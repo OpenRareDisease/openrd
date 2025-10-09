@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 关于我们</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .contact-item:hover {
+            transform: translateY(-1px);
+            transition: all 0.3s ease;
+        }
+        
+        .link-item:hover {
+            background: rgba(150, 159, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="flex items-center justify-between px-6 py-4">
+            <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                <i class="fas fa-arrow-left text-text-secondary"></i>
+            </button>
+            <h1 id="page-title" class="text-lg font-semibold text-text-primary">关于我们</h1>
+            <div class="w-10"></div> <!-- 占位元素保持标题居中 -->
+        </header>
+
+        <!-- 主要内容区域 -->
+        <main id="main-content" class="px-6 space-y-6">
+            <!-- App Logo和基本信息 -->
+            <section id="app-info" class="text-center">
+                <div id="app-logo" class="w-20 h-20 mx-auto mb-4 rounded-2xl glass-card flex items-center justify-center">
+                    <i class="fas fa-heartbeat text-3xl gradient-text"></i>
+                </div>
+                <h2 id="app-name" class="text-2xl font-bold gradient-text mb-2">FSHD-openrd</h2>
+                <p id="app-version" class="text-sm text-text-muted mb-4">版本 1.0.0</p>
+                <div id="app-tagline" class="glass-card rounded-lg p-3">
+                    <p class="text-sm text-text-secondary">专为FSHD患者设计的智能管理平台</p>
+                </div>
+            </section>
+
+            <!-- 产品介绍 -->
+            <section id="product-intro">
+                <h3 id="intro-title" class="text-base font-semibold text-text-primary mb-3">产品介绍</h3>
+                <div id="intro-content" class="glass-card rounded-lg p-4">
+                    <p class="text-sm text-text-secondary leading-relaxed">
+                        FSHD-openrd是一款专为面肩肱型肌营养不良症（FSHD）患者设计的移动端智能管理平台。我们致力于通过数据驱动、智能分析和社区互助，赋能患者自我管理，优化医疗资源对接，加速科研进展。
+                    </p>
+                </div>
+            </section>
+
+            <!-- 核心功能亮点 -->
+            <section id="features-highlight">
+                <h3 id="features-title" class="text-base font-semibold text-text-primary mb-3">核心功能</h3>
+                <div id="features-list" class="space-y-3">
+                    <div class="glass-card rounded-lg p-3 flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-question-circle text-primary text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="text-sm font-medium text-text-primary">智能问答</h4>
+                            <p class="text-xs text-text-muted">专业FSHD知识查询与个性化问答</p>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-card rounded-lg p-3 flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-chart-line text-secondary text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="text-sm font-medium text-text-primary">病程管理</h4>
+                            <p class="text-xs text-text-muted">肌力评估与AI病程预测</p>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-card rounded-lg p-3 flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-users text-green-400 text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="text-sm font-medium text-text-primary">患者社区</h4>
+                            <p class="text-xs text-text-muted">经验分享与互助交流</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 联系方式 -->
+            <section id="contact-info">
+                <h3 id="contact-title" class="text-base font-semibold text-text-primary mb-3">联系我们</h3>
+                <div id="contact-list" class="space-y-3">
+                    <button id="contact-phone" class="contact-item w-full glass-card rounded-lg p-3 flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-phone text-blue-400 text-sm"></i>
+                            </div>
+                            <div class="text-left">
+                                <h4 class="text-sm font-medium text-text-primary">客服电话</h4>
+                                <p class="text-xs text-text-muted">400-123-4567</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </button>
+                    
+                    <button id="contact-email" class="contact-item w-full glass-card rounded-lg p-3 flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-envelope text-green-400 text-sm"></i>
+                            </div>
+                            <div class="text-left">
+                                <h4 class="text-sm font-medium text-text-primary">客服邮箱</h4>
+                                <p class="text-xs text-text-muted">support@fshd-openrd.com</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </button>
+                    
+                    <button id="contact-website" class="contact-item w-full glass-card rounded-lg p-3 flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-full bg-purple-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-globe text-purple-400 text-sm"></i>
+                            </div>
+                            <div class="text-left">
+                                <h4 class="text-sm font-medium text-text-primary">官方网站</h4>
+                                <p class="text-xs text-text-muted">www.fshd-openrd.com</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </button>
+                </div>
+            </section>
+
+            <!-- 用户协议和隐私政策 -->
+            <section id="legal-links">
+                <h3 id="legal-title" class="text-base font-semibold text-text-primary mb-3">法律条款</h3>
+                <div id="legal-list" class="space-y-3">
+                    <button id="user-agreement" class="link-item w-full glass-card rounded-lg p-3 flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-file-contract text-yellow-400 text-sm"></i>
+                            </div>
+                            <h4 class="text-sm font-medium text-text-primary">用户协议</h4>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </button>
+                    
+                    <button id="privacy-policy" class="link-item w-full glass-card rounded-lg p-3 flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-8 h-8 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-shield-alt text-red-400 text-sm"></i>
+                            </div>
+                            <h4 class="text-sm font-medium text-text-primary">隐私政策</h4>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </button>
+                </div>
+            </section>
+
+            <!-- 版权信息 -->
+            <section id="copyright" class="text-center py-6">
+                <p class="text-xs text-text-muted">
+                    © 2024 FSHD-openrd. 保留所有权利。
+                </p>
+                <p class="text-xs text-text-muted mt-1">
+                    致力于为FSHD患者提供更好的医疗服务
+                </p>
+            </section>
+        </main>
+    </div>
+
+    <!-- 用户协议弹窗 -->
+    <div id="agreement-modal" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 hidden">
+        <div class="flex items-end justify-center min-h-screen">
+            <div class="glass-card rounded-t-2xl w-full max-w-sm max-h-96 overflow-hidden">
+                <div class="flex items-center justify-between p-4 border-b border-dark-border">
+                    <h3 class="text-lg font-semibold text-text-primary">用户协议</h3>
+                    <button id="close-agreement" class="w-8 h-8 rounded-full bg-dark-card flex items-center justify-center">
+                        <i class="fas fa-times text-text-muted text-sm"></i>
+                    </button>
+                </div>
+                <div class="p-4 overflow-y-auto max-h-80">
+                    <div class="space-y-4 text-sm text-text-secondary">
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">1. 服务条款</h4>
+                            <p>欢迎使用FSHD-openrd应用程序。在使用我们的服务前，请仔细阅读并理解本协议的所有条款。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">2. 用户责任</h4>
+                            <p>用户应确保所提供的信息真实有效，并对其账户下的所有活动承担责任。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">3. 隐私保护</h4>
+                            <p>我们严格保护用户隐私，详细的隐私政策请查看隐私政策条款。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">4. 免责声明</h4>
+                            <p>本应用提供的信息仅供参考，不能替代专业医疗建议。如有健康问题，请咨询专业医生。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 隐私政策弹窗 -->
+    <div id="privacy-modal" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 hidden">
+        <div class="flex items-end justify-center min-h-screen">
+            <div class="glass-card rounded-t-2xl w-full max-w-sm max-h-96 overflow-hidden">
+                <div class="flex items-center justify-between p-4 border-b border-dark-border">
+                    <h3 class="text-lg font-semibold text-text-primary">隐私政策</h3>
+                    <button id="close-privacy" class="w-8 h-8 rounded-full bg-dark-card flex items-center justify-center">
+                        <i class="fas fa-times text-text-muted text-sm"></i>
+                    </button>
+                </div>
+                <div class="p-4 overflow-y-auto max-h-80">
+                    <div class="space-y-4 text-sm text-text-secondary">
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">1. 信息收集</h4>
+                            <p>我们收集您提供的医疗信息、使用数据等，用于提供更好的服务体验。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">2. 信息使用</h4>
+                            <p>您的信息仅用于FSHD管理、分析和改善服务质量，不会用于其他商业目的。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">3. 信息保护</h4>
+                            <p>我们采用医疗级加密技术保护您的数据安全，符合HIPAA、GDPR等国际标准。</p>
+                        </div>
+                        <div>
+                            <h4 class="font-medium text-text-primary mb-2">4. 数据共享</h4>
+                            <p>未经您同意，我们不会与第三方分享您的个人信息，除非法律要求。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 返回按钮点击事件
+            document.querySelector('#back-button').addEventListener('click', function() {
+                window.location.href = 'P-SETTINGS.html';
+            });
+
+            // 客服电话点击事件
+            document.querySelector('#contact-phone').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现电话拨打功能');
+                // 注释：此功能需要调用设备电话API，在原型阶段仅做UI展示
+            });
+
+            // 客服邮箱点击事件
+            document.querySelector('#contact-email').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现邮件发送功能');
+                // 注释：此功能需要调用设备邮件API，在原型阶段仅做UI展示
+            });
+
+            // 官方网站点击事件
+            document.querySelector('#contact-website').addEventListener('click', function() {
+                console.log('需要调用第三方接口打开网页浏览器');
+                // 注释：此功能需要调用设备浏览器API，在原型阶段仅做UI展示
+            });
+
+            // 用户协议点击事件
+            document.querySelector('#user-agreement').addEventListener('click', function() {
+                document.querySelector('#agreement-modal').classList.remove('hidden');
+            });
+
+            // 隐私政策点击事件
+            document.querySelector('#privacy-policy').addEventListener('click', function() {
+                document.querySelector('#privacy-modal').classList.remove('hidden');
+            });
+
+            // 关闭用户协议弹窗
+            document.querySelector('#close-agreement').addEventListener('click', function() {
+                document.querySelector('#agreement-modal').classList.add('hidden');
+            });
+
+            // 关闭隐私政策弹窗
+            document.querySelector('#close-privacy').addEventListener('click', function() {
+                document.querySelector('#privacy-modal').classList.add('hidden');
+            });
+
+            // 点击弹窗背景关闭弹窗
+            document.querySelector('#agreement-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+
+            document.querySelector('#privacy-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

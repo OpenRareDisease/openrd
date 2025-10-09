@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 临床护照</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .expandable-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        
+        .expandable-content.expanded {
+            max-height: 500px;
+        }
+        
+        .loading-spinner {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .passport-id {
+            font-family: 'Courier New', monospace;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-1 text-xs text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-xs mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="flex items-center justify-between px-6 py-3">
+            <button id="back-button" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                <i class="fas fa-arrow-left text-text-secondary text-xs"></i>
+            </button>
+            <h1 id="page-title" class="text-base font-semibold text-text-primary">FSHD临床护照</h1>
+            <div class="w-8"></div> <!-- 占位元素保持标题居中 -->
+        </header>
+
+        <!-- 临床护照ID卡片 -->
+        <section id="passport-id-section" class="mx-6 mb-4">
+            <div id="passport-id-card" class="glass-card rounded-lg p-3 text-center">
+                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center mx-auto mb-2">
+                    <i class="fas fa-id-card text-white text-lg"></i>
+                </div>
+                <h2 class="text-base font-semibold text-text-primary mb-1">临床护照ID</h2>
+                <div id="passport-id" class="passport-id text-primary text-sm font-mono tracking-wide bg-dark-card rounded-md p-2 mb-2">
+                    FSHD-2024-001-0001
+                </div>
+                <p class="text-xs text-text-muted">唯一标识您的FSHD医疗档案</p>
+            </div>
+        </section>
+
+        <!-- 基因信息 -->
+        <section id="genetic-info-section" class="mx-6 mb-3">
+            <div id="genetic-info-card" class="glass-card rounded-md">
+                <div id="genetic-header" class="flex items-center justify-between p-3 cursor-pointer">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-accent bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-dna text-accent text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-text-primary text-sm">基因信息</h3>
+                            <p class="text-xs text-text-muted">FSHD分型与分子诊断</p>
+                        </div>
+                    </div>
+                    <i id="genetic-arrow" class="fas fa-chevron-down text-text-muted text-xs transition-transform duration-300"></i>
+                </div>
+                <div id="genetic-content" class="expandable-content px-3 pb-3">
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">基因类型</span>
+                            <span class="text-xs font-medium text-text-primary">FSHD1</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">D4Z4重复数</span>
+                            <span class="text-xs font-medium text-text-primary">8</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">甲基化值</span>
+                            <span class="text-xs font-medium text-text-primary">0.35</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">诊断日期</span>
+                            <span class="text-xs font-medium text-text-primary">2023-06-15</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 肌力评估摘要 -->
+        <section id="strength-summary-section" class="mx-6 mb-3">
+            <div id="strength-summary-card" class="glass-card rounded-md">
+                <div id="strength-header" class="flex items-center justify-between p-3 cursor-pointer">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-chart-line text-green-400 text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-text-primary text-sm">肌力评估摘要</h3>
+                            <p class="text-xs text-text-muted">最近3次评估结果</p>
+                        </div>
+                    </div>
+                    <i id="strength-arrow" class="fas fa-chevron-down text-text-muted text-xs transition-transform duration-300"></i>
+                </div>
+                <div id="strength-content" class="expandable-content px-3 pb-3">
+                    <div class="space-y-3">
+                        <div class="border-l-2 border-primary pl-2">
+                            <div class="flex justify-between items-center mb-1">
+                                <span class="text-xs font-medium text-text-primary">2024-01-15</span>
+                                <span class="text-xs text-primary">平均分: 4.2</span>
+                            </div>
+                            <div class="text-xs text-text-muted">三角肌:4.0 | 肱二头肌:4.5 | 股四头肌:4.3 | 胫前肌:4.0</div>
+                        </div>
+                        <div class="border-l-2 border-secondary pl-2">
+                            <div class="flex justify-between items-center mb-1">
+                                <span class="text-xs font-medium text-text-primary">2023-12-20</span>
+                                <span class="text-xs text-secondary">平均分: 4.3</span>
+                            </div>
+                            <div class="text-xs text-text-muted">三角肌:4.2 | 肱二头肌:4.5 | 股四头肌:4.4 | 胫前肌:4.1</div>
+                        </div>
+                        <div class="border-l-2 border-accent pl-2">
+                            <div class="flex justify-between items-center mb-1">
+                                <span class="text-xs font-medium text-text-primary">2023-11-10</span>
+                                <span class="text-xs text-accent">平均分: 4.4</span>
+                            </div>
+                            <div class="text-xs text-text-muted">三角肌:4.3 | 肱二头肌:4.5 | 股四头肌:4.5 | 胫前肌:4.3</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- MRI影像分析 -->
+        <section id="mri-summary-section" class="mx-6 mb-3">
+            <div id="mri-summary-card" class="glass-card rounded-md">
+                <div id="mri-header" class="flex items-center justify-between p-3 cursor-pointer">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-images text-blue-400 text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-text-primary text-sm">MRI影像分析</h3>
+                            <p class="text-xs text-text-muted">肌肉脂肪化程度评估</p>
+                        </div>
+                    </div>
+                    <i id="mri-arrow" class="fas fa-chevron-down text-text-muted text-xs transition-transform duration-300"></i>
+                </div>
+                <div id="mri-content" class="expandable-content px-3 pb-3">
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">最近MRI</span>
+                            <span class="text-xs font-medium text-text-primary">2024-01-10</span>
+                        </div>
+                        <div class="space-y-2">
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-text-secondary">前锯肌</span>
+                                <div class="flex items-center space-x-2">
+                                    <div class="w-12 h-2 bg-dark-card rounded-full overflow-hidden">
+                                        <div class="w-1/2 h-full bg-yellow-400"></div>
+                                    </div>
+                                    <span class="text-xs font-medium text-text-primary">2级</span>
+                                </div>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-text-secondary">三角肌</span>
+                                <div class="flex items-center space-x-2">
+                                    <div class="w-12 h-2 bg-dark-card rounded-full overflow-hidden">
+                                        <div class="w-1/4 h-full bg-green-400"></div>
+                                    </div>
+                                    <span class="text-xs font-medium text-text-primary">1级</span>
+                                </div>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs text-text-secondary">肱二头肌</span>
+                                <div class="flex items-center space-x-2">
+                                    <div class="w-12 h-2 bg-dark-card rounded-full overflow-hidden">
+                                        <div class="w-1/4 h-full bg-green-400"></div>
+                                    </div>
+                                    <span class="text-xs font-medium text-text-primary">1级</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 血检报告摘要 -->
+        <section id="blood-summary-section" class="mx-6 mb-4">
+            <div id="blood-summary-card" class="glass-card rounded-md">
+                <div id="blood-header" class="flex items-center justify-between p-3 cursor-pointer">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-tint text-red-400 text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold text-text-primary text-sm">血检报告摘要</h3>
+                            <p class="text-xs text-text-muted">肝功能、肌酶等关键指标</p>
+                        </div>
+                    </div>
+                    <i id="blood-arrow" class="fas fa-chevron-down text-text-muted text-xs transition-transform duration-300"></i>
+                </div>
+                <div id="blood-content" class="expandable-content px-3 pb-3">
+                    <div class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">最近血检</span>
+                            <span class="text-xs font-medium text-text-primary">2024-01-05</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="text-center">
+                                <div class="text-xs font-medium text-text-primary">ALT</div>
+                                <div class="text-xs text-green-400">32 U/L</div>
+                                <div class="text-xs text-text-muted">正常</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs font-medium text-text-primary">AST</div>
+                                <div class="text-xs text-green-400">28 U/L</div>
+                                <div class="text-xs text-text-muted">正常</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs font-medium text-text-primary">CK</div>
+                                <div class="text-xs text-yellow-400">380 U/L</div>
+                                <div class="text-xs text-text-muted">轻度升高</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs font-medium text-text-primary">LDH</div>
+                                <div class="text-xs text-green-400">220 U/L</div>
+                                <div class="text-xs text-text-muted">正常</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 导出PDF按钮 -->
+        <section id="export-section" class="mx-6 mb-6">
+            <button id="export-pdf-button" class="w-full glass-card rounded-md p-3 flex items-center justify-center space-x-2 hover:bg-opacity-15 transition-all duration-300">
+                <div id="export-icon" class="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center">
+                    <i class="fas fa-download text-white text-sm"></i>
+                </div>
+                <div class="flex-1 text-left">
+                    <h3 class="font-semibold text-text-primary text-sm">导出PDF档案</h3>
+                    <p class="text-xs text-text-muted">生成符合医疗标准的PDF文档</p>
+                </div>
+                <div id="export-loading" class="hidden">
+                    <i class="fas fa-spinner loading-spinner text-primary text-sm"></i>
+                </div>
+            </button>
+        </section>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 返回按钮点击事件
+            document.querySelector('#back-button').addEventListener('click', function() {
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            // 展开/收起功能
+            function setupExpandableSection(headerId, contentId, arrowId) {
+                const header = document.querySelector(`#${headerId}`);
+                const content = document.querySelector(`#${contentId}`);
+                const arrow = document.querySelector(`#${arrowId}`);
+
+                header.addEventListener('click', function() {
+                    const isExpanded = content.classList.contains('expanded');
+                    
+                    if (isExpanded) {
+                        content.classList.remove('expanded');
+                        arrow.style.transform = 'rotate(0deg)';
+                    } else {
+                        content.classList.add('expanded');
+                        arrow.style.transform = 'rotate(180deg)';
+                    }
+                });
+            }
+
+            // 设置各个可展开区域
+            setupExpandableSection('genetic-header', 'genetic-content', 'genetic-arrow');
+            setupExpandableSection('strength-header', 'strength-content', 'strength-arrow');
+            setupExpandableSection('mri-header', 'mri-content', 'mri-arrow');
+            setupExpandableSection('blood-header', 'blood-content', 'blood-arrow');
+
+            // 导出PDF功能
+            document.querySelector('#export-pdf-button').addEventListener('click', function() {
+                const button = this;
+                const icon = document.querySelector('#export-icon');
+                const loading = document.querySelector('#export-loading');
+                
+                // 显示加载状态
+                icon.classList.add('hidden');
+                loading.classList.remove('hidden');
+                button.disabled = true;
+                
+                // 模拟PDF生成过程
+                setTimeout(function() {
+                    // 恢复按钮状态
+                    icon.classList.remove('hidden');
+                    loading.classList.add('hidden');
+                    button.disabled = false;
+                    
+                    // 显示成功提示
+                    alert('PDF档案已生成，请查收！');
+                    
+                    // 模拟下载（在实际应用中这里会触发文件下载）
+                    console.log('PDF文件已生成并下载');
+                }, 2000);
+            });
+        });
+    </script>
+</body>
+</html>

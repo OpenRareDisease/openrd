@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 医疗资源地图</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .map-container {
+            background: linear-gradient(45deg, #1A1A3A, #2D2D5F);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .map-marker {
+            position: absolute;
+            transform: translate(-50%, -100%);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .map-marker:hover {
+            transform: translate(-50%, -100%) scale(1.1);
+        }
+        
+        .map-marker.clinic {
+            color: #969FFF;
+        }
+        
+        .map-marker.rehab {
+            color: #34D399;
+        }
+        
+        .resource-card {
+            transition: all 0.3s ease;
+        }
+        
+        .resource-card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .detail-modal {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+        }
+        
+        .search-overlay {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="px-6 py-4">
+            <div id="nav-bar" class="flex items-center justify-between">
+                <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                    <i class="fas fa-arrow-left text-text-secondary"></i>
+                </button>
+                <h1 id="page-title" class="text-lg font-semibold text-text-primary">医疗资源地图</h1>
+                <div id="header-actions" class="flex items-center space-x-2">
+                    <button id="search-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-search text-text-secondary"></i>
+                    </button>
+                    <button id="filter-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-filter text-text-secondary"></i>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 搜索覆盖层 -->
+        <div id="search-overlay" class="search-overlay fixed inset-0 z-50 hidden">
+            <div class="p-6">
+                <div class="flex items-center space-x-3 mb-4">
+                    <button id="search-close" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-times text-text-secondary text-sm"></i>
+                    </button>
+                    <input id="search-input" type="text" placeholder="搜索城市或机构名称" class="flex-1 px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-primary">
+                </div>
+                <div id="search-results" class="space-y-3">
+                    <!-- 搜索结果将动态插入这里 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 筛选覆盖层 -->
+        <div id="filter-overlay" class="search-overlay fixed inset-0 z-50 hidden">
+            <div class="p-6">
+                <div class="flex items-center space-x-3 mb-6">
+                    <button id="filter-close" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-times text-text-secondary text-sm"></i>
+                    </button>
+                    <h3 class="text-lg font-semibold text-text-primary">筛选条件</h3>
+                </div>
+                
+                <!-- 资源类型筛选 -->
+                <div class="mb-6">
+                    <h4 class="text-base font-medium text-text-primary mb-3">资源类型</h4>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-3">
+                            <input type="checkbox" id="filter-clinic" class="w-4 h-4 text-primary bg-dark-card border-dark-border rounded focus:ring-primary" checked>
+                            <span class="text-text-secondary">FSHD诊疗中心</span>
+                        </label>
+                        <label class="flex items-center space-x-3">
+                            <input type="checkbox" id="filter-rehab" class="w-4 h-4 text-primary bg-dark-card border-dark-border rounded focus:ring-primary" checked>
+                            <span class="text-text-secondary">康复机构</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <!-- 距离筛选 -->
+                <div class="mb-6">
+                    <h4 class="text-base font-medium text-text-primary mb-3">距离范围</h4>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-3">
+                            <input type="radio" name="distance" value="5" class="w-4 h-4 text-primary bg-dark-card border-dark-border focus:ring-primary" checked>
+                            <span class="text-text-secondary">5公里内</span>
+                        </label>
+                        <label class="flex items-center space-x-3">
+                            <input type="radio" name="distance" value="10" class="w-4 h-4 text-primary bg-dark-card border-dark-border focus:ring-primary">
+                            <span class="text-text-secondary">10公里内</span>
+                        </label>
+                        <label class="flex items-center space-x-3">
+                            <input type="radio" name="distance" value="20" class="w-4 h-4 text-primary bg-dark-card border-dark-border focus:ring-primary">
+                            <span class="text-text-secondary">20公里内</span>
+                        </label>
+                        <label class="flex items-center space-x-3">
+                            <input type="radio" name="distance" value="50" class="w-4 h-4 text-primary bg-dark-card border-dark-border focus:ring-primary">
+                            <span class="text-text-secondary">50公里内</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <div class="flex space-x-3">
+                    <button id="filter-reset" class="flex-1 py-3 bg-dark-card border border-dark-border rounded-lg text-text-secondary">
+                        重置
+                    </button>
+                    <button id="filter-apply" class="flex-1 py-3 bg-primary rounded-lg text-white font-medium">
+                        应用筛选
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 地图区域 -->
+        <section id="map-section" class="mx-6 mb-4">
+            <div id="map-container" class="map-container glass-card rounded-xl h-64 relative">
+                <!-- 地图背景装饰 -->
+                <div class="absolute inset-0 opacity-10">
+                    <div class="absolute top-4 left-4 w-2 h-2 bg-primary rounded-full"></div>
+                    <div class="absolute top-8 right-8 w-1 h-1 bg-secondary rounded-full"></div>
+                    <div class="absolute bottom-6 left-8 w-1.5 h-1.5 bg-accent rounded-full"></div>
+                    <div class="absolute bottom-12 right-6 w-1 h-1 bg-primary rounded-full"></div>
+                    <div class="absolute top-16 left-12 w-1 h-1 bg-secondary rounded-full"></div>
+                </div>
+                
+                <!-- 地图标记点 -->
+                <div id="marker-1" class="map-marker clinic" style="top: 30%; left: 25%;" data-resource-id="1">
+                    <div class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center border-2 border-primary">
+                        <i class="fas fa-hospital text-sm"></i>
+                    </div>
+                </div>
+                
+                <div id="marker-2" class="map-marker rehab" style="top: 60%; left: 70%;" data-resource-id="2">
+                    <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center border-2 border-green-400">
+                        <i class="fas fa-heartbeat text-sm"></i>
+                    </div>
+                </div>
+                
+                <div id="marker-3" class="map-marker clinic" style="top: 45%; left: 60%;" data-resource-id="3">
+                    <div class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center border-2 border-primary">
+                        <i class="fas fa-hospital text-sm"></i>
+                    </div>
+                </div>
+                
+                <div id="marker-4" class="map-marker rehab" style="top: 75%; left: 35%;" data-resource-id="4">
+                    <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center border-2 border-green-400">
+                        <i class="fas fa-heartbeat text-sm"></i>
+                    </div>
+                </div>
+                
+                <!-- 地图控制按钮 -->
+                <div id="map-controls" class="absolute top-3 right-3 space-y-2">
+                    <button id="zoom-in" class="w-8 h-8 rounded-full bg-dark bg-opacity-80 flex items-center justify-center">
+                        <i class="fas fa-plus text-text-secondary text-xs"></i>
+                    </button>
+                    <button id="zoom-out" class="w-8 h-8 rounded-full bg-dark bg-opacity-80 flex items-center justify-center">
+                        <i class="fas fa-minus text-text-secondary text-xs"></i>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 资源列表 -->
+        <section id="resources-section" class="mx-6 mb-6">
+            <div id="resources-header" class="flex items-center justify-between mb-3">
+                <h3 id="resources-title" class="text-base font-semibold text-text-primary">附近资源</h3>
+                <button id="list-toggle" class="text-text-secondary text-sm">
+                    <i class="fas fa-chevron-down mr-1"></i>收起
+                </button>
+            </div>
+            
+            <div id="resources-list" class="space-y-3">
+                <!-- 资源卡片1 -->
+                <div id="resource-card-1" class="resource-card glass-card rounded-lg p-4" data-resource-id="1">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-hospital text-primary"></i>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">华西医院FSHD诊疗中心</h4>
+                            <p class="text-xs text-text-secondary mb-2">四川省成都市武侯区国学巷37号</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-4 text-xs text-text-muted">
+                                    <span><i class="fas fa-map-marker-alt mr-1"></i>2.3km</span>
+                                    <span><i class="fas fa-phone mr-1"></i>028-85422114</span>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button class="text-primary text-xs">
+                                        <i class="fas fa-phone"></i>
+                                    </button>
+                                    <button class="text-secondary text-xs">
+                                        <i class="fas fa-directions"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 资源卡片2 -->
+                <div id="resource-card-2" class="resource-card glass-card rounded-lg p-4" data-resource-id="2">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-heartbeat text-green-400"></i>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">康复之家专业康复中心</h4>
+                            <p class="text-xs text-text-secondary mb-2">四川省成都市青羊区一环路西二段32号</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-4 text-xs text-text-muted">
+                                    <span><i class="fas fa-map-marker-alt mr-1"></i>4.1km</span>
+                                    <span><i class="fas fa-phone mr-1"></i>028-87766555</span>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button class="text-primary text-xs">
+                                        <i class="fas fa-phone"></i>
+                                    </button>
+                                    <button class="text-secondary text-xs">
+                                        <i class="fas fa-directions"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 资源卡片3 -->
+                <div id="resource-card-3" class="resource-card glass-card rounded-lg p-4" data-resource-id="3">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-hospital text-primary"></i>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">四川省人民医院神经肌肉病中心</h4>
+                            <p class="text-xs text-text-secondary mb-2">四川省成都市青羊区一环路西二段32号</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-4 text-xs text-text-muted">
+                                    <span><i class="fas fa-map-marker-alt mr-1"></i>5.2km</span>
+                                    <span><i class="fas fa-phone mr-1"></i>028-87393999</span>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button class="text-primary text-xs">
+                                        <i class="fas fa-phone"></i>
+                                    </button>
+                                    <button class="text-secondary text-xs">
+                                        <i class="fas fa-directions"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 资源卡片4 -->
+                <div id="resource-card-4" class="resource-card glass-card rounded-lg p-4" data-resource-id="4">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-heartbeat text-green-400"></i>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">阳光康复理疗中心</h4>
+                            <p class="text-xs text-text-secondary mb-2">四川省成都市锦江区红星路二段126号</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-4 text-xs text-text-muted">
+                                    <span><i class="fas fa-map-marker-alt mr-1"></i>6.8km</span>
+                                    <span><i class="fas fa-phone mr-1"></i>028-86668888</span>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button class="text-primary text-xs">
+                                        <i class="fas fa-phone"></i>
+                                    </button>
+                                    <button class="text-secondary text-xs">
+                                        <i class="fas fa-directions"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 资源详情弹窗 -->
+    <div id="detail-modal" class="detail-modal fixed inset-0 z-50 hidden">
+        <div class="flex flex-col h-full">
+            <div class="flex-1 flex items-end">
+                <div id="detail-content" class="w-full glass-card rounded-t-2xl p-6 transform translate-y-full transition-transform duration-300">
+                    <!-- 拖拽指示器 -->
+                    <div class="w-10 h-1 bg-text-muted rounded-full mx-auto mb-4"></div>
+                    
+                    <!-- 详情内容 -->
+                    <div id="detail-body">
+                        <div class="flex items-center space-x-3 mb-4">
+                            <div id="detail-icon" class="w-12 h-12 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-hospital text-primary text-lg"></i>
+                            </div>
+                            <div class="flex-1">
+                                <h3 id="detail-title" class="text-lg font-semibold text-text-primary">华西医院FSHD诊疗中心</h3>
+                                <p id="detail-type" class="text-sm text-text-secondary">FSHD诊疗中心</p>
+                            </div>
+                            <button id="detail-close" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                                <i class="fas fa-times text-text-secondary text-sm"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="space-y-4">
+                            <div class="flex items-start space-x-3">
+                                <i class="fas fa-map-marker-alt text-text-muted mt-1"></i>
+                                <div>
+                                    <p class="text-sm text-text-primary">地址</p>
+                                    <p id="detail-address" class="text-sm text-text-secondary">四川省成都市武侯区国学巷37号</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-start space-x-3">
+                                <i class="fas fa-phone text-text-muted mt-1"></i>
+                                <div>
+                                    <p class="text-sm text-text-primary">联系电话</p>
+                                    <p id="detail-phone" class="text-sm text-text-secondary">028-85422114</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-start space-x-3">
+                                <i class="fas fa-clock text-text-muted mt-1"></i>
+                                <div>
+                                    <p class="text-sm text-text-primary">门诊时间</p>
+                                    <p id="detail-hours" class="text-sm text-text-secondary">周一至周五 8:00-17:30</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-start space-x-3">
+                                <i class="fas fa-star text-text-muted mt-1"></i>
+                                <div>
+                                    <p class="text-sm text-text-primary">特色服务</p>
+                                    <p id="detail-services" class="text-sm text-text-secondary">FSHD专病门诊、基因检测、肌力评估、多学科会诊</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-start space-x-3">
+                                <i class="fas fa-info-circle text-text-muted mt-1"></i>
+                                <div>
+                                    <p class="text-sm text-text-primary">挂号信息</p>
+                                    <p id="detail-registration" class="text-sm text-text-secondary">FSHD专病门诊每周三上午开放，可通过医院官网或微信公众号预约</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex space-x-3 mt-6">
+                            <button id="detail-phone-btn" class="flex-1 py-3 bg-primary rounded-lg text-white font-medium flex items-center justify-center space-x-2">
+                                <i class="fas fa-phone"></i>
+                                <span>拨打电话</span>
+                            </button>
+                            <button id="detail-navigate-btn" class="flex-1 py-3 bg-secondary rounded-lg text-white font-medium flex items-center justify-center space-x-2">
+                                <i class="fas fa-directions"></i>
+                                <span>导航前往</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 模拟资源数据
+            const resources = {
+                1: {
+                    name: '华西医院FSHD诊疗中心',
+                    type: 'FSHD诊疗中心',
+                    address: '四川省成都市武侯区国学巷37号',
+                    phone: '028-85422114',
+                    hours: '周一至周五 8:00-17:30',
+                    services: 'FSHD专病门诊、基因检测、肌力评估、多学科会诊',
+                    registration: 'FSHD专病门诊每周三上午开放，可通过医院官网或微信公众号预约',
+                    distance: '2.3km',
+                    icon: 'fas fa-hospital',
+                    color: 'primary'
+                },
+                2: {
+                    name: '康复之家专业康复中心',
+                    type: '康复机构',
+                    address: '四川省成都市青羊区一环路西二段32号',
+                    phone: '028-87766555',
+                    hours: '周一至周日 9:00-18:00',
+                    services: '物理治疗、作业治疗、言语治疗、康复评估',
+                    registration: '可电话预约或现场咨询，首次评估免费',
+                    distance: '4.1km',
+                    icon: 'fas fa-heartbeat',
+                    color: 'green-400'
+                },
+                3: {
+                    name: '四川省人民医院神经肌肉病中心',
+                    type: 'FSHD诊疗中心',
+                    address: '四川省成都市青羊区一环路西二段32号',
+                    phone: '028-87393999',
+                    hours: '周一至周五 8:30-17:00',
+                    services: '神经肌肉病诊断、基因检测、肌肉活检、康复指导',
+                    registration: '需提前预约，建议携带既往检查资料',
+                    distance: '5.2km',
+                    icon: 'fas fa-hospital',
+                    color: 'primary'
+                },
+                4: {
+                    name: '阳光康复理疗中心',
+                    type: '康复机构',
+                    address: '四川省成都市锦江区红星路二段126号',
+                    phone: '028-86668888',
+                    hours: '周一至周六 8:30-19:00',
+                    services: '运动康复、物理因子治疗、中医理疗、心理辅导',
+                    registration: '支持医保报销，可通过微信小程序预约',
+                    distance: '6.8km',
+                    icon: 'fas fa-heartbeat',
+                    color: 'green-400'
+                }
+            };
+
+            // 返回按钮
+            document.querySelector('#back-button').addEventListener('click', function() {
+                // 根据来源页面决定返回位置
+                const referrer = document.referrer;
+                if (referrer.includes('P-QNA.html')) {
+                    window.location.href = 'P-QNA.html';
+                } else if (referrer.includes('P-COMMUNITY.html')) {
+                    window.location.href = 'P-COMMUNITY.html';
+                } else {
+                    window.location.href = 'P-HOME.html';
+                }
+            });
+
+            // 搜索功能
+            document.querySelector('#search-button').addEventListener('click', function() {
+                document.querySelector('#search-overlay').classList.remove('hidden');
+                document.querySelector('#search-input').focus();
+            });
+
+            document.querySelector('#search-close').addEventListener('click', function() {
+                document.querySelector('#search-overlay').classList.add('hidden');
+                document.querySelector('#search-input').value = '';
+                document.querySelector('#search-results').innerHTML = '';
+            });
+
+            document.querySelector('#search-input').addEventListener('input', function() {
+                const query = this.value.toLowerCase();
+                const resultsContainer = document.querySelector('#search-results');
+                
+                if (query.length < 2) {
+                    resultsContainer.innerHTML = '';
+                    return;
+                }
+
+                const matchedResources = Object.values(resources).filter(resource => 
+                    resource.name.toLowerCase().includes(query) ||
+                    resource.address.toLowerCase().includes(query)
+                );
+
+                if (matchedResources.length > 0) {
+                    resultsContainer.innerHTML = matchedResources.map(resource => `
+                        <div class="glass-card rounded-lg p-3 cursor-pointer hover:bg-opacity-20" onclick="selectSearchResult('${resource.name}')">
+                            <h4 class="font-medium text-text-primary text-sm">${resource.name}</h4>
+                            <p class="text-xs text-text-secondary">${resource.address}</p>
+                        </div>
+                    `).join('');
+                } else {
+                    resultsContainer.innerHTML = '<p class="text-text-muted text-sm">未找到相关资源</p>';
+                }
+            });
+
+            // 筛选功能
+            document.querySelector('#filter-button').addEventListener('click', function() {
+                document.querySelector('#filter-overlay').classList.remove('hidden');
+            });
+
+            document.querySelector('#filter-close').addEventListener('click', function() {
+                document.querySelector('#filter-overlay').classList.add('hidden');
+            });
+
+            document.querySelector('#filter-reset').addEventListener('click', function() {
+                // 重置所有筛选条件
+                document.querySelector('#filter-clinic').checked = true;
+                document.querySelector('#filter-rehab').checked = true;
+                document.querySelector('input[name="distance"][value="5"]').checked = true;
+            });
+
+            document.querySelector('#filter-apply').addEventListener('click', function() {
+                // 应用筛选条件
+                const clinicChecked = document.querySelector('#filter-clinic').checked;
+                const rehabChecked = document.querySelector('#filter-rehab').checked;
+                const distance = document.querySelector('input[name="distance"]:checked').value;
+                
+                console.log('应用筛选条件:', { clinicChecked, rehabChecked, distance });
+                
+                // 这里可以添加实际的筛选逻辑
+                document.querySelector('#filter-overlay').classList.add('hidden');
+            });
+
+            // 地图标记点点击事件
+            document.querySelectorAll('.map-marker').forEach(marker => {
+                marker.addEventListener('click', function() {
+                    const resourceId = this.dataset.resourceId;
+                    showResourceDetail(resourceId);
+                });
+            });
+
+            // 资源卡片点击事件
+            document.querySelectorAll('.resource-card').forEach(card => {
+                card.addEventListener('click', function(e) {
+                    // 避免按钮点击时触发卡片点击
+                    if (e.target.closest('button')) return;
+                    
+                    const resourceId = this.dataset.resourceId;
+                    showResourceDetail(resourceId);
+                });
+            });
+
+            // 资源卡片内的电话和导航按钮
+            document.querySelectorAll('.resource-card button').forEach(button => {
+                button.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const resourceCard = this.closest('.resource-card');
+                    const resourceId = resourceCard.dataset.resourceId;
+                    const resource = resources[resourceId];
+                    
+                    if (this.querySelector('.fa-phone')) {
+                        console.log('拨打电话:', resource.phone);
+                        // 实际应用中这里会调用电话功能
+                    } else if (this.querySelector('.fa-directions')) {
+                        console.log('导航前往:', resource.address);
+                        // 实际应用中这里会调用地图导航
+                    }
+                });
+            });
+
+            // 列表收起/展开
+            document.querySelector('#list-toggle').addEventListener('click', function() {
+                const list = document.querySelector('#resources-list');
+                const icon = this.querySelector('i');
+                const text = this.childNodes[this.childNodes.length - 1];
+                
+                if (list.style.display === 'none') {
+                    list.style.display = 'block';
+                    icon.className = 'fas fa-chevron-down mr-1';
+                    text.textContent = '收起';
+                } else {
+                    list.style.display = 'none';
+                    icon.className = 'fas fa-chevron-up mr-1';
+                    text.textContent = '展开';
+                }
+            });
+
+            // 地图缩放控制
+            document.querySelector('#zoom-in').addEventListener('click', function() {
+                console.log('地图放大');
+                // 实际应用中这里会调用地图API
+            });
+
+            document.querySelector('#zoom-out').addEventListener('click', function() {
+                console.log('地图缩小');
+                // 实际应用中这里会调用地图API
+            });
+
+            // 详情弹窗关闭
+            document.querySelector('#detail-close').addEventListener('click', function() {
+                hideResourceDetail();
+            });
+
+            document.querySelector('#detail-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    hideResourceDetail();
+                }
+            });
+
+            // 详情弹窗内的按钮
+            document.querySelector('#detail-phone-btn').addEventListener('click', function() {
+                const phone = document.querySelector('#detail-phone').textContent;
+                console.log('拨打电话:', phone);
+                // 实际应用中这里会调用电话功能
+            });
+
+            document.querySelector('#detail-navigate-btn').addEventListener('click', function() {
+                const address = document.querySelector('#detail-address').textContent;
+                console.log('导航前往:', address);
+                // 实际应用中这里会调用地图导航
+            });
+
+            // 显示资源详情
+            function showResourceDetail(resourceId) {
+                const resource = resources[resourceId];
+                if (!resource) return;
+
+                // 更新详情内容
+                document.querySelector('#detail-title').textContent = resource.name;
+                document.querySelector('#detail-type').textContent = resource.type;
+                document.querySelector('#detail-address').textContent = resource.address;
+                document.querySelector('#detail-phone').textContent = resource.phone;
+                document.querySelector('#detail-hours').textContent = resource.hours;
+                document.querySelector('#detail-services').textContent = resource.services;
+                document.querySelector('#detail-registration').textContent = resource.registration;
+
+                // 更新图标和颜色
+                const iconElement = document.querySelector('#detail-icon i');
+                iconElement.className = resource.icon + ' text-lg';
+                
+                const iconContainer = document.querySelector('#detail-icon');
+                if (resource.color === 'primary') {
+                    iconContainer.className = 'w-12 h-12 rounded-full bg-primary bg-opacity-20 flex items-center justify-center';
+                    iconElement.className += ' text-primary';
+                } else {
+                    iconContainer.className = 'w-12 h-12 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center';
+                    iconElement.className += ' text-green-400';
+                }
+
+                // 显示弹窗
+                document.querySelector('#detail-modal').classList.remove('hidden');
+                setTimeout(() => {
+                    document.querySelector('#detail-content').style.transform = 'translateY(0)';
+                }, 10);
+            }
+
+            // 隐藏资源详情
+            function hideResourceDetail() {
+                document.querySelector('#detail-content').style.transform = 'translateY(100%)';
+                setTimeout(() => {
+                    document.querySelector('#detail-modal').classList.add('hidden');
+                }, 300);
+            }
+
+            // 搜索结果选择
+            window.selectSearchResult = function(resourceName) {
+                const resourceId = Object.keys(resources).find(id => resources[id].name === resourceName);
+                if (resourceId) {
+                    document.querySelector('#search-overlay').classList.add('hidden');
+                    document.querySelector('#search-input').value = '';
+                    document.querySelector('#search-results').innerHTML = '';
+                    showResourceDetail(resourceId);
+                }
+            };
+        });
+    </script>
+</body>
+</html>

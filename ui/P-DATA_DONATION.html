@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 数据捐赠</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .toggle-switch.active {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+        }
+        
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        
+        .toggle-switch.active::after {
+            transform: translateX(24px);
+        }
+        
+        .donation-icon {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+        }
+        
+        /* 主要功能图标比次要图标大20% */
+        .primary-icon {
+            transform: scale(1.2);
+        }
+        
+        .progress-ring {
+            transform: rotate(-90deg);
+        }
+        
+        .progress-ring-circle {
+            stroke-dasharray: 251.2;
+            stroke-dashoffset: 125.6;
+            transition: stroke-dashoffset 0.5s ease-in-out;
+        }
+        
+        .progress-ring.active .progress-ring-circle {
+            stroke-dashoffset: 62.8;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="flex items-center justify-between px-6 py-4">
+            <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                <i class="fas fa-arrow-left text-text-secondary"></i>
+            </button>
+            <h1 id="page-title" class="text-base font-semibold text-text-primary">数据捐赠</h1>
+            <div class="w-10"></div> <!-- 占位元素保持标题居中 -->
+        </header>
+
+        <!-- 捐赠说明区域 -->
+        <section id="donation-intro" class="mx-6 mb-6">
+            <div id="intro-card" class="glass-card rounded-xl p-4 text-center">
+                <div id="donation-icon" class="w-10 h-10 rounded-full donation-icon flex items-center justify-center mx-auto mb-3">
+                    <i class="fas fa-heart text-white text-lg"></i>
+                </div>
+                <h2 id="intro-title" class="text-lg font-bold text-text-primary mb-2">为FSHD研究贡献力量</h2>
+                <p id="intro-description" class="text-text-secondary text-xs leading-relaxed">
+                    您的匿名化数据将帮助科学家更好地了解FSHD，加速新药研发和治疗方案的改进，为全球FSHD患者带来希望。
+                </p>
+            </div>
+        </section>
+
+        <!-- 捐赠流程说明 -->
+        <section id="donation-process" class="mx-6 mb-6">
+            <h3 id="process-title" class="text-sm font-semibold text-text-primary mb-2">捐赠流程</h3>
+            <div id="process-steps" class="space-y-2">
+                <div id="step-1" class="glass-card rounded-lg p-3 flex items-center space-x-2">
+                    <div class="w-6 h-6 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                        <span class="text-primary font-semibold text-xs">1</span>
+                    </div>
+                    <div class="flex-1">
+                        <h4 class="font-medium text-text-primary text-xs">授权捐赠</h4>
+                        <p class="text-[10px] text-text-secondary">开启捐赠开关，同意数据使用协议</p>
+                    </div>
+                </div>
+                
+                <div id="step-2" class="glass-card rounded-lg p-3 flex items-center space-x-2">
+                    <div class="w-6 h-6 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center">
+                        <span class="text-secondary font-semibold text-xs">2</span>
+                    </div>
+                    <div class="flex-1">
+                        <h4 class="font-medium text-text-primary text-xs">数据脱敏</h4>
+                        <p class="text-[10px] text-text-secondary">系统自动移除所有个人身份信息</p>
+                    </div>
+                </div>
+                
+                <div id="step-3" class="glass-card rounded-lg p-3 flex items-center space-x-2">
+                    <div class="w-6 h-6 rounded-full bg-accent bg-opacity-20 flex items-center justify-center">
+                        <span class="text-accent font-semibold text-xs">3</span>
+                    </div>
+                    <div class="flex-1">
+                        <h4 class="font-medium text-text-primary text-xs">科研使用</h4>
+                        <p class="text-[10px] text-text-secondary">数据汇入中国FSHD队列数据库</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 隐私保护说明 -->
+        <section id="privacy-protection" class="mx-6 mb-6">
+            <h3 id="privacy-title" class="text-sm font-semibold text-text-primary mb-2">隐私保护承诺</h3>
+            <div id="privacy-card" class="glass-card rounded-lg p-3">
+                <div id="privacy-features" class="space-y-2">
+                    <div id="privacy-item-1" class="flex items-center space-x-2">
+                        <div class="w-5 h-5 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-shield-alt text-green-400 text-[10px]"></i>
+                        </div>
+                        <span class="text-xs text-text-secondary">匿名化处理，无法识别个人身份</span>
+                    </div>
+                    
+                    <div id="privacy-item-2" class="flex items-center space-x-2">
+                        <div class="w-5 h-5 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-lock text-blue-400 text-[10px]"></i>
+                        </div>
+                        <span class="text-xs text-text-secondary">区块链技术确保数据安全</span>
+                    </div>
+                    
+                    <div id="privacy-item-3" class="flex items-center space-x-2">
+                        <div class="w-5 h-5 rounded-full bg-purple-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-eye-slash text-purple-400 text-[10px]"></i>
+                        </div>
+                        <span class="text-xs text-text-secondary">仅用于科研，不用于商业用途</span>
+                    </div>
+                    
+                    <div id="privacy-item-4" class="flex items-center space-x-2">
+                        <div class="w-5 h-5 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-toggle-on text-yellow-400 text-[10px]"></i>
+                        </div>
+                        <span class="text-xs text-text-secondary">随时可关闭捐赠，完全自主控制</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 捐赠授权开关 -->
+        <section id="donation-toggle" class="mx-6 mb-6">
+            <div id="toggle-card" class="glass-card rounded-lg p-3">
+                <div class="flex items-center justify-between">
+                    <div class="flex-1">
+                        <h3 id="toggle-title" class="text-sm font-semibold text-text-primary mb-1">允许匿名化数据捐赠</h3>
+                        <p id="toggle-description" class="text-xs text-text-secondary">您的贡献将帮助推动FSHD研究进展</p>
+                    </div>
+                    <div id="donation-switch" class="toggle-switch ml-4"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 捐赠状态显示 -->
+        <section id="donation-status" class="mx-6 mb-8">
+            <h3 id="status-title" class="text-sm font-semibold text-text-primary mb-2">捐赠状态</h3>
+            
+            <!-- 未捐赠状态 -->
+            <div id="not-donating" class="glass-card rounded-lg p-4 text-center">
+                <div class="w-10 h-10 rounded-full bg-gray-500 bg-opacity-20 flex items-center justify-center mx-auto mb-2">
+                    <i class="fas fa-heart text-gray-400 text-lg"></i>
+                </div>
+                <h4 class="font-medium text-text-primary mb-1 text-sm">暂未开启数据捐赠</h4>
+                <p class="text-xs text-text-secondary mb-3">开启捐赠后，您的数据将为FSHD研究做出重要贡献</p>
+                <button id="enable-donation-btn" class="px-5 py-1.5 bg-primary text-white rounded-lg text-xs font-medium">
+                    立即开启
+                </button>
+            </div>
+            
+            <!-- 已捐赠状态 -->
+            <div id="donating" class="glass-card rounded-lg p-4 text-center hidden">
+                <div class="relative w-10 h-10 mx-auto mb-2">
+                    <svg class="progress-ring w-10 h-10" viewBox="0 0 84 84">
+                        <circle cx="42" cy="42" r="40" stroke="rgba(255,255,255,0.1)" stroke-width="4" fill="none"/>
+                        <circle id="progress-circle" cx="42" cy="42" r="40" stroke="url(#gradient)" stroke-width="4" fill="none" class="progress-ring-circle"/>
+                        <defs>
+                            <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" style="stop-color:#969FFF"/>
+                                <stop offset="100%" style="stop-color:#5147FF"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <i class="fas fa-heart text-primary text-lg"></i>
+                    </div>
+                </div>
+                <h4 class="font-medium text-text-primary mb-1 text-sm">感谢您的爱心捐赠</h4>
+                <p class="text-xs text-text-secondary mb-1">您的数据正在为FSHD研究提供重要支持</p>
+                <p id="last-donation-time" class="text-[10px] text-text-muted">上次捐赠时间：2024年1月15日</p>
+                <div id="donation-stats" class="mt-3 grid grid-cols-2 gap-3">
+                    <div class="text-center">
+                        <div class="text-base font-bold gradient-text">15</div>
+                        <div class="text-[10px] text-text-muted">捐赠天数</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-base font-bold gradient-text">42</div>
+                        <div class="text-[10px] text-text-muted">数据条目</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 确认弹窗 -->
+    <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div id="modal-content" class="glass-card rounded-xl p-4 mx-6 max-w-sm w-full">
+            <h3 id="modal-title" class="text-base font-semibold text-text-primary mb-2">确认开启数据捐赠</h3>
+            <p id="modal-description" class="text-xs text-text-secondary mb-4">
+                开启后，您的医疗数据将经过严格脱敏处理，用于FSHD科研研究。您可以随时关闭捐赠功能。
+            </p>
+            <div class="flex space-x-2">
+                <button id="modal-cancel" class="flex-1 py-1.5 px-3 bg-gray-500 bg-opacity-20 text-text-secondary rounded-lg text-xs font-medium">
+                    取消
+                </button>
+                <button id="modal-confirm" class="flex-1 py-1.5 px-3 bg-primary text-white rounded-lg text-xs font-medium">
+                    确认开启
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 成功提示 -->
+    <div id="success-toast" class="fixed top-20 left-1/2 transform -translate-x-1/2 glass-card rounded-lg px-3 py-1.5 z-50 hidden">
+        <div class="flex items-center space-x-1.5">
+            <i class="fas fa-check-circle text-green-400 text-xs"></i>
+            <span class="text-xs text-text-primary">设置已保存</span>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 页面元素
+            const backButton = document.querySelector('#back-button');
+            const donationSwitch = document.querySelector('#donation-switch');
+            const enableDonationBtn = document.querySelector('#enable-donation-btn');
+            const notDonatingSection = document.querySelector('#not-donating');
+            const donatingSection = document.querySelector('#donating');
+            const confirmModal = document.querySelector('#confirm-modal');
+            const modalCancel = document.querySelector('#modal-cancel');
+            const modalConfirm = document.querySelector('#modal-confirm');
+            const successToast = document.querySelector('#success-toast');
+            const progressRing = document.querySelector('.progress-ring');
+
+            // 捐赠状态（模拟数据）
+            let isDonating = false;
+            let lastDonationTime = '2024年1月15日';
+            let donationDays = 15;
+            let donationItems = 42;
+
+            // 返回按钮点击事件
+            backButton.addEventListener('click', function() {
+                window.location.href = 'P-PRIVACY_SETTINGS.html';
+            });
+
+            // 捐赠开关点击事件
+            donationSwitch.addEventListener('click', function() {
+                if (!isDonating) {
+                    // 显示确认弹窗
+                    confirmModal.classList.remove('hidden');
+                } else {
+                    // 关闭捐赠
+                    toggleDonation(false);
+                }
+            });
+
+            // 立即开启按钮点击事件
+            enableDonationBtn.addEventListener('click', function() {
+                confirmModal.classList.remove('hidden');
+            });
+
+            // 弹窗取消按钮
+            modalCancel.addEventListener('click', function() {
+                confirmModal.classList.add('hidden');
+            });
+
+            // 弹窗确认按钮
+            modalConfirm.addEventListener('click', function() {
+                confirmModal.classList.add('hidden');
+                toggleDonation(true);
+            });
+
+            // 点击弹窗背景关闭
+            confirmModal.addEventListener('click', function(e) {
+                if (e.target === confirmModal) {
+                    confirmModal.classList.add('hidden');
+                }
+            });
+
+            // 切换捐赠状态
+            function toggleDonation(enable) {
+                isDonating = enable;
+                
+                if (enable) {
+                    // 开启捐赠
+                    donationSwitch.classList.add('active');
+                    notDonatingSection.classList.add('hidden');
+                    donatingSection.classList.remove('hidden');
+                    
+                    // 更新捐赠时间
+                    const now = new Date();
+                    lastDonationTime = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
+                    document.querySelector('#last-donation-time').textContent = `上次捐赠时间：${lastDonationTime}`;
+                    
+                    // 动画效果
+                    setTimeout(() => {
+                        progressRing.classList.add('active');
+                    }, 100);
+                } else {
+                    // 关闭捐赠
+                    donationSwitch.classList.remove('active');
+                    notDonatingSection.classList.remove('hidden');
+                    donatingSection.classList.add('hidden');
+                    progressRing.classList.remove('active');
+                }
+                
+                // 显示成功提示
+                showSuccessToast();
+            }
+
+            // 显示成功提示
+            function showSuccessToast() {
+                successToast.classList.remove('hidden');
+                setTimeout(() => {
+                    successToast.classList.add('hidden');
+                }, 2000);
+            }
+
+            // 初始化页面状态
+            function initializePage() {
+                if (isDonating) {
+                    donationSwitch.classList.add('active');
+                    notDonatingSection.classList.add('hidden');
+                    donatingSection.classList.remove('hidden');
+                    progressRing.classList.add('active');
+                } else {
+                    donationSwitch.classList.remove('active');
+                    notDonatingSection.classList.remove('hidden');
+                    donatingSection.classList.add('hidden');
+                    progressRing.classList.remove('active');
+                }
+            }
+
+            // 页面初始化
+            initializePage();
+        });
+    </script>
+</body>
+</html>

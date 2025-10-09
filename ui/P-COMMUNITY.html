@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 患者社区</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .forum-card:hover {
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+        
+        .post-card:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transition: all 0.3s ease;
+        }
+        
+        .online-indicator {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="px-6 py-4">
+            <div id="nav-header" class="flex items-center justify-between">
+                <h1 id="page-title" class="text-lg font-bold text-text-primary">患者社区</h1>
+                <button id="publish-btn" class="w-12 h-12 rounded-full glass-card flex items-center justify-center">
+                    <i class="fas fa-plus text-text-secondary text-lg"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- 社区专区 -->
+        <section id="forum-sections" class="mx-6 mb-6">
+            <h3 id="sections-title" class="text-sm font-semibold text-text-primary mb-3">交流专区</h3>
+            <div id="sections-grid" class="space-y-3">
+                <!-- 新手村 -->
+                <div id="forum-newbie" class="forum-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-seedling text-blue-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-sm">新手村</h4>
+                                <p class="text-xs text-text-secondary">初诊1年内患者交流区</p>
+                                <div class="flex items-center space-x-2 mt-1">
+                                    <div class="flex items-center space-x-1">
+                                        <div class="w-2 h-2 bg-green-400 rounded-full online-indicator"></div>
+                                        <span class="text-xs text-text-muted">23人在线</span>
+                                    </div>
+                                    <span class="text-xs text-text-muted">·</span>
+                                    <span class="text-xs text-text-muted">156个帖子</span>
+                                </div>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+
+                <!-- 肌力加油站 -->
+                <div id="forum-rehab" class="forum-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-dumbbell text-green-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-sm">肌力加油站</h4>
+                                <p class="text-xs text-text-secondary">康复训练经验分享</p>
+                                <div class="flex items-center space-x-2 mt-1">
+                                    <div class="flex items-center space-x-1">
+                                        <div class="w-2 h-2 bg-green-400 rounded-full online-indicator"></div>
+                                        <span class="text-xs text-text-muted">45人在线</span>
+                                    </div>
+                                    <span class="text-xs text-text-muted">·</span>
+                                    <span class="text-xs text-text-muted">328个帖子</span>
+                                </div>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+
+                <!-- 临床试验广场 -->
+                <div id="forum-trial" class="forum-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-purple-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-flask text-purple-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-sm">临床试验广场</h4>
+                                <p class="text-xs text-text-secondary">试验信息与入组交流</p>
+                                <div class="flex items-center space-x-2 mt-1">
+                                    <div class="flex items-center space-x-1">
+                                        <div class="w-2 h-2 bg-green-400 rounded-full online-indicator"></div>
+                                        <span class="text-xs text-text-muted">18人在线</span>
+                                    </div>
+                                    <span class="text-xs text-text-muted">·</span>
+                                    <span class="text-xs text-text-muted">89个帖子</span>
+                                </div>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 快捷入口 -->
+        <section id="quick-access" class="mx-6 mb-6">
+            <div id="access-grid" class="grid grid-cols-2 gap-3">
+                <div id="access-expert" class="glass-card rounded-lg p-2 text-center cursor-pointer">
+                    <div class="w-7 h-7 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center mx-auto mb-1">
+                        <i class="fas fa-user-md text-yellow-400 text-xs"></i>
+                    </div>
+                    <h4 class="font-medium text-text-primary text-xs mb-0.5">专家咨询</h4>
+                    <p class="text-xs text-text-muted">在线咨询专科医生</p>
+                </div>
+                
+                <div id="access-resource" class="glass-card rounded-lg p-2 text-center cursor-pointer">
+                    <div class="w-7 h-7 rounded-full bg-orange-500 bg-opacity-20 flex items-center justify-center mx-auto mb-1">
+                        <i class="fas fa-map-marker-alt text-orange-400 text-xs"></i>
+                    </div>
+                    <h4 class="font-medium text-text-primary text-xs mb-0.5">资源地图</h4>
+                    <p class="text-xs text-text-muted">查找医疗资源</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 热门帖子 -->
+        <section id="hot-posts" class="mx-6 mb-6">
+            <div id="posts-header" class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-text-primary">热门话题</h3>
+                <button id="view-all-posts" class="text-primary text-xs">查看全部</button>
+            </div>
+            
+            <div id="posts-list" class="space-y-3">
+                <!-- 帖子1 -->
+                <div id="post-1" class="post-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-start space-x-2">
+                        <img class="w-6 h-6 rounded-full bg-gradient-to-br from-primary to-secondary object-cover" src="https://s.coze.cn/image/RIH2imuygWw/" alt="李患者头像" data-category="人物">
+                        <div class="flex-1">
+                            <div class="flex items-center space-x-1 mb-1">
+                                <span class="font-medium text-text-primary text-xs">李患者</span>
+                                <span class="text-xs text-text-muted">2小时前</span>
+                                <span class="px-1.5 py-0.5 bg-blue-500 bg-opacity-20 text-blue-400 text-xs rounded-full">新手村</span>
+                            </div>
+                            <h4 class="font-medium text-text-primary text-xs mb-1.5">刚确诊FSHD，心情很复杂，想问问大家都是怎么调整心态的？</h4>
+                            <div class="flex items-center space-x-3 text-xs text-text-muted">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-heart text-xs"></i>
+                                    <span>12</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-comment text-xs"></i>
+                                    <span>8</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-share text-xs"></i>
+                                    <span>2</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 帖子2 -->
+                <div id="post-2" class="post-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-start space-x-2">
+                        <img class="w-6 h-6 rounded-full bg-gradient-to-br from-green-400 to-blue-400 object-cover" src="https://s.coze.cn/image/E6aqkM__vV0/" alt="王康复师头像" data-category="人物">
+                        <div class="flex-1">
+                            <div class="flex items-center space-x-1 mb-1">
+                                <span class="font-medium text-text-primary text-xs">王康复师</span>
+                                <span class="text-xs text-text-muted">4小时前</span>
+                                <span class="px-1.5 py-0.5 bg-green-500 bg-opacity-20 text-green-400 text-xs rounded-full">肌力加油站</span>
+                                <span class="px-1.5 py-0.5 bg-yellow-500 bg-opacity-20 text-yellow-400 text-xs rounded-full">认证康复师</span>
+                            </div>
+                            <h4 class="font-medium text-text-primary text-xs mb-1.5">分享一个简单有效的肩部训练方法，亲测对FSHD患者很有帮助</h4>
+                            <div class="flex items-center space-x-3 text-xs text-text-muted">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-heart text-xs"></i>
+                                    <span>25</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-comment text-xs"></i>
+                                    <span>15</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-share text-xs"></i>
+                                    <span>6</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 帖子3 -->
+                <div id="post-3" class="post-card glass-card rounded-lg p-3 cursor-pointer">
+                    <div class="flex items-start space-x-2">
+                        <img class="w-6 h-6 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 object-cover" src="https://s.coze.cn/image/P4QZGW_USfY/" alt="张患者头像" data-category="人物">
+                        <div class="flex-1">
+                            <div class="flex items-center space-x-1 mb-1">
+                                <span class="font-medium text-text-primary text-xs">张患者</span>
+                                <span class="text-xs text-text-muted">6小时前</span>
+                                <span class="px-1.5 py-0.5 bg-purple-500 bg-opacity-20 text-purple-400 text-xs rounded-full">临床试验广场</span>
+                            </div>
+                            <h4 class="font-medium text-text-primary text-xs mb-1.5">有人参加过基因治疗的临床试验吗？想了解一下具体情况</h4>
+                            <div class="flex items-center space-x-3 text-xs text-text-muted">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-heart text-xs"></i>
+                                    <span>18</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-comment text-xs"></i>
+                                    <span>11</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-share text-xs"></i>
+                                    <span>3</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 发布内容弹窗 -->
+    <div id="publish-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-overlay absolute inset-0"></div>
+        <div class="relative flex items-center justify-center min-h-screen p-4">
+            <div class="modal-content rounded-xl p-6 w-full max-w-sm">
+                <h3 class="text-base font-semibold text-text-primary mb-3">选择发布类型</h3>
+                <div class="space-y-3">
+                    <button id="publish-text" class="w-full glass-card rounded-lg p-3 text-left">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-edit text-blue-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-sm">文字帖子</h4>
+                                <p class="text-xs text-text-secondary">分享经验、提问或讨论</p>
+                            </div>
+                        </div>
+                    </button>
+                    
+                    <button id="publish-video" class="w-full glass-card rounded-lg p-3 text-left">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-video text-green-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-sm">康复视频</h4>
+                                <p class="text-xs text-text-secondary">分享训练视频和经验</p>
+                            </div>
+                        </div>
+                    </button>
+                </div>
+                <button id="cancel-publish" class="w-full mt-4 py-3 text-text-muted">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 帖子详情弹窗 -->
+    <div id="post-detail-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-overlay absolute inset-0"></div>
+        <div class="relative flex items-end justify-center min-h-screen p-4">
+            <div class="modal-content rounded-t-xl p-6 w-full max-w-sm max-h-96 overflow-y-auto">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-base font-semibold text-text-primary">帖子详情</h3>
+                    <button id="close-post-detail" class="text-text-muted">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="post-detail-content">
+                    <!-- 帖子详情内容将在这里动态加载 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-sm"></i>
+            <span class="text-xs mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-question-circle text-sm"></i>
+            <span class="text-xs mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-sm"></i>
+            <span class="text-xs mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-primary">
+            <i class="fas fa-users text-base"></i>
+            <span class="text-xs mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-user text-sm"></i>
+            <span class="text-xs mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 发布按钮点击事件
+            document.querySelector('#publish-btn').addEventListener('click', function() {
+                document.querySelector('#publish-modal').classList.remove('hidden');
+            });
+
+            // 取消发布
+            document.querySelector('#cancel-publish').addEventListener('click', function() {
+                document.querySelector('#publish-modal').classList.add('hidden');
+            });
+
+            // 发布文字帖子
+            document.querySelector('#publish-text').addEventListener('click', function() {
+                console.log('发布文字帖子功能需要实现');
+                document.querySelector('#publish-modal').classList.add('hidden');
+                // 这里可以跳转到文字发布页面或在当前页面实现
+            });
+
+            // 发布视频帖子（跳转到康复经验分享页）
+            document.querySelector('#publish-video').addEventListener('click', function() {
+                window.location.href = 'P-REHAB_SHARE.html';
+            });
+
+            // 社区专区点击事件
+            document.querySelector('#forum-newbie').addEventListener('click', function() {
+                console.log('进入新手村专区');
+                // 这里可以在当前页面切换内容或跳转到专区页面
+            });
+
+            document.querySelector('#forum-rehab').addEventListener('click', function() {
+                console.log('进入肌力加油站专区');
+                // 这里可以在当前页面切换内容或跳转到专区页面
+            });
+
+            document.querySelector('#forum-trial').addEventListener('click', function() {
+                window.location.href = 'P-TRIAL_SQUARE.html';
+            });
+
+            // 快捷入口点击事件
+            document.querySelector('#access-expert').addEventListener('click', function() {
+                window.location.href = 'P-EXPERT_CONSULT.html';
+            });
+
+            document.querySelector('#access-resource').addEventListener('click', function() {
+                window.location.href = 'P-RESOURCE_MAP.html';
+            });
+
+            // 帖子点击事件
+            const posts = document.querySelectorAll('[id^="post-"]');
+            posts.forEach(post => {
+                post.addEventListener('click', function() {
+                    const postId = this.id;
+                    showPostDetail(postId);
+                });
+            });
+
+            // 关闭帖子详情
+            document.querySelector('#close-post-detail').addEventListener('click', function() {
+                document.querySelector('#post-detail-modal').classList.add('hidden');
+            });
+
+            // 弹窗背景点击关闭
+            document.querySelector('#publish-modal .modal-overlay').addEventListener('click', function() {
+                document.querySelector('#publish-modal').classList.add('hidden');
+            });
+
+            document.querySelector('#post-detail-modal .modal-overlay').addEventListener('click', function() {
+                document.querySelector('#post-detail-modal').classList.add('hidden');
+            });
+
+            // 底部导航栏点击事件
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-QNA.html';
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                // 已在社区页面，无需操作
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-SETTINGS.html';
+            });
+
+            // 查看全部帖子
+            document.querySelector('#view-all-posts').addEventListener('click', function() {
+                console.log('查看全部帖子功能需要实现');
+            });
+
+            // 显示帖子详情
+            function showPostDetail(postId) {
+                const postDetailContent = document.querySelector('#post-detail-content');
+                let postContent = '';
+
+                switch(postId) {
+                    case 'post-1':
+                        postContent = `
+                            <div class="space-y-4">
+                                <div class="flex items-start space-x-3">
+                                    <img class="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-secondary object-cover" src="https://s.coze.cn/image/yVK476vZzUk/" alt="李患者头像" data-category="人物">
+                                    <div class="flex-1">
+                                        <div class="flex items-center space-x-2 mb-2">
+                                            <span class="font-medium text-text-primary">李患者</span>
+                                            <span class="text-xs text-text-muted">2小时前</span>
+                                            <span class="px-2 py-0.5 bg-blue-500 bg-opacity-20 text-blue-400 text-xs rounded-full">新手村</span>
+                                        </div>
+                                        <p class="text-text-secondary text-sm leading-relaxed">
+                                            刚确诊FSHD，心情很复杂，想问问大家都是怎么调整心态的？最近总是担心病情会越来越严重，影响工作和生活。希望能得到一些建议和鼓励。
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                <div class="border-t border-dark-border pt-4">
+                                    <h4 class="font-medium text-text-primary mb-3">8条回复</h4>
+                                    <div class="space-y-3">
+                                        <div class="flex items-start space-x-2">
+                                            <img class="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-blue-400 object-cover" src="https://s.coze.cn/image/V9zp9IxDjus/" alt="王患者头像" data-category="人物">
+                                            <div class="flex-1">
+                                                <div class="flex items-center space-x-2 mb-1">
+                                                    <span class="font-medium text-text-primary text-sm">王患者</span>
+                                                    <span class="text-xs text-text-muted">1小时前</span>
+                                                </div>
+                                                <p class="text-text-secondary text-sm">我刚确诊的时候也很焦虑，建议多了解疾病知识，和医生保持沟通，积极进行康复训练。</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        break;
+                    case 'post-2':
+                        postContent = `
+                            <div class="space-y-4">
+                                <div class="flex items-start space-x-3">
+                                    <img class="w-10 h-10 rounded-full bg-gradient-to-br from-green-400 to-blue-400 object-cover" src="https://s.coze.cn/image/hZgjdsY_T2A/" alt="王康复师头像" data-category="人物">
+                                    <div class="flex-1">
+                                        <div class="flex items-center space-x-2 mb-2">
+                                            <span class="font-medium text-text-primary">王康复师</span>
+                                            <span class="text-xs text-text-muted">4小时前</span>
+                                            <span class="px-2 py-0.5 bg-green-500 bg-opacity-20 text-green-400 text-xs rounded-full">肌力加油站</span>
+                                            <span class="px-2 py-0.5 bg-yellow-500 bg-opacity-20 text-yellow-400 text-xs rounded-full">认证康复师</span>
+                                        </div>
+                                        <p class="text-text-secondary text-sm leading-relaxed">
+                                            分享一个简单有效的肩部训练方法：<br><br>
+                                            1. 站立位，双臂自然下垂<br>
+                                            2. 缓慢将双臂向前抬起至肩膀高度<br>
+                                            3. 保持2秒后缓慢放下<br>
+                                            4. 每组10次，每天3组<br><br>
+                                            这个动作对FSHD患者的肩部肌力提升很有帮助，大家可以试试。
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        break;
+                    case 'post-3':
+                        postContent = `
+                            <div class="space-y-4">
+                                <div class="flex items-start space-x-3">
+                                    <img class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-400 to-pink-400 object-cover" src="https://s.coze.cn/image/eMjdQTJ-7ag/" alt="张患者头像" data-category="人物">
+                                    <div class="flex-1">
+                                        <div class="flex items-center space-x-2 mb-2">
+                                            <span class="font-medium text-text-primary">张患者</span>
+                                            <span class="text-xs text-text-muted">6小时前</span>
+                                            <span class="px-2 py-0.5 bg-purple-500 bg-opacity-20 text-purple-400 text-xs rounded-full">临床试验广场</span>
+                                        </div>
+                                        <p class="text-text-secondary text-sm leading-relaxed">
+                                            有人参加过基因治疗的临床试验吗？想了解一下具体情况，比如治疗效果、副作用、入组条件等。我的基因检测结果是FSHD1型，不知道是否符合条件。
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        break;
+                }
+
+                postDetailContent.innerHTML = postContent;
+                document.querySelector('#post-detail-modal').classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

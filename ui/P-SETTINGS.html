@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 设置</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .setting-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            transform: translateY(-1px);
+            transition: all 0.3s ease;
+        }
+        
+        .logout-item:hover {
+            background: rgba(239, 68, 68, 0.1);
+            transform: translateY(-1px);
+            transition: all 0.3s ease;
+        }
+        
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部标题区域 -->
+        <header id="header" class="px-6 py-4">
+            <div id="title-section" class="text-center">
+                <h1 id="page-title" class="text-2xl font-bold gradient-text mb-2">设置</h1>
+                <p id="page-subtitle" class="text-sm text-text-secondary">管理您的应用偏好和账户设置</p>
+            </div>
+        </header>
+
+        <!-- 用户信息卡片 -->
+        <section id="user-info-section" class="mx-6 mb-6">
+            <div id="user-info-card" class="glass-card rounded-xl p-4">
+                <div id="user-profile-info" class="flex items-center space-x-3">
+                    <img id="user-avatar" class="w-16 h-16 rounded-full bg-gradient-to-br from-primary to-secondary object-cover" src="https://s.coze.cn/image/Pqg4BKyFb3M/" alt="张先生头像" data-category="人物">
+                    <div id="user-details" class="flex-1">
+                        <h3 id="user-name" class="text-lg font-semibold text-text-primary">张先生</h3>
+                        <p id="user-id" class="text-sm text-text-secondary">ID: FSHD2024001</p>
+                        <p id="user-join-date" class="text-xs text-text-muted">加入时间：2024年1月15日</p>
+                    </div>
+                    <button id="edit-profile-btn" class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                        <i class="fas fa-edit text-primary text-sm"></i>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 设置选项列表 -->
+        <section id="settings-list-section" class="mx-6 mb-6">
+            <div id="settings-list" class="space-y-2">
+                <!-- 隐私设置 -->
+                <div id="privacy-settings-item" class="setting-item glass-card rounded-lg p-4 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-shield-alt text-blue-400 text-lg"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary">隐私设置</h4>
+                                <p class="text-sm text-text-secondary">管理数据授权和隐私偏好</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted"></i>
+                    </div>
+                </div>
+
+                <!-- 个性化设置 -->
+                <div id="personalization-settings-item" class="setting-item glass-card rounded-lg p-4 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-palette text-green-400 text-lg"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary">个性化设置</h4>
+                                <p class="text-sm text-text-secondary">大字体、语音读屏、高对比度</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted"></i>
+                    </div>
+                </div>
+
+                <!-- 关于我们 -->
+                <div id="about-us-item" class="setting-item glass-card rounded-lg p-4 cursor-pointer">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-purple-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-info-circle text-purple-400 text-lg"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary">关于我们</h4>
+                                <p class="text-sm text-text-secondary">产品介绍、版本信息、联系方式</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted"></i>
+                    </div>
+                </div>
+
+                <!-- 退出登录 -->
+                <div id="logout-item" class="logout-item glass-card rounded-lg p-4 cursor-pointer mt-6">
+                    <div class="flex items-center justify-center space-x-2">
+                        <i class="fas fa-sign-out-alt text-red-400 text-lg"></i>
+                        <span class="font-medium text-red-400">退出登录</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 版本信息 -->
+        <section id="version-info-section" class="mx-6 mb-6">
+            <div id="version-info" class="text-center">
+                <p class="text-xs text-text-muted">FSHD-openrd v1.0.0</p>
+                <p class="text-xs text-text-muted mt-1">© 2024 FSHD-openrd. 保留所有权利</p>
+            </div>
+        </section>
+    </div>
+
+    <!-- 退出登录确认弹窗 -->
+    <div id="logout-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-overlay absolute inset-0"></div>
+        <div class="relative flex items-center justify-center min-h-screen p-4">
+            <div id="logout-modal-content" class="modal-content rounded-xl p-6 w-full max-w-sm">
+                <div class="text-center">
+                    <div class="w-16 h-16 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-sign-out-alt text-red-400 text-2xl"></i>
+                    </div>
+                    <h3 class="text-lg font-semibold text-text-primary mb-2">确认退出登录</h3>
+                    <p class="text-sm text-text-secondary mb-6">您确定要退出当前账户吗？</p>
+                    <div class="flex space-x-3">
+                        <button id="cancel-logout-btn" class="flex-1 py-3 px-4 rounded-lg bg-dark-card text-text-secondary font-medium">
+                            取消
+                        </button>
+                        <button id="confirm-logout-btn" class="flex-1 py-3 px-4 rounded-lg bg-red-500 text-white font-medium">
+                            退出登录
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-lg"></i>
+            <span class="text-xs mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-question-circle text-lg"></i>
+            <span class="text-xs mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-lg"></i>
+            <span class="text-xs mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-users text-lg"></i>
+            <span class="text-xs mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-primary">
+            <i class="fas fa-user text-lg"></i>
+            <span class="text-xs mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 隐私设置点击事件
+            document.querySelector('#privacy-settings-item').addEventListener('click', function() {
+                window.location.href = 'P-PRIVACY_SETTINGS.html';
+            });
+
+            // 个性化设置点击事件
+            document.querySelector('#personalization-settings-item').addEventListener('click', function() {
+                // 个性化设置功能暂未实现独立页面，显示提示
+                alert('个性化设置功能即将上线，敬请期待！');
+            });
+
+            // 关于我们点击事件
+            document.querySelector('#about-us-item').addEventListener('click', function() {
+                window.location.href = 'P-ABOUT_US.html';
+            });
+
+            // 退出登录点击事件
+            document.querySelector('#logout-item').addEventListener('click', function() {
+                document.querySelector('#logout-modal').classList.remove('hidden');
+            });
+
+            // 取消退出登录
+            document.querySelector('#cancel-logout-btn').addEventListener('click', function() {
+                document.querySelector('#logout-modal').classList.add('hidden');
+            });
+
+            // 确认退出登录
+            document.querySelector('#confirm-logout-btn').addEventListener('click', function() {
+                // 清除本地存储的用户信息（如果有）
+                localStorage.removeItem('userToken');
+                localStorage.removeItem('userInfo');
+                
+                // 跳转到登录页面
+                window.location.href = 'P-LOGIN_REGISTER.html';
+            });
+
+            // 点击弹窗背景关闭弹窗
+            document.querySelector('.modal-overlay').addEventListener('click', function() {
+                document.querySelector('#logout-modal').classList.add('hidden');
+            });
+
+            // 编辑个人资料点击事件
+            document.querySelector('#edit-profile-btn').addEventListener('click', function() {
+                alert('个人资料编辑功能即将上线，敬请期待！');
+            });
+
+            // 底部导航栏点击事件
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-QNA.html';
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                // 已在设置页面，无需操作
+            });
+        });
+    </script>
+</body>
+</html>

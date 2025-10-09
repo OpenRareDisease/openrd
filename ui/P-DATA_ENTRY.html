@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 数据录入</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .slider-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            height: 6px;
+        }
+        
+        .slider-progress {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            border-radius: 10px;
+            height: 6px;
+            transition: width 0.3s ease;
+        }
+        
+        .slider-thumb {
+            background: #969FFF;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(150, 159, 255, 0.3);
+        }
+        
+        .timer-active {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .upload-area {
+            border: 2px dashed rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+        
+        .upload-area:hover {
+            border-color: #969FFF;
+            background: rgba(150, 159, 255, 0.05);
+        }
+        
+        .muscle-group-item {
+            transition: all 0.3s ease;
+        }
+        
+        .muscle-group-item.active {
+            background: rgba(150, 159, 255, 0.1);
+            border-color: #969FFF;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航 -->
+        <header id="header" class="px-6 py-4">
+            <div class="flex items-center justify-between">
+                <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                    <i class="fas fa-arrow-left text-text-secondary"></i>
+                </button>
+                <h1 id="page-title" class="text-lg font-semibold text-text-primary">数据录入</h1>
+                <div class="w-10"></div> <!-- 占位元素保持居中 -->
+            </div>
+        </header>
+
+        <!-- 表单内容 -->
+        <form id="data-entry-form" class="px-6 space-y-6 pb-6">
+            <!-- 医疗报告上传 -->
+            <section id="medical-reports" class="space-y-4">
+                <h2 class="text-base font-semibold text-text-primary mb-3">医疗报告</h2>
+                
+                <!-- MRI报告上传 -->
+                <div id="mri-upload" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-medium text-text-primary text-sm">MRI影像</h3>
+                        <span id="mri-status" class="text-xs text-text-muted">未上传</span>
+                    </div>
+                    <div class="upload-area rounded-lg p-4 text-center">
+                        <input type="file" id="mri-file-input" accept="image/*,.pdf" class="hidden">
+                        <button type="button" id="mri-camera-btn" class="w-12 h-12 rounded-full bg-primary bg-opacity-20 flex items-center justify-center mx-auto mb-2">
+                            <i class="fas fa-camera text-primary text-lg"></i>
+                        </button>
+                        <p class="text-xs text-text-secondary mb-2">拍照上传或选择文件</p>
+                        <button type="button" id="mri-upload-btn" class="text-primary text-xs font-medium">选择文件</button>
+                    </div>
+                </div>
+
+                <!-- 基因报告上传 -->
+                <div id="genetic-upload" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-medium text-text-primary text-sm">基因检测报告</h3>
+                        <span id="genetic-status" class="text-xs text-text-muted">未上传</span>
+                    </div>
+                    <div class="upload-area rounded-lg p-4 text-center">
+                        <input type="file" id="genetic-file-input" accept="image/*,.pdf" class="hidden">
+                        <button type="button" id="genetic-camera-btn" class="w-12 h-12 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center mx-auto mb-2">
+                            <i class="fas fa-camera text-secondary text-lg"></i>
+                        </button>
+                        <p class="text-xs text-text-secondary mb-2">拍照上传或选择文件</p>
+                        <button type="button" id="genetic-upload-btn" class="text-secondary text-xs font-medium">选择文件</button>
+                    </div>
+                </div>
+
+                <!-- 血检报告上传 -->
+                <div id="blood-upload" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-medium text-text-primary text-sm">血检报告</h3>
+                        <span id="blood-status" class="text-xs text-text-muted">未上传</span>
+                    </div>
+                    <div class="upload-area rounded-lg p-4 text-center">
+                        <input type="file" id="blood-file-input" accept="image/*,.pdf" class="hidden">
+                        <button type="button" id="blood-camera-btn" class="w-12 h-12 rounded-full bg-accent bg-opacity-20 flex items-center justify-center mx-auto mb-2">
+                            <i class="fas fa-camera text-accent text-lg"></i>
+                        </button>
+                        <p class="text-xs text-text-secondary mb-2">拍照上传或选择文件</p>
+                        <button type="button" id="blood-upload-btn" class="text-accent text-xs font-medium">选择文件</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 肌力评分录入 -->
+            <section id="muscle-strength" class="space-y-4">
+                <h2 class="text-base font-semibold text-text-primary mb-3">肌力评分</h2>
+                
+                <!-- 肌群选择 -->
+                <div id="muscle-groups" class="grid grid-cols-2 gap-2 mb-4">
+                    <button type="button" class="muscle-group-item glass-card rounded-lg p-3 text-center text-sm" data-group="deltoid">
+                        <i class="fas fa-user-shield text-primary mb-1"></i>
+                        <div>三角肌</div>
+                    </button>
+                    <button type="button" class="muscle-group-item glass-card rounded-lg p-3 text-center text-sm" data-group="biceps">
+                        <i class="fas fa-dumbbell text-secondary mb-1"></i>
+                        <div>肱二头肌</div>
+                    </button>
+                    <button type="button" class="muscle-group-item glass-card rounded-lg p-3 text-center text-sm" data-group="triceps">
+                        <i class="fas fa-hand-fist text-accent mb-1"></i>
+                        <div>肱三头肌</div>
+                    </button>
+                    <button type="button" class="muscle-group-item glass-card rounded-lg p-3 text-center text-sm" data-group="tibialis">
+                        <i class="fas fa-running text-green-400 mb-1"></i>
+                        <div>胫骨前肌</div>
+                    </button>
+                </div>
+
+                <!-- 肌力滑动条 -->
+                <div id="strength-slider-container" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <span id="selected-muscle" class="font-medium text-text-primary text-sm">请选择肌群</span>
+                        <span id="strength-value" class="text-primary font-semibold text-lg">0</span>
+                    </div>
+                    
+                    <!-- 滑动条 -->
+                    <div id="strength-slider" class="relative h-6 mb-4">
+                        <div class="slider-track absolute inset-0"></div>
+                        <div id="slider-progress" class="slider-progress absolute left-0 top-0 w-0"></div>
+                        <div id="slider-thumb" class="slider-thumb absolute top-1/2 transform -translate-y-1/2 left-0 cursor-pointer"></div>
+                    </div>
+                    
+                    <!-- 肌力等级说明 -->
+                    <div id="strength-labels" class="flex justify-between text-xs text-text-muted">
+                        <span>0级</span>
+                        <span>1级</span>
+                        <span>2级</span>
+                        <span>3级</span>
+                        <span>4级</span>
+                        <span>5级</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 楼梯测试计时 -->
+            <section id="stair-test" class="space-y-4">
+                <h2 class="text-base font-semibold text-text-primary mb-3">楼梯测试</h2>
+                
+                <div id="stair-timer-card" class="glass-card rounded-lg p-4 text-center">
+                    <div class="w-16 h-16 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center mx-auto mb-3">
+                        <i id="timer-icon" class="fas fa-stopwatch text-green-400 text-2xl"></i>
+                    </div>
+                    <h3 class="font-medium text-text-primary mb-2">爬楼计时</h3>
+                    <p class="text-xs text-text-secondary mb-4">记录爬10级楼梯所需时间</p>
+                    
+                    <div id="timer-display" class="text-3xl font-bold text-text-primary mb-4">00:00</div>
+                    
+                    <button id="timer-button" class="w-full py-3 bg-green-500 bg-opacity-20 text-green-400 rounded-lg font-medium border border-green-400 border-opacity-30">
+                        开始计时
+                    </button>
+                </div>
+            </section>
+
+            <!-- 日常活动记录 -->
+            <section id="daily-activities" class="space-y-4">
+                <h2 class="text-base font-semibold text-text-primary mb-3">日常活动</h2>
+                
+                <div id="activity-input-card" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-medium text-text-primary text-sm">活动记录</h3>
+                        <button type="button" id="voice-input-btn" class="w-8 h-8 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-microphone text-blue-400 text-sm"></i>
+                        </button>
+                    </div>
+                    
+                    <textarea id="activity-textarea" placeholder="记录今天的活动情况，如：上午进行了30分钟的康复训练，下午散步1小时..." 
+                              class="w-full h-24 bg-transparent border border-dark-border rounded-lg p-3 text-text-primary text-sm placeholder-text-muted resize-none focus:outline-none focus:border-primary"></textarea>
+                    
+                    <div id="voice-status" class="hidden mt-2 text-xs text-text-secondary text-center">
+                        <i class="fas fa-microphone-slash mr-1"></i>
+                        正在识别中...
+                    </div>
+                </div>
+            </section>
+
+            <!-- 提交按钮 -->
+            <div id="submit-section" class="pt-4">
+                <button type="submit" id="submit-button" class="w-full py-4 bg-gradient-to-r from-primary to-secondary text-white rounded-lg font-semibold text-base shadow-lg">
+                    提交数据
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- 加载遮罩 -->
+    <div id="loading-overlay" class="fixed inset-0 bg-dark bg-opacity-80 flex items-center justify-center z-50 hidden">
+        <div class="glass-card rounded-lg p-6 text-center">
+            <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+            <p class="text-text-primary">正在保存数据...</p>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let selectedMuscleGroup = null;
+            let isTimerRunning = false;
+            let timerInterval = null;
+            let timerSeconds = 0;
+            let isRecording = false;
+
+            // 返回按钮
+            document.querySelector('#back-button').addEventListener('click', function() {
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            // 肌群选择
+            const muscleGroupButtons = document.querySelectorAll('.muscle-group-item');
+            muscleGroupButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    // 移除所有活跃状态
+                    muscleGroupButtons.forEach(btn => btn.classList.remove('active'));
+                    // 添加当前活跃状态
+                    this.classList.add('active');
+                    
+                    selectedMuscleGroup = this.dataset.group;
+                    const muscleNames = {
+                        'deltoid': '三角肌',
+                        'biceps': '肱二头肌', 
+                        'triceps': '肱三头肌',
+                        'tibialis': '胫骨前肌'
+                    };
+                    document.querySelector('#selected-muscle').textContent = muscleNames[selectedMuscleGroup];
+                    
+                    // 重置滑动条
+                    updateSlider(0);
+                });
+            });
+
+            // 肌力滑动条
+            const slider = document.querySelector('#strength-slider');
+            const sliderProgress = document.querySelector('#slider-progress');
+            const sliderThumb = document.querySelector('#slider-thumb');
+            const strengthValue = document.querySelector('#strength-value');
+
+            function updateSlider(value) {
+                const percentage = (value / 5) * 100;
+                sliderProgress.style.width = percentage + '%';
+                sliderThumb.style.left = percentage + '%';
+                strengthValue.textContent = value;
+            }
+
+            slider.addEventListener('click', function(e) {
+                if (!selectedMuscleGroup) return;
+                
+                const rect = slider.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const percentage = (clickX / rect.width) * 100;
+                const value = Math.round((percentage / 100) * 5);
+                
+                updateSlider(value);
+            });
+
+            // 楼梯测试计时
+            const timerButton = document.querySelector('#timer-button');
+            const timerDisplay = document.querySelector('#timer-display');
+            const timerIcon = document.querySelector('#timer-icon');
+
+            function formatTime(seconds) {
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+
+            function startTimer() {
+                isTimerRunning = true;
+                timerSeconds = 0;
+                timerButton.textContent = '停止计时';
+                timerButton.classList.add('timer-active');
+                timerIcon.className = 'fas fa-stop text-red-400 text-2xl';
+                
+                timerInterval = setInterval(() => {
+                    timerSeconds++;
+                    timerDisplay.textContent = formatTime(timerSeconds);
+                }, 1000);
+            }
+
+            function stopTimer() {
+                isTimerRunning = false;
+                clearInterval(timerInterval);
+                timerButton.textContent = '重新计时';
+                timerButton.classList.remove('timer-active');
+                timerIcon.className = 'fas fa-check text-green-400 text-2xl';
+            }
+
+            timerButton.addEventListener('click', function() {
+                if (!isTimerRunning) {
+                    startTimer();
+                } else {
+                    stopTimer();
+                }
+            });
+
+            // 语音录入
+            const voiceInputBtn = document.querySelector('#voice-input-btn');
+            const activityTextarea = document.querySelector('#activity-textarea');
+            const voiceStatus = document.querySelector('#voice-status');
+
+            voiceInputBtn.addEventListener('click', function() {
+                if (!isRecording) {
+                    startVoiceRecording();
+                } else {
+                    stopVoiceRecording();
+                }
+            });
+
+            function startVoiceRecording() {
+                console.log('需要调用第三方接口实现语音录制功能');
+                isRecording = true;
+                voiceInputBtn.innerHTML = '<i class="fas fa-stop text-red-400 text-sm"></i>';
+                voiceStatus.classList.remove('hidden');
+                voiceStatus.innerHTML = '<i class="fas fa-microphone mr-1"></i>正在录音...';
+                
+                // 模拟语音识别
+                setTimeout(() => {
+                    if (isRecording) {
+                        activityTextarea.value = '今天上午进行了30分钟的康复训练，包括肩部和手臂的力量练习。下午散步了1小时，感觉体力比昨天有所提升。';
+                        stopVoiceRecording();
+                    }
+                }, 3000);
+            }
+
+            function stopVoiceRecording() {
+                isRecording = false;
+                voiceInputBtn.innerHTML = '<i class="fas fa-microphone text-blue-400 text-sm"></i>';
+                voiceStatus.classList.add('hidden');
+            }
+
+            // 文件上传处理
+            function handleFileUpload(inputId, statusId, type) {
+                const fileInput = document.querySelector(`#${inputId}`);
+                const statusElement = document.querySelector(`#${statusId}`);
+                
+                fileInput.addEventListener('change', function(e) {
+                    const file = e.target.files[0];
+                    if (file) {
+                        statusElement.textContent = '上传中...';
+                        
+                        // 模拟文件上传
+                        setTimeout(() => {
+                            statusElement.textContent = '已上传';
+                            statusElement.className = 'text-xs text-green-400';
+                        }, 2000);
+                    }
+                });
+            }
+
+            // MRI报告上传
+            document.querySelector('#mri-camera-btn').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现相机拍照功能');
+                document.querySelector('#mri-file-input').click();
+            });
+
+            document.querySelector('#mri-upload-btn').addEventListener('click', function() {
+                document.querySelector('#mri-file-input').click();
+            });
+
+            handleFileUpload('mri-file-input', 'mri-status', 'mri');
+
+            // 基因报告上传
+            document.querySelector('#genetic-camera-btn').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现相机拍照功能');
+                document.querySelector('#genetic-file-input').click();
+            });
+
+            document.querySelector('#genetic-upload-btn').addEventListener('click', function() {
+                document.querySelector('#genetic-file-input').click();
+            });
+
+            handleFileUpload('genetic-file-input', 'genetic-status', 'genetic');
+
+            // 血检报告上传
+            document.querySelector('#blood-camera-btn').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现相机拍照功能');
+                document.querySelector('#blood-file-input').click();
+            });
+
+            document.querySelector('#blood-upload-btn').addEventListener('click', function() {
+                document.querySelector('#blood-file-input').click();
+            });
+
+            handleFileUpload('blood-file-input', 'blood-status', 'blood');
+
+            // 表单提交
+            document.querySelector('#data-entry-form').addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // 显示加载遮罩
+                document.querySelector('#loading-overlay').classList.remove('hidden');
+                
+                // 收集表单数据
+                const formData = {
+                    mriReport: document.querySelector('#mri-status').textContent === '已上传',
+                    geneticReport: document.querySelector('#genetic-status').textContent === '已上传',
+                    bloodReport: document.querySelector('#blood-status').textContent === '已上传',
+                    muscleStrength: selectedMuscleGroup ? {
+                        group: selectedMuscleGroup,
+                        value: parseInt(strengthValue.textContent)
+                    } : null,
+                    stairTestTime: timerSeconds > 0 ? timerSeconds : null,
+                    dailyActivity: activityTextarea.value.trim()
+                };
+                
+                console.log('提交的数据:', formData);
+                
+                // 模拟提交过程
+                setTimeout(() => {
+                    document.querySelector('#loading-overlay').classList.add('hidden');
+                    alert('数据已成功录入！');
+                    window.location.href = 'P-ARCHIVE.html';
+                }, 2000);
+            });
+        });
+    </script>
+</body>
+</html>
