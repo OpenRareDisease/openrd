@@ -1,152 +1,113 @@
-# FSHD-openrd (FSHD Management Platform)
+# FSHD-openrd
 
 [中文](./README.md)
 
 ---
 
-A comprehensive mobile application designed specifically for FSHD (Facioscapulohumeral Muscular Dystrophy) patients, providing intelligent Q&A, dynamic health records, disease progression management, patient community features, and clinical trial matching capabilities.
+FSHD-openrd is a unified monorepo that powers the mobile application and backend services for managing Facioscapulohumeral muscular dystrophy (FSHD). The platform combines intelligent Q&A, dynamic health records, disease management tools, patient communities, and clinical trial matching.
 
-## 🎯 Project Overview
+## 🎯 Overview
 
-FSHD-openrd is a mobile-first platform that empowers FSHD patients with tools for self-management, knowledge acquisition, community support, and clinical trial participation. The app integrates AI-powered insights with comprehensive data tracking to provide personalized care and support.
+The project empowers patients and caregivers with data-driven insights, AI-assisted recommendations, and collaboration features that connect medical experts, researchers, and the broader community.
 
-## ✨ Key Features
+## 🛠 Tech Stack
 
-### 🤖 Intelligent Q&A System
-- **FSHD Knowledge Base**: Comprehensive medical knowledge covering FSHD subtypes, symptom management, genetic counseling, rehabilitation, and medication guidance
-- **Personalized Answers**: AI-powered responses that consider individual patient data and medical history
-- **Local Resource Recommendations**: Smart suggestions for nearby FSHD treatment centers and clinical trials
-- **Clinical Pathway Guidance**: Integration with 30+ top hospital FSHD clinical pathways
+| Layer | Technology | Notes |
+| --- | --- | --- |
+| Mobile | Expo (React Native + TypeScript) | Shared codebase targeting iOS, Android, and Web |
+| Backend API | Express + TypeScript | REST API surface for authentication, archives, Q&A, etc. |
+| Database | PostgreSQL | Primary data store for transactional data |
+| Code Quality | ESLint + Prettier + Husky | Consistent style enforcement and git hooks |
+| Logging | pino + pino-http | Structured logging for observability |
 
-### 📊 Dynamic Health Records
-- **Multi-modal Data Collection**: OCR/AI analysis of genetic reports, MRI images, blood tests with manual muscle strength recording
-- **Visual Timeline**: Interactive timeline showing disease progression, muscle strength trends, and medical events
-- **FSHD Clinical Passport**: Standardized medical record export for clinical trials and multi-center care
-- **Risk Alert Dashboard**: Automated alerts for functional decline and rehabilitation recommendations
-
-### 🏥 Disease Management Tools
-- **Muscle Strength Assessment**: Radar charts comparing muscle group strength with age-matched FSHD patients
-- **Activity Monitoring**: Integration with health app data for abnormal activity detection
-- **AI Disease Progression Prediction**: 3/5-year trend predictions with personalized intervention plans
-- **Medication Safety Management**: Blood test analysis for adverse drug reaction warnings
-
-### 👥 Patient Community
-- **Stratified Forums**: Specialized communities for different patient stages and muscle groups
-- **Rehabilitation Experience Sharing**: Verified training videos with motion capture correction
-- **Clinical Trial Matching**: Real-time trial matching based on patient profiles
-- **Medical Resource Map**: Directory of FSHD treatment centers and rehabilitation facilities
-
-### 🔬 Clinical Integration
-- **Trial Enrollment Acceleration**: Automated generation of standardized trial data packages
-- **Hospital Data Synchronization**: Integration with hospital HIS systems
-- **Data Donation Mechanism**: Anonymous data contribution to FSHD research databases
-
-## 🛠 Technology Stack
-
-- **Framework**: Expo with React Native
-- **Routing**: Expo Router (file-based routing)
-- **Language**: TypeScript with React
-- **Navigation**: React Navigation with bottom tabs
-- **Styling**: React Native StyleSheet
-- **State Management**: React Context/Hooks
-- **Data Visualization**: React Native Chart Kit, React Native SVG
-
-## 📁 Project Structure
+## 📁 Repository Layout
 
 ```
 openrd/
-├── app/                    # Main application (Expo Router)
-│   ├── (tabs)/            # Bottom tab navigation
-│   │   ├── p-home.tsx     # Home dashboard
-│   │   ├── p-qna.tsx      # Intelligent Q&A
-│   │   ├── p-archive.tsx  # Dynamic health records
-│   │   ├── p-community.tsx # Patient community
-│   │   └── p-settings.tsx # App settings
-│   ├── p-data_entry.tsx   # Data entry forms
-│   ├── p-manage.tsx       # Disease management
-│   ├── p-clinical_passport.tsx # Clinical passport
-│   └── ... (other pages)
-├── screens/               # Screen components
-│   ├── home/             # Home screen components
-│   ├── qna/              # Q&A screen components
-│   └── ... (other screens)
-├── ui/                   # UI components
-├── assets/               # Images, icons, fonts
-└── package.json          # Dependencies and scripts
+├── apps/
+│   ├── api/                # Express API service (TypeScript)
+│   │   ├── src/            # Configuration, modules, middleware
+│   │   ├── package.json    # Dependencies and scripts
+│   │   └── eslint.config.mjs
+│   └── mobile/             # Expo React Native application
+│       ├── app/            # Expo Router pages
+│       ├── screens/        # High-level UI compositions
+│       ├── assets/         # Fonts, icons, media
+│       └── package.json
+├── db/                     # PostgreSQL bootstrap scripts
+├── ui/                     # Static design prototypes
+├── .husky/                 # Git hooks (pre-commit runs lint-staged)
+├── .env.example            # Environment variable template
+├── package.json            # Workspace configuration & shared scripts
+└── prettier.config.cjs     # Formatting rules
 ```
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### 1. Requirements
 
-- Node.js (v18 or higher)
-- npm or yarn
-- Expo CLI (optional)
+- Node.js ≥ 18
+- npm ≥ 10
+- PostgreSQL ≥ 14
+- Optional: Expo Go for device testing
 
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd openrd
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Start development server**
-   ```bash
-   npm start
-   # or
-   npx expo start
-   ```
-
-### Development Commands
+### 2. Installation
 
 ```bash
-# Start development server
-npm start
-
-# Platform-specific development
-npm run android    # Android development
-npm run ios        # iOS development
-npm run web        # Web development
-
-# Testing and quality
-npm test           # Run tests
-npm run lint       # Run linting
-
-# Reset project
-npm run reset-project
+git clone <repository-url>
+cd openrd
+cp .env.example .env      # adjust for your environment
+npm install               # installs workspace dependencies & sets up Husky
 ```
 
-## 📱 Platform Support
+To bootstrap the database schema:
 
-- **iOS**: Full support with native features
-- **Android**: Full support with native features
-- **Web**: Progressive Web App capabilities
+```bash
+psql -U postgres -f db/init_db.sql
+```
 
-## 🔒 Privacy & Security
+### 3. Development commands
 
-- **Medical-grade Data Encryption**: End-to-end encryption for sensitive health data
-- **Privacy-first Approach**: Granular data permissions and user-controlled access
-- **Blockchain Audit Trail**: Immutable logging of data operations
-- **HIPAA/GDPR Compliance**: Adherence to international privacy standards
-- **Anonymous Data Donation**: Secure, anonymized data contribution for research
+| Module | Command | Description |
+| --- | --- | --- |
+| Backend API | `npm run dev:api` | Starts the API server on `http://localhost:4000` |
+| Mobile app | `npm run dev:mobile` | Launches the Expo developer tools |
+| Lint | `npm run lint` | Runs ESLint for all workspaces |
+| Test | `npm run test` | Executes workspace test suites |
 
-## 🤝 Contributing
+## 🔐 Backend capabilities
 
-We welcome contributions from the FSHD community, healthcare professionals, and developers. Please see our contribution guidelines for more information.
+The API service (`apps/api`) currently exposes:
 
-## 📄 License
+- `GET /api/healthz` – health probe with database reachability check
+- `POST /api/auth/register` – phone/email registration with bcrypt password hashing
+- `POST /api/auth/login` – login via phone or email returning a JWT access token
+- Centralized logging and error handling powered by pino
+- Reusable PostgreSQL connection pool shared across modules
 
-This project is licensed under the [License Name] - see the LICENSE file for details.
+Environment variables are validated in `apps/api/src/config/env.ts`. Copy `.env.example` to configure local values.
 
-## 📞 Support
+## 🧭 Git workflow
 
-For technical support or questions about the application:
+- Branching: keep `main` deployable; create feature branches as `feature/<scope>`
+- Pre-commit: Husky runs `lint-staged` to enforce ESLint and Prettier formatting
+- Pre-flight checks: run `npm run lint` and `npm run test` before opening a PR
+- Database changes: store SQL scripts or migrations inside `db/` and document them in PRs
+
+See [`docs/WORKFLOW.md`](./docs/WORKFLOW.md) for the extended collaboration guide.
+
+## 📄 Additional docs
+
+- [System Architecture](./FSHD-openrd-系统架构设计文档.md)
+- [Product Requirements](./prd-v2.md)
+- [Database Bootstrap](./db/init_db.sql)
+
+## 💬 Support
+
 - Email: support@fshd-openrd.org
-- Community: Join our patient forums
-- Documentation: Check our comprehensive guides
+- Community: join our patient forum
+- Documentation: more developer guides and API references coming soon
+
+---
+
+We welcome contributions from the FSHD community, healthcare professionals, and developers. Please follow the shared workflow and quality standards to keep the platform reliable.

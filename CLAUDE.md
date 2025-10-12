@@ -1,90 +1,60 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI coding assistants working in this repository.
 
-## Project Overview
+## Repository Overview
 
-FSHD-openrd is a mobile application for FSHD (Facioscapulohumeral muscular dystrophy) patients, designed as a comprehensive management platform. The app provides intelligent Q&A, dynamic health records, disease progression management, patient community features, and clinical trial matching capabilities.
+FSHD-openrd is a monorepo that houses both the Expo-based mobile application and the TypeScript Express backend API. The goal is to build a comprehensive management platform for FSHD (Facioscapulohumeral muscular dystrophy) patients.
 
-## Architecture
+## High-Level Architecture
 
-### Technology Stack
-- **Framework**: Expo with React Native
-- **Routing**: Expo Router (file-based routing)
-- **Language**: TypeScript with React
-- **Navigation**: React Navigation with bottom tabs
-- **Styling**: React Native StyleSheet
-
-### Project Structure
-- `/app/` - Main application routes using Expo Router
-  - `(tabs)/` - Bottom tab navigation screens
-  - Individual page files following naming pattern `p-{page_name}.tsx`
-- `/ui/` - Screen components organized by page
-  - Each page has its own directory with `index.tsx` and `styles.ts`
-  - Complex pages have additional component subdirectories
-
-### Key Pages and Features
-- **Home (P-HOME)**: Main dashboard with health status overview
-- **Q&A (P-QNA)**: Intelligent question-answering system with FSHD knowledge base
-- **Archive (P-ARCHIVE)**: Dynamic health records with timeline visualization
-- **Community (P-COMMUNITY)**: Patient community with specialized forums
-- **Settings (P-SETTINGS)**: User preferences and app settings
-- **Additional Pages**: Data entry, clinical trials, expert consultation, privacy settings, etc.
+- **Mobile App (`apps/mobile`)**
+  - Expo Router with file-based navigation under `app/`
+  - Screen implementations in `screens/`
+  - Shared assets in `assets/`
+  - TypeScript-first codebase with existing ESLint configuration
+- **Backend API (`apps/api`)**
+  - Express server with modular folders (`config`, `modules`, `middleware`)
+  - PostgreSQL connection pool (`db/pool.ts`)
+  - Authentication module offering register/login endpoints and JWT issuance
+  - Centralized logging with `pino`
+- **Shared Tooling**
+  - Root `package.json` defines npm workspaces and scripts (`dev:api`, `dev:mobile`, `lint`, `test`)
+  - Husky pre-commit hook runs `lint-staged` for ESLint/Prettier
+  - Formatting rules live in `prettier.config.cjs`
 
 ## Development Commands
 
-### Core Development
+Run the following from the repository root unless noted otherwise:
+
 ```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm start
-# or
-npx expo start
-
-# Platform-specific development
-npm run android    # Android development
-npm run ios        # iOS development
-npm run web        # Web development
+npm run dev:mobile   # Launch Expo dev tools
+npm run dev:api      # Start the API service (http://localhost:4000)
+npm run lint         # Run lint scripts across workspaces
+npm run test         # Execute available tests
 ```
 
-### Testing and Quality
+Inside `apps/api` you can also run:
+
 ```bash
-# Run tests
-npm test
-
-# Run linting
-npm run lint
-
-# Reset project (moves starter code to app-example)
-npm run reset-project
+npm run lint:fix
+npm run format:write
 ```
 
-## Key Implementation Details
+## Backend Notes
 
-### Routing System
-- Uses Expo Router with file-based routing
-- Main navigation through bottom tabs in `(tabs)/_layout.tsx`
-- Individual pages accessible via direct routes
-- Root layout in `_layout.tsx` handles global navigation and messaging
+- Environment variables are defined in `.env` (see `.env.example` for defaults).
+- Database schema bootstrap lives in `db/init_db.sql`.
+- Authentication relies on the `app_users` table—ensure migrations stay in sync.
+- Logging is structured (JSON by default) and routed through `pino`/`pino-http`.
+- Error handling flows through `middleware/error-handler.ts` with `AppError` for operational issues.
 
-### Component Organization
-- Each major page has corresponding files in both `/app/` and `/screens/`
-- Screen components contain the actual UI implementation
-- App routes serve as entry points
-- Styles are separated into dedicated `styles.ts` files
+## Contribution Tips
 
-### Data Flow
-- The app is designed to handle sensitive medical data (genetic reports, MRI images, muscle strength records)
-- Implements privacy-first approach with granular data permissions
-- Supports data donation for research purposes
-- Integrates with clinical trial matching systems
+- Keep changes scoped to a single feature per PR.
+- Update `TODO.md` when tasks are completed.
+- Document API changes in README or dedicated docs.
+- For UI work, follow existing naming conventions (`p-<page>.tsx`, screen components, etc.).
+- Sensitive health data handling must remain privacy-first—never log secrets or raw PHI.
 
-## Important Notes
-
-- This is a medical application handling sensitive patient data - prioritize privacy and security
-- The app targets FSHD patients specifically with specialized features
-- Uses TypeScript for type safety across the codebase
-- Follows the established naming conventions for pages and components
-- Includes accessibility features like large text mode and voice screen reading
+Stay consistent with TypeScript usage and the established folder structure to ensure smooth collaboration.

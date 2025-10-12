@@ -4,149 +4,112 @@
 
 ---
 
-专为FSHD（面肩肱型肌营养不良症）患者设计的综合性移动应用平台，提供智能问答、动态健康档案、病程管理、患者社区功能和临床试验匹配能力。
+专为 FSHD（面肩肱型肌营养不良症）患者设计的综合性移动应用平台，提供智能问答、动态健康档案、病程管理、患者社区功能和临床试验匹配能力。本仓库现已升级为统一管理移动端与后端服务的 **monorepo**，便于团队协作与持续扩展。
 
 ## 🎯 项目概述
 
-FSHD-openrd 是一个以移动端为主的平台，为FSHD患者提供自我管理工具、知识获取、社区支持和临床试验参与功能。该应用集成了AI驱动的洞察与全面的数据跟踪，提供个性化护理和支持。
-
-## ✨ 核心功能
-
-### 🤖 智能问答系统
-- **FSHD知识库**：涵盖FSHD分型鉴别、症状管理、遗传咨询、康复训练和用药指导的综合医学知识
-- **个性化回答**：基于患者个人数据和医疗历史的AI驱动回答
-- **本地资源推荐**：智能推荐附近的FSHD诊疗中心和临床试验
-- **临床路径指引**：集成30+三甲医院FSHD临床路径
-
-### 📊 动态健康档案
-- **多模态数据采集**：基因报告、MRI影像、血检报告的OCR/AI分析，支持手动肌力记录
-- **可视化时间轴**：展示病程发展、肌力趋势和医疗事件的交互式时间轴
-- **FSHD临床护照**：标准化医疗记录导出，用于临床试验和多中心诊疗
-- **风险预警看板**：功能衰退自动预警和康复建议
-
-### 🏥 病程管理工具
-- **肌肉力量评估**：肌群力量雷达图，与同年龄段FSHD患者对比
-- **活动监测**：健康应用数据集成，异常活动检测
-- **AI病程预测**：3/5年趋势预测，个性化干预计划
-- **用药安全管理**：血检报告分析，药物不良反应预警
-
-### 👥 患者社区
-- **分层交流专区**：不同患者阶段和肌群的专业社区
-- **康复经验分享**：经认证的训练视频，动作捕捉纠错
-- **临床试验匹配**：基于患者档案的实时试验匹配
-- **医疗资源地图**：FSHD诊疗中心和康复机构目录
-
-### 🔬 临床对接枢纽
-- **试验入组加速**：标准化试验数据包自动生成
-- **医院数据同步**：医院HIS系统集成
-- **数据捐赠机制**：匿名数据贡献至FSHD研究数据库
+FSHD-openrd 是一个以移动端为主的平台，为 FSHD 患者提供自我管理工具、知识获取、社区支持和临床试验参与功能。该应用集成了 AI 驱动的洞察与全面的数据跟踪，提供个性化护理和支持。
 
 ## 🛠 技术栈
 
-- **框架**：Expo + React Native
-- **路由**：Expo Router（基于文件的路由）
-- **语言**：TypeScript + React
-- **导航**：React Navigation + 底部标签
-- **样式**：React Native StyleSheet
-- **状态管理**：React Context/Hooks
-- **数据可视化**：React Native Chart Kit, React Native SVG
+| 层级 | 技术 | 说明 |
+| --- | --- | --- |
+| 移动端 | Expo (React Native + TypeScript) | 面向 iOS / Android / Web 的统一代码仓库 |
+| 后端 API | Express + TypeScript | 提供认证、档案、问答等核心 REST API |
+| 数据库 | PostgreSQL | 结构化业务数据存储与扩展 |
+| 代码规范 | ESLint + Prettier + Husky | 统一的代码风格和提交校验 |
+| 日志 | pino/pino-http | 结构化日志输出，便于排错与监控 |
 
-## 📁 项目结构
+## 📁 Monorepo 目录结构
 
 ```
 openrd/
-├── app/                    # 主应用（Expo Router）
-│   ├── (tabs)/            # 底部标签导航
-│   │   ├── p-home.tsx     # 首页仪表板
-│   │   ├── p-qna.tsx      # 智能问答
-│   │   ├── p-archive.tsx  # 动态健康档案
-│   │   ├── p-community.tsx # 患者社区
-│   │   └── p-settings.tsx # 应用设置
-│   ├── p-data_entry.tsx   # 数据录入表单
-│   ├── p-manage.tsx       # 病程管理
-│   ├── p-clinical_passport.tsx # 临床护照
-│   └── ... (其他页面)
-├── screens/               # 屏幕组件
-│   ├── home/             # 首页组件
-│   ├── qna/              # 问答组件
-│   └── ... (其他屏幕)
-├── ui/                   # UI组件
-├── assets/               # 图片、图标、字体
-└── package.json          # 依赖和脚本
+├── apps/
+│   ├── api/                # TypeScript Express API 服务
+│   │   ├── src/            # 应用源码（配置、认证模块等）
+│   │   ├── package.json    # 服务依赖与脚本
+│   │   └── eslint.config.mjs
+│   └── mobile/             # Expo React Native 应用
+│       ├── app/            # Expo Router 页面
+│       ├── screens/        # 复杂页面的 UI 组件
+│       ├── assets/         # 图片、图标、字体
+│       └── package.json
+├── db/                     # PostgreSQL 初始化脚本与迁移
+├── ui/                     # 静态原型页面
+├── .husky/                 # Git hooks（pre-commit 运行 lint-staged）
+├── .env.example            # 环境变量示例
+├── package.json            # 顶层工作区配置及统一脚本
+└── prettier.config.cjs     # 项目级代码格式化配置
 ```
 
 ## 🚀 快速开始
 
-### 环境要求
+### 1. 环境准备
 
-- Node.js (v18 或更高版本)
-- npm 或 yarn
-- Expo CLI (可选)
+- Node.js ≥ 18
+- npm ≥ 10（随 Node 一起安装）
+- PostgreSQL ≥ 14
+- 可选：Expo Go（移动端调试）
 
-### 安装步骤
-
-1. **克隆仓库**
-   ```bash
-   git clone <仓库地址>
-   cd openrd
-   ```
-
-2. **安装依赖**
-   ```bash
-   npm install
-   ```
-
-3. **启动开发服务器**
-   ```bash
-   npm start
-   # 或
-   npx expo start
-   ```
-
-### 开发命令
+### 2. 克隆与依赖安装
 
 ```bash
-# 启动开发服务器
-npm start
-
-# 平台特定开发
-npm run android    # Android开发
-npm run ios        # iOS开发
-npm run web        # Web开发
-
-# 测试和质量
-npm test           # 运行测试
-npm run lint       # 运行代码检查
-
-# 重置项目
-npm run reset-project
+git clone <仓库地址>
+cd openrd
+cp .env.example .env          # 根据实际环境调整
+npm install                   # 安装 workspace 依赖并初始化 Husky
 ```
 
-## 📱 平台支持
+> 如需初始化数据库，可使用 `db/init_db.sql`：
+>
+> ```bash
+> psql -U postgres -f db/init_db.sql
+> ```
 
-- **iOS**：完整支持，包含原生功能
-- **Android**：完整支持，包含原生功能
-- **Web**：渐进式Web应用能力
+### 3. 启动服务
 
-## 🔒 隐私与安全
+| 模块 | 命令 | 说明 |
+| --- | --- | --- |
+| 后端 API | `npm run dev:api` | 在 `http://localhost:4000` 启动开发服务器，暴露 `/api` 路径 |
+| 移动端 | `npm run dev:mobile` | 进入 Expo 开发工具，可选择 iOS/Android/Web |
+| 统一 lint | `npm run lint` | 运行全部工作区的 ESLint 脚本 |
+| 统一测试 | `npm run test` | 执行所有工作区内的测试命令 |
 
-- **医疗级数据加密**：敏感健康数据的端到端加密
-- **隐私优先方法**：细粒度数据权限和用户控制访问
-- **区块链审计追踪**：数据操作的不可变日志记录
-- **HIPAA/GDPR合规**：符合国际隐私标准
-- **匿名数据捐赠**：安全的匿名数据贡献用于研究
+## 🔐 后端基础能力
 
-## 🤝 贡献
+后端服务位于 `apps/api`，目前提供：
 
-我们欢迎FSHD社区、医疗专业人员和开发者的贡献。请参阅我们的贡献指南了解更多信息。
+- `/api/healthz`：基础健康检查，包含数据库连通性探测
+- `/api/auth/register`：手机号/邮箱注册，采用 `bcrypt` 存储密码摘要
+- `/api/auth/login`：手机号或邮箱登录，返回 JWT 令牌
+- 统一日志与错误处理：使用 `pino` 输出结构化日志，并对 API 错误进行集中捕获
+- PostgreSQL 连接池：集中初始化并在路由中复用
 
-## 📄 许可证
+所有配置项均由 `.env` 管理，可通过 `apps/api/src/config/env.ts` 查看默认值与校验规则。
 
-本项目采用 [许可证名称] 许可证 - 详见 LICENSE 文件。
+## 🧭 Git 工作流
 
-## 📞 支持
+- **分支策略**：`main` 保持可部署状态，功能迭代以 `feature/<scope>` 命名
+- **提交校验**：提交前自动执行 `lint-staged`（包含 ESLint、Prettier），确保代码质量
+- **代码检查**：建议在提交前手动运行 `npm run lint` 与 `npm run test`
+- **数据库迁移**：`db` 目录用于保存 SQL 脚本，PR 中需说明对应变更
+
+更多细节请参考 [`docs/WORKFLOW.md`](./docs/WORKFLOW.md)。
+
+## 📄 其他文档
+
+- [系统架构设计文档](./FSHD-openrd-系统架构设计文档.md)
+- [产品需求文档](./prd-v2.md)
+- [数据库初始化脚本](./db/init_db.sql)
+
+## 📞 支持与反馈
 
 如需技术支持或有关应用的疑问：
+
 - 邮箱：support@fshd-openrd.org
 - 社区：加入我们的患者论坛
-- 文档：查看我们的综合指南
+- 文档：持续更新中的开发规范与 API 文档
+
+---
+
+欢迎为 FSHD 社区、医疗专业人员和开发者贡献力量。请遵循仓库内的开发规范和 Git 工作流，共建可信赖的医疗健康平台。
