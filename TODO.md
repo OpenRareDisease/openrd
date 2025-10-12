@@ -18,16 +18,16 @@ FSHD-openrd 是一个面向FSHD（面肩肱型肌营养不良症）患者的综�
 #### 1.1 基础设施搭建
 
 **P0 - 基础环境配置**
-- [ ] 创建项目目录结构
-- [ ] 配置开发环境（Node.js, TypeScript, Expo）
-- [ ] 设置代码规范（ESLint, Prettier, Husky）
-- [ ] 配置Git工作流
+- [x] 创建项目目录结构
+- [x] 配置开发环境（Node.js, TypeScript, Expo）
+- [x] 设置代码规范（ESLint, Prettier, Husky）
+- [x] 配置Git工作流
 
 **P0 - 基础服务搭建**
-- [ ] 搭建基础API服务框架
-- [ ] 配置数据库连接（PostgreSQL）
-- [ ] 实现用户认证基础框架
-- [ ] 配置日志系统
+- [x] 搭建基础API服务框架
+- [x] 配置数据库连接（PostgreSQL）
+- [x] 实现用户认证基础框架
+- [x] 配置日志系统
 
 #### 1.2 移动端基础功能
 
