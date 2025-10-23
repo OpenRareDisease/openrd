@@ -27,7 +27,6 @@
     "pino-pretty": "^11.3.0"
   },
   "devDependencies": {
-    "@eslint-community/eslint-plugin-security": "^2.4.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
