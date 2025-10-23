@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
-import type { AppEnv } from '../config/env';
-import type { AppLogger } from '../config/logger';
+import type { AppEnv } from '../config/env.js';
+import type { AppLogger } from '../config/logger.js';
 
 let pool: Pool | null = null;
 
@@ -9,7 +9,7 @@ export const initPool = (env: AppEnv, logger: AppLogger) => {
     pool = new Pool({
       connectionString: env.DATABASE_URL,
       max: env.isTest ? 1 : undefined,
-      ssl: env.isProduction ? { rejectUnauthorized: false } : undefined
+      ssl: env.isProduction ? { rejectUnauthorized: false } : undefined,
     });
 
     pool.on('error', (error) => {

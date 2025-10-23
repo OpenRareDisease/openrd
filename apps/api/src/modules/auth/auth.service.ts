@@ -1,10 +1,10 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { Pool } from 'pg';
-import type { AppEnv } from '../../config/env';
-import type { AppLogger } from '../../config/logger';
-import { AppError } from '../../utils/app-error';
-import type { LoginInput, RegisterInput } from './auth.schema';
+import type { LoginInput, RegisterInput } from './auth.schema.js';
+import type { AppEnv } from '../../config/env.js';
+import type { AppLogger } from '../../config/logger.js';
+import { AppError } from '../../utils/app-error.js';
 
 interface AuthServiceDeps {
   env: AppEnv;
@@ -18,6 +18,15 @@ interface AuthenticatedUser {
   email: string | null;
   role: string;
   createdAt: string;
+}
+
+interface UserRow {
+  id: string;
+  phone_number: string;
+  email: string | null;
+  role: string;
+  created_at: string;
+  password_hash?: string;
 }
 
 export class AuthService {
@@ -35,20 +44,20 @@ export class AuthService {
     return jwt.sign(
       {
         sub: user.id,
-        role: user.role
+        role: user.role,
       },
       this.env.JWT_SECRET,
-      { expiresIn: this.env.JWT_EXPIRES_IN }
+      { expiresIn: this.env.JWT_EXPIRES_IN } as jwt.SignOptions,
     );
   }
 
-  private serializeUser(row: any): AuthenticatedUser {
+  private serializeUser(row: UserRow): AuthenticatedUser {
     return {
       id: row.id,
       phoneNumber: row.phone_number,
       email: row.email,
       role: row.role,
-      createdAt: row.created_at
+      createdAt: row.created_at,
     };
   }
 
@@ -58,7 +67,7 @@ export class AuthService {
     try {
       const existing = await client.query(
         'SELECT id FROM app_users WHERE phone_number = $1 OR (email IS NOT NULL AND email = $2)',
-        [payload.phoneNumber, payload.email ?? null]
+        [payload.phoneNumber, payload.email ?? null],
       );
 
       if (existing.rowCount) {
@@ -70,7 +79,7 @@ export class AuthService {
         `INSERT INTO app_users (phone_number, email, password_hash, role)
          VALUES ($1, $2, $3, $4)
          RETURNING id, phone_number, email, role, created_at`,
-        [payload.phoneNumber, payload.email ?? null, passwordHash, payload.role]
+        [payload.phoneNumber, payload.email ?? null, passwordHash, payload.role],
       );
 
       const user = this.serializeUser(inserted.rows[0]);
@@ -90,7 +99,7 @@ export class AuthService {
       `SELECT id, phone_number, email, role, password_hash, created_at
        FROM app_users
        WHERE ${payload.phoneNumber ? 'phone_number = $1' : 'email = $1'}`,
-      [identifier]
+      [identifier],
     );
 
     if (!result.rowCount) {

@@ -1,10 +1,10 @@
-import type { Express } from 'express';
+import type { Express, Request, Response } from 'express';
 import { Router } from 'express';
-import type { AppEnv } from '../config/env';
-import type { AppLogger } from '../config/logger';
-import { asyncHandler } from '../utils/async-handler';
-import { createAuthRouter } from '../modules/auth/auth.routes';
-import { getPool } from '../db/pool';
+import type { AppEnv } from '../config/env.js';
+import type { AppLogger } from '../config/logger.js';
+import { getPool } from '../db/pool.js';
+import { createAuthRouter } from '../modules/auth/auth.routes.js';
+import { asyncHandler } from '../utils/async-handler.js';
 
 export interface RouteContext {
   env: AppEnv;
@@ -16,7 +16,7 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
 
   apiRouter.get(
     '/healthz',
-    asyncHandler(async (_req, res) => {
+    asyncHandler(async (_req: Request, res: Response) => {
       try {
         await getPool().query('SELECT 1');
         res.status(200).json({ status: 'ok', database: 'connected' });
@@ -24,7 +24,7 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
         context.logger.error({ error }, 'Database health check failed');
         res.status(503).json({ status: 'degraded', database: 'unreachable' });
       }
-    })
+    }),
   );
 
   apiRouter.use('/auth', createAuthRouter(context));

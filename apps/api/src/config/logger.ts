@@ -1,5 +1,5 @@
 import pino from 'pino';
-import type { AppEnv } from './env';
+import type { AppEnv } from './env.js';
 
 export const createLogger = (env: AppEnv) =>
   pino({
@@ -10,9 +10,9 @@ export const createLogger = (env: AppEnv) =>
           target: 'pino-pretty',
           options: {
             colorize: true,
-            translateTime: 'SYS:standard'
-          }
-        }
+            translateTime: 'SYS:standard',
+          },
+        },
   });
 
 export type AppLogger = ReturnType<typeof createLogger>;
