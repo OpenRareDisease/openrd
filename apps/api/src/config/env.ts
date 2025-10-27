@@ -18,7 +18,8 @@ const envSchema = z
     JWT_EXPIRES_IN: z.string().default('7d'),
     BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(6).max(14).default(10),
     CORS_ORIGIN: z.string().default('*'),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info')
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    OPENAI_API_KEY: z.string().min(1).optional()
   })
   .transform((value) => ({
     ...value,
