@@ -1,5 +1,5 @@
 import eslintPluginImport from 'eslint-plugin-import';
-import eslintPluginSecurity from '@eslint-community/eslint-plugin-security';
+import eslintPluginSecurity from 'eslint-plugin-security';
 import tseslint from 'typescript-eslint';
 import eslintConfigPrettier from 'eslint-config-prettier';
 

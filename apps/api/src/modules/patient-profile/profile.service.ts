@@ -1,0 +1,562 @@
+import type { Pool, PoolClient } from 'pg';
+import type {
+  ActivityLogInput,
+  CreateProfileInput,
+  DocumentInput,
+  FunctionTestInput,
+  MeasurementInput,
+  UpdateProfileInput,
+} from './profile.schema';
+import type { AppLogger } from '../../config/logger';
+import { AppError } from '../../utils/app-error';
+
+interface ServiceDeps {
+  pool: Pool;
+  logger: AppLogger;
+}
+
+interface PatientProfileRecord {
+  id: string;
+  user_id: string;
+  full_name: string | null;
+  preferred_name: string | null;
+  date_of_birth: string | null;
+  gender: string | null;
+  patient_code: string | null;
+  diagnosis_stage: string | null;
+  diagnosis_date: string | null;
+  genetic_mutation: string | null;
+  height_cm: string | null;
+  weight_kg: string | null;
+  blood_type: string | null;
+  contact_phone: string | null;
+  contact_email: string | null;
+  primary_physician: string | null;
+  notes: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface PatientMeasurementDTO {
+  id: string;
+  muscleGroup: string;
+  strengthScore: number;
+  method: string | null;
+  notes: string | null;
+  recordedAt: string;
+  createdAt: string;
+}
+
+export interface PatientFunctionTestDTO {
+  id: string;
+  testType: string;
+  measuredValue: number | null;
+  unit: string | null;
+  notes: string | null;
+  performedAt: string;
+  createdAt: string;
+}
+
+export interface PatientActivityLogDTO {
+  id: string;
+  logDate: string;
+  source: string;
+  content: string | null;
+  moodScore: number | null;
+  createdAt: string;
+}
+
+export interface PatientDocumentDTO {
+  id: string;
+  documentType: string;
+  title: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  fileSizeBytes: number | null;
+  storageUri: string;
+  status: string;
+  uploadedAt: string;
+  checksum: string | null;
+}
+
+export interface PatientProfileDTO {
+  id: string;
+  userId: string;
+  fullName: string | null;
+  preferredName: string | null;
+  dateOfBirth: string | null;
+  gender: string | null;
+  patientCode: string | null;
+  diagnosisStage: string | null;
+  diagnosisDate: string | null;
+  geneticMutation: string | null;
+  heightCm: number | null;
+  weightKg: number | null;
+  bloodType: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  primaryPhysician: string | null;
+  notes: string | null;
+  measurements: PatientMeasurementDTO[];
+  functionTests: PatientFunctionTestDTO[];
+  activityLogs: PatientActivityLogDTO[];
+  documents: PatientDocumentDTO[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+const toNumber = (value: string | number | null): number | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const toDateString = (value: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  // value is already an ISO-like string from PG for DATE columns
+  return value;
+};
+
+const toTimestampString = (value: Date | null): string => {
+  return value ? value.toISOString() : new Date().toISOString();
+};
+
+export class PatientProfileService {
+  private readonly pool: Pool;
+  private readonly logger: AppLogger;
+
+  constructor({ pool, logger }: ServiceDeps) {
+    this.pool = pool;
+    this.logger = logger;
+  }
+
+  async getProfileByUserId(userId: string): Promise<PatientProfileDTO | null> {
+    const client = await this.pool.connect();
+
+    try {
+      const profileResult = await client.query<PatientProfileRecord>(
+        `SELECT *
+         FROM patient_profiles
+         WHERE user_id = $1`,
+        [userId],
+      );
+
+      if (!profileResult.rowCount) {
+        return null;
+      }
+
+      const profile = profileResult.rows[0];
+      const profileId = profile.id;
+
+      const [measurementsResult, functionTestsResult, activityLogsResult, documentsResult] =
+        await Promise.all([
+          client.query(
+            `SELECT id, profile_id, recorded_at, muscle_group, strength_score, method, notes, created_at
+           FROM patient_measurements
+           WHERE profile_id = $1
+           ORDER BY recorded_at DESC`,
+            [profileId],
+          ),
+          client.query(
+            `SELECT id, profile_id, test_type, measured_value, unit, notes, performed_at, created_at
+           FROM patient_function_tests
+           WHERE profile_id = $1
+           ORDER BY performed_at DESC`,
+            [profileId],
+          ),
+          client.query(
+            `SELECT id, profile_id, log_date, source, content, mood_score, created_at
+           FROM patient_activity_logs
+           WHERE profile_id = $1
+           ORDER BY log_date DESC, created_at DESC`,
+            [profileId],
+          ),
+          client.query(
+            `SELECT id, profile_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum
+           FROM patient_documents
+           WHERE profile_id = $1
+           ORDER BY uploaded_at DESC`,
+            [profileId],
+          ),
+        ]);
+
+      return {
+        id: profile.id,
+        userId: profile.user_id,
+        fullName: profile.full_name,
+        preferredName: profile.preferred_name,
+        dateOfBirth: toDateString(profile.date_of_birth),
+        gender: profile.gender,
+        patientCode: profile.patient_code,
+        diagnosisStage: profile.diagnosis_stage,
+        diagnosisDate: toDateString(profile.diagnosis_date),
+        geneticMutation: profile.genetic_mutation,
+        heightCm: toNumber(profile.height_cm),
+        weightKg: toNumber(profile.weight_kg),
+        bloodType: profile.blood_type,
+        contactPhone: profile.contact_phone,
+        contactEmail: profile.contact_email,
+        primaryPhysician: profile.primary_physician,
+        notes: profile.notes,
+        measurements: measurementsResult.rows.map((row) => ({
+          id: row.id,
+          muscleGroup: row.muscle_group,
+          strengthScore: Number(row.strength_score),
+          method: row.method,
+          notes: row.notes,
+          recordedAt: toTimestampString(row.recorded_at),
+          createdAt: toTimestampString(row.created_at),
+        })),
+        functionTests: functionTestsResult.rows.map((row) => ({
+          id: row.id,
+          testType: row.test_type,
+          measuredValue: row.measured_value ? Number(row.measured_value) : null,
+          unit: row.unit,
+          notes: row.notes,
+          performedAt: toTimestampString(row.performed_at),
+          createdAt: toTimestampString(row.created_at),
+        })),
+        activityLogs: activityLogsResult.rows.map((row) => ({
+          id: row.id,
+          logDate: row.log_date.toISOString?.() ?? row.log_date,
+          source: row.source,
+          content: row.content,
+          moodScore: row.mood_score === null ? null : Number(row.mood_score),
+          createdAt: toTimestampString(row.created_at),
+        })),
+        documents: documentsResult.rows.map((row) => ({
+          id: row.id,
+          documentType: row.document_type,
+          title: row.title,
+          fileName: row.file_name,
+          mimeType: row.mime_type,
+          fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+          storageUri: row.storage_uri,
+          status: row.status,
+          uploadedAt: toTimestampString(row.uploaded_at),
+          checksum: row.checksum,
+        })),
+        createdAt: toTimestampString(profile.created_at),
+        updatedAt: toTimestampString(profile.updated_at),
+      };
+    } finally {
+      client.release();
+    }
+  }
+
+  async createProfile(userId: string, payload: CreateProfileInput): Promise<PatientProfileDTO> {
+    const existing = await this.pool.query('SELECT id FROM patient_profiles WHERE user_id = $1', [
+      userId,
+    ]);
+
+    if (existing.rowCount) {
+      throw new AppError('Patient profile already exists', 409);
+    }
+
+    await this.pool.query(
+      `INSERT INTO patient_profiles (
+        user_id,
+        full_name,
+        preferred_name,
+        date_of_birth,
+        gender,
+        patient_code,
+        diagnosis_stage,
+        diagnosis_date,
+        genetic_mutation,
+        height_cm,
+        weight_kg,
+        blood_type,
+        contact_phone,
+        contact_email,
+        primary_physician,
+        notes
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+      )`,
+      [
+        userId,
+        payload.fullName ?? null,
+        payload.preferredName ?? null,
+        payload.dateOfBirth ?? null,
+        payload.gender ?? null,
+        payload.patientCode ?? null,
+        payload.diagnosisStage ?? null,
+        payload.diagnosisDate ?? null,
+        payload.geneticMutation ?? null,
+        payload.heightCm ?? null,
+        payload.weightKg ?? null,
+        payload.bloodType ?? null,
+        payload.contactPhone ?? null,
+        payload.contactEmail ?? null,
+        payload.primaryPhysician ?? null,
+        payload.notes ?? null,
+      ],
+    );
+
+    this.logger.info({ userId }, 'Patient profile created');
+
+    const created = await this.getProfileByUserId(userId);
+
+    if (!created) {
+      throw new AppError('Failed to load created patient profile', 500);
+    }
+
+    return created;
+  }
+
+  async updateProfile(userId: string, payload: UpdateProfileInput): Promise<PatientProfileDTO> {
+    const existing = await this.pool.query<PatientProfileRecord>(
+      'SELECT id FROM patient_profiles WHERE user_id = $1',
+      [userId],
+    );
+
+    if (!existing.rowCount) {
+      throw new AppError('Patient profile not found', 404);
+    }
+
+    const columns: Array<[keyof UpdateProfileInput, string]> = [
+      ['fullName', 'full_name'],
+      ['preferredName', 'preferred_name'],
+      ['dateOfBirth', 'date_of_birth'],
+      ['gender', 'gender'],
+      ['patientCode', 'patient_code'],
+      ['diagnosisStage', 'diagnosis_stage'],
+      ['diagnosisDate', 'diagnosis_date'],
+      ['geneticMutation', 'genetic_mutation'],
+      ['heightCm', 'height_cm'],
+      ['weightKg', 'weight_kg'],
+      ['bloodType', 'blood_type'],
+      ['contactPhone', 'contact_phone'],
+      ['contactEmail', 'contact_email'],
+      ['primaryPhysician', 'primary_physician'],
+      ['notes', 'notes'],
+    ];
+
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+
+    columns.forEach(([key, column]) => {
+      if (payload[key] !== undefined) {
+        setClauses.push(`${column} = $${values.length + 1}`);
+        values.push(payload[key] ?? null);
+      }
+    });
+
+    if (setClauses.length === 0) {
+      const profile = await this.getProfileByUserId(userId);
+      if (!profile) {
+        throw new AppError('Patient profile not found', 404);
+      }
+      return profile;
+    }
+
+    setClauses.push(`updated_at = NOW()`);
+
+    await this.pool.query(
+      `UPDATE patient_profiles
+       SET ${setClauses.join(', ')}
+       WHERE user_id = $${values.length + 1}`,
+      [...values, userId],
+    );
+
+    this.logger.info({ userId }, 'Patient profile updated');
+
+    const updated = await this.getProfileByUserId(userId);
+    if (!updated) {
+      throw new AppError('Failed to load updated patient profile', 500);
+    }
+
+    return updated;
+  }
+
+  async addMeasurement(userId: string, payload: MeasurementInput): Promise<PatientMeasurementDTO> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_measurements (
+        profile_id,
+        muscle_group,
+        strength_score,
+        method,
+        notes,
+        recorded_at
+      )
+      VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW()))
+      RETURNING id, muscle_group, strength_score, method, notes, recorded_at, created_at`,
+      [
+        profileId,
+        payload.muscleGroup,
+        payload.strengthScore,
+        payload.method ?? null,
+        payload.notes ?? null,
+        payload.recordedAt ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      muscleGroup: row.muscle_group,
+      strengthScore: Number(row.strength_score),
+      method: row.method,
+      notes: row.notes,
+      recordedAt: toTimestampString(row.recorded_at),
+      createdAt: toTimestampString(row.created_at),
+    };
+  }
+
+  async addFunctionTest(
+    userId: string,
+    payload: FunctionTestInput,
+  ): Promise<PatientFunctionTestDTO> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_function_tests (
+        profile_id,
+        test_type,
+        measured_value,
+        unit,
+        notes,
+        performed_at
+      )
+      VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW()))
+      RETURNING id, test_type, measured_value, unit, notes, performed_at, created_at`,
+      [
+        profileId,
+        payload.testType,
+        payload.measuredValue ?? null,
+        payload.unit ?? null,
+        payload.notes ?? null,
+        payload.performedAt ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      testType: row.test_type,
+      measuredValue: row.measured_value ? Number(row.measured_value) : null,
+      unit: row.unit,
+      notes: row.notes,
+      performedAt: toTimestampString(row.performed_at),
+      createdAt: toTimestampString(row.created_at),
+    };
+  }
+
+  async addActivityLog(userId: string, payload: ActivityLogInput): Promise<PatientActivityLogDTO> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_activity_logs (
+        profile_id,
+        log_date,
+        source,
+        content,
+        mood_score
+      )
+      VALUES (
+        $1,
+        COALESCE($2::date, CURRENT_DATE),
+        $3,
+        $4,
+        $5
+      )
+      RETURNING id, log_date, source, content, mood_score, created_at`,
+      [
+        profileId,
+        payload.logDate ?? null,
+        payload.source,
+        payload.content ?? null,
+        payload.moodScore ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      logDate: row.log_date?.toISOString?.() ?? row.log_date,
+      source: row.source,
+      content: row.content,
+      moodScore: row.mood_score === null ? null : Number(row.mood_score),
+      createdAt: toTimestampString(row.created_at),
+    };
+  }
+
+  async addDocument(userId: string, payload: DocumentInput): Promise<PatientDocumentDTO> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_documents (
+        profile_id,
+        document_type,
+        title,
+        file_name,
+        mime_type,
+        file_size_bytes,
+        storage_uri,
+        status,
+        uploaded_at,
+        checksum
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        COALESCE($8, 'uploaded'),
+        COALESCE($9::timestamptz, NOW()),
+        $10
+      )
+      RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum`,
+      [
+        profileId,
+        payload.documentType,
+        payload.title ?? null,
+        payload.fileName ?? null,
+        payload.mimeType ?? null,
+        payload.fileSizeBytes ?? null,
+        payload.storageUri,
+        payload.status ?? null,
+        payload.uploadedAt ?? null,
+        payload.checksum ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      documentType: row.document_type,
+      title: row.title,
+      fileName: row.file_name,
+      mimeType: row.mime_type,
+      fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+      storageUri: row.storage_uri,
+      status: row.status,
+      uploadedAt: toTimestampString(row.uploaded_at),
+      checksum: row.checksum,
+    };
+  }
+
+  private async ensureProfileForUser(userId: string, client?: PoolClient): Promise<string> {
+    const executor = client ?? this.pool;
+    const result = await executor.query<{ id: string }>(
+      'SELECT id FROM patient_profiles WHERE user_id = $1',
+      [userId],
+    );
+
+    if (!result.rowCount) {
+      throw new AppError('Patient profile not found', 404);
+    }
+
+    return result.rows[0].id;
+  }
+}

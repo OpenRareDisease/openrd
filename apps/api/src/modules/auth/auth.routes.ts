@@ -1,9 +1,9 @@
 import { Router } from 'express';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { getPool } from '../../db/pool';
 import type { RouteContext } from '../../routes';
 import { asyncHandler } from '../../utils/async-handler';
-import { getPool } from '../../db/pool';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
 
 export const createAuthRouter = (context: RouteContext) => {
   const router = Router();

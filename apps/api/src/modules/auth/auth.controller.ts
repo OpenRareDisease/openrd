@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
-import type { AuthService } from './auth.service';
 import { loginSchema, registerSchema } from './auth.schema';
+import type { AuthService } from './auth.service';
 
 export class AuthController {
   constructor(private readonly service: AuthService) {}
