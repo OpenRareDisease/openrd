@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 康复经验分享</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .video-card:hover {
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+        
+        .video-overlay {
+            background: linear-gradient(45deg, rgba(150, 159, 255, 0.2), rgba(81, 71, 255, 0.2));
+        }
+        
+        .action-correction {
+            animation: slideInUp 0.5s ease-out;
+        }
+        
+        @keyframes slideInUp {
+            from {
+                transform: translateY(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .loading-spinner {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .upload-progress {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="flex items-center justify-between px-6 py-4">
+            <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                <i class="fas fa-arrow-left text-text-secondary"></i>
+            </button>
+            <h1 id="page-title" class="text-lg font-semibold text-text-primary">康复经验分享</h1>
+            <button id="upload-button" class="w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                <i class="fas fa-plus text-primary"></i>
+            </button>
+        </header>
+
+        <!-- 视频播放器区域 -->
+        <section id="video-player-section" class="mx-6 mb-6 hidden">
+            <div id="video-player-container" class="glass-card rounded-xl overflow-hidden relative">
+                <!-- 视频播放器 -->
+                <div id="video-player" class="relative">
+                    <img id="video-poster" class="w-full h-48 object-cover" src="https://s.coze.cn/image/E-ortR-_UyE/" alt="康复训练视频封面" data-category="运动体育">
+                    <div id="video-overlay" class="absolute inset-0 video-overlay flex items-center justify-center">
+                        <button id="play-button" class="w-16 h-16 rounded-full bg-white bg-opacity-20 backdrop-blur-sm flex items-center justify-center">
+                            <i class="fas fa-play text-white text-xl ml-1"></i>
+                        </button>
+                    </div>
+                    <!-- 视频信息 -->
+                    <div id="video-info" class="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black to-transparent">
+                        <h3 id="video-title" class="text-white font-semibold text-base mb-1">三角肌强化训练</h3>
+                        <div class="flex items-center space-x-4 text-white text-sm opacity-90">
+                            <span id="video-author">康复师李医生</span>
+                            <span id="video-duration">05:32</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 视频控制栏 -->
+                <div id="video-controls" class="p-4 border-t border-dark-border">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center space-x-4">
+                            <button id="like-button" class="flex items-center space-x-1 text-text-secondary">
+                                <i class="fas fa-heart"></i>
+                                <span id="like-count">128</span>
+                            </button>
+                            <button id="share-button" class="flex items-center space-x-1 text-text-secondary">
+                                <i class="fas fa-share"></i>
+                                <span>分享</span>
+                            </button>
+                        </div>
+                        <button id="fullscreen-button" class="text-text-secondary">
+                            <i class="fas fa-expand"></i>
+                        </button>
+                    </div>
+                    
+                    <!-- 进度条 -->
+                    <div class="flex items-center space-x-2">
+                        <span id="current-time" class="text-xs text-text-muted">00:00</span>
+                        <div class="flex-1 bg-dark-border rounded-full h-1">
+                            <div id="progress-bar" class="bg-primary h-1 rounded-full w-0 transition-all duration-300"></div>
+                        </div>
+                        <span id="total-time" class="text-xs text-text-muted">05:32</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 动作捕捉纠错提示 -->
+        <section id="action-correction-section" class="mx-6 mb-6 hidden">
+            <div id="correction-card" class="glass-card rounded-lg p-4 action-correction">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                        <i class="fas fa-magic text-green-400"></i>
+                    </div>
+                    <div class="flex-1">
+                        <h4 class="font-medium text-text-primary text-sm mb-1">动作捕捉分析</h4>
+                        <p id="correction-text" class="text-xs text-text-secondary">您的动作非常标准，继续保持！</p>
+                    </div>
+                    <button id="close-correction" class="text-text-muted">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 康复视频列表 -->
+        <section id="video-list-section" class="mx-6 mb-6">
+            <div id="video-list-header" class="flex items-center justify-between mb-4">
+                <h3 class="text-base font-semibold text-text-primary">推荐训练视频</h3>
+                <div class="flex items-center space-x-2">
+                    <button id="filter-button" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-filter text-text-secondary text-sm"></i>
+                    </button>
+                    <button id="sort-button" class="w-8 h-8 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-sort text-text-secondary text-sm"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <div id="video-list" class="space-y-3">
+                <!-- 视频项1 -->
+                <div id="video-item-1" class="video-card glass-card rounded-lg overflow-hidden cursor-pointer" data-video-id="1">
+                    <div class="flex">
+                        <div class="relative w-24 h-16 flex-shrink-0">
+                            <img class="w-full h-full object-cover" src="https://s.coze.cn/image/cv0jPNeZLys/" alt="三角肌训练视频缩略图" data-category="运动体育">
+                            <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center">
+                                <i class="fas fa-play text-white text-sm"></i>
+                            </div>
+                            <span class="absolute bottom-1 right-1 bg-black bg-opacity-70 text-white text-xs px-1 rounded">05:32</span>
+                        </div>
+                        <div class="flex-1 p-3">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">三角肌强化训练</h4>
+                            <p class="text-xs text-text-secondary mb-2">康复师李医生 · 认证</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-3">
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-heart text-red-400"></i>
+                                        <span>128</span>
+                                    </span>
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-eye"></i>
+                                        <span>1.2k</span>
+                                    </span>
+                                </div>
+                                <span class="text-xs text-text-muted">2天前</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 视频项2 -->
+                <div id="video-item-2" class="video-card glass-card rounded-lg overflow-hidden cursor-pointer" data-video-id="2">
+                    <div class="flex">
+                        <div class="relative w-24 h-16 flex-shrink-0">
+                            <img class="w-full h-full object-cover" src="https://s.coze.cn/image/lpqX7sOLbmk/" alt="前锯肌训练视频缩略图" data-category="运动体育">
+                            <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center">
+                                <i class="fas fa-play text-white text-sm"></i>
+                            </div>
+                            <span class="absolute bottom-1 right-1 bg-black bg-opacity-70 text-white text-xs px-1 rounded">03:45</span>
+                        </div>
+                        <div class="flex-1 p-3">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">前锯肌功能恢复</h4>
+                            <p class="text-xs text-text-secondary mb-2">康复师王医生 · 认证</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-3">
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-heart text-red-400"></i>
+                                        <span>89</span>
+                                    </span>
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-eye"></i>
+                                        <span>856</span>
+                                    </span>
+                                </div>
+                                <span class="text-xs text-text-muted">1周前</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 视频项3 -->
+                <div id="video-item-3" class="video-card glass-card rounded-lg overflow-hidden cursor-pointer" data-video-id="3">
+                    <div class="flex">
+                        <div class="relative w-24 h-16 flex-shrink-0">
+                            <img class="w-full h-full object-cover" src="https://s.coze.cn/image/BXZvw5WCiMk/" alt="肩部拉伸训练视频缩略图" data-category="运动体育">
+                            <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center">
+                                <i class="fas fa-play text-white text-sm"></i>
+                            </div>
+                            <span class="absolute bottom-1 right-1 bg-black bg-opacity-70 text-white text-xs px-1 rounded">04:12</span>
+                        </div>
+                        <div class="flex-1 p-3">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">肩部拉伸放松</h4>
+                            <p class="text-xs text-text-secondary mb-2">康复师张医生 · 认证</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-3">
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-heart text-red-400"></i>
+                                        <span>156</span>
+                                    </span>
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-eye"></i>
+                                        <span>2.1k</span>
+                                    </span>
+                                </div>
+                                <span class="text-xs text-text-muted">3天前</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 视频项4 -->
+                <div id="video-item-4" class="video-card glass-card rounded-lg overflow-hidden cursor-pointer" data-video-id="4">
+                    <div class="flex">
+                        <div class="relative w-24 h-16 flex-shrink-0">
+                            <img class="w-full h-full object-cover" src="https://s.coze.cn/image/JGjTFuxVpdY/" alt="居家简易训练视频缩略图" data-category="运动体育">
+                            <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center">
+                                <i class="fas fa-play text-white text-sm"></i>
+                            </div>
+                            <span class="absolute bottom-1 right-1 bg-black bg-opacity-70 text-white text-xs px-1 rounded">06:20</span>
+                        </div>
+                        <div class="flex-1 p-3">
+                            <h4 class="font-medium text-text-primary text-sm mb-1">居家简易训练</h4>
+                            <p class="text-xs text-text-secondary mb-2">患者张先生 · 分享</p>
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center space-x-3">
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-heart text-red-400"></i>
+                                        <span>73</span>
+                                    </span>
+                                    <span class="flex items-center space-x-1 text-xs text-text-muted">
+                                        <i class="fas fa-eye"></i>
+                                        <span>445</span>
+                                    </span>
+                                </div>
+                                <span class="text-xs text-text-muted">5天前</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 上传视频弹窗 -->
+    <div id="upload-modal" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 hidden">
+        <div class="flex items-end justify-center min-h-screen">
+            <div class="glass-card rounded-t-2xl w-full max-w-sm p-6">
+                <div class="text-center mb-6">
+                    <h3 class="text-lg font-semibold text-text-primary mb-2">上传康复视频</h3>
+                    <p class="text-sm text-text-secondary">分享您的康复训练经验</p>
+                </div>
+                
+                <div class="space-y-4">
+                    <button id="camera-upload" class="w-full glass-card rounded-lg p-4 flex items-center justify-center space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-camera text-primary"></i>
+                        </div>
+                        <span class="text-text-primary">拍摄视频</span>
+                    </button>
+                    
+                    <button id="file-upload" class="w-full glass-card rounded-lg p-4 flex items-center justify-center space-x-3">
+                        <div class="w-10 h-10 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-folder-open text-secondary"></i>
+                        </div>
+                        <span class="text-text-primary">选择文件</span>
+                    </button>
+                    
+                    <button id="cancel-upload" class="w-full py-3 text-text-secondary">
+                        取消
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 上传进度弹窗 -->
+    <div id="progress-modal" class="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm z-50 hidden">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="glass-card rounded-xl p-6 w-80 text-center">
+                <div class="w-16 h-16 rounded-full bg-primary bg-opacity-20 flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-cloud-upload-alt text-primary text-2xl"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-text-primary mb-2">上传中...</h3>
+                <p class="text-sm text-text-secondary mb-4">视频正在上传，请稍候</p>
+                
+                <div class="bg-dark-border rounded-full h-2 mb-4">
+                    <div id="upload-progress-bar" class="bg-primary h-2 rounded-full upload-progress w-0"></div>
+                </div>
+                
+                <p id="progress-text" class="text-xs text-text-muted">0%</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 成功提示 -->
+    <div id="success-toast" class="fixed top-20 left-1/2 transform -translate-x-1/2 glass-card rounded-lg p-4 z-50 hidden">
+        <div class="flex items-center space-x-2">
+            <div class="w-6 h-6 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                <i class="fas fa-check text-green-400 text-xs"></i>
+            </div>
+            <span class="text-text-primary text-sm">视频已提交审核</span>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 视频数据
+            const videos = {
+                1: {
+                    title: '三角肌强化训练',
+                    author: '康复师李医生',
+                    duration: '05:32',
+                    poster: 'https://s.coze.cn/image/LD1Od5fe6W0/',
+                    likes: 128,
+                    views: 1200
+                },
+                2: {
+                    title: '前锯肌功能恢复',
+                    author: '康复师王医生',
+                    duration: '03:45',
+                    poster: 'https://s.coze.cn/image/EjUYoS2oF0U/',
+                    likes: 89,
+                    views: 856
+                },
+                3: {
+                    title: '肩部拉伸放松',
+                    author: '康复师张医生',
+                    duration: '04:12',
+                    poster: 'https://s.coze.cn/image/1OFPApUXc5M/',
+                    likes: 156,
+                    views: 2100
+                },
+                4: {
+                    title: '居家简易训练',
+                    author: '患者张先生',
+                    duration: '06:20',
+                    poster: 'https://s.coze.cn/image/I4sMXszamuA/',
+                    likes: 73,
+                    views: 445
+                }
+            };
+
+            let currentVideoId = null;
+            let isPlaying = false;
+            let playInterval = null;
+            let currentProgress = 0;
+
+            // 返回按钮
+            document.querySelector('#back-button').addEventListener('click', function() {
+                // 根据来源页面返回
+                const referrer = document.referrer;
+                if (referrer.includes('P-COMMUNITY.html')) {
+                    window.location.href = 'P-COMMUNITY.html';
+                } else if (referrer.includes('P-ARCHIVE.html')) {
+                    window.location.href = 'P-ARCHIVE.html';
+                } else if (referrer.includes('P-MANAGE.html')) {
+                    window.location.href = 'P-MANAGE.html';
+                } else {
+                    window.location.href = 'P-COMMUNITY.html';
+                }
+            });
+
+            // 上传按钮
+            document.querySelector('#upload-button').addEventListener('click', function() {
+                document.querySelector('#upload-modal').classList.remove('hidden');
+            });
+
+            // 取消上传
+            document.querySelector('#cancel-upload').addEventListener('click', function() {
+                document.querySelector('#upload-modal').classList.add('hidden');
+            });
+
+            // 拍摄视频
+            document.querySelector('#camera-upload').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现相机拍摄视频功能');
+                // 注释：此功能需要调用设备相机API，在原型阶段仅做UI展示
+                document.querySelector('#upload-modal').classList.add('hidden');
+                showUploadProgress();
+            });
+
+            // 选择文件
+            document.querySelector('#file-upload').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现文件选择功能');
+                // 注释：此功能需要调用文件选择API，在原型阶段仅做UI展示
+                document.querySelector('#upload-modal').classList.add('hidden');
+                showUploadProgress();
+            });
+
+            // 显示上传进度
+            function showUploadProgress() {
+                document.querySelector('#progress-modal').classList.remove('hidden');
+                let progress = 0;
+                const progressBar = document.querySelector('#upload-progress-bar');
+                const progressText = document.querySelector('#progress-text');
+                
+                const interval = setInterval(() => {
+                    progress += Math.random() * 15;
+                    if (progress >= 100) {
+                        progress = 100;
+                        clearInterval(interval);
+                        
+                        setTimeout(() => {
+                            document.querySelector('#progress-modal').classList.add('hidden');
+                            showSuccessToast();
+                        }, 500);
+                    }
+                    
+                    progressBar.style.width = progress + '%';
+                    progressText.textContent = Math.round(progress) + '%';
+                }, 200);
+            }
+
+            // 显示成功提示
+            function showSuccessToast() {
+                const toast = document.querySelector('#success-toast');
+                toast.classList.remove('hidden');
+                
+                setTimeout(() => {
+                    toast.classList.add('hidden');
+                }, 3000);
+            }
+
+            // 视频列表点击事件
+            document.querySelectorAll('.video-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    const videoId = this.dataset.videoId;
+                    playVideo(videoId);
+                });
+            });
+
+            // 播放视频
+            function playVideo(videoId) {
+                currentVideoId = videoId;
+                const video = videos[videoId];
+                
+                // 更新视频信息
+                document.querySelector('#video-title').textContent = video.title;
+                document.querySelector('#video-author').textContent = video.author;
+                document.querySelector('#video-duration').textContent = video.duration;
+                document.querySelector('#total-time').textContent = video.duration;
+                document.querySelector('#video-poster').src = video.poster;
+                document.querySelector('#like-count').textContent = video.likes;
+                
+                // 显示视频播放器
+                document.querySelector('#video-player-section').classList.remove('hidden');
+                document.querySelector('#video-list-section').classList.add('hidden');
+                
+                // 滚动到视频播放器
+                document.querySelector('#video-player-section').scrollIntoView({ behavior: 'smooth' });
+                
+                // 模拟播放
+                setTimeout(() => {
+                    startVideoPlayback();
+                }, 500);
+            }
+
+            // 开始视频播放
+            function startVideoPlayback() {
+                isPlaying = true;
+                currentProgress = 0;
+                
+                // 隐藏播放按钮
+                document.querySelector('#video-overlay').classList.add('hidden');
+                
+                // 模拟播放进度
+                playInterval = setInterval(() => {
+                    currentProgress += 0.5;
+                    if (currentProgress >= 100) {
+                        currentProgress = 100;
+                        stopVideoPlayback();
+                    }
+                    
+                    const progressBar = document.querySelector('#progress-bar');
+                    progressBar.style.width = currentProgress + '%';
+                    
+                    // 更新当前时间
+                    const totalSeconds = 332; // 5:32 in seconds
+                    const currentSeconds = Math.floor((currentProgress / 100) * totalSeconds);
+                    const minutes = Math.floor(currentSeconds / 60);
+                    const seconds = currentSeconds % 60;
+                    document.querySelector('#current-time').textContent = 
+                        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                    
+                    // 模拟动作捕捉纠错
+                    if (Math.random() > 0.95) {
+                        showActionCorrection();
+                    }
+                }, 100);
+            }
+
+            // 停止视频播放
+            function stopVideoPlayback() {
+                isPlaying = false;
+                if (playInterval) {
+                    clearInterval(playInterval);
+                    playInterval = null;
+                }
+                
+                // 显示播放按钮
+                document.querySelector('#video-overlay').classList.remove('hidden');
+                
+                // 重置进度
+                currentProgress = 0;
+                document.querySelector('#progress-bar').style.width = '0%';
+                document.querySelector('#current-time').textContent = '00:00';
+            }
+
+            // 播放按钮点击
+            document.querySelector('#play-button').addEventListener('click', function() {
+                if (!isPlaying) {
+                    startVideoPlayback();
+                }
+            });
+
+            // 显示动作捕捉纠错
+            function showActionCorrection() {
+                const corrections = [
+                    '您的动作非常标准，继续保持！',
+                    '注意保持正确的姿势，避免受伤',
+                    '动作幅度可以再大一些，效果会更好',
+                    '节奏控制得很好，坚持下去',
+                    '肩膀放松，不要过于紧张'
+                ];
+                
+                const randomCorrection = corrections[Math.floor(Math.random() * corrections.length)];
+                document.querySelector('#correction-text').textContent = randomCorrection;
+                document.querySelector('#action-correction-section').classList.remove('hidden');
+                
+                setTimeout(() => {
+                    document.querySelector('#action-correction-section').classList.add('hidden');
+                }, 3000);
+            }
+
+            // 关闭纠错提示
+            document.querySelector('#close-correction').addEventListener('click', function() {
+                document.querySelector('#action-correction-section').classList.add('hidden');
+            });
+
+            // 点赞按钮
+            document.querySelector('#like-button').addEventListener('click', function() {
+                if (currentVideoId) {
+                    videos[currentVideoId].likes += 1;
+                    document.querySelector('#like-count').textContent = videos[currentVideoId].likes;
+                    
+                    // 添加点赞动画
+                    const heartIcon = this.querySelector('i');
+                    heartIcon.classList.add('text-red-400');
+                    setTimeout(() => {
+                        heartIcon.classList.remove('text-red-400');
+                    }, 1000);
+                }
+            });
+
+            // 分享按钮
+            document.querySelector('#share-button').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现分享功能');
+                // 注释：此功能需要调用系统分享API，在原型阶段仅做UI展示
+            });
+
+            // 全屏按钮
+            document.querySelector('#fullscreen-button').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现全屏功能');
+                // 注释：此功能需要调用全屏API，在原型阶段仅做UI展示
+            });
+
+            // 筛选按钮
+            document.querySelector('#filter-button').addEventListener('click', function() {
+                console.log('筛选功能');
+                // 可以添加筛选逻辑
+            });
+
+            // 排序按钮
+            document.querySelector('#sort-button').addEventListener('click', function() {
+                console.log('排序功能');
+                // 可以添加排序逻辑
+            });
+
+            // 点击模态框背景关闭
+            document.querySelector('#upload-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+
+            document.querySelector('#progress-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

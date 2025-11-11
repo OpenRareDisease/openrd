@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 登录注册</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .form-input {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #969FFF;
+            box-shadow: 0 0 0 2px rgba(150, 159, 255, 0.2);
+        }
+        
+        .primary-button {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            transition: all 0.3s ease;
+        }
+        
+        .primary-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(150, 159, 255, 0.3);
+        }
+        
+        .primary-button:disabled {
+            opacity: 0.6;
+            transform: none;
+            cursor: not-allowed;
+        }
+        
+        .third-party-button {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+        
+        .third-party-button:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        .logo-animation {
+            animation: float 3s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.6s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- Logo和产品名称区域 -->
+        <header id="header" class="text-center py-12 fade-in">
+            <div id="logo-container" class="mb-6">
+                <div class="w-16 h-16 mx-auto mb-4 logo-animation">
+                    <div class="w-full h-full rounded-2xl glass-card flex items-center justify-center">
+                        <i class="fas fa-heartbeat text-2xl gradient-text"></i>
+                    </div>
+                </div>
+                <h1 id="app-name" class="text-xl font-bold gradient-text mb-2">FSHD-openrd</h1>
+                <p id="app-slogan" class="text-sm text-text-secondary">智能FSHD管理平台</p>
+            </div>
+        </header>
+
+        <!-- 登录注册表单 -->
+        <main id="main-content" class="px-6 fade-in">
+            <!-- 切换标签 -->
+            <div id="tab-switcher" class="flex mb-6">
+                <button id="login-tab" class="flex-1 py-2.5 text-center font-medium rounded-l-lg bg-primary text-white">
+                    登录
+                </button>
+                <button id="register-tab" class="flex-1 py-2.5 text-center font-medium rounded-r-lg text-text-secondary border border-dark-border">
+                    注册
+                </button>
+            </div>
+
+            <!-- 登录表单 -->
+            <form id="login-form" class="space-y-4 mb-6">
+                <div id="phone-input-container">
+                    <label for="login-phone" class="block text-sm font-medium text-text-secondary mb-2">手机号</label>
+                    <input type="tel" id="login-phone" name="phone" class="w-full px-3 py-2.5 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请输入手机号" required>
+                </div>
+
+                <div id="password-input-container">
+                    <label for="login-password" class="block text-sm font-medium text-text-secondary mb-2">密码</label>
+                    <div class="relative">
+                        <input type="password" id="login-password" name="password" class="w-full px-3 py-2.5 pr-12 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请输入密码" required>
+                        <button type="button" id="toggle-login-password" class="absolute right-4 top-1/2 transform -translate-y-1/2 text-text-muted">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" id="login-submit" class="w-full py-2.5 rounded-lg primary-button text-white font-medium">
+                    登录
+                </button>
+            </form>
+
+            <!-- 注册表单 -->
+            <form id="register-form" class="space-y-4 mb-6 hidden">
+                <div id="register-phone-container">
+                    <label for="register-phone" class="block text-sm font-medium text-text-secondary mb-2">手机号</label>
+                    <input type="tel" id="register-phone" name="phone" class="w-full px-3 py-2.5 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请输入手机号" required>
+                </div>
+
+                <div id="verification-code-container">
+                    <label for="verification-code" class="block text-sm font-medium text-text-secondary mb-2">验证码</label>
+                    <div class="flex space-x-3">
+                        <input type="text" id="verification-code" name="code" class="flex-1 px-3 py-2.5 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请输入验证码" required>
+                        <button type="button" id="get-code-btn" class="px-3 py-2.5 rounded-lg text-primary border border-primary text-sm font-medium">
+                            获取验证码
+                        </button>
+                    </div>
+                </div>
+
+                <div id="register-password-container">
+                    <label for="register-password" class="block text-sm font-medium text-text-secondary mb-2">设置密码</label>
+                    <div class="relative">
+                        <input type="password" id="register-password" name="password" class="w-full px-3 py-2.5 pr-12 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请设置6-20位密码" required>
+                        <button type="button" id="toggle-register-password" class="absolute right-4 top-1/2 transform -translate-y-1/2 text-text-muted">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="confirm-password-container">
+                    <label for="confirm-password" class="block text-sm font-medium text-text-secondary mb-2">确认密码</label>
+                    <div class="relative">
+                        <input type="password" id="confirm-password" name="confirmPassword" class="w-full px-3 py-2.5 pr-12 rounded-lg form-input text-text-primary placeholder-text-muted" placeholder="请再次输入密码" required>
+                        <button type="button" id="toggle-confirm-password" class="absolute right-4 top-1/2 transform -translate-y-1/2 text-text-muted">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" id="register-submit" class="w-full py-2.5 rounded-lg primary-button text-white font-medium">
+                    注册
+                </button>
+            </form>
+
+            <!-- 忘记密码 -->
+            <div id="forgot-password-container" class="text-center mb-8">
+                <button id="forgot-password-btn" class="text-primary text-sm">
+                    忘记密码？
+                </button>
+            </div>
+
+            <!-- 分割线 -->
+            <div id="divider" class="flex items-center mb-6">
+                <div class="flex-1 h-px bg-dark-border"></div>
+                <span class="px-4 text-sm text-text-muted">或</span>
+                <div class="flex-1 h-px bg-dark-border"></div>
+            </div>
+
+            <!-- 第三方登录 -->
+            <div id="third-party-login" class="space-y-3 mb-8">
+                <button id="wechat-login" class="w-full py-2.5 rounded-lg third-party-button text-text-primary flex items-center justify-center space-x-3">
+                    <i class="fab fa-weixin text-green-400 text-lg"></i>
+                    <span class="font-medium">微信登录</span>
+                </button>
+                
+                <button id="alipay-login" class="w-full py-2.5 rounded-lg third-party-button text-text-primary flex items-center justify-center space-x-3">
+                    <i class="fab fa-alipay text-blue-400 text-lg"></i>
+                    <span class="font-medium">支付宝登录</span>
+                </button>
+            </div>
+
+            <!-- 用户协议 -->
+            <div id="agreement" class="text-center text-sm text-text-muted">
+                <p>登录即表示同意 <button id="user-agreement-btn" class="text-primary">《用户协议》</button> 和 <button id="privacy-policy-btn" class="text-primary">《隐私政策》</button></p>
+            </div>
+        </main>
+    </div>
+
+    <!-- 错误提示弹窗 -->
+    <div id="error-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="glass-card rounded-lg p-4 mx-6 max-w-sm w-full">
+            <div class="text-center">
+                <div class="w-10 h-10 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center mx-auto mb-3">
+                    <i class="fas fa-exclamation-triangle text-red-400"></i>
+                </div>
+                <h3 class="font-medium text-text-primary mb-2">错误</h3>
+                <p id="error-message" class="text-sm text-text-secondary mb-4">错误信息</p>
+                <button id="error-confirm" class="w-full py-2 rounded-lg bg-primary text-white text-sm font-medium">
+                    确定
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 成功提示弹窗 -->
+    <div id="success-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="glass-card rounded-lg p-4 mx-6 max-w-sm w-full">
+            <div class="text-center">
+                <div class="w-10 h-10 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center mx-auto mb-3">
+                    <i class="fas fa-check text-green-400"></i>
+                </div>
+                <h3 class="font-medium text-text-primary mb-2">成功</h3>
+                <p id="success-message" class="text-sm text-text-secondary mb-4">成功信息</p>
+                <button id="success-confirm" class="w-full py-2 rounded-lg bg-primary text-white text-sm font-medium">
+                    确定
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 协议详情弹窗 -->
+    <div id="agreement-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="glass-card rounded-lg p-4 mx-6 max-w-sm w-full max-h-96 overflow-hidden">
+            <div class="flex items-center justify-between mb-3">
+                <h3 id="agreement-title" class="font-medium text-text-primary">用户协议</h3>
+                <button id="agreement-close" class="text-text-muted">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div id="agreement-content" class="overflow-y-auto max-h-72 text-sm text-text-secondary leading-relaxed">
+                <!-- 协议内容将通过JavaScript动态加载 -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 标签切换功能
+            const loginTab = document.querySelector('#login-tab');
+            const registerTab = document.querySelector('#register-tab');
+            const loginForm = document.querySelector('#login-form');
+            const registerForm = document.querySelector('#register-form');
+            const forgotPasswordContainer = document.querySelector('#forgot-password-container');
+
+            loginTab.addEventListener('click', function() {
+                switchToLogin();
+            });
+
+            registerTab.addEventListener('click', function() {
+                switchToRegister();
+            });
+
+            function switchToLogin() {
+            loginTab.className = 'flex-1 py-2.5 text-center font-medium rounded-l-lg bg-primary text-white';
+            registerTab.className = 'flex-1 py-2.5 text-center font-medium rounded-r-lg text-text-secondary border border-dark-border';
+                loginForm.classList.remove('hidden');
+                registerForm.classList.add('hidden');
+                forgotPasswordContainer.classList.remove('hidden');
+            }
+
+            function switchToRegister() {
+            registerTab.className = 'flex-1 py-2.5 text-center font-medium rounded-r-lg bg-primary text-white';
+            loginTab.className = 'flex-1 py-2.5 text-center font-medium rounded-l-lg text-text-secondary border border-dark-border';
+                registerForm.classList.remove('hidden');
+                loginForm.classList.add('hidden');
+                forgotPasswordContainer.classList.add('hidden');
+            }
+
+            // 密码显示/隐藏切换
+            function setupPasswordToggle(toggleId, inputId) {
+                const toggle = document.querySelector(`#${toggleId}`);
+                const input = document.querySelector(`#${inputId}`);
+                
+                toggle.addEventListener('click', function() {
+                    const icon = toggle.querySelector('i');
+                    if (input.type === 'password') {
+                        input.type = 'text';
+                        icon.className = 'fas fa-eye-slash';
+                    } else {
+                        input.type = 'password';
+                        icon.className = 'fas fa-eye';
+                    }
+                });
+            }
+
+            setupPasswordToggle('toggle-login-password', 'login-password');
+            setupPasswordToggle('toggle-register-password', 'register-password');
+            setupPasswordToggle('toggle-confirm-password', 'confirm-password');
+
+            // 获取验证码功能
+            let countdown = 0;
+            const getCodeBtn = document.querySelector('#get-code-btn');
+
+            getCodeBtn.addEventListener('click', function() {
+                const phoneInput = document.querySelector('#register-phone');
+                const phone = phoneInput.value.trim();
+                
+                if (!phone) {
+                    showError('请先输入手机号');
+                    return;
+                }
+                
+                if (!validatePhone(phone)) {
+                    showError('请输入正确的手机号');
+                    return;
+                }
+                
+                // 模拟发送验证码
+                startCountdown();
+                showSuccess('验证码已发送');
+            });
+
+            function startCountdown() {
+                countdown = 60;
+                getCodeBtn.disabled = true;
+                getCodeBtn.textContent = `${countdown}秒后重发`;
+                
+                const timer = setInterval(function() {
+                    countdown--;
+                    if (countdown > 0) {
+                        getCodeBtn.textContent = `${countdown}秒后重发`;
+                    } else {
+                        clearInterval(timer);
+                        getCodeBtn.disabled = false;
+                        getCodeBtn.textContent = '获取验证码';
+                    }
+                }, 1000);
+            }
+
+            // 表单验证
+            function validatePhone(phone) {
+                const phoneRegex = /^1[3-9]\d{9}$/;
+                return phoneRegex.test(phone);
+            }
+
+            function validatePassword(password) {
+                return password.length >= 6 && password.length <= 20;
+            }
+
+            // 登录表单提交
+            loginForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const phone = document.querySelector('#login-phone').value.trim();
+                const password = document.querySelector('#login-password').value.trim();
+                
+                if (!phone) {
+                    showError('请输入手机号');
+                    return;
+                }
+                
+                if (!validatePhone(phone)) {
+                    showError('请输入正确的手机号');
+                    return;
+                }
+                
+                if (!password) {
+                    showError('请输入密码');
+                    return;
+                }
+                
+                // 模拟登录请求
+                const submitBtn = document.querySelector('#login-submit');
+                submitBtn.disabled = true;
+                submitBtn.textContent = '登录中...';
+                
+                setTimeout(function() {
+                    // 模拟登录成功，跳转到首页
+                    window.location.href = 'P-HOME.html';
+                }, 1500);
+            });
+
+            // 注册表单提交
+            registerForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const phone = document.querySelector('#register-phone').value.trim();
+                const code = document.querySelector('#verification-code').value.trim();
+                const password = document.querySelector('#register-password').value.trim();
+                const confirmPassword = document.querySelector('#confirm-password').value.trim();
+                
+                if (!phone) {
+                    showError('请输入手机号');
+                    return;
+                }
+                
+                if (!validatePhone(phone)) {
+                    showError('请输入正确的手机号');
+                    return;
+                }
+                
+                if (!code) {
+                    showError('请输入验证码');
+                    return;
+                }
+                
+                if (!password) {
+                    showError('请设置密码');
+                    return;
+                }
+                
+                if (!validatePassword(password)) {
+                    showError('密码长度应为6-20位');
+                    return;
+                }
+                
+                if (password !== confirmPassword) {
+                    showError('两次输入的密码不一致');
+                    return;
+                }
+                
+                // 模拟注册请求
+                const submitBtn = document.querySelector('#register-submit');
+                submitBtn.disabled = true;
+                submitBtn.textContent = '注册中...';
+                
+                setTimeout(function() {
+                    // 模拟注册成功，跳转到首页
+                    window.location.href = 'P-HOME.html';
+                }, 1500);
+            });
+
+            // 忘记密码
+            document.querySelector('#forgot-password-btn').addEventListener('click', function() {
+                showError('忘记密码功能暂未开放，请联系客服');
+            });
+
+            // 第三方登录
+            document.querySelector('#wechat-login').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现微信登录');
+                showError('微信登录功能暂未开放');
+            });
+
+            document.querySelector('#alipay-login').addEventListener('click', function() {
+                console.log('需要调用第三方接口实现支付宝登录');
+                showError('支付宝登录功能暂未开放');
+            });
+
+            // 用户协议和隐私政策
+            document.querySelector('#user-agreement-btn').addEventListener('click', function() {
+                showAgreement('用户协议', `
+                    <p class="mb-4"><strong>1. 服务条款</strong></p>
+                    <p class="mb-4">欢迎使用FSHD-openrd应用程序。在使用本应用前，请仔细阅读并理解本用户协议。</p>
+                    
+                    <p class="mb-4"><strong>2. 服务内容</strong></p>
+                    <p class="mb-4">本应用为FSHD患者提供健康管理、知识查询、社区交流等服务。</p>
+                    
+                    <p class="mb-4"><strong>3. 用户责任</strong></p>
+                    <p class="mb-4">用户应确保提供真实、准确的个人信息，并妥善保管账户密码。</p>
+                    
+                    <p class="mb-4"><strong>4. 隐私保护</strong></p>
+                    <p class="mb-4">我们严格保护用户隐私，具体请查看《隐私政策》。</p>
+                    
+                    <p class="mb-4"><strong>5. 免责声明</strong></p>
+                    <p class="mb-4">本应用提供的信息仅供参考，不构成医疗建议，请在专业医生指导下使用。</p>
+                `);
+            });
+
+            document.querySelector('#privacy-policy-btn').addEventListener('click', function() {
+                showAgreement('隐私政策', `
+                    <p class="mb-4"><strong>1. 信息收集</strong></p>
+                    <p class="mb-4">我们收集您提供的个人信息和使用数据，用于提供更好的服务。</p>
+                    
+                    <p class="mb-4"><strong>2. 信息使用</strong></p>
+                    <p class="mb-4">您的信息仅用于应用功能实现，不会用于其他商业目的。</p>
+                    
+                    <p class="mb-4"><strong>3. 信息保护</strong></p>
+                    <p class="mb-4">我们采用行业标准的安全措施保护您的个人信息。</p>
+                    
+                    <p class="mb-4"><strong>4. 信息共享</strong></p>
+                    <p class="mb-4">未经您同意，我们不会与第三方分享您的个人信息。</p>
+                    
+                    <p class="mb-4"><strong>5. 数据删除</strong></p>
+                    <p class="mb-4">您可以随时申请删除账户和相关数据。</p>
+                `);
+            });
+
+            // 弹窗控制
+            function showError(message) {
+                const modal = document.querySelector('#error-modal');
+                const messageEl = document.querySelector('#error-message');
+                messageEl.textContent = message;
+                modal.classList.remove('hidden');
+            }
+
+            function showSuccess(message) {
+                const modal = document.querySelector('#success-modal');
+                const messageEl = document.querySelector('#success-message');
+                messageEl.textContent = message;
+                modal.classList.remove('hidden');
+            }
+
+            function showAgreement(title, content) {
+                const modal = document.querySelector('#agreement-modal');
+                const titleEl = document.querySelector('#agreement-title');
+                const contentEl = document.querySelector('#agreement-content');
+                titleEl.textContent = title;
+                contentEl.innerHTML = content;
+                modal.classList.remove('hidden');
+            }
+
+            // 弹窗关闭事件
+            document.querySelector('#error-confirm').addEventListener('click', function() {
+                document.querySelector('#error-modal').classList.add('hidden');
+            });
+
+            document.querySelector('#success-confirm').addEventListener('click', function() {
+                document.querySelector('#success-modal').classList.add('hidden');
+            });
+
+            document.querySelector('#agreement-close').addEventListener('click', function() {
+                document.querySelector('#agreement-modal').classList.add('hidden');
+            });
+
+            // 点击弹窗背景关闭
+            document.querySelectorAll('.fixed.inset-0').forEach(modal => {
+                modal.addEventListener('click', function(e) {
+                    if (e.target === this) {
+                        this.classList.add('hidden');
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>

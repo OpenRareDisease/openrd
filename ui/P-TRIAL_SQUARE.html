@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 临床试验广场</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .match-badge {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+        }
+        
+        .phase-badge {
+            background: rgba(150, 159, 255, 0.2);
+            color: #969FFF;
+        }
+        
+        .trial-card:hover {
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+        
+        .filter-dropdown {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .loading-spinner {
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        .modal-overlay {
+            background: rgba(15, 15, 35, 0.8);
+            backdrop-filter: blur(10px);
+        }
+        
+        .modal-content {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部标题栏 -->
+        <header id="header" class="px-6 py-4">
+            <div class="flex items-center justify-between">
+                <h1 id="page-title" class="text-lg font-bold text-text-primary">临床试验广场</h1>
+                <div class="flex items-center space-x-2">
+                    <button id="filter-btn" class="w-9 h-9 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-filter text-text-secondary text-sm"></i>
+                    </button>
+                    <button id="sort-btn" class="w-9 h-9 rounded-full glass-card flex items-center justify-center">
+                        <i class="fas fa-sort text-text-secondary text-sm"></i>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 筛选和排序下拉菜单 -->
+        <div id="filter-dropdown" class="hidden mx-6 mb-4">
+            <div class="filter-dropdown rounded-lg p-4">
+                <h3 class="text-xs font-semibold text-text-primary mb-2">筛选条件</h3>
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-[10px] text-text-secondary mb-1 block">试验阶段</label>
+                        <select id="phase-filter" class="w-full bg-dark-card border border-dark-border rounded px-2 py-1.5 text-xs text-text-primary">
+                            <option value="">全部阶段</option>
+                            <option value="I">I期</option>
+                            <option value="II">II期</option>
+                            <option value="III">III期</option>
+                            <option value="IV">IV期</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-[10px] text-text-secondary mb-1 block">匹配度</label>
+                        <select id="match-filter" class="w-full bg-dark-card border border-dark-border rounded px-2 py-1.5 text-xs text-text-primary">
+                            <option value="">全部匹配度</option>
+                            <option value="high">高匹配度(80%+)</option>
+                            <option value="medium">中匹配度(60%-79%)</option>
+                            <option value="low">低匹配度(&lt;60%)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="flex space-x-2 mt-4">
+                    <button id="apply-filter" class="flex-1 bg-primary text-white py-1.5 px-3 rounded-lg text-xs font-medium">应用筛选</button>
+                    <button id="reset-filter" class="px-3 py-1.5 border border-dark-border rounded-lg text-xs text-text-secondary">重置</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 排序下拉菜单 -->
+        <div id="sort-dropdown" class="hidden mx-6 mb-4">
+            <div class="filter-dropdown rounded-lg p-4">
+                <h3 class="text-xs font-semibold text-text-primary mb-2">排序方式</h3>
+                <div class="space-y-2">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="radio" name="sort" value="match" class="text-primary" checked>
+                        <span class="text-xs text-text-primary">匹配度从高到低</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="radio" name="sort" value="newest" class="text-primary">
+                        <span class="text-xs text-text-primary">最新发布</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="radio" name="sort" value="location" class="text-primary">
+                        <span class="text-xs text-text-primary">距离最近</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- 临床试验列表 -->
+        <section id="trials-section" class="mx-6">
+            <div id="trials-list" class="space-y-3">
+                <!-- 临床试验卡片1 -->
+                <div id="trial-card-1" class="trial-card glass-card rounded-lg p-3 cursor-pointer" data-trial-id="trial-001">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex-1">
+                            <h3 class="text-sm font-semibold text-text-primary mb-1">FSHD基因治疗临床试验</h3>
+                            <p class="text-[10px] text-text-secondary mb-1.5">北京协和医院 · 基因治疗研究中心</p>
+                            <div class="flex items-center space-x-1.5">
+                                <span class="phase-badge px-1.5 py-0.5 rounded-full text-[10px] font-medium">III期</span>
+                                <span class="text-[10px] text-text-muted">招募中</span>
+                            </div>
+                        </div>
+                        <div class="match-badge px-2 py-0.5 rounded-full text-[10px] font-bold text-white ml-2">
+                            83%匹配
+                        </div>
+                    </div>
+                    
+                    <div class="border-t border-dark-border pt-2">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[10px] text-text-secondary">主要入组条件:</span>
+                            <span class="text-[10px] text-primary">查看详情</span>
+                        </div>
+                        <div class="space-y-0.5">
+                            <p class="text-[10px] text-text-muted">• FSHD1型患者，D4Z4重复数≤8</p>
+                            <p class="text-[10px] text-text-muted">• 年龄18-65岁</p>
+                            <p class="text-[10px] text-text-muted">• 病程进展期</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center justify-between mt-2 pt-2 border-t border-dark-border">
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-map-marker-alt text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">北京</span>
+                            </div>
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-calendar text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">2024.01-2025.12</span>
+                            </div>
+                        </div>
+                        <button class="apply-trial-btn bg-primary text-white px-3 py-1 rounded-lg text-[10px] font-medium" data-trial-id="trial-001">
+                            申请入组
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 临床试验卡片2 -->
+                <div id="trial-card-2" class="trial-card glass-card rounded-lg p-3 cursor-pointer" data-trial-id="trial-002">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex-1">
+                            <h3 class="text-sm font-semibold text-text-primary mb-1">FSHD肌肉保护药物试验</h3>
+                            <p class="text-[10px] text-text-secondary mb-1.5">上海华山医院 · 神经内科</p>
+                            <div class="flex items-center space-x-1.5">
+                                <span class="phase-badge px-1.5 py-0.5 rounded-full text-[10px] font-medium">II期</span>
+                                <span class="text-[10px] text-text-muted">招募中</span>
+                            </div>
+                        </div>
+                        <div class="bg-yellow-500 bg-opacity-20 text-yellow-400 px-2 py-0.5 rounded-full text-[10px] font-bold ml-2">
+                            67%匹配
+                        </div>
+                    </div>
+                    
+                    <div class="border-t border-dark-border pt-2">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[10px] text-text-secondary">主要入组条件:</span>
+                            <span class="text-[10px] text-primary">查看详情</span>
+                        </div>
+                        <div class="space-y-0.5">
+                            <p class="text-[10px] text-text-muted">• FSHD患者，任何分型</p>
+                            <p class="text-[10px] text-text-muted">• 年龄18-70岁</p>
+                            <p class="text-[10px] text-text-muted">• 肌力评分3-4级</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center justify-between mt-2 pt-2 border-t border-dark-border">
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-map-marker-alt text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">上海</span>
+                            </div>
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-calendar text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">2024.03-2025.09</span>
+                            </div>
+                        </div>
+                        <button class="apply-trial-btn bg-primary text-white px-3 py-1 rounded-lg text-[10px] font-medium" data-trial-id="trial-002">
+                            申请入组
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 临床试验卡片3 -->
+                <div id="trial-card-3" class="trial-card glass-card rounded-lg p-3 cursor-pointer" data-trial-id="trial-003">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex-1">
+                            <h3 class="text-sm font-semibold text-text-primary mb-1">FSHD康复评估研究</h3>
+                            <p class="text-[10px] text-text-secondary mb-1.5">广州中山大学附属第一医院</p>
+                            <div class="flex items-center space-x-1.5">
+                                <span class="phase-badge px-1.5 py-0.5 rounded-full text-[10px] font-medium">IV期</span>
+                                <span class="text-[10px] text-text-muted">招募中</span>
+                            </div>
+                        </div>
+                        <div class="bg-green-500 bg-opacity-20 text-green-400 px-2 py-0.5 rounded-full text-[10px] font-bold ml-2">
+                            91%匹配
+                        </div>
+                    </div>
+                    
+                    <div class="border-t border-dark-border pt-2">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[10px] text-text-secondary">主要入组条件:</span>
+                            <span class="text-[10px] text-primary">查看详情</span>
+                        </div>
+                        <div class="space-y-0.5">
+                            <p class="text-[10px] text-text-muted">• FSHD确诊患者</p>
+                            <p class="text-[10px] text-text-muted">• 年龄16-75岁</p>
+                            <p class="text-[10px] text-text-muted">• 能够配合康复评估</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center justify-between mt-2 pt-2 border-t border-dark-border">
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-map-marker-alt text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">广州</span>
+                            </div>
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-calendar text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">2024.02-2026.02</span>
+                            </div>
+                        </div>
+                        <button class="apply-trial-btn bg-primary text-white px-3 py-1 rounded-lg text-[10px] font-medium" data-trial-id="trial-003">
+                            申请入组
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 临床试验卡片4 -->
+                <div id="trial-card-4" class="trial-card glass-card rounded-lg p-3 cursor-pointer" data-trial-id="trial-004">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex-1">
+                            <h3 class="text-sm font-semibold text-text-primary mb-1">FSHD生物标志物研究</h3>
+                            <p class="text-[10px] text-text-secondary mb-1.5">成都华西医院 · 罕见病中心</p>
+                            <div class="flex items-center space-x-1.5">
+                                <span class="phase-badge px-1.5 py-0.5 rounded-full text-[10px] font-medium">I期</span>
+                                <span class="text-[10px] text-text-muted">即将开始</span>
+                            </div>
+                        </div>
+                        <div class="bg-red-500 bg-opacity-20 text-red-400 px-2 py-0.5 rounded-full text-[10px] font-bold ml-2">
+                            45%匹配
+                        </div>
+                    </div>
+                    
+                    <div class="border-t border-dark-border pt-2">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[10px] text-text-secondary">主要入组条件:</span>
+                            <span class="text-[10px] text-primary">查看详情</span>
+                        </div>
+                        <div class="space-y-0.5">
+                            <p class="text-[10px] text-text-muted">• FSHD1型患者</p>
+                            <p class="text-[10px] text-text-muted">• 年龄20-60岁</p>
+                            <p class="text-[10px] text-text-muted">• 近期未接受其他治疗</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center justify-between mt-2 pt-2 border-t border-dark-border">
+                        <div class="flex items-center space-x-3">
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-map-marker-alt text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">成都</span>
+                            </div>
+                            <div class="flex items-center space-x-0.5">
+                                <i class="fas fa-calendar text-[10px] text-text-muted"></i>
+                                <span class="text-[10px] text-text-muted">2024.06-2025.06</span>
+                            </div>
+                        </div>
+                        <button class="apply-trial-btn bg-primary text-white px-3 py-1 rounded-lg text-[10px] font-medium" data-trial-id="trial-004">
+                            申请入组
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 加载更多 -->
+        <div id="load-more" class="text-center py-6">
+            <button id="load-more-btn" class="text-primary text-xs font-medium">加载更多试验</button>
+        </div>
+    </div>
+
+    <!-- 申请入组确认弹窗 -->
+    <div id="apply-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay">
+        <div class="modal-content rounded-xl p-6 mx-6 max-w-sm w-full">
+            <div class="text-center">
+                <div class="w-16 h-16 rounded-full bg-primary bg-opacity-20 flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-file-medical-alt text-primary text-lg"></i>
+                </div>
+                <h3 class="text-base font-semibold text-text-primary mb-2">申请入组临床试验</h3>
+                <p class="text-xs text-text-secondary mb-4">
+                    系统将自动生成您的标准化入组数据包，包含基因报告、肌力数据等核心信息，提交给临床试验机构进行审核。
+                </p>
+                
+                <div class="space-y-3">
+                    <button id="confirm-apply" class="w-full bg-primary text-white py-2 rounded-lg font-medium text-sm">
+                        确认提交申请
+                    </button>
+                    <button id="cancel-apply" class="w-full border border-dark-border text-text-secondary py-2 rounded-lg font-medium text-sm">
+                        取消
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 申请成功弹窗 -->
+    <div id="success-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay">
+        <div class="modal-content rounded-xl p-6 mx-6 max-w-sm w-full">
+            <div class="text-center">
+                <div class="w-16 h-16 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center mx-auto mb-4">
+                    <i class="fas fa-check text-green-400 text-lg"></i>
+                </div>
+                <h3 class="text-base font-semibold text-text-primary mb-2">申请提交成功</h3>
+                <p class="text-xs text-text-secondary mb-4">
+                    您的申请已成功提交，临床试验机构将在3-5个工作日内审核并联系您。
+                </p>
+                
+                <button id="close-success" class="w-full bg-primary text-white py-2 rounded-lg font-medium text-sm">
+                    确定
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-base"></i>
+            <span class="text-[10px] mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-question-circle text-base"></i>
+            <span class="text-[10px] mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-base"></i>
+            <span class="text-[10px] mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-users text-base"></i>
+            <span class="text-[10px] mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-user text-base"></i>
+            <span class="text-[10px] mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let currentTrialId = null;
+
+            // 筛选和排序功能
+            const filterBtn = document.querySelector('#filter-btn');
+            const sortBtn = document.querySelector('#sort-btn');
+            const filterDropdown = document.querySelector('#filter-dropdown');
+            const sortDropdown = document.querySelector('#sort-dropdown');
+
+            filterBtn.addEventListener('click', function() {
+                filterDropdown.classList.toggle('hidden');
+                sortDropdown.classList.add('hidden');
+            });
+
+            sortBtn.addEventListener('click', function() {
+                sortDropdown.classList.toggle('hidden');
+                filterDropdown.classList.add('hidden');
+            });
+
+            // 应用筛选
+            document.querySelector('#apply-filter').addEventListener('click', function() {
+                const phaseFilter = document.querySelector('#phase-filter').value;
+                const matchFilter = document.querySelector('#match-filter').value;
+                
+                // 这里可以添加筛选逻辑
+                console.log('应用筛选:', { phaseFilter, matchFilter });
+                filterDropdown.classList.add('hidden');
+                
+                // 模拟筛选效果
+                showLoading();
+                setTimeout(hideLoading, 1000);
+            });
+
+            // 重置筛选
+            document.querySelector('#reset-filter').addEventListener('click', function() {
+                document.querySelector('#phase-filter').value = '';
+                document.querySelector('#match-filter').value = '';
+            });
+
+            // 排序选择
+            document.querySelectorAll('input[name="sort"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    const sortValue = this.value;
+                    console.log('排序方式:', sortValue);
+                    sortDropdown.classList.add('hidden');
+                    
+                    // 模拟排序效果
+                    showLoading();
+                    setTimeout(hideLoading, 1000);
+                });
+            });
+
+            // 临床试验卡片点击事件
+            document.querySelectorAll('.trial-card').forEach(card => {
+                card.addEventListener('click', function(e) {
+                    // 如果点击的是申请按钮，不触发卡片展开
+                    if (e.target.classList.contains('apply-trial-btn') || e.target.closest('.apply-trial-btn')) {
+                        return;
+                    }
+                    
+                    const trialId = this.dataset.trialId;
+                    console.log('查看试验详情:', trialId);
+                    
+                    // 这里可以展开显示详细信息，或者跳转到详情页
+                    // 目前在当前页面内展开
+                    const details = this.querySelector('.border-t:last-child');
+                    if (details) {
+                        details.style.display = details.style.display === 'none' ? 'block' : 'none';
+                    }
+                });
+            });
+
+            // 申请入组按钮点击事件
+            document.querySelectorAll('.apply-trial-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    currentTrialId = this.dataset.trialId;
+                    document.querySelector('#apply-modal').classList.remove('hidden');
+                });
+            });
+
+            // 确认申请
+            document.querySelector('#confirm-apply').addEventListener('click', function() {
+                document.querySelector('#apply-modal').classList.add('hidden');
+                
+                // 模拟申请提交
+                showLoading();
+                setTimeout(() => {
+                    hideLoading();
+                    document.querySelector('#success-modal').classList.remove('hidden');
+                }, 2000);
+            });
+
+            // 取消申请
+            document.querySelector('#cancel-apply').addEventListener('click', function() {
+                document.querySelector('#apply-modal').classList.add('hidden');
+                currentTrialId = null;
+            });
+
+            // 关闭成功弹窗
+            document.querySelector('#close-success').addEventListener('click', function() {
+                document.querySelector('#success-modal').classList.add('hidden');
+                currentTrialId = null;
+            });
+
+            // 底部导航栏点击事件
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-QNA.html';
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-SETTINGS.html';
+            });
+
+            // 加载更多
+            document.querySelector('#load-more-btn').addEventListener('click', function() {
+                console.log('加载更多临床试验');
+                this.textContent = '加载中...';
+                
+                // 模拟加载
+                setTimeout(() => {
+                    this.textContent = '加载更多试验';
+                    // 这里可以添加更多试验卡片
+                }, 1500);
+            });
+
+            // 显示加载状态
+            function showLoading() {
+                const loading = document.createElement('div');
+                loading.id = 'loading-overlay';
+                loading.className = 'fixed inset-0 z-50 flex items-center justify-center modal-overlay';
+                loading.innerHTML = `
+                    <div class="modal-content rounded-xl p-6 text-center">
+                        <div class="loading-spinner w-6 h-6 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2"></div>
+                        <p class="text-text-primary text-sm">正在处理...</p>
+                    </div>
+                `;
+                document.body.appendChild(loading);
+            }
+
+            // 隐藏加载状态
+            function hideLoading() {
+                const loading = document.querySelector('#loading-overlay');
+                if (loading) {
+                    loading.remove();
+                }
+            }
+
+            // 点击弹窗外部关闭
+            document.querySelector('#apply-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                    currentTrialId = null;
+                }
+            });
+
+            document.querySelector('#success-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.add('hidden');
+                    currentTrialId = null;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

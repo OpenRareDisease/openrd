@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 隐私设置</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .toggle-switch.active {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+        }
+        
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        
+        .toggle-switch.active::after {
+            transform: translateX(20px);
+        }
+        
+        .setting-item:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen">
+        <!-- 顶部导航栏 -->
+        <header id="header" class="glass-nav px-6 py-4">
+            <div class="flex items-center justify-between">
+                <button id="back-button" class="w-10 h-10 rounded-full bg-dark-card flex items-center justify-center">
+                    <i class="fas fa-chevron-left text-text-secondary"></i>
+                </button>
+                <h1 id="page-title" class="text-lg font-semibold text-text-primary">隐私设置</h1>
+                <div class="w-10"></div> <!-- 占位元素保持居中 -->
+            </div>
+        </header>
+
+        <!-- 页面内容 -->
+        <main id="main-content" class="px-6 py-6">
+            <!-- 数据授权设置 -->
+            <section id="data-permissions" class="mb-8">
+                <h2 id="permissions-title" class="text-base font-semibold text-text-primary mb-4">数据授权</h2>
+                
+                <!-- 临床试验数据授权 -->
+                <div id="trial-permission-item" class="setting-item glass-card rounded-lg p-4 mb-3 transition-all duration-200">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <h3 id="trial-permission-title" class="font-medium text-text-primary text-sm mb-1">临床试验数据授权</h3>
+                            <p id="trial-permission-desc" class="text-xs text-text-secondary">允许临床试验机构访问您的档案数据以评估入组资格</p>
+                        </div>
+                        <div id="trial-permission-toggle" class="toggle-switch active ml-4"></div>
+                    </div>
+                </div>
+
+                <!-- 匿名化数据捐赠 -->
+                <div id="donation-permission-item" class="setting-item glass-card rounded-lg p-4 mb-3 transition-all duration-200">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <h3 id="donation-permission-title" class="font-medium text-text-primary text-sm mb-1">匿名化数据捐赠</h3>
+                            <p id="donation-permission-desc" class="text-xs text-text-secondary">将您的匿名化数据捐赠给FSHD科研项目</p>
+                        </div>
+                        <div id="donation-permission-toggle" class="toggle-switch ml-4"></div>
+                    </div>
+                </div>
+
+                <!-- 医院数据同步 -->
+                <div id="hospital-sync-item" class="setting-item glass-card rounded-lg p-4 mb-3 transition-all duration-200">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <h3 id="hospital-sync-title" class="font-medium text-text-primary text-sm mb-1">医院数据同步</h3>
+                            <p id="hospital-sync-desc" class="text-xs text-text-secondary">允许医院HIS系统同步您的随访数据到个人档案</p>
+                        </div>
+                        <div id="hospital-sync-toggle" class="toggle-switch active ml-4"></div>
+                    </div>
+                </div>
+
+                <!-- 社区内容分享 -->
+                <div id="community-share-item" class="setting-item glass-card rounded-lg p-4 mb-3 transition-all duration-200">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <h3 id="community-share-title" class="font-medium text-text-primary text-sm mb-1">社区内容分享</h3>
+                            <p id="community-share-desc" class="text-xs text-text-secondary">允许在社区中分享您的康复经验和训练视频</p>
+                        </div>
+                        <div id="community-share-toggle" class="toggle-switch active ml-4"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 数据捐赠详情 -->
+            <section id="donation-details" class="mb-8">
+                <h2 id="donation-section-title" class="text-base font-semibold text-text-primary mb-4">数据捐赠详情</h2>
+                
+                <div id="donation-info-card" class="glass-card rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 id="donation-info-title" class="font-medium text-text-primary text-sm">了解数据捐赠</h3>
+                        <button id="donation-details-button" class="text-primary text-xs font-medium">
+                            查看详情 <i class="fas fa-chevron-right text-xs ml-1"></i>
+                        </button>
+                    </div>
+                    
+                    <div id="donation-status" class="space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">捐赠状态</span>
+                            <span id="donation-status-text" class="text-xs text-text-muted">未授权</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">上次捐赠</span>
+                            <span id="last-donation-time" class="text-xs text-text-muted">--</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-text-secondary">已捐赠数据</span>
+                            <span id="donated-data-count" class="text-xs text-text-muted">0 条</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 隐私保护说明 -->
+            <section id="privacy-notice" class="mb-8">
+                <div id="privacy-notice-card" class="glass-card rounded-lg p-4">
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                            <i class="fas fa-shield-alt text-primary text-sm"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h3 id="privacy-notice-title" class="font-medium text-text-primary text-sm mb-2">隐私保护承诺</h3>
+                            <ul id="privacy-notice-list" class="space-y-1 text-xs text-text-secondary">
+                                <li class="flex items-start space-x-2">
+                                    <span class="text-primary">•</span>
+                                    <span>采用医疗级数据加密技术，确保数据安全</span>
+                                </li>
+                                <li class="flex items-start space-x-2">
+                                    <span class="text-primary">•</span>
+                                    <span>严格遵守HIPAA、GDPR等国际隐私标准</span>
+                                </li>
+                                <li class="flex items-start space-x-2">
+                                    <span class="text-primary">•</span>
+                                    <span>区块链存证数据操作日志，确保可追溯</span>
+                                </li>
+                                <li class="flex items-start space-x-2">
+                                    <span class="text-primary">•</span>
+                                    <span>支持"最小必要"授权原则，您可随时撤销</span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 确认弹窗 -->
+    <div id="confirm-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-overlay absolute inset-0"></div>
+        <div class="relative flex items-center justify-center min-h-screen p-4">
+            <div id="modal-content" class="modal-content rounded-xl p-6 w-full max-w-sm">
+                <div class="text-center">
+                    <div id="modal-icon" class="w-16 h-16 rounded-full bg-primary bg-opacity-20 flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-info-circle text-primary text-xl"></i>
+                    </div>
+                    <h3 id="modal-title" class="text-lg font-semibold text-text-primary mb-2">确认授权</h3>
+                    <p id="modal-message" class="text-sm text-text-secondary mb-6">您确定要开启此授权吗？</p>
+                    <div class="flex space-x-3">
+                        <button id="modal-cancel" class="flex-1 py-3 px-4 bg-dark-card text-text-secondary rounded-lg font-medium">
+                            取消
+                        </button>
+                        <button id="modal-confirm" class="flex-1 py-3 px-4 bg-primary text-white rounded-lg font-medium">
+                            确认
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 成功提示 -->
+    <div id="success-toast" class="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 hidden">
+        <div class="glass-card rounded-lg px-4 py-2">
+            <div class="flex items-center space-x-2">
+                <i class="fas fa-check-circle text-green-400 text-sm"></i>
+                <span id="toast-message" class="text-sm text-text-primary">设置已更新</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 返回按钮事件
+            document.querySelector('#back-button').addEventListener('click', function() {
+                window.location.href = 'P-SETTINGS.html';
+            });
+
+            // 数据捐赠详情按钮事件
+            document.querySelector('#donation-details-button').addEventListener('click', function() {
+                window.location.href = 'P-DATA_DONATION.html';
+            });
+
+            // 开关切换事件
+            const toggles = document.querySelectorAll('.toggle-switch');
+            toggles.forEach(toggle => {
+                toggle.addEventListener('click', function() {
+                    const toggleId = this.id;
+                    const isActive = this.classList.contains('active');
+                    
+                    // 显示确认弹窗
+                    showConfirmModal(toggleId, !isActive);
+                });
+            });
+
+            // 弹窗事件
+            document.querySelector('#modal-cancel').addEventListener('click', function() {
+                hideConfirmModal();
+            });
+
+            document.querySelector('#modal-confirm').addEventListener('click', function() {
+                confirmToggle();
+            });
+
+            document.querySelector('.modal-overlay').addEventListener('click', function() {
+                hideConfirmModal();
+            });
+
+            // 当前要切换的开关信息
+            let currentToggleInfo = null;
+
+            // 显示确认弹窗
+            function showConfirmModal(toggleId, newState) {
+                const modal = document.querySelector('#confirm-modal');
+                const modalTitle = document.querySelector('#modal-title');
+                const modalMessage = document.querySelector('#modal-message');
+                const modalIcon = document.querySelector('#modal-icon i');
+                
+                currentToggleInfo = {
+                    toggleId: toggleId,
+                    newState: newState
+                };
+
+                let title, message, icon;
+                
+                switch(toggleId) {
+                    case 'trial-permission-toggle':
+                        title = newState ? '开启临床试验授权' : '关闭临床试验授权';
+                        message = newState ? 
+                            '开启后，临床试验机构将能够访问您的档案数据以评估入组资格。您可以随时在此页面关闭此授权。' : 
+                            '关闭后，临床试验机构将无法访问您的档案数据，可能影响您参与临床试验的机会。';
+                        icon = newState ? 'fas fa-check-circle' : 'fas fa-exclamation-triangle';
+                        break;
+                    case 'donation-permission-toggle':
+                        title = newState ? '开启数据捐赠' : '关闭数据捐赠';
+                        message = newState ? 
+                            '开启后，您的匿名化数据将被捐赠给FSHD科研项目，助力医学研究。我们会严格保护您的隐私。' : 
+                            '关闭后，您的数据将不再被捐赠给科研项目。之前捐赠的数据仍将用于科研。';
+                        icon = newState ? 'fas fa-heart' : 'fas fa-heart-broken';
+                        break;
+                    case 'hospital-sync-toggle':
+                        title = newState ? '开启医院数据同步' : '关闭医院数据同步';
+                        message = newState ? 
+                            '开启后，医院HIS系统将自动同步您的随访数据到个人档案，减少重复录入。' : 
+                            '关闭后，医院数据将不会自动同步，您需要手动录入随访信息。';
+                        icon = newState ? 'fas fa-sync-alt' : 'fas fa-times-circle';
+                        break;
+                    case 'community-share-toggle':
+                        title = newState ? '开启社区分享' : '关闭社区分享';
+                        message = newState ? 
+                            '开启后，您可以在社区中分享康复经验和训练视频，帮助其他患者。' : 
+                            '关闭后，您将无法在社区中发布内容，但仍可浏览他人分享。';
+                        icon = newState ? 'fas fa-share-alt' : 'fas fa-lock';
+                        break;
+                }
+
+                modalTitle.textContent = title;
+                modalMessage.textContent = message;
+                modalIcon.className = icon + ' text-primary text-xl';
+                
+                modal.classList.remove('hidden');
+            }
+
+            // 隐藏确认弹窗
+            function hideConfirmModal() {
+                document.querySelector('#confirm-modal').classList.add('hidden');
+                currentToggleInfo = null;
+            }
+
+            // 确认切换开关
+            function confirmToggle() {
+                if (!currentToggleInfo) return;
+
+                const { toggleId, newState } = currentToggleInfo;
+                const toggle = document.querySelector('#' + toggleId);
+                
+                // 切换开关状态
+                if (newState) {
+                    toggle.classList.add('active');
+                } else {
+                    toggle.classList.remove('active');
+                }
+
+                // 更新数据捐赠状态显示
+                if (toggleId === 'donation-permission-toggle') {
+                    updateDonationStatus(newState);
+                }
+
+                // 显示成功提示
+                showSuccessToast('设置已更新');
+                
+                // 隐藏弹窗
+                hideConfirmModal();
+            }
+
+            // 更新数据捐赠状态显示
+            function updateDonationStatus(isDonating) {
+                const statusText = document.querySelector('#donation-status-text');
+                const lastDonationTime = document.querySelector('#last-donation-time');
+                const donatedDataCount = document.querySelector('#donated-data-count');
+
+                if (isDonating) {
+                    statusText.textContent = '已授权';
+                    statusText.className = 'text-xs text-green-400';
+                    lastDonationTime.textContent = new Date().toLocaleDateString();
+                    donatedDataCount.textContent = '12 条';
+                } else {
+                    statusText.textContent = '未授权';
+                    statusText.className = 'text-xs text-text-muted';
+                    lastDonationTime.textContent = '--';
+                    donatedDataCount.textContent = '0 条';
+                }
+            }
+
+            // 显示成功提示
+            function showSuccessToast(message) {
+                const toast = document.querySelector('#success-toast');
+                const toastMessage = document.querySelector('#toast-message');
+                
+                toastMessage.textContent = message;
+                toast.classList.remove('hidden');
+                
+                setTimeout(() => {
+                    toast.classList.add('hidden');
+                }, 3000);
+            }
+        });
+    </script>
+</body>
+</html>

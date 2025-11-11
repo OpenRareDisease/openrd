@@ -1,0 +1,29 @@
+{
+  "name": "openrd",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "postinstall": "husky install",
+    "dev:api": "npm run dev --workspace @openrd/api",
+    "dev:mobile": "npm run start --workspace @openrd/mobile",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "npm run format --workspaces --if-present",
+    "format:write": "npm run format:write --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "husky": "^9.1.6",
+    "lint-staged": "^15.4.2",
+    "prettier": "^3.4.2"
+  },
+  "lint-staged": {
+    "apps/api/src/**/*.{ts,tsx}": [
+      "npm run lint --workspace @openrd/api -- --fix"
+    ],
+    "**/*.{ts,tsx,js,jsx,json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}

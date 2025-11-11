@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 专家咨询</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .online-indicator {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: #969FFF;
+            box-shadow: 0 0 0 2px rgba(150, 159, 255, 0.2);
+        }
+        
+        .expert-card:hover {
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+        
+        .consult-button {
+            transition: all 0.3s ease;
+        }
+        
+        .consult-button:hover {
+            transform: scale(1.05);
+        }
+        
+        .modal-overlay {
+            background: rgba(15, 15, 35, 0.8);
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部标题栏 -->
+        <header id="header" class="px-6 py-4">
+            <div class="flex items-center justify-between">
+                <button id="back-button" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                    <i class="fas fa-arrow-left text-text-secondary"></i>
+                </button>
+                <h1 id="page-title" class="text-lg font-semibold text-text-primary">专家咨询</h1>
+                <div class="w-10"></div> <!-- 占位元素保持居中 -->
+            </div>
+        </header>
+
+        <!-- 搜索和筛选区域 -->
+        <section id="search-filter-section" class="mx-6 mb-6">
+            <div class="glass-card rounded-lg p-4">
+                <!-- 搜索框 -->
+                <div id="search-container" class="mb-4">
+                    <div class="relative">
+                        <input 
+                            type="text" 
+                            id="search-input" 
+                            placeholder="搜索专家姓名、医院或科室" 
+                            class="w-full px-4 py-3 pl-10 bg-dark-card border border-dark-border rounded-lg text-text-primary placeholder-text-muted search-input"
+                        >
+                        <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-text-muted"></i>
+                    </div>
+                </div>
+                
+                <!-- 筛选标签 -->
+                <div id="filter-tags" class="flex space-x-2">
+                    <button id="filter-all" class="px-3 py-1 bg-primary bg-opacity-20 text-primary text-sm rounded-full border border-primary border-opacity-30">
+                        全部
+                    </button>
+                    <button id="filter-online" class="px-3 py-1 bg-dark-card text-text-secondary text-sm rounded-full border border-dark-border">
+                        在线
+                    </button>
+                    <button id="filter-hospital" class="px-3 py-1 bg-dark-card text-text-secondary text-sm rounded-full border border-dark-border">
+                        三甲医院
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 专家列表 -->
+        <section id="experts-section" class="mx-6 mb-6">
+            <div id="experts-list" class="space-y-4">
+                <!-- 专家卡片1 -->
+                <div id="expert-card-1" class="expert-card glass-card rounded-lg p-4" data-expert-id="expert1">
+                    <div class="flex items-start space-x-3">
+                        <div class="relative">
+                            <img id="expert-avatar-1" src="https://s.coze.cn/image/o-3sRbZCzt0/" alt="李教授头像，神经内科专家" data-category="人物" class="w-16 h-16 rounded-full object-cover">
+                            <div id="online-status-1" class="absolute -bottom-1 -right-1 w-5 h-5 bg-green-400 rounded-full border-2 border-dark online-indicator"></div>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center justify-between mb-1">
+                                <h3 id="expert-name-1" class="text-base font-semibold text-text-primary">李教授</h3>
+                                <span id="online-text-1" class="text-xs text-green-400">在线</span>
+                            </div>
+                            <p id="expert-title-1" class="text-sm text-text-secondary mb-1">主任医师 · 神经内科</p>
+                            <p id="expert-hospital-1" class="text-xs text-text-muted mb-2">北京协和医院</p>
+                            <div class="flex items-center space-x-4 mb-3">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-star text-yellow-400 text-xs"></i>
+                                    <span id="expert-rating-1" class="text-xs text-text-secondary">4.9</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-users text-text-muted text-xs"></i>
+                                    <span id="expert-patients-1" class="text-xs text-text-secondary">1000+ 患者</span>
+                                </div>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button id="text-consult-1" class="flex-1 py-2 bg-primary text-white text-sm rounded-lg consult-button">
+                                    <i class="fas fa-comment-dots mr-1"></i>图文咨询
+                                </button>
+                                <button id="phone-consult-1" class="px-4 py-2 bg-dark-card text-text-primary text-sm rounded-lg border border-dark-border consult-button">
+                                    <i class="fas fa-phone mr-1"></i>电话咨询
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 专家卡片2 -->
+                <div id="expert-card-2" class="expert-card glass-card rounded-lg p-4" data-expert-id="expert2">
+                    <div class="flex items-start space-x-3">
+                        <div class="relative">
+                            <img id="expert-avatar-2" src="https://s.coze.cn/image/KThNslHScpE/" alt="王医生头像，康复医学专家" data-category="人物" class="w-16 h-16 rounded-full object-cover">
+                            <div id="online-status-2" class="absolute -bottom-1 -right-1 w-5 h-5 bg-yellow-400 rounded-full border-2 border-dark"></div>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center justify-between mb-1">
+                                <h3 id="expert-name-2" class="text-base font-semibold text-text-primary">王医生</h3>
+                                <span id="online-text-2" class="text-xs text-yellow-400">忙碌</span>
+                            </div>
+                            <p id="expert-title-2" class="text-sm text-text-secondary mb-1">副主任医师 · 康复医学科</p>
+                            <p id="expert-hospital-2" class="text-xs text-text-muted mb-2">上海华山医院</p>
+                            <div class="flex items-center space-x-4 mb-3">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-star text-yellow-400 text-xs"></i>
+                                    <span id="expert-rating-2" class="text-xs text-text-secondary">4.8</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-users text-text-muted text-xs"></i>
+                                    <span id="expert-patients-2" class="text-xs text-text-secondary">800+ 患者</span>
+                                </div>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button id="text-consult-2" class="flex-1 py-2 bg-primary text-white text-sm rounded-lg consult-button">
+                                    <i class="fas fa-comment-dots mr-1"></i>图文咨询
+                                </button>
+                                <button id="phone-consult-2" class="px-4 py-2 bg-dark-card text-text-primary text-sm rounded-lg border border-dark-border consult-button">
+                                    <i class="fas fa-phone mr-1"></i>电话咨询
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 专家卡片3 -->
+                <div id="expert-card-3" class="expert-card glass-card rounded-lg p-4" data-expert-id="expert3">
+                    <div class="flex items-start space-x-3">
+                        <div class="relative">
+                            <img id="expert-avatar-3" src="https://s.coze.cn/image/KfU3fVhCMfc/" alt="张教授头像，神经肌肉病专家" data-category="人物" class="w-16 h-16 rounded-full object-cover">
+                            <div id="online-status-3" class="absolute -bottom-1 -right-1 w-5 h-5 bg-green-400 rounded-full border-2 border-dark online-indicator"></div>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center justify-between mb-1">
+                                <h3 id="expert-name-3" class="text-base font-semibold text-text-primary">张教授</h3>
+                                <span id="online-text-3" class="text-xs text-green-400">在线</span>
+                            </div>
+                            <p id="expert-title-3" class="text-sm text-text-secondary mb-1">主任医师 · 神经肌肉病专科</p>
+                            <p id="expert-hospital-3" class="text-xs text-text-muted mb-2">中山大学附属第一医院</p>
+                            <div class="flex items-center space-x-4 mb-3">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-star text-yellow-400 text-xs"></i>
+                                    <span id="expert-rating-3" class="text-xs text-text-secondary">4.9</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-users text-text-muted text-xs"></i>
+                                    <span id="expert-patients-3" class="text-xs text-text-secondary">1200+ 患者</span>
+                                </div>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button id="text-consult-3" class="flex-1 py-2 bg-primary text-white text-sm rounded-lg consult-button">
+                                    <i class="fas fa-comment-dots mr-1"></i>图文咨询
+                                </button>
+                                <button id="phone-consult-3" class="px-4 py-2 bg-dark-card text-text-primary text-sm rounded-lg border border-dark-border consult-button">
+                                    <i class="fas fa-phone mr-1"></i>电话咨询
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 专家卡片4 -->
+                <div id="expert-card-4" class="expert-card glass-card rounded-lg p-4" data-expert-id="expert4">
+                    <div class="flex items-start space-x-3">
+                        <div class="relative">
+                            <img id="expert-avatar-4" src="https://s.coze.cn/image/17nO7PssNKQ/" alt="刘医生头像，遗传咨询专家" data-category="人物" class="w-16 h-16 rounded-full object-cover">
+                            <div id="online-status-4" class="absolute -bottom-1 -right-1 w-5 h-5 bg-gray-400 rounded-full border-2 border-dark"></div>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center justify-between mb-1">
+                                <h3 id="expert-name-4" class="text-base font-semibold text-text-primary">刘医生</h3>
+                                <span id="online-text-4" class="text-xs text-text-muted">离线</span>
+                            </div>
+                            <p id="expert-title-4" class="text-sm text-text-secondary mb-1">副主任医师 · 遗传咨询科</p>
+                            <p id="expert-hospital-4" class="text-xs text-text-muted mb-2">四川大学华西医院</p>
+                            <div class="flex items-center space-x-4 mb-3">
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-star text-yellow-400 text-xs"></i>
+                                    <span id="expert-rating-4" class="text-xs text-text-secondary">4.7</span>
+                                </div>
+                                <div class="flex items-center space-x-1">
+                                    <i class="fas fa-users text-text-muted text-xs"></i>
+                                    <span id="expert-patients-4" class="text-xs text-text-secondary">600+ 患者</span>
+                                </div>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button id="text-consult-4" class="flex-1 py-2 bg-dark-card text-text-muted text-sm rounded-lg border border-dark-border" disabled>
+                                    <i class="fas fa-comment-dots mr-1"></i>图文咨询
+                                </button>
+                                <button id="phone-consult-4" class="px-4 py-2 bg-dark-card text-text-muted text-sm rounded-lg border border-dark-border" disabled>
+                                    <i class="fas fa-phone mr-1"></i>电话咨询
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 专家详情弹窗 -->
+    <div id="expert-detail-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-overlay absolute inset-0"></div>
+        <div class="relative flex items-end justify-center min-h-screen p-4">
+            <div id="modal-content" class="glass-card rounded-t-2xl w-full max-w-sm max-h-96 overflow-y-auto">
+                <div class="p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 id="modal-expert-name" class="text-lg font-semibold text-text-primary">专家详情</h3>
+                        <button id="close-modal" class="w-8 h-8 rounded-full bg-dark-card flex items-center justify-center">
+                            <i class="fas fa-times text-text-secondary"></i>
+                        </button>
+                    </div>
+                    
+                    <div id="modal-expert-info" class="space-y-4">
+                        <!-- 专家信息将在这里动态填充 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-lg"></i>
+            <span class="text-xs mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-question-circle text-lg"></i>
+            <span class="text-xs mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-lg"></i>
+            <span class="text-xs mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-users text-lg"></i>
+            <span class="text-xs mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-user text-lg"></i>
+            <span class="text-xs mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 专家数据
+            const expertsData = {
+                expert1: {
+                    name: "李教授",
+                    title: "主任医师 · 神经内科",
+                    hospital: "北京协和医院",
+                    rating: "4.9",
+                    patients: "1000+ 患者",
+                    online: true,
+                    busy: false,
+                    specialty: "FSHD诊断与治疗、神经肌肉疾病",
+                    experience: "20年临床经验，发表论文100余篇",
+                    availableTime: "周一至周五 8:00-17:00"
+                },
+                expert2: {
+                    name: "王医生",
+                    title: "副主任医师 · 康复医学科",
+                    hospital: "上海华山医院",
+                    rating: "4.8",
+                    patients: "800+ 患者",
+                    online: true,
+                    busy: true,
+                    specialty: "FSHD康复治疗、运动康复",
+                    experience: "15年康复治疗经验，擅长神经肌肉疾病康复",
+                    availableTime: "周二、周四、周六 9:00-16:00"
+                },
+                expert3: {
+                    name: "张教授",
+                    title: "主任医师 · 神经肌肉病专科",
+                    hospital: "中山大学附属第一医院",
+                    rating: "4.9",
+                    patients: "1200+ 患者",
+                    online: true,
+                    busy: false,
+                    specialty: "FSHD基因诊断、罕见病诊疗",
+                    experience: "25年神经肌肉病诊疗经验，国际知名专家",
+                    availableTime: "周一、周三、周五 8:30-17:30"
+                },
+                expert4: {
+                    name: "刘医生",
+                    title: "副主任医师 · 遗传咨询科",
+                    hospital: "四川大学华西医院",
+                    rating: "4.7",
+                    patients: "600+ 患者",
+                    online: false,
+                    busy: false,
+                    specialty: "FSHD遗传咨询、产前诊断",
+                    experience: "12年遗传咨询经验，专注于肌肉疾病遗传咨询",
+                    availableTime: "周一至周五 9:00-16:00"
+                }
+            };
+
+            // 返回按钮
+            document.querySelector('#back-button').addEventListener('click', function() {
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            // 搜索功能
+            document.querySelector('#search-input').addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase();
+                const expertCards = document.querySelectorAll('.expert-card');
+                
+                expertCards.forEach(card => {
+                    const expertName = card.querySelector('h3').textContent.toLowerCase();
+                    const expertTitle = card.querySelector('p').textContent.toLowerCase();
+                    const expertHospital = card.querySelectorAll('p')[1].textContent.toLowerCase();
+                    
+                    if (expertName.includes(searchTerm) || expertTitle.includes(searchTerm) || expertHospital.includes(searchTerm)) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = searchTerm === '' ? 'block' : 'none';
+                    }
+                });
+            });
+
+            // 筛选功能
+            const filterButtons = document.querySelectorAll('#filter-tags button');
+            filterButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    // 重置所有按钮样式
+                    filterButtons.forEach(btn => {
+                        btn.classList.remove('bg-primary', 'bg-opacity-20', 'text-primary', 'border-primary', 'border-opacity-30');
+                        btn.classList.add('bg-dark-card', 'text-text-secondary', 'border-dark-border');
+                    });
+                    
+                    // 设置当前按钮样式
+                    this.classList.remove('bg-dark-card', 'text-text-secondary', 'border-dark-border');
+                    this.classList.add('bg-primary', 'bg-opacity-20', 'text-primary', 'border-primary', 'border-opacity-30');
+                    
+                    // 执行筛选逻辑
+                    const filterType = this.id;
+                    const expertCards = document.querySelectorAll('.expert-card');
+                    
+                    expertCards.forEach(card => {
+                        const expertId = card.dataset.expertId;
+                        const expert = expertsData[expertId];
+                        
+                        let shouldShow = true;
+                        
+                        switch(filterType) {
+                            case 'filter-online':
+                                shouldShow = expert.online && !expert.busy;
+                                break;
+                            case 'filter-hospital':
+                                shouldShow = expert.hospital.includes('三甲') || expert.hospital.includes('协和') || expert.hospital.includes('华山') || expert.hospital.includes('华西');
+                                break;
+                            case 'filter-all':
+                            default:
+                                shouldShow = true;
+                                break;
+                        }
+                        
+                        card.style.display = shouldShow ? 'block' : 'none';
+                    });
+                });
+            });
+
+            // 专家卡片点击事件
+            const expertCards = document.querySelectorAll('.expert-card');
+            expertCards.forEach(card => {
+                card.addEventListener('click', function(e) {
+                    // 如果点击的是按钮，不触发卡片点击
+                    if (e.target.closest('button')) {
+                        return;
+                    }
+                    
+                    const expertId = this.dataset.expertId;
+                    showExpertDetail(expertId);
+                });
+            });
+
+            // 专家详情弹窗
+            function showExpertDetail(expertId) {
+                const expert = expertsData[expertId];
+                if (!expert) return;
+                
+                const modalContent = document.querySelector('#modal-expert-info');
+                modalContent.innerHTML = `
+                    <div class="flex items-center space-x-3 mb-4">
+                        <img src="https://s.coze.cn/image/U-UONN4GKBM/" alt="${expert.name}头像" data-category="人物" class="w-16 h-16 rounded-full object-cover">
+                        <div>
+                            <h4 class="text-lg font-semibold text-text-primary">${expert.name}</h4>
+                            <p class="text-sm text-text-secondary">${expert.title}</p>
+                            <p class="text-xs text-text-muted">${expert.hospital}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">擅长领域</span>
+                            <span class="text-sm text-text-primary">${expert.specialty}</span>
+                        </div>
+                        
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">临床经验</span>
+                            <span class="text-sm text-text-primary">${expert.experience}</span>
+                        </div>
+                        
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">评分</span>
+                            <div class="flex items-center space-x-1">
+                                <i class="fas fa-star text-yellow-400 text-xs"></i>
+                                <span class="text-sm text-text-primary">${expert.rating}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">服务患者</span>
+                            <span class="text-sm text-text-primary">${expert.patients}</span>
+                        </div>
+                        
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">出诊时间</span>
+                            <span class="text-sm text-text-primary">${expert.availableTime}</span>
+                        </div>
+                    </div>
+                `;
+                
+                document.querySelector('#expert-detail-modal').classList.remove('hidden');
+            }
+
+            // 关闭弹窗
+            document.querySelector('#close-modal').addEventListener('click', function() {
+                document.querySelector('#expert-detail-modal').classList.add('hidden');
+            });
+
+            // 点击弹窗背景关闭
+            document.querySelector('.modal-overlay').addEventListener('click', function() {
+                document.querySelector('#expert-detail-modal').classList.add('hidden');
+            });
+
+            // 咨询按钮事件
+            for (let i = 1; i <= 4; i++) {
+                // 图文咨询
+                document.querySelector(`#text-consult-${i}`).addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (this.disabled) return;
+                    
+                    const expertId = `expert${i}`;
+                    const expert = expertsData[expertId];
+                    if (expert.online) {
+                        alert(`正在为您连接${expert.name}进行图文咨询...`);
+                    } else {
+                        alert('专家当前不在线，请稍后再试');
+                    }
+                });
+
+                // 电话咨询
+                document.querySelector(`#phone-consult-${i}`).addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (this.disabled) return;
+                    
+                    const expertId = `expert${i}`;
+                    const expert = expertsData[expertId];
+                    if (expert.online) {
+                        alert(`正在为您连接${expert.name}进行电话咨询...`);
+                    } else {
+                        alert('专家当前不在线，请稍后再试');
+                    }
+                });
+            }
+
+            // 底部导航栏
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-QNA.html';
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-SETTINGS.html';
+            });
+        });
+    </script>
+</body>
+</html>

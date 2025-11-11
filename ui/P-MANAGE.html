@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 病程管理</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .muscle-radar {
+            background: conic-gradient(from 0deg, #969FFF 0deg 126deg, rgba(255, 255, 255, 0.1) 126deg 360deg);
+        }
+        
+        .alert-card {
+            border-left: 3px solid #fbbf24;
+        }
+        
+        .prediction-chart {
+            background: linear-gradient(135deg, rgba(150, 159, 255, 0.1), rgba(81, 71, 255, 0.1));
+        }
+        
+        .medication-safe {
+            border-left: 3px solid #10b981;
+        }
+        
+        .medication-warning {
+            border-left: 3px solid #f59e0b;
+        }
+        
+        .muscle-group {
+            transition: all 0.3s ease;
+        }
+        
+        .muscle-group:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部标题区域 -->
+        <header id="header" class="px-6 py-4">
+            <div class="flex items-center justify-between">
+                <h1 id="page-title" class="text-xl font-bold text-text-primary">病程管理</h1>
+                <button id="data-entry-btn" class="w-10 h-10 rounded-full glass-card flex items-center justify-center">
+                    <i class="fas fa-plus text-primary"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- 肌力雷达图区域 -->
+        <section id="muscle-strength-section" class="mx-6 mb-6">
+            <div id="muscle-strength-card" class="glass-card rounded-xl p-4">
+                <div id="muscle-header" class="flex items-center justify-between mb-4">
+                    <h3 id="muscle-title" class="text-base font-semibold text-text-primary">肌力评估</h3>
+                    <button id="muscle-detail-btn" class="text-primary text-sm">
+                        查看详情 <i class="fas fa-chevron-right text-xs ml-1"></i>
+                    </button>
+                </div>
+                
+                <!-- 肌力雷达图 -->
+                <div id="radar-chart" class="flex items-center justify-center mb-4">
+                    <div class="relative w-32 h-32">
+                        <div class="muscle-radar w-full h-full rounded-full flex items-center justify-center">
+                            <div class="w-20 h-20 bg-dark rounded-full flex flex-col items-center justify-center">
+                                <span class="text-xl font-bold gradient-text">4.2</span>
+                                <span class="text-xs text-text-muted">平均分</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 肌群详细数据 -->
+                <div id="muscle-groups" class="grid grid-cols-2 gap-3">
+                    <div id="deltoid-group" class="muscle-group glass-card rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-text-secondary">三角肌</span>
+                            <span class="text-sm font-semibold text-primary">3.5</span>
+                        </div>
+                        <div class="w-full bg-dark-border rounded-full h-1.5">
+                            <div class="bg-primary h-1.5 rounded-full" style="width: 70%"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="biceps-group" class="muscle-group glass-card rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-text-secondary">肱二头肌</span>
+                            <span class="text-sm font-semibold text-secondary">4.0</span>
+                        </div>
+                        <div class="w-full bg-dark-border rounded-full h-1.5">
+                            <div class="bg-secondary h-1.5 rounded-full" style="width: 80%"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="triceps-group" class="muscle-group glass-card rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-text-secondary">肱三头肌</span>
+                            <span class="text-sm font-semibold text-accent">4.5</span>
+                        </div>
+                        <div class="w-full bg-dark-border rounded-full h-1.5">
+                            <div class="bg-accent h-1.5 rounded-full" style="width: 90%"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="tibialis-group" class="muscle-group glass-card rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-text-secondary">胫骨前肌</span>
+                            <span class="text-sm font-semibold text-green-400">4.8</span>
+                        </div>
+                        <div class="w-full bg-dark-border rounded-full h-1.5">
+                            <div class="bg-green-400 h-1.5 rounded-full" style="width: 96%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 异常活动预警 -->
+        <section id="activity-alert-section" class="mx-6 mb-6">
+            <div id="activity-alert-card" class="glass-card alert-card rounded-lg p-4">
+                <div id="alert-header" class="flex items-center justify-between mb-3">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-yellow-400 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-exclamation-triangle text-yellow-400 text-sm"></i>
+                        </div>
+                        <h3 class="text-base font-semibold text-text-primary">活动预警</h3>
+                    </div>
+                    <button id="alert-detail-btn" class="text-yellow-400 text-sm">
+                        查看详情 <i class="fas fa-chevron-right text-xs ml-1"></i>
+                    </button>
+                </div>
+                
+                <div id="alert-content">
+                    <p class="text-sm text-text-secondary mb-2">本周步数较上周下降 <span class="text-yellow-400 font-semibold">32%</span></p>
+                    <p class="text-xs text-text-muted mb-3">建议：适当增加日常活动量，避免长时间久坐</p>
+                    
+                    <div id="activity-stats" class="grid grid-cols-2 gap-3">
+                        <div class="text-center">
+                            <div class="text-lg font-bold text-yellow-400">4,521</div>
+                            <div class="text-xs text-text-muted">本周步数</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-lg font-bold text-text-secondary">6,684</div>
+                            <div class="text-xs text-text-muted">上周步数</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- AI病程预测 -->
+        <section id="ai-prediction-section" class="mx-6 mb-6">
+            <div id="ai-prediction-card" class="glass-card rounded-xl p-4">
+                <div id="prediction-header" class="flex items-center justify-between mb-4">
+                    <h3 id="prediction-title" class="text-base font-semibold text-text-primary">AI病程预测</h3>
+                    <button id="prediction-detail-btn" class="text-primary text-sm">
+                        查看详情 <i class="fas fa-chevron-right text-xs ml-1"></i>
+                    </button>
+                </div>
+                
+                <div id="prediction-content" class="prediction-chart rounded-lg p-3 mb-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm text-text-secondary">3年发展趋势</span>
+                        <span class="text-sm font-semibold text-primary">低风险</span>
+                    </div>
+                    <p class="text-xs text-text-muted mb-3">基于您的基因类型和当前肌力数据，预计3年内病情进展缓慢</p>
+                    
+                    <div id="risk-levels" class="grid grid-cols-3 gap-2">
+                        <div class="text-center">
+                            <div class="text-sm font-semibold text-green-400">15%</div>
+                            <div class="text-xs text-text-muted">足下垂风险</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-sm font-semibold text-yellow-400">28%</div>
+                            <div class="text-xs text-text-muted">肌力下降</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="text-sm font-semibold text-blue-400">85%</div>
+                            <div class="text-xs text-text-muted">稳定概率</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="intervention-plan-btn" class="w-full py-2 bg-primary bg-opacity-20 text-primary rounded-lg text-sm font-medium">
+                    查看个性化干预计划
+                </button>
+            </div>
+        </section>
+
+        <!-- 用药安全管理 -->
+        <section id="medication-safety-section" class="mx-6 mb-6">
+            <div id="medication-safety-card" class="glass-card medication-safe rounded-lg p-4">
+                <div id="medication-header" class="flex items-center justify-between mb-3">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-green-400 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-shield-alt text-green-400 text-sm"></i>
+                        </div>
+                        <h3 class="text-base font-semibold text-text-primary">用药安全</h3>
+                    </div>
+                    <button id="medication-detail-btn" class="text-green-400 text-sm">
+                        查看详情 <i class="fas fa-chevron-right text-xs ml-1"></i>
+                    </button>
+                </div>
+                
+                <div id="medication-content">
+                    <p class="text-sm text-text-secondary mb-3">当前用药方案安全，肝功能指标正常</p>
+                    
+                    <div id="medication-list" class="space-y-2 mb-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">布洛芬</span>
+                            <span class="text-xs bg-green-400 bg-opacity-20 text-green-400 px-2 py-1 rounded-full">安全</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-sm text-text-secondary">维生素D</span>
+                            <span class="text-xs bg-green-400 bg-opacity-20 text-green-400 px-2 py-1 rounded-full">安全</span>
+                        </div>
+                    </div>
+                    
+                    <div id="liver-function" class="glass-card rounded-lg p-3">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm text-text-secondary">肝功能指标</span>
+                            <span class="text-sm font-semibold text-green-400">正常</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 text-xs">
+                            <div>
+                                <span class="text-text-muted">ALT:</span>
+                                <span class="text-text-primary ml-1">28 U/L</span>
+                            </div>
+                            <div>
+                                <span class="text-text-muted">AST:</span>
+                                <span class="text-text-primary ml-1">32 U/L</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-lg"></i>
+            <span class="text-xs mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-question-circle text-lg"></i>
+            <span class="text-xs mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-lg"></i>
+            <span class="text-xs mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-users text-lg"></i>
+            <span class="text-xs mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-user text-lg"></i>
+            <span class="text-xs mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 数据录入按钮点击事件
+            document.querySelector('#data-entry-btn').addEventListener('click', function() {
+                window.location.href = 'P-DATA_ENTRY.html';
+            });
+
+            // 肌力详情按钮点击事件
+            document.querySelector('#muscle-detail-btn').addEventListener('click', function() {
+                // 展开显示更多肌群数据
+                console.log('显示肌力详细数据');
+            });
+
+            // 肌群卡片点击事件
+            const muscleGroups = document.querySelectorAll('.muscle-group');
+            muscleGroups.forEach(group => {
+                group.addEventListener('click', function() {
+                    console.log('查看肌群详细信息:', this.id);
+                });
+            });
+
+            // 活动预警详情按钮点击事件
+            document.querySelector('#alert-detail-btn').addEventListener('click', function() {
+                console.log('查看活动预警详情');
+            });
+
+            // AI预测详情按钮点击事件
+            document.querySelector('#prediction-detail-btn').addEventListener('click', function() {
+                console.log('查看AI预测详情');
+            });
+
+            // 干预计划按钮点击事件
+            document.querySelector('#intervention-plan-btn').addEventListener('click', function() {
+                window.location.href = 'P-REHAB_SHARE.html';
+            });
+
+            // 用药安全详情按钮点击事件
+            document.querySelector('#medication-detail-btn').addEventListener('click', function() {
+                console.log('查看用药安全详情');
+            });
+
+            // 底部导航栏点击事件
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-QNA.html';
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-SETTINGS.html';
+            });
+        });
+    </script>
+</body>
+</html>

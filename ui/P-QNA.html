@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSHD-openrd - 智能问答</title>
+    <script src="https://unpkg.byted-static.com/coze/space_ppt_lib/1.0.3-alpha.12/lib/tailwindcss.js"></script>
+    <script src="https://unpkg.byted-static.com/fortawesome/fontawesome-free/6.7.2/js/all.min.js" data-auto-replace-svg="nest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#969FFF',
+                        secondary: '#5147FF', 
+                        accent: '#3E3987',
+                        dark: '#0F0F23',
+                        'dark-card': 'rgba(255, 255, 255, 0.05)',
+                        'dark-border': 'rgba(255, 255, 255, 0.1)',
+                        'text-primary': '#FFFFFF',
+                        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+                        'text-muted': 'rgba(255, 255, 255, 0.5)'
+                    },
+                    backdropBlur: {
+                        'xs': '2px',
+                    },
+                    boxShadow: {
+                        'glass': '0 8px 32px 0 rgba(150, 159, 255, 0.1)',
+                        'glass-inset': 'inset 0 1px 0 0 rgba(255, 255, 255, 0.05)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0F0F23 0%, #1A1A3A 50%, #0F0F23 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(150, 159, 255, 0.1);
+        }
+        
+        .glass-nav {
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #969FFF, #5147FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: #969FFF;
+            box-shadow: 0 0 0 2px rgba(150, 159, 255, 0.2);
+        }
+        
+        .knowledge-item:hover {
+            background: rgba(150, 159, 255, 0.05);
+            transform: translateY(-1px);
+            transition: all 0.3s ease;
+        }
+        
+        .resource-card:hover {
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+        
+        .question-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+        }
+        
+        .answer-panel {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        
+        .answer-panel.expanded {
+            max-height: 500px;
+        }
+    </style>
+</head>
+<body class="bg-dark text-text-primary overflow-x-hidden">
+    <!-- iOS状态栏 -->
+    <div id="status-bar" class="flex justify-between items-center px-6 py-2 text-sm text-text-primary">
+        <div class="flex items-center space-x-1">
+            <span>9:41</span>
+        </div>
+        <div class="flex items-center space-x-1">
+            <i class="fas fa-signal text-xs"></i>
+            <i class="fas fa-wifi text-xs"></i>
+            <i class="fas fa-battery-three-quarters text-xs"></i>
+        </div>
+    </div>
+
+    <!-- 主容器 -->
+    <div id="main-container" class="max-w-sm mx-auto bg-transparent min-h-screen pb-20">
+        <!-- 顶部搜索区域 -->
+        <header id="header" class="px-6 py-4">
+            <div id="search-container" class="relative">
+                <div class="flex space-x-2">
+                    <input 
+                        type="text" 
+                        id="search-input" 
+                        placeholder="请输入您的问题..." 
+                        class="flex-1 px-3 py-2 bg-dark-card border border-dark-border rounded-lg text-text-primary placeholder-text-muted search-input text-sm"
+                    >
+                    <button id="search-button" class="px-3 py-2 bg-primary rounded-lg text-white font-medium">
+                        <i class="fas fa-search text-sm"></i>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- 热门问题 -->
+        <section id="hot-questions" class="mx-6 mb-6">
+            <h3 id="hot-questions-title" class="text-sm font-semibold text-text-primary mb-2">热门问题</h3>
+            <div id="hot-questions-list" class="space-y-2">
+                <div class="question-item glass-card rounded-lg p-2 cursor-pointer" data-question="FSHD患者如何进行家庭康复训练？">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-text-primary">FSHD患者如何进行家庭康复训练？</span>
+                        <i class="fas fa-chevron-down text-text-muted text-xs transform transition-transform duration-300"></i>
+                    </div>
+                    <div class="answer-panel mt-1">
+                        <div class="text-xs text-text-secondary leading-relaxed">
+                            FSHD患者的家庭康复训练应遵循个体化原则，重点包括：<br><br>
+                            1. 肌力训练：使用弹力带进行抗阻训练，重点训练肩带肌、上臂肌和下肢肌群<br>
+                            2. 关节活动度训练：每日进行关节的全范围活动，预防关节挛缩<br>
+                            3. 呼吸训练：腹式呼吸和深呼吸练习，改善呼吸功能<br>
+                            4. 平衡训练：单腿站立、足跟走等练习，预防跌倒<br><br>
+                            建议在专业康复师指导下制定训练计划，避免过度疲劳。
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="question-item glass-card rounded-lg p-2 cursor-pointer" data-question="FSHD的遗传方式是什么？">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-text-primary">FSHD的遗传方式是什么？</span>
+                        <i class="fas fa-chevron-down text-text-muted text-xs transform transition-transform duration-300"></i>
+                    </div>
+                    <div class="answer-panel mt-1">
+                        <div class="text-xs text-text-secondary leading-relaxed">
+                            FSHD主要有两种遗传方式：<br><br>
+                            1. FSHD1型（占95%）：常染色体显性遗传，由4号染色体长臂（4q35）上的D4Z4重复序列缺失引起<br>
+                            2. FSHD2型（占5%）：常染色体显性遗传，由SMCHD1基因突变引起<br><br>
+                            患者子女有50%的概率遗传该疾病，但临床表现可能存在差异。建议进行遗传咨询和基因检测。
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="question-item glass-card rounded-lg p-2 cursor-pointer" data-question="FSHD患者可以参加哪些运动？">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-text-primary">FSHD患者可以参加哪些运动？</span>
+                        <i class="fas fa-chevron-down text-text-muted text-xs transform transition-transform duration-300"></i>
+                    </div>
+                    <div class="answer-panel mt-1">
+                        <div class="text-xs text-text-secondary leading-relaxed">
+                            FSHD患者适合的运动包括：<br><br>
+                            ✅ 推荐：游泳、水中运动、太极拳、瑜伽、散步<br>
+                            ⚠️ 谨慎：慢跑、骑自行车（需注意安全）<br>
+                            ❌ 避免：高强度力量训练、剧烈运动、举重<br><br>
+                            运动时应注意：<br>
+                            • 避免过度疲劳和肌肉疼痛<br>
+                            • 运动前后充分热身和拉伸<br>
+                            • 如有不适立即停止<br>
+                            • 最好在专业指导下进行
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 知识分类 -->
+        <section id="knowledge-categories" class="mx-6 mb-6">
+            <h3 id="knowledge-title" class="text-sm font-semibold text-text-primary mb-2">知识分类</h3>
+            <div id="knowledge-grid" class="grid grid-cols-2 gap-2">
+                <div class="knowledge-item glass-card rounded-lg p-2 cursor-pointer" data-category="分型鉴别">
+                    <div class="flex items-center space-x-2 mb-1">
+                        <div class="w-6 h-6 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-dna text-primary text-xs"></i>
+                        </div>
+                        <h4 class="font-medium text-text-primary text-xs">分型鉴别</h4>
+                    </div>
+                    <p class="text-xs text-text-muted">FSHD1型与2型的区别</p>
+                </div>
+                
+                <div class="knowledge-item glass-card rounded-lg p-2 cursor-pointer" data-category="症状管理">
+                    <div class="flex items-center space-x-2 mb-1">
+                        <div class="w-6 h-6 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-stethoscope text-secondary text-xs"></i>
+                        </div>
+                        <h4 class="font-medium text-text-primary text-xs">症状管理</h4>
+                    </div>
+                    <p class="text-xs text-text-muted">肌肉无力、疼痛处理</p>
+                </div>
+                
+                <div class="knowledge-item glass-card rounded-lg p-2 cursor-pointer" data-category="遗传咨询">
+                    <div class="flex items-center space-x-2 mb-1">
+                        <div class="w-6 h-6 rounded-full bg-accent bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-users text-accent text-xs"></i>
+                        </div>
+                        <h4 class="font-medium text-text-primary text-xs">遗传咨询</h4>
+                    </div>
+                    <p class="text-xs text-text-muted">家族遗传风险评估</p>
+                </div>
+                
+                <div class="knowledge-item glass-card rounded-lg p-2 cursor-pointer" data-category="用药指导">
+                    <div class="flex items-center space-x-2 mb-1">
+                        <div class="w-6 h-6 rounded-full bg-green-500 bg-opacity-20 flex items-center justify-center">
+                            <i class="fas fa-pills text-green-400 text-xs"></i>
+                        </div>
+                        <h4 class="font-medium text-text-primary text-xs">用药指导</h4>
+                    </div>
+                    <p class="text-xs text-text-muted">药物使用注意事项</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 地域化资源推荐 -->
+        <section id="local-resources" class="mx-6 mb-6">
+            <div class="flex items-center justify-between mb-2">
+                <h3 id="resources-title" class="text-sm font-semibold text-text-primary">附近资源</h3>
+                <button id="view-all-resources" class="text-primary text-xs">查看全部</button>
+            </div>
+            <div id="resources-list" class="space-y-2">
+                <div class="resource-card glass-card rounded-lg p-2 cursor-pointer" data-resource="华西医院FSHD诊疗中心">
+                    <div class="flex items-start space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-primary bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-hospital text-primary text-xs"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="font-medium text-text-primary text-xs mb-0.5">华西医院FSHD诊疗中心</h4>
+                            <p class="text-xs text-text-secondary mb-0.5">距离您 2.3 公里</p>
+                            <p class="text-xs text-text-muted">专业FSHD诊断与治疗</p>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs text-green-400 mb-0.5">⭐ 4.8</div>
+                            <div class="text-xs text-text-muted">三甲医院</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="resource-card glass-card rounded-lg p-2 cursor-pointer" data-resource="康复之家理疗中心">
+                    <div class="flex items-start space-x-2">
+                        <div class="w-8 h-8 rounded-full bg-secondary bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-heartbeat text-secondary text-xs"></i>
+                        </div>
+                        <div class="flex-1">
+                            <h4 class="font-medium text-text-primary text-xs mb-0.5">康复之家理疗中心</h4>
+                            <p class="text-xs text-text-secondary mb-0.5">距离您 1.8 公里</p>
+                            <p class="text-xs text-text-muted">专业康复训练指导</p>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs text-green-400 mb-0.5">⭐ 4.6</div>
+                            <div class="text-xs text-text-muted">医保定点</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 临床路径指引 -->
+        <section id="clinical-pathways" class="mx-6 mb-6">
+            <h3 id="pathways-title" class="text-sm font-semibold text-text-primary mb-2">临床路径</h3>
+            <div id="pathways-list" class="space-y-2">
+                <div class="glass-card rounded-lg p-2 cursor-pointer" data-pathway="初诊检查流程">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-6 h-6 rounded-full bg-blue-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-clipboard-list text-blue-400 text-xs"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-xs">初诊检查流程</h4>
+                                <p class="text-xs text-text-muted">标准化诊断检查项目</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+                
+                <div class="glass-card rounded-lg p-2 cursor-pointer" data-pathway="随访管理计划">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-6 h-6 rounded-full bg-purple-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-calendar-check text-purple-400 text-xs"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-xs">随访管理计划</h4>
+                                <p class="text-xs text-text-muted">定期复查与评估安排</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+                
+                <div class="glass-card rounded-lg p-2 cursor-pointer" data-pathway="康复治疗指南">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-6 h-6 rounded-full bg-orange-500 bg-opacity-20 flex items-center justify-center">
+                                <i class="fas fa-dumbbell text-orange-400 text-xs"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-medium text-text-primary text-xs">康复治疗指南</h4>
+                                <p class="text-xs text-text-muted">个性化康复训练方案</p>
+                            </div>
+                        </div>
+                        <i class="fas fa-chevron-right text-text-muted text-xs"></i>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- 底部导航栏 -->
+    <nav id="bottom-nav" class="fixed bottom-0 left-0 right-0 glass-nav flex justify-around items-center h-14 px-2 z-40">
+        <a id="nav-home" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-home text-base"></i>
+            <span class="text-xs mt-0.5">首页</span>
+        </a>
+        <a id="nav-qna" href="#" class="flex flex-col items-center p-1 text-primary">
+            <i class="fas fa-question-circle text-lg"></i>
+            <span class="text-xs mt-0.5">问答</span>
+        </a>
+        <a id="nav-archive" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-file-medical-alt text-base"></i>
+            <span class="text-xs mt-0.5">档案</span>
+        </a>
+        <a id="nav-community" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-users text-base"></i>
+            <span class="text-xs mt-0.5">社区</span>
+        </a>
+        <a id="nav-profile" href="#" class="flex flex-col items-center p-1 text-text-muted">
+            <i class="fas fa-user text-base"></i>
+            <span class="text-xs mt-0.5">我的</span>
+        </a>
+    </nav>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 搜索功能
+            document.querySelector('#search-button').addEventListener('click', function() {
+                const searchInput = document.querySelector('#search-input');
+                const question = searchInput.value.trim();
+                
+                if (question) {
+                    // 模拟智能问答处理
+                    console.log('用户提问:', question);
+                    
+                    // 显示加载状态
+                    this.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                    
+                    // 模拟API调用延迟
+                    setTimeout(() => {
+                        this.innerHTML = '<i class="fas fa-search"></i>';
+                        
+                        // 模拟回答
+                        const answer = `
+                            <div class="glass-card rounded-lg p-3 mb-3">
+                                <div class="flex items-start space-x-2">
+                                    <div class="w-6 h-6 rounded-full bg-primary bg-opacity-20 flex items-center justify-center flex-shrink-0">
+                                        <i class="fas fa-robot text-primary text-xs"></i>
+                                    </div>
+                                    <div class="flex-1">
+                                        <h4 class="font-medium text-text-primary text-xs mb-1">智能回答</h4>
+                                        <p class="text-xs text-text-secondary leading-relaxed">
+                                            感谢您的问题："${question}"<br><br>
+                                            这是一个很好的问题。根据FSHD专业知识库，建议您：<br>
+                                            1. 咨询专业医生获取个性化建议<br>
+                                            2. 参考相关的临床路径和指南<br>
+                                            3. 可以在患者社区中寻求其他患者的经验分享
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        
+                        // 在热门问题前插入回答
+                        const hotQuestionsSection = document.querySelector('#hot-questions');
+                        hotQuestionsSection.insertAdjacentHTML('beforebegin', answer);
+                        
+                        // 清空搜索框
+                        searchInput.value = '';
+                    }, 1500);
+                }
+            });
+
+            // 搜索框回车事件
+            document.querySelector('#search-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    document.querySelector('#search-button').click();
+                }
+            });
+
+            // 热门问题展开/收起
+            document.querySelectorAll('.question-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const answerPanel = this.querySelector('.answer-panel');
+                    const chevron = this.querySelector('.fa-chevron-down');
+                    
+                    if (answerPanel.classList.contains('expanded')) {
+                        answerPanel.classList.remove('expanded');
+                        chevron.style.transform = 'rotate(0deg)';
+                    } else {
+                        // 先收起所有其他问题
+                        document.querySelectorAll('.answer-panel').forEach(panel => {
+                            panel.classList.remove('expanded');
+                        });
+                        document.querySelectorAll('.fa-chevron-down').forEach(c => {
+                            c.style.transform = 'rotate(0deg)';
+                        });
+                        
+                        // 展开当前问题
+                        answerPanel.classList.add('expanded');
+                        chevron.style.transform = 'rotate(180deg)';
+                    }
+                });
+            });
+
+            // 知识分类点击
+            document.querySelectorAll('.knowledge-item').forEach(item => {
+                item.addEventListener('click', function() {
+                    const category = this.dataset.category;
+                    console.log('点击知识分类:', category);
+                    
+                    // 模拟跳转到知识库详情（当前页内展开）
+                    alert(`正在加载"${category}"相关知识...`);
+                });
+            });
+
+            // 地域化资源点击
+            document.querySelectorAll('.resource-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    const resource = this.dataset.resource;
+                    console.log('点击资源:', resource);
+                    
+                    // 跳转到医疗资源地图页
+                    window.location.href = 'P-RESOURCE_MAP.html';
+                });
+            });
+
+            // 查看全部资源
+            document.querySelector('#view-all-resources').addEventListener('click', function() {
+                window.location.href = 'P-RESOURCE_MAP.html';
+            });
+
+            // 临床路径点击
+            document.querySelectorAll('#pathways-list .glass-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    const pathway = this.dataset.pathway;
+                    console.log('点击临床路径:', pathway);
+                    
+                    // 模拟展开详情（当前页内展开）
+                    alert(`正在加载"${pathway}"详细内容...`);
+                });
+            });
+
+            // 底部导航栏
+            document.querySelector('#nav-home').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-HOME.html';
+            });
+
+            document.querySelector('#nav-qna').addEventListener('click', function(e) {
+                e.preventDefault();
+                // 已在问答页面，无需操作
+            });
+
+            document.querySelector('#nav-archive').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-ARCHIVE.html';
+            });
+
+            document.querySelector('#nav-community').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-COMMUNITY.html';
+            });
+
+            document.querySelector('#nav-profile').addEventListener('click', function(e) {
+                e.preventDefault();
+                window.location.href = 'P-SETTINGS.html';
+            });
+        });
+    </script>
+</body>
+</html>
