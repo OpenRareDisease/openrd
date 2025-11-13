@@ -1,0 +1,48 @@
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 中间件
+app.use(cors());
+app.use(express.json());
+
+// 健康检查路由
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Medical Chat API is running!',
+    timestamp: new Date().toISOString(),
+    service: 'medical-chat-api',
+    version: '1.0.0',
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'medical-chat-api',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Welcome to Medical Chat API',
+    endpoints: {
+      health: '/health',
+      apiHealth: '/api/health',
+      chat: '/api/chat (POST)',
+    },
+  });
+});
+
+// 启动服务器
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Medical Chat API Server is running!`);
+  console.log(`📍 Local: http://localhost:${PORT}`);
+  console.log(`📊 Health: http://localhost:${PORT}/health`);
+});
