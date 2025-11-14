@@ -87,3 +87,31 @@ export const addPatientMeasurement = (payload: Record<string, unknown>) =>
     method: 'POST',
     body: JSON.stringify(payload),
   });
+
+export interface AuthResponse {
+  user: {
+    id: string;
+    phoneNumber: string;
+    email: string | null;
+    role: string;
+    createdAt: string;
+  };
+  token: string;
+}
+
+export const login = (payload: { phoneNumber?: string; email?: string; password: string }) =>
+  apiRequest<AuthResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const register = (payload: {
+  phoneNumber: string;
+  password: string;
+  role?: string;
+  email?: string;
+}) =>
+  apiRequest<AuthResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
