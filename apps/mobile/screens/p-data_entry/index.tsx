@@ -1,13 +1,21 @@
-
-
 import React, { useState, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, Alert, Modal, ActivityIndicator, } from 'react-native';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+  Alert,
+  Modal,
+  ActivityIndicator,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
 import styles from './styles';
+import { ApiError, addPatientMeasurement, upsertPatientProfile } from '../../lib/api';
 
 interface UploadStatus {
   mri: '未上传' | '上传中...' | '已上传';
@@ -22,7 +30,9 @@ interface MuscleStrengthData {
 
 const DataEntryScreen = () => {
   const router = useRouter();
-  
+  const [fullName, setFullName] = useState('');
+  const [diagnosisStage, setDiagnosisStage] = useState('');
+
   // 上传状态
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
     mri: '未上传',
@@ -62,7 +72,7 @@ const DataEntryScreen = () => {
   };
 
   const handleMuscleGroupSelect = (group: string) => {
-    setMuscleStrength(prev => ({
+    setMuscleStrength((prev) => ({
       ...prev,
       group,
       value: 0,
@@ -70,7 +80,7 @@ const DataEntryScreen = () => {
   };
 
   const handleStrengthValueChange = (value: number) => {
-    setMuscleStrength(prev => ({
+    setMuscleStrength((prev) => ({
       ...prev,
       value: Math.round(value),
     }));
@@ -88,7 +98,7 @@ const DataEntryScreen = () => {
     setIsTimerRunning(true);
     setTimerSeconds(0);
     timerInterval.current = setInterval(() => {
-      setTimerSeconds(prev => prev + 1);
+      setTimerSeconds((prev) => prev + 1);
     }, 1000);
   };
 
@@ -119,7 +129,9 @@ const DataEntryScreen = () => {
     // 模拟语音识别
     setTimeout(() => {
       if (isRecording) {
-        setActivityText('今天上午进行了30分钟的康复训练，包括肩部和手臂的力量练习。下午散步了1小时，感觉体力比昨天有所提升。');
+        setActivityText(
+          '今天上午进行了30分钟的康复训练，包括肩部和手臂的力量练习。下午散步了1小时，感觉体力比昨天有所提升。',
+        );
         stopVoiceRecording();
       }
     }, 3000);
@@ -139,7 +151,7 @@ const DataEntryScreen = () => {
       }
 
       // 显示上传中状态
-      setUploadStatus(prev => ({
+      setUploadStatus((prev) => ({
         ...prev,
         [type]: '上传中...',
       }));
@@ -155,21 +167,21 @@ const DataEntryScreen = () => {
       if (!result.canceled) {
         // 模拟上传过程
         setTimeout(() => {
-          setUploadStatus(prev => ({
+          setUploadStatus((prev) => ({
             ...prev,
             [type]: '已上传',
           }));
         }, 2000);
       } else {
         // 恢复原状态
-        setUploadStatus(prev => ({
+        setUploadStatus((prev) => ({
           ...prev,
           [type]: '未上传',
         }));
       }
     } catch (error) {
       console.error('文件上传失败:', error);
-      setUploadStatus(prev => ({
+      setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
@@ -187,7 +199,7 @@ const DataEntryScreen = () => {
       }
 
       // 显示上传中状态
-      setUploadStatus(prev => ({
+      setUploadStatus((prev) => ({
         ...prev,
         [type]: '上传中...',
       }));
@@ -202,21 +214,21 @@ const DataEntryScreen = () => {
       if (!result.canceled) {
         // 模拟上传过程
         setTimeout(() => {
-          setUploadStatus(prev => ({
+          setUploadStatus((prev) => ({
             ...prev,
             [type]: '已上传',
           }));
         }, 2000);
       } else {
         // 恢复原状态
-        setUploadStatus(prev => ({
+        setUploadStatus((prev) => ({
           ...prev,
           [type]: '未上传',
         }));
       }
     } catch (error) {
       console.error('拍照失败:', error);
-      setUploadStatus(prev => ({
+      setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
@@ -225,23 +237,29 @@ const DataEntryScreen = () => {
   };
 
   const handleSubmit = async () => {
+    if (!fullName.trim()) {
+      Alert.alert('提示', '请先填写姓名');
+      return;
+    }
+
     try {
       setIsLoading(true);
 
-      // 收集表单数据
-      const formData = {
-        mriReport: uploadStatus.mri === '已上传',
-        geneticReport: uploadStatus.genetic === '已上传',
-        bloodReport: uploadStatus.blood === '已上传',
-        muscleStrength: muscleStrength.group ? muscleStrength : null,
-        stairTestTime: timerSeconds > 0 ? timerSeconds : null,
-        dailyActivity: activityText.trim(),
+      const payload = {
+        fullName: fullName.trim(),
+        diagnosisStage: diagnosisStage.trim() || undefined,
+        notes: activityText.trim() || undefined,
       };
 
-      console.log('提交的数据:', formData);
+      await upsertPatientProfile(payload);
 
-      // 模拟提交过程
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (muscleStrength.group) {
+        await addPatientMeasurement({
+          muscleGroup: muscleStrength.group,
+          strengthScore: muscleStrength.value,
+          recordedAt: new Date().toISOString(),
+        });
+      }
 
       Alert.alert('提交成功', '数据已成功录入！', [
         {
@@ -255,7 +273,8 @@ const DataEntryScreen = () => {
       ]);
     } catch (error) {
       console.error('提交失败:', error);
-      Alert.alert('提交失败', '数据提交过程中出现错误');
+      const message = error instanceof ApiError ? error.message : '数据提交过程中出现错误';
+      Alert.alert('提交失败', message);
     } finally {
       setIsLoading(false);
     }
@@ -263,7 +282,7 @@ const DataEntryScreen = () => {
 
   const getMuscleGroupName = (group: string | null): string => {
     if (!group) return '请选择肌群';
-    const muscleGroup = muscleGroups.find(mg => mg.id === group);
+    const muscleGroup = muscleGroups.find((mg) => mg.id === group);
     return muscleGroup ? muscleGroup.name : '请选择肌群';
   };
 
@@ -290,6 +309,32 @@ const DataEntryScreen = () => {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        {/* 基础信息 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>基础信息</Text>
+          <View style={styles.basicInfoCard}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>姓名 *</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="请输入姓名"
+                placeholderTextColor="#9CA3AF"
+                value={fullName}
+                onChangeText={setFullName}
+              />
+            </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>诊断阶段</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="如：Stage 1"
+                placeholderTextColor="#9CA3AF"
+                value={diagnosisStage}
+                onChangeText={setDiagnosisStage}
+              />
+            </View>
+          </View>
+        </View>
         {/* 医疗报告上传 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>医疗报告</Text>
@@ -367,7 +412,7 @@ const DataEntryScreen = () => {
 
           {/* 肌群选择 */}
           <View style={styles.muscleGroupGrid}>
-            {muscleGroups.map(group => (
+            {muscleGroups.map((group) => (
               <TouchableOpacity
                 key={group.id}
                 style={[
@@ -376,7 +421,12 @@ const DataEntryScreen = () => {
                 ]}
                 onPress={() => handleMuscleGroupSelect(group.id)}
               >
-                <FontAwesome6 name={group.icon} size={16} color={group.color} style={styles.muscleGroupIcon} />
+                <FontAwesome6
+                  name={group.icon}
+                  size={16}
+                  color={group.color}
+                  style={styles.muscleGroupIcon}
+                />
                 <Text style={styles.muscleGroupName}>{group.name}</Text>
               </TouchableOpacity>
             ))}
@@ -405,7 +455,7 @@ const DataEntryScreen = () => {
 
             {/* 肌力等级说明 */}
             <View style={styles.strengthLabels}>
-              {[0, 1, 2, 3, 4, 5].map(level => (
+              {[0, 1, 2, 3, 4, 5].map((level) => (
                 <Text key={level} style={styles.strengthLabel}>
                   {level}级
                 </Text>
@@ -432,16 +482,12 @@ const DataEntryScreen = () => {
             <Text style={styles.timerDisplay}>{formatTime(timerSeconds)}</Text>
 
             <TouchableOpacity
-              style={[
-                styles.timerButton,
-                isTimerRunning && styles.timerButtonActive,
-              ]}
+              style={[styles.timerButton, isTimerRunning && styles.timerButtonActive]}
               onPress={handleTimerToggle}
             >
-              <Text style={[
-                styles.timerButtonText,
-                isTimerRunning && styles.timerButtonTextActive,
-              ]}>
+              <Text
+                style={[styles.timerButtonText, isTimerRunning && styles.timerButtonTextActive]}
+              >
                 {isTimerRunning ? '停止计时' : timerSeconds > 0 ? '重新计时' : '开始计时'}
               </Text>
             </TouchableOpacity>
@@ -456,10 +502,7 @@ const DataEntryScreen = () => {
             <View style={styles.activityHeader}>
               <Text style={styles.activityTitle}>活动记录</Text>
               <TouchableOpacity
-                style={[
-                  styles.voiceButton,
-                  isRecording && styles.voiceButtonActive,
-                ]}
+                style={[styles.voiceButton, isRecording && styles.voiceButtonActive]}
                 onPress={handleVoiceToggle}
               >
                 <FontAwesome6
@@ -498,11 +541,7 @@ const DataEntryScreen = () => {
       </ScrollView>
 
       {/* 加载遮罩 */}
-      <Modal
-        visible={isLoading}
-        transparent
-        animationType="fade"
-      >
+      <Modal visible={isLoading} transparent animationType="fade">
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color="#969FFF" style={styles.loadingSpinner} />
@@ -515,4 +554,3 @@ const DataEntryScreen = () => {
 };
 
 export default DataEntryScreen;
-
