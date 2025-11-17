@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -330,5 +328,149 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.5)',
   },
-});
 
+  /* ===================== AI 聊天区域样式 ===================== */
+  aiSection: {
+    paddingHorizontal: 24,
+    marginBottom: 24,
+  },
+  aiHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  aiTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  aiToggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(150, 159, 255, 0.12)',
+  },
+  aiToggleText: {
+    fontSize: 12,
+    color: '#969FFF',
+  },
+  aiChatContainer: {
+    marginTop: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#969FFF',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.15,
+        shadowRadius: 32,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
+  },
+  aiMessagesList: {
+    maxHeight: 260,
+    marginBottom: 8,
+  },
+  aiWelcome: {
+    padding: 8,
+  },
+  aiWelcomeText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    lineHeight: 18,
+  },
+  aiMessageContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+    gap: 8,
+  },
+  aiUserMessage: {
+    alignSelf: 'flex-end',
+  },
+  aiAssistantMessage: {
+    alignSelf: 'flex-start',
+  },
+  aiAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aiUserAvatar: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  aiAssistantAvatar: {
+    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+  },
+  aiAvatarText: {
+    fontSize: 14,
+  },
+  aiMessageBubble: {
+    flex: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  aiUserBubble: {
+    backgroundColor: 'rgba(150, 159, 255, 0.3)',
+  },
+  aiAssistantBubble: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  aiMessageText: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  aiUserText: {
+    color: '#FFFFFF',
+  },
+  aiAssistantText: {
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  aiTypingText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontStyle: 'italic',
+  },
+  aiInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  aiTextInput: {
+    flex: 1,
+    maxHeight: 100,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    color: '#FFFFFF',
+    fontSize: 12,
+  },
+  aiSendButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#969FFF',
+  },
+  aiSendButtonDisabled: {
+    opacity: 0.4,
+  },
+});
