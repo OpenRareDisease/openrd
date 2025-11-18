@@ -220,7 +220,8 @@ const LoginRegisterScreen: React.FC = () => {
       showModal('success', '登录成功', `欢迎回来，${response.user.phoneNumber}`);
       router.replace('/p-home');
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : '登录失败，请重试';
+      const message =
+        error instanceof ApiError && error.status === 401 ? '用户名或密码错误' : '登录失败，请重试';
       showModal('error', '错误', message);
     } finally {
       setIsLoading(false);
