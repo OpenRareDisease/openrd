@@ -1,12 +1,11 @@
-
-
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { ApiError, getMyPatientProfile } from '../../lib/api';
 
 interface TimelineEvent {
   id: string;
@@ -26,49 +25,39 @@ interface AlertItem {
   actionText?: string;
 }
 
+interface PatientMeasurement {
+  id: string;
+  muscleGroup: string;
+  strengthScore: number;
+  recordedAt: string;
+}
+
+interface PatientProfile {
+  id: string;
+  fullName: string | null;
+  diagnosisStage: string | null;
+  measurements: PatientMeasurement[];
+  updatedAt: string;
+}
+
 const ArchiveScreen = () => {
   const router = useRouter();
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const timelineEvents: TimelineEvent[] = [
-    {
-      id: '1',
-      title: 'MRI影像分析',
-      date: '2024-01-15',
-      description: '前锯肌脂肪化等级：2级',
-      status: 'warning',
-      statusText: '建议关注'
-    },
-    {
-      id: '2',
-      title: '肌力评估',
-      date: '2024-01-10',
-      description: '',
-      status: 'stable',
-      statusText: '整体稳定',
-      details: {
-        '三角肌': '3.5',
-        '肱二头肌': '4.0', 
-        '股四头肌': '4.2'
-      }
-    },
-    {
-      id: '3',
-      title: '血检报告',
-      date: '2024-01-05',
-      description: '肝功能：正常 | 肌酸激酶：轻度升高',
-      status: 'info',
-      statusText: '定期复查'
-    },
-    {
-      id: '4',
-      title: '楼梯测试',
-      date: '2024-01-01',
-      description: '完成时间：12秒 | 较上次提升1秒',
-      status: 'stable',
-      statusText: '表现良好'
-    }
-  ];
+  const timelineEvents: TimelineEvent[] = profile
+    ? profile.measurements.map((item) => ({
+        id: item.id,
+        title: `${item.muscleGroup} 肌力评估`,
+        date: new Date(item.recordedAt).toLocaleDateString(),
+        description: `肌力得分：${item.strengthScore}`,
+        status: item.strengthScore >= 4 ? 'stable' : item.strengthScore >= 3 ? 'info' : 'warning',
+        statusText:
+          item.strengthScore >= 4 ? '表现良好' : item.strengthScore >= 3 ? '建议关注' : '需要干预',
+      }))
+    : [];
 
   const alertItems: AlertItem[] = [
     {
@@ -76,21 +65,46 @@ const ArchiveScreen = () => {
       type: 'warning',
       title: '肌力下降预警',
       description: '三角肌肌力从4.0降至3.5，建议加强针对性训练',
-      actionText: '查看干预计划 →'
+      actionText: '查看干预计划 →',
     },
     {
       id: '2',
       type: 'info',
       title: '定期复查提醒',
-      description: '建议3个月后进行MRI复查'
+      description: '建议3个月后进行MRI复查',
     },
     {
       id: '3',
       type: 'success',
       title: '康复训练坚持良好',
-      description: '本周已完成80%的训练计划'
-    }
+      description: '本周已完成80%的训练计划',
+    },
   ];
+
+  const fetchProfile = async () => {
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+      const data = await getMyPatientProfile();
+      setProfile({
+        id: data.id,
+        fullName: data.fullName,
+        diagnosisStage: data.diagnosisStage,
+        measurements: data.measurements ?? [],
+        updatedAt: data.updatedAt,
+      });
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '无法获取档案数据';
+      setErrorMessage(message);
+      setProfile(null);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProfile();
+  }, []);
 
   const handleClinicalPassportPress = () => {
     router.push('/p-clinical_passport');
@@ -165,17 +179,17 @@ const ArchiveScreen = () => {
             />
           )}
         </View>
-        
+
         <View style={styles.eventContent}>
           <View style={styles.eventHeader}>
             <Text style={styles.eventTitle}>{event.title}</Text>
             <Text style={styles.eventDate}>{event.date}</Text>
           </View>
-          
+
           {event.description ? (
             <Text style={styles.eventDescription}>{event.description}</Text>
           ) : null}
-          
+
           {event.details && (
             <View style={styles.eventDetails}>
               {Object.entries(event.details).map(([muscle, strength]) => (
@@ -186,7 +200,7 @@ const ArchiveScreen = () => {
               ))}
             </View>
           )}
-          
+
           <View style={styles.eventStatus}>
             <View style={[styles.statusDot, { backgroundColor: getStatusColor(event.status) }]} />
             <Text style={[styles.statusText, { color: getStatusColor(event.status) }]}>
@@ -198,18 +212,87 @@ const ArchiveScreen = () => {
     );
   };
 
+  const renderContent = () => {
+    if (isLoading) {
+      return (
+        <View style={styles.stateContainer}>
+          <ActivityIndicator size="large" color="#969FFF" />
+          <Text style={styles.stateText}>正在加载档案数据...</Text>
+        </View>
+      );
+    }
+
+    if (errorMessage) {
+      return (
+        <View style={styles.stateContainer}>
+          <Text style={styles.stateText}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={fetchProfile}>
+            <Text style={styles.retryButtonText}>重试</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    if (!profile) {
+      return (
+        <View style={styles.stateContainer}>
+          <Text style={styles.stateText}>还没有档案数据，快去录入吧！</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={handleDataEntryPress}>
+            <Text style={styles.retryButtonText}>去录入</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <>
+        <View style={styles.profileCard}>
+          <Text style={styles.profileName}>{profile.fullName ?? '未填写姓名'}</Text>
+          <Text style={styles.profileMeta}>
+            诊断阶段：{profile.diagnosisStage ?? '未填写'} · 最近更新：
+            {new Date(profile.updatedAt).toLocaleDateString()}
+          </Text>
+          <TouchableOpacity style={styles.editButton} onPress={handleDataEntryPress}>
+            <Text style={styles.editButtonText}>更新档案</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>最近肌力测量</Text>
+          {profile.measurements.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>暂无肌力记录，立即去录入吧。</Text>
+            </View>
+          ) : (
+            profile.measurements.slice(0, 3).map((item) => (
+              <View key={item.id} style={styles.measurementCard}>
+                <View>
+                  <Text style={styles.measurementMuscle}>{item.muscleGroup}</Text>
+                  <Text style={styles.measurementDate}>
+                    {new Date(item.recordedAt).toLocaleString()}
+                  </Text>
+                </View>
+                <Text style={styles.measurementScore}>{item.strengthScore}</Text>
+              </View>
+            ))
+          )}
+        </View>
+      </>
+    );
+  };
+
   const renderAlertItem = (item: AlertItem, index: number) => {
     const isMainAlert = index === 0;
-    
+
     if (isMainAlert) {
       return (
         <View key={item.id} style={styles.mainAlertCard}>
           <View style={styles.alertHeader}>
             <View style={styles.alertIconContainer}>
-              <FontAwesome6 
-                name={getStatusIcon(item.type)} 
-                size={12} 
-                color={getStatusColor(item.type)} 
+              <FontAwesome6
+                name={getStatusIcon(item.type)}
+                size={12}
+                color={getStatusColor(item.type)}
               />
             </View>
             <View style={styles.alertContent}>
@@ -234,13 +317,21 @@ const ArchiveScreen = () => {
     }
 
     return (
-      <View key={item.id} style={[styles.secondaryAlertCard, { borderLeftColor: getStatusColor(item.type) }]}>
+      <View
+        key={item.id}
+        style={[styles.secondaryAlertCard, { borderLeftColor: getStatusColor(item.type) }]}
+      >
         <View style={styles.secondaryAlertContent}>
-          <View style={[styles.secondaryAlertIcon, { backgroundColor: `${getStatusColor(item.type)}20` }]}>
-            <FontAwesome6 
-              name={getStatusIcon(item.type)} 
-              size={10} 
-              color={getStatusColor(item.type)} 
+          <View
+            style={[
+              styles.secondaryAlertIcon,
+              { backgroundColor: `${getStatusColor(item.type)}20` },
+            ]}
+          >
+            <FontAwesome6
+              name={getStatusIcon(item.type)}
+              size={10}
+              color={getStatusColor(item.type)}
             />
           </View>
           <View style={styles.secondaryAlertText}>
@@ -260,7 +351,7 @@ const ArchiveScreen = () => {
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
@@ -269,7 +360,7 @@ const ArchiveScreen = () => {
           <View style={styles.header}>
             <Text style={styles.pageTitle}>动态档案</Text>
             <View style={styles.headerActions}>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.clinicalPassportButton}
                 onPress={handleClinicalPassportPress}
                 activeOpacity={0.7}
@@ -277,8 +368,8 @@ const ArchiveScreen = () => {
                 <FontAwesome6 name="id-card" size={12} color="#969FFF" />
                 <Text style={styles.clinicalPassportText}>临床护照</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity 
+
+              <TouchableOpacity
                 style={styles.dataEntryButton}
                 onPress={handleDataEntryPress}
                 activeOpacity={0.7}
@@ -288,6 +379,8 @@ const ArchiveScreen = () => {
               </TouchableOpacity>
             </View>
           </View>
+
+          {renderContent()}
 
           {/* FSHD临床护照概览卡片 */}
           <View style={styles.passportSection}>
@@ -301,7 +394,7 @@ const ArchiveScreen = () => {
                 <Text style={styles.passportTitle}>FSHD临床护照</Text>
                 <Text style={styles.passportId}>ID: FSHD-2024-001</Text>
               </View>
-              
+
               <View style={styles.passportGrid}>
                 <View style={styles.passportItem}>
                   <Text style={styles.passportLabel}>基因类型</Text>
@@ -334,16 +427,22 @@ const ArchiveScreen = () => {
                 </View>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.timelineContainer}>
-              {timelineEvents.map((event, index) => renderTimelineEvent(event, index))}
+              {timelineEvents.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyText}>暂无测量记录</Text>
+                </View>
+              ) : (
+                timelineEvents.map((event, index) => renderTimelineEvent(event, index))
+              )}
             </View>
           </View>
 
           {/* 风险预警看板 */}
           <View style={styles.riskAlertSection}>
             <Text style={styles.riskAlertTitle}>风险预警</Text>
-            
+
             <View style={styles.alertsContainer}>
               {alertItems.map((item, index) => renderAlertItem(item, index))}
             </View>
@@ -355,4 +454,3 @@ const ArchiveScreen = () => {
 };
 
 export default ArchiveScreen;
-
