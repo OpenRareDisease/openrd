@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const TOKEN_KEY = 'openrd.authToken';
+export const AUTH_TOKEN_STORAGE_KEY = 'openrd.authToken';
+export const AUTH_USER_STORAGE_KEY = 'openrd.authUser';
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 export class ApiError extends Error {
@@ -25,14 +26,14 @@ const buildHeaders = async (headers?: HeadersInit) => {
 
 export const setAuthToken = async (token: string | null) => {
   if (token) {
-    await AsyncStorage.setItem(TOKEN_KEY, token);
+    await AsyncStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
   } else {
-    await AsyncStorage.removeItem(TOKEN_KEY);
+    await AsyncStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
   }
 };
 
 export const getAuthToken = async () => {
-  return AsyncStorage.getItem(TOKEN_KEY);
+  return AsyncStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 };
 
 export const apiRequest = async <T = unknown>(
