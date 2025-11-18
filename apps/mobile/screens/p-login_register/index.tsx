@@ -21,7 +21,8 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, register, setAuthToken } from '../../lib/api';
+import { ApiError, login, register } from '../../lib/api';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface LoginFormData {
   phone: string;
@@ -45,6 +46,7 @@ interface ModalState {
 
 const LoginRegisterScreen: React.FC = () => {
   const router = useRouter();
+  const { setSession } = useAuth();
 
   // 表单状态
   const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
@@ -214,7 +216,7 @@ const LoginRegisterScreen: React.FC = () => {
         password: loginForm.password,
       });
 
-      await setAuthToken(response.token);
+      await setSession(response);
       showModal('success', '登录成功', `欢迎回来，${response.user.phoneNumber}`);
       router.replace('/p-home');
     } catch (error) {
@@ -266,7 +268,7 @@ const LoginRegisterScreen: React.FC = () => {
         role: 'patient',
       });
 
-      await setAuthToken(response.token);
+      await setSession(response);
       showModal('success', '注册成功', '账户已创建并自动登录');
       router.replace('/p-home');
     } catch (error) {
