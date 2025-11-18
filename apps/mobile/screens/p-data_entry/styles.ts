@@ -90,6 +90,31 @@ export default StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
   },
+  stageOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  stageOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  stageOptionActive: {
+    borderColor: '#969FFF',
+    backgroundColor: 'rgba(150, 159, 255, 0.15)',
+  },
+  stageOptionText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+  },
+  stageOptionTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
   uploadCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,

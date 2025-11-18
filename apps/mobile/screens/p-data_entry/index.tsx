@@ -28,6 +28,8 @@ interface MuscleStrengthData {
   value: number;
 }
 
+const diagnosisOptions = ['Stage 0', 'Stage 1', 'Stage 2', 'Stage 3', 'Stage 4'];
+
 const DataEntryScreen = () => {
   const router = useRouter();
   const [fullName, setFullName] = useState('');
@@ -45,6 +47,7 @@ const DataEntryScreen = () => {
     group: null,
     value: 0,
   });
+  const [muscleStrengthMap, setMuscleStrengthMap] = useState<Record<string, number>>({});
 
   // 计时器状态
   const [isTimerRunning, setIsTimerRunning] = useState(false);
@@ -72,18 +75,29 @@ const DataEntryScreen = () => {
   };
 
   const handleMuscleGroupSelect = (group: string) => {
-    setMuscleStrength((prev) => ({
-      ...prev,
+    setMuscleStrength({
       group,
-      value: 0,
-    }));
+      value: muscleStrengthMap[group] ?? 0,
+    });
   };
 
   const handleStrengthValueChange = (value: number) => {
-    setMuscleStrength((prev) => ({
-      ...prev,
-      value: Math.round(value),
-    }));
+    setMuscleStrength((prev) => {
+      const rounded = Math.round(value);
+      if (!prev.group) {
+        return { ...prev, value: rounded };
+      }
+
+      setMuscleStrengthMap((map) => ({
+        ...map,
+        [prev.group as string]: rounded,
+      }));
+
+      return {
+        ...prev,
+        value: rounded,
+      };
+    });
   };
 
   const handleTimerToggle = () => {
@@ -247,16 +261,18 @@ const DataEntryScreen = () => {
 
       const payload = {
         fullName: fullName.trim(),
-        diagnosisStage: diagnosisStage.trim() || undefined,
+        diagnosisStage: diagnosisStage || undefined,
         notes: activityText.trim() || undefined,
       };
 
       await upsertPatientProfile(payload);
 
       if (muscleStrength.group) {
+        const strengthScore = muscleStrengthMap[muscleStrength.group] ?? muscleStrength.value ?? 0;
+
         await addPatientMeasurement({
           muscleGroup: muscleStrength.group,
-          strengthScore: muscleStrength.value,
+          strengthScore,
           recordedAt: new Date().toISOString(),
         });
       }
@@ -325,13 +341,25 @@ const DataEntryScreen = () => {
             </View>
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>诊断阶段</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="如：Stage 1"
-                placeholderTextColor="#9CA3AF"
-                value={diagnosisStage}
-                onChangeText={setDiagnosisStage}
-              />
+              <View style={styles.stageOptions}>
+                {diagnosisOptions.map((option) => {
+                  const selected = diagnosisStage === option;
+                  return (
+                    <TouchableOpacity
+                      key={option}
+                      style={[styles.stageOption, selected && styles.stageOptionActive]}
+                      onPress={() => setDiagnosisStage(selected ? '' : option)}
+                      activeOpacity={0.8}
+                    >
+                      <Text
+                        style={[styles.stageOptionText, selected && styles.stageOptionTextActive]}
+                      >
+                        {option}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
           </View>
         </View>
