@@ -4,6 +4,39 @@
 
 ---
 
+## 2025-11-15
+
+### 完成事项
+
+1. **统一鉴权上下文**
+   - 新增 `apps/mobile/contexts/AuthContext.tsx`，集中管理 token、用户信息、初始化状态与退出登录能力。
+   - 在 `app/_layout.tsx` 使用 `AuthProvider` 包裹整个应用，确保任意页面都能读取登录状态。
+2. **页面联动**
+   - 登录/注册页调用 `setSession` 处理 token 保存；设置页使用 `logout` 清理本地状态并跳回登录页，同时展示当前用户信息。
+3. **测试文档**
+   - `docs/testing-guide.md` 增加“退出登录”步骤，确保 QA 能覆盖新流程。
+
+### 验证
+
+```bash
+# 1. 启动后端与 Expo（同前）
+# 2. 登录/注册 -> 自动跳首页
+# 3. 数据录入 -> 档案页显示真实数据
+# 4. 设置页点击“退出登录” -> 返回登录页，再次打开应用需重新登录
+```
+
+### 已知问题
+
+- `npm run lint --workspace @openrd/mobile` 仍受旧模板影响报 “React is defined but never used”，待后续 chore 清理。
+
+### 下一步建议
+
+1. 基于 AuthContext 扩展更多入口（首页、顶部用户信息等），增强登录态可见性。
+2. 继续完善档案展示页的图表/趋势功能，形成可对外演示的可视化页面。
+3. 安排 lint-cleanup 提交，移除多余 `import React` 或调整 ESLint 规则。
+
+---
+
 ## 2025-11-14
 
 ### 完成事项
