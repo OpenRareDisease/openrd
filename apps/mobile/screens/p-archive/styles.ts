@@ -14,6 +14,20 @@ export default StyleSheet.create({
   scrollContent: {
     paddingBottom: 80,
   },
+  section: {
+    marginHorizontal: 24,
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  sectionTitleAccent: {
+    color: '#E0E4FF',
+    letterSpacing: 0.5,
+  },
   stateContainer: {
     marginHorizontal: 24,
     marginBottom: 24,
@@ -94,6 +108,7 @@ export default StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
     marginBottom: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    width: '100%',
   },
   measurementMuscle: {
     color: '#FFFFFF',

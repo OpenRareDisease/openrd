@@ -258,7 +258,7 @@ const ArchiveScreen = () => {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>最近肌力测量</Text>
+          <Text style={[styles.sectionTitle, styles.sectionTitleAccent]}>最近肌力测量</Text>
           {profile.measurements.length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>暂无肌力记录，立即去录入吧。</Text>
