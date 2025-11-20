@@ -5,6 +5,7 @@ import {
   FUNCTION_TEST_TYPES,
   GENDER_OPTIONS,
   MUSCLE_GROUPS,
+  MEDICATION_STATUS,
 } from './profile.constants';
 
 const isoDateString = z
@@ -74,3 +75,15 @@ export const documentSchema = z.object({
   uploadedAt: z.string().datetime().optional(),
 });
 export type DocumentInput = z.infer<typeof documentSchema>;
+
+export const medicationSchema = z.object({
+  medicationName: z.string().min(1).max(255),
+  dosage: z.string().max(120).optional().nullable(),
+  frequency: z.string().max(120).optional().nullable(),
+  route: z.string().max(120).optional().nullable(),
+  startDate: isoDateString.optional().nullable(),
+  endDate: isoDateString.optional().nullable(),
+  notes: z.string().max(1000).optional().nullable(),
+  status: z.enum(MEDICATION_STATUS).optional(),
+});
+export type MedicationInput = z.infer<typeof medicationSchema>;

@@ -5,6 +5,7 @@ import {
   documentSchema,
   functionTestSchema,
   measurementSchema,
+  medicationSchema,
   updateProfileSchema,
 } from './profile.schema';
 import type { PatientProfileService } from './profile.service';
@@ -58,5 +59,21 @@ export class PatientProfileController {
     const payload = documentSchema.parse(req.body);
     const result = await this.service.addDocument(req.user.id, payload);
     res.status(201).json(result);
+  };
+
+  addMedication = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = medicationSchema.parse(req.body);
+    const result = await this.service.addMedication(req.user.id, payload);
+    res.status(201).json(result);
+  };
+
+  listMedications = async (req: AuthenticatedRequest, res: Response) => {
+    const items = await this.service.getMedications(req.user.id);
+    res.status(200).json(items);
+  };
+
+  getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {
+    const result = await this.service.getRiskSummary(req.user.id);
+    res.status(200).json(result);
   };
 }
