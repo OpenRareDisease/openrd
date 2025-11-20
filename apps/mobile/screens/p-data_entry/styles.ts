@@ -395,6 +395,10 @@ export default StyleSheet.create({
     color: '#9CA3AF',
     marginLeft: 4,
   },
+  sectionDescription: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
   submitSection: {
     paddingTop: 16,
     paddingBottom: 24,

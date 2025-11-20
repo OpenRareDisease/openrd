@@ -15,7 +15,13 @@ import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
 import styles from './styles';
-import { ApiError, addPatientMeasurement, upsertPatientProfile } from '../../lib/api';
+import {
+  ApiError,
+  addActivityLog,
+  addMedication,
+  addPatientMeasurement,
+  upsertPatientProfile,
+} from '../../lib/api';
 
 interface UploadStatus {
   mri: '未上传' | '上传中...' | '已上传';
@@ -60,6 +66,11 @@ const DataEntryScreen = () => {
 
   // 加载状态
   const [isLoading, setIsLoading] = useState(false);
+
+  // 用药管理
+  const [medicationName, setMedicationName] = useState('');
+  const [medicationDosage, setMedicationDosage] = useState('');
+  const [medicationFrequency, setMedicationFrequency] = useState('');
 
   const muscleGroups = [
     { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
@@ -274,6 +285,25 @@ const DataEntryScreen = () => {
           muscleGroup: muscleStrength.group,
           strengthScore,
           recordedAt: new Date().toISOString(),
+        });
+      }
+
+      if (activityText.trim()) {
+        await addActivityLog({
+          logDate: new Date().toISOString(),
+          source: 'manual',
+          content: activityText.trim(),
+          moodScore: 3,
+        });
+      }
+
+      if (medicationName.trim()) {
+        await addMedication({
+          medicationName: medicationName.trim(),
+          dosage: medicationDosage.trim() || undefined,
+          frequency: medicationFrequency.trim() || undefined,
+          startDate: new Date().toISOString(),
+          status: 'active',
         });
       }
 
@@ -557,6 +587,45 @@ const DataEntryScreen = () => {
                 <Text style={styles.voiceStatusText}>正在录音...</Text>
               </View>
             )}
+          </View>
+        </View>
+
+        {/* 用药管理 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>用药管理</Text>
+
+          <View style={styles.basicInfoCard}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>药品名称</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="如：布洛芬、维生素D"
+                placeholderTextColor="#9CA3AF"
+                value={medicationName}
+                onChangeText={setMedicationName}
+              />
+            </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>剂量</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="如：200mg"
+                placeholderTextColor="#9CA3AF"
+                value={medicationDosage}
+                onChangeText={setMedicationDosage}
+              />
+            </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>频次</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="如：每日2次"
+                placeholderTextColor="#9CA3AF"
+                value={medicationFrequency}
+                onChangeText={setMedicationFrequency}
+              />
+            </View>
+            <Text style={styles.sectionDescription}>提交后自动同步到用药清单</Text>
           </View>
         </View>
 
