@@ -89,6 +89,22 @@ export const addPatientMeasurement = (payload: Record<string, unknown>) =>
     body: JSON.stringify(payload),
   });
 
+export const addActivityLog = (payload: Record<string, unknown>) =>
+  apiRequest('/profiles/me/activity-logs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const addMedication = (payload: Record<string, unknown>) =>
+  apiRequest('/profiles/me/medications', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const getMedications = () => apiRequest('/profiles/me/medications');
+
+export const getRiskSummary = () => apiRequest('/profiles/me/risk');
+
 export interface AuthResponse {
   user: {
     id: string;
