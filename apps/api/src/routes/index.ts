@@ -5,6 +5,7 @@ import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { aiChatRoutes } from './ai-chat.routes.js'; 
+import profileRoutes from './profiles.js'; // 添加这行 - 导入 profiles 路由
 import { asyncHandler } from '../utils/async-handler.js';
 
 export interface RouteContext {
@@ -30,6 +31,7 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
 
   apiRouter.use('/auth', createAuthRouter(context));
   apiRouter.use('/ai', aiChatRoutes);
+  apiRouter.use('/profiles', profileRoutes); // 添加这行 - 注册 profiles 路由
 
   app.use('/api', apiRouter);
 };
