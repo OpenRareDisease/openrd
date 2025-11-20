@@ -130,6 +130,24 @@ CREATE TABLE IF NOT EXISTS patient_activity_logs (
 CREATE INDEX IF NOT EXISTS idx_patient_activity_logs_profile
     ON patient_activity_logs (profile_id, log_date DESC);
 
+-- Medication management.
+CREATE TABLE IF NOT EXISTS patient_medications (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id       UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    medication_name  TEXT NOT NULL,
+    dosage           TEXT,
+    frequency        TEXT,
+    route            TEXT,
+    start_date       DATE,
+    end_date         DATE,
+    notes            TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_medications_profile
+    ON patient_medications (profile_id);
+
 -- Uploaded medical document metadata.
 CREATE TABLE IF NOT EXISTS patient_documents (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

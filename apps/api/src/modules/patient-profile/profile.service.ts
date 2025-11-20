@@ -5,6 +5,7 @@ import type {
   DocumentInput,
   FunctionTestInput,
   MeasurementInput,
+  MedicationInput,
   UpdateProfileInput,
 } from './profile.schema';
 import type { AppLogger } from '../../config/logger';
@@ -79,6 +80,28 @@ export interface PatientDocumentDTO {
   checksum: string | null;
 }
 
+export interface PatientMedicationDTO {
+  id: string;
+  medicationName: string;
+  dosage: string | null;
+  frequency: string | null;
+  route: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  notes: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface RiskSummary {
+  overallLevel: 'low' | 'medium' | 'high';
+  strengthLevel: 'low' | 'medium' | 'high';
+  activityLevel: 'low' | 'medium' | 'high';
+  latestMeasurement?: PatientMeasurementDTO;
+  lastActivityAt?: string | null;
+  notes: string[];
+}
+
 export interface PatientProfileDTO {
   id: string;
   userId: string;
@@ -101,6 +124,7 @@ export interface PatientProfileDTO {
   functionTests: PatientFunctionTestDTO[];
   activityLogs: PatientActivityLogDTO[];
   documents: PatientDocumentDTO[];
+  medications: PatientMedicationDTO[];
   createdAt: string;
   updatedAt: string;
 }
@@ -154,37 +178,49 @@ export class PatientProfileService {
       const profile = profileResult.rows[0];
       const profileId = profile.id;
 
-      const [measurementsResult, functionTestsResult, activityLogsResult, documentsResult] =
-        await Promise.all([
-          client.query(
-            `SELECT id, profile_id, recorded_at, muscle_group, strength_score, method, notes, created_at
+      const [
+        measurementsResult,
+        functionTestsResult,
+        activityLogsResult,
+        documentsResult,
+        medicationsResult,
+      ] = await Promise.all([
+        client.query(
+          `SELECT id, profile_id, recorded_at, muscle_group, strength_score, method, notes, created_at
            FROM patient_measurements
            WHERE profile_id = $1
            ORDER BY recorded_at DESC`,
-            [profileId],
-          ),
-          client.query(
-            `SELECT id, profile_id, test_type, measured_value, unit, notes, performed_at, created_at
+          [profileId],
+        ),
+        client.query(
+          `SELECT id, profile_id, test_type, measured_value, unit, notes, performed_at, created_at
            FROM patient_function_tests
            WHERE profile_id = $1
            ORDER BY performed_at DESC`,
-            [profileId],
-          ),
-          client.query(
-            `SELECT id, profile_id, log_date, source, content, mood_score, created_at
+          [profileId],
+        ),
+        client.query(
+          `SELECT id, profile_id, log_date, source, content, mood_score, created_at
            FROM patient_activity_logs
            WHERE profile_id = $1
            ORDER BY log_date DESC, created_at DESC`,
-            [profileId],
-          ),
-          client.query(
-            `SELECT id, profile_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum
+          [profileId],
+        ),
+        client.query(
+          `SELECT id, profile_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum
            FROM patient_documents
            WHERE profile_id = $1
            ORDER BY uploaded_at DESC`,
-            [profileId],
-          ),
-        ]);
+          [profileId],
+        ),
+        client.query(
+          `SELECT id, profile_id, medication_name, dosage, frequency, route, start_date, end_date, notes, status, created_at
+           FROM patient_medications
+           WHERE profile_id = $1
+           ORDER BY created_at DESC`,
+          [profileId],
+        ),
+      ]);
 
       return {
         id: profile.id,
@@ -241,6 +277,18 @@ export class PatientProfileService {
           status: row.status,
           uploadedAt: toTimestampString(row.uploaded_at),
           checksum: row.checksum,
+        })),
+        medications: medicationsResult.rows.map((row) => ({
+          id: row.id,
+          medicationName: row.medication_name,
+          dosage: row.dosage,
+          frequency: row.frequency,
+          route: row.route,
+          startDate: toDateString(row.start_date),
+          endDate: toDateString(row.end_date),
+          notes: row.notes,
+          status: row.status,
+          createdAt: toTimestampString(row.created_at),
         })),
         createdAt: toTimestampString(profile.created_at),
         updatedAt: toTimestampString(profile.updated_at),
@@ -543,6 +591,168 @@ export class PatientProfileService {
       status: row.status,
       uploadedAt: toTimestampString(row.uploaded_at),
       checksum: row.checksum,
+    };
+  }
+
+  async addMedication(userId: string, payload: MedicationInput): Promise<PatientMedicationDTO> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_medications (
+        profile_id,
+        medication_name,
+        dosage,
+        frequency,
+        route,
+        start_date,
+        end_date,
+        notes,
+        status
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'active')
+      )
+      RETURNING id, medication_name, dosage, frequency, route, start_date, end_date, notes, status, created_at`,
+      [
+        profileId,
+        payload.medicationName,
+        payload.dosage ?? null,
+        payload.frequency ?? null,
+        payload.route ?? null,
+        payload.startDate ?? null,
+        payload.endDate ?? null,
+        payload.notes ?? null,
+        payload.status ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      medicationName: row.medication_name,
+      dosage: row.dosage,
+      frequency: row.frequency,
+      route: row.route,
+      startDate: toDateString(row.start_date),
+      endDate: toDateString(row.end_date),
+      notes: row.notes,
+      status: row.status,
+      createdAt: toTimestampString(row.created_at),
+    };
+  }
+
+  async getMedications(userId: string): Promise<PatientMedicationDTO[]> {
+    const profileId = await this.ensureProfileForUser(userId);
+    const result = await this.pool.query(
+      `SELECT id, medication_name, dosage, frequency, route, start_date, end_date, notes, status, created_at
+       FROM patient_medications
+       WHERE profile_id = $1
+       ORDER BY created_at DESC`,
+      [profileId],
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      medicationName: row.medication_name,
+      dosage: row.dosage,
+      frequency: row.frequency,
+      route: row.route,
+      startDate: toDateString(row.start_date),
+      endDate: toDateString(row.end_date),
+      notes: row.notes,
+      status: row.status,
+      createdAt: toTimestampString(row.created_at),
+    }));
+  }
+
+  async getRiskSummary(userId: string): Promise<RiskSummary> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const [measurementsResult, activityResult] = await Promise.all([
+      this.pool.query(
+        `SELECT id, muscle_group, strength_score, recorded_at
+         FROM patient_measurements
+         WHERE profile_id = $1
+         ORDER BY recorded_at DESC
+         LIMIT 5`,
+        [profileId],
+      ),
+      this.pool.query(
+        `SELECT log_date
+         FROM patient_activity_logs
+         WHERE profile_id = $1
+         ORDER BY log_date DESC
+         LIMIT 1`,
+        [profileId],
+      ),
+    ]);
+
+    const measurementRows = measurementsResult.rows;
+    const avgStrength =
+      measurementRows.length === 0
+        ? null
+        : measurementRows.reduce((sum, row) => sum + Number(row.strength_score), 0) /
+          measurementRows.length;
+
+    const strengthLevel: RiskSummary['strengthLevel'] =
+      avgStrength === null
+        ? 'medium'
+        : avgStrength < 3
+          ? 'high'
+          : avgStrength < 4
+            ? 'medium'
+            : 'low';
+
+    const latestActivity = activityResult.rows[0];
+    const lastActivityDate = latestActivity?.log_date ? new Date(latestActivity.log_date) : null;
+
+    let activityLevel: RiskSummary['activityLevel'] = 'medium';
+    if (!lastActivityDate) {
+      activityLevel = 'high';
+    } else {
+      const daysSince = Math.floor(
+        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24),
+      );
+      activityLevel = daysSince > 14 ? 'high' : daysSince > 7 ? 'medium' : 'low';
+    }
+
+    const levelRank = { low: 1, medium: 2, high: 3 } as const;
+    const overallLevel =
+      levelRank[strengthLevel] >= levelRank[activityLevel] ? strengthLevel : activityLevel;
+
+    const notes: string[] = [];
+    if (avgStrength !== null) {
+      notes.push(`最近平均肌力分数：${avgStrength.toFixed(1)}`);
+    } else {
+      notes.push('暂无肌力评估数据');
+    }
+
+    if (lastActivityDate) {
+      notes.push(`最近活动记录：${lastActivityDate.toISOString().split('T')[0]}`);
+    } else {
+      notes.push('近期没有活动记录');
+    }
+
+    const latestMeasurementRow = measurementRows[0];
+    const latestMeasurement = latestMeasurementRow
+      ? {
+          id: latestMeasurementRow.id,
+          muscleGroup: latestMeasurementRow.muscle_group,
+          strengthScore: Number(latestMeasurementRow.strength_score),
+          method: null,
+          notes: null,
+          recordedAt: toTimestampString(latestMeasurementRow.recorded_at),
+          createdAt: toTimestampString(latestMeasurementRow.recorded_at),
+        }
+      : undefined;
+
+    return {
+      overallLevel,
+      strengthLevel,
+      activityLevel,
+      latestMeasurement,
+      lastActivityAt: lastActivityDate ? lastActivityDate.toISOString() : null,
+      notes,
     };
   }
 
