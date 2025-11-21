@@ -223,7 +223,7 @@ def main():
     ]
     
     for question in test_questions:
-        results = processor.search_knowledge(question, n_results=2)
+        results = processor.search_fshd_knowledge(question, n_results=2)
         print(f"\n❓ 问题: {question}")
         print(f"📋 找到 {len(results['documents'][0])} 个相关结果")
         for j, doc in enumerate(results['documents'][0]):
