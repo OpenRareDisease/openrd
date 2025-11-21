@@ -1,0 +1,9 @@
+﻿{
+  "model": "Qwen/Qwen2.7B-Instruct",
+  "messages": [
+    {
+      "role": "user", 
+      "content": "Hi"
+    }
+  ]
+}
