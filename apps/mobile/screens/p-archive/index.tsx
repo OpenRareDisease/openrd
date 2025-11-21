@@ -41,6 +41,18 @@ interface PatientProfile {
 }
 
 const ArchiveScreen = () => {
+  const MUSCLE_LABELS: Record<string, string> = {
+    deltoid: '三角肌',
+    biceps: '肱二头肌',
+    triceps: '肱三头肌',
+    tibialis: '胫骨前肌',
+    quadriceps: '股四头肌',
+    hamstrings: '腘绳肌',
+    gluteus: '臀肌',
+  };
+
+  const getMuscleLabel = (key: string) => MUSCLE_LABELS[key] || key;
+
   const router = useRouter();
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [profile, setProfile] = useState<PatientProfile | null>(null);
@@ -50,7 +62,7 @@ const ArchiveScreen = () => {
   const timelineEvents: TimelineEvent[] = profile
     ? profile.measurements.map((item) => ({
         id: item.id,
-        title: `${item.muscleGroup} 肌力评估`,
+        title: `${getMuscleLabel(item.muscleGroup)} 肌力评估`,
         date: new Date(item.recordedAt).toLocaleDateString(),
         description: `肌力得分：${item.strengthScore}`,
         status: item.strengthScore >= 4 ? 'stable' : item.strengthScore >= 3 ? 'info' : 'warning',
@@ -267,7 +279,7 @@ const ArchiveScreen = () => {
             profile.measurements.slice(0, 3).map((item) => (
               <View key={item.id} style={styles.measurementCard}>
                 <View>
-                  <Text style={styles.measurementMuscle}>{item.muscleGroup}</Text>
+                  <Text style={styles.measurementMuscle}>{getMuscleLabel(item.muscleGroup)}</Text>
                   <Text style={styles.measurementDate}>
                     {new Date(item.recordedAt).toLocaleString()}
                   </Text>

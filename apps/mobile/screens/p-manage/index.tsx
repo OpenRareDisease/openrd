@@ -9,6 +9,15 @@ import { ApiError, getMedications, getMyPatientProfile, getRiskSummary } from '.
 
 const PMANAGE = () => {
   const router = useRouter();
+  const MUSCLE_LABELS: Record<string, string> = {
+    deltoid: '三角肌',
+    biceps: '肱二头肌',
+    triceps: '肱三头肌',
+    tibialis: '胫骨前肌',
+    quadriceps: '股四头肌',
+    hamstrings: '腘绳肌',
+    gluteus: '臀肌',
+  };
   const [profile, setProfile] = useState<any | null>(null);
   const [medications, setMedications] = useState<any[]>([]);
   const [riskSummary, setRiskSummary] = useState<any | null>(null);
@@ -185,7 +194,9 @@ const PMANAGE = () => {
                         onPress={() => handleMuscleGroupPress(group)}
                       >
                         <View style={styles.muscleGroupHeader}>
-                          <Text style={styles.muscleGroupName}>{group}</Text>
+                          <Text style={styles.muscleGroupName}>
+                            {MUSCLE_LABELS[group] || group}
+                          </Text>
                           <Text style={[styles.muscleGroupScore, { color: '#969FFF' }]}>
                             {data.strengthScore.toFixed(1)}
                           </Text>
@@ -371,7 +382,9 @@ const PMANAGE = () => {
                           style={[
                             styles.medicationBadge,
                             {
-                              backgroundColor: `${riskLevelColor(item.status === 'active' ? 'low' : 'medium')}22`,
+                              backgroundColor: `${riskLevelColor(
+                                item.status === 'active' ? 'low' : 'medium',
+                              )}22`,
                             },
                           ]}
                         >
