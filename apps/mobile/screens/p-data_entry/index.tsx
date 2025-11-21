@@ -278,14 +278,32 @@ const DataEntryScreen = () => {
 
       await upsertPatientProfile(payload);
 
-      if (muscleStrength.group) {
-        const strengthScore = muscleStrengthMap[muscleStrength.group] ?? muscleStrength.value ?? 0;
+      const measurementEntries = Object.entries(muscleStrengthMap);
+      const measurementsPayload =
+        measurementEntries.length > 0
+          ? measurementEntries.map(([group, value]) => ({
+              muscleGroup: group,
+              strengthScore: value,
+            }))
+          : muscleStrength.group
+            ? [
+                {
+                  muscleGroup: muscleStrength.group,
+                  strengthScore: muscleStrength.value ?? 0,
+                },
+              ]
+            : [];
 
-        await addPatientMeasurement({
-          muscleGroup: muscleStrength.group,
-          strengthScore,
-          recordedAt: new Date().toISOString(),
-        });
+      if (measurementsPayload.length) {
+        await Promise.all(
+          measurementsPayload.map((item) =>
+            addPatientMeasurement({
+              muscleGroup: item.muscleGroup,
+              strengthScore: item.strengthScore,
+              recordedAt: new Date().toISOString(),
+            }),
+          ),
+        );
       }
 
       if (activityText.trim()) {
