@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -70,9 +68,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   uploadHeader: {
@@ -114,6 +110,33 @@ export default StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  historyCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  historyTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#FFFFFF',
+  },
+  historyStatus: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  historyMeta: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
   muscleGroupGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -136,9 +159,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   muscleGroupItemActive: {
@@ -166,9 +187,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   strengthHeader: {
@@ -194,16 +213,39 @@ export default StyleSheet.create({
     width: '100%',
     height: 40,
   },
-  sliderThumb: {
-    backgroundColor: '#969FFF',
-    width: 20,
-    height: 20,
-  },
   strengthLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   strengthLabel: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  chartCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  chart: {
+    marginLeft: -16,
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingHorizontal: 16,
+  },
+  chartLegendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#969FFF',
+    marginRight: 8,
+  },
+  chartLegendText: {
     fontSize: 12,
     color: '#9CA3AF',
   },
@@ -221,9 +263,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   timerIconContainer: {
@@ -287,9 +327,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   activityHeader: {
@@ -336,6 +374,60 @@ export default StyleSheet.create({
     color: '#9CA3AF',
     marginLeft: 4,
   },
+  timelineCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  timelineItem: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  timelineItemLast: {
+    borderBottomWidth: 0,
+  },
+  timelineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  timelineTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#FFFFFF',
+    flex: 1,
+    marginRight: 8,
+  },
+  timelineTag: {
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    color: '#FFFFFF',
+  },
+  timelineTagReport: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+  },
+  timelineTagStrength: {
+    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+  },
+  timelineTagActivity: {
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+  },
+  timelineDescription: {
+    fontSize: 12,
+    color: '#D1D5DB',
+    marginTop: 6,
+    lineHeight: 18,
+  },
+  timelineTimestamp: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 4,
+  },
   submitSection: {
     paddingTop: 16,
     paddingBottom: 24,
@@ -353,9 +445,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.3,
         shadowRadius: 16,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   submitButtonText: {
@@ -383,9 +473,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   loadingSpinner: {
@@ -396,4 +484,3 @@ export default StyleSheet.create({
     color: '#FFFFFF',
   },
 });
-
