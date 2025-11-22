@@ -19,7 +19,10 @@ const envSchema = z
     BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(6).max(14).default(10),
     CORS_ORIGIN: z.string().default('*'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
-    OPENAI_API_KEY: z.string().min(1).optional()
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    AI_API_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),
+    AI_API_MODEL: z.string().default('deepseek-ai/DeepSeek-V3'),
+    AI_API_TIMEOUT: z.coerce.number().int().positive().default(30000)
   })
   .transform((value) => ({
     ...value,
