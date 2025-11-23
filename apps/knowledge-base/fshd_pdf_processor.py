@@ -164,6 +164,25 @@ class FSHDPDFProcessor:
         
         return total_chunks
     
+    def search_fshd_knowledge(self, question: str, n_results: int = 3, language_filter: str = None):
+        """搜索FSHD知识库"""
+        # 可选的语言过滤
+        where_filter = None
+        if language_filter:
+            where_filter = {"language": language_filter}
+        
+        # 执行向量搜索
+        results = self.collection.query(
+            query_texts=[question],
+            n_results=n_results,
+            where=where_filter
+        )
+        return results
+    
+    def search_knowledge(self, question: str, n_results: int = 3, language_filter: str = None):
+        """搜索FSHD知识库（兼容性方法）"""
+        return self.search_fshd_knowledge(question, n_results, language_filter)
+    
     def get_collection_stats(self):
         """获取知识库统计信息"""
         count = self.collection.count()
@@ -223,7 +242,7 @@ def main():
     ]
     
     for question in test_questions:
-        results = processor.search_fshd_knowledge(question, n_results=2)
+        results = processor.search_knowledge(question, n_results=2)
         print(f"\n❓ 问题: {question}")
         print(f"📋 找到 {len(results['documents'][0])} 个相关结果")
         for j, doc in enumerate(results['documents'][0]):
