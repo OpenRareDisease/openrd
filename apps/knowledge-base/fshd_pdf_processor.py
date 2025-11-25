@@ -208,7 +208,7 @@ def main():
     """主函数 - 专门处理疾病定义和科普分类"""
     processor = FSHDPDFProcessor()
     
-    # 专门处理疾病定义和科普分类 - 使用绝对路径
+    # 专门处理疾病定义和科普分类 路径如下
     folder_path = r"C:\yoyo\openrd-master\FSHD_知识库\01.疾病定义和科普\第一批：2025年3月31日"
     category = "疾病定义和科普"
     
