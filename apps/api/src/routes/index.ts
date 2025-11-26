@@ -4,7 +4,8 @@ import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
-import { aiChatRoutes } from './ai-chat.routes.js'; 
+import { createKnowledgeRouter } from '../modules/knowledge/knowledge.routes.js';
+import { aiChatRoutes } from './ai-chat.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export interface RouteContext {
@@ -29,6 +30,7 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
   );
 
   apiRouter.use('/auth', createAuthRouter(context));
+  apiRouter.use('/knowledge', createKnowledgeRouter(context));
   apiRouter.use('/ai', aiChatRoutes);
 
   app.use('/api', apiRouter);
