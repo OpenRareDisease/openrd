@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -30,9 +28,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   headerTitle: {
@@ -56,6 +52,53 @@ export default StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 12,
   },
+  basicInfoCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 16,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 6,
+  },
+  textInput: {
+    height: 44,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    color: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  stageOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  stageOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  stageOptionActive: {
+    borderColor: '#969FFF',
+    backgroundColor: 'rgba(150, 159, 255, 0.15)',
+  },
+  stageOptionText: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  stageOptionTextActive: {
+    color: '#FFFFFF',
+  },
   uploadCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,
@@ -70,9 +113,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.1,
         shadowRadius: 32,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   uploadHeader: {
@@ -129,20 +170,9 @@ export default StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   muscleGroupItemActive: {
-    backgroundColor: 'rgba(150, 159, 255, 0.1)',
+    backgroundColor: 'rgba(150, 159, 255, 0.15)',
     borderColor: '#969FFF',
   },
   muscleGroupIcon: {
@@ -159,17 +189,6 @@ export default StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   strengthHeader: {
     flexDirection: 'row',
@@ -194,11 +213,6 @@ export default StyleSheet.create({
     width: '100%',
     height: 40,
   },
-  sliderThumb: {
-    backgroundColor: '#969FFF',
-    width: 20,
-    height: 20,
-  },
   strengthLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -207,6 +221,24 @@ export default StyleSheet.create({
     fontSize: 12,
     color: '#9CA3AF',
   },
+  radarCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 12,
+    paddingVertical: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  radarHint: {
+    marginTop: 12,
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  radarEmpty: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
   timerCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,
@@ -214,17 +246,6 @@ export default StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   timerIconContainer: {
     width: 64,
@@ -280,17 +301,6 @@ export default StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   activityHeader: {
     flexDirection: 'row',
@@ -353,9 +363,7 @@ export default StyleSheet.create({
         shadowOpacity: 0.3,
         shadowRadius: 16,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
   submitButtonText: {
@@ -376,17 +384,6 @@ export default StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   loadingSpinner: {
     marginBottom: 12,
@@ -396,4 +393,3 @@ export default StyleSheet.create({
     color: '#FFFFFF',
   },
 });
-
