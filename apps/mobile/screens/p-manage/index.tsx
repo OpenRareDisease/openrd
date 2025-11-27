@@ -1,5 +1,5 @@
-
-
+import DataComparisonFeature from '../p-data_comparison_feature/DataComparisonFeature';
+import RecordTimelineScreen from '../p-record_timeline_screen/RecordTimelineScreen';
 import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -84,8 +84,8 @@ const PMANAGE = () => {
 
               {/* 肌群详细数据 */}
               <View style={styles.muscleGroupsGrid}>
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
+                <TouchableOpacity
+                  style={styles.muscleGroupCard}
                   onPress={() => handleMuscleGroupPress('三角肌')}
                 >
                   <View style={styles.muscleGroupHeader}>
@@ -93,12 +93,14 @@ const PMANAGE = () => {
                     <Text style={styles.muscleGroupScore}>3.5</Text>
                   </View>
                   <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '70%', backgroundColor: '#969FFF' }]} />
+                    <View
+                      style={[styles.progressBar, { width: '70%', backgroundColor: '#969FFF' }]}
+                    />
                   </View>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
+                <TouchableOpacity
+                  style={styles.muscleGroupCard}
                   onPress={() => handleMuscleGroupPress('肱二头肌')}
                 >
                   <View style={styles.muscleGroupHeader}>
@@ -106,12 +108,14 @@ const PMANAGE = () => {
                     <Text style={[styles.muscleGroupScore, { color: '#5147FF' }]}>4.0</Text>
                   </View>
                   <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '80%', backgroundColor: '#5147FF' }]} />
+                    <View
+                      style={[styles.progressBar, { width: '80%', backgroundColor: '#5147FF' }]}
+                    />
                   </View>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
+                <TouchableOpacity
+                  style={styles.muscleGroupCard}
                   onPress={() => handleMuscleGroupPress('肱三头肌')}
                 >
                   <View style={styles.muscleGroupHeader}>
@@ -119,12 +123,14 @@ const PMANAGE = () => {
                     <Text style={[styles.muscleGroupScore, { color: '#3E3987' }]}>4.5</Text>
                   </View>
                   <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '90%', backgroundColor: '#3E3987' }]} />
+                    <View
+                      style={[styles.progressBar, { width: '90%', backgroundColor: '#3E3987' }]}
+                    />
                   </View>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
+                <TouchableOpacity
+                  style={styles.muscleGroupCard}
                   onPress={() => handleMuscleGroupPress('胫骨前肌')}
                 >
                   <View style={styles.muscleGroupHeader}>
@@ -132,7 +138,9 @@ const PMANAGE = () => {
                     <Text style={[styles.muscleGroupScore, { color: '#10b981' }]}>4.8</Text>
                   </View>
                   <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '96%', backgroundColor: '#10b981' }]} />
+                    <View
+                      style={[styles.progressBar, { width: '96%', backgroundColor: '#10b981' }]}
+                    />
                   </View>
                 </TouchableOpacity>
               </View>
@@ -171,11 +179,27 @@ const PMANAGE = () => {
                     <Text style={styles.statLabel}>本周步数</Text>
                   </View>
                   <View style={styles.statItem}>
-                    <Text style={[styles.statValue, { color: 'rgba(255, 255, 255, 0.7)' }]}>6,684</Text>
+                    <Text style={[styles.statValue, { color: 'rgba(255, 255, 255, 0.7)' }]}>
+                      6,684
+                    </Text>
                     <Text style={styles.statLabel}>上周步数</Text>
                   </View>
                 </View>
               </View>
+            </View>
+          </View>
+
+          {/* 动态记录时间线 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <RecordTimelineScreen />
+            </View>
+          </View>
+
+          {/* 数据对比功能 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <DataComparisonFeature />
             </View>
           </View>
 
@@ -217,7 +241,10 @@ const PMANAGE = () => {
                 </View>
               </View>
 
-              <TouchableOpacity style={styles.interventionButton} onPress={handleInterventionPlanPress}>
+              <TouchableOpacity
+                style={styles.interventionButton}
+                onPress={handleInterventionPlanPress}
+              >
                 <Text style={styles.interventionButtonText}>查看个性化干预计划</Text>
               </TouchableOpacity>
             </View>
@@ -285,4 +312,3 @@ const PMANAGE = () => {
 };
 
 export default PMANAGE;
-
