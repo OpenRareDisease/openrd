@@ -1,27 +1,24 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-  Modal,
   ActivityIndicator,
+  Alert,
+  Dimensions,
+  Modal,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
+import { LineChart } from 'react-native-chart-kit';
 import styles from './styles';
-import {
-  ApiError,
-  addActivityLog,
-  addMedication,
-  addPatientMeasurement,
-  upsertPatientProfile,
-} from '../../lib/api';
+
+type ReportType = 'mri' | 'genetic' | 'blood';
 
 interface UploadStatus {
   mri: '未上传' | '上传中...' | '已上传';
@@ -34,40 +31,119 @@ interface MuscleStrengthData {
   value: number;
 }
 
+interface ReportHistoryItem {
+  id: string;
+  type: ReportType;
+  source: '相册' | '相机';
+  timestamp: string;
+  fileName?: string;
+}
+
+interface TimelineEvent {
+  id: string;
+  title: string;
+  description: string;
+  timestamp: string;
+  tag: '报告' | '肌力' | '活动';
+}
+
+const reportLabels: Record<ReportType, string> = {
+  mri: 'MRI 影像报告',
+  genetic: '基因检测报告',
+  blood: '血检报告',
+};
+
+const chartWidth = Dimensions.get('window').width - 48;
+
+const initialTimeline: TimelineEvent[] = [
+  {
+    id: 'timeline-1',
+    title: 'MRI 影像报告已上传',
+    description: '来源：相册 · 影像清晰可读',
+    timestamp: '2025-11-18 09:20',
+    tag: '报告',
+  },
+  {
+    id: 'timeline-2',
+    title: '肩部肌群评分更新',
+    description: '肌力 3 级，医生建议继续弹力带训练',
+    timestamp: '2025-11-17 17:45',
+    tag: '肌力',
+  },
+  {
+    id: 'timeline-3',
+    title: '日常活动记录',
+    description: '完成 30 分钟康复训练，步行 2 公里',
+    timestamp: '2025-11-16 20:15',
+    tag: '活动',
+  },
+];
+
+const initialTrendData = {
+  labels: ['11/10', '11/12', '11/14', '11/16', '11/18'],
+  datasets: [
+    {
+      data: [2.5, 3, 3.6, 3.8, 4],
+      strokeWidth: 2,
+    },
+  ],
+};
+
+const chartConfig = {
+  backgroundColor: '#0F0F23',
+  backgroundGradientFrom: '#0F0F23',
+  backgroundGradientTo: '#0F0F23',
+  decimalPlaces: 1,
+  color: (opacity = 1) => `rgba(150, 159, 255, ${opacity})`,
+  labelColor: () => '#9CA3AF',
+  propsForDots: {
+    r: '4',
+    strokeWidth: '2',
+    stroke: '#FFFFFF',
+  },
+};
+
 const DataEntryScreen = () => {
   const router = useRouter();
-  const [fullName, setFullName] = useState('');
-  const [diagnosisStage, setDiagnosisStage] = useState('');
+  const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 上传状态
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
     mri: '未上传',
     genetic: '未上传',
     blood: '未上传',
   });
 
-  // 肌力评分
+  const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([
+    {
+      id: 'history-1',
+      type: 'mri',
+      source: '相册',
+      timestamp: '2025-11-18 09:20',
+      fileName: 'FSHD-MRI-001.jpg',
+    },
+    {
+      id: 'history-2',
+      type: 'genetic',
+      source: '相机',
+      timestamp: '2025-11-15 15:10',
+      fileName: '基因检测单.png',
+    },
+  ]);
+
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>(initialTimeline);
+  const [strengthTrend, setStrengthTrend] = useState(initialTrendData);
+
   const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
     group: null,
     value: 0,
   });
+  const [muscleStrengthMap, setMuscleStrengthMap] = useState<Record<string, number>>({});
 
-  // 计时器状态
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(0);
-  const timerInterval = useRef<number | null>(null);
-
-  // 语音录入状态
   const [isRecording, setIsRecording] = useState(false);
   const [activityText, setActivityText] = useState('');
-
-  // 加载状态
   const [isLoading, setIsLoading] = useState(false);
-
-  // 用药管理
-  const [medicationName, setMedicationName] = useState('');
-  const [medicationDosage, setMedicationDosage] = useState('');
-  const [medicationFrequency, setMedicationFrequency] = useState('');
 
   const muscleGroups = [
     { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
@@ -83,26 +159,25 @@ const DataEntryScreen = () => {
   };
 
   const handleMuscleGroupSelect = (group: string) => {
-    setMuscleStrength((prev) => ({
-      ...prev,
+    setMuscleStrength({
       group,
-      value: 0,
-    }));
+      value: muscleStrengthMap[group] ?? 0,
+    });
   };
 
   const handleStrengthValueChange = (value: number) => {
+    const rounded = Math.round(value);
     setMuscleStrength((prev) => ({
       ...prev,
-      value: Math.round(value),
+      value: rounded,
     }));
-  };
-
-  const handleTimerToggle = () => {
-    if (!isTimerRunning) {
-      startTimer();
-    } else {
-      stopTimer();
-    }
+    setMuscleStrengthMap((prev) => {
+      if (!muscleStrength.group) return prev;
+      return {
+        ...prev,
+        [muscleStrength.group]: rounded,
+      };
+    });
   };
 
   const startTimer = () => {
@@ -121,6 +196,14 @@ const DataEntryScreen = () => {
     }
   };
 
+  const handleTimerToggle = () => {
+    if (isTimerRunning) {
+      stopTimer();
+    } else {
+      startTimer();
+    }
+  };
+
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -128,172 +211,205 @@ const DataEntryScreen = () => {
   };
 
   const handleVoiceToggle = () => {
-    if (!isRecording) {
-      startVoiceRecording();
-    } else {
-      stopVoiceRecording();
+    if (isRecording) {
+      setIsRecording(false);
+      return;
     }
-  };
-
-  const startVoiceRecording = () => {
     setIsRecording(true);
-    // 模拟语音识别
     setTimeout(() => {
-      if (isRecording) {
-        setActivityText(
-          '今天上午进行了30分钟的康复训练，包括肩部和手臂的力量练习。下午散步了1小时，感觉体力比昨天有所提升。',
-        );
-        stopVoiceRecording();
-      }
+      setActivityText('今天完成 20 分钟肩部康复训练，下午散步 40 分钟。');
+      setIsRecording(false);
     }, 3000);
   };
 
-  const stopVoiceRecording = () => {
-    setIsRecording(false);
+  const formatTimestamp = (date: Date) => {
+    const yyyy = date.getFullYear();
+    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
+    const dd = `${date.getDate()}`.padStart(2, '0');
+    const hh = `${date.getHours()}`.padStart(2, '0');
+    const min = `${date.getMinutes()}`.padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   };
 
-  const handleFileUpload = async (type: 'mri' | 'genetic' | 'blood') => {
+  const appendReportRecord = (type: ReportType, source: '相册' | '相机', fileName?: string) => {
+    const timestamp = formatTimestamp(new Date());
+    const historyItem: ReportHistoryItem = {
+      id: `report-${Date.now()}`,
+      type,
+      source,
+      timestamp,
+      fileName,
+    };
+    setReportHistory((prev) => [historyItem, ...prev].slice(0, 5));
+    setTimelineEvents((prev) =>
+      [
+        {
+          id: `timeline-report-${Date.now()}`,
+          title: `${reportLabels[type]}已上传`,
+          description: `来源：${source}${fileName ? ` · ${fileName}` : ''}`,
+          timestamp,
+          tag: '报告',
+        },
+        ...prev,
+      ].slice(0, 8),
+    );
+  };
+
+  const appendMuscleStrengthEvent = (value: number) => {
+    if (!muscleStrength.group) return;
+    const timestamp = formatTimestamp(new Date());
+    setStrengthTrend((prev) => {
+      const newLabels = [...prev.labels, timestamp.slice(5, 10)].slice(-6);
+      const newData = [...prev.datasets[0].data, value].slice(-6);
+      return {
+        labels: newLabels,
+        datasets: [
+          {
+            ...prev.datasets[0],
+            data: newData,
+          },
+        ],
+      };
+    });
+    setTimelineEvents((prev) =>
+      [
+        {
+          id: `timeline-strength-${Date.now()}`,
+          title: `${getMuscleGroupName(muscleStrength.group)}肌力更新`,
+          description: `评分 ${value} 级，持续跟踪康复趋势`,
+          timestamp,
+          tag: '肌力',
+        },
+        ...prev,
+      ].slice(0, 8),
+    );
+  };
+
+  const appendActivityEvent = (description: string) => {
+    const trimmed = description.trim();
+    if (!trimmed) return;
+    const timestamp = formatTimestamp(new Date());
+    setTimelineEvents((prev) =>
+      [
+        {
+          id: `timeline-activity-${Date.now()}`,
+          title: '日常活动更新',
+          description: trimmed,
+          timestamp,
+          tag: '活动',
+        },
+        ...prev,
+      ].slice(0, 8),
+    );
+  };
+
+  const handleFileUpload = async (type: ReportType) => {
     try {
-      // 请求媒体库权限
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('权限不足', '需要访问相册权限才能上传文件');
         return;
       }
-
-      // 显示上传中状态
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '上传中...',
       }));
-
-      // 选择文件
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsEditing: true,
         aspect: [4, 3],
         quality: 1,
       });
-
-      if (!result.canceled) {
-        // 模拟上传过程
-        setTimeout(() => {
-          setUploadStatus((prev) => ({
-            ...prev,
-            [type]: '已上传',
-          }));
-        }, 2000);
-      } else {
-        // 恢复原状态
+      if (result.canceled) {
         setUploadStatus((prev) => ({
           ...prev,
           [type]: '未上传',
         }));
+        return;
       }
+      setTimeout(() => {
+        setUploadStatus((prev) => ({
+          ...prev,
+          [type]: '已上传',
+        }));
+        appendReportRecord(type, '相册', result.assets?.[0]?.fileName);
+      }, 1500);
     } catch (error) {
       console.error('文件上传失败:', error);
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
-      Alert.alert('上传失败', '文件上传过程中出现错误');
+      Alert.alert('上传失败', '文件上传过程中出现错误，请稍后再试。');
     }
   };
 
-  const handleCameraCapture = async (type: 'mri' | 'genetic' | 'blood') => {
+  const handleCameraCapture = async (type: ReportType) => {
     try {
-      // 请求相机权限
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('权限不足', '需要访问相机权限才能拍照');
         return;
       }
-
-      // 显示上传中状态
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '上传中...',
       }));
-
-      // 拍照
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: true,
         aspect: [4, 3],
         quality: 1,
       });
-
-      if (!result.canceled) {
-        // 模拟上传过程
-        setTimeout(() => {
-          setUploadStatus((prev) => ({
-            ...prev,
-            [type]: '已上传',
-          }));
-        }, 2000);
-      } else {
-        // 恢复原状态
+      if (result.canceled) {
         setUploadStatus((prev) => ({
           ...prev,
           [type]: '未上传',
         }));
+        return;
       }
+      setTimeout(() => {
+        setUploadStatus((prev) => ({
+          ...prev,
+          [type]: '已上传',
+        }));
+        appendReportRecord(type, '相机');
+      }, 1500);
     } catch (error) {
       console.error('拍照失败:', error);
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
-      Alert.alert('拍照失败', '拍照过程中出现错误');
+      Alert.alert('拍照失败', '拍照过程中出现错误，请稍后再试。');
     }
   };
 
   const handleSubmit = async () => {
-    if (!fullName.trim()) {
-      Alert.alert('提示', '请先填写姓名');
-      return;
-    }
-
     try {
       setIsLoading(true);
-
-      const payload = {
-        fullName: fullName.trim(),
-        diagnosisStage: diagnosisStage.trim() || undefined,
-        notes: activityText.trim() || undefined,
+      const formData = {
+        mriReport: uploadStatus.mri === '已上传',
+        geneticReport: uploadStatus.genetic === '已上传',
+        bloodReport: uploadStatus.blood === '已上传',
+        muscleStrength: muscleStrengthMap,
+        stairTestTime: timerSeconds > 0 ? timerSeconds : null,
+        dailyActivity: activityText.trim(),
       };
-
-      await upsertPatientProfile(payload);
-
-      if (muscleStrength.group) {
-        await addPatientMeasurement({
-          muscleGroup: muscleStrength.group,
-          strengthScore: muscleStrength.value,
-          recordedAt: new Date().toISOString(),
-        });
+      console.log('提交的数据', formData);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (muscleStrength.group && muscleStrength.value > 0) {
+        appendMuscleStrengthEvent(muscleStrength.value);
       }
-
+      if (timerSeconds > 0) {
+        appendActivityEvent(`楼梯测试完成，用时 ${formatTime(timerSeconds)}。`);
+      }
       if (activityText.trim()) {
-        await addActivityLog({
-          logDate: new Date().toISOString(),
-          source: 'manual',
-          content: activityText.trim(),
-          moodScore: 3,
-        });
+        appendActivityEvent(activityText);
       }
-
-      if (medicationName.trim()) {
-        await addMedication({
-          medicationName: medicationName.trim(),
-          dosage: medicationDosage.trim() || undefined,
-          frequency: medicationFrequency.trim() || undefined,
-          startDate: new Date().toISOString(),
-          status: 'active',
-        });
-      }
-
       Alert.alert('提交成功', '数据已成功录入！', [
+        { text: '继续录入' },
         {
-          text: '确定',
+          text: '返回上一页',
           onPress: () => {
             if (router.canGoBack()) {
               router.back();
@@ -303,8 +419,7 @@ const DataEntryScreen = () => {
       ]);
     } catch (error) {
       console.error('提交失败:', error);
-      const message = error instanceof ApiError ? error.message : '数据提交过程中出现错误';
-      Alert.alert('提交失败', message);
+      Alert.alert('提交失败', '数据提交过程中出现错误，请稍后再试。');
     } finally {
       setIsLoading(false);
     }
@@ -329,7 +444,6 @@ const DataEntryScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* 顶部导航 */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
           <FontAwesome6 name="arrow-left" size={16} color="#9CA3AF" />
@@ -339,108 +453,51 @@ const DataEntryScreen = () => {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* 基础信息 */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>基础信息</Text>
-          <View style={styles.basicInfoCard}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>姓名 *</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="请输入姓名"
-                placeholderTextColor="#9CA3AF"
-                value={fullName}
-                onChangeText={setFullName}
-              />
-            </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>诊断阶段</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="如：Stage 1"
-                placeholderTextColor="#9CA3AF"
-                value={diagnosisStage}
-                onChangeText={setDiagnosisStage}
-              />
-            </View>
-          </View>
-        </View>
-        {/* 医疗报告上传 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>医疗报告</Text>
 
-          {/* MRI报告上传 */}
-          <View style={styles.uploadCard}>
-            <View style={styles.uploadHeader}>
-              <Text style={styles.uploadTitle}>MRI影像</Text>
-              <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus.mri) }]}>
-                {uploadStatus.mri}
-              </Text>
+          {(['mri', 'genetic', 'blood'] as ReportType[]).map((type) => (
+            <View style={styles.uploadCard} key={type}>
+              <View style={styles.uploadHeader}>
+                <Text style={styles.uploadTitle}>{reportLabels[type]}</Text>
+                <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus[type]) }]}>
+                  {uploadStatus[type]}
+                </Text>
+              </View>
+              <View style={styles.uploadArea}>
+                <TouchableOpacity
+                  style={[styles.cameraButton, { backgroundColor: 'rgba(150, 159, 255, 0.2)' }]}
+                  onPress={() => handleCameraCapture(type)}
+                >
+                  <FontAwesome6 name="camera" size={18} color="#969FFF" />
+                </TouchableOpacity>
+                <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
+                <TouchableOpacity onPress={() => handleFileUpload(type)}>
+                  <Text style={[styles.uploadButtonText, { color: '#969FFF' }]}>选择文件</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <View style={styles.uploadArea}>
-              <TouchableOpacity
-                style={[styles.cameraButton, { backgroundColor: 'rgba(150, 159, 255, 0.2)' }]}
-                onPress={() => handleCameraCapture('mri')}
-              >
-                <FontAwesome6 name="camera" size={18} color="#969FFF" />
-              </TouchableOpacity>
-              <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
-              <TouchableOpacity onPress={() => handleFileUpload('mri')}>
-                <Text style={[styles.uploadButtonText, { color: '#969FFF' }]}>选择文件</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* 基因报告上传 */}
-          <View style={styles.uploadCard}>
-            <View style={styles.uploadHeader}>
-              <Text style={styles.uploadTitle}>基因检测报告</Text>
-              <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus.genetic) }]}>
-                {uploadStatus.genetic}
-              </Text>
-            </View>
-            <View style={styles.uploadArea}>
-              <TouchableOpacity
-                style={[styles.cameraButton, { backgroundColor: 'rgba(81, 71, 255, 0.2)' }]}
-                onPress={() => handleCameraCapture('genetic')}
-              >
-                <FontAwesome6 name="camera" size={18} color="#5147FF" />
-              </TouchableOpacity>
-              <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
-              <TouchableOpacity onPress={() => handleFileUpload('genetic')}>
-                <Text style={[styles.uploadButtonText, { color: '#5147FF' }]}>选择文件</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* 血检报告上传 */}
-          <View style={styles.uploadCard}>
-            <View style={styles.uploadHeader}>
-              <Text style={styles.uploadTitle}>血检报告</Text>
-              <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus.blood) }]}>
-                {uploadStatus.blood}
-              </Text>
-            </View>
-            <View style={styles.uploadArea}>
-              <TouchableOpacity
-                style={[styles.cameraButton, { backgroundColor: 'rgba(62, 57, 135, 0.2)' }]}
-                onPress={() => handleCameraCapture('blood')}
-              >
-                <FontAwesome6 name="camera" size={18} color="#3E3987" />
-              </TouchableOpacity>
-              <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
-              <TouchableOpacity onPress={() => handleFileUpload('blood')}>
-                <Text style={[styles.uploadButtonText, { color: '#3E3987' }]}>选择文件</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+          ))}
         </View>
 
-        {/* 肌力评分录入 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>报告上传历史</Text>
+          {reportHistory.map((item) => (
+            <View key={item.id} style={styles.historyCard}>
+              <View style={styles.historyHeader}>
+                <Text style={styles.historyTitle}>{reportLabels[item.type]}</Text>
+                <Text style={[styles.historyStatus, { color: '#10B981' }]}>已保存</Text>
+              </View>
+              <Text style={styles.historyMeta}>
+                {item.timestamp} · {item.source}
+              </Text>
+              {item.fileName && <Text style={styles.historyMeta}>文件：{item.fileName}</Text>}
+            </View>
+          ))}
+        </View>
+
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>肌力评分</Text>
-
-          {/* 肌群选择 */}
           <View style={styles.muscleGroupGrid}>
             {muscleGroups.map((group) => (
               <TouchableOpacity
@@ -462,7 +519,6 @@ const DataEntryScreen = () => {
             ))}
           </View>
 
-          {/* 肌力滑动条 */}
           <View style={styles.strengthSliderCard}>
             <View style={styles.strengthHeader}>
               <Text style={styles.selectedMuscle}>{getMuscleGroupName(muscleStrength.group)}</Text>
@@ -483,7 +539,6 @@ const DataEntryScreen = () => {
               />
             </View>
 
-            {/* 肌力等级说明 */}
             <View style={styles.strengthLabels}>
               {[0, 1, 2, 3, 4, 5].map((level) => (
                 <Text key={level} style={styles.strengthLabel}>
@@ -494,23 +549,38 @@ const DataEntryScreen = () => {
           </View>
         </View>
 
-        {/* 楼梯测试计时 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>基础数据可视化</Text>
+          <View style={styles.chartCard}>
+            <LineChart
+              data={strengthTrend}
+              width={chartWidth}
+              height={220}
+              chartConfig={chartConfig}
+              bezier
+              withShadow={false}
+              style={styles.chart}
+            />
+            <View style={styles.chartLegend}>
+              <View style={styles.chartLegendDot} />
+              <Text style={styles.chartLegendText}>肌力评分趋势（0-5 级）</Text>
+            </View>
+          </View>
+        </View>
+
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>楼梯测试</Text>
-
           <View style={styles.timerCard}>
             <View style={styles.timerIconContainer}>
               <FontAwesome6
                 name={isTimerRunning ? 'stop' : timerSeconds > 0 ? 'check' : 'stopwatch'}
                 size={24}
-                color={isTimerRunning ? '#EF4444' : timerSeconds > 0 ? '#10B981' : '#10B981'}
+                color={isTimerRunning ? '#EF4444' : '#10B981'}
               />
             </View>
             <Text style={styles.timerTitle}>爬楼计时</Text>
-            <Text style={styles.timerDescription}>记录爬10级楼梯所需时间</Text>
-
+            <Text style={styles.timerDescription}>记录 10 级楼梯所需时间</Text>
             <Text style={styles.timerDisplay}>{formatTime(timerSeconds)}</Text>
-
             <TouchableOpacity
               style={[styles.timerButton, isTimerRunning && styles.timerButtonActive]}
               onPress={handleTimerToggle}
@@ -524,10 +594,8 @@ const DataEntryScreen = () => {
           </View>
         </View>
 
-        {/* 日常活动记录 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>日常活动</Text>
-
           <View style={styles.activityCard}>
             <View style={styles.activityHeader}>
               <Text style={styles.activityTitle}>活动记录</Text>
@@ -536,23 +604,21 @@ const DataEntryScreen = () => {
                 onPress={handleVoiceToggle}
               >
                 <FontAwesome6
-                  name={isRecording ? 'stop' : 'microphone'}
+                  name={isRecording ? 'stop' : 'micro.phone'}
                   size={14}
                   color={isRecording ? '#EF4444' : '#3B82F6'}
                 />
               </TouchableOpacity>
             </View>
-
             <TextInput
               style={styles.activityTextarea}
-              placeholder="记录今天的活动情况，如：上午进行了30分钟的康复训练，下午散步1小时..."
+              placeholder="记录今天的活动情况，如：上午完成 20 分钟康复训练，下午散步 1 小时..."
               placeholderTextColor="#9CA3AF"
               value={activityText}
               onChangeText={setActivityText}
               multiline
               textAlignVertical="top"
             />
-
             {isRecording && (
               <View style={styles.voiceStatus}>
                 <FontAwesome6 name="microphone" size={12} color="#9CA3AF" />
@@ -562,46 +628,37 @@ const DataEntryScreen = () => {
           </View>
         </View>
 
-        {/* 用药管理 */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>用药管理</Text>
-
-          <View style={styles.basicInfoCard}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>药品名称</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="如：布洛芬、维生素D"
-                placeholderTextColor="#9CA3AF"
-                value={medicationName}
-                onChangeText={setMedicationName}
-              />
-            </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>剂量</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="如：200mg"
-                placeholderTextColor="#9CA3AF"
-                value={medicationDosage}
-                onChangeText={setMedicationDosage}
-              />
-            </View>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>频次</Text>
-              <TextInput
-                style={styles.textInput}
-                placeholder="如：每日2次"
-                placeholderTextColor="#9CA3AF"
-                value={medicationFrequency}
-                onChangeText={setMedicationFrequency}
-              />
-            </View>
-            <Text style={styles.sectionDescription}>提交后自动同步到用药清单</Text>
+          <Text style={styles.sectionTitle}>医疗时间轴</Text>
+          <View style={styles.timelineCard}>
+            {timelineEvents.map((event, index) => (
+              <View
+                key={event.id}
+                style={[
+                  styles.timelineItem,
+                  index === timelineEvents.length - 1 && styles.timelineItemLast,
+                ]}
+              >
+                <View style={styles.timelineHeader}>
+                  <Text style={styles.timelineTitle}>{event.title}</Text>
+                  <Text
+                    style={[
+                      styles.timelineTag,
+                      event.tag === '报告' && styles.timelineTagReport,
+                      event.tag === '肌力' && styles.timelineTagStrength,
+                      event.tag === '活动' && styles.timelineTagActivity,
+                    ]}
+                  >
+                    {event.tag}
+                  </Text>
+                </View>
+                <Text style={styles.timelineDescription}>{event.description}</Text>
+                <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
+              </View>
+            ))}
           </View>
         </View>
 
-        {/* 提交按钮 */}
         <View style={styles.submitSection}>
           <TouchableOpacity style={styles.submitButton} onPress={handleSubmit}>
             <Text style={styles.submitButtonText}>提交数据</Text>
@@ -609,7 +666,6 @@ const DataEntryScreen = () => {
         </View>
       </ScrollView>
 
-      {/* 加载遮罩 */}
       <Modal visible={isLoading} transparent animationType="fade">
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingCard}>
