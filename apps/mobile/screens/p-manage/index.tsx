@@ -1,3 +1,5 @@
+import DataComparisonFeature from '../p-data_comparison_feature/DataComparisonFeature';
+import RecordTimelineScreen from '../p-record_timeline_screen/RecordTimelineScreen';
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -263,6 +265,20 @@ const PMANAGE = () => {
                   </View>
                 </View>
               </View>
+            </View>
+          </View>
+
+          {/* 动态记录时间线 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <RecordTimelineScreen />
+            </View>
+          </View>
+
+          {/* 数据对比功能 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <DataComparisonFeature />
             </View>
           </View>
 
