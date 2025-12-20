@@ -1,11 +1,11 @@
-import type { Express, Request, Response } from 'express';
 import { Router } from 'express';
+import type { Express, Request, Response } from 'express';
+import { aiChatRoutes } from './ai-chat.routes.js';
 import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { createPatientProfileRouter } from '../modules/patient-profile/profile.routes.js';
-import { aiChatRoutes } from './ai-chat.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export interface RouteContext {

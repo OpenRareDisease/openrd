@@ -1,5 +1,4 @@
 import { useRouter } from 'expo-router';
-import React from 'react';
 import { StyleSheet, View, Text, Pressable, Platform } from 'react-native';
 
 export default function NotFoundScreen() {
@@ -15,9 +14,7 @@ export default function NotFoundScreen() {
     <View style={styles.container}>
       <Text style={styles.heading}>404</Text>
       <Text style={styles.textStyle}>页面未找到</Text>
-      <Text style={styles.subTextStyle}>
-        抱歉！您访问的页面不存在，当前页面功能待完善。
-      </Text>
+      <Text style={styles.subTextStyle}>抱歉！您访问的页面不存在，当前页面功能待完善。</Text>
       <Pressable onPress={goBack} style={styles.button}>
         <Text style={styles.buttonText}>返回上一页</Text>
       </Pressable>

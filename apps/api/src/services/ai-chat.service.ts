@@ -34,19 +34,20 @@ export class AIChatService {
 请用中文回答，保持专业且温暖的态度：`;
 
       const response = await openai.chat.completions.create({
-        model: "deepseek-ai/DeepSeek-V3",  
+        model: 'deepseek-ai/DeepSeek-V3',
         messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
         ],
         max_tokens: 1500,
         temperature: 0.7,
       });
 
       return response.choices[0]?.message?.content || '抱歉，我暂时无法回答这个问题。';
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as { message?: string; status?: unknown; code?: unknown };
       console.error('AI问答服务错误:', error);
-      console.error('错误详情:', error.message, error.status, error.code);
+      console.error('错误详情:', err.message, err.status, err.code);
       throw new Error('AI服务暂时不可用，请稍后重试。');
     }
   }

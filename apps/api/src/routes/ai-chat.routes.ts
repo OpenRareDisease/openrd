@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { AIChatService } from '../services/ai-chat.service';
-import { authenticate } from '../middleware/auth.js'; 
 
 const router = Router();
 const aiService = new AIChatService();
@@ -9,16 +8,16 @@ const aiService = new AIChatService();
 router.post('/ask', async (req, res) => {
   try {
     const { question, userContext } = req.body;
-    
+
     if (!question) {
       return res.status(400).json({
-        error: '问题不能为空'
+        error: '问题不能为空',
       });
     }
 
     const answer = await aiService.askFSHDQuestion({
       question,
-      userContext
+      userContext,
     });
 
     res.json({
@@ -26,13 +25,13 @@ router.post('/ask', async (req, res) => {
       data: {
         question,
         answer,
-        timestamp: new Date().toISOString()
-      }
+        timestamp: new Date().toISOString(),
+      },
     });
   } catch (error) {
     console.error('AI问答API错误:', error);
     res.status(500).json({
-      error: 'AI服务暂时不可用'
+      error: 'AI服务暂时不可用',
     });
   }
 });
@@ -42,7 +41,7 @@ router.get('/health', (req, res) => {
   res.json({
     service: 'AI Chat',
     status: 'active',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
