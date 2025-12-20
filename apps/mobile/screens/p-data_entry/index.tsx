@@ -17,6 +17,13 @@ import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
 import { LineChart } from 'react-native-chart-kit';
 import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
+import {
+  ApiError,
+  addActivityLog,
+  addPatientMeasurement,
+  getMyPatientProfile,
+  upsertPatientProfile,
+} from '../../lib/api';
 import styles from './styles';
 
 type ReportType = 'mri' | 'genetic' | 'blood';
@@ -466,16 +473,59 @@ const DataEntryScreen = () => {
   const handleSubmit = async () => {
     try {
       setIsLoading(true);
-      const formData = {
-        mriReport: uploadStatus.mri === '已上传',
-        geneticReport: uploadStatus.genetic === '已上传',
-        bloodReport: uploadStatus.blood === '已上传',
-        muscleStrength: muscleStrengthMap,
-        stairTestTime: timerSeconds > 0 ? timerSeconds : null,
-        dailyActivity: activityText.trim(),
-      };
-      console.log('提交的数据', formData);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // 确保档案存在；若 404 则创建一个占位档案
+      try {
+        await getMyPatientProfile();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          await upsertPatientProfile({ fullName: '未命名用户' });
+        } else {
+          throw error;
+        }
+      }
+
+      const requests: Promise<unknown>[] = [];
+
+      // 提交肌力测量
+      Object.entries(muscleStrengthMap).forEach(([group, value]) => {
+        if (value > 0) {
+          requests.push(
+            addPatientMeasurement({
+              muscleGroup: group,
+              strengthScore: value,
+              recordedAt: new Date().toISOString(),
+            }),
+          );
+        }
+      });
+
+      const nowIso = new Date().toISOString();
+
+      // 提交楼梯测试结果作为活动日志
+      if (timerSeconds > 0) {
+        requests.push(
+          addActivityLog({
+            logDate: nowIso,
+            source: 'stair-test',
+            content: `楼梯测试用时 ${formatTime(timerSeconds)}`,
+          }),
+        );
+      }
+
+      // 提交日常活动
+      if (activityText.trim()) {
+        requests.push(
+          addActivityLog({
+            logDate: nowIso,
+            source: 'manual',
+            content: activityText.trim(),
+          }),
+        );
+      }
+
+      await Promise.all(requests);
+
       if (muscleStrength.group && muscleStrength.value > 0) {
         appendMuscleStrengthEvent(muscleStrength.value);
       }
@@ -497,8 +547,12 @@ const DataEntryScreen = () => {
         },
       ]);
     } catch (error) {
+      const message =
+        error instanceof ApiError && error.message
+          ? error.message
+          : '数据提交过程中出现错误，请稍后再试。';
       console.error('提交失败:', error);
-      Alert.alert('提交失败', '数据提交过程中出现错误，请稍后再试。');
+      Alert.alert('提交失败', message);
     } finally {
       setIsLoading(false);
     }
