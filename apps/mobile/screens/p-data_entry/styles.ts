@@ -54,6 +54,11 @@ export default StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 12,
   },
+  sectionSubtitle: {
+    fontSize: 13,
+    color: '#D1D5DB',
+    marginBottom: 12,
+  },
   uploadCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,
@@ -228,6 +233,15 @@ export default StyleSheet.create({
     paddingHorizontal: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  radarCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    marginBottom: 12,
+    alignItems: 'center',
   },
   chart: {
     marginLeft: -16,

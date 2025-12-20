@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
 import { LineChart } from 'react-native-chart-kit';
+import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
 import styles from './styles';
 
 type ReportType = 'mri' | 'genetic' | 'blood';
@@ -103,6 +104,75 @@ const chartConfig = {
   },
 };
 
+const RadarChart = ({
+  data,
+  maxValue = 5,
+  size = 260,
+}: {
+  data: { label: string; value: number }[];
+  maxValue?: number;
+  size?: number;
+}) => {
+  const center = size / 2;
+  const radius = size / 2 - 20;
+  const angleStep = (Math.PI * 2) / data.length;
+
+  const points = data
+    .map((item, index) => {
+      const angle = -Math.PI / 2 + index * angleStep;
+      const valueRatio = Math.max(0, Math.min(item.value, maxValue)) / maxValue;
+      const x = center + radius * valueRatio * Math.cos(angle);
+      const y = center + radius * valueRatio * Math.sin(angle);
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  return (
+    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {[1, 2, 3, 4, 5].map((level) => {
+        const r = (radius / 5) * level;
+        const polygonPoints = data
+          .map((_, index) => {
+            const angle = -Math.PI / 2 + index * angleStep;
+            const x = center + r * Math.cos(angle);
+            const y = center + r * Math.sin(angle);
+            return `${x},${y}`;
+          })
+          .join(' ');
+        return <Polygon key={level} points={polygonPoints} fill="none" stroke="#2F2F4A" />;
+      })}
+
+      {data.map((_, index) => {
+        const angle = -Math.PI / 2 + index * angleStep;
+        const x = center + radius * Math.cos(angle);
+        const y = center + radius * Math.sin(angle);
+        return <Line key={index} x1={center} y1={center} x2={x} y2={y} stroke="#2F2F4A" />;
+      })}
+
+      <Polygon points={points} fill="rgba(150, 159, 255, 0.2)" stroke="#969FFF" />
+      {data.map((item, index) => {
+        const angle = -Math.PI / 2 + index * angleStep;
+        const x = center + radius * Math.cos(angle);
+        const y = center + radius * Math.sin(angle);
+        return (
+          <React.Fragment key={item.label}>
+            <Circle cx={x} cy={y} r={3} fill="#969FFF" />
+            <SvgText
+              x={x}
+              y={y + (y < center ? -8 : 12)}
+              fill="#CBD5E1"
+              fontSize="10"
+              textAnchor="middle"
+            >
+              {item.label}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
+    </Svg>
+  );
+};
+
 const DataEntryScreen = () => {
   const router = useRouter();
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -151,6 +221,15 @@ const DataEntryScreen = () => {
     { id: 'triceps', name: '肱三头肌', icon: 'hand-fist', color: '#3E3987' },
     { id: 'tibialis', name: '胫骨前肌', icon: 'person-running', color: '#10B981' },
   ];
+
+  const radarData = useMemo(
+    () =>
+      muscleGroups.map((group) => ({
+        label: group.name,
+        value: muscleStrengthMap[group.id] ?? 0,
+      })),
+    [muscleGroups, muscleStrengthMap],
+  );
 
   const handleBackPress = () => {
     if (router.canGoBack()) {
@@ -551,6 +630,10 @@ const DataEntryScreen = () => {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>基础数据可视化</Text>
+          <View style={styles.radarCard}>
+            <Text style={styles.sectionSubtitle}>肌群雷达图（0-5 级）</Text>
+            <RadarChart data={radarData} />
+          </View>
           <View style={styles.chartCard}>
             <LineChart
               data={strengthTrend}
