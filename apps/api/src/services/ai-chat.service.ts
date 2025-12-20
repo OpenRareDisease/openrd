@@ -2,11 +2,14 @@ import OpenAI from 'openai';
 import { loadAppEnv } from '../config/env';
 const config = loadAppEnv();
 
-// 使用硅基流动 API - 修正配置
-const openai = new OpenAI({
-  apiKey: config.openaiApiKey,
-  baseURL: 'https://api.siliconflow.cn/v1',
-});
+// 延迟创建客户端，避免在缺少密钥时阻塞服务启动
+const apiKey = config.openaiApiKey;
+const openai = apiKey
+  ? new OpenAI({
+      apiKey,
+      baseURL: 'https://api.siliconflow.cn/v1',
+    })
+  : null;
 
 export interface AIQuestionRequest {
   question: string;
@@ -20,6 +23,10 @@ export interface AIQuestionRequest {
 export class AIChatService {
   async askFSHDQuestion(request: AIQuestionRequest): Promise<string> {
     try {
+      if (!openai) {
+        throw new Error('AI服务未配置：缺少 OPENAI_API_KEY');
+      }
+
       const systemPrompt = `你是一个专业、友善的FSHD（面肩肱型肌营养不良症）医疗助手。请遵循以下原则：
 1. 提供准确、专业的FSHD相关知识，包括症状、治疗、康复等
 2. 用简单易懂的语言解释医学术语
