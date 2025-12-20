@@ -2,6 +2,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Stack, usePathname, useGlobalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { LogBox } from 'react-native';
+import { useEffect } from 'react';
 import { AuthProvider } from '../contexts/AuthContext';
 
 LogBox.ignoreLogs([
