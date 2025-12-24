@@ -15,11 +15,13 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "chromadb": "^3.1.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "openai": "^6.9.1",
     "pg": "^8.13.1",
     "pino": "^9.5.0",
     "pino-http": "^10.3.1",
