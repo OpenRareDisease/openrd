@@ -102,6 +102,43 @@ const PMANAGE = () => {
     return isNaN(date.getTime()) ? '暂无记录' : date.toLocaleDateString();
   }, [riskSummary]);
 
+  const timelineItems = useMemo(() => {
+    if (!profile) return [];
+    const items: { title: string; description: string; time: string; ts: number }[] = [];
+    (profile.documents ?? []).forEach((doc: any) => {
+      const ts = doc.uploadedAt ? new Date(doc.uploadedAt).getTime() : 0;
+      items.push({
+        title: '报告上传',
+        description:
+          doc.ocrPayload?.extractedText ??
+          doc.ocrPayload?.fields?.hint ??
+          doc.fileName ??
+          '已上传报告',
+        time: doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    (profile.measurements ?? []).forEach((item: any) => {
+      const ts = item.recordedAt ? new Date(item.recordedAt).getTime() : 0;
+      items.push({
+        title: `${MUSCLE_LABELS[item.muscleGroup] || item.muscleGroup} 肌力评估`,
+        description: `肌力 ${Number(item.strengthScore)} 分`,
+        time: item.recordedAt ? new Date(item.recordedAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    (profile.activityLogs ?? []).forEach((item: any) => {
+      const ts = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      items.push({
+        title: '日常活动记录',
+        description: item.content ?? '已记录活动',
+        time: item.createdAt ? new Date(item.createdAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    return items.sort((a, b) => b.ts - a.ts).slice(0, 6);
+  }, [profile]);
+
   const riskLevelColor = (level: string) => {
     switch (level) {
       case 'high':
@@ -271,14 +308,14 @@ const PMANAGE = () => {
           {/* 动态记录时间线 */}
           <View style={styles.section}>
             <View style={styles.card}>
-              <RecordTimelineScreen />
+              <RecordTimelineScreen items={timelineItems} />
             </View>
           </View>
 
           {/* 数据对比功能 */}
           <View style={styles.section}>
             <View style={styles.card}>
-              <DataComparisonFeature />
+              <DataComparisonFeature measurements={profile?.measurements ?? []} />
             </View>
           </View>
 

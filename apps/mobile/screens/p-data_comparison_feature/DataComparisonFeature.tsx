@@ -5,26 +5,60 @@ import { FontAwesome6 } from '@expo/vector-icons';
 type MuscleSnapshot = {
   label: string;
   latest: number;
-  previous: number;
+  previous: number | null;
 };
 
-const MOCK_DATA: MuscleSnapshot[] = [
-  { label: '三角肌', latest: 3.5, previous: 4.0 },
-  { label: '肱二头肌', latest: 4.0, previous: 4.2 },
-  { label: '肱三头肌', latest: 4.5, previous: 4.6 },
-  { label: '胫骨前肌', latest: 4.8, previous: 4.8 },
-];
+export interface Measurement {
+  id: string;
+  muscleGroup: string;
+  strengthScore: number;
+  recordedAt: string;
+}
 
-function getTrend(latest: number, previous: number) {
+const getTrend = (latest: number, previous: number | null) => {
+  if (previous === null) return { label: '首次记录', color: '#93c5fd' };
   const diff = latest - previous;
 
   if (diff > 0.1) return { label: '略有上升', color: '#22c55e' }; // green
   if (diff < -0.1) return { label: '略有下降', color: '#f97316' }; // orange
   return { label: '基本稳定', color: '#e5e7eb' }; // grey
-}
+};
+
+const defaultLabels: Record<string, string> = {
+  deltoid: '三角肌',
+  biceps: '肱二头肌',
+  triceps: '肱三头肌',
+  tibialis: '胫骨前肌',
+  quadriceps: '股四头肌',
+  hamstrings: '腘绳肌',
+  gluteus: '臀肌',
+};
 
 // 👇 name matches the file & your import
-const DataComparisonFeature: React.FC = () => {
+const DataComparisonFeature: React.FC<{
+  measurements: Measurement[];
+  muscleLabels?: Record<string, string>;
+}> = ({ measurements, muscleLabels = defaultLabels }) => {
+  const grouped = new Map<string, Measurement[]>();
+  measurements.forEach((item) => {
+    const list = grouped.get(item.muscleGroup) ?? [];
+    list.push(item);
+    grouped.set(item.muscleGroup, list);
+  });
+
+  const rows: MuscleSnapshot[] = Array.from(grouped.entries()).map(([group, list]) => {
+    const sorted = [...list].sort(
+      (a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime(),
+    );
+    const latest = sorted[0];
+    const previous = sorted[1];
+    return {
+      label: muscleLabels[group] ?? group,
+      latest: Number(latest.strengthScore),
+      previous: previous ? Number(previous.strengthScore) : null,
+    };
+  });
+
   return (
     <View style={styles.card}>
       {/* 标题 */}
@@ -48,28 +82,36 @@ const DataComparisonFeature: React.FC = () => {
       </View>
 
       {/* 数据行 */}
-      {MOCK_DATA.map((row) => {
-        const trend = getTrend(row.latest, row.previous);
-        const diff = row.latest - row.previous;
+      {rows.length === 0 ? (
+        <Text style={styles.emptyText}>暂无肌力记录，录入后可查看对比。</Text>
+      ) : (
+        rows.map((row) => {
+          const trend = getTrend(row.latest, row.previous);
+          const diff = row.previous === null ? 0 : row.latest - row.previous;
 
-        return (
-          <View key={row.label} style={styles.row}>
-            <Text style={[styles.cellText, { flex: 2 }]}>{row.label}</Text>
-            <Text style={styles.cellText}>{row.previous.toFixed(1)}</Text>
-            <Text style={styles.cellText}>{row.latest.toFixed(1)}</Text>
-            <View style={[styles.trendPill, { borderColor: trend.color }]}>
-              <View style={[styles.trendDot, { backgroundColor: trend.color }]} />
-              <Text style={[styles.trendText, { color: trend.color }]}>
-                {trend.label}{' '}
-                <Text style={styles.diffText}>
-                  ({diff >= 0 ? '+' : ''}
-                  {diff.toFixed(1)})
-                </Text>
+          return (
+            <View key={row.label} style={styles.row}>
+              <Text style={[styles.cellText, { flex: 2 }]}>{row.label}</Text>
+              <Text style={styles.cellText}>
+                {row.previous === null ? '--' : row.previous.toFixed(1)}
               </Text>
+              <Text style={styles.cellText}>{row.latest.toFixed(1)}</Text>
+              <View style={[styles.trendPill, { borderColor: trend.color }]}>
+                <View style={[styles.trendDot, { backgroundColor: trend.color }]} />
+                <Text style={[styles.trendText, { color: trend.color }]}>
+                  {trend.label}{' '}
+                  {row.previous !== null && (
+                    <Text style={styles.diffText}>
+                      ({diff >= 0 ? '+' : ''}
+                      {diff.toFixed(1)})
+                    </Text>
+                  )}
+                </Text>
+              </View>
             </View>
-          </View>
-        );
-      })}
+          );
+        })
+      )}
     </View>
   );
 };
@@ -152,6 +194,11 @@ const styles = StyleSheet.create({
   diffText: {
     color: 'rgba(156,163,175,0.9)', // subtle grey for the +0.3 part
     fontSize: 11,
+  },
+  emptyText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+    marginTop: 8,
   },
 });
 

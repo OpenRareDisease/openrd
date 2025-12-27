@@ -1,26 +1,30 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
-const mockTimeline = [
-  { title: 'MRI 影像上传', description: '影像清晰可读', time: '2025-12-18' },
-  { title: '日常活动记录', description: '步行 2 公里，拉伸 20 分钟', time: '2025-12-17' },
-  { title: '肌力评估', description: '三角肌评分 4.0', time: '2025-12-16' },
-];
+export interface TimelineItem {
+  title: string;
+  description: string;
+  time: string;
+}
 
-const RecordTimelineScreen: React.FC = () => {
+const RecordTimelineScreen: React.FC<{ items: TimelineItem[] }> = ({ items }) => {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>动态记录</Text>
-      {mockTimeline.map((item, idx) => (
-        <View key={idx} style={styles.item}>
-          <View style={styles.dot} />
-          <View style={styles.content}>
-            <Text style={styles.itemTitle}>{item.title}</Text>
-            <Text style={styles.itemDesc}>{item.description}</Text>
-            <Text style={styles.itemTime}>{item.time}</Text>
+      {items.length === 0 ? (
+        <Text style={styles.emptyText}>暂无动态记录，录入后会展示在这里。</Text>
+      ) : (
+        items.map((item, idx) => (
+          <View key={`${item.title}-${idx}`} style={styles.item}>
+            <View style={styles.dot} />
+            <View style={styles.content}>
+              <Text style={styles.itemTitle}>{item.title}</Text>
+              <Text style={styles.itemDesc}>{item.description}</Text>
+              <Text style={styles.itemTime}>{item.time}</Text>
+            </View>
           </View>
-        </View>
-      ))}
+        ))
+      )}
     </View>
   );
 };
@@ -64,6 +68,10 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
   },
   itemTime: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  emptyText: {
     fontSize: 12,
     color: '#9CA3AF',
   },
