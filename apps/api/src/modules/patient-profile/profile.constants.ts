@@ -17,7 +17,12 @@ export const FUNCTION_TEST_TYPES = [
   'custom',
 ] as const;
 
-export const ACTIVITY_SOURCES = ['manual', 'voice_transcription', 'imported'] as const;
+export const ACTIVITY_SOURCES = [
+  'manual',
+  'voice_transcription',
+  'imported',
+  'stair_test',
+] as const;
 
 export const DOCUMENT_TYPES = ['mri', 'genetic_report', 'blood_panel', 'other'] as const;
 

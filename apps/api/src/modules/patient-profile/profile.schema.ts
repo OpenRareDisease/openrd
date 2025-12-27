@@ -76,6 +76,12 @@ export const documentSchema = z.object({
 });
 export type DocumentInput = z.infer<typeof documentSchema>;
 
+export const documentUploadSchema = z.object({
+  documentType: z.enum(DOCUMENT_TYPES),
+  title: z.string().max(255).optional().nullable(),
+});
+export type DocumentUploadInput = z.infer<typeof documentUploadSchema>;
+
 export const medicationSchema = z.object({
   medicationName: z.string().min(1).max(255),
   dosage: z.string().max(120).optional().nullable(),

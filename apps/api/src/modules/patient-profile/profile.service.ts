@@ -78,6 +78,7 @@ export interface PatientDocumentDTO {
   status: string;
   uploadedAt: string;
   checksum: string | null;
+  ocrPayload: unknown | null;
 }
 
 export interface PatientMedicationDTO {
@@ -207,7 +208,7 @@ export class PatientProfileService {
           [profileId],
         ),
         client.query(
-          `SELECT id, profile_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum
+          `SELECT id, profile_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload
            FROM patient_documents
            WHERE profile_id = $1
            ORDER BY uploaded_at DESC`,
@@ -277,6 +278,7 @@ export class PatientProfileService {
           status: row.status,
           uploadedAt: toTimestampString(row.uploaded_at),
           checksum: row.checksum,
+          ocrPayload: row.ocr_payload ?? null,
         })),
         medications: medicationsResult.rows.map((row) => ({
           id: row.id,
@@ -555,15 +557,17 @@ export class PatientProfileService {
         storage_uri,
         status,
         uploaded_at,
-        checksum
+        checksum,
+        ocr_payload
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7,
         COALESCE($8, 'uploaded'),
         COALESCE($9::timestamptz, NOW()),
-        $10
+        $10,
+        $11
       )
-      RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum`,
+      RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload`,
       [
         profileId,
         payload.documentType,
@@ -575,6 +579,7 @@ export class PatientProfileService {
         payload.status ?? null,
         payload.uploadedAt ?? null,
         payload.checksum ?? null,
+        null,
       ],
     );
 
@@ -591,6 +596,87 @@ export class PatientProfileService {
       status: row.status,
       uploadedAt: toTimestampString(row.uploaded_at),
       checksum: row.checksum,
+      ocrPayload: row.ocr_payload ?? null,
+    };
+  }
+
+  async addUploadedDocument(input: {
+    userId: string;
+    documentType: string;
+    title?: string | null;
+    storageUri: string;
+    fileName: string | null;
+    mimeType: string | null;
+    fileSizeBytes: number | null;
+    ocrPayload: unknown | null;
+  }): Promise<PatientDocumentDTO> {
+    const profileId = await this.ensureProfileForUser(input.userId);
+
+    const result = await this.pool.query(
+      `INSERT INTO patient_documents (
+        profile_id,
+        document_type,
+        title,
+        file_name,
+        mime_type,
+        file_size_bytes,
+        storage_uri,
+        status,
+        uploaded_at,
+        ocr_payload
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7, 'uploaded', NOW(), $8
+      )
+      RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload`,
+      [
+        profileId,
+        input.documentType,
+        input.title ?? null,
+        input.fileName ?? null,
+        input.mimeType ?? null,
+        input.fileSizeBytes ?? null,
+        input.storageUri,
+        input.ocrPayload ?? null,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return {
+      id: row.id,
+      documentType: row.document_type,
+      title: row.title,
+      fileName: row.file_name,
+      mimeType: row.mime_type,
+      fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+      storageUri: row.storage_uri,
+      status: row.status,
+      uploadedAt: toTimestampString(row.uploaded_at),
+      checksum: row.checksum,
+      ocrPayload: row.ocr_payload ?? null,
+    };
+  }
+
+  async getDocumentForUser(userId: string, documentId: string) {
+    const result = await this.pool.query(
+      `SELECT d.id, d.storage_uri, d.file_name, d.mime_type, d.ocr_payload
+       FROM patient_documents d
+       JOIN patient_profiles p ON p.id = d.profile_id
+       WHERE p.user_id = $1 AND d.id = $2`,
+      [userId, documentId],
+    );
+
+    if (!result.rowCount) {
+      throw new AppError('Document not found', 404);
+    }
+
+    return result.rows[0] as {
+      id: string;
+      storage_uri: string;
+      file_name: string | null;
+      mime_type: string | null;
+      ocr_payload: unknown | null;
     };
   }
 
