@@ -160,11 +160,15 @@ CREATE TABLE IF NOT EXISTS patient_documents (
     storage_uri      TEXT NOT NULL,
     status           TEXT NOT NULL DEFAULT 'uploaded',
     uploaded_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    checksum         TEXT
+    checksum         TEXT,
+    ocr_payload      JSONB
 );
 
 CREATE INDEX IF NOT EXISTS idx_patient_documents_profile
     ON patient_documents (profile_id, document_type);
+
+ALTER TABLE patient_documents
+    ADD COLUMN IF NOT EXISTS ocr_payload JSONB;
 
 -- Medical reports (metadata only, files stored elsewhere).
 CREATE TABLE IF NOT EXISTS medical_reports (
