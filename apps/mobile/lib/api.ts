@@ -9,12 +9,20 @@ export class ApiError extends Error {
   data?: unknown;
 }
 
-const buildHeaders = async (headers?: HeadersInit) => {
+const buildHeaders = async (
+  headers?: HeadersInit,
+  config?: {
+    isFormData?: boolean;
+  },
+) => {
   const mergedHeaders: Record<string, string> = {
     Accept: 'application/json',
-    'Content-Type': 'application/json',
     ...(headers as Record<string, string>),
   };
+
+  if (!config?.isFormData) {
+    mergedHeaders['Content-Type'] = 'application/json';
+  }
 
   const token = await getAuthToken();
   if (token) {
@@ -39,10 +47,13 @@ export const getAuthToken = async () => {
 export const apiRequest = async <T = unknown>(
   path: string,
   options: RequestInit = {},
+  config?: {
+    isFormData?: boolean;
+  },
 ): Promise<T> => {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
-    headers: await buildHeaders(options.headers),
+    headers: await buildHeaders(options.headers, config),
   });
 
   const isJson = response.headers.get('content-type')?.includes('application/json');
@@ -104,6 +115,61 @@ export const addMedication = (payload: Record<string, unknown>) =>
 export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
+
+export interface PatientDocument {
+  id: string;
+  documentType: string;
+  title: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+  fileSizeBytes: number | null;
+  storageUri: string;
+  status: string;
+  uploadedAt: string;
+  checksum: string | null;
+  ocrPayload: {
+    extractedText?: string;
+    fields?: Record<string, string>;
+    provider?: string;
+  } | null;
+}
+
+type DocumentUploadFile =
+  | {
+      uri: string;
+      name: string;
+      type: string;
+    }
+  | File;
+
+const isWebFile = (file: DocumentUploadFile): file is File => {
+  return typeof File !== 'undefined' && file instanceof File;
+};
+
+export const uploadPatientDocument = async (input: {
+  documentType: string;
+  title?: string;
+  file: DocumentUploadFile;
+}): Promise<PatientDocument> => {
+  const formData = new FormData();
+  formData.append('documentType', input.documentType);
+  if (input.title) {
+    formData.append('title', input.title);
+  }
+  if (isWebFile(input.file)) {
+    formData.append('file', input.file, input.file.name);
+  } else {
+    formData.append('file', input.file as any);
+  }
+
+  return apiRequest<PatientDocument>(
+    '/profiles/me/documents/upload',
+    { method: 'POST', body: formData },
+    {
+      isFormData: true,
+    },
+  );
+};
 
 export interface AuthResponse {
   user: {
