@@ -1,9 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+  Dimensions,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { LineChart } from 'react-native-chart-kit';
+import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
 import styles from './styles';
 import { ApiError, getMyPatientProfile } from '../../lib/api';
 
@@ -23,6 +33,7 @@ interface AlertItem {
   title: string;
   description: string;
   actionText?: string;
+  actionTarget?: 'data_entry' | 'manage';
 }
 
 interface PatientMeasurement {
@@ -32,11 +43,32 @@ interface PatientMeasurement {
   recordedAt: string;
 }
 
+interface PatientActivityLog {
+  id: string;
+  logDate: string;
+  content: string | null;
+  createdAt: string;
+}
+
+interface PatientDocument {
+  id: string;
+  documentType: string;
+  title: string | null;
+  fileName: string | null;
+  uploadedAt: string;
+  ocrPayload?: {
+    extractedText?: string;
+    fields?: Record<string, string>;
+  } | null;
+}
+
 interface PatientProfile {
   id: string;
   fullName: string | null;
   diagnosisStage: string | null;
   measurements: PatientMeasurement[];
+  activityLogs: PatientActivityLog[];
+  documents: PatientDocument[];
   updatedAt: string;
 }
 
@@ -54,44 +86,263 @@ const ArchiveScreen = () => {
   const getMuscleLabel = (key: string) => MUSCLE_LABELS[key] || key;
 
   const router = useRouter();
-  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+  const [isTimelineExpanded, setIsTimelineExpanded] = useState(false);
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const latestUpdatedAt = React.useMemo(() => {
+    if (!profile) return null;
+    const timestamps = [
+      profile.updatedAt,
+      ...profile.measurements.map((item) => item.recordedAt),
+      ...profile.activityLogs.map((item) => item.createdAt ?? item.logDate),
+      ...profile.documents.map((doc) => doc.uploadedAt),
+    ]
+      .filter(Boolean)
+      .map((value) => new Date(value).getTime())
+      .filter((value) => !Number.isNaN(value));
+
+    if (timestamps.length === 0) return null;
+    return new Date(Math.max(...timestamps));
+  }, [profile]);
+
+  const mapDocumentTypeLabel = (type?: string) => {
+    switch (type) {
+      case 'mri':
+        return 'MRI 影像报告';
+      case 'genetic_report':
+        return '基因检测报告';
+      case 'blood_panel':
+        return '血检报告';
+      default:
+        return '医学报告';
+    }
+  };
+
   const timelineEvents: TimelineEvent[] = profile
-    ? profile.measurements.map((item) => ({
-        id: item.id,
-        title: `${getMuscleLabel(item.muscleGroup)} 肌力评估`,
-        date: new Date(item.recordedAt).toLocaleDateString(),
-        description: `肌力得分：${item.strengthScore}`,
-        status: item.strengthScore >= 4 ? 'stable' : item.strengthScore >= 3 ? 'info' : 'warning',
-        statusText:
-          item.strengthScore >= 4 ? '表现良好' : item.strengthScore >= 3 ? '建议关注' : '需要干预',
-      }))
+    ? [
+        ...profile.measurements.map((item) => ({
+          sortKey: new Date(item.recordedAt).getTime(),
+          event: {
+            id: `measure-${item.id}`,
+            title: `${getMuscleLabel(item.muscleGroup)} 肌力评估`,
+            date: new Date(item.recordedAt).toLocaleDateString(),
+            description: `肌力得分：${item.strengthScore}`,
+            status:
+              item.strengthScore >= 4 ? 'stable' : item.strengthScore >= 3 ? 'info' : 'warning',
+            statusText:
+              item.strengthScore >= 4
+                ? '表现良好'
+                : item.strengthScore >= 3
+                  ? '建议关注'
+                  : '需要干预',
+          },
+        })),
+        ...profile.activityLogs.map((item) => ({
+          sortKey: new Date(item.logDate ?? item.createdAt).getTime(),
+          event: {
+            id: `activity-${item.id}`,
+            title: '日常活动记录',
+            date: new Date(item.logDate ?? item.createdAt).toLocaleDateString(),
+            description: item.content ?? '已记录活动',
+            status: 'stable' as const,
+            statusText: '已记录',
+          },
+        })),
+        ...profile.documents.map((doc) => ({
+          sortKey: new Date(doc.uploadedAt).getTime(),
+          event: {
+            id: `doc-${doc.id}`,
+            title: `${mapDocumentTypeLabel(doc.documentType)}已上传`,
+            date: new Date(doc.uploadedAt).toLocaleDateString(),
+            description:
+              doc.ocrPayload?.extractedText ??
+              doc.ocrPayload?.fields?.hint ??
+              doc.fileName ??
+              '已上传',
+            status: 'info' as const,
+            statusText: '已更新',
+          },
+        })),
+      ]
+        .sort((a, b) => b.sortKey - a.sortKey)
+        .map((item) => item.event)
     : [];
 
-  const alertItems: AlertItem[] = [
-    {
-      id: '1',
-      type: 'warning',
-      title: '肌力下降预警',
-      description: '三角肌肌力从4.0降至3.5，建议加强针对性训练',
-      actionText: '查看干预计划 →',
+  const chartWidth = Dimensions.get('window').width - 48;
+
+  const chartConfig = {
+    backgroundColor: '#0F0F23',
+    backgroundGradientFrom: '#0F0F23',
+    backgroundGradientTo: '#0F0F23',
+    decimalPlaces: 1,
+    color: (opacity = 1) => `rgba(150, 159, 255, ${opacity})`,
+    labelColor: () => '#9CA3AF',
+    propsForDots: {
+      r: '4',
+      strokeWidth: '2',
+      stroke: '#FFFFFF',
     },
-    {
-      id: '2',
-      type: 'info',
-      title: '定期复查提醒',
-      description: '建议3个月后进行MRI复查',
-    },
-    {
-      id: '3',
-      type: 'success',
-      title: '康复训练坚持良好',
-      description: '本周已完成80%的训练计划',
-    },
-  ];
+  };
+
+  const RadarChart = ({
+    data,
+    maxValue = 5,
+    size = 220,
+  }: {
+    data: { label: string; value: number }[];
+    maxValue?: number;
+    size?: number;
+  }) => {
+    const center = size / 2;
+    const radius = size / 2 - 20;
+    const angleStep = (Math.PI * 2) / data.length;
+
+    const points = data
+      .map((item, index) => {
+        const angle = -Math.PI / 2 + index * angleStep;
+        const valueRatio = Math.max(0, Math.min(item.value, maxValue)) / maxValue;
+        const x = center + radius * valueRatio * Math.cos(angle);
+        const y = center + radius * valueRatio * Math.sin(angle);
+        return `${x},${y}`;
+      })
+      .join(' ');
+
+    return (
+      <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {[1, 2, 3, 4, 5].map((level) => {
+          const r = (radius / 5) * level;
+          const polygonPoints = data
+            .map((_, index) => {
+              const angle = -Math.PI / 2 + index * angleStep;
+              const x = center + r * Math.cos(angle);
+              const y = center + r * Math.sin(angle);
+              return `${x},${y}`;
+            })
+            .join(' ');
+          return <Polygon key={level} points={polygonPoints} fill="none" stroke="#2F2F4A" />;
+        })}
+
+        {data.map((_, index) => {
+          const angle = -Math.PI / 2 + index * angleStep;
+          const x = center + radius * Math.cos(angle);
+          const y = center + radius * Math.sin(angle);
+          return <Line key={index} x1={center} y1={center} x2={x} y2={y} stroke="#2F2F4A" />;
+        })}
+
+        <Polygon points={points} fill="rgba(150, 159, 255, 0.2)" stroke="#969FFF" />
+        {data.map((item, index) => {
+          const angle = -Math.PI / 2 + index * angleStep;
+          const x = center + radius * Math.cos(angle);
+          const y = center + radius * Math.sin(angle);
+          return (
+            <React.Fragment key={item.label}>
+              <Circle cx={x} cy={y} r={3} fill="#969FFF" />
+              <SvgText
+                x={x}
+                y={y + (y < center ? -8 : 12)}
+                fill="#CBD5E1"
+                fontSize="10"
+                textAnchor="middle"
+              >
+                {item.label}
+              </SvgText>
+            </React.Fragment>
+          );
+        })}
+      </Svg>
+    );
+  };
+
+  const radarData = useMemo(() => {
+    const measurements = profile?.measurements ?? [];
+    const latestByGroup = new Map<string, PatientMeasurement>();
+    measurements.forEach((item) => {
+      const existing = latestByGroup.get(item.muscleGroup);
+      if (!existing || new Date(item.recordedAt) > new Date(existing.recordedAt)) {
+        latestByGroup.set(item.muscleGroup, item);
+      }
+    });
+    return Object.entries(MUSCLE_LABELS).map(([group, label]) => ({
+      label,
+      value: Number(latestByGroup.get(group)?.strengthScore ?? 0),
+    }));
+  }, [profile, MUSCLE_LABELS]);
+
+  const strengthTrend = useMemo(() => {
+    const measurements = profile?.measurements ?? [];
+    if (measurements.length === 0) return null;
+    const grouped = new Map<string, { sum: number; count: number; ts: number; label: string }>();
+    measurements.forEach((item) => {
+      const date = new Date(item.recordedAt);
+      const key = date.toISOString().slice(0, 16);
+      const existing = grouped.get(key);
+      const label = date.toLocaleString();
+      if (existing) {
+        existing.sum += Number(item.strengthScore);
+        existing.count += 1;
+      } else {
+        grouped.set(key, { sum: Number(item.strengthScore), count: 1, ts: date.getTime(), label });
+      }
+    });
+    const series = Array.from(grouped.values())
+      .sort((a, b) => a.ts - b.ts)
+      .slice(-6);
+    return {
+      labels: series.map((item) => item.label),
+      datasets: [
+        {
+          data: series.map((item) => Number((item.sum / item.count).toFixed(1))),
+          strokeWidth: 2,
+        },
+      ],
+    };
+  }, [profile]);
+
+  const alertItems: AlertItem[] = (() => {
+    if (!profile) return [];
+    const items: AlertItem[] = [];
+    if (profile.measurements.length === 0) {
+      items.push({
+        id: 'no-measurements',
+        type: 'info',
+        title: '暂无肌力记录',
+        description: '录入肌力评估后会在此生成趋势。',
+        actionText: '去录入 →',
+        actionTarget: 'data_entry',
+      });
+    }
+    const lastActivity = profile.activityLogs[0];
+    if (!lastActivity) {
+      items.push({
+        id: 'no-activity',
+        type: 'warning',
+        title: '暂无活动记录',
+        description: '记录日常活动有助于病程评估。',
+        actionText: '去录入 →',
+        actionTarget: 'data_entry',
+      });
+    } else {
+      items.push({
+        id: 'activity-latest',
+        type: 'success',
+        title: '最近活动已记录',
+        description: lastActivity.content ?? '保持规律活动，继续加油！',
+      });
+    }
+    if (profile.documents.length === 0) {
+      items.push({
+        id: 'no-docs',
+        type: 'info',
+        title: '暂无影像报告',
+        description: '上传报告后可在时间轴查看。',
+        actionText: '去录入 →',
+        actionTarget: 'data_entry',
+      });
+    }
+    return items;
+  })();
 
   const fetchProfile = async () => {
     try {
@@ -103,6 +354,8 @@ const ArchiveScreen = () => {
         fullName: data.fullName,
         diagnosisStage: data.diagnosisStage,
         measurements: data.measurements ?? [],
+        activityLogs: data.activityLogs ?? [],
+        documents: data.documents ?? [],
         updatedAt: data.updatedAt,
       });
     } catch (error) {
@@ -128,10 +381,6 @@ const ArchiveScreen = () => {
 
   const handleTimelineFilterPress = () => {
     Alert.alert('筛选', '时间轴筛选功能');
-  };
-
-  const handleEventPress = (eventId: string) => {
-    setExpandedEventId(expandedEventId === eventId ? null : eventId);
   };
 
   const handleInterventionPlanPress = () => {
@@ -166,15 +415,9 @@ const ArchiveScreen = () => {
 
   const renderTimelineEvent = (event: TimelineEvent, index: number) => {
     const isLast = index === timelineEvents.length - 1;
-    const isExpanded = expandedEventId === event.id;
 
     return (
-      <TouchableOpacity
-        key={event.id}
-        style={styles.eventCard}
-        onPress={() => handleEventPress(event.id)}
-        activeOpacity={0.7}
-      >
+      <TouchableOpacity key={event.id} style={styles.eventCard} activeOpacity={0.7}>
         <View style={styles.timelineLeft}>
           <LinearGradient
             colors={['#969FFF', '#5147FF']}
@@ -194,7 +437,9 @@ const ArchiveScreen = () => {
 
         <View style={styles.eventContent}>
           <View style={styles.eventHeader}>
-            <Text style={styles.eventTitle}>{event.title}</Text>
+            <View style={styles.eventHeaderLeft}>
+              <Text style={styles.eventTitle}>{event.title}</Text>
+            </View>
             <Text style={styles.eventDate}>{event.date}</Text>
           </View>
 
@@ -262,7 +507,7 @@ const ArchiveScreen = () => {
           <Text style={styles.profileName}>{profile.fullName ?? '未填写姓名'}</Text>
           <Text style={styles.profileMeta}>
             诊断阶段：{profile.diagnosisStage ?? '未填写'} · 最近更新：
-            {new Date(profile.updatedAt).toLocaleDateString()}
+            {(latestUpdatedAt ?? new Date(profile.updatedAt)).toLocaleDateString()}
           </Text>
           <TouchableOpacity style={styles.editButton} onPress={handleDataEntryPress}>
             <Text style={styles.editButtonText}>更新档案</Text>
@@ -289,12 +534,43 @@ const ArchiveScreen = () => {
             ))
           )}
         </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>肌力分析</Text>
+          <View style={styles.radarCard}>
+            <Text style={styles.sectionSubtitle}>肌群雷达图（0-5 级）</Text>
+            <RadarChart data={radarData} />
+          </View>
+          <View style={styles.chartCard}>
+            {strengthTrend ? (
+              <>
+                <LineChart
+                  data={strengthTrend}
+                  width={chartWidth}
+                  height={220}
+                  chartConfig={chartConfig}
+                  bezier
+                  withShadow={false}
+                  style={styles.chart}
+                />
+                <View style={styles.chartLegend}>
+                  <View style={styles.chartLegendDot} />
+                  <Text style={styles.chartLegendText}>平均肌力趋势（按提交）</Text>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.emptyText}>暂无趋势数据，录入后自动生成。</Text>
+            )}
+          </View>
+        </View>
       </>
     );
   };
 
   const renderAlertItem = (item: AlertItem, index: number) => {
     const isMainAlert = index === 0;
+    const actionHandler =
+      item.actionTarget === 'data_entry' ? handleDataEntryPress : handleInterventionPlanPress;
 
     if (isMainAlert) {
       return (
@@ -316,7 +592,7 @@ const ArchiveScreen = () => {
               </View>
               <Text style={styles.alertDescription}>{item.description}</Text>
               {item.actionText && (
-                <TouchableOpacity onPress={handleInterventionPlanPress}>
+                <TouchableOpacity onPress={actionHandler}>
                   <Text style={[styles.alertAction, { color: getStatusColor(item.type) }]}>
                     {item.actionText}
                   </Text>
@@ -440,15 +716,36 @@ const ArchiveScreen = () => {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.timelineContainer}>
-              {timelineEvents.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>暂无测量记录</Text>
-                </View>
-              ) : (
-                timelineEvents.map((event, index) => renderTimelineEvent(event, index))
-              )}
+            <View style={styles.timelineToggleRow}>
+              <Text style={styles.timelineHint}>
+                {timelineEvents.length === 0 ? '暂无记录' : `共 ${timelineEvents.length} 条记录`}
+              </Text>
+              <TouchableOpacity
+                style={styles.timelineToggle}
+                onPress={() => setIsTimelineExpanded((prev) => !prev)}
+              >
+                <Text style={styles.timelineToggleText}>
+                  {isTimelineExpanded ? '收起' : '展开'}
+                </Text>
+                <FontAwesome6
+                  name={isTimelineExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={10}
+                  color="#969FFF"
+                />
+              </TouchableOpacity>
             </View>
+
+            {isTimelineExpanded && (
+              <View style={styles.timelineContainer}>
+                {timelineEvents.length === 0 ? (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyText}>暂无测量记录</Text>
+                  </View>
+                ) : (
+                  timelineEvents.map((event, index) => renderTimelineEvent(event, index))
+                )}
+              </View>
+            )}
           </View>
 
           {/* 风险预警看板 */}

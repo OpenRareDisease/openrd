@@ -24,6 +24,11 @@ export default StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 12,
   },
+  sectionSubtitle: {
+    fontSize: 13,
+    color: '#D1D5DB',
+    marginBottom: 12,
+  },
   sectionTitleAccent: {
     color: '#E0E4FF',
     letterSpacing: 0.5,
@@ -97,6 +102,42 @@ export default StyleSheet.create({
   emptyText: {
     color: '#9CA3AF',
     fontSize: 13,
+  },
+  radarCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  chartCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  chart: {
+    borderRadius: 12,
+    marginLeft: -12,
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  chartLegendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#969FFF',
+    marginRight: 6,
+  },
+  chartLegendText: {
+    color: '#9CA3AF',
+    fontSize: 12,
   },
   measurementCard: {
     flexDirection: 'row',
@@ -243,6 +284,25 @@ export default StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  timelineToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  timelineHint: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  timelineToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  timelineToggleText: {
+    fontSize: 12,
+    color: '#969FFF',
+  },
   timelineTitle: {
     fontSize: 14,
     fontWeight: '600',
@@ -315,6 +375,13 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
+  },
+  eventHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  eventChevron: {
+    marginLeft: 6,
   },
   eventTitle: {
     fontSize: 12,
