@@ -26,6 +26,7 @@ npm run test         # placeholder for Vitest suites
 ## Environment variables
 
 Copy the repository `.env.example` to `.env` and adjust as needed. Key variables include database connection, JWT secret, and log level.
+For Baidu OCR integration, set `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` (and optional endpoint overrides).
 
 ## Folder layout
 
@@ -45,5 +46,8 @@ src/
 - `GET /api/healthz`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/profiles/me/documents/upload`
+- `GET /api/profiles/me/documents/:id`
+- `GET /api/profiles/me/documents/:id/ocr`
 
 Extend modules under `src/modules/<domain>` to grow the service in a modular fashion.
