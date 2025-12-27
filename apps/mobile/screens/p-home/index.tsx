@@ -1,24 +1,63 @@
-
-
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Image,
-  Modal,
-  Alert,
-} from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { ApiError, getMyPatientProfile, getRiskSummary } from '../../lib/api';
 
 const HomeScreen = () => {
   const router = useRouter();
   const [isNotificationModalVisible, setIsNotificationModalVisible] = useState(false);
+  const [profile, setProfile] = useState<any | null>(null);
+  const [riskSummary, setRiskSummary] = useState<any | null>(null);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [profileData, riskData] = await Promise.all([
+          getMyPatientProfile(),
+          getRiskSummary(),
+        ]);
+        setProfile(profileData);
+        setRiskSummary(riskData);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404)) {
+          console.warn('首页数据加载失败:', error);
+        }
+        setProfile(null);
+        setRiskSummary(null);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  const displayName = useMemo(() => {
+    const fullName = profile?.fullName?.trim();
+    if (fullName) {
+      return fullName;
+    }
+    return '未填写姓名';
+  }, [profile]);
+
+  const averageStrength = useMemo(() => {
+    const measurements = profile?.measurements ?? [];
+    if (!measurements.length) return null;
+    const sum = measurements.reduce(
+      (total: number, item: any) => total + Number(item.strengthScore),
+      0,
+    );
+    return sum / measurements.length;
+  }, [profile]);
+
+  const riskSummaryText = useMemo(() => {
+    if (!riskSummary) return '暂无风险评估数据';
+    if (riskSummary.overallLevel === 'high') return '近期风险偏高，建议及时关注';
+    if (riskSummary.overallLevel === 'medium') return '风险中等，保持规律复查';
+    return '整体稳定，保持当前节奏';
+  }, [riskSummary]);
 
   const handleNotificationPress = () => {
     setIsNotificationModalVisible(true);
@@ -73,7 +112,7 @@ const HomeScreen = () => {
         end={{ x: 1, y: 1 }}
         style={styles.backgroundGradient}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
@@ -96,14 +135,11 @@ const HomeScreen = () => {
                   </LinearGradient>
                 </TouchableOpacity>
                 <View style={styles.userDetails}>
-                  <Text style={styles.userName}>张先生</Text>
+                  <Text style={styles.userName}>{displayName}</Text>
                   <Text style={styles.userGreeting}>今天也要保持健康哦</Text>
                 </View>
               </View>
-              <TouchableOpacity 
-                style={styles.notificationButton}
-                onPress={handleNotificationPress}
-              >
+              <TouchableOpacity style={styles.notificationButton} onPress={handleNotificationPress}>
                 <FontAwesome6 name="bell" size={16} color="rgba(255, 255, 255, 0.7)" />
                 <View style={styles.notificationBadge} />
               </TouchableOpacity>
@@ -120,7 +156,7 @@ const HomeScreen = () => {
                   <Text style={styles.statusText}>稳定</Text>
                 </View>
               </View>
-              
+
               {/* 肌力雷达图 */}
               <View style={styles.muscleStrengthContainer}>
                 <View style={styles.muscleRingContainer}>
@@ -132,26 +168,28 @@ const HomeScreen = () => {
                         end={{ x: 1, y: 1 }}
                         style={styles.gradientTextWrapper}
                       >
-                        <Text style={styles.averageScore}>4.2</Text>
+                        <Text style={styles.averageScore}>
+                          {averageStrength !== null ? averageStrength.toFixed(1) : '--'}
+                        </Text>
                       </LinearGradient>
                       <Text style={styles.averageLabel}>平均分</Text>
                     </View>
                   </View>
                 </View>
               </View>
-              
+
               {/* 快速数据 */}
               <View style={styles.quickStats}>
                 <View style={styles.statItem}>
-                  <Text style={styles.statValue}>12s</Text>
+                  <Text style={styles.statValue}>--</Text>
                   <Text style={styles.statLabel}>爬楼时间</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#5147FF' }]}>6,842</Text>
+                  <Text style={[styles.statValue, { color: '#5147FF' }]}>--</Text>
                   <Text style={styles.statLabel}>今日步数</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#3E3987' }]}>15</Text>
+                  <Text style={[styles.statValue, { color: '#3E3987' }]}>--</Text>
                   <Text style={styles.statLabel}>连续记录</Text>
                 </View>
               </View>
@@ -167,7 +205,7 @@ const HomeScreen = () => {
                 </View>
                 <View style={styles.alertTextContainer}>
                   <Text style={styles.alertTitle}>注意</Text>
-                  <Text style={styles.alertDescription}>三角肌肌力略有下降，建议加强训练</Text>
+                  <Text style={styles.alertDescription}>{riskSummaryText}</Text>
                 </View>
                 <FontAwesome6 name="chevron-right" size={12} color="#FBBF24" />
               </View>
@@ -179,31 +217,51 @@ const HomeScreen = () => {
             <Text style={styles.sectionTitle}>核心功能</Text>
             <View style={styles.featuresGrid}>
               <TouchableOpacity style={styles.featureCard} onPress={handleFeatureQNAPress}>
-                <View style={[styles.featureIconContainer, { backgroundColor: 'rgba(150, 159, 255, 0.2)' }]}>
+                <View
+                  style={[
+                    styles.featureIconContainer,
+                    { backgroundColor: 'rgba(150, 159, 255, 0.2)' },
+                  ]}
+                >
                   <FontAwesome6 name="circle-question" size={18} color="#969FFF" />
                 </View>
                 <Text style={styles.featureTitle}>智能问答</Text>
                 <Text style={styles.featureDescription}>专业知识查询</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.featureCard} onPress={handleFeatureArchivePress}>
-                <View style={[styles.featureIconContainer, { backgroundColor: 'rgba(81, 71, 255, 0.2)' }]}>
+                <View
+                  style={[
+                    styles.featureIconContainer,
+                    { backgroundColor: 'rgba(81, 71, 255, 0.2)' },
+                  ]}
+                >
                   <FontAwesome6 name="file-medical" size={18} color="#5147FF" />
                 </View>
                 <Text style={styles.featureTitle}>我的档案</Text>
                 <Text style={styles.featureDescription}>医疗数据管理</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.featureCard} onPress={handleFeatureManagePress}>
-                <View style={[styles.featureIconContainer, { backgroundColor: 'rgba(62, 57, 135, 0.2)' }]}>
+                <View
+                  style={[
+                    styles.featureIconContainer,
+                    { backgroundColor: 'rgba(62, 57, 135, 0.2)' },
+                  ]}
+                >
                   <FontAwesome6 name="chart-line" size={14} color="#3E3987" />
                 </View>
                 <Text style={styles.featureTitle}>病程管理</Text>
                 <Text style={styles.featureDescription}>肌力趋势分析</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={styles.featureCard} onPress={handleFeatureCommunityPress}>
-                <View style={[styles.featureIconContainer, { backgroundColor: 'rgba(34, 197, 94, 0.2)' }]}>
+                <View
+                  style={[
+                    styles.featureIconContainer,
+                    { backgroundColor: 'rgba(34, 197, 94, 0.2)' },
+                  ]}
+                >
                   <FontAwesome6 name="users" size={14} color="#22C55E" />
                 </View>
                 <Text style={styles.featureTitle}>患者社区</Text>
@@ -215,10 +273,10 @@ const HomeScreen = () => {
           {/* 个性化推荐 */}
           <View style={styles.recommendationsSection}>
             <Text style={styles.sectionTitle}>为您推荐</Text>
-            
+
             {/* 临床试验匹配 */}
-            <TouchableOpacity 
-              style={styles.recommendationCard} 
+            <TouchableOpacity
+              style={styles.recommendationCard}
               onPress={handleTrialRecommendationPress}
             >
               <View style={styles.recommendationHeader}>
@@ -227,13 +285,15 @@ const HomeScreen = () => {
                   <Text style={styles.matchBadgeText}>83%匹配</Text>
                 </View>
               </View>
-              <Text style={styles.recommendationDescription}>您符合"FSHD基因治疗试验"的主要入组条件</Text>
+              <Text style={styles.recommendationDescription}>
+                您符合"FSHD基因治疗试验"的主要入组条件
+              </Text>
               <Text style={styles.recommendationAction}>查看详情 →</Text>
             </TouchableOpacity>
-            
+
             {/* 康复建议 */}
-            <TouchableOpacity 
-              style={styles.recommendationCard} 
+            <TouchableOpacity
+              style={styles.recommendationCard}
               onPress={handleRehabRecommendationPress}
             >
               <View style={styles.rehabHeader}>
@@ -257,12 +317,12 @@ const HomeScreen = () => {
           animationType="fade"
           onRequestClose={handleCloseNotification}
         >
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.modalOverlay}
             activeOpacity={1}
             onPress={handleCloseNotification}
           >
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.notificationModal}
               activeOpacity={1}
               onPress={(e) => e.stopPropagation()}
@@ -298,4 +358,3 @@ const HomeScreen = () => {
 };
 
 export default HomeScreen;
-
