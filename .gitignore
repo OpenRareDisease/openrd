@@ -154,3 +154,4 @@ Thumbs.db
 *.temp
 tmp/
 temp/
+apps/api/uploads/
