@@ -1,27 +1,28 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   Modal,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import Slider from '@react-native-community/slider';
-import { LineChart } from 'react-native-chart-kit';
-import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
 import {
   ApiError,
   addActivityLog,
   addPatientMeasurement,
+  addMedication,
   getMyPatientProfile,
+  getMedications,
+  uploadPatientDocument,
   upsertPatientProfile,
 } from '../../lib/api';
 import styles from './styles';
@@ -42,9 +43,10 @@ interface MuscleStrengthData {
 interface ReportHistoryItem {
   id: string;
   type: ReportType;
-  source: '相册' | '相机';
+  source: '相册' | '相机' | '上传';
   timestamp: string;
   fileName?: string;
+  ocrSummary?: string;
 }
 
 interface TimelineEvent {
@@ -61,123 +63,10 @@ const reportLabels: Record<ReportType, string> = {
   blood: '血检报告',
 };
 
-const chartWidth = Dimensions.get('window').width - 48;
-
-const initialTimeline: TimelineEvent[] = [
-  {
-    id: 'timeline-1',
-    title: 'MRI 影像报告已上传',
-    description: '来源：相册 · 影像清晰可读',
-    timestamp: '2025-11-18 09:20',
-    tag: '报告',
-  },
-  {
-    id: 'timeline-2',
-    title: '肩部肌群评分更新',
-    description: '肌力 3 级，医生建议继续弹力带训练',
-    timestamp: '2025-11-17 17:45',
-    tag: '肌力',
-  },
-  {
-    id: 'timeline-3',
-    title: '日常活动记录',
-    description: '完成 30 分钟康复训练，步行 2 公里',
-    timestamp: '2025-11-16 20:15',
-    tag: '活动',
-  },
-];
-
-const initialTrendData = {
-  labels: ['11/10', '11/12', '11/14', '11/16', '11/18'],
-  datasets: [
-    {
-      data: [2.5, 3, 3.6, 3.8, 4],
-      strokeWidth: 2,
-    },
-  ],
-};
-
-const chartConfig = {
-  backgroundColor: '#0F0F23',
-  backgroundGradientFrom: '#0F0F23',
-  backgroundGradientTo: '#0F0F23',
-  decimalPlaces: 1,
-  color: (opacity = 1) => `rgba(150, 159, 255, ${opacity})`,
-  labelColor: () => '#9CA3AF',
-  propsForDots: {
-    r: '4',
-    strokeWidth: '2',
-    stroke: '#FFFFFF',
-  },
-};
-
-const RadarChart = ({
-  data,
-  maxValue = 5,
-  size = 260,
-}: {
-  data: { label: string; value: number }[];
-  maxValue?: number;
-  size?: number;
-}) => {
-  const center = size / 2;
-  const radius = size / 2 - 20;
-  const angleStep = (Math.PI * 2) / data.length;
-
-  const points = data
-    .map((item, index) => {
-      const angle = -Math.PI / 2 + index * angleStep;
-      const valueRatio = Math.max(0, Math.min(item.value, maxValue)) / maxValue;
-      const x = center + radius * valueRatio * Math.cos(angle);
-      const y = center + radius * valueRatio * Math.sin(angle);
-      return `${x},${y}`;
-    })
-    .join(' ');
-
-  return (
-    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      {[1, 2, 3, 4, 5].map((level) => {
-        const r = (radius / 5) * level;
-        const polygonPoints = data
-          .map((_, index) => {
-            const angle = -Math.PI / 2 + index * angleStep;
-            const x = center + r * Math.cos(angle);
-            const y = center + r * Math.sin(angle);
-            return `${x},${y}`;
-          })
-          .join(' ');
-        return <Polygon key={level} points={polygonPoints} fill="none" stroke="#2F2F4A" />;
-      })}
-
-      {data.map((_, index) => {
-        const angle = -Math.PI / 2 + index * angleStep;
-        const x = center + radius * Math.cos(angle);
-        const y = center + radius * Math.sin(angle);
-        return <Line key={index} x1={center} y1={center} x2={x} y2={y} stroke="#2F2F4A" />;
-      })}
-
-      <Polygon points={points} fill="rgba(150, 159, 255, 0.2)" stroke="#969FFF" />
-      {data.map((item, index) => {
-        const angle = -Math.PI / 2 + index * angleStep;
-        const x = center + radius * Math.cos(angle);
-        const y = center + radius * Math.sin(angle);
-        return (
-          <React.Fragment key={item.label}>
-            <Circle cx={x} cy={y} r={3} fill="#969FFF" />
-            <SvgText
-              x={x}
-              y={y + (y < center ? -8 : 12)}
-              fill="#CBD5E1"
-              fontSize="10"
-              textAnchor="middle"
-            >
-              {item.label}
-            </SvgText>
-          </React.Fragment>
-        );
-      })}
-    </Svg>
-  );
+const documentTypeMap: Record<ReportType, string> = {
+  mri: 'mri',
+  genetic: 'genetic_report',
+  blood: 'blood_panel',
 };
 
 const DataEntryScreen = () => {
@@ -190,25 +79,9 @@ const DataEntryScreen = () => {
     blood: '未上传',
   });
 
-  const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([
-    {
-      id: 'history-1',
-      type: 'mri',
-      source: '相册',
-      timestamp: '2025-11-18 09:20',
-      fileName: 'FSHD-MRI-001.jpg',
-    },
-    {
-      id: 'history-2',
-      type: 'genetic',
-      source: '相机',
-      timestamp: '2025-11-15 15:10',
-      fileName: '基因检测单.png',
-    },
-  ]);
+  const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([]);
 
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>(initialTimeline);
-  const [strengthTrend, setStrengthTrend] = useState(initialTrendData);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
   const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
     group: null,
@@ -221,22 +94,30 @@ const DataEntryScreen = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [activityText, setActivityText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showDiagnosisModal, setShowDiagnosisModal] = useState(false);
+  const [medicationForm, setMedicationForm] = useState({
+    medicationName: '',
+    dosage: '',
+    frequency: '',
+    route: '',
+  });
+  const [medications, setMedications] = useState<any[]>([]);
+
+  const diagnosisOptions = ['Stage 1', 'Stage 2', 'Stage 3', 'Stage 4', '不确定'];
+  const [profileForm, setProfileForm] = useState({
+    fullName: '',
+    diagnosisStage: '',
+  });
 
   const muscleGroups = [
     { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
     { id: 'biceps', name: '肱二头肌', icon: 'dumbbell', color: '#5147FF' },
     { id: 'triceps', name: '肱三头肌', icon: 'hand-fist', color: '#3E3987' },
     { id: 'tibialis', name: '胫骨前肌', icon: 'person-running', color: '#10B981' },
+    { id: 'quadriceps', name: '股四头肌', icon: 'person-running', color: '#F97316' },
+    { id: 'hamstrings', name: '腘绳肌', icon: 'person-running', color: '#EF4444' },
+    { id: 'gluteus', name: '臀肌', icon: 'person-running', color: '#22D3EE' },
   ];
-
-  const radarData = useMemo(
-    () =>
-      muscleGroups.map((group) => ({
-        label: group.name,
-        value: muscleStrengthMap[group.id] ?? 0,
-      })),
-    [muscleGroups, muscleStrengthMap],
-  );
 
   const handleBackPress = () => {
     if (router.canGoBack()) {
@@ -317,76 +198,166 @@ const DataEntryScreen = () => {
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   };
 
-  const appendReportRecord = (type: ReportType, source: '相册' | '相机', fileName?: string) => {
-    const timestamp = formatTimestamp(new Date());
-    const historyItem: ReportHistoryItem = {
-      id: `report-${Date.now()}`,
-      type,
-      source,
-      timestamp,
-      fileName,
-    };
-    setReportHistory((prev) => [historyItem, ...prev].slice(0, 5));
-    setTimelineEvents((prev) =>
-      [
-        {
-          id: `timeline-report-${Date.now()}`,
+  const mapDocumentTypeToReportType = (documentType?: string): ReportType | null => {
+    switch (documentType) {
+      case 'mri':
+        return 'mri';
+      case 'genetic_report':
+        return 'genetic';
+      case 'blood_panel':
+        return 'blood';
+      default:
+        return null;
+    }
+  };
+
+  const buildProfilePayload = () => {
+    const payload: Record<string, string> = {};
+    const fullName = profileForm.fullName.trim();
+    const diagnosisStage = profileForm.diagnosisStage.trim();
+    if (fullName) payload.fullName = fullName;
+    if (diagnosisStage) payload.diagnosisStage = diagnosisStage;
+    return payload;
+  };
+
+  const buildStrengthMapFromProfile = (profile: any) => {
+    if (!profile?.measurements?.length) {
+      return {};
+    }
+    const map: Record<string, number> = {};
+    profile.measurements.forEach((item: any) => {
+      const existing = map[item.muscleGroup];
+      if (existing === undefined) {
+        map[item.muscleGroup] = Number(item.strengthScore);
+      }
+    });
+    return map;
+  };
+
+  const buildReportHistoryFromProfile = (profile: any) => {
+    if (!profile?.documents?.length) {
+      return [];
+    }
+    return profile.documents
+      .map((doc: any) => {
+        const type = mapDocumentTypeToReportType(doc.documentType);
+        if (!type) return null;
+        const timestamp = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
+        return {
+          id: doc.id,
+          type,
+          source: '上传' as const,
+          timestamp: formatTimestamp(timestamp),
+          fileName: doc.fileName ?? doc.title ?? undefined,
+          ocrSummary: doc.ocrPayload?.extractedText ?? doc.ocrPayload?.fields?.hint ?? undefined,
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      ) as ReportHistoryItem[];
+  };
+
+  const buildTimelineFromProfile = (profile: any) => {
+    const events: Array<{ event: TimelineEvent; sortKey: number }> = [];
+
+    profile?.documents?.forEach((doc: any) => {
+      const type = mapDocumentTypeToReportType(doc.documentType);
+      if (!type) return;
+      const time = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
+      events.push({
+        sortKey: time.getTime(),
+        event: {
+          id: `doc-${doc.id}`,
           title: `${reportLabels[type]}已上传`,
-          description: `来源：${source}${fileName ? ` · ${fileName}` : ''}`,
-          timestamp,
+          description:
+            doc.ocrPayload?.extractedText ??
+            doc.ocrPayload?.fields?.hint ??
+            doc.fileName ??
+            '已上传',
+          timestamp: formatTimestamp(time),
           tag: '报告',
         },
-        ...prev,
-      ].slice(0, 8),
-    );
-  };
-
-  const appendMuscleStrengthEvent = (value: number) => {
-    if (!muscleStrength.group) return;
-    const timestamp = formatTimestamp(new Date());
-    setStrengthTrend((prev) => {
-      const newLabels = [...prev.labels, timestamp.slice(5, 10)].slice(-6);
-      const newData = [...prev.datasets[0].data, value].slice(-6);
-      return {
-        labels: newLabels,
-        datasets: [
-          {
-            ...prev.datasets[0],
-            data: newData,
-          },
-        ],
-      };
+      });
     });
-    setTimelineEvents((prev) =>
-      [
-        {
-          id: `timeline-strength-${Date.now()}`,
-          title: `${getMuscleGroupName(muscleStrength.group)}肌力更新`,
-          description: `评分 ${value} 级，持续跟踪康复趋势`,
-          timestamp,
+
+    profile?.measurements?.forEach((item: any) => {
+      const time = item.recordedAt ? new Date(item.recordedAt) : new Date();
+      events.push({
+        sortKey: time.getTime(),
+        event: {
+          id: `measurement-${item.id}`,
+          title: `${getMuscleGroupName(item.muscleGroup)}肌力更新`,
+          description: `肌力 ${Number(item.strengthScore)} 级`,
+          timestamp: formatTimestamp(time),
           tag: '肌力',
         },
-        ...prev,
-      ].slice(0, 8),
-    );
-  };
+      });
+    });
 
-  const appendActivityEvent = (description: string) => {
-    const trimmed = description.trim();
-    if (!trimmed) return;
-    const timestamp = formatTimestamp(new Date());
-    setTimelineEvents((prev) =>
-      [
-        {
-          id: `timeline-activity-${Date.now()}`,
-          title: '日常活动更新',
-          description: trimmed,
-          timestamp,
+    profile?.activityLogs?.forEach((item: any) => {
+      const time = item.createdAt ? new Date(item.createdAt) : new Date();
+      events.push({
+        sortKey: time.getTime(),
+        event: {
+          id: `activity-${item.id}`,
+          title: '日常活动记录',
+          description: item.content ?? '已记录活动',
+          timestamp: formatTimestamp(time),
           tag: '活动',
         },
-        ...prev,
-      ].slice(0, 8),
-    );
+      });
+    });
+
+    return events.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
+  };
+
+  const loadProfile = async () => {
+    try {
+      const [data, meds] = await Promise.all([getMyPatientProfile(), getMedications()]);
+      setProfileForm({
+        fullName: data.fullName ?? '',
+        diagnosisStage: data.diagnosisStage ?? '',
+      });
+      setMuscleStrengthMap(buildStrengthMapFromProfile(data));
+      setReportHistory(buildReportHistoryFromProfile(data));
+      setTimelineEvents(buildTimelineFromProfile(data));
+      setMedications(meds ?? []);
+
+      const existingTypes = new Set(
+        (data.documents ?? []).map((doc: any) => mapDocumentTypeToReportType(doc.documentType)),
+      );
+      setUploadStatus({
+        mri: existingTypes.has('mri') ? '已上传' : '未上传',
+        genetic: existingTypes.has('genetic') ? '已上传' : '未上传',
+        blood: existingTypes.has('blood') ? '已上传' : '未上传',
+      });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) {
+        console.error('加载档案失败:', error);
+      }
+      setProfileForm({ fullName: '', diagnosisStage: '' });
+      setMuscleStrengthMap({});
+      setReportHistory([]);
+      setTimelineEvents([]);
+      setMedications([]);
+    }
+  };
+
+  useEffect(() => {
+    loadProfile();
+  }, []);
+
+  const ensureProfileExists = async () => {
+    try {
+      await getMyPatientProfile();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        await upsertPatientProfile(buildProfilePayload());
+      } else {
+        throw error;
+      }
+    }
   };
 
   const handleFileUpload = async (type: ReportType) => {
@@ -400,6 +371,7 @@ const DataEntryScreen = () => {
         ...prev,
         [type]: '上传中...',
       }));
+      await ensureProfileExists();
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsEditing: true,
@@ -413,20 +385,61 @@ const DataEntryScreen = () => {
         }));
         return;
       }
-      setTimeout(() => {
-        setUploadStatus((prev) => ({
+      const asset = result.assets?.[0];
+      if (!asset?.uri) {
+        throw new Error('无法读取文件');
+      }
+      const fileName = asset.fileName ?? `report-${type}-${Date.now()}`;
+      const uploadFile =
+        Platform.OS === 'web'
+          ? await (async () => {
+              const response = await fetch(asset.uri);
+              const blob = await response.blob();
+              return new File([blob], fileName, {
+                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
+              });
+            })()
+          : {
+              uri: asset.uri,
+              name: fileName,
+              type: asset.mimeType ?? 'application/octet-stream',
+            };
+      const response = await uploadPatientDocument({
+        documentType: documentTypeMap[type],
+        title: reportLabels[type],
+        file: uploadFile,
+      });
+      const ocrSummary =
+        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
+      setUploadStatus((prev) => ({
+        ...prev,
+        [type]: '已上传',
+      }));
+      setReportHistory((prev) =>
+        [
+          {
+            id: `report-${Date.now()}`,
+            type,
+            source: '相册',
+            timestamp: formatTimestamp(new Date()),
+            fileName,
+            ocrSummary,
+          },
           ...prev,
-          [type]: '已上传',
-        }));
-        appendReportRecord(type, '相册', result.assets?.[0]?.fileName);
-      }, 1500);
+        ].slice(0, 5),
+      );
+      await loadProfile();
     } catch (error) {
       console.error('文件上传失败:', error);
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
-      Alert.alert('上传失败', '文件上传过程中出现错误，请稍后再试。');
+      const message =
+        error instanceof ApiError && error.message
+          ? error.message
+          : '文件上传过程中出现错误，请稍后再试。';
+      Alert.alert('上传失败', message);
     }
   };
 
@@ -441,6 +454,7 @@ const DataEntryScreen = () => {
         ...prev,
         [type]: '上传中...',
       }));
+      await ensureProfileExists();
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: true,
         aspect: [4, 3],
@@ -453,20 +467,61 @@ const DataEntryScreen = () => {
         }));
         return;
       }
-      setTimeout(() => {
-        setUploadStatus((prev) => ({
+      const asset = result.assets?.[0];
+      if (!asset?.uri) {
+        throw new Error('无法读取文件');
+      }
+      const fileName = asset.fileName ?? `camera-${type}-${Date.now()}`;
+      const uploadFile =
+        Platform.OS === 'web'
+          ? await (async () => {
+              const response = await fetch(asset.uri);
+              const blob = await response.blob();
+              return new File([blob], fileName, {
+                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
+              });
+            })()
+          : {
+              uri: asset.uri,
+              name: fileName,
+              type: asset.mimeType ?? 'application/octet-stream',
+            };
+      const response = await uploadPatientDocument({
+        documentType: documentTypeMap[type],
+        title: reportLabels[type],
+        file: uploadFile,
+      });
+      const ocrSummary =
+        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
+      setUploadStatus((prev) => ({
+        ...prev,
+        [type]: '已上传',
+      }));
+      setReportHistory((prev) =>
+        [
+          {
+            id: `report-${Date.now()}`,
+            type,
+            source: '相机',
+            timestamp: formatTimestamp(new Date()),
+            fileName,
+            ocrSummary,
+          },
           ...prev,
-          [type]: '已上传',
-        }));
-        appendReportRecord(type, '相机');
-      }, 1500);
+        ].slice(0, 5),
+      );
+      await loadProfile();
     } catch (error) {
       console.error('拍照失败:', error);
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '未上传',
       }));
-      Alert.alert('拍照失败', '拍照过程中出现错误，请稍后再试。');
+      const message =
+        error instanceof ApiError && error.message
+          ? error.message
+          : '拍照过程中出现错误，请稍后再试。';
+      Alert.alert('拍照失败', message);
     }
   };
 
@@ -474,15 +529,10 @@ const DataEntryScreen = () => {
     try {
       setIsLoading(true);
 
-      // 确保档案存在；若 404 则创建一个占位档案
-      try {
-        await getMyPatientProfile();
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) {
-          await upsertPatientProfile({ fullName: '未命名用户' });
-        } else {
-          throw error;
-        }
+      await ensureProfileExists();
+      const profilePayload = buildProfilePayload();
+      if (Object.keys(profilePayload).length > 0) {
+        await upsertPatientProfile(profilePayload);
       }
 
       const requests: Promise<unknown>[] = [];
@@ -507,7 +557,7 @@ const DataEntryScreen = () => {
         requests.push(
           addActivityLog({
             logDate: nowIso,
-            source: 'stair-test',
+            source: 'stair_test',
             content: `楼梯测试用时 ${formatTime(timerSeconds)}`,
           }),
         );
@@ -524,17 +574,27 @@ const DataEntryScreen = () => {
         );
       }
 
+      if (medicationForm.medicationName.trim()) {
+        requests.push(
+          addMedication({
+            medicationName: medicationForm.medicationName.trim(),
+            dosage: medicationForm.dosage.trim() || null,
+            frequency: medicationForm.frequency.trim() || null,
+            route: medicationForm.route.trim() || null,
+          }),
+        );
+      }
+
       await Promise.all(requests);
 
-      if (muscleStrength.group && muscleStrength.value > 0) {
-        appendMuscleStrengthEvent(muscleStrength.value);
-      }
-      if (timerSeconds > 0) {
-        appendActivityEvent(`楼梯测试完成，用时 ${formatTime(timerSeconds)}。`);
-      }
-      if (activityText.trim()) {
-        appendActivityEvent(activityText);
-      }
+      setMedicationForm({
+        medicationName: '',
+        dosage: '',
+        frequency: '',
+        route: '',
+      });
+
+      await loadProfile();
       Alert.alert('提交成功', '数据已成功录入！', [
         { text: '继续录入' },
         {
@@ -587,6 +647,38 @@ const DataEntryScreen = () => {
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>基础档案</Text>
+          <View style={styles.profileCard}>
+            <Text style={styles.inputLabel}>姓名</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="请输入姓名"
+              placeholderTextColor="#9CA3AF"
+              value={profileForm.fullName}
+              onChangeText={(value) =>
+                setProfileForm((prev) => ({
+                  ...prev,
+                  fullName: value,
+                }))
+              }
+            />
+
+            <Text style={styles.inputLabel}>诊断阶段</Text>
+            <TouchableOpacity
+              style={styles.selectInput}
+              onPress={() => setShowDiagnosisModal(true)}
+            >
+              <Text
+                style={[styles.selectText, !profileForm.diagnosisStage && styles.selectPlaceholder]}
+              >
+                {profileForm.diagnosisStage || '请选择诊断阶段'}
+              </Text>
+              <FontAwesome6 name="chevron-down" size={12} color="#9CA3AF" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>医疗报告</Text>
 
           {(['mri', 'genetic', 'blood'] as ReportType[]).map((type) => (
@@ -614,19 +706,103 @@ const DataEntryScreen = () => {
         </View>
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>用药记录</Text>
+          <View style={styles.profileCard}>
+            <Text style={styles.inputLabel}>药物名称</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例如：维生素D"
+              placeholderTextColor="#9CA3AF"
+              value={medicationForm.medicationName}
+              onChangeText={(value) =>
+                setMedicationForm((prev) => ({
+                  ...prev,
+                  medicationName: value,
+                }))
+              }
+            />
+
+            <Text style={styles.inputLabel}>剂量</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例如：1片"
+              placeholderTextColor="#9CA3AF"
+              value={medicationForm.dosage}
+              onChangeText={(value) =>
+                setMedicationForm((prev) => ({
+                  ...prev,
+                  dosage: value,
+                }))
+              }
+            />
+
+            <Text style={styles.inputLabel}>频次</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例如：每日一次"
+              placeholderTextColor="#9CA3AF"
+              value={medicationForm.frequency}
+              onChangeText={(value) =>
+                setMedicationForm((prev) => ({
+                  ...prev,
+                  frequency: value,
+                }))
+              }
+            />
+
+            <Text style={styles.inputLabel}>用药途径</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="例如：口服"
+              placeholderTextColor="#9CA3AF"
+              value={medicationForm.route}
+              onChangeText={(value) =>
+                setMedicationForm((prev) => ({
+                  ...prev,
+                  route: value,
+                }))
+              }
+            />
+          </View>
+
+          <View style={styles.historyCard}>
+            <Text style={styles.historyTitle}>当前用药</Text>
+            {medications.length === 0 ? (
+              <Text style={styles.historyMeta}>暂无用药记录，提交后会展示在此处。</Text>
+            ) : (
+              medications.slice(0, 3).map((item) => (
+                <View key={item.id} style={{ marginTop: 8 }}>
+                  <Text style={styles.historyMeta}>{item.medicationName}</Text>
+                  <Text style={styles.historyMeta}>
+                    {item.dosage ?? '--'} · {item.frequency ?? '--'}
+                  </Text>
+                </View>
+              ))
+            )}
+          </View>
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>报告上传历史</Text>
-          {reportHistory.map((item) => (
-            <View key={item.id} style={styles.historyCard}>
-              <View style={styles.historyHeader}>
-                <Text style={styles.historyTitle}>{reportLabels[item.type]}</Text>
-                <Text style={[styles.historyStatus, { color: '#10B981' }]}>已保存</Text>
-              </View>
-              <Text style={styles.historyMeta}>
-                {item.timestamp} · {item.source}
-              </Text>
-              {item.fileName && <Text style={styles.historyMeta}>文件：{item.fileName}</Text>}
+          {reportHistory.length === 0 ? (
+            <View style={styles.historyCard}>
+              <Text style={styles.historyMeta}>暂无报告记录，上传后会展示在此处。</Text>
             </View>
-          ))}
+          ) : (
+            reportHistory.map((item) => (
+              <View key={item.id} style={styles.historyCard}>
+                <View style={styles.historyHeader}>
+                  <Text style={styles.historyTitle}>{reportLabels[item.type]}</Text>
+                  <Text style={[styles.historyStatus, { color: '#10B981' }]}>已保存</Text>
+                </View>
+                <Text style={styles.historyMeta}>
+                  {item.timestamp} · {item.source}
+                </Text>
+                {item.fileName && <Text style={styles.historyMeta}>文件：{item.fileName}</Text>}
+                {item.ocrSummary && <Text style={styles.historyMeta}>OCR：{item.ocrSummary}</Text>}
+              </View>
+            ))
+          )}
         </View>
 
         <View style={styles.section}>
@@ -678,29 +854,6 @@ const DataEntryScreen = () => {
                   {level}级
                 </Text>
               ))}
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>基础数据可视化</Text>
-          <View style={styles.radarCard}>
-            <Text style={styles.sectionSubtitle}>肌群雷达图（0-5 级）</Text>
-            <RadarChart data={radarData} />
-          </View>
-          <View style={styles.chartCard}>
-            <LineChart
-              data={strengthTrend}
-              width={chartWidth}
-              height={220}
-              chartConfig={chartConfig}
-              bezier
-              withShadow={false}
-              style={styles.chart}
-            />
-            <View style={styles.chartLegend}>
-              <View style={styles.chartLegendDot} />
-              <Text style={styles.chartLegendText}>肌力评分趋势（0-5 级）</Text>
             </View>
           </View>
         </View>
@@ -768,31 +921,35 @@ const DataEntryScreen = () => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>医疗时间轴</Text>
           <View style={styles.timelineCard}>
-            {timelineEvents.map((event, index) => (
-              <View
-                key={event.id}
-                style={[
-                  styles.timelineItem,
-                  index === timelineEvents.length - 1 && styles.timelineItemLast,
-                ]}
-              >
-                <View style={styles.timelineHeader}>
-                  <Text style={styles.timelineTitle}>{event.title}</Text>
-                  <Text
-                    style={[
-                      styles.timelineTag,
-                      event.tag === '报告' && styles.timelineTagReport,
-                      event.tag === '肌力' && styles.timelineTagStrength,
-                      event.tag === '活动' && styles.timelineTagActivity,
-                    ]}
-                  >
-                    {event.tag}
-                  </Text>
+            {timelineEvents.length === 0 ? (
+              <Text style={{ color: '#9CA3AF' }}>暂无记录，录入后会自动生成时间轴。</Text>
+            ) : (
+              timelineEvents.map((event, index) => (
+                <View
+                  key={event.id}
+                  style={[
+                    styles.timelineItem,
+                    index === timelineEvents.length - 1 && styles.timelineItemLast,
+                  ]}
+                >
+                  <View style={styles.timelineHeader}>
+                    <Text style={styles.timelineTitle}>{event.title}</Text>
+                    <Text
+                      style={[
+                        styles.timelineTag,
+                        event.tag === '报告' && styles.timelineTagReport,
+                        event.tag === '肌力' && styles.timelineTagStrength,
+                        event.tag === '活动' && styles.timelineTagActivity,
+                      ]}
+                    >
+                      {event.tag}
+                    </Text>
+                  </View>
+                  <Text style={styles.timelineDescription}>{event.description}</Text>
+                  <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
                 </View>
-                <Text style={styles.timelineDescription}>{event.description}</Text>
-                <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
-              </View>
-            ))}
+              ))
+            )}
           </View>
         </View>
 
@@ -808,6 +965,44 @@ const DataEntryScreen = () => {
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color="#969FFF" style={styles.loadingSpinner} />
             <Text style={styles.loadingText}>正在保存数据...</Text>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showDiagnosisModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>选择诊断阶段</Text>
+            {diagnosisOptions.map((option) => (
+              <TouchableOpacity
+                key={option}
+                style={styles.modalOption}
+                onPress={() => {
+                  setProfileForm((prev) => ({
+                    ...prev,
+                    diagnosisStage: option,
+                  }));
+                  setShowDiagnosisModal(false);
+                }}
+              >
+                <Text style={styles.modalOptionText}>{option}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.modalOption, styles.modalCancel]}
+              onPress={() => setShowDiagnosisModal(false)}
+            >
+              <Text style={styles.modalCancelText}>取消</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalClear}
+              onPress={() => {
+                setProfileForm((prev) => ({ ...prev, diagnosisStage: '' }));
+                setShowDiagnosisModal(false);
+              }}
+            >
+              <Text style={styles.modalClearText}>清空</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>

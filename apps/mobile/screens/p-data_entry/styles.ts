@@ -59,6 +59,98 @@ export default StyleSheet.create({
     color: '#D1D5DB',
     marginBottom: 12,
   },
+  profileCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 8,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#969FFF',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.1,
+        shadowRadius: 32,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  inputLabel: {
+    fontSize: 12,
+    color: '#D1D5DB',
+    marginBottom: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  selectInput: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  selectText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+  },
+  selectPlaceholder: {
+    color: '#9CA3AF',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: '#151530',
+    borderRadius: 12,
+    padding: 16,
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  modalOption: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  modalOptionText: {
+    color: '#E5E7EB',
+    fontSize: 14,
+  },
+  modalCancel: {
+    borderBottomWidth: 0,
+    marginTop: 8,
+  },
+  modalCancelText: {
+    color: '#F59E0B',
+    fontSize: 14,
+  },
+  modalClear: {
+    marginTop: 8,
+  },
+  modalClearText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    textAlign: 'right',
+  },
   uploadCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,
