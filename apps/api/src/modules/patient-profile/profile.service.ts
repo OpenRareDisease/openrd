@@ -128,6 +128,22 @@ export interface MuscleInsightResult {
   userLatestScore: number | null;
 }
 
+export interface SubmissionSummary {
+  id: string;
+  createdAt: string;
+  measurements: PatientMeasurementDTO[];
+  activityLogs: PatientActivityLogDTO[];
+  medications: PatientMedicationDTO[];
+  documents: PatientDocumentDTO[];
+}
+
+export interface SubmissionTimelineResult {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: SubmissionSummary[];
+}
+
 export interface PatientProfileDTO {
   id: string;
   userId: string;
@@ -478,16 +494,18 @@ export class PatientProfileService {
     const result = await this.pool.query(
       `INSERT INTO patient_measurements (
         profile_id,
+        submission_id,
         muscle_group,
         strength_score,
         method,
         notes,
         recorded_at
       )
-      VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW()))
+      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, NOW()))
       RETURNING id, muscle_group, strength_score, method, notes, recorded_at, created_at`,
       [
         profileId,
+        payload.submissionId ?? null,
         payload.muscleGroup,
         payload.strengthScore,
         payload.method ?? null,
@@ -555,6 +573,7 @@ export class PatientProfileService {
     const result = await this.pool.query(
       `INSERT INTO patient_activity_logs (
         profile_id,
+        submission_id,
         log_date,
         source,
         content,
@@ -562,14 +581,16 @@ export class PatientProfileService {
       )
       VALUES (
         $1,
-        COALESCE($2::date, CURRENT_DATE),
-        $3,
+        $2,
+        COALESCE($3::date, CURRENT_DATE),
         $4,
-        $5
+        $5,
+        $6
       )
       RETURNING id, log_date, source, content, mood_score, created_at`,
       [
         profileId,
+        payload.submissionId ?? null,
         payload.logDate ?? null,
         payload.source,
         payload.content ?? null,
@@ -595,6 +616,7 @@ export class PatientProfileService {
     const result = await this.pool.query(
       `INSERT INTO patient_documents (
         profile_id,
+        submission_id,
         document_type,
         title,
         file_name,
@@ -607,15 +629,16 @@ export class PatientProfileService {
         ocr_payload
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        COALESCE($8, 'uploaded'),
-        COALESCE($9::timestamptz, NOW()),
-        $10,
-        $11
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        COALESCE($9, 'uploaded'),
+        COALESCE($10::timestamptz, NOW()),
+        $11,
+        $12
       )
       RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload`,
       [
         profileId,
+        payload.submissionId ?? null,
         payload.documentType,
         payload.title ?? null,
         payload.fileName ?? null,
@@ -655,12 +678,14 @@ export class PatientProfileService {
     mimeType: string | null;
     fileSizeBytes: number | null;
     ocrPayload: unknown | null;
+    submissionId?: string | null;
   }): Promise<PatientDocumentDTO> {
     const profileId = await this.ensureProfileForUser(input.userId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_documents (
         profile_id,
+        submission_id,
         document_type,
         title,
         file_name,
@@ -672,11 +697,12 @@ export class PatientProfileService {
         ocr_payload
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, 'uploaded', NOW(), $8
+        $1, $2, $3, $4, $5, $6, $7, $8, 'uploaded', NOW(), $9
       )
       RETURNING id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload`,
       [
         profileId,
+        input.submissionId ?? null,
         input.documentType,
         input.title ?? null,
         input.fileName ?? null,
@@ -732,6 +758,7 @@ export class PatientProfileService {
     const result = await this.pool.query(
       `INSERT INTO patient_medications (
         profile_id,
+        submission_id,
         medication_name,
         dosage,
         frequency,
@@ -741,11 +768,12 @@ export class PatientProfileService {
         notes,
         status
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'active')
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'active')
       )
       RETURNING id, medication_name, dosage, frequency, route, start_date, end_date, notes, status, created_at`,
       [
         profileId,
+        payload.submissionId ?? null,
         payload.medicationName,
         payload.dosage ?? null,
         payload.frequency ?? null,
@@ -885,6 +913,193 @@ export class PatientProfileService {
       latestMeasurement,
       lastActivityAt: lastActivityDate ? lastActivityDate.toISOString() : null,
       notes,
+    };
+  }
+
+  async createSubmission(userId: string): Promise<{ id: string; createdAt: string }> {
+    const profileId = await this.ensureProfileForUser(userId);
+    const result = await this.pool.query<{ id: string; created_at: Date }>(
+      `INSERT INTO patient_submissions (profile_id)
+       VALUES ($1)
+       RETURNING id, created_at`,
+      [profileId],
+    );
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      createdAt: toTimestampString(row.created_at),
+    };
+  }
+
+  async attachDocumentsToSubmission(
+    userId: string,
+    submissionId: string,
+    documentIds: string[],
+  ): Promise<{ updated: number }> {
+    const profileId = await this.ensureProfileForUser(userId);
+    const submissionResult = await this.pool.query(
+      `SELECT id FROM patient_submissions WHERE id = $1 AND profile_id = $2`,
+      [submissionId, profileId],
+    );
+    if (!submissionResult.rowCount) {
+      throw new AppError('Submission not found', 404);
+    }
+
+    const updateResult = await this.pool.query(
+      `UPDATE patient_documents
+       SET submission_id = $1
+       WHERE profile_id = $2 AND id = ANY($3::uuid[])`,
+      [submissionId, profileId, documentIds],
+    );
+
+    return { updated: updateResult.rowCount ?? 0 };
+  }
+
+  async listSubmissions(
+    userId: string,
+    page = 1,
+    pageSize = 10,
+  ): Promise<SubmissionTimelineResult> {
+    const profileId = await this.ensureProfileForUser(userId);
+    const offset = (page - 1) * pageSize;
+
+    const totalResult = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM patient_submissions WHERE profile_id = $1`,
+      [profileId],
+    );
+    const total = Number(totalResult.rows[0]?.count ?? 0);
+
+    const submissionsResult = await this.pool.query<{ id: string; created_at: Date }>(
+      `SELECT id, created_at
+       FROM patient_submissions
+       WHERE profile_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [profileId, pageSize, offset],
+    );
+
+    const submissionIds = submissionsResult.rows.map((row) => row.id);
+    if (submissionIds.length === 0) {
+      return { page, pageSize, total, items: [] };
+    }
+
+    const [measurementsResult, activityResult, medicationResult, documentResult] =
+      await Promise.all([
+        this.pool.query(
+          `SELECT id, submission_id, recorded_at, muscle_group, strength_score, method, notes, created_at
+           FROM patient_measurements
+           WHERE submission_id = ANY($1::uuid[])
+           ORDER BY recorded_at ASC`,
+          [submissionIds],
+        ),
+        this.pool.query(
+          `SELECT id, submission_id, log_date, source, content, mood_score, created_at
+           FROM patient_activity_logs
+           WHERE submission_id = ANY($1::uuid[])
+           ORDER BY created_at ASC`,
+          [submissionIds],
+        ),
+        this.pool.query(
+          `SELECT id, submission_id, medication_name, dosage, frequency, route, start_date, end_date, notes, status, created_at
+           FROM patient_medications
+           WHERE submission_id = ANY($1::uuid[])
+           ORDER BY created_at ASC`,
+          [submissionIds],
+        ),
+        this.pool.query(
+          `SELECT id, submission_id, document_type, title, file_name, mime_type, file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload
+           FROM patient_documents
+           WHERE submission_id = ANY($1::uuid[])
+           ORDER BY uploaded_at ASC`,
+          [submissionIds],
+        ),
+      ]);
+
+    const grouped: Record<string, SubmissionSummary> = {};
+    submissionsResult.rows.forEach((row) => {
+      grouped[row.id] = {
+        id: row.id,
+        createdAt: toTimestampString(row.created_at),
+        measurements: [],
+        activityLogs: [],
+        medications: [],
+        documents: [],
+      };
+    });
+
+    measurementsResult.rows.forEach((row) => {
+      const submissionId = row.submission_id as string;
+      const target = grouped[submissionId];
+      if (!target) return;
+      target.measurements.push({
+        id: row.id,
+        muscleGroup: row.muscle_group,
+        strengthScore: Number(row.strength_score),
+        method: row.method,
+        notes: row.notes,
+        recordedAt: toTimestampString(row.recorded_at),
+        createdAt: toTimestampString(row.created_at),
+      });
+    });
+
+    activityResult.rows.forEach((row) => {
+      const submissionId = row.submission_id as string;
+      const target = grouped[submissionId];
+      if (!target) return;
+      target.activityLogs.push({
+        id: row.id,
+        logDate: row.log_date.toISOString?.() ?? row.log_date,
+        source: row.source,
+        content: row.content,
+        moodScore: row.mood_score === null ? null : Number(row.mood_score),
+        createdAt: toTimestampString(row.created_at),
+      });
+    });
+
+    medicationResult.rows.forEach((row) => {
+      const submissionId = row.submission_id as string;
+      const target = grouped[submissionId];
+      if (!target) return;
+      target.medications.push({
+        id: row.id,
+        medicationName: row.medication_name,
+        dosage: row.dosage,
+        frequency: row.frequency,
+        route: row.route,
+        startDate: toDateString(row.start_date),
+        endDate: toDateString(row.end_date),
+        notes: row.notes,
+        status: row.status,
+        createdAt: toTimestampString(row.created_at),
+      });
+    });
+
+    documentResult.rows.forEach((row) => {
+      const submissionId = row.submission_id as string;
+      const target = grouped[submissionId];
+      if (!target) return;
+      target.documents.push({
+        id: row.id,
+        documentType: row.document_type,
+        title: row.title,
+        fileName: row.file_name,
+        mimeType: row.mime_type,
+        fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+        storageUri: row.storage_uri,
+        status: row.status,
+        uploadedAt: toTimestampString(row.uploaded_at),
+        checksum: row.checksum,
+        ocrPayload: row.ocr_payload ?? null,
+      });
+    });
+
+    const items = submissionsResult.rows.map((row) => grouped[row.id]).filter(Boolean);
+
+    return {
+      page,
+      pageSize,
+      total,
+      items,
     };
   }
 
