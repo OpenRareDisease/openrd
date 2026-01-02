@@ -116,6 +116,29 @@ export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
 
+export interface MuscleInsight {
+  muscleGroup: string;
+  trend: Array<{
+    recordedAt: string;
+    strengthScore: number;
+  }>;
+  distribution: {
+    muscleGroup: string;
+    minScore: number;
+    maxScore: number;
+    medianScore: number;
+    quartile25: number;
+    quartile75: number;
+    sampleCount: number;
+  } | null;
+  userLatestScore: number | null;
+}
+
+export const getMuscleInsight = (muscleGroup: string, limit = 8) =>
+  apiRequest<MuscleInsight>(
+    `/profiles/me/insights/muscle?muscleGroup=${encodeURIComponent(muscleGroup)}&limit=${limit}`,
+  );
+
 export interface PatientDocument {
   id: string;
   documentType: string;
