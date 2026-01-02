@@ -46,6 +46,7 @@ export const measurementSchema = z.object({
   method: z.string().max(120).optional().nullable(),
   notes: z.string().optional().nullable(),
   recordedAt: z.string().datetime().optional(),
+  submissionId: z.string().uuid().optional().nullable(),
 });
 export type MeasurementInput = z.infer<typeof measurementSchema>;
 
@@ -63,6 +64,7 @@ export const activityLogSchema = z.object({
   source: z.enum(ACTIVITY_SOURCES),
   content: z.string().max(2000).optional().nullable(),
   moodScore: z.coerce.number().int().min(1).max(5).optional().nullable(),
+  submissionId: z.string().uuid().optional().nullable(),
 });
 export type ActivityLogInput = z.infer<typeof activityLogSchema>;
 
@@ -76,12 +78,14 @@ export const documentSchema = z.object({
   status: z.enum(['uploaded', 'processing', 'failed']).optional(),
   checksum: z.string().max(255).optional().nullable(),
   uploadedAt: z.string().datetime().optional(),
+  submissionId: z.string().uuid().optional().nullable(),
 });
 export type DocumentInput = z.infer<typeof documentSchema>;
 
 export const documentUploadSchema = z.object({
   documentType: z.enum(DOCUMENT_TYPES),
   title: z.string().max(255).optional().nullable(),
+  submissionId: z.string().uuid().optional().nullable(),
 });
 export type DocumentUploadInput = z.infer<typeof documentUploadSchema>;
 
@@ -94,6 +98,7 @@ export const medicationSchema = z.object({
   endDate: isoDateString.optional().nullable(),
   notes: z.string().max(1000).optional().nullable(),
   status: z.enum(MEDICATION_STATUS).optional(),
+  submissionId: z.string().uuid().optional().nullable(),
 });
 export type MedicationInput = z.infer<typeof medicationSchema>;
 
@@ -102,3 +107,14 @@ export const muscleInsightQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(24).optional(),
 });
 export type MuscleInsightQuery = z.infer<typeof muscleInsightQuerySchema>;
+
+export const submissionListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(50).optional(),
+});
+export type SubmissionListQuery = z.infer<typeof submissionListQuerySchema>;
+
+export const attachDocumentsSchema = z.object({
+  documentIds: z.array(z.string().uuid()).min(1),
+});
+export type AttachDocumentsInput = z.infer<typeof attachDocumentsSchema>;
