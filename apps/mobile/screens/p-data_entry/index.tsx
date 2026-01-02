@@ -94,7 +94,6 @@ const DataEntryScreen = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [activityText, setActivityText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showDiagnosisModal, setShowDiagnosisModal] = useState(false);
   const [medicationForm, setMedicationForm] = useState({
     medicationName: '',
     dosage: '',
@@ -102,12 +101,6 @@ const DataEntryScreen = () => {
     route: '',
   });
   const [medications, setMedications] = useState<any[]>([]);
-
-  const diagnosisOptions = ['Stage 1', 'Stage 2', 'Stage 3', 'Stage 4', '不确定'];
-  const [profileForm, setProfileForm] = useState({
-    fullName: '',
-    diagnosisStage: '',
-  });
 
   const muscleGroups = [
     { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
@@ -211,15 +204,6 @@ const DataEntryScreen = () => {
     }
   };
 
-  const buildProfilePayload = () => {
-    const payload: Record<string, string> = {};
-    const fullName = profileForm.fullName.trim();
-    const diagnosisStage = profileForm.diagnosisStage.trim();
-    if (fullName) payload.fullName = fullName;
-    if (diagnosisStage) payload.diagnosisStage = diagnosisStage;
-    return payload;
-  };
-
   const buildStrengthMapFromProfile = (profile: any) => {
     if (!profile?.measurements?.length) {
       return {};
@@ -315,10 +299,6 @@ const DataEntryScreen = () => {
   const loadProfile = async () => {
     try {
       const [data, meds] = await Promise.all([getMyPatientProfile(), getMedications()]);
-      setProfileForm({
-        fullName: data.fullName ?? '',
-        diagnosisStage: data.diagnosisStage ?? '',
-      });
       setMuscleStrengthMap(buildStrengthMapFromProfile(data));
       setReportHistory(buildReportHistoryFromProfile(data));
       setTimelineEvents(buildTimelineFromProfile(data));
@@ -336,7 +316,6 @@ const DataEntryScreen = () => {
       if (!(error instanceof ApiError && error.status === 404)) {
         console.error('加载档案失败:', error);
       }
-      setProfileForm({ fullName: '', diagnosisStage: '' });
       setMuscleStrengthMap({});
       setReportHistory([]);
       setTimelineEvents([]);
@@ -353,7 +332,7 @@ const DataEntryScreen = () => {
       await getMyPatientProfile();
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
-        await upsertPatientProfile(buildProfilePayload());
+        await upsertPatientProfile({});
       } else {
         throw error;
       }
@@ -530,10 +509,6 @@ const DataEntryScreen = () => {
       setIsLoading(true);
 
       await ensureProfileExists();
-      const profilePayload = buildProfilePayload();
-      if (Object.keys(profilePayload).length > 0) {
-        await upsertPatientProfile(profilePayload);
-      }
 
       const requests: Promise<unknown>[] = [];
 
@@ -595,8 +570,8 @@ const DataEntryScreen = () => {
       });
 
       await loadProfile();
-      Alert.alert('提交成功', '数据已成功录入！', [
-        { text: '继续录入' },
+      Alert.alert('提交成功', '数据已成功添加/更新！', [
+        { text: '继续添加/更新' },
         {
           text: '返回上一页',
           onPress: () => {
@@ -641,43 +616,11 @@ const DataEntryScreen = () => {
         <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
           <FontAwesome6 name="arrow-left" size={16} color="#9CA3AF" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>数据录入</Text>
+        <Text style={styles.headerTitle}>添加/更新数据</Text>
         <View style={styles.headerPlaceholder} />
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>基础档案</Text>
-          <View style={styles.profileCard}>
-            <Text style={styles.inputLabel}>姓名</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="请输入姓名"
-              placeholderTextColor="#9CA3AF"
-              value={profileForm.fullName}
-              onChangeText={(value) =>
-                setProfileForm((prev) => ({
-                  ...prev,
-                  fullName: value,
-                }))
-              }
-            />
-
-            <Text style={styles.inputLabel}>诊断阶段</Text>
-            <TouchableOpacity
-              style={styles.selectInput}
-              onPress={() => setShowDiagnosisModal(true)}
-            >
-              <Text
-                style={[styles.selectText, !profileForm.diagnosisStage && styles.selectPlaceholder]}
-              >
-                {profileForm.diagnosisStage || '请选择诊断阶段'}
-              </Text>
-              <FontAwesome6 name="chevron-down" size={12} color="#9CA3AF" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>医疗报告</Text>
 
@@ -922,7 +865,7 @@ const DataEntryScreen = () => {
           <Text style={styles.sectionTitle}>医疗时间轴</Text>
           <View style={styles.timelineCard}>
             {timelineEvents.length === 0 ? (
-              <Text style={{ color: '#9CA3AF' }}>暂无记录，录入后会自动生成时间轴。</Text>
+              <Text style={{ color: '#9CA3AF' }}>暂无记录，添加/更新后会自动生成时间轴。</Text>
             ) : (
               timelineEvents.map((event, index) => (
                 <View
@@ -955,7 +898,7 @@ const DataEntryScreen = () => {
 
         <View style={styles.submitSection}>
           <TouchableOpacity style={styles.submitButton} onPress={handleSubmit}>
-            <Text style={styles.submitButtonText}>提交数据</Text>
+            <Text style={styles.submitButtonText}>添加/更新数据</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -969,43 +912,7 @@ const DataEntryScreen = () => {
         </View>
       </Modal>
 
-      <Modal visible={showDiagnosisModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>选择诊断阶段</Text>
-            {diagnosisOptions.map((option) => (
-              <TouchableOpacity
-                key={option}
-                style={styles.modalOption}
-                onPress={() => {
-                  setProfileForm((prev) => ({
-                    ...prev,
-                    diagnosisStage: option,
-                  }));
-                  setShowDiagnosisModal(false);
-                }}
-              >
-                <Text style={styles.modalOptionText}>{option}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity
-              style={[styles.modalOption, styles.modalCancel]}
-              onPress={() => setShowDiagnosisModal(false)}
-            >
-              <Text style={styles.modalCancelText}>取消</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalClear}
-              onPress={() => {
-                setProfileForm((prev) => ({ ...prev, diagnosisStage: '' }));
-                setShowDiagnosisModal(false);
-              }}
-            >
-              <Text style={styles.modalClearText}>清空</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {/* 档案编辑已移至设置页 */}
     </SafeAreaView>
   );
 };

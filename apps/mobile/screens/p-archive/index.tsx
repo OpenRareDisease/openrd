@@ -65,7 +65,6 @@ interface PatientDocument {
 interface PatientProfile {
   id: string;
   fullName: string | null;
-  diagnosisStage: string | null;
   measurements: PatientMeasurement[];
   activityLogs: PatientActivityLog[];
   documents: PatientDocument[];
@@ -106,6 +105,23 @@ const ArchiveScreen = () => {
     if (timestamps.length === 0) return null;
     return new Date(Math.max(...timestamps));
   }, [profile]);
+
+  const formatDateTime = (value: Date) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    const hour = String(value.getHours()).padStart(2, '0');
+    const minute = String(value.getMinutes()).padStart(2, '0');
+    const second = String(value.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+  };
+
+  const hasRecordedData = Boolean(
+    profile &&
+      (profile.measurements.length > 0 ||
+        profile.activityLogs.length > 0 ||
+        profile.documents.length > 0),
+  );
 
   const mapDocumentTypeLabel = (type?: string) => {
     switch (type) {
@@ -352,7 +368,6 @@ const ArchiveScreen = () => {
       setProfile({
         id: data.id,
         fullName: data.fullName,
-        diagnosisStage: data.diagnosisStage,
         measurements: data.measurements ?? [],
         activityLogs: data.activityLogs ?? [],
         documents: data.documents ?? [],
@@ -506,12 +521,8 @@ const ArchiveScreen = () => {
         <View style={styles.profileCard}>
           <Text style={styles.profileName}>{profile.fullName ?? '未填写姓名'}</Text>
           <Text style={styles.profileMeta}>
-            诊断阶段：{profile.diagnosisStage ?? '未填写'} · 最近更新：
-            {(latestUpdatedAt ?? new Date(profile.updatedAt)).toLocaleDateString()}
+            最近更新：{formatDateTime(latestUpdatedAt ?? new Date(profile.updatedAt))}
           </Text>
-          <TouchableOpacity style={styles.editButton} onPress={handleDataEntryPress}>
-            <Text style={styles.editButtonText}>更新档案</Text>
-          </TouchableOpacity>
         </View>
 
         <View style={styles.section}>
@@ -663,7 +674,9 @@ const ArchiveScreen = () => {
                 activeOpacity={0.7}
               >
                 <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.dataEntryText}>录入数据</Text>
+                <Text style={styles.dataEntryText}>
+                  {hasRecordedData ? '添加数据' : '录入数据'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
