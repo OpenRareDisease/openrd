@@ -89,10 +89,21 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Submission batches (one per data-entry action).
+CREATE TABLE IF NOT EXISTS patient_submissions (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id  UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_submissions_profile
+    ON patient_submissions (profile_id, created_at DESC);
+
 -- Muscle strength measurements linked to a patient profile.
 CREATE TABLE IF NOT EXISTS patient_measurements (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id      UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id   UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     muscle_group    TEXT NOT NULL,
     strength_score  SMALLINT NOT NULL CHECK (strength_score BETWEEN 0 AND 5),
@@ -126,6 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_patient_function_tests_profile
 CREATE TABLE IF NOT EXISTS patient_activity_logs (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id      UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id   UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     log_date        DATE NOT NULL DEFAULT CURRENT_DATE,
     source          TEXT NOT NULL,
     content         TEXT,
@@ -140,6 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_patient_activity_logs_profile
 CREATE TABLE IF NOT EXISTS patient_medications (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id       UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id    UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     medication_name  TEXT NOT NULL,
     dosage           TEXT,
     frequency        TEXT,
@@ -158,6 +171,7 @@ CREATE INDEX IF NOT EXISTS idx_patient_medications_profile
 CREATE TABLE IF NOT EXISTS patient_documents (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id       UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id    UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     document_type    TEXT NOT NULL,
     title            TEXT,
     file_name        TEXT,
@@ -175,6 +189,18 @@ CREATE INDEX IF NOT EXISTS idx_patient_documents_profile
 
 ALTER TABLE patient_documents
     ADD COLUMN IF NOT EXISTS ocr_payload JSONB;
+
+ALTER TABLE patient_measurements
+    ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL;
+
+ALTER TABLE patient_activity_logs
+    ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL;
+
+ALTER TABLE patient_medications
+    ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL;
+
+ALTER TABLE patient_documents
+    ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL;
 
 -- Medical reports (metadata only, files stored elsewhere).
 CREATE TABLE IF NOT EXISTS medical_reports (
