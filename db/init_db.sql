@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS patient_profiles (
     contact_phone       CITEXT,
     contact_email       CITEXT,
     primary_physician   TEXT,
+    region_province     TEXT,
+    region_city         TEXT,
+    region_district     TEXT,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -63,7 +66,10 @@ ALTER TABLE patient_profiles
     ADD COLUMN IF NOT EXISTS blood_type TEXT,
     ADD COLUMN IF NOT EXISTS contact_phone CITEXT,
     ADD COLUMN IF NOT EXISTS contact_email CITEXT,
-    ADD COLUMN IF NOT EXISTS primary_physician TEXT;
+    ADD COLUMN IF NOT EXISTS primary_physician TEXT,
+    ADD COLUMN IF NOT EXISTS region_province TEXT,
+    ADD COLUMN IF NOT EXISTS region_city TEXT,
+    ADD COLUMN IF NOT EXISTS region_district TEXT;
 
 ALTER TABLE patient_profiles
     DROP COLUMN IF EXISTS muscle_strength;
