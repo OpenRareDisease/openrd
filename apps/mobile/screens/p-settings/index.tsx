@@ -43,7 +43,7 @@ const SettingsScreen = () => {
   };
 
   const handleEditProfilePress = () => {
-    Alert.alert('提示', '个人资料编辑功能即将上线，敬请期待！');
+    router.push('/p-register_profile');
   };
 
   const handleModalOverlayPress = () => {

@@ -65,6 +65,7 @@ export default function RootLayout() {
         >
           <Stack.Screen name="(tabs)" options={{ title: '底部导航栏' }} />
           <Stack.Screen name="p-login_register" options={{ title: '登录注册页' }} />
+          <Stack.Screen name="p-register_profile" options={{ title: '编辑档案页' }} />
           <Stack.Screen name="p-data_entry" options={{ title: '数据录入页' }} />
           <Stack.Screen name="p-manage" options={{ title: '病程管理页' }} />
           <Stack.Screen name="p-rehab_share" options={{ title: '康复经验分享页' }} />
