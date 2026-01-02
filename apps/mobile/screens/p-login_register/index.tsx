@@ -21,7 +21,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, register } from '../../lib/api';
+import { ApiError, login, register, upsertPatientProfile } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface LoginFormData {
@@ -34,6 +34,14 @@ interface RegisterFormData {
   code: string;
   password: string;
   confirmPassword: string;
+  identity: 'doctor' | 'patient_family' | 'other';
+  fullName: string;
+  dateOfBirth: string;
+  gender: 'male' | 'female' | 'non_binary' | 'prefer_not_to_say' | '';
+  contactEmail: string;
+  regionProvince: string;
+  regionCity: string;
+  regionDistrict: string;
 }
 
 interface ModalState {
@@ -59,6 +67,14 @@ const LoginRegisterScreen: React.FC = () => {
     code: '',
     password: '',
     confirmPassword: '',
+    identity: 'patient_family',
+    fullName: '',
+    dateOfBirth: '',
+    gender: '',
+    contactEmail: '',
+    regionProvince: '',
+    regionCity: '',
+    regionDistrict: '',
   });
 
   // UI状态
@@ -106,7 +122,7 @@ const LoginRegisterScreen: React.FC = () => {
   };
 
   const validatePassword = (password: string): boolean => {
-    return password.length >= 6 && password.length <= 20;
+    return password.length >= 8 && password.length <= 20;
   };
 
   const formatPhoneNumber = (phone: string) => {
@@ -118,6 +134,13 @@ const LoginRegisterScreen: React.FC = () => {
       return trimmed;
     }
     return `+86${trimmed}`;
+  };
+
+  const isValidDate = (value: string): boolean => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return false;
+    }
+    return !Number.isNaN(Date.parse(value));
   };
 
   // 显示弹窗
@@ -230,6 +253,31 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 注册提交
   const handleRegisterSubmit = async () => {
+    if (!registerForm.identity) {
+      showModal('error', '错误', '请选择身份');
+      return;
+    }
+
+    if (!registerForm.fullName.trim()) {
+      showModal('error', '错误', '请输入姓名');
+      return;
+    }
+
+    if (!registerForm.dateOfBirth.trim()) {
+      showModal('error', '错误', '请输入出生日期');
+      return;
+    }
+
+    if (!isValidDate(registerForm.dateOfBirth.trim())) {
+      showModal('error', '错误', '出生日期格式应为YYYY-MM-DD');
+      return;
+    }
+
+    if (!registerForm.gender) {
+      showModal('error', '错误', '请选择性别');
+      return;
+    }
+
     if (!registerForm.phone) {
       showModal('error', '错误', '请输入手机号');
       return;
@@ -251,7 +299,7 @@ const LoginRegisterScreen: React.FC = () => {
     }
 
     if (!validatePassword(registerForm.password)) {
-      showModal('error', '错误', '密码长度应为6-20位');
+      showModal('error', '错误', '密码长度应为8-20位');
       return;
     }
 
@@ -260,17 +308,55 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
+    if (!registerForm.regionProvince.trim()) {
+      showModal('error', '错误', '请输入所在省份');
+      return;
+    }
+
+    if (!registerForm.regionCity.trim()) {
+      showModal('error', '错误', '请输入所在城市');
+      return;
+    }
+
+    if (!registerForm.regionDistrict.trim()) {
+      showModal('error', '错误', '请输入所在区县');
+      return;
+    }
+
+    if (
+      registerForm.contactEmail.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.contactEmail.trim())
+    ) {
+      showModal('error', '错误', '请输入正确的邮箱格式');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
+      const roleMap = {
+        doctor: 'clinician',
+        patient_family: 'patient',
+        other: 'caregiver',
+      } as const;
       const response = await register({
         phoneNumber: formatPhoneNumber(registerForm.phone),
         password: registerForm.password,
-        role: 'patient',
+        role: roleMap[registerForm.identity],
       });
 
       await setSession(response);
-      showModal('success', '注册成功', '账户已创建并自动登录');
+      await upsertPatientProfile({
+        fullName: registerForm.fullName.trim(),
+        dateOfBirth: registerForm.dateOfBirth.trim(),
+        gender: registerForm.gender,
+        contactPhone: formatPhoneNumber(registerForm.phone),
+        contactEmail: registerForm.contactEmail.trim() || null,
+        regionProvince: registerForm.regionProvince.trim(),
+        regionCity: registerForm.regionCity.trim(),
+        regionDistrict: registerForm.regionDistrict.trim(),
+      });
+      showModal('success', '注册成功', '账户已创建并完成档案');
       router.replace('/p-home');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '注册失败，请重试';
@@ -485,6 +571,101 @@ const LoginRegisterScreen: React.FC = () => {
               {activeTab === 'register' && (
                 <View style={styles.formContainer}>
                   <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>身份选择</Text>
+                    <View style={styles.identityRow}>
+                      {[
+                        { value: 'doctor', label: '医生' },
+                        { value: 'patient_family', label: '患者或家属' },
+                        { value: 'other', label: '其他' },
+                      ].map((option) => {
+                        const isActive = registerForm.identity === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[styles.identityButton, isActive && styles.identityButtonActive]}
+                            onPress={() =>
+                              setRegisterForm((prev) => ({
+                                ...prev,
+                                identity: option.value as RegisterFormData['identity'],
+                              }))
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.identityButtonText,
+                                isActive && styles.identityButtonTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  <Text style={styles.registerSectionTitle}>基本信息</Text>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>姓名</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="请输入姓名"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      value={registerForm.fullName}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, fullName: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>出生日期</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="YYYY-MM-DD"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      value={registerForm.dateOfBirth}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, dateOfBirth: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>性别</Text>
+                    <View style={styles.identityRow}>
+                      {[
+                        { value: 'male', label: '男' },
+                        { value: 'female', label: '女' },
+                        { value: 'non_binary', label: '非二元' },
+                        { value: 'prefer_not_to_say', label: '不透露' },
+                      ].map((option) => {
+                        const isActive = registerForm.gender === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[styles.identityButton, isActive && styles.identityButtonActive]}
+                            onPress={() =>
+                              setRegisterForm((prev) => ({
+                                ...prev,
+                                gender: option.value as RegisterFormData['gender'],
+                              }))
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.identityButtonText,
+                                isActive && styles.identityButtonTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  <Text style={styles.registerSectionTitle}>账号信息</Text>
+                  <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>手机号</Text>
                     <TextInput
                       style={styles.textInput}
@@ -578,6 +759,59 @@ const LoginRegisterScreen: React.FC = () => {
                         />
                       </TouchableOpacity>
                     </View>
+                  </View>
+
+                  <Text style={styles.registerSectionTitle}>联系方式</Text>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>邮箱（可选）</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="用于账号验证与平台通知"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      keyboardType="email-address"
+                      value={registerForm.contactEmail}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, contactEmail: text }))
+                      }
+                    />
+                  </View>
+
+                  <Text style={styles.registerSectionTitle}>所在地区</Text>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>省份</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：浙江省"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      value={registerForm.regionProvince}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, regionProvince: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>城市</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：杭州市"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      value={registerForm.regionCity}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, regionCity: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>区县</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：西湖区"
+                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      value={registerForm.regionDistrict}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, regionDistrict: text }))
+                      }
+                    />
                   </View>
 
                   <TouchableOpacity
