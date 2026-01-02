@@ -116,6 +116,60 @@ export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
 
+export const createSubmission = () =>
+  apiRequest<{ id: string; createdAt: string }>('/profiles/me/submissions', {
+    method: 'POST',
+  });
+
+export interface SubmissionItem {
+  id: string;
+  createdAt: string;
+  measurements: Array<{
+    id: string;
+    muscleGroup: string;
+    strengthScore: number;
+    recordedAt: string;
+  }>;
+  activityLogs: Array<{
+    id: string;
+    content: string | null;
+    logDate: string;
+    createdAt: string;
+  }>;
+  medications: Array<{
+    id: string;
+    medicationName: string;
+    dosage: string | null;
+    frequency: string | null;
+    route: string | null;
+  }>;
+  documents: Array<{
+    id: string;
+    documentType: string;
+    title: string | null;
+    fileName: string | null;
+    uploadedAt: string;
+  }>;
+}
+
+export interface SubmissionTimelineResponse {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: SubmissionItem[];
+}
+
+export const getSubmissionTimeline = (page = 1, pageSize = 10) =>
+  apiRequest<SubmissionTimelineResponse>(
+    `/profiles/me/submissions?page=${page}&pageSize=${pageSize}`,
+  );
+
+export const attachSubmissionDocuments = (submissionId: string, documentIds: string[]) =>
+  apiRequest<{ updated: number }>(`/profiles/me/submissions/${submissionId}/documents`, {
+    method: 'PATCH',
+    body: JSON.stringify({ documentIds }),
+  });
+
 export interface MuscleInsight {
   muscleGroup: string;
   trend: Array<{
