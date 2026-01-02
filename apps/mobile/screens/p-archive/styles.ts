@@ -400,7 +400,81 @@ export default StyleSheet.create({
     color: '#969FFF',
   },
   timelineContainer: {
-    gap: 24,
+    gap: 12,
+  },
+  submissionCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 12,
+  },
+  submissionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  submissionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  submissionDate: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: 2,
+  },
+  submissionMeta: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  submissionSummary: {
+    fontSize: 11,
+    color: '#9CA3AF',
+  },
+  submissionDetails: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    gap: 10,
+  },
+  detailSection: {
+    gap: 4,
+  },
+  detailTitle: {
+    fontSize: 12,
+    color: '#E5E7EB',
+    fontWeight: '600',
+  },
+  detailItem: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  paginationRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pageButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  pageButtonDisabled: {
+    opacity: 0.5,
+  },
+  pageButtonText: {
+    fontSize: 12,
+    color: '#FFFFFF',
+  },
+  pageIndicator: {
+    fontSize: 12,
+    color: '#9CA3AF',
   },
   eventCard: {
     flexDirection: 'row',
