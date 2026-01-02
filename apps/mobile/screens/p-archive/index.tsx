@@ -15,7 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart } from 'react-native-chart-kit';
 import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
 import styles from './styles';
-import { ApiError, getMyPatientProfile } from '../../lib/api';
+import { ApiError, getMuscleInsight, getMyPatientProfile, type MuscleInsight } from '../../lib/api';
 
 interface TimelineEvent {
   id: string;
@@ -89,6 +89,10 @@ const ArchiveScreen = () => {
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedMuscle, setSelectedMuscle] = useState<keyof typeof MUSCLE_LABELS>('deltoid');
+  const [muscleInsight, setMuscleInsight] = useState<MuscleInsight | null>(null);
+  const [insightLoading, setInsightLoading] = useState(false);
+  const [insightError, setInsightError] = useState<string | null>(null);
 
   const latestUpdatedAt = React.useMemo(() => {
     if (!profile) return null;
@@ -292,35 +296,39 @@ const ArchiveScreen = () => {
     }));
   }, [profile, MUSCLE_LABELS]);
 
-  const strengthTrend = useMemo(() => {
-    const measurements = profile?.measurements ?? [];
-    if (measurements.length === 0) return null;
-    const grouped = new Map<string, { sum: number; count: number; ts: number; label: string }>();
-    measurements.forEach((item) => {
-      const date = new Date(item.recordedAt);
-      const key = date.toISOString().slice(0, 16);
-      const existing = grouped.get(key);
-      const label = date.toLocaleString();
-      if (existing) {
-        existing.sum += Number(item.strengthScore);
-        existing.count += 1;
-      } else {
-        grouped.set(key, { sum: Number(item.strengthScore), count: 1, ts: date.getTime(), label });
-      }
-    });
-    const series = Array.from(grouped.values())
-      .sort((a, b) => a.ts - b.ts)
-      .slice(-6);
+  const formatTrendLabel = (value: string) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hour = String(date.getHours()).padStart(2, '0');
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    return `${month}-${day} ${hour}:${minute}`;
+  };
+
+  const trendChartData = useMemo(() => {
+    if (!muscleInsight?.trend?.length) return null;
+    const points = muscleInsight.trend;
     return {
-      labels: series.map((item) => item.label),
+      labels: points.map((item) => formatTrendLabel(item.recordedAt)),
       datasets: [
         {
-          data: series.map((item) => Number((item.sum / item.count).toFixed(1))),
+          data: points.map((item) => Number(item.strengthScore)),
           strokeWidth: 2,
         },
       ],
     };
-  }, [profile]);
+  }, [muscleInsight]);
+
+  const distributionPosition = useMemo(() => {
+    if (!muscleInsight?.distribution || muscleInsight.userLatestScore === null) return null;
+    const { quartile25, medianScore, quartile75 } = muscleInsight.distribution;
+    const score = muscleInsight.userLatestScore;
+    if (score <= quartile25) return '前25%';
+    if (score <= medianScore) return '25%-50%';
+    if (score <= quartile75) return '50%-75%';
+    return '75%+';
+  }, [muscleInsight]);
 
   const alertItems: AlertItem[] = (() => {
     if (!profile) return [];
@@ -391,6 +399,38 @@ const ArchiveScreen = () => {
   useEffect(() => {
     fetchProfile();
   }, []);
+
+  useEffect(() => {
+    if (!profile) {
+      setMuscleInsight(null);
+      setInsightError(null);
+      return;
+    }
+    let isMounted = true;
+    const loadInsight = async () => {
+      try {
+        setInsightLoading(true);
+        setInsightError(null);
+        const data = await getMuscleInsight(selectedMuscle);
+        if (!isMounted) return;
+        setMuscleInsight(data);
+      } catch (error) {
+        if (!isMounted) return;
+        const message = error instanceof ApiError ? error.message : '无法获取肌力趋势数据';
+        setInsightError(message);
+        setMuscleInsight(null);
+      } finally {
+        if (isMounted) {
+          setInsightLoading(false);
+        }
+      }
+    };
+
+    loadInsight();
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMuscle, profile]);
 
   const handleClinicalPassportPress = () => {
     router.push('/p-clinical_passport');
@@ -559,10 +599,32 @@ const ArchiveScreen = () => {
             <RadarChart data={radarData} />
           </View>
           <View style={styles.chartCard}>
-            {strengthTrend ? (
+            <Text style={styles.sectionSubtitle}>选择肌肉部位</Text>
+            <View style={styles.muscleSelector}>
+              {Object.entries(MUSCLE_LABELS).map(([group, label]) => {
+                const isActive = selectedMuscle === group;
+                return (
+                  <TouchableOpacity
+                    key={group}
+                    style={[styles.muscleChip, isActive && styles.muscleChipActive]}
+                    onPress={() => setSelectedMuscle(group as keyof typeof MUSCLE_LABELS)}
+                  >
+                    <Text style={[styles.muscleChipText, isActive && styles.muscleChipTextActive]}>
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {insightLoading ? (
+              <ActivityIndicator color="#969FFF" style={styles.insightLoading} />
+            ) : insightError ? (
+              <Text style={styles.emptyText}>{insightError}</Text>
+            ) : trendChartData ? (
               <>
                 <LineChart
-                  data={strengthTrend}
+                  data={trendChartData}
                   width={chartWidth}
                   height={220}
                   chartConfig={chartConfig}
@@ -572,12 +634,76 @@ const ArchiveScreen = () => {
                 />
                 <View style={styles.chartLegend}>
                   <View style={styles.chartLegendDot} />
-                  <Text style={styles.chartLegendText}>平均肌力趋势（按提交）</Text>
+                  <Text style={styles.chartLegendText}>
+                    {MUSCLE_LABELS[selectedMuscle]}肌力趋势（按提交）
+                  </Text>
                 </View>
               </>
             ) : (
               <Text style={styles.emptyText}>暂无趋势数据，录入后自动生成。</Text>
             )}
+
+            <View style={styles.distributionCard}>
+              <Text style={styles.sectionSubtitle}>群体分布对比</Text>
+              {muscleInsight?.distribution ? (
+                <>
+                  <View style={styles.distributionBar}>
+                    <View style={styles.distributionRange} />
+                    {(() => {
+                      const dist = muscleInsight.distribution;
+                      const min = dist.minScore;
+                      const max = dist.maxScore;
+                      const range = max - min || 1;
+                      const getLeft = (value: number) =>
+                        `${Math.min(100, Math.max(0, ((value - min) / range) * 100))}%`;
+                      return (
+                        <>
+                          <View
+                            style={[styles.distributionMarker, { left: getLeft(dist.minScore) }]}
+                          />
+                          <View
+                            style={[styles.distributionMarker, { left: getLeft(dist.quartile25) }]}
+                          />
+                          <View
+                            style={[styles.distributionMarker, { left: getLeft(dist.medianScore) }]}
+                          />
+                          <View
+                            style={[styles.distributionMarker, { left: getLeft(dist.quartile75) }]}
+                          />
+                          <View
+                            style={[styles.distributionMarker, { left: getLeft(dist.maxScore) }]}
+                          />
+                          {muscleInsight.userLatestScore !== null && (
+                            <View
+                              style={[
+                                styles.distributionMarkerUser,
+                                { left: getLeft(muscleInsight.userLatestScore) },
+                              ]}
+                            />
+                          )}
+                        </>
+                      );
+                    })()}
+                  </View>
+                  <View style={styles.distributionLegend}>
+                    <Text style={styles.distributionText}>
+                      样本数：{muscleInsight.distribution.sampleCount}
+                    </Text>
+                    <Text style={styles.distributionText}>
+                      你的分位：{distributionPosition ?? '—'}
+                    </Text>
+                    <Text style={styles.distributionText}>
+                      当前评分：
+                      {muscleInsight.userLatestScore !== null
+                        ? muscleInsight.userLatestScore.toFixed(1)
+                        : '—'}
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.emptyText}>暂无分布数据</Text>
+              )}
+            </View>
           </View>
         </View>
       </>
