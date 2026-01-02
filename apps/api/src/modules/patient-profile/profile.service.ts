@@ -106,6 +106,28 @@ export interface RiskSummary {
   notes: string[];
 }
 
+export interface MuscleTrendPoint {
+  recordedAt: string;
+  strengthScore: number;
+}
+
+export interface MuscleDistributionSnapshot {
+  muscleGroup: string;
+  minScore: number;
+  maxScore: number;
+  medianScore: number;
+  quartile25: number;
+  quartile75: number;
+  sampleCount: number;
+}
+
+export interface MuscleInsightResult {
+  muscleGroup: string;
+  trend: MuscleTrendPoint[];
+  distribution: MuscleDistributionSnapshot | null;
+  userLatestScore: number | null;
+}
+
 export interface PatientProfileDTO {
   id: string;
   userId: string;
@@ -878,5 +900,73 @@ export class PatientProfileService {
     }
 
     return result.rows[0].id;
+  }
+
+  async getMuscleInsight(
+    userId: string,
+    muscleGroup: string,
+    limit = 12,
+  ): Promise<MuscleInsightResult> {
+    const profileId = await this.ensureProfileForUser(userId);
+
+    const [trendResult, distributionResult, latestResult] = await Promise.all([
+      this.pool.query(
+        `SELECT recorded_at, strength_score
+         FROM patient_measurements
+         WHERE profile_id = $1 AND muscle_group = $2
+         ORDER BY recorded_at ASC`,
+        [profileId, muscleGroup],
+      ),
+      this.pool.query(
+        `SELECT
+           MIN(strength_score) AS min_score,
+           MAX(strength_score) AS max_score,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY strength_score) AS median_score,
+           percentile_cont(0.25) WITHIN GROUP (ORDER BY strength_score) AS quartile_25,
+           percentile_cont(0.75) WITHIN GROUP (ORDER BY strength_score) AS quartile_75,
+           COUNT(*) AS sample_count
+         FROM patient_measurements
+         WHERE muscle_group = $1`,
+        [muscleGroup],
+      ),
+      this.pool.query(
+        `SELECT strength_score
+         FROM patient_measurements
+         WHERE profile_id = $1 AND muscle_group = $2
+         ORDER BY recorded_at DESC
+         LIMIT 1`,
+        [profileId, muscleGroup],
+      ),
+    ]);
+
+    const trend = trendResult.rows
+      .map((row) => ({
+        recordedAt: toTimestampString(row.recorded_at),
+        strengthScore: Number(row.strength_score),
+      }))
+      .slice(-limit);
+
+    const distributionRow = distributionResult.rows[0];
+    const distribution = distributionRow?.sample_count
+      ? {
+          muscleGroup,
+          minScore: Number(distributionRow.min_score),
+          maxScore: Number(distributionRow.max_score),
+          medianScore: Number(distributionRow.median_score),
+          quartile25: Number(distributionRow.quartile_25),
+          quartile75: Number(distributionRow.quartile_75),
+          sampleCount: Number(distributionRow.sample_count),
+        }
+      : null;
+
+    const latestRow = latestResult.rows[0];
+    const userLatestScore = latestRow ? Number(latestRow.strength_score) : null;
+
+    return {
+      muscleGroup,
+      trend,
+      distribution,
+      userLatestScore,
+    };
   }
 }

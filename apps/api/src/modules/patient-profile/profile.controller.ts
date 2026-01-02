@@ -7,6 +7,7 @@ import {
   functionTestSchema,
   measurementSchema,
   medicationSchema,
+  muscleInsightQuerySchema,
   updateProfileSchema,
 } from './profile.schema';
 import type { PatientProfileService } from './profile.service';
@@ -148,6 +149,16 @@ export class PatientProfileController {
 
   getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {
     const result = await this.service.getRiskSummary(req.user.id);
+    res.status(200).json(result);
+  };
+
+  getMuscleInsight = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = muscleInsightQuerySchema.parse(req.query);
+    const result = await this.service.getMuscleInsight(
+      req.user.id,
+      payload.muscleGroup,
+      payload.limit,
+    );
     res.status(200).json(result);
   };
 }

@@ -54,6 +54,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.post('/me/medications', asyncHandler(controller.addMedication));
   router.get('/me/medications', asyncHandler(controller.listMedications));
   router.get('/me/risk', asyncHandler(controller.getRiskSummary));
+  router.get('/me/insights/muscle', asyncHandler(controller.getMuscleInsight));
 
   return router;
 };
