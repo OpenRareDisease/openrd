@@ -96,3 +96,9 @@ export const medicationSchema = z.object({
   status: z.enum(MEDICATION_STATUS).optional(),
 });
 export type MedicationInput = z.infer<typeof medicationSchema>;
+
+export const muscleInsightQuerySchema = z.object({
+  muscleGroup: z.enum(MUSCLE_GROUPS),
+  limit: z.coerce.number().int().min(1).max(24).optional(),
+});
+export type MuscleInsightQuery = z.infer<typeof muscleInsightQuerySchema>;
