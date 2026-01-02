@@ -28,6 +28,9 @@ export const baseProfileSchema = z.object({
   contactPhone: z.string().max(40).optional().nullable(),
   contactEmail: z.string().email().optional().nullable(),
   primaryPhysician: z.string().max(120).optional().nullable(),
+  regionProvince: z.string().max(120).optional().nullable(),
+  regionCity: z.string().max(120).optional().nullable(),
+  regionDistrict: z.string().max(120).optional().nullable(),
   notes: z.string().optional().nullable(),
 });
 

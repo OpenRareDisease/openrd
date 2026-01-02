@@ -21,11 +21,11 @@ interface PatientProfileRecord {
   user_id: string;
   full_name: string | null;
   preferred_name: string | null;
-  date_of_birth: string | null;
+  date_of_birth: string | Date | null;
   gender: string | null;
   patient_code: string | null;
   diagnosis_stage: string | null;
-  diagnosis_date: string | null;
+  diagnosis_date: string | Date | null;
   genetic_mutation: string | null;
   height_cm: string | null;
   weight_kg: string | null;
@@ -33,6 +33,9 @@ interface PatientProfileRecord {
   contact_phone: string | null;
   contact_email: string | null;
   primary_physician: string | null;
+  region_province: string | null;
+  region_city: string | null;
+  region_district: string | null;
   notes: string | null;
   created_at: Date;
   updated_at: Date;
@@ -120,6 +123,9 @@ export interface PatientProfileDTO {
   contactPhone: string | null;
   contactEmail: string | null;
   primaryPhysician: string | null;
+  regionProvince: string | null;
+  regionCity: string | null;
+  regionDistrict: string | null;
   notes: string | null;
   measurements: PatientMeasurementDTO[];
   functionTests: PatientFunctionTestDTO[];
@@ -139,13 +145,19 @@ const toNumber = (value: string | number | null): number | null => {
   return Number.isNaN(parsed) ? null : parsed;
 };
 
-const toDateString = (value: string | null): string | null => {
+const toDateString = (value: string | Date | null): string | null => {
   if (!value) {
     return null;
   }
 
-  // value is already an ISO-like string from PG for DATE columns
-  return value;
+  if (value instanceof Date) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  return value.includes('T') ? value.split('T')[0] : value;
 };
 
 const toTimestampString = (value: Date | null): string => {
@@ -240,6 +252,9 @@ export class PatientProfileService {
         contactPhone: profile.contact_phone,
         contactEmail: profile.contact_email,
         primaryPhysician: profile.primary_physician,
+        regionProvince: profile.region_province,
+        regionCity: profile.region_city,
+        regionDistrict: profile.region_district,
         notes: profile.notes,
         measurements: measurementsResult.rows.map((row) => ({
           id: row.id,
@@ -326,9 +341,12 @@ export class PatientProfileService {
         contact_phone,
         contact_email,
         primary_physician,
+        region_province,
+        region_city,
+        region_district,
         notes
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
       )`,
       [
         userId,
@@ -346,6 +364,9 @@ export class PatientProfileService {
         payload.contactPhone ?? null,
         payload.contactEmail ?? null,
         payload.primaryPhysician ?? null,
+        payload.regionProvince ?? null,
+        payload.regionCity ?? null,
+        payload.regionDistrict ?? null,
         payload.notes ?? null,
       ],
     );
@@ -386,6 +407,9 @@ export class PatientProfileService {
       ['contactPhone', 'contact_phone'],
       ['contactEmail', 'contact_email'],
       ['primaryPhysician', 'primary_physician'],
+      ['regionProvince', 'region_province'],
+      ['regionCity', 'region_city'],
+      ['regionDistrict', 'region_district'],
       ['notes', 'notes'],
     ];
 
