@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -16,7 +14,7 @@ export default StyleSheet.create({
   scrollContent: {
     paddingBottom: 24,
   },
-  
+
   // 顶部导航栏
   header: {
     flexDirection: 'row',
@@ -53,6 +51,24 @@ export default StyleSheet.create({
   },
   headerPlaceholder: {
     width: 32,
+  },
+  loadingContainer: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorContainer: {
+    marginHorizontal: 24,
+    marginBottom: 12,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+  },
+  errorText: {
+    color: '#FFFFFF',
+    fontSize: 12,
   },
 
   // 临床护照ID卡片
@@ -335,4 +351,3 @@ export default StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.5)',
   },
 });
-

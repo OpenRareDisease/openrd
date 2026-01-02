@@ -1,22 +1,25 @@
-
-
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { ApiError, getMyPatientProfile } from '../../lib/api';
 
 const ClinicalPassportScreen = () => {
   const router = useRouter();
-  
+
   // 展开状态管理
   const [isGeneticExpanded, setIsGeneticExpanded] = useState(false);
   const [isStrengthExpanded, setIsStrengthExpanded] = useState(false);
   const [isMriExpanded, setIsMriExpanded] = useState(false);
   const [isBloodExpanded, setIsBloodExpanded] = useState(false);
-  
+
+  const [profile, setProfile] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   // 导出PDF状态
   const [isExporting, setIsExporting] = useState(false);
 
@@ -28,26 +31,64 @@ const ClinicalPassportScreen = () => {
 
   const handleExportPdf = async () => {
     setIsExporting(true);
-    
+
     try {
       // 模拟PDF生成过程
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      Alert.alert(
-        '导出成功',
-        'PDF档案已生成，请查收！',
-        [{ text: '确定', style: 'default' }]
-      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      Alert.alert('导出成功', 'PDF档案已生成，请查收！', [{ text: '确定', style: 'default' }]);
     } catch (error) {
-      Alert.alert(
-        '导出失败',
-        'PDF生成过程中出现错误，请重试。',
-        [{ text: '确定', style: 'default' }]
-      );
+      Alert.alert('导出失败', 'PDF生成过程中出现错误，请重试。', [
+        { text: '确定', style: 'default' },
+      ]);
     } finally {
       setIsExporting(false);
     }
   };
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadProfile = async () => {
+      try {
+        setIsLoading(true);
+        setErrorMessage(null);
+        const data = await getMyPatientProfile();
+        if (!isMounted) {
+          return;
+        }
+        setProfile(data);
+      } catch (error) {
+        if (!isMounted) return;
+        const message = error instanceof ApiError ? error.message : '无法获取档案数据';
+        setErrorMessage(message);
+        setProfile(null);
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadProfile();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const hasRecordedData = useMemo(() => {
+    if (!profile) return false;
+    return Boolean(
+      (profile.measurements?.length ?? 0) > 0 ||
+        (profile.activityLogs?.length ?? 0) > 0 ||
+        (profile.documents?.length ?? 0) > 0,
+    );
+  }, [profile]);
+
+  const passportId = useMemo(() => {
+    if (!profile?.id) return 'FSHD-UNASSIGNED';
+    const compact = profile.id.replace(/-/g, '').slice(0, 10).toUpperCase();
+    return `FSHD-${compact}`;
+  }, [profile]);
 
   const renderExpandableSection = (
     title: string,
@@ -57,14 +98,10 @@ const ClinicalPassportScreen = () => {
     iconBgColor: string,
     isExpanded: boolean,
     onToggle: () => void,
-    children: React.ReactNode
+    children: React.ReactNode,
   ) => (
     <View style={styles.expandableCard}>
-      <TouchableOpacity 
-        style={styles.expandableHeader} 
-        onPress={onToggle}
-        activeOpacity={0.7}
-      >
+      <TouchableOpacity style={styles.expandableHeader} onPress={onToggle} activeOpacity={0.7}>
         <View style={styles.expandableHeaderLeft}>
           <View style={[styles.expandableIconContainer, { backgroundColor: iconBgColor }]}>
             <FontAwesome6 name={icon} size={14} color={iconColor} />
@@ -74,21 +111,17 @@ const ClinicalPassportScreen = () => {
             <Text style={styles.expandableSubtitle}>{subtitle}</Text>
           </View>
         </View>
-        <FontAwesome6 
-          name="chevron-down" 
-          size={12} 
-          color="rgba(255, 255, 255, 0.5)" 
+        <FontAwesome6
+          name="chevron-down"
+          size={12}
+          color="rgba(255, 255, 255, 0.5)"
           style={[
             styles.expandableArrow,
-            { transform: [{ rotate: isExpanded ? '180deg' : '0deg' }] }
+            { transform: [{ rotate: isExpanded ? '180deg' : '0deg' }] },
           ]}
         />
       </TouchableOpacity>
-      {isExpanded && (
-        <View style={styles.expandableContent}>
-          {children}
-        </View>
-      )}
+      {isExpanded && <View style={styles.expandableContent}>{children}</View>}
     </View>
   );
 
@@ -96,19 +129,19 @@ const ClinicalPassportScreen = () => {
     <View style={styles.geneticContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>基因类型</Text>
-        <Text style={styles.infoValue}>FSHD1</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>D4Z4重复数</Text>
-        <Text style={styles.infoValue}>8</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>甲基化值</Text>
-        <Text style={styles.infoValue}>0.35</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>诊断日期</Text>
-        <Text style={styles.infoValue}>2023-06-15</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
     </View>
   );
@@ -117,24 +150,10 @@ const ClinicalPassportScreen = () => {
     <View style={styles.strengthContent}>
       <View style={styles.strengthItem}>
         <View style={styles.strengthItemHeader}>
-          <Text style={styles.strengthDate}>2024-01-15</Text>
-          <Text style={styles.strengthAverage}>平均分: 4.2</Text>
+          <Text style={styles.strengthDate}>最近记录</Text>
+          <Text style={styles.strengthAverage}>平均分: —</Text>
         </View>
-        <Text style={styles.strengthDetails}>三角肌:4.0 | 肱二头肌:4.5 | 股四头肌:4.3 | 胫前肌:4.0</Text>
-      </View>
-      <View style={[styles.strengthItem, { borderLeftColor: '#5147FF' }]}>
-        <View style={styles.strengthItemHeader}>
-          <Text style={styles.strengthDate}>2023-12-20</Text>
-          <Text style={[styles.strengthAverage, { color: '#5147FF' }]}>平均分: 4.3</Text>
-        </View>
-        <Text style={styles.strengthDetails}>三角肌:4.2 | 肱二头肌:4.5 | 股四头肌:4.4 | 胫前肌:4.1</Text>
-      </View>
-      <View style={[styles.strengthItem, { borderLeftColor: '#3E3987' }]}>
-        <View style={styles.strengthItemHeader}>
-          <Text style={styles.strengthDate}>2023-11-10</Text>
-          <Text style={[styles.strengthAverage, { color: '#3E3987' }]}>平均分: 4.4</Text>
-        </View>
-        <Text style={styles.strengthDetails}>三角肌:4.3 | 肱二头肌:4.5 | 股四头肌:4.5 | 胫前肌:4.3</Text>
+        <Text style={styles.strengthDetails}>暂无可用的肌力评估摘要</Text>
       </View>
     </View>
   );
@@ -143,37 +162,9 @@ const ClinicalPassportScreen = () => {
     <View style={styles.mriContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>最近MRI</Text>
-        <Text style={styles.infoValue}>2024-01-10</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
-      <View style={styles.mriMuscleList}>
-        <View style={styles.mriMuscleItem}>
-          <Text style={styles.infoLabel}>前锯肌</Text>
-          <View style={styles.mriProgressContainer}>
-            <View style={styles.mriProgressBar}>
-              <View style={[styles.mriProgressFill, { width: '50%', backgroundColor: '#F59E0B' }]} />
-            </View>
-            <Text style={styles.mriGrade}>2级</Text>
-          </View>
-        </View>
-        <View style={styles.mriMuscleItem}>
-          <Text style={styles.infoLabel}>三角肌</Text>
-          <View style={styles.mriProgressContainer}>
-            <View style={styles.mriProgressBar}>
-              <View style={[styles.mriProgressFill, { width: '25%', backgroundColor: '#10B981' }]} />
-            </View>
-            <Text style={styles.mriGrade}>1级</Text>
-          </View>
-        </View>
-        <View style={styles.mriMuscleItem}>
-          <Text style={styles.infoLabel}>肱二头肌</Text>
-          <View style={styles.mriProgressContainer}>
-            <View style={styles.mriProgressBar}>
-              <View style={[styles.mriProgressFill, { width: '25%', backgroundColor: '#10B981' }]} />
-            </View>
-            <Text style={styles.mriGrade}>1级</Text>
-          </View>
-        </View>
-      </View>
+      <Text style={styles.strengthDetails}>暂无MRI分析数据</Text>
     </View>
   );
 
@@ -181,30 +172,9 @@ const ClinicalPassportScreen = () => {
     <View style={styles.bloodContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>最近血检</Text>
-        <Text style={styles.infoValue}>2024-01-05</Text>
+        <Text style={styles.infoValue}>—</Text>
       </View>
-      <View style={styles.bloodGrid}>
-        <View style={styles.bloodItem}>
-          <Text style={styles.bloodItemTitle}>ALT</Text>
-          <Text style={[styles.bloodItemValue, { color: '#10B981' }]}>32 U/L</Text>
-          <Text style={styles.bloodItemStatus}>正常</Text>
-        </View>
-        <View style={styles.bloodItem}>
-          <Text style={styles.bloodItemTitle}>AST</Text>
-          <Text style={[styles.bloodItemValue, { color: '#10B981' }]}>28 U/L</Text>
-          <Text style={styles.bloodItemStatus}>正常</Text>
-        </View>
-        <View style={styles.bloodItem}>
-          <Text style={styles.bloodItemTitle}>CK</Text>
-          <Text style={[styles.bloodItemValue, { color: '#F59E0B' }]}>380 U/L</Text>
-          <Text style={styles.bloodItemStatus}>轻度升高</Text>
-        </View>
-        <View style={styles.bloodItem}>
-          <Text style={styles.bloodItemTitle}>LDH</Text>
-          <Text style={[styles.bloodItemValue, { color: '#10B981' }]}>220 U/L</Text>
-          <Text style={styles.bloodItemStatus}>正常</Text>
-        </View>
-      </View>
+      <Text style={styles.strengthDetails}>暂无血检摘要</Text>
     </View>
   );
 
@@ -217,15 +187,15 @@ const ClinicalPassportScreen = () => {
         end={{ x: 1, y: 1 }}
         style={styles.backgroundGradient}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* 顶部导航栏 */}
           <View style={styles.header}>
-            <TouchableOpacity 
-              style={styles.backButton} 
+            <TouchableOpacity
+              style={styles.backButton}
               onPress={handleBackPress}
               activeOpacity={0.7}
             >
@@ -234,6 +204,18 @@ const ClinicalPassportScreen = () => {
             <Text style={styles.headerTitle}>FSHD临床护照</Text>
             <View style={styles.headerPlaceholder} />
           </View>
+
+          {isLoading && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator color="#969FFF" />
+            </View>
+          )}
+
+          {errorMessage && !isLoading && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          )}
 
           {/* 临床护照ID卡片 */}
           <View style={styles.passportIdSection}>
@@ -248,9 +230,11 @@ const ClinicalPassportScreen = () => {
               </LinearGradient>
               <Text style={styles.passportIdTitle}>临床护照ID</Text>
               <View style={styles.passportIdContainer}>
-                <Text style={styles.passportIdText}>FSHD-2024-001-0001</Text>
+                <Text style={styles.passportIdText}>{hasRecordedData ? passportId : '—'}</Text>
               </View>
-              <Text style={styles.passportIdDescription}>唯一标识您的FSHD医疗档案</Text>
+              <Text style={styles.passportIdDescription}>
+                {hasRecordedData ? '唯一标识您的FSHD医疗档案' : '录入数据以获得临床护照'}
+              </Text>
             </View>
           </View>
 
@@ -264,7 +248,7 @@ const ClinicalPassportScreen = () => {
               'rgba(62, 57, 135, 0.2)',
               isGeneticExpanded,
               () => setIsGeneticExpanded(!isGeneticExpanded),
-              renderGeneticContent()
+              renderGeneticContent(),
             )}
           </View>
 
@@ -278,7 +262,7 @@ const ClinicalPassportScreen = () => {
               'rgba(16, 185, 129, 0.2)',
               isStrengthExpanded,
               () => setIsStrengthExpanded(!isStrengthExpanded),
-              renderStrengthContent()
+              renderStrengthContent(),
             )}
           </View>
 
@@ -292,7 +276,7 @@ const ClinicalPassportScreen = () => {
               'rgba(59, 130, 246, 0.2)',
               isMriExpanded,
               () => setIsMriExpanded(!isMriExpanded),
-              renderMriContent()
+              renderMriContent(),
             )}
           </View>
 
@@ -306,16 +290,16 @@ const ClinicalPassportScreen = () => {
               'rgba(239, 68, 68, 0.2)',
               isBloodExpanded,
               () => setIsBloodExpanded(!isBloodExpanded),
-              renderBloodContent()
+              renderBloodContent(),
             )}
           </View>
 
           {/* 导出PDF按钮 */}
           <View style={styles.exportSection}>
-            <TouchableOpacity 
-              style={styles.exportButton} 
+            <TouchableOpacity
+              style={styles.exportButton}
               onPress={handleExportPdf}
-              disabled={isExporting}
+              disabled={isExporting || !hasRecordedData}
               activeOpacity={0.7}
             >
               {!isExporting ? (
@@ -345,4 +329,3 @@ const ClinicalPassportScreen = () => {
 };
 
 export default ClinicalPassportScreen;
-
