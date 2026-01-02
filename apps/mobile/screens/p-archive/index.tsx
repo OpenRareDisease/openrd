@@ -123,6 +123,12 @@ const ArchiveScreen = () => {
         profile.documents.length > 0),
   );
 
+  const getPassportId = () => {
+    if (!profile?.id) return 'FSHD-UNASSIGNED';
+    const compact = profile.id.replace(/-/g, '').slice(0, 10).toUpperCase();
+    return `FSHD-${compact}`;
+  };
+
   const mapDocumentTypeLabel = (type?: string) => {
     switch (type) {
       case 'mri':
@@ -681,8 +687,6 @@ const ArchiveScreen = () => {
             </View>
           </View>
 
-          {renderContent()}
-
           {/* FSHD临床护照概览卡片 */}
           <View style={styles.passportSection}>
             <LinearGradient
@@ -693,29 +697,35 @@ const ArchiveScreen = () => {
             >
               <View style={styles.passportHeader}>
                 <Text style={styles.passportTitle}>FSHD临床护照</Text>
-                <Text style={styles.passportId}>ID: FSHD-2024-001</Text>
+                <Text style={styles.passportId}>ID: {hasRecordedData ? getPassportId() : '—'}</Text>
               </View>
 
-              <View style={styles.passportGrid}>
-                <View style={styles.passportItem}>
-                  <Text style={styles.passportLabel}>基因类型</Text>
-                  <Text style={styles.passportValue}>FSHD1</Text>
+              {hasRecordedData ? (
+                <View style={styles.passportGrid}>
+                  <View style={styles.passportItem}>
+                    <Text style={styles.passportLabel}>基因类型</Text>
+                    <Text style={styles.passportValue}>—</Text>
+                  </View>
+                  <View style={styles.passportItem}>
+                    <Text style={styles.passportLabel}>D4Z4重复数</Text>
+                    <Text style={styles.passportValue}>—</Text>
+                  </View>
+                  <View style={styles.passportItem}>
+                    <Text style={styles.passportLabel}>甲基化值</Text>
+                    <Text style={styles.passportValue}>—</Text>
+                  </View>
+                  <View style={styles.passportItem}>
+                    <Text style={styles.passportLabel}>初诊时间</Text>
+                    <Text style={styles.passportValue}>—</Text>
+                  </View>
                 </View>
-                <View style={styles.passportItem}>
-                  <Text style={styles.passportLabel}>D4Z4重复数</Text>
-                  <Text style={styles.passportValue}>8</Text>
-                </View>
-                <View style={styles.passportItem}>
-                  <Text style={styles.passportLabel}>甲基化值</Text>
-                  <Text style={styles.passportValue}>0.35</Text>
-                </View>
-                <View style={styles.passportItem}>
-                  <Text style={styles.passportLabel}>初诊时间</Text>
-                  <Text style={styles.passportValue}>2023-05-15</Text>
-                </View>
-              </View>
+              ) : (
+                <Text style={styles.passportHint}>录入数据以获得临床护照</Text>
+              )}
             </LinearGradient>
           </View>
+
+          {renderContent()}
 
           {/* 可视化时间轴 */}
           <View style={styles.timelineSection}>

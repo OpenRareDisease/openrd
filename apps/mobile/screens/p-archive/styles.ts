@@ -272,6 +272,12 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.7)',
   },
+  passportHint: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
 
   // 时间轴
   timelineSection: {
