@@ -15,17 +15,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart } from 'react-native-chart-kit';
 import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
 import styles from './styles';
-import { ApiError, getMuscleInsight, getMyPatientProfile, type MuscleInsight } from '../../lib/api';
-
-interface TimelineEvent {
-  id: string;
-  title: string;
-  date: string;
-  description: string;
-  status: 'warning' | 'stable' | 'info';
-  statusText: string;
-  details?: Record<string, string>;
-}
+import {
+  ApiError,
+  getMuscleInsight,
+  getMyPatientProfile,
+  getSubmissionTimeline,
+  type MuscleInsight,
+  type SubmissionItem,
+} from '../../lib/api';
 
 interface AlertItem {
   id: string;
@@ -85,7 +82,6 @@ const ArchiveScreen = () => {
   const getMuscleLabel = (key: string) => MUSCLE_LABELS[key] || key;
 
   const router = useRouter();
-  const [isTimelineExpanded, setIsTimelineExpanded] = useState(false);
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -93,6 +89,12 @@ const ArchiveScreen = () => {
   const [muscleInsight, setMuscleInsight] = useState<MuscleInsight | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [insightError, setInsightError] = useState<string | null>(null);
+  const [submissions, setSubmissions] = useState<SubmissionItem[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [timelinePage, setTimelinePage] = useState(1);
+  const [timelineTotal, setTimelineTotal] = useState(0);
+  const [expandedSubmissions, setExpandedSubmissions] = useState<Record<string, boolean>>({});
 
   const latestUpdatedAt = React.useMemo(() => {
     if (!profile) return null;
@@ -145,56 +147,6 @@ const ArchiveScreen = () => {
         return '医学报告';
     }
   };
-
-  const timelineEvents: TimelineEvent[] = profile
-    ? [
-        ...profile.measurements.map((item) => ({
-          sortKey: new Date(item.recordedAt).getTime(),
-          event: {
-            id: `measure-${item.id}`,
-            title: `${getMuscleLabel(item.muscleGroup)} 肌力评估`,
-            date: new Date(item.recordedAt).toLocaleDateString(),
-            description: `肌力得分：${item.strengthScore}`,
-            status:
-              item.strengthScore >= 4 ? 'stable' : item.strengthScore >= 3 ? 'info' : 'warning',
-            statusText:
-              item.strengthScore >= 4
-                ? '表现良好'
-                : item.strengthScore >= 3
-                  ? '建议关注'
-                  : '需要干预',
-          },
-        })),
-        ...profile.activityLogs.map((item) => ({
-          sortKey: new Date(item.logDate ?? item.createdAt).getTime(),
-          event: {
-            id: `activity-${item.id}`,
-            title: '日常活动记录',
-            date: new Date(item.logDate ?? item.createdAt).toLocaleDateString(),
-            description: item.content ?? '已记录活动',
-            status: 'stable' as const,
-            statusText: '已记录',
-          },
-        })),
-        ...profile.documents.map((doc) => ({
-          sortKey: new Date(doc.uploadedAt).getTime(),
-          event: {
-            id: `doc-${doc.id}`,
-            title: `${mapDocumentTypeLabel(doc.documentType)}已上传`,
-            date: new Date(doc.uploadedAt).toLocaleDateString(),
-            description:
-              doc.ocrPayload?.extractedText ??
-              doc.ocrPayload?.fields?.hint ??
-              doc.fileName ??
-              '已上传',
-            status: 'info' as const,
-            statusText: '已更新',
-          },
-        })),
-      ]
-        .sort((a, b) => b.sortKey - a.sortKey)
-        .map((item) => item.event)
-    : [];
 
   const chartWidth = Dimensions.get('window').width - 48;
 
@@ -401,6 +353,39 @@ const ArchiveScreen = () => {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const loadTimeline = async () => {
+      if (!profile) {
+        setSubmissions([]);
+        setTimelineTotal(0);
+        return;
+      }
+      try {
+        setTimelineLoading(true);
+        setTimelineError(null);
+        const response = await getSubmissionTimeline(timelinePage, 10);
+        if (!isMounted) return;
+        setSubmissions(response.items);
+        setTimelineTotal(response.total);
+      } catch (error) {
+        if (!isMounted) return;
+        const message = error instanceof ApiError ? error.message : '无法获取时间轴数据';
+        setTimelineError(message);
+        setSubmissions([]);
+      } finally {
+        if (isMounted) {
+          setTimelineLoading(false);
+        }
+      }
+    };
+
+    loadTimeline();
+    return () => {
+      isMounted = false;
+    };
+  }, [profile, timelinePage]);
+
+  useEffect(() => {
     if (!profile) {
       setMuscleInsight(null);
       setInsightError(null);
@@ -474,59 +459,95 @@ const ArchiveScreen = () => {
     }
   };
 
-  const renderTimelineEvent = (event: TimelineEvent, index: number) => {
-    const isLast = index === timelineEvents.length - 1;
+  const toggleSubmission = (id: string) => {
+    setExpandedSubmissions((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
+
+  const renderSubmissionCard = (item: SubmissionItem) => {
+    const isExpanded = Boolean(expandedSubmissions[item.id]);
+    const measurementCount = item.measurements.length;
+    const activityCount = item.activityLogs.length;
+    const medicationCount = item.medications.length;
+    const documentCount = item.documents.length;
 
     return (
-      <TouchableOpacity key={event.id} style={styles.eventCard} activeOpacity={0.7}>
-        <View style={styles.timelineLeft}>
-          <LinearGradient
-            colors={['#969FFF', '#5147FF']}
-            style={styles.timelineDot}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-          />
-          {!isLast && (
-            <LinearGradient
-              colors={['#969FFF', '#5147FF']}
-              style={styles.timelineLine}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-            />
-          )}
-        </View>
-
-        <View style={styles.eventContent}>
-          <View style={styles.eventHeader}>
-            <View style={styles.eventHeaderLeft}>
-              <Text style={styles.eventTitle}>{event.title}</Text>
-            </View>
-            <Text style={styles.eventDate}>{event.date}</Text>
+      <View key={item.id} style={styles.submissionCard}>
+        <TouchableOpacity
+          style={styles.submissionHeader}
+          onPress={() => toggleSubmission(item.id)}
+          activeOpacity={0.7}
+        >
+          <View>
+            <Text style={styles.submissionTitle}>一次录入</Text>
+            <Text style={styles.submissionDate}>{formatDateTime(new Date(item.createdAt))}</Text>
           </View>
-
-          {event.description ? (
-            <Text style={styles.eventDescription}>{event.description}</Text>
-          ) : null}
-
-          {event.details && (
-            <View style={styles.eventDetails}>
-              {Object.entries(event.details).map(([muscle, strength]) => (
-                <View key={muscle} style={styles.muscleDetail}>
-                  <Text style={styles.muscleName}>{muscle}</Text>
-                  <Text style={styles.muscleStrength}>{strength}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          <View style={styles.eventStatus}>
-            <View style={[styles.statusDot, { backgroundColor: getStatusColor(event.status) }]} />
-            <Text style={[styles.statusText, { color: getStatusColor(event.status) }]}>
-              {event.statusText}
+          <View style={styles.submissionMeta}>
+            <Text style={styles.submissionSummary}>
+              报告 {documentCount} · 肌力 {measurementCount} · 活动 {activityCount} · 用药{' '}
+              {medicationCount}
             </Text>
+            <FontAwesome6
+              name={isExpanded ? 'chevron-up' : 'chevron-down'}
+              size={12}
+              color="#969FFF"
+            />
           </View>
-        </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <View style={styles.submissionDetails}>
+            {documentCount > 0 && (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailTitle}>医疗报告</Text>
+                {item.documents.map((doc) => (
+                  <Text key={doc.id} style={styles.detailItem}>
+                    {mapDocumentTypeLabel(doc.documentType)} ·{' '}
+                    {doc.fileName ?? doc.title ?? '已上传'}
+                  </Text>
+                ))}
+              </View>
+            )}
+
+            {measurementCount > 0 && (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailTitle}>肌力评估</Text>
+                {item.measurements.map((m) => (
+                  <Text key={m.id} style={styles.detailItem}>
+                    {getMuscleLabel(m.muscleGroup)} · {m.strengthScore} 级
+                  </Text>
+                ))}
+              </View>
+            )}
+
+            {activityCount > 0 && (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailTitle}>活动记录</Text>
+                {item.activityLogs.map((log) => (
+                  <Text key={log.id} style={styles.detailItem}>
+                    {log.content ?? '已记录活动'}
+                  </Text>
+                ))}
+              </View>
+            )}
+
+            {medicationCount > 0 && (
+              <View style={styles.detailSection}>
+                <Text style={styles.detailTitle}>用药记录</Text>
+                {item.medications.map((med) => (
+                  <Text key={med.id} style={styles.detailItem}>
+                    {med.medicationName}
+                    {med.dosage ? ` · ${med.dosage}` : ''}
+                    {med.frequency ? ` · ${med.frequency}` : ''}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+      </View>
     );
   };
 
@@ -867,32 +888,52 @@ const ArchiveScreen = () => {
 
             <View style={styles.timelineToggleRow}>
               <Text style={styles.timelineHint}>
-                {timelineEvents.length === 0 ? '暂无记录' : `共 ${timelineEvents.length} 条记录`}
+                {timelineTotal === 0 ? '暂无记录' : `共 ${timelineTotal} 次录入`}
               </Text>
-              <TouchableOpacity
-                style={styles.timelineToggle}
-                onPress={() => setIsTimelineExpanded((prev) => !prev)}
-              >
-                <Text style={styles.timelineToggleText}>
-                  {isTimelineExpanded ? '收起' : '展开'}
-                </Text>
-                <FontAwesome6
-                  name={isTimelineExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={10}
-                  color="#969FFF"
-                />
-              </TouchableOpacity>
             </View>
 
-            {isTimelineExpanded && (
-              <View style={styles.timelineContainer}>
-                {timelineEvents.length === 0 ? (
-                  <View style={styles.emptyCard}>
-                    <Text style={styles.emptyText}>暂无测量记录</Text>
-                  </View>
-                ) : (
-                  timelineEvents.map((event, index) => renderTimelineEvent(event, index))
-                )}
+            <View style={styles.timelineContainer}>
+              {timelineLoading ? (
+                <View style={styles.emptyCard}>
+                  <ActivityIndicator color="#969FFF" />
+                </View>
+              ) : timelineError ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyText}>{timelineError}</Text>
+                </View>
+              ) : submissions.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyText}>暂无录入记录</Text>
+                </View>
+              ) : (
+                submissions.map((item) => renderSubmissionCard(item))
+              )}
+            </View>
+
+            {timelineTotal > 0 && (
+              <View style={styles.paginationRow}>
+                <TouchableOpacity
+                  style={[styles.pageButton, timelinePage <= 1 && styles.pageButtonDisabled]}
+                  onPress={() => setTimelinePage((prev) => Math.max(1, prev - 1))}
+                  disabled={timelinePage <= 1}
+                >
+                  <Text style={styles.pageButtonText}>上一页</Text>
+                </TouchableOpacity>
+                <Text style={styles.pageIndicator}>
+                  第 {timelinePage} / {Math.max(1, Math.ceil(timelineTotal / 10))} 页
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    styles.pageButton,
+                    timelinePage >= Math.ceil(timelineTotal / 10) && styles.pageButtonDisabled,
+                  ]}
+                  onPress={() =>
+                    setTimelinePage((prev) => Math.min(prev + 1, Math.ceil(timelineTotal / 10)))
+                  }
+                  disabled={timelinePage >= Math.ceil(timelineTotal / 10)}
+                >
+                  <Text style={styles.pageButtonText}>下一页</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
