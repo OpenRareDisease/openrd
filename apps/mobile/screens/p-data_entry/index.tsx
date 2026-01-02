@@ -20,6 +20,8 @@ import {
   addActivityLog,
   addPatientMeasurement,
   addMedication,
+  attachSubmissionDocuments,
+  createSubmission,
   getMyPatientProfile,
   getMedications,
   uploadPatientDocument,
@@ -101,6 +103,7 @@ const DataEntryScreen = () => {
     route: '',
   });
   const [medications, setMedications] = useState<any[]>([]);
+  const [uploadedDocumentIds, setUploadedDocumentIds] = useState<string[]>([]);
 
   const muscleGroups = [
     { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
@@ -388,6 +391,9 @@ const DataEntryScreen = () => {
         title: reportLabels[type],
         file: uploadFile,
       });
+      if (response?.id) {
+        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
+      }
       const ocrSummary =
         response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
       setUploadStatus((prev) => ({
@@ -470,6 +476,9 @@ const DataEntryScreen = () => {
         title: reportLabels[type],
         file: uploadFile,
       });
+      if (response?.id) {
+        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
+      }
       const ocrSummary =
         response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
       setUploadStatus((prev) => ({
@@ -510,6 +519,18 @@ const DataEntryScreen = () => {
 
       await ensureProfileExists();
 
+      const hasMeasurements = Object.values(muscleStrengthMap).some((value) => value > 0);
+      const hasActivity = timerSeconds > 0 || Boolean(activityText.trim());
+      const hasMedication = Boolean(medicationForm.medicationName.trim());
+      const hasDocuments = uploadedDocumentIds.length > 0;
+      if (!hasMeasurements && !hasActivity && !hasMedication && !hasDocuments) {
+        Alert.alert('提示', '请至少录入一项数据');
+        return;
+      }
+
+      const submission = await createSubmission();
+      const submissionId = submission.id;
+
       const requests: Promise<unknown>[] = [];
 
       // 提交肌力测量
@@ -520,6 +541,7 @@ const DataEntryScreen = () => {
               muscleGroup: group,
               strengthScore: value,
               recordedAt: new Date().toISOString(),
+              submissionId,
             }),
           );
         }
@@ -534,6 +556,7 @@ const DataEntryScreen = () => {
             logDate: nowIso,
             source: 'stair_test',
             content: `楼梯测试用时 ${formatTime(timerSeconds)}`,
+            submissionId,
           }),
         );
       }
@@ -545,6 +568,7 @@ const DataEntryScreen = () => {
             logDate: nowIso,
             source: 'manual',
             content: activityText.trim(),
+            submissionId,
           }),
         );
       }
@@ -556,11 +580,16 @@ const DataEntryScreen = () => {
             dosage: medicationForm.dosage.trim() || null,
             frequency: medicationForm.frequency.trim() || null,
             route: medicationForm.route.trim() || null,
+            submissionId,
           }),
         );
       }
 
       await Promise.all(requests);
+
+      if (uploadedDocumentIds.length > 0) {
+        await attachSubmissionDocuments(submissionId, uploadedDocumentIds);
+      }
 
       setMedicationForm({
         medicationName: '',
@@ -568,6 +597,7 @@ const DataEntryScreen = () => {
         frequency: '',
         route: '',
       });
+      setUploadedDocumentIds([]);
 
       await loadProfile();
       Alert.alert('提交成功', '数据已成功添加/更新！', [
