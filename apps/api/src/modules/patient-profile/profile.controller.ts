@@ -7,6 +7,8 @@ import {
   functionTestSchema,
   measurementSchema,
   medicationSchema,
+  submissionListQuerySchema,
+  attachDocumentsSchema,
   muscleInsightQuerySchema,
   updateProfileSchema,
 } from './profile.schema';
@@ -100,6 +102,7 @@ export class PatientProfileController {
       userId: req.user.id,
       documentType: payload.documentType,
       title: payload.title ?? null,
+      submissionId: payload.submissionId ?? null,
       storageUri: stored.storageUri,
       fileName: file.originalname ?? stored.fileName,
       mimeType: file.mimetype ?? null,
@@ -158,6 +161,32 @@ export class PatientProfileController {
       req.user.id,
       payload.muscleGroup,
       payload.limit,
+    );
+    res.status(200).json(result);
+  };
+
+  createSubmission = async (req: AuthenticatedRequest, res: Response) => {
+    const result = await this.service.createSubmission(req.user.id);
+    res.status(201).json(result);
+  };
+
+  listSubmissions = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = submissionListQuerySchema.parse(req.query);
+    const result = await this.service.listSubmissions(
+      req.user.id,
+      payload.page ?? 1,
+      payload.pageSize ?? 10,
+    );
+    res.status(200).json(result);
+  };
+
+  attachSubmissionDocuments = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = attachDocumentsSchema.parse(req.body);
+    const submissionId = req.params.id;
+    const result = await this.service.attachDocumentsToSubmission(
+      req.user.id,
+      submissionId,
+      payload.documentIds,
     );
     res.status(200).json(result);
   };
