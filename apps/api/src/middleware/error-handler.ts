@@ -1,14 +1,16 @@
-import type { ErrorRequestHandler } from 'express';
+import type { ErrorRequestHandler, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import type { AppLogger } from '../config/logger.js';
-import { AppError } from '../utils/app-error.js';
+import type { AppLogger } from '../config/logger';
+import { AppError } from '../utils/app-error';
 
 interface ErrorHandlerOptions {
   logger: AppLogger;
 }
 
 export const errorHandler = ({ logger }: ErrorHandlerOptions): ErrorRequestHandler => {
-  return (error, _req, res) => {
+  return (error, _req, res, _next: NextFunction) => {
+    void _next;
+
     if (error instanceof AppError) {
       if (!error.isOperational) {
         logger.error({ error }, 'Operational error occurred');

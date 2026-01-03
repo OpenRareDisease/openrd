@@ -1,24 +1,15 @@
-
-
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Image,
-  Modal,
-  Alert,
-} from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import styles from './styles';
+import { useAuth } from '../../contexts/AuthContext';
 
 const SettingsScreen = () => {
   const router = useRouter();
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
+  const { user, logout } = useAuth();
 
   const handlePrivacySettingsPress = () => {
     router.push('/p-privacy_settings');
@@ -42,13 +33,8 @@ const SettingsScreen = () => {
 
   const handleConfirmLogout = async () => {
     try {
-      // 清除本地存储的用户信息
-      await AsyncStorage.removeItem('@userToken');
-      await AsyncStorage.removeItem('@userInfo');
-      
+      await logout();
       setIsLogoutModalVisible(false);
-      
-      // 跳转到登录页面，使用replace避免返回
       router.replace('/p-login_register');
     } catch (error) {
       console.error('退出登录失败:', error);
@@ -57,7 +43,7 @@ const SettingsScreen = () => {
   };
 
   const handleEditProfilePress = () => {
-    Alert.alert('提示', '个人资料编辑功能即将上线，敬请期待！');
+    router.push('/p-register_profile');
   };
 
   const handleModalOverlayPress = () => {
@@ -66,7 +52,7 @@ const SettingsScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView 
+      <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -88,11 +74,13 @@ const SettingsScreen = () => {
                 style={styles.userAvatar}
               />
               <View style={styles.userDetails}>
-                <Text style={styles.userName}>张先生</Text>
-                <Text style={styles.userId}>ID: FSHD2024001</Text>
-                <Text style={styles.userJoinDate}>加入时间：2024年1月15日</Text>
+                <Text style={styles.userName}>{user?.phoneNumber ?? '未登录'}</Text>
+                <Text style={styles.userId}>角色：{user?.role ?? '未知'}</Text>
+                <Text style={styles.userJoinDate}>
+                  注册时间：{user ? new Date(user.createdAt).toLocaleDateString() : '—'}
+                </Text>
               </View>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.editProfileButton}
                 onPress={handleEditProfilePress}
                 activeOpacity={0.7}
@@ -107,7 +95,7 @@ const SettingsScreen = () => {
         <View style={styles.settingsListSection}>
           <View style={styles.settingsList}>
             {/* 隐私设置 */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={handlePrivacySettingsPress}
               activeOpacity={0.7}
@@ -127,7 +115,7 @@ const SettingsScreen = () => {
             </TouchableOpacity>
 
             {/* 个性化设置 */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={handlePersonalizationSettingsPress}
               activeOpacity={0.7}
@@ -147,7 +135,7 @@ const SettingsScreen = () => {
             </TouchableOpacity>
 
             {/* 关于我们 */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.settingItem}
               onPress={handleAboutUsPress}
               activeOpacity={0.7}
@@ -167,7 +155,7 @@ const SettingsScreen = () => {
             </TouchableOpacity>
 
             {/* 退出登录 */}
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.logoutItem}
               onPress={handleLogoutPress}
               activeOpacity={0.7}
@@ -196,13 +184,13 @@ const SettingsScreen = () => {
         animationType="fade"
         onRequestClose={handleCancelLogout}
       >
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
           onPress={handleModalOverlayPress}
         >
           <View style={styles.modalContainer}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.modalContent}
               activeOpacity={1}
               onPress={() => {}} // 阻止事件冒泡
@@ -213,14 +201,14 @@ const SettingsScreen = () => {
               <Text style={styles.modalTitle}>确认退出登录</Text>
               <Text style={styles.modalMessage}>您确定要退出当前账户吗？</Text>
               <View style={styles.modalButtonContainer}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.cancelButton}
                   onPress={handleCancelLogout}
                   activeOpacity={0.7}
                 >
                   <Text style={styles.cancelButtonText}>取消</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.confirmButton}
                   onPress={handleConfirmLogout}
                   activeOpacity={0.7}
@@ -237,4 +225,3 @@ const SettingsScreen = () => {
 };
 
 export default SettingsScreen;
-

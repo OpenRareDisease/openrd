@@ -1,7 +1,5 @@
-
-
 import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Modal, Linking, Alert, } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Modal, Linking, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
@@ -20,7 +18,7 @@ const AboutUsScreen = () => {
   };
 
   const handlePhonePress = () => {
-    const phoneNumber = 'tel:400-123-4567';
+    const phoneNumber = 'tel:18099610336';
     Linking.canOpenURL(phoneNumber).then((supported) => {
       if (supported) {
         Linking.openURL(phoneNumber);
@@ -31,7 +29,7 @@ const AboutUsScreen = () => {
   };
 
   const handleEmailPress = () => {
-    const email = 'mailto:support@fshd-openrd.com';
+    const email = 'mailto:ailiyaer201025@outlook.com';
     Linking.canOpenURL(email).then((supported) => {
       if (supported) {
         Linking.openURL(email);
@@ -42,7 +40,7 @@ const AboutUsScreen = () => {
   };
 
   const handleWebsitePress = () => {
-    const website = 'https://www.fshd-openrd.com';
+    const website = 'https://fshdyouth.com';
     Linking.canOpenURL(website).then((supported) => {
       if (supported) {
         Linking.openURL(website);
@@ -68,7 +66,12 @@ const AboutUsScreen = () => {
     setIsPrivacyModalVisible(false);
   };
 
-  const renderFeatureItem = (icon: string, title: string, description: string, iconColor: string) => (
+  const renderFeatureItem = (
+    icon: string,
+    title: string,
+    description: string,
+    iconColor: string,
+  ) => (
     <View style={styles.featureItem}>
       <View style={[styles.featureIconContainer, { backgroundColor: iconColor }]}>
         <FontAwesome6 name={icon} size={14} color="#FFFFFF" />
@@ -80,7 +83,13 @@ const AboutUsScreen = () => {
     </View>
   );
 
-  const renderContactItem = (icon: string, title: string, description: string, iconColor: string, onPress: () => void) => (
+  const renderContactItem = (
+    icon: string,
+    title: string,
+    description: string,
+    iconColor: string,
+    onPress: () => void,
+  ) => (
     <TouchableOpacity style={styles.contactItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.contactItemContent}>
         <View style={[styles.contactIconContainer, { backgroundColor: iconColor }]}>
@@ -125,10 +134,10 @@ const AboutUsScreen = () => {
             <View style={styles.appLogo}>
               <FontAwesome5 name="heartbeat" size={32} color="#969FFF" />
             </View>
-            <Text style={styles.appName}>FSHD-openrd</Text>
+            <Text style={styles.appName}>FSHD青年社区患者平台</Text>
             <Text style={styles.appVersion}>版本 1.0.0</Text>
             <View style={styles.appTaglineContainer}>
-              <Text style={styles.appTagline}>专为FSHD患者设计的智能管理平台</Text>
+              <Text style={styles.appTagline}>面向FSHD患者的移动智能互助平台</Text>
             </View>
           </View>
 
@@ -137,7 +146,7 @@ const AboutUsScreen = () => {
             <Text style={styles.sectionTitle}>产品介绍</Text>
             <View style={styles.introContent}>
               <Text style={styles.introText}>
-                FSHD-openrd是一款专为面肩肱型肌营养不良症（FSHD）患者设计的移动端智能管理平台。我们致力于通过数据驱动、智能分析和社区互助，赋能患者自我管理，优化医疗资源对接，加速科研进展。
+                FSHD青年社区患者平台是专为面肩肱型肌营养不良症（FSHD）患者打造的移动智能互助平台。我们以数据驱动为核心，融合智能分析与社区互助能力，助力患者实现疾病自我管理、优化医疗资源对接效率，同时为FSHD科研进展提供真实数据支撑。
               </Text>
             </View>
           </View>
@@ -146,9 +155,24 @@ const AboutUsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>核心功能</Text>
             <View style={styles.featuresContainer}>
-              {renderFeatureItem('question-circle', '智能问答', '专业FSHD知识查询与个性化问答', 'rgba(150, 159, 255, 0.2)')}
-              {renderFeatureItem('chart-line', '病程管理', '肌力评估与AI病程预测', 'rgba(81, 71, 255, 0.2)')}
-              {renderFeatureItem('users', '患者社区', '经验分享与互助交流', 'rgba(34, 197, 94, 0.2)')}
+              {renderFeatureItem(
+                'question-circle',
+                '智能问答',
+                '专业FSHD疾病知识库检索，支持个性化症状、用药、康复问题解答',
+                'rgba(150, 159, 255, 0.2)',
+              )}
+              {renderFeatureItem(
+                'chart-line',
+                '病程管理',
+                '标准化肌力评估与趋势分析，辅助医患沟通决策',
+                'rgba(81, 71, 255, 0.2)',
+              )}
+              {renderFeatureItem(
+                'users',
+                '患者社区',
+                '症状经验分享、康复方法探讨与心理互助陪伴',
+                'rgba(34, 197, 94, 0.2)',
+              )}
             </View>
           </View>
 
@@ -156,9 +180,27 @@ const AboutUsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>联系我们</Text>
             <View style={styles.contactContainer}>
-              {renderContactItem('phone', '客服电话', '400-123-4567', 'rgba(59, 130, 246, 0.2)', handlePhonePress)}
-              {renderContactItem('envelope', '客服邮箱', 'support@fshd-openrd.com', 'rgba(34, 197, 94, 0.2)', handleEmailPress)}
-              {renderContactItem('globe', '官方网站', 'www.fshd-openrd.com', 'rgba(168, 85, 247, 0.2)', handleWebsitePress)}
+              {renderContactItem(
+                'phone',
+                '联系方式',
+                '18099610336',
+                'rgba(59, 130, 246, 0.2)',
+                handlePhonePress,
+              )}
+              {renderContactItem(
+                'envelope',
+                '邮箱',
+                'ailiyaer201025@outlook.com',
+                'rgba(34, 197, 94, 0.2)',
+                handleEmailPress,
+              )}
+              {renderContactItem(
+                'globe',
+                '网站',
+                'fshdyouth.com',
+                'rgba(168, 85, 247, 0.2)',
+                handleWebsitePress,
+              )}
             </View>
           </View>
 
@@ -166,15 +208,25 @@ const AboutUsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>法律条款</Text>
             <View style={styles.legalContainer}>
-              {renderLinkItem('file-contract', '用户协议', 'rgba(234, 179, 8, 0.2)', handleUserAgreementPress)}
-              {renderLinkItem('shield-alt', '隐私政策', 'rgba(239, 68, 68, 0.2)', handlePrivacyPolicyPress)}
+              {renderLinkItem(
+                'file-contract',
+                '用户协议',
+                'rgba(234, 179, 8, 0.2)',
+                handleUserAgreementPress,
+              )}
+              {renderLinkItem(
+                'shield-alt',
+                '隐私政策',
+                'rgba(239, 68, 68, 0.2)',
+                handlePrivacyPolicyPress,
+              )}
             </View>
           </View>
 
           {/* Copyright */}
           <View style={styles.copyrightSection}>
-            <Text style={styles.copyrightText}>© 2024 FSHD-openrd. 保留所有权利。</Text>
-            <Text style={styles.copyrightSubText}>致力于为FSHD患者提供更好的医疗服务</Text>
+            <Text style={styles.copyrightText}>© 2024 FSHD青年社区患者平台. 保留所有权利。</Text>
+            <Text style={styles.copyrightSubText}>致力于为FSHD患者提供更好的互助与数据服务</Text>
           </View>
         </ScrollView>
 
@@ -185,9 +237,9 @@ const AboutUsScreen = () => {
           animationType="slide"
           onRequestClose={closeAgreementModal}
         >
-          <TouchableOpacity 
-            style={styles.modalOverlay} 
-            activeOpacity={1} 
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
             onPress={closeAgreementModal}
           >
             <View style={styles.modalContainer}>
@@ -240,9 +292,9 @@ const AboutUsScreen = () => {
           animationType="slide"
           onRequestClose={closePrivacyModal}
         >
-          <TouchableOpacity 
-            style={styles.modalOverlay} 
-            activeOpacity={1} 
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
             onPress={closePrivacyModal}
           >
             <View style={styles.modalContainer}>
@@ -293,4 +345,3 @@ const AboutUsScreen = () => {
 };
 
 export default AboutUsScreen;
-

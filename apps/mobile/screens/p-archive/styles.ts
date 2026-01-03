@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -16,7 +14,235 @@ export default StyleSheet.create({
   scrollContent: {
     paddingBottom: 80,
   },
-  
+  section: {
+    marginHorizontal: 24,
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  sectionSubtitle: {
+    fontSize: 13,
+    color: '#D1D5DB',
+    marginBottom: 12,
+  },
+  sectionTitleAccent: {
+    color: '#E0E4FF',
+    letterSpacing: 0.5,
+  },
+  stateContainer: {
+    marginHorizontal: 24,
+    marginBottom: 24,
+    padding: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 12,
+  },
+  stateText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  retryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#969FFF',
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '500',
+    fontSize: 13,
+  },
+  profileCard: {
+    marginHorizontal: 24,
+    marginBottom: 24,
+    padding: 20,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 8,
+  },
+  profileName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  profileMeta: {
+    fontSize: 13,
+    color: '#9CA3AF',
+  },
+  editButton: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#969FFF',
+  },
+  editButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  emptyCard: {
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  emptyText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+  },
+  radarCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  chartCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  muscleSelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  muscleChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  muscleChipActive: {
+    borderColor: '#969FFF',
+    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+  },
+  muscleChipText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  muscleChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  insightLoading: {
+    marginVertical: 16,
+  },
+  chart: {
+    borderRadius: 12,
+    marginLeft: -12,
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  chartLegendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#969FFF',
+    marginRight: 6,
+  },
+  chartLegendText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+  },
+  distributionCard: {
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  distributionBar: {
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginTop: 12,
+    marginBottom: 12,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  distributionRange: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(150, 159, 255, 0.18)',
+  },
+  distributionMarker: {
+    position: 'absolute',
+    top: -4,
+    width: 2,
+    height: 16,
+    backgroundColor: '#CBD5E1',
+  },
+  distributionMarkerUser: {
+    position: 'absolute',
+    top: -6,
+    width: 6,
+    height: 20,
+    borderRadius: 3,
+    backgroundColor: '#969FFF',
+  },
+  distributionLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  distributionText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+  },
+  measurementCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    marginBottom: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+    width: '100%',
+  },
+  measurementMuscle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  measurementDate: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  measurementScore: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#969FFF',
+  },
+
   // 顶部标题栏
   header: {
     flexDirection: 'row',
@@ -122,6 +348,12 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.7)',
   },
+  passportHint: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
 
   // 时间轴
   timelineSection: {
@@ -133,6 +365,25 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  timelineToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  timelineHint: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  timelineToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  timelineToggleText: {
+    fontSize: 12,
+    color: '#969FFF',
   },
   timelineTitle: {
     fontSize: 14,
@@ -149,7 +400,81 @@ export default StyleSheet.create({
     color: '#969FFF',
   },
   timelineContainer: {
-    gap: 24,
+    gap: 12,
+  },
+  submissionCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 12,
+  },
+  submissionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  submissionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  submissionDate: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: 2,
+  },
+  submissionMeta: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  submissionSummary: {
+    fontSize: 11,
+    color: '#9CA3AF',
+  },
+  submissionDetails: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    gap: 10,
+  },
+  detailSection: {
+    gap: 4,
+  },
+  detailTitle: {
+    fontSize: 12,
+    color: '#E5E7EB',
+    fontWeight: '600',
+  },
+  detailItem: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  paginationRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pageButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  pageButtonDisabled: {
+    opacity: 0.5,
+  },
+  pageButtonText: {
+    fontSize: 12,
+    color: '#FFFFFF',
+  },
+  pageIndicator: {
+    fontSize: 12,
+    color: '#9CA3AF',
   },
   eventCard: {
     flexDirection: 'row',
@@ -206,6 +531,13 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
+  },
+  eventHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  eventChevron: {
+    marginLeft: 6,
   },
   eventTitle: {
     fontSize: 12,
@@ -363,4 +695,3 @@ export default StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
   },
 });
-

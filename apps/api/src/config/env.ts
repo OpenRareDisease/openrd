@@ -3,9 +3,7 @@ import { z } from 'zod';
 
 const envSchema = z
   .object({
-    NODE_ENV: z
-      .enum(['development', 'test', 'production'])
-      .default('development'),
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(4000),
     DATABASE_URL: z
       .string()
@@ -19,12 +17,17 @@ const envSchema = z
     BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(6).max(14).default(10),
     CORS_ORIGIN: z.string().default('*'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
-    OPENAI_API_KEY: z.string().min(1).optional()
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    BAIDU_OCR_API_KEY: z.string().min(1).optional(),
+    BAIDU_OCR_SECRET_KEY: z.string().min(1).optional(),
+    BAIDU_OCR_GENERAL_ENDPOINT: z.string().optional(),
+    BAIDU_OCR_ACCURATE_ENDPOINT: z.string().optional(),
+    BAIDU_OCR_MEDICAL_ENDPOINT: z.string().optional(),
   })
   .transform((value) => ({
     ...value,
     isProduction: value.NODE_ENV === 'production',
-    isTest: value.NODE_ENV === 'test'
+    isTest: value.NODE_ENV === 'test',
   }));
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -36,11 +39,13 @@ export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
     loadEnv();
     const parsed = envSchema.safeParse({
       ...process.env,
-      ...overrides
+      ...overrides,
     });
 
     if (!parsed.success) {
-      const message = parsed.error.errors.map((err) => `${err.path.join('.')}: ${err.message}`).join(', ');
+      const message = parsed.error.errors
+        .map((err) => `${err.path.join('.')}: ${err.message}`)
+        .join(', ');
       throw new Error(`Failed to parse environment variables: ${message}`);
     }
 

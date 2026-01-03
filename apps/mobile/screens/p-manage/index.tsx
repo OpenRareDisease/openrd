@@ -1,15 +1,54 @@
-
-
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
+import DataComparisonFeature from '../p-data_comparison_feature/DataComparisonFeature';
+import RecordTimelineScreen from '../p-record_timeline_screen/RecordTimelineScreen';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { ApiError, getMedications, getMyPatientProfile, getRiskSummary } from '../../lib/api';
 
 const PMANAGE = () => {
   const router = useRouter();
+  const MUSCLE_LABELS: Record<string, string> = {
+    deltoid: '三角肌',
+    biceps: '肱二头肌',
+    triceps: '肱三头肌',
+    tibialis: '胫骨前肌',
+    quadriceps: '股四头肌',
+    hamstrings: '腘绳肌',
+    gluteus: '臀肌',
+  };
+  const [profile, setProfile] = useState<any | null>(null);
+  const [medications, setMedications] = useState<any[]>([]);
+  const [riskSummary, setRiskSummary] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const loadData = async () => {
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+      const [profileData, medicationData, riskData] = await Promise.all([
+        getMyPatientProfile(),
+        getMedications(),
+        getRiskSummary(),
+      ]);
+      setProfile(profileData);
+      setMedications(medicationData);
+      setRiskSummary(riskData);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '数据加载失败';
+      setErrorMessage(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
 
   const handleDataEntryPress = () => {
     router.push('/p-data_entry');
@@ -38,6 +77,102 @@ const PMANAGE = () => {
   const handleMedicationDetailPress = () => {
     console.log('查看用药安全详情');
   };
+
+  const latestMeasurementsByGroup = useMemo(() => {
+    if (!profile?.measurements) return {};
+    const map: Record<string, { strengthScore: number; recordedAt: string }> = {};
+    profile.measurements.forEach((m: any) => {
+      const existing = map[m.muscleGroup];
+      if (!existing || new Date(m.recordedAt) > new Date(existing.recordedAt)) {
+        map[m.muscleGroup] = { strengthScore: Number(m.strengthScore), recordedAt: m.recordedAt };
+      }
+    });
+    return map;
+  }, [profile]);
+
+  const averageStrength = useMemo(() => {
+    const values = Object.values(latestMeasurementsByGroup).map((item) => item.strengthScore);
+    if (!values.length) return null;
+    return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }, [latestMeasurementsByGroup]);
+
+  const formattedLastActivity = useMemo(() => {
+    if (!riskSummary?.lastActivityAt) return '暂无记录';
+    const date = new Date(riskSummary.lastActivityAt);
+    return isNaN(date.getTime()) ? '暂无记录' : date.toLocaleDateString();
+  }, [riskSummary]);
+
+  const timelineItems = useMemo(() => {
+    if (!profile) return [];
+    const items: { title: string; description: string; time: string; ts: number }[] = [];
+    (profile.documents ?? []).forEach((doc: any) => {
+      const ts = doc.uploadedAt ? new Date(doc.uploadedAt).getTime() : 0;
+      items.push({
+        title: '报告上传',
+        description:
+          doc.ocrPayload?.extractedText ??
+          doc.ocrPayload?.fields?.hint ??
+          doc.fileName ??
+          '已上传报告',
+        time: doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    (profile.measurements ?? []).forEach((item: any) => {
+      const ts = item.recordedAt ? new Date(item.recordedAt).getTime() : 0;
+      items.push({
+        title: `${MUSCLE_LABELS[item.muscleGroup] || item.muscleGroup} 肌力评估`,
+        description: `肌力 ${Number(item.strengthScore)} 分`,
+        time: item.recordedAt ? new Date(item.recordedAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    (profile.activityLogs ?? []).forEach((item: any) => {
+      const ts = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      items.push({
+        title: '日常活动记录',
+        description: item.content ?? '已记录活动',
+        time: item.createdAt ? new Date(item.createdAt).toLocaleDateString() : '',
+        ts,
+      });
+    });
+    return items.sort((a, b) => b.ts - a.ts).slice(0, 6);
+  }, [profile]);
+
+  const riskLevelColor = (level: string) => {
+    switch (level) {
+      case 'high':
+        return '#f87171';
+      case 'medium':
+        return '#fbbf24';
+      default:
+        return '#10b981';
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
+          <ActivityIndicator size="large" color="#969FFF" />
+          <Text style={{ color: '#9CA3AF', marginTop: 12 }}>正在加载病程数据...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
+          <Text style={{ color: '#9CA3AF', marginBottom: 12 }}>{errorMessage}</Text>
+          <TouchableOpacity style={styles.dataEntryButton} onPress={loadData}>
+            <FontAwesome6 name="arrow-rotate-right" size={14} color="#969FFF" />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -75,7 +210,9 @@ const PMANAGE = () => {
                 <View style={styles.radarChartWrapper}>
                   <View style={styles.radarChart}>
                     <View style={styles.radarChartCenter}>
-                      <Text style={styles.averageScore}>4.2</Text>
+                      <Text style={styles.averageScore}>
+                        {averageStrength !== null ? averageStrength.toFixed(1) : '--'}
+                      </Text>
                       <Text style={styles.averageLabel}>平均分</Text>
                     </View>
                   </View>
@@ -84,57 +221,37 @@ const PMANAGE = () => {
 
               {/* 肌群详细数据 */}
               <View style={styles.muscleGroupsGrid}>
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
-                  onPress={() => handleMuscleGroupPress('三角肌')}
-                >
-                  <View style={styles.muscleGroupHeader}>
-                    <Text style={styles.muscleGroupName}>三角肌</Text>
-                    <Text style={styles.muscleGroupScore}>3.5</Text>
-                  </View>
-                  <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '70%', backgroundColor: '#969FFF' }]} />
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
-                  onPress={() => handleMuscleGroupPress('肱二头肌')}
-                >
-                  <View style={styles.muscleGroupHeader}>
-                    <Text style={styles.muscleGroupName}>肱二头肌</Text>
-                    <Text style={[styles.muscleGroupScore, { color: '#5147FF' }]}>4.0</Text>
-                  </View>
-                  <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '80%', backgroundColor: '#5147FF' }]} />
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
-                  onPress={() => handleMuscleGroupPress('肱三头肌')}
-                >
-                  <View style={styles.muscleGroupHeader}>
-                    <Text style={styles.muscleGroupName}>肱三头肌</Text>
-                    <Text style={[styles.muscleGroupScore, { color: '#3E3987' }]}>4.5</Text>
-                  </View>
-                  <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '90%', backgroundColor: '#3E3987' }]} />
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity 
-                  style={styles.muscleGroupCard} 
-                  onPress={() => handleMuscleGroupPress('胫骨前肌')}
-                >
-                  <View style={styles.muscleGroupHeader}>
-                    <Text style={styles.muscleGroupName}>胫骨前肌</Text>
-                    <Text style={[styles.muscleGroupScore, { color: '#10b981' }]}>4.8</Text>
-                  </View>
-                  <View style={styles.progressBarContainer}>
-                    <View style={[styles.progressBar, { width: '96%', backgroundColor: '#10b981' }]} />
-                  </View>
-                </TouchableOpacity>
+                {Object.entries(latestMeasurementsByGroup).length === 0 ? (
+                  <Text style={{ color: '#9CA3AF' }}>暂无肌力评估，去录入吧</Text>
+                ) : (
+                  Object.entries(latestMeasurementsByGroup).map(([group, data]) => {
+                    const widthPercent = Math.min(100, (data.strengthScore / 5) * 100);
+                    return (
+                      <TouchableOpacity
+                        key={group}
+                        style={styles.muscleGroupCard}
+                        onPress={() => handleMuscleGroupPress(group)}
+                      >
+                        <View style={styles.muscleGroupHeader}>
+                          <Text style={styles.muscleGroupName}>
+                            {MUSCLE_LABELS[group] || group}
+                          </Text>
+                          <Text style={[styles.muscleGroupScore, { color: '#969FFF' }]}>
+                            {data.strengthScore.toFixed(1)}
+                          </Text>
+                        </View>
+                        <View style={styles.progressBarContainer}>
+                          <View
+                            style={[
+                              styles.progressBar,
+                              { width: `${widthPercent}%`, backgroundColor: '#969FFF' },
+                            ]}
+                          />
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
               </View>
             </View>
           </View>
@@ -158,24 +275,47 @@ const PMANAGE = () => {
               </View>
 
               <View style={styles.alertContent}>
-                <Text style={styles.alertDescription}>
-                  本周步数较上周下降 <Text style={styles.alertHighlight}>32%</Text>
-                </Text>
+                <Text style={styles.alertDescription}>最近活动记录：{formattedLastActivity}</Text>
                 <Text style={styles.alertRecommendation}>
-                  建议：适当增加日常活动量，避免长时间久坐
+                  活动风险：{' '}
+                  <Text style={{ color: riskLevelColor(riskSummary?.activityLevel || 'low') }}>
+                    {riskSummary?.activityLevel === 'high'
+                      ? '需尽快增加活动'
+                      : riskSummary?.activityLevel === 'medium'
+                        ? '建议保持规律运动'
+                        : '良好'}
+                  </Text>
                 </Text>
 
                 <View style={styles.activityStats}>
                   <View style={styles.statItem}>
-                    <Text style={styles.statValue}>4,521</Text>
-                    <Text style={styles.statLabel}>本周步数</Text>
+                    <Text style={styles.statValue}>
+                      {riskSummary?.latestMeasurement?.strengthScore ?? '--'}
+                    </Text>
+                    <Text style={styles.statLabel}>最近肌力</Text>
                   </View>
                   <View style={styles.statItem}>
-                    <Text style={[styles.statValue, { color: 'rgba(255, 255, 255, 0.7)' }]}>6,684</Text>
-                    <Text style={styles.statLabel}>上周步数</Text>
+                    <Text style={[styles.statValue, { color: 'rgba(255, 255, 255, 0.7)' }]}>
+                      {formattedLastActivity}
+                    </Text>
+                    <Text style={styles.statLabel}>上次活动</Text>
                   </View>
                 </View>
               </View>
+            </View>
+          </View>
+
+          {/* 动态记录时间线 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <RecordTimelineScreen items={timelineItems} />
+            </View>
+          </View>
+
+          {/* 数据对比功能 */}
+          <View style={styles.section}>
+            <View style={styles.card}>
+              <DataComparisonFeature measurements={profile?.measurements ?? []} />
             </View>
           </View>
 
@@ -194,30 +334,68 @@ const PMANAGE = () => {
 
               <View style={styles.predictionContent}>
                 <View style={styles.predictionHeader}>
-                  <Text style={styles.predictionLabel}>3年发展趋势</Text>
-                  <Text style={styles.predictionRisk}>低风险</Text>
+                  <Text style={styles.predictionLabel}>基础风险评估</Text>
+                  <Text
+                    style={[
+                      styles.predictionRisk,
+                      { color: riskLevelColor(riskSummary?.overallLevel || 'low') },
+                    ]}
+                  >
+                    {riskSummary?.overallLevel === 'high'
+                      ? '高风险'
+                      : riskSummary?.overallLevel === 'medium'
+                        ? '中等风险'
+                        : '低风险'}
+                  </Text>
                 </View>
                 <Text style={styles.predictionDescription}>
-                  基于您的基因类型和当前肌力数据，预计3年内病情进展缓慢
+                  {riskSummary?.notes?.join('； ') || '暂无评估数据'}
                 </Text>
 
                 <View style={styles.riskLevels}>
                   <View style={styles.riskItem}>
-                    <Text style={[styles.riskValue, { color: '#10b981' }]}>15%</Text>
-                    <Text style={styles.riskLabel}>足下垂风险</Text>
+                    <Text
+                      style={[
+                        styles.riskValue,
+                        { color: riskLevelColor(riskSummary?.strengthLevel || 'low') },
+                      ]}
+                    >
+                      {riskSummary?.strengthLevel === 'high'
+                        ? '偏高风险'
+                        : riskSummary?.strengthLevel === 'medium'
+                          ? '需关注'
+                          : '良好'}
+                    </Text>
+                    <Text style={styles.riskLabel}>肌力风险</Text>
                   </View>
                   <View style={styles.riskItem}>
-                    <Text style={[styles.riskValue, { color: '#fbbf24' }]}>28%</Text>
-                    <Text style={styles.riskLabel}>肌力下降</Text>
+                    <Text
+                      style={[
+                        styles.riskValue,
+                        { color: riskLevelColor(riskSummary?.activityLevel || 'low') },
+                      ]}
+                    >
+                      {riskSummary?.activityLevel === 'high'
+                        ? '偏高风险'
+                        : riskSummary?.activityLevel === 'medium'
+                          ? '需关注'
+                          : '良好'}
+                    </Text>
+                    <Text style={styles.riskLabel}>活动风险</Text>
                   </View>
                   <View style={styles.riskItem}>
-                    <Text style={[styles.riskValue, { color: '#3b82f6' }]}>85%</Text>
-                    <Text style={styles.riskLabel}>稳定概率</Text>
+                    <Text style={[styles.riskValue, { color: '#3b82f6' }]}>
+                      {averageStrength !== null ? `${averageStrength.toFixed(1)} 分` : '--'}
+                    </Text>
+                    <Text style={styles.riskLabel}>平均肌力</Text>
                   </View>
                 </View>
               </View>
 
-              <TouchableOpacity style={styles.interventionButton} onPress={handleInterventionPlanPress}>
+              <TouchableOpacity
+                style={styles.interventionButton}
+                onPress={handleInterventionPlanPress}
+              >
                 <Text style={styles.interventionButtonText}>查看个性化干预计划</Text>
               </TouchableOpacity>
             </View>
@@ -242,38 +420,34 @@ const PMANAGE = () => {
               </View>
 
               <View style={styles.medicationContent}>
-                <Text style={styles.medicationStatus}>当前用药方案安全，肝功能指标正常</Text>
+                <Text style={styles.medicationStatus}>
+                  当前用药 {medications.length || 0} 项，保持按时服用并关注不良反应
+                </Text>
 
                 <View style={styles.medicationList}>
-                  <View style={styles.medicationItem}>
-                    <Text style={styles.medicationName}>布洛芬</Text>
-                    <View style={styles.medicationBadge}>
-                      <Text style={styles.medicationBadgeText}>安全</Text>
-                    </View>
-                  </View>
-                  <View style={styles.medicationItem}>
-                    <Text style={styles.medicationName}>维生素D</Text>
-                    <View style={styles.medicationBadge}>
-                      <Text style={styles.medicationBadgeText}>安全</Text>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.liverFunctionCard}>
-                  <View style={styles.liverFunctionHeader}>
-                    <Text style={styles.liverFunctionLabel}>肝功能指标</Text>
-                    <Text style={styles.liverFunctionStatus}>正常</Text>
-                  </View>
-                  <View style={styles.liverFunctionValues}>
-                    <View style={styles.liverFunctionValue}>
-                      <Text style={styles.liverFunctionValueLabel}>ALT:</Text>
-                      <Text style={styles.liverFunctionValueText}>28 U/L</Text>
-                    </View>
-                    <View style={styles.liverFunctionValue}>
-                      <Text style={styles.liverFunctionValueLabel}>AST:</Text>
-                      <Text style={styles.liverFunctionValueText}>32 U/L</Text>
-                    </View>
-                  </View>
+                  {medications.length === 0 ? (
+                    <Text style={{ color: '#9CA3AF' }}>暂无用药记录，去录入一条吧</Text>
+                  ) : (
+                    medications.map((item) => (
+                      <View key={item.id} style={styles.medicationItem}>
+                        <Text style={styles.medicationName}>{item.medicationName}</Text>
+                        <View
+                          style={[
+                            styles.medicationBadge,
+                            {
+                              backgroundColor: `${riskLevelColor(
+                                item.status === 'active' ? 'low' : 'medium',
+                              )}22`,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.medicationBadgeText}>
+                            {item.status === 'active' ? '进行中' : item.status}
+                          </Text>
+                        </View>
+                      </View>
+                    ))
+                  )}
                 </View>
               </View>
             </View>
@@ -285,4 +459,3 @@ const PMANAGE = () => {
 };
 
 export default PMANAGE;
-

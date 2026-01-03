@@ -152,3 +152,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+tmp/
+temp/
+apps/api/uploads/

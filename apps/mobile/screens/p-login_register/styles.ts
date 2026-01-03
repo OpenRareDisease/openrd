@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Dimensions, Platform } from 'react-native';
 
 const { width } = Dimensions.get('window');
@@ -22,7 +20,7 @@ export default StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 24,
   },
-  
+
   // Header styles
   header: {
     alignItems: 'center',
@@ -68,12 +66,12 @@ export default StyleSheet.create({
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.7)',
   },
-  
+
   // Main content styles
   mainContent: {
     flex: 1,
   },
-  
+
   // Tab switcher styles
   tabSwitcher: {
     flexDirection: 'row',
@@ -109,13 +107,20 @@ export default StyleSheet.create({
   tabButtonTextActive: {
     color: '#FFFFFF',
   },
-  
+
   // Form styles
   formContainer: {
     marginBottom: 24,
   },
   inputContainer: {
     marginBottom: 16,
+  },
+  registerSectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    marginTop: 8,
   },
   inputLabel: {
     fontSize: 14,
@@ -134,7 +139,34 @@ export default StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
   },
-  
+
+  identityRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  identityButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  identityButtonActive: {
+    borderColor: '#969FFF',
+    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+  },
+  identityButtonText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  identityButtonTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+
   // Password input styles
   passwordInputWrapper: {
     flexDirection: 'row',
@@ -154,7 +186,7 @@ export default StyleSheet.create({
   passwordToggleButton: {
     paddingHorizontal: 12,
   },
-  
+
   // Verification code styles
   verificationCodeWrapper: {
     flexDirection: 'row',
@@ -187,7 +219,7 @@ export default StyleSheet.create({
     fontWeight: '500',
     color: '#969FFF',
   },
-  
+
   // Primary button styles
   primaryButton: {
     borderRadius: 8,
@@ -207,7 +239,7 @@ export default StyleSheet.create({
     fontWeight: '500',
     color: '#FFFFFF',
   },
-  
+
   // Forgot password styles
   forgotPasswordContainer: {
     alignItems: 'center',
@@ -217,7 +249,7 @@ export default StyleSheet.create({
     fontSize: 14,
     color: '#969FFF',
   },
-  
+
   // Divider styles
   divider: {
     flexDirection: 'row',
@@ -234,7 +266,7 @@ export default StyleSheet.create({
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.5)',
   },
-  
+
   // Third party login styles
   thirdPartyLogin: {
     gap: 12,
@@ -256,7 +288,7 @@ export default StyleSheet.create({
     fontWeight: '500',
     color: '#FFFFFF',
   },
-  
+
   // Agreement styles
   agreement: {
     alignItems: 'center',
@@ -271,7 +303,7 @@ export default StyleSheet.create({
   agreementLink: {
     color: '#969FFF',
   },
-  
+
   // Modal styles
   modalOverlay: {
     position: 'absolute',
@@ -353,7 +385,7 @@ export default StyleSheet.create({
     fontWeight: '500',
     color: '#FFFFFF',
   },
-  
+
   // Agreement modal styles
   agreementModalContent: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -394,4 +426,3 @@ export default StyleSheet.create({
     lineHeight: 22,
   },
 });
-
