@@ -7,6 +7,10 @@ node_modules/
 .yarn/install-state.gz
 .pnp.*
 
+# Vector DB (generated data)
+chroma_db/
+apps/knowledge-base/chroma_db/
+
 # Production builds
 /dist
 /build
