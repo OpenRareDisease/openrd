@@ -116,6 +116,21 @@ export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
 
+export interface AiAskResponse {
+  success: boolean;
+  data: {
+    question: string;
+    answer: string;
+    timestamp: string;
+  };
+}
+
+export const askAiQuestion = (question: string, userContext?: Record<string, unknown>) =>
+  apiRequest<AiAskResponse>('/ai/ask', {
+    method: 'POST',
+    body: JSON.stringify({ question, userContext }),
+  });
+
 export const createSubmission = () =>
   apiRequest<{ id: string; createdAt: string }>('/profiles/me/submissions', {
     method: 'POST',
