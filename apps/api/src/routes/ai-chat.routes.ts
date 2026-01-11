@@ -1,9 +1,6 @@
-import { execFile } from 'child_process';
 import { Router } from 'express';
 import type { RequestHandler } from 'express';
-import fs from 'fs';
 import OpenAI from 'openai';
-import path from 'path';
 import type { RouteContext } from './index.js';
 import { requireAuth } from '../middleware/require-auth.js';
 
@@ -29,29 +26,16 @@ type KnowledgePayload = {
   keep_debug_fields: boolean;
 };
 
-type KnowledgeExecError = {
-  error: Error;
-  stdout: string;
-  stderr: string;
-  payloadUsed: KnowledgePayload;
-};
-
 const cleanJsonText = (s: string) => s.replace(/^\uFEFF/, '').trim();
 
-const resolvePythonScriptPath = () => {
-  const cwd = process.cwd();
-  const candidates = [
-    path.resolve(cwd, 'knowledge.py'),
-    path.resolve(cwd, 'apps', 'api', 'knowledge.py'),
-    path.resolve(cwd, 'knowledge', 'knowledge.py'),
-    path.resolve(cwd, 'apps', 'api', 'knowledge', 'knowledge.py'),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+const getKbServiceUrl = () => {
+  if (process.env.KB_SERVICE_URL) {
+    return process.env.KB_SERVICE_URL;
   }
 
-  return candidates[0];
+  const host = process.env.KB_SERVICE_HOST || '127.0.0.1';
+  const port = process.env.KB_SERVICE_PORT || '5010';
+  return `http://${host}:${port}`;
 };
 
 const isUuid = (s: unknown) =>
@@ -121,6 +105,41 @@ const getErrorMessage = (error: unknown) => {
   return String(error);
 };
 
+const requestKnowledgeBase = async (payload: KnowledgePayload) => {
+  const kbServiceUrl = getKbServiceUrl();
+  const response = await fetch(`${kbServiceUrl}/multi`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  const parsed = safeJsonParse<KnowledgeParseResult>(text || '');
+
+  if (!response.ok || !parsed) {
+    const detail = parsed?.answer || text || `KB service error: ${response.status}`;
+    throw new Error(detail);
+  }
+
+  const rawChunks = Array.isArray(parsed?.chunks) ? parsed.chunks : [];
+  const chunksText = chunksToText(rawChunks);
+  const filteredChunks = chunksText.filter((chunk) => !isJunkChunk(chunk));
+
+  const ragContext = (filteredChunks.length ? filteredChunks : chunksText)
+    .slice(0, 6)
+    .map((chunk, index) => `【片段${index + 1}】${chunk}`)
+    .join('\n\n');
+
+  return {
+    parsed,
+    rawChunks,
+    chunksText,
+    filteredChunks,
+    ragContext,
+    payloadUsed: payload,
+  };
+};
+
 const createAiChatRoutes = (context: RouteContext) => {
   const router = Router();
   const authMiddleware: RequestHandler = requireAuth(context.env, context.logger);
@@ -138,14 +157,8 @@ const createAiChatRoutes = (context: RouteContext) => {
       process.stdout.write(`👤 userId = ${String(userId)} (uuid=${isUuid(userId)})\n`);
       process.stdout.write(`❓ question = ${String(question)}\n`);
       process.stdout.write(`🔧 cwd = ${process.cwd()}\n`);
-
-      const pythonScript = resolvePythonScriptPath();
-      process.stdout.write(`📄 pythonScript = ${pythonScript}\n`);
-      process.stdout.write(`📄 pythonScript exists = ${fs.existsSync(pythonScript)}\n`);
-
-      const pythonExe =
-        process.env.PYTHON_EXE || (process.platform === 'win32' ? 'python' : 'python3');
-      process.stdout.write(`🐍 pythonExe = ${pythonExe}\n`);
+      const kbServiceUrl = getKbServiceUrl();
+      process.stdout.write(`🧠 kbServiceUrl = ${kbServiceUrl}\n`);
 
       let queries: string[] = [String(question)];
       let where: Record<string, unknown> | null = null;
@@ -214,71 +227,17 @@ const createAiChatRoutes = (context: RouteContext) => {
         where = null;
       }
 
-      const kb = await new Promise<{
-        parsed: KnowledgeParseResult;
-        rawChunks: KnowledgeChunk[];
-        chunksText: string[];
-        filteredChunks: string[];
-        ragContext: string;
-        payloadUsed: KnowledgePayload;
-      }>((resolve, reject) => {
-        const payload: KnowledgePayload = {
-          question: String(question),
-          queries,
-          top_k: 8,
-          fetch_k: 80,
-          max_per_source: 4,
-          where,
-          keep_debug_fields: false,
-        };
+      const payload: KnowledgePayload = {
+        question: String(question),
+        queries,
+        top_k: 8,
+        fetch_k: 80,
+        max_per_source: 4,
+        where,
+        keep_debug_fields: false,
+      };
 
-        const args = [pythonScript, '--multi', JSON.stringify(payload)];
-        process.stdout.write(`📤 python args preview = ${args.slice(0, 2).join(' ')} ...\n`);
-
-        execFile(pythonExe, args, (error, stdout, stderr) => {
-          process.stdout.write(`🧾 stderr(first500) = ${(stderr || '').slice(0, 500)}\n`);
-          process.stdout.write(`🧾 stdout(first500) = ${(stdout || '').slice(0, 500)}\n`);
-
-          if (error) {
-            return reject({ error, stdout, stderr, payloadUsed: payload } as KnowledgeExecError);
-          }
-
-          const parsed = safeJsonParse<KnowledgeParseResult>(stdout || '');
-          if (!parsed) {
-            return reject({
-              error: new Error('python_json_parse_failed'),
-              stdout,
-              stderr,
-              payloadUsed: payload,
-            } as KnowledgeExecError);
-          }
-
-          const rawChunks = Array.isArray(parsed?.chunks) ? parsed.chunks : [];
-          const chunksText = chunksToText(rawChunks);
-          const filteredChunks = chunksText.filter((text) => !isJunkChunk(text));
-
-          process.stdout.write(
-            `🧠 chunksText=${chunksText.length}, filtered=${filteredChunks.length}\n`,
-          );
-          process.stdout.write(
-            `🧠 chunk0=${(filteredChunks[0] || chunksText[0] || '').slice(0, 140)}\n`,
-          );
-
-          const ragContext = (filteredChunks.length ? filteredChunks : chunksText)
-            .slice(0, 6)
-            .map((text, index) => `【片段${index + 1}】${text}`)
-            .join('\n\n');
-
-          return resolve({
-            parsed,
-            rawChunks,
-            chunksText,
-            filteredChunks,
-            ragContext,
-            payloadUsed: payload,
-          });
-        });
-      });
+      const kb = await requestKnowledgeBase(payload);
 
       process.stdout.write(`📦 python chunks(raw) = ${kb.rawChunks.length}\n`);
 
