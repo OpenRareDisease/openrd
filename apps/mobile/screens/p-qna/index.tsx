@@ -181,7 +181,10 @@ const P_QNA = () => {
             (error.data as { message?: string; error?: string })?.error ||
             error.message
           : '暂时无法获取回答，请稍后再试。';
-      Alert.alert('智能问答失败', message);
+      const friendlyMessage = message.includes('知识库服务不可用')
+        ? '知识库服务未启动，请联系管理员或稍后再试。'
+        : message;
+      Alert.alert('智能问答失败', friendlyMessage);
     } finally {
       setIsSearchLoading(false);
     }

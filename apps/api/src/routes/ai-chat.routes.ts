@@ -107,11 +107,19 @@ const getErrorMessage = (error: unknown) => {
 
 const requestKnowledgeBase = async (payload: KnowledgePayload) => {
   const kbServiceUrl = getKbServiceUrl();
-  const response = await fetch(`${kbServiceUrl}/multi`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${kbServiceUrl}/multi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    const message =
+      '知识库服务不可用，请先启动 apps/api/knowledge_service.py（KB_SERVICE_HOST/PORT）。';
+    throw new Error(message);
+  }
 
   const text = await response.text();
   const parsed = safeJsonParse<KnowledgeParseResult>(text || '');
@@ -331,11 +339,13 @@ ${knowledgeContext}
         },
       });
     } catch (error) {
-      console.error('❌ /api/ai/ask error:', getErrorMessage(error));
-      return res.status(500).json({
+      const detail = getErrorMessage(error);
+      const isKbDown = detail.includes('知识库服务不可用');
+      console.error('❌ /api/ai/ask error:', detail);
+      return res.status(isKbDown ? 503 : 500).json({
         success: false,
-        message: 'AI服务暂时不可用',
-        detail: getErrorMessage(error),
+        message: isKbDown ? '知识库服务不可用' : 'AI服务暂时不可用',
+        detail,
       });
     }
   });
