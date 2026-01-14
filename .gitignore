@@ -144,6 +144,10 @@ ios/Pods/
 *.swo
 *~
 
+# Python
+__pycache__/
+*.py[cod]
+
 # OS
 .DS_Store
 .DS_Store?

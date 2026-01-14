@@ -3,8 +3,25 @@ import logging
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
+from pathlib import Path
 
 from knowledge import FSHDKnowledgeBaseCloud
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+
+def _load_env():
+    if load_dotenv is None:
+        return
+    env_path = Path(__file__).resolve().parents[2] / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+
+
+_load_env()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('fshd_kb_service')
