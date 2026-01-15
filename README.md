@@ -68,6 +68,8 @@ npm install                   # 安装 workspace 依赖并初始化 Husky
 > source .venv/bin/activate
 > pip install -r requirements.txt
 > ```
+>
+> 知识服务依赖 Chroma Cloud，请确保 `.env` 已设置 `CHROMA_API_KEY` 与 `CHROMA_TENANT_ID`。
 
 > 如需初始化数据库，可使用 `db/init_db.sql`：
 >
@@ -111,6 +113,8 @@ npm install                   # 安装 workspace 依赖并初始化 Husky
 - [系统架构设计文档](./FSHD-openrd-系统架构设计文档.md)
 - [产品需求文档](./prd-v2.md)
 - [数据库初始化脚本](./db/init_db.sql)
+- [智能问答服务说明](./docs/ai-chat.md)
+- [发布/部署清单](./docs/release-checklist.md)
 
 ## 📞 支持与反馈
 
