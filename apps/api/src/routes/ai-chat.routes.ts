@@ -26,6 +26,115 @@ type KnowledgePayload = {
   keep_debug_fields: boolean;
 };
 
+type ProgressStageStatus = 'pending' | 'active' | 'done' | 'error';
+
+type ProgressStage = {
+  id: string;
+  label: string;
+  status: ProgressStageStatus;
+  startedAt?: string;
+  endedAt?: string;
+};
+
+type ProgressState = {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  percent: number;
+  stageId: string;
+  stages: ProgressStage[];
+  updatedAt: number;
+  error?: string;
+};
+
+const PROGRESS_STAGE_DEFS = [
+  { id: 'received', label: '接收问题', percent: 5 },
+  { id: 'query_gen', label: '生成检索问题', percent: 25 },
+  { id: 'kb_search', label: '检索知识库', percent: 60 },
+  { id: 'final_answer', label: '生成回答', percent: 90 },
+  { id: 'done', label: '整理结果', percent: 100 },
+];
+
+const PROGRESS_TTL_MS = 10 * 60 * 1000;
+const progressStore = new Map<string, ProgressState>();
+
+const nowIso = () => new Date().toISOString();
+
+const pruneProgressStore = () => {
+  const cutoff = Date.now() - PROGRESS_TTL_MS;
+  for (const [id, entry] of progressStore.entries()) {
+    if (entry.updatedAt < cutoff) {
+      progressStore.delete(id);
+    }
+  }
+};
+
+const initProgress = (progressId: string) => {
+  const stages: ProgressStage[] = PROGRESS_STAGE_DEFS.map((stage) => ({
+    id: stage.id,
+    label: stage.label,
+    status: 'pending',
+  }));
+  const state: ProgressState = {
+    id: progressId,
+    status: 'running',
+    percent: 0,
+    stageId: 'received',
+    stages,
+    updatedAt: Date.now(),
+  };
+  progressStore.set(progressId, state);
+  return state;
+};
+
+const setProgressStage = (
+  progressId: string,
+  stageId: string,
+  statusOverride?: ProgressStageStatus,
+  error?: string,
+) => {
+  const state = progressStore.get(progressId);
+  if (!state) return;
+
+  const stageIndex = state.stages.findIndex((stage) => stage.id === stageId);
+  if (stageIndex === -1) return;
+
+  const prevIndex = state.stages.findIndex((stage) => stage.status === 'active');
+  if (prevIndex >= 0 && prevIndex !== stageIndex) {
+    state.stages[prevIndex] = {
+      ...state.stages[prevIndex],
+      status: 'done',
+      endedAt: nowIso(),
+    };
+  }
+
+  const targetStatus: ProgressStageStatus =
+    statusOverride || (stageId === 'done' ? 'done' : 'active');
+  const updatedStage: ProgressStage = {
+    ...state.stages[stageIndex],
+    status: targetStatus,
+    startedAt: state.stages[stageIndex].startedAt || nowIso(),
+    endedAt: targetStatus === 'done' ? nowIso() : state.stages[stageIndex].endedAt,
+  };
+  state.stages[stageIndex] = updatedStage;
+
+  const percent =
+    PROGRESS_STAGE_DEFS.find((stage) => stage.id === stageId)?.percent ?? state.percent;
+  state.percent = Math.max(state.percent, percent);
+  state.stageId = stageId;
+  state.updatedAt = Date.now();
+
+  if (targetStatus === 'error') {
+    state.status = 'error';
+    state.error = error;
+  } else if (stageId === 'done') {
+    state.status = 'done';
+  } else {
+    state.status = 'running';
+  }
+
+  pruneProgressStore();
+};
+
 const cleanJsonText = (s: string) => s.replace(/^\uFEFF/, '').trim();
 
 const getKbServiceUrl = () => {
@@ -153,11 +262,21 @@ const createAiChatRoutes = (context: RouteContext) => {
   const authMiddleware: RequestHandler = requireAuth(context.env, context.logger);
 
   router.post('/ask', authMiddleware, async (req, res) => {
+    const progressId =
+      req.body && typeof req.body.progressId === 'string' ? req.body.progressId : null;
+    if (progressId) {
+      initProgress(progressId);
+      setProgressStage(progressId, 'received');
+    }
+
     try {
       process.stdout.write('\n🔥 HIT POST /api/ai/ask\n');
 
       const { question, userContext } = req.body || {};
       if (!question || !String(question).trim()) {
+        if (progressId) {
+          setProgressStage(progressId, 'received', 'error', '问题不能为空');
+        }
         return res.status(400).json({ success: false, message: '问题不能为空' });
       }
 
@@ -173,6 +292,9 @@ const createAiChatRoutes = (context: RouteContext) => {
       let queryGenRaw = '';
 
       try {
+        if (progressId) {
+          setProgressStage(progressId, 'query_gen');
+        }
         process.stdout.write('🧩 generating retrieval queries via DeepSeek...\n');
 
         const queryGenSystem = `你是一个RAG检索查询生成器。你的任务：把用户问题改写成多条“更利于向医学知识库检索”的查询语句。
@@ -245,6 +367,9 @@ const createAiChatRoutes = (context: RouteContext) => {
         keep_debug_fields: false,
       };
 
+      if (progressId) {
+        setProgressStage(progressId, 'kb_search');
+      }
       const kb = await requestKnowledgeBase(payload);
 
       process.stdout.write(`📦 python chunks(raw) = ${kb.rawChunks.length}\n`);
@@ -303,6 +428,9 @@ ${knowledgeContext}
 
       let finalAnswer = '';
       try {
+        if (progressId) {
+          setProgressStage(progressId, 'final_answer');
+        }
         process.stdout.write('🤖 calling DeepSeek for final answer...\n');
         const completion = await openai.chat.completions.create({
           model: process.env.AI_API_MODEL || 'deepseek-ai/DeepSeek-V3',
@@ -322,6 +450,9 @@ ${knowledgeContext}
         finalAnswer = kb.parsed?.answer || '抱歉，AI 服务暂时不可用，请稍后重试。';
       }
 
+      if (progressId) {
+        setProgressStage(progressId, 'done');
+      }
       return res.json({
         success: true,
         data: {
@@ -336,18 +467,63 @@ ${knowledgeContext}
             queryGenRawPreview: queryGenRaw.slice(0, 800),
           },
           timestamp: new Date().toISOString(),
+          progressId: progressId || undefined,
         },
       });
     } catch (error) {
       const detail = getErrorMessage(error);
       const isKbDown = detail.includes('知识库服务不可用');
       console.error('❌ /api/ai/ask error:', detail);
+      if (progressId) {
+        setProgressStage(progressId, 'done', 'error', detail);
+      }
       return res.status(isKbDown ? 503 : 500).json({
         success: false,
         message: isKbDown ? '知识库服务不可用' : 'AI服务暂时不可用',
         detail,
+        progressId: progressId || undefined,
       });
     }
+  });
+
+  router.post('/ask/progress/init', authMiddleware, (req, res) => {
+    const progressId =
+      req.body && typeof req.body.progressId === 'string' ? req.body.progressId : null;
+    if (!progressId) {
+      return res.status(400).json({ success: false, message: 'progressId 不能为空' });
+    }
+    initProgress(progressId);
+    setProgressStage(progressId, 'received');
+    return res.json({
+      success: true,
+      data: {
+        progressId,
+        status: 'running',
+        percent: 5,
+        stageId: 'received',
+      },
+    });
+  });
+
+  router.get('/ask/progress/:progressId', authMiddleware, (req, res) => {
+    pruneProgressStore();
+    const progressId = req.params.progressId;
+    const state = progressStore.get(progressId);
+    if (!state) {
+      return res.status(404).json({ success: false, message: '进度不存在或已过期' });
+    }
+    return res.json({
+      success: true,
+      data: {
+        progressId: state.id,
+        status: state.status,
+        percent: state.percent,
+        stageId: state.stageId,
+        stages: state.stages,
+        error: state.error,
+        updatedAt: new Date(state.updatedAt).toISOString(),
+      },
+    });
   });
 
   router.get('/health', authMiddleware, (_req, res) => {

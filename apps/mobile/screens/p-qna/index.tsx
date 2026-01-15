@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../contexts/AuthContext';
-import { ApiError, askAiQuestion } from '../../lib/api';
+import {
+  ApiError,
+  AiAskProgressStage,
+  askAiQuestion,
+  getAiAskProgress,
+  initAiAskProgress,
+} from '../../lib/api';
 import styles from './styles';
 
 interface HotQuestion {
@@ -59,6 +65,35 @@ const P_QNA = () => {
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [showSearchResult, setShowSearchResult] = useState(false);
   const [searchResultAnswer, setSearchResultAnswer] = useState('');
+  const [askProgress, setAskProgress] = useState<{
+    progressId: string;
+    status: 'running' | 'done' | 'error';
+    percent: number;
+    stageId: string;
+    stages: AiAskProgressStage[];
+    error?: string;
+  } | null>(null);
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const defaultProgressStages: AiAskProgressStage[] = [
+    { id: 'received', label: '接收问题', status: 'pending' },
+    { id: 'query_gen', label: '生成检索问题', status: 'pending' },
+    { id: 'kb_search', label: '检索知识库', status: 'pending' },
+    { id: 'final_answer', label: '生成回答', status: 'pending' },
+    { id: 'done', label: '整理结果', status: 'pending' },
+  ];
+
+  useEffect(() => {
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const createProgressId = () =>
+    `qna_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
   const hotQuestions: HotQuestion[] = [
     {
@@ -167,13 +202,56 @@ const P_QNA = () => {
     }
 
     setIsSearchLoading(true);
+    setShowSearchResult(false);
+    setSearchResultAnswer('');
+
+    const progressId = createProgressId();
+    setAskProgress({
+      progressId,
+      status: 'running',
+      percent: 5,
+      stageId: 'received',
+      stages: defaultProgressStages.map((stage) =>
+        stage.id === 'received' ? { ...stage, status: 'active' } : stage,
+      ),
+    });
+
+    const pollProgress = async () => {
+      try {
+        const response = await getAiAskProgress(progressId);
+        setAskProgress(response.data);
+      } catch {
+        // ignore progress polling failures
+      }
+    };
+
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+    }
+    await initAiAskProgress(progressId);
+    progressTimerRef.current = setInterval(pollProgress, 1200);
+    pollProgress();
 
     try {
-      const response = await askAiQuestion(searchQuery, { language: 'zh' });
+      const response = await askAiQuestion(searchQuery, { language: 'zh' }, progressId);
       setShowSearchResult(true);
       setSearchResultAnswer(response.data.answer);
       setSearchQuery('');
       searchInputRef.current?.blur();
+      setTimeout(() => {
+        setAskProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'done',
+                percent: 100,
+                stages: prev.stages.map((stage) =>
+                  stage.id === 'done' ? { ...stage, status: 'done' } : stage,
+                ),
+              }
+            : prev,
+        );
+      }, 0);
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -185,8 +263,24 @@ const P_QNA = () => {
         ? '知识库服务未启动，请联系管理员或稍后再试。'
         : message;
       Alert.alert('智能问答失败', friendlyMessage);
+      setAskProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'error',
+              stages: prev.stages.map((stage) =>
+                stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+              ),
+              error: friendlyMessage,
+            }
+          : prev,
+      );
     } finally {
       setIsSearchLoading(false);
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
     }
   };
 
@@ -225,6 +319,55 @@ const P_QNA = () => {
               <Text style={styles.searchResultAnswer}>{searchResultAnswer}</Text>
             </View>
           </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderProgress = () => {
+    if (!askProgress) return null;
+
+    const stages = askProgress.stages.length ? askProgress.stages : defaultProgressStages;
+    const percent = Math.min(100, Math.max(0, askProgress.percent));
+    const statusText =
+      askProgress.status === 'error'
+        ? '连接中断，正在重试'
+        : askProgress.status === 'done'
+          ? '已完成'
+          : '处理中';
+
+    return (
+      <View style={styles.progressContainer}>
+        <View style={styles.progressHeader}>
+          <Text style={styles.progressTitle}>回答进度</Text>
+          <Text style={styles.progressStatus}>{statusText}</Text>
+        </View>
+        <View style={styles.progressBar}>
+          <View style={[styles.progressFill, { width: `${percent}%` }]} />
+        </View>
+        <View style={styles.progressStages}>
+          {stages.map((stage) => (
+            <View key={stage.id} style={styles.progressStageItem}>
+              <View
+                style={[
+                  styles.progressStageDot,
+                  stage.status === 'done' && styles.progressStageDotDone,
+                  stage.status === 'active' && styles.progressStageDotActive,
+                  stage.status === 'error' && styles.progressStageDotError,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.progressStageText,
+                  stage.status === 'done' && styles.progressStageTextDone,
+                  stage.status === 'active' && styles.progressStageTextActive,
+                  stage.status === 'error' && styles.progressStageTextError,
+                ]}
+              >
+                {stage.label}
+              </Text>
+            </View>
+          ))}
         </View>
       </View>
     );
@@ -390,6 +533,8 @@ const P_QNA = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {renderProgress()}
+
           {/* 搜索结果 */}
           {renderSearchResult()}
 

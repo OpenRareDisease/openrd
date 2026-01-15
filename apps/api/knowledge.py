@@ -152,9 +152,25 @@ class FSHDKnowledgeBaseCloud:
         merged: List[Dict[str, Any]] = []
         seen_fp = set()
 
-        # 1) multi-query recall
+        # 1) multi-query recall (single remote request for stability)
+        q_embs = self._embed_texts(queries)
+        kwargs: Dict[str, Any] = {
+            "query_embeddings": q_embs,
+            "n_results": fetch_k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            kwargs["where"] = where
+        results = self.collection.query(**kwargs)
+
+        docs_all = results.get("documents") or []
+        metas_all = results.get("metadatas") or []
+        dists_all = results.get("distances") or []
+
         for qi, q in enumerate(queries):
-            docs, metas, dists = self._query_once(q, fetch_k, where=where)
+            docs = docs_all[qi] if qi < len(docs_all) and docs_all[qi] else []
+            metas = metas_all[qi] if qi < len(metas_all) and metas_all[qi] else []
+            dists = dists_all[qi] if qi < len(dists_all) and dists_all[qi] else []
 
             for i, doc in enumerate(docs):
                 text_norm = _norm_text(doc or "")
