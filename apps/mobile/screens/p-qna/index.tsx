@@ -1,10 +1,25 @@
-
-
-import React, { useState, useRef } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Alert, KeyboardAvoidingView, Platform, } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useAuth } from '../../contexts/AuthContext';
+import {
+  ApiError,
+  AiAskProgressStage,
+  askAiQuestion,
+  getAiAskProgress,
+  initAiAskProgress,
+} from '../../lib/api';
 import styles from './styles';
 
 interface HotQuestion {
@@ -43,29 +58,62 @@ interface ClinicalPathway {
 const P_QNA = () => {
   const router = useRouter();
   const searchInputRef = useRef<TextInput>(null);
-  
+  const { token } = useAuth();
+
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedQuestionId, setExpandedQuestionId] = useState<string | null>(null);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [showSearchResult, setShowSearchResult] = useState(false);
   const [searchResultAnswer, setSearchResultAnswer] = useState('');
+  const [askProgress, setAskProgress] = useState<{
+    progressId: string;
+    status: 'running' | 'done' | 'error';
+    percent: number;
+    stageId: string;
+    stages: AiAskProgressStage[];
+    error?: string;
+  } | null>(null);
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const defaultProgressStages: AiAskProgressStage[] = [
+    { id: 'received', label: '接收问题', status: 'pending' },
+    { id: 'query_gen', label: '生成检索问题', status: 'pending' },
+    { id: 'kb_search', label: '检索知识库', status: 'pending' },
+    { id: 'final_answer', label: '生成回答', status: 'pending' },
+    { id: 'done', label: '整理结果', status: 'pending' },
+  ];
+
+  useEffect(() => {
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const createProgressId = () =>
+    `qna_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
   const hotQuestions: HotQuestion[] = [
     {
       id: '1',
       question: 'FSHD患者如何进行家庭康复训练？',
-      answer: 'FSHD患者的家庭康复训练应遵循个体化原则，重点包括：\n\n1. 肌力训练：使用弹力带进行抗阻训练，重点训练肩带肌、上臂肌和下肢肌群\n2. 关节活动度训练：每日进行关节的全范围活动，预防关节挛缩\n3. 呼吸训练：腹式呼吸和深呼吸练习，改善呼吸功能\n4. 平衡训练：单腿站立、足跟走等练习，预防跌倒\n\n建议在专业康复师指导下制定训练计划，避免过度疲劳。'
+      answer:
+        'FSHD患者的家庭康复训练应遵循个体化原则，重点包括：\n\n1. 肌力训练：使用弹力带进行抗阻训练，重点训练肩带肌、上臂肌和下肢肌群\n2. 关节活动度训练：每日进行关节的全范围活动，预防关节挛缩\n3. 呼吸训练：腹式呼吸和深呼吸练习，改善呼吸功能\n4. 平衡训练：单腿站立、足跟走等练习，预防跌倒\n\n建议在专业康复师指导下制定训练计划，避免过度疲劳。',
     },
     {
       id: '2',
       question: 'FSHD的遗传方式是什么？',
-      answer: 'FSHD主要有两种遗传方式：\n\n1. FSHD1型（占95%）：常染色体显性遗传，由4号染色体长臂（4q35）上的D4Z4重复序列缺失引起\n2. FSHD2型（占5%）：常染色体显性遗传，由SMCHD1基因突变引起\n\n患者子女有50%的概率遗传该疾病，但临床表现可能存在差异。建议进行遗传咨询和基因检测。'
+      answer:
+        'FSHD主要有两种遗传方式：\n\n1. FSHD1型（占95%）：常染色体显性遗传，由4号染色体长臂（4q35）上的D4Z4重复序列缺失引起\n2. FSHD2型（占5%）：常染色体显性遗传，由SMCHD1基因突变引起\n\n患者子女有50%的概率遗传该疾病，但临床表现可能存在差异。建议进行遗传咨询和基因检测。',
     },
     {
       id: '3',
       question: 'FSHD患者可以参加哪些运动？',
-      answer: 'FSHD患者适合的运动包括：\n\n✅ 推荐：游泳、水中运动、太极拳、瑜伽、散步\n⚠️ 谨慎：慢跑、骑自行车（需注意安全）\n❌ 避免：高强度力量训练、剧烈运动、举重\n\n运动时应注意：\n• 避免过度疲劳和肌肉疼痛\n• 运动前后充分热身和拉伸\n• 如有不适立即停止\n• 最好在专业指导下进行'
-    }
+      answer:
+        'FSHD患者适合的运动包括：\n\n✅ 推荐：游泳、水中运动、太极拳、瑜伽、散步\n⚠️ 谨慎：慢跑、骑自行车（需注意安全）\n❌ 避免：高强度力量训练、剧烈运动、举重\n\n运动时应注意：\n• 避免过度疲劳和肌肉疼痛\n• 运动前后充分热身和拉伸\n• 如有不适立即停止\n• 最好在专业指导下进行',
+    },
   ];
 
   const knowledgeCategories: KnowledgeCategory[] = [
@@ -74,29 +122,29 @@ const P_QNA = () => {
       title: '分型鉴别',
       description: 'FSHD1型与2型的区别',
       icon: 'dna',
-      color: '#969FFF'
+      color: '#969FFF',
     },
     {
       id: '2',
       title: '症状管理',
       description: '肌肉无力、疼痛处理',
       icon: 'stethoscope',
-      color: '#5147FF'
+      color: '#5147FF',
     },
     {
       id: '3',
       title: '遗传咨询',
       description: '家族遗传风险评估',
       icon: 'users',
-      color: '#3E3987'
+      color: '#3E3987',
     },
     {
       id: '4',
       title: '用药指导',
       description: '药物使用注意事项',
       icon: 'pills',
-      color: '#10B981'
-    }
+      color: '#10B981',
+    },
   ];
 
   const localResources: LocalResource[] = [
@@ -108,7 +156,7 @@ const P_QNA = () => {
       rating: '⭐ 4.8',
       type: '三甲医院',
       icon: 'hospital',
-      color: '#969FFF'
+      color: '#969FFF',
     },
     {
       id: '2',
@@ -118,8 +166,8 @@ const P_QNA = () => {
       rating: '⭐ 4.6',
       type: '医保定点',
       icon: 'heartbeat',
-      color: '#5147FF'
-    }
+      color: '#5147FF',
+    },
   ];
 
   const clinicalPathways: ClinicalPathway[] = [
@@ -128,39 +176,112 @@ const P_QNA = () => {
       title: '初诊检查流程',
       description: '标准化诊断检查项目',
       icon: 'clipboard-list',
-      color: '#3B82F6'
+      color: '#3B82F6',
     },
     {
       id: '2',
       title: '随访管理计划',
       description: '定期复查与评估安排',
       icon: 'calendar-check',
-      color: '#8B5CF6'
+      color: '#8B5CF6',
     },
     {
       id: '3',
       title: '康复治疗指南',
       description: '个性化康复训练方案',
       icon: 'dumbbell',
-      color: '#F97316'
-    }
+      color: '#F97316',
+    },
   ];
 
   const handleSearchPress = async () => {
     if (!searchQuery.trim()) return;
+    if (!token) {
+      Alert.alert('请先登录', '登录后才能使用智能问答功能。');
+      return;
+    }
 
     setIsSearchLoading(true);
-    
-    // 模拟API调用
-    setTimeout(() => {
-      setIsSearchLoading(false);
+    setShowSearchResult(false);
+    setSearchResultAnswer('');
+
+    const progressId = createProgressId();
+    setAskProgress({
+      progressId,
+      status: 'running',
+      percent: 5,
+      stageId: 'received',
+      stages: defaultProgressStages.map((stage) =>
+        stage.id === 'received' ? { ...stage, status: 'active' } : stage,
+      ),
+    });
+
+    const pollProgress = async () => {
+      try {
+        const response = await getAiAskProgress(progressId);
+        setAskProgress(response.data);
+      } catch {
+        // ignore progress polling failures
+      }
+    };
+
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+    }
+    await initAiAskProgress(progressId);
+    progressTimerRef.current = setInterval(pollProgress, 1200);
+    pollProgress();
+
+    try {
+      const response = await askAiQuestion(searchQuery, { language: 'zh' }, progressId);
       setShowSearchResult(true);
-      setSearchResultAnswer(`感谢您的问题："${searchQuery}"\n\n这是一个很好的问题。根据FSHD专业知识库，建议您：\n1. 咨询专业医生获取个性化建议\n2. 参考相关的临床路径和指南\n3. 可以在患者社区中寻求其他患者的经验分享`);
-      
-      // 清空搜索框并失去焦点
+      setSearchResultAnswer(response.data.answer);
       setSearchQuery('');
       searchInputRef.current?.blur();
-    }, 1500);
+      setTimeout(() => {
+        setAskProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'done',
+                percent: 100,
+                stages: prev.stages.map((stage) =>
+                  stage.id === 'done' ? { ...stage, status: 'done' } : stage,
+                ),
+              }
+            : prev,
+        );
+      }, 0);
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? (error.data as { message?: string; error?: string })?.message ||
+            (error.data as { message?: string; error?: string })?.error ||
+            error.message
+          : '暂时无法获取回答，请稍后再试。';
+      const friendlyMessage = message.includes('知识库服务不可用')
+        ? '知识库服务未启动，请联系管理员或稍后再试。'
+        : message;
+      Alert.alert('智能问答失败', friendlyMessage);
+      setAskProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'error',
+              stages: prev.stages.map((stage) =>
+                stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+              ),
+              error: friendlyMessage,
+            }
+          : prev,
+      );
+    } finally {
+      setIsSearchLoading(false);
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    }
   };
 
   const handleQuestionToggle = (questionId: string) => {
@@ -203,6 +324,55 @@ const P_QNA = () => {
     );
   };
 
+  const renderProgress = () => {
+    if (!askProgress) return null;
+
+    const stages = askProgress.stages.length ? askProgress.stages : defaultProgressStages;
+    const percent = Math.min(100, Math.max(0, askProgress.percent));
+    const statusText =
+      askProgress.status === 'error'
+        ? '连接中断，正在重试'
+        : askProgress.status === 'done'
+          ? '已完成'
+          : '处理中';
+
+    return (
+      <View style={styles.progressContainer}>
+        <View style={styles.progressHeader}>
+          <Text style={styles.progressTitle}>回答进度</Text>
+          <Text style={styles.progressStatus}>{statusText}</Text>
+        </View>
+        <View style={styles.progressBar}>
+          <View style={[styles.progressFill, { width: `${percent}%` }]} />
+        </View>
+        <View style={styles.progressStages}>
+          {stages.map((stage) => (
+            <View key={stage.id} style={styles.progressStageItem}>
+              <View
+                style={[
+                  styles.progressStageDot,
+                  stage.status === 'done' && styles.progressStageDotDone,
+                  stage.status === 'active' && styles.progressStageDotActive,
+                  stage.status === 'error' && styles.progressStageDotError,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.progressStageText,
+                  stage.status === 'done' && styles.progressStageTextDone,
+                  stage.status === 'active' && styles.progressStageTextActive,
+                  stage.status === 'error' && styles.progressStageTextError,
+                ]}
+              >
+                {stage.label}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
   const renderHotQuestions = () => (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>热门问题</Text>
@@ -222,7 +392,7 @@ const P_QNA = () => {
                 color="rgba(255, 255, 255, 0.5)"
                 style={[
                   styles.chevronIcon,
-                  expandedQuestionId === item.id && styles.chevronIconExpanded
+                  expandedQuestionId === item.id && styles.chevronIconExpanded,
                 ]}
               />
             </View>
@@ -363,6 +533,8 @@ const P_QNA = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {renderProgress()}
+
           {/* 搜索结果 */}
           {renderSearchResult()}
 
@@ -384,4 +556,3 @@ const P_QNA = () => {
 };
 
 export default P_QNA;
-

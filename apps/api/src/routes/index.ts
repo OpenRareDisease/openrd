@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Express, Request, Response } from 'express';
-import { aiChatRoutes } from './ai-chat.routes.js';
+import { createAiChatRoutes } from './ai-chat.routes.js';
 import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
@@ -30,7 +30,7 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
   );
 
   apiRouter.use('/auth', createAuthRouter(context));
-  apiRouter.use('/ai', aiChatRoutes);
+  apiRouter.use('/ai', createAiChatRoutes(context));
   apiRouter.use('/profiles', createPatientProfileRouter(context));
 
   app.use('/api', apiRouter);

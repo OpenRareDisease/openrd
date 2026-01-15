@@ -116,6 +116,56 @@ export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
 
+export interface AiAskResponse {
+  success: boolean;
+  data: {
+    question: string;
+    answer: string;
+    timestamp: string;
+    progressId?: string;
+  };
+}
+
+export interface AiAskProgressStage {
+  id: string;
+  label: string;
+  status: 'pending' | 'active' | 'done' | 'error';
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export interface AiAskProgressResponse {
+  success: boolean;
+  data: {
+    progressId: string;
+    status: 'running' | 'done' | 'error';
+    percent: number;
+    stageId: string;
+    stages: AiAskProgressStage[];
+    error?: string;
+    updatedAt: string;
+  };
+}
+
+export const askAiQuestion = (
+  question: string,
+  userContext?: Record<string, unknown>,
+  progressId?: string,
+) =>
+  apiRequest<AiAskResponse>('/ai/ask', {
+    method: 'POST',
+    body: JSON.stringify({ question, userContext, progressId }),
+  });
+
+export const getAiAskProgress = (progressId: string) =>
+  apiRequest<AiAskProgressResponse>(`/ai/ask/progress/${encodeURIComponent(progressId)}`);
+
+export const initAiAskProgress = (progressId: string) =>
+  apiRequest<{ success: boolean; data: { progressId: string } }>('/ai/ask/progress/init', {
+    method: 'POST',
+    body: JSON.stringify({ progressId }),
+  });
+
 export const createSubmission = () =>
   apiRequest<{ id: string; createdAt: string }>('/profiles/me/submissions', {
     method: 'POST',

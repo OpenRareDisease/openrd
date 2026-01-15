@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -104,6 +102,73 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.7)',
     lineHeight: 18,
+  },
+  progressContainer: {
+    paddingHorizontal: 24,
+    marginBottom: 12,
+  },
+  progressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  progressTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  progressStatus: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  progressBar: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
+    marginBottom: 10,
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#969FFF',
+  },
+  progressStages: {
+    gap: 6,
+  },
+  progressStageItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  progressStageDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  progressStageDotActive: {
+    backgroundColor: '#969FFF',
+  },
+  progressStageDotDone: {
+    backgroundColor: '#10B981',
+  },
+  progressStageDotError: {
+    backgroundColor: '#F97316',
+  },
+  progressStageText: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  progressStageTextActive: {
+    color: '#FFFFFF',
+  },
+  progressStageTextDone: {
+    color: 'rgba(255, 255, 255, 0.85)',
+  },
+  progressStageTextError: {
+    color: '#FCA5A5',
   },
   section: {
     paddingHorizontal: 24,
@@ -331,4 +396,3 @@ export default StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.5)',
   },
 });
-

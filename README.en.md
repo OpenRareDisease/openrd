@@ -12,13 +12,13 @@ The project empowers patients and caregivers with data-driven insights, AI-assis
 
 ## 🛠 Tech Stack
 
-| Layer | Technology | Notes |
-| --- | --- | --- |
-| Mobile | Expo (React Native + TypeScript) | Shared codebase targeting iOS, Android, and Web |
-| Backend API | Express + TypeScript | REST API surface for authentication, archives, Q&A, etc. |
-| Database | PostgreSQL | Primary data store for transactional data |
-| Code Quality | ESLint + Prettier + Husky | Consistent style enforcement and git hooks |
-| Logging | pino + pino-http | Structured logging for observability |
+| Layer        | Technology                       | Notes                                                    |
+| ------------ | -------------------------------- | -------------------------------------------------------- |
+| Mobile       | Expo (React Native + TypeScript) | Shared codebase targeting iOS, Android, and Web          |
+| Backend API  | Express + TypeScript             | REST API surface for authentication, archives, Q&A, etc. |
+| Database     | PostgreSQL                       | Primary data store for transactional data                |
+| Code Quality | ESLint + Prettier + Husky        | Consistent style enforcement and git hooks               |
+| Logging      | pino + pino-http                 | Structured logging for observability                     |
 
 ## 📁 Repository Layout
 
@@ -50,6 +50,7 @@ openrd/
 - npm ≥ 10
 - PostgreSQL ≥ 14
 - Optional: Expo Go for device testing
+- Optional: Python ≥ 3.10 (knowledge service)
 
 ### 2. Installation
 
@@ -60,6 +61,17 @@ cp .env.example .env      # adjust for your environment
 npm install               # installs workspace dependencies & sets up Husky
 ```
 
+If you want to run the Python knowledge service:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+The knowledge service depends on Chroma Cloud. Make sure `.env` includes
+`CHROMA_API_KEY` and `CHROMA_TENANT_ID`.
+
 To bootstrap the database schema:
 
 ```bash
@@ -68,12 +80,13 @@ psql -U postgres -f db/init_db.sql
 
 ### 3. Development commands
 
-| Module | Command | Description |
-| --- | --- | --- |
-| Backend API | `npm run dev:api` | Starts the API server on `http://localhost:4000` |
-| Mobile app | `npm run dev:mobile` | Launches the Expo developer tools |
-| Lint | `npm run lint` | Runs ESLint for all workspaces |
-| Test | `npm run test` | Executes workspace test suites |
+| Module            | Command                                | Description                                           |
+| ----------------- | -------------------------------------- | ----------------------------------------------------- |
+| Backend API       | `npm run dev:api`                      | Starts the API server on `http://localhost:4000`      |
+| Mobile app        | `npm run dev:mobile`                   | Launches the Expo developer tools                     |
+| Knowledge service | `python apps/api/knowledge_service.py` | Starts the local KB service (`http://127.0.0.1:5010`) |
+| Lint              | `npm run lint`                         | Runs ESLint for all workspaces                        |
+| Test              | `npm run test`                         | Executes workspace test suites                        |
 
 ## 🔐 Backend capabilities
 
@@ -101,6 +114,8 @@ See [`docs/WORKFLOW.md`](./docs/WORKFLOW.md) for the extended collaboration guid
 - [System Architecture](./FSHD-openrd-系统架构设计文档.md)
 - [Product Requirements](./prd-v2.md)
 - [Database Bootstrap](./db/init_db.sql)
+- [AI Q&A Service](./docs/ai-chat.md)
+- [Release Checklist](./docs/release-checklist.md)
 
 ## 💬 Support
 
