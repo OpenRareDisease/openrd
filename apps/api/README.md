@@ -26,7 +26,10 @@ npm run test         # placeholder for Vitest suites
 ## Environment variables
 
 Copy the repository `.env.example` to `.env` and adjust as needed. Key variables include database connection, JWT secret, and log level.
-For Baidu OCR integration, set `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` (and optional endpoint overrides).
+For OCR integration, you can either:
+
+- Use Report Manager 002 by setting `REPORT_MANAGER_OCR_URL` (and optional `REPORT_MANAGER_OCR_API_KEY`).
+- Or use Baidu OCR by setting `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` (and optional endpoint overrides).
 
 ## Folder layout
 

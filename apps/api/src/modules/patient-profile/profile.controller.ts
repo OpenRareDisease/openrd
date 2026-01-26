@@ -92,6 +92,9 @@ export class PatientProfileController {
         buffer: file.buffer,
         mimeType: file.mimetype ?? null,
         documentType: payload.documentType,
+        userId: req.user.id,
+        fileName: file.originalname ?? undefined,
+        reportName: payload.title ?? file.originalname ?? undefined,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'OCR failed';

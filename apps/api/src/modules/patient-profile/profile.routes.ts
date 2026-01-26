@@ -7,6 +7,7 @@ import { requireAuth } from '../../middleware/require-auth';
 import type { RouteContext } from '../../routes';
 import { BaiduOcrProvider } from '../../services/ocr/baidu-ocr.js';
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
+import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import { LocalStorageProvider } from '../../services/storage/local-storage.js';
 import { asyncHandler } from '../../utils/async-handler';
 
@@ -17,8 +18,13 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     logger: context.logger,
   });
   const storage = new LocalStorageProvider();
-  const ocr =
-    context.env.BAIDU_OCR_API_KEY && context.env.BAIDU_OCR_SECRET_KEY
+  const ocr = context.env.REPORT_MANAGER_OCR_URL
+    ? new ReportManagerOcrProvider({
+        endpoint: context.env.REPORT_MANAGER_OCR_URL,
+        apiKey: context.env.REPORT_MANAGER_OCR_API_KEY,
+        defaultUserId: context.env.REPORT_MANAGER_OCR_USER_ID,
+      })
+    : context.env.BAIDU_OCR_API_KEY && context.env.BAIDU_OCR_SECRET_KEY
       ? new BaiduOcrProvider({
           apiKey: context.env.BAIDU_OCR_API_KEY,
           secretKey: context.env.BAIDU_OCR_SECRET_KEY,

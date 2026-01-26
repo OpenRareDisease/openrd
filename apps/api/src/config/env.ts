@@ -24,11 +24,39 @@ const envSchema = z
     AI_API_MODEL: z.string().default('deepseek-ai/DeepSeek-V3'),
     AI_API_TIMEOUT: z.coerce.number().int().positive().default(30000),
 
-    BAIDU_OCR_API_KEY: z.string().min(1).optional(),
-    BAIDU_OCR_SECRET_KEY: z.string().min(1).optional(),
-    BAIDU_OCR_GENERAL_ENDPOINT: z.string().optional(),
-    BAIDU_OCR_ACCURATE_ENDPOINT: z.string().optional(),
-    BAIDU_OCR_MEDICAL_ENDPOINT: z.string().optional(),
+    BAIDU_OCR_API_KEY: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    BAIDU_OCR_SECRET_KEY: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    BAIDU_OCR_GENERAL_ENDPOINT: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().optional(),
+    ),
+    BAIDU_OCR_ACCURATE_ENDPOINT: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().optional(),
+    ),
+    BAIDU_OCR_MEDICAL_ENDPOINT: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().optional(),
+    ),
+
+    REPORT_MANAGER_OCR_URL: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().url().optional(),
+    ),
+    REPORT_MANAGER_OCR_API_KEY: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.string().min(1).optional(),
+    ),
+    REPORT_MANAGER_OCR_USER_ID: z.preprocess(
+      (value) => (value === '' ? undefined : value),
+      z.coerce.number().int().positive().optional(),
+    ),
 
     CHROMA_API_KEY: z.string().min(1).optional(),
     CHROMA_TENANT_ID: z.string().min(1).optional(),
