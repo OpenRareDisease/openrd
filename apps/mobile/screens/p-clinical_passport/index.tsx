@@ -6,6 +6,7 @@ import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
 import { ApiError, getMyPatientProfile } from '../../lib/api';
+import { buildReportInsights } from '../../lib/report-insights';
 
 const ClinicalPassportScreen = () => {
   const router = useRouter();
@@ -84,6 +85,11 @@ const ClinicalPassportScreen = () => {
     );
   }, [profile]);
 
+  const reportInsights = useMemo(
+    () => buildReportInsights(profile?.documents ?? [], profile),
+    [profile],
+  );
+
   const passportId = useMemo(() => {
     if (!profile?.id) return 'FSHD-UNASSIGNED';
     const compact = profile.id.replace(/-/g, '').slice(0, 10).toUpperCase();
@@ -129,19 +135,19 @@ const ClinicalPassportScreen = () => {
     <View style={styles.geneticContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>基因类型</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.geneticType}</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>D4Z4重复数</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.d4z4Repeats}</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>甲基化值</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.methylationValue}</Text>
       </View>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>诊断日期</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.diagnosisDate}</Text>
       </View>
     </View>
   );
@@ -151,9 +157,9 @@ const ClinicalPassportScreen = () => {
       <View style={styles.strengthItem}>
         <View style={styles.strengthItemHeader}>
           <Text style={styles.strengthDate}>最近记录</Text>
-          <Text style={styles.strengthAverage}>平均分: —</Text>
+          <Text style={styles.strengthAverage}>平均分: {reportInsights.strengthAverage}</Text>
         </View>
-        <Text style={styles.strengthDetails}>暂无可用的肌力评估摘要</Text>
+        <Text style={styles.strengthDetails}>{reportInsights.strengthSummary}</Text>
       </View>
     </View>
   );
@@ -162,9 +168,9 @@ const ClinicalPassportScreen = () => {
     <View style={styles.mriContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>最近MRI</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.latestMriDate}</Text>
       </View>
-      <Text style={styles.strengthDetails}>暂无MRI分析数据</Text>
+      <Text style={styles.strengthDetails}>{reportInsights.mriSummary}</Text>
     </View>
   );
 
@@ -172,9 +178,9 @@ const ClinicalPassportScreen = () => {
     <View style={styles.bloodContent}>
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>最近血检</Text>
-        <Text style={styles.infoValue}>—</Text>
+        <Text style={styles.infoValue}>{reportInsights.latestBloodDate}</Text>
       </View>
-      <Text style={styles.strengthDetails}>暂无血检摘要</Text>
+      <Text style={styles.strengthDetails}>{reportInsights.bloodSummary}</Text>
     </View>
   );
 
