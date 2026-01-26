@@ -23,6 +23,7 @@ import {
   type MuscleInsight,
   type SubmissionItem,
 } from '../../lib/api';
+import { buildReportInsights, buildStrengthSummary } from '../../lib/report-insights';
 
 interface AlertItem {
   id: string;
@@ -247,6 +248,11 @@ const ArchiveScreen = () => {
       value: Number(latestByGroup.get(group)?.strengthScore ?? 0),
     }));
   }, [profile, MUSCLE_LABELS]);
+
+  const reportInsights = useMemo(
+    () => buildReportInsights(profile?.documents ?? [], profile),
+    [profile],
+  );
 
   const formatTrendLabel = (value: string) => {
     const date = new Date(value);
@@ -473,6 +479,46 @@ const ArchiveScreen = () => {
     const medicationCount = item.medications.length;
     const documentCount = item.documents.length;
 
+    const pickOcrField = (fields: Record<string, string> | undefined, keys: string[]) => {
+      if (!fields) return undefined;
+      for (const key of keys) {
+        const value = fields[key];
+        if (value === null || value === undefined) continue;
+        const text = String(value).trim();
+        if (text) return text;
+      }
+      return undefined;
+    };
+
+    const buildDocumentLines = (doc: SubmissionItem['documents'][number]) => {
+      const fields = doc.ocrPayload?.fields ?? undefined;
+      const lines: string[] = [];
+      const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
+      const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
+      const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
+      const liverFunction = pickOcrField(fields, ['liverFunction', 'liver_function']);
+      const creatineKinase = pickOcrField(fields, ['creatineKinase', 'creatine_kinase']);
+      if (d4z4Repeats) lines.push(`D4Z4重复数 ${d4z4Repeats}`);
+      if (methylation) lines.push(`甲基化值 ${methylation}`);
+      if (serratus) lines.push(`前锯肌脂肪化等级 ${serratus}`);
+      if (liverFunction) lines.push(`肝功能 ${liverFunction}`);
+      if (creatineKinase) lines.push(`肌酸激酶 ${creatineKinase}`);
+      const strengthSummary = buildStrengthSummary(fields).summary;
+      if (strengthSummary) lines.push(`肌力评估 ${strengthSummary}`);
+      const hint = fields?.hint;
+      if (lines.length === 0 && hint) {
+        lines.push(hint);
+      }
+      const extracted = doc.ocrPayload?.extractedText;
+      if (extracted && lines.length === 0) {
+        lines.push(`OCR：${extracted}`);
+      }
+      if (lines.length === 0 && doc.ocrPayload?.error) {
+        lines.push(`解析失败：${doc.ocrPayload.error}`);
+      }
+      return lines;
+    };
+
     return (
       <View key={item.id} style={styles.submissionCard}>
         <TouchableOpacity
@@ -503,10 +549,17 @@ const ArchiveScreen = () => {
               <View style={styles.detailSection}>
                 <Text style={styles.detailTitle}>医疗报告</Text>
                 {item.documents.map((doc) => (
-                  <Text key={doc.id} style={styles.detailItem}>
-                    {mapDocumentTypeLabel(doc.documentType)} ·{' '}
-                    {doc.fileName ?? doc.title ?? '已上传'}
-                  </Text>
+                  <View key={doc.id} style={{ marginBottom: 6 }}>
+                    <Text style={styles.detailItem}>
+                      {mapDocumentTypeLabel(doc.documentType)} ·{' '}
+                      {doc.fileName ?? doc.title ?? '已上传'}
+                    </Text>
+                    {buildDocumentLines(doc).map((line, index) => (
+                      <Text key={`${doc.id}-${index}`} style={styles.detailItem}>
+                        {line}
+                      </Text>
+                    ))}
+                  </View>
                 ))}
               </View>
             )}
@@ -851,19 +904,19 @@ const ArchiveScreen = () => {
                 <View style={styles.passportGrid}>
                   <View style={styles.passportItem}>
                     <Text style={styles.passportLabel}>基因类型</Text>
-                    <Text style={styles.passportValue}>—</Text>
+                    <Text style={styles.passportValue}>{reportInsights.geneticType}</Text>
                   </View>
                   <View style={styles.passportItem}>
                     <Text style={styles.passportLabel}>D4Z4重复数</Text>
-                    <Text style={styles.passportValue}>—</Text>
+                    <Text style={styles.passportValue}>{reportInsights.d4z4Repeats}</Text>
                   </View>
                   <View style={styles.passportItem}>
                     <Text style={styles.passportLabel}>甲基化值</Text>
-                    <Text style={styles.passportValue}>—</Text>
+                    <Text style={styles.passportValue}>{reportInsights.methylationValue}</Text>
                   </View>
                   <View style={styles.passportItem}>
                     <Text style={styles.passportLabel}>初诊时间</Text>
-                    <Text style={styles.passportValue}>—</Text>
+                    <Text style={styles.passportValue}>{reportInsights.diagnosisDate}</Text>
                   </View>
                 </View>
               ) : (

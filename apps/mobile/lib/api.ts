@@ -199,6 +199,10 @@ export interface SubmissionItem {
     title: string | null;
     fileName: string | null;
     uploadedAt: string;
+    ocrPayload?: {
+      extractedText?: string;
+      fields?: Record<string, string>;
+    } | null;
   }>;
 }
 
