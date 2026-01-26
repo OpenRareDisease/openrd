@@ -12,6 +12,9 @@ export class MockOcrProvider implements OcrProvider {
     buffer: Buffer;
     mimeType: string | null;
     documentType: string;
+    userId?: string | number;
+    fileName?: string;
+    reportName?: string;
   }): Promise<OcrResult> {
     const summary = summaries[input.documentType] ?? summaries.other;
     return {

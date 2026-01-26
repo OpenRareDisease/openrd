@@ -88,6 +88,9 @@ export class BaiduOcrProvider implements OcrProvider {
     buffer: Buffer;
     mimeType: string | null;
     documentType: string;
+    userId?: string | number;
+    fileName?: string;
+    reportName?: string;
   }): Promise<OcrResult> {
     const token = await this.getAccessToken();
     const endpoint = pickEndpoint(input.documentType, this.config);
