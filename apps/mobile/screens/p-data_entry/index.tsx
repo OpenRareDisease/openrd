@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import Slider from '@react-native-community/slider';
 import {
   ApiError,
@@ -344,21 +345,15 @@ const DataEntryScreen = () => {
 
   const handleFileUpload = async (type: ReportType) => {
     try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('权限不足', '需要访问相册权限才能上传文件');
-        return;
-      }
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '上传中...',
       }));
       await ensureProfileExists();
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 1,
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        multiple: false,
+        copyToCacheDirectory: true,
       });
       if (result.canceled) {
         setUploadStatus((prev) => ({
@@ -371,7 +366,18 @@ const DataEntryScreen = () => {
       if (!asset?.uri) {
         throw new Error('无法读取文件');
       }
-      const fileName = asset.fileName ?? `report-${type}-${Date.now()}`;
+      if (
+        asset.mimeType &&
+        !asset.mimeType.startsWith('application/pdf') &&
+        !asset.mimeType.startsWith('image/')
+      ) {
+        throw new Error('仅支持上传PDF或图片文件');
+      }
+      const guessExt = asset.mimeType?.startsWith('image/')
+        ? asset.mimeType.split('/')[1] || 'jpg'
+        : 'pdf';
+      const baseName = asset.fileName ?? `report-${type}-${Date.now()}`;
+      const fileName = baseName.includes('.') ? baseName : `${baseName}.${guessExt}`;
       const uploadFile =
         Platform.OS === 'web'
           ? await (async () => {
