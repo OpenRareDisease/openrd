@@ -523,6 +523,9 @@ export default StyleSheet.create({
   timelineTagActivity: {
     backgroundColor: 'rgba(59, 130, 246, 0.2)',
   },
+  timelineTagMedication: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+  },
   timelineDescription: {
     fontSize: 12,
     color: '#D1D5DB',

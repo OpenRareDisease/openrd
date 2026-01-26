@@ -50,6 +50,11 @@ interface ReportHistoryItem {
   timestamp: string;
   fileName?: string;
   ocrSummary?: string;
+  ocrPayload?: {
+    extractedText?: string;
+    fields?: Record<string, string>;
+    error?: string;
+  } | null;
 }
 
 interface TimelineEvent {
@@ -57,7 +62,7 @@ interface TimelineEvent {
   title: string;
   description: string;
   timestamp: string;
-  tag: '报告' | '肌力' | '活动';
+  tag: '报告' | '肌力' | '活动' | '用药';
 }
 
 const reportLabels: Record<ReportType, string> = {
@@ -83,8 +88,6 @@ const DataEntryScreen = () => {
   });
 
   const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([]);
-
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
   const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
     group: null,
@@ -195,6 +198,42 @@ const DataEntryScreen = () => {
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   };
 
+  const pickOcrField = (fields: Record<string, string> | undefined, keys: string[]) => {
+    if (!fields) return undefined;
+    for (const key of keys) {
+      const value = fields[key];
+      if (value === null || value === undefined) continue;
+      const text = String(value).trim();
+      if (text) return text;
+    }
+    return undefined;
+  };
+
+  const buildReportSummary = (item: ReportHistoryItem) => {
+    const fields = item.ocrPayload?.fields;
+    const parts: string[] = [];
+    const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
+    const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
+    const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
+    const liverFunction = pickOcrField(fields, ['liverFunction', 'liver_function']);
+    const creatineKinase = pickOcrField(fields, ['creatineKinase', 'creatine_kinase']);
+    if (d4z4Repeats) parts.push(`D4Z4重复数 ${d4z4Repeats}`);
+    if (methylation) parts.push(`甲基化值 ${methylation}`);
+    if (serratus) parts.push(`前锯肌脂肪化等级 ${serratus}`);
+    if (liverFunction) parts.push(`肝功能 ${liverFunction}`);
+    if (creatineKinase) parts.push(`肌酸激酶 ${creatineKinase}`);
+    if (parts.length === 0) {
+      if (item.ocrPayload?.error) {
+        parts.push(`解析失败：${item.ocrPayload.error}`);
+        return parts.join('，');
+      }
+      const summary =
+        item.ocrSummary ?? item.ocrPayload?.extractedText ?? item.fileName ?? '已上传';
+      parts.push(summary);
+    }
+    return parts.join('，');
+  };
+
   const mapDocumentTypeToReportType = (documentType?: string): ReportType | null => {
     switch (documentType) {
       case 'mri':
@@ -222,90 +261,10 @@ const DataEntryScreen = () => {
     return map;
   };
 
-  const buildReportHistoryFromProfile = (profile: any) => {
-    if (!profile?.documents?.length) {
-      return [];
-    }
-    return profile.documents
-      .map((doc: any) => {
-        const type = mapDocumentTypeToReportType(doc.documentType);
-        if (!type) return null;
-        const timestamp = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
-        return {
-          id: doc.id,
-          type,
-          source: '上传' as const,
-          timestamp: formatTimestamp(timestamp),
-          fileName: doc.fileName ?? doc.title ?? undefined,
-          ocrSummary: doc.ocrPayload?.extractedText ?? doc.ocrPayload?.fields?.hint ?? undefined,
-        };
-      })
-      .filter(Boolean)
-      .sort(
-        (a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-      ) as ReportHistoryItem[];
-  };
-
-  const buildTimelineFromProfile = (profile: any) => {
-    const events: Array<{ event: TimelineEvent; sortKey: number }> = [];
-
-    profile?.documents?.forEach((doc: any) => {
-      const type = mapDocumentTypeToReportType(doc.documentType);
-      if (!type) return;
-      const time = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `doc-${doc.id}`,
-          title: `${reportLabels[type]}已上传`,
-          description:
-            doc.ocrPayload?.extractedText ??
-            doc.ocrPayload?.fields?.hint ??
-            doc.fileName ??
-            '已上传',
-          timestamp: formatTimestamp(time),
-          tag: '报告',
-        },
-      });
-    });
-
-    profile?.measurements?.forEach((item: any) => {
-      const time = item.recordedAt ? new Date(item.recordedAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `measurement-${item.id}`,
-          title: `${getMuscleGroupName(item.muscleGroup)}肌力更新`,
-          description: `肌力 ${Number(item.strengthScore)} 级`,
-          timestamp: formatTimestamp(time),
-          tag: '肌力',
-        },
-      });
-    });
-
-    profile?.activityLogs?.forEach((item: any) => {
-      const time = item.createdAt ? new Date(item.createdAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `activity-${item.id}`,
-          title: '日常活动记录',
-          description: item.content ?? '已记录活动',
-          timestamp: formatTimestamp(time),
-          tag: '活动',
-        },
-      });
-    });
-
-    return events.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
-  };
-
   const loadProfile = async () => {
     try {
       const [data, meds] = await Promise.all([getMyPatientProfile(), getMedications()]);
       setMuscleStrengthMap(buildStrengthMapFromProfile(data));
-      setReportHistory(buildReportHistoryFromProfile(data));
-      setTimelineEvents(buildTimelineFromProfile(data));
       setMedications(meds ?? []);
 
       const existingTypes = new Set(
@@ -322,7 +281,6 @@ const DataEntryScreen = () => {
       }
       setMuscleStrengthMap({});
       setReportHistory([]);
-      setTimelineEvents([]);
       setMedications([]);
     }
   };
@@ -401,7 +359,10 @@ const DataEntryScreen = () => {
         setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
       }
       const ocrSummary =
-        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
+        response?.ocrPayload?.extractedText ??
+        response?.ocrPayload?.fields?.hint ??
+        response?.ocrPayload?.error ??
+        'OCR解析完成';
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '已上传',
@@ -409,8 +370,9 @@ const DataEntryScreen = () => {
       setReportHistory((prev) =>
         [
           {
-            id: `report-${Date.now()}`,
+            id: response?.id ?? `report-${Date.now()}`,
             type,
+            ocrPayload: response?.ocrPayload ?? null,
             source: '相册',
             timestamp: formatTimestamp(new Date()),
             fileName,
@@ -486,7 +448,10 @@ const DataEntryScreen = () => {
         setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
       }
       const ocrSummary =
-        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
+        response?.ocrPayload?.extractedText ??
+        response?.ocrPayload?.fields?.hint ??
+        response?.ocrPayload?.error ??
+        'OCR解析完成';
       setUploadStatus((prev) => ({
         ...prev,
         [type]: '已上传',
@@ -494,8 +459,9 @@ const DataEntryScreen = () => {
       setReportHistory((prev) =>
         [
           {
-            id: `report-${Date.now()}`,
+            id: response?.id ?? `report-${Date.now()}`,
             type,
+            ocrPayload: response?.ocrPayload ?? null,
             source: '相机',
             timestamp: formatTimestamp(new Date()),
             fileName,
@@ -631,6 +597,84 @@ const DataEntryScreen = () => {
 
   const getMuscleGroupName = (group: string | null): string => {
     if (!group) return '请选择肌群';
+    const sessionTimeline = React.useMemo(() => {
+      const now = formatTimestamp(new Date());
+      const items: Array<{ event: TimelineEvent; sortKey: number }> = [];
+
+      reportHistory.forEach((item) => {
+        const time = new Date(item.timestamp);
+        items.push({
+          sortKey: time.getTime(),
+          event: {
+            id: `report-${item.id}`,
+            title: `${reportLabels[item.type]}已上传`,
+            description: buildReportSummary(item),
+            timestamp: item.timestamp,
+            tag: '报告',
+          },
+        });
+      });
+
+      Object.entries(muscleStrengthMap).forEach(([group, value]) => {
+        if (value <= 0) return;
+        items.push({
+          sortKey: Date.now(),
+          event: {
+            id: `strength-${group}`,
+            title: `${getMuscleGroupName(group)}肌力记录`,
+            description: `肌力 ${value} 级`,
+            timestamp: now,
+            tag: '肌力',
+          },
+        });
+      });
+
+      if (timerSeconds > 0) {
+        items.push({
+          sortKey: Date.now(),
+          event: {
+            id: 'activity-stair-test',
+            title: '楼梯测试',
+            description: `用时 ${formatTime(timerSeconds)}`,
+            timestamp: now,
+            tag: '活动',
+          },
+        });
+      }
+
+      if (activityText.trim()) {
+        items.push({
+          sortKey: Date.now(),
+          event: {
+            id: 'activity-manual',
+            title: '日常活动记录',
+            description: activityText.trim(),
+            timestamp: now,
+            tag: '活动',
+          },
+        });
+      }
+
+      if (medicationForm.medicationName.trim()) {
+        const meta = [medicationForm.dosage, medicationForm.frequency, medicationForm.route]
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .join(' · ');
+        items.push({
+          sortKey: Date.now(),
+          event: {
+            id: 'medication-entry',
+            title: `用药记录：${medicationForm.medicationName.trim()}`,
+            description: meta || '已记录用药',
+            timestamp: now,
+            tag: '用药',
+          },
+        });
+      }
+
+      return items.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
+    }, [activityText, medicationForm, muscleStrengthMap, reportHistory, timerSeconds]);
+
     const muscleGroup = muscleGroups.find((mg) => mg.id === group);
     return muscleGroup ? muscleGroup.name : '请选择肌群';
   };
@@ -762,26 +806,39 @@ const DataEntryScreen = () => {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>报告上传历史</Text>
-          {reportHistory.length === 0 ? (
-            <View style={styles.historyCard}>
-              <Text style={styles.historyMeta}>暂无报告记录，上传后会展示在此处。</Text>
-            </View>
-          ) : (
-            reportHistory.map((item) => (
-              <View key={item.id} style={styles.historyCard}>
-                <View style={styles.historyHeader}>
-                  <Text style={styles.historyTitle}>{reportLabels[item.type]}</Text>
-                  <Text style={[styles.historyStatus, { color: '#10B981' }]}>已保存</Text>
+          <Text style={styles.sectionTitle}>本次录入记录</Text>
+          <View style={styles.timelineCard}>
+            {sessionTimeline.length === 0 ? (
+              <Text style={{ color: '#9CA3AF' }}>暂无记录，添加内容后会汇总在这里。</Text>
+            ) : (
+              sessionTimeline.map((event, index) => (
+                <View
+                  key={event.id}
+                  style={[
+                    styles.timelineItem,
+                    index === sessionTimeline.length - 1 && styles.timelineItemLast,
+                  ]}
+                >
+                  <View style={styles.timelineHeader}>
+                    <Text style={styles.timelineTitle}>{event.title}</Text>
+                    <Text
+                      style={[
+                        styles.timelineTag,
+                        event.tag === '报告' && styles.timelineTagReport,
+                        event.tag === '肌力' && styles.timelineTagStrength,
+                        event.tag === '活动' && styles.timelineTagActivity,
+                        event.tag === '用药' && styles.timelineTagMedication,
+                      ]}
+                    >
+                      {event.tag}
+                    </Text>
+                  </View>
+                  <Text style={styles.timelineDescription}>{event.description}</Text>
+                  <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
                 </View>
-                <Text style={styles.historyMeta}>
-                  {item.timestamp} · {item.source}
-                </Text>
-                {item.fileName && <Text style={styles.historyMeta}>文件：{item.fileName}</Text>}
-                {item.ocrSummary && <Text style={styles.historyMeta}>OCR：{item.ocrSummary}</Text>}
-              </View>
-            ))
-          )}
+              ))
+            )}
+          </View>
         </View>
 
         <View style={styles.section}>
@@ -893,41 +950,6 @@ const DataEntryScreen = () => {
                 <FontAwesome6 name="microphone" size={12} color="#9CA3AF" />
                 <Text style={styles.voiceStatusText}>正在录音...</Text>
               </View>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>医疗时间轴</Text>
-          <View style={styles.timelineCard}>
-            {timelineEvents.length === 0 ? (
-              <Text style={{ color: '#9CA3AF' }}>暂无记录，添加/更新后会自动生成时间轴。</Text>
-            ) : (
-              timelineEvents.map((event, index) => (
-                <View
-                  key={event.id}
-                  style={[
-                    styles.timelineItem,
-                    index === timelineEvents.length - 1 && styles.timelineItemLast,
-                  ]}
-                >
-                  <View style={styles.timelineHeader}>
-                    <Text style={styles.timelineTitle}>{event.title}</Text>
-                    <Text
-                      style={[
-                        styles.timelineTag,
-                        event.tag === '报告' && styles.timelineTagReport,
-                        event.tag === '肌力' && styles.timelineTagStrength,
-                        event.tag === '活动' && styles.timelineTagActivity,
-                      ]}
-                    >
-                      {event.tag}
-                    </Text>
-                  </View>
-                  <Text style={styles.timelineDescription}>{event.description}</Text>
-                  <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
-                </View>
-              ))
             )}
           </View>
         </View>
