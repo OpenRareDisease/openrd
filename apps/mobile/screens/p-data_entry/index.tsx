@@ -597,87 +597,87 @@ const DataEntryScreen = () => {
 
   const getMuscleGroupName = (group: string | null): string => {
     if (!group) return '请选择肌群';
-    const sessionTimeline = React.useMemo(() => {
-      const now = formatTimestamp(new Date());
-      const items: Array<{ event: TimelineEvent; sortKey: number }> = [];
-
-      reportHistory.forEach((item) => {
-        const time = new Date(item.timestamp);
-        items.push({
-          sortKey: time.getTime(),
-          event: {
-            id: `report-${item.id}`,
-            title: `${reportLabels[item.type]}已上传`,
-            description: buildReportSummary(item),
-            timestamp: item.timestamp,
-            tag: '报告',
-          },
-        });
-      });
-
-      Object.entries(muscleStrengthMap).forEach(([group, value]) => {
-        if (value <= 0) return;
-        items.push({
-          sortKey: Date.now(),
-          event: {
-            id: `strength-${group}`,
-            title: `${getMuscleGroupName(group)}肌力记录`,
-            description: `肌力 ${value} 级`,
-            timestamp: now,
-            tag: '肌力',
-          },
-        });
-      });
-
-      if (timerSeconds > 0) {
-        items.push({
-          sortKey: Date.now(),
-          event: {
-            id: 'activity-stair-test',
-            title: '楼梯测试',
-            description: `用时 ${formatTime(timerSeconds)}`,
-            timestamp: now,
-            tag: '活动',
-          },
-        });
-      }
-
-      if (activityText.trim()) {
-        items.push({
-          sortKey: Date.now(),
-          event: {
-            id: 'activity-manual',
-            title: '日常活动记录',
-            description: activityText.trim(),
-            timestamp: now,
-            tag: '活动',
-          },
-        });
-      }
-
-      if (medicationForm.medicationName.trim()) {
-        const meta = [medicationForm.dosage, medicationForm.frequency, medicationForm.route]
-          .map((value) => value.trim())
-          .filter(Boolean)
-          .join(' · ');
-        items.push({
-          sortKey: Date.now(),
-          event: {
-            id: 'medication-entry',
-            title: `用药记录：${medicationForm.medicationName.trim()}`,
-            description: meta || '已记录用药',
-            timestamp: now,
-            tag: '用药',
-          },
-        });
-      }
-
-      return items.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
-    }, [activityText, medicationForm, muscleStrengthMap, reportHistory, timerSeconds]);
-
     const muscleGroup = muscleGroups.find((mg) => mg.id === group);
     return muscleGroup ? muscleGroup.name : '请选择肌群';
   };
+
+  const sessionTimeline = React.useMemo(() => {
+    const now = formatTimestamp(new Date());
+    const items: Array<{ event: TimelineEvent; sortKey: number }> = [];
+
+    reportHistory.forEach((item) => {
+      const time = new Date(item.timestamp);
+      items.push({
+        sortKey: time.getTime(),
+        event: {
+          id: `report-${item.id}`,
+          title: `${reportLabels[item.type]}已上传`,
+          description: buildReportSummary(item),
+          timestamp: item.timestamp,
+          tag: '报告',
+        },
+      });
+    });
+
+    Object.entries(muscleStrengthMap).forEach(([group, value]) => {
+      if (value <= 0) return;
+      items.push({
+        sortKey: Date.now(),
+        event: {
+          id: `strength-${group}`,
+          title: `${getMuscleGroupName(group)}肌力记录`,
+          description: `肌力 ${value} 级`,
+          timestamp: now,
+          tag: '肌力',
+        },
+      });
+    });
+
+    if (timerSeconds > 0) {
+      items.push({
+        sortKey: Date.now(),
+        event: {
+          id: 'activity-stair-test',
+          title: '楼梯测试',
+          description: `用时 ${formatTime(timerSeconds)}`,
+          timestamp: now,
+          tag: '活动',
+        },
+      });
+    }
+
+    if (activityText.trim()) {
+      items.push({
+        sortKey: Date.now(),
+        event: {
+          id: 'activity-manual',
+          title: '日常活动记录',
+          description: activityText.trim(),
+          timestamp: now,
+          tag: '活动',
+        },
+      });
+    }
+
+    if (medicationForm.medicationName.trim()) {
+      const meta = [medicationForm.dosage, medicationForm.frequency, medicationForm.route]
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .join(' · ');
+      items.push({
+        sortKey: Date.now(),
+        event: {
+          id: 'medication-entry',
+          title: `用药记录：${medicationForm.medicationName.trim()}`,
+          description: meta || '已记录用药',
+          timestamp: now,
+          tag: '用药',
+        },
+      });
+    }
+
+    return items.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
+  }, [activityText, medicationForm, muscleStrengthMap, reportHistory, timerSeconds]);
 
   const getStatusColor = (status: string): string => {
     switch (status) {
