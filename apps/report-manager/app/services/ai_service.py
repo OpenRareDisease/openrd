@@ -9,15 +9,22 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 def _build_session():
-    retry = Retry(
+    # urllib3 Retry API changed over time:
+    # - old: `method_whitelist=...`
+    # - new: `allowed_methods=...`
+    # Some base images may ship an older urllib3, so we support both.
+    retry_kwargs = dict(
         total=Config.AI_MAX_RETRIES,
         connect=Config.AI_MAX_RETRIES,
         read=Config.AI_MAX_RETRIES,
         status=Config.AI_MAX_RETRIES,
         backoff_factor=Config.AI_RETRY_BACKOFF,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=frozenset(["POST"])
     )
+    try:
+        retry = Retry(allowed_methods=frozenset(["POST"]), **retry_kwargs)
+    except TypeError:
+        retry = Retry(method_whitelist=frozenset(["POST"]), **retry_kwargs)
     adapter = HTTPAdapter(max_retries=retry)
     session = requests.Session()
     session.mount("https://", adapter)
