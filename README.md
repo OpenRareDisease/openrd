@@ -62,7 +62,9 @@ cp .env.example .env          # 根据实际环境调整
 npm install                   # 安装 workspace 依赖并初始化 Husky
 ```
 
-> 如果你是用 `docker-compose` 启动（推荐），请注意：容器内不能用 `127.0.0.1/localhost` 访问其他服务。
+> 推荐使用 Docker Compose v2（命令为 `docker compose ...`），避免旧版 `docker-compose`（v1.29.x）在部分环境触发 `KeyError: 'ContainerConfig'`。
+>
+> 使用容器编排时请注意：容器内不能用 `127.0.0.1/localhost` 访问其他服务。
 > 例如 `.env` 里的 `REPORT_MANAGER_OCR_URL` / `REPORT_MANAGER_DATABASE_URL` / `REPORT_MANAGER_MINIO_ENDPOINT` 应该使用 `report-manager` / `postgres` / `minio` 这类 service name。
 
 > 若需要运行 Python 知识服务：
@@ -90,7 +92,7 @@ npm install                   # 安装 workspace 依赖并初始化 Husky
 | 知识服务  | `python apps/api/knowledge_service.py`            | 启动本地知识检索服务（默认 `http://127.0.0.1:5010`）        |
 | 报告解析  | `python -m uvicorn main:app --reload --port 8000` | 在 `apps/report-manager` 下启动 OCR/AI 报告解析服务         |
 | 静态原型  | `bash scripts/serve-ui.sh 8080`                   | 直接启动 `ui/` 原型页面（临时演示用）                       |
-| 真实前端  | `docker-compose up -d web`                        | 构建 `apps/mobile` 的 Expo Web 并通过 Nginx 提供服务        |
+| 真实前端  | `docker compose up -d web`                        | 构建 `apps/mobile` 的 Expo Web 并通过 Nginx 提供服务        |
 | 统一 lint | `npm run lint`                                    | 运行全部工作区的 ESLint 脚本                                |
 | 统一测试  | `npm run test`                                    | 执行所有工作区内的测试命令                                  |
 

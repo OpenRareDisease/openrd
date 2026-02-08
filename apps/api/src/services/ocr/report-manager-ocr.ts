@@ -292,7 +292,26 @@ export class ReportManagerOcrProvider implements OcrProvider {
       method: 'POST',
       body: form,
       headers,
+      // Do not follow redirects for multipart requests. A 307/308 redirect can cause the
+      // request body to be re-sent in a way that breaks boundary parsing server-side.
+      redirect: 'manual',
     });
+
+    if (
+      response.status === 301 ||
+      response.status === 302 ||
+      response.status === 303 ||
+      response.status === 307 ||
+      response.status === 308
+    ) {
+      const location = response.headers.get('location');
+      const hint = location ? `Redirected to ${location}.` : 'Redirected by server.';
+      throw new AppError(
+        `Report Manager OCR endpoint misconfigured (${response.status}). ${hint} ` +
+          `Use \`.../api/reports/upload-and-analyze\` (recommended) or \`.../api/reports/\` (trailing slash).`,
+        502,
+      );
+    }
 
     const payload = (await response.json().catch(() => null)) as
       | ReportManagerResponse

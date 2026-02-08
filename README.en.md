@@ -80,13 +80,15 @@ psql -U postgres -f db/init_db.sql
 
 ### 3. Development commands
 
+> We recommend Docker Compose v2 (`docker compose ...`). Legacy `docker-compose` (v1.29.x) may fail with `KeyError: 'ContainerConfig'` on some environments.
+
 | Module            | Command                                | Description                                           |
 | ----------------- | -------------------------------------- | ----------------------------------------------------- |
 | Backend API       | `npm run dev:api`                      | Starts the API server on `http://localhost:4000`      |
 | Mobile app        | `npm run dev:mobile`                   | Launches the Expo developer tools                     |
 | Knowledge service | `python apps/api/knowledge_service.py` | Starts the local KB service (`http://127.0.0.1:5010`) |
 | Static prototype  | `bash scripts/serve-ui.sh 8080`        | Serves `ui/` prototype pages for quick demos          |
-| Real web frontend | `docker-compose up -d web`             | Builds `apps/mobile` Expo Web and serves via Nginx    |
+| Real web frontend | `docker compose up -d web`             | Builds `apps/mobile` Expo Web and serves via Nginx    |
 | Lint              | `npm run lint`                         | Runs ESLint for all workspaces                        |
 | Test              | `npm run test`                         | Executes workspace test suites                        |
 
