@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddle:2.6.2
 
 ENV PYTHONUNBUFFERED=1
 
@@ -11,6 +11,9 @@ RUN apt-get update \
       tesseract-ocr \
       tesseract-ocr-chi-sim \
       tesseract-ocr-eng \
+      # Some PaddleOCR deps (opencv) may require these runtime libs on Debian.
+      libglib2.0-0 \
+      libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY apps/report-manager/requirements.txt ./apps/report-manager/requirements.txt

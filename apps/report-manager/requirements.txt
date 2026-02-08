@@ -14,5 +14,6 @@ werkzeug==3.0.6
 email-validator==2.2.0
 pdf2image==1.17.0
 json-repair==0.33.0
-paddlepaddle==2.6.2
+# NOTE: Paddle is provided by the base image in apps/report-manager/Dockerfile.
+# Installing paddlepaddle via pip here can break the runtime (conflicting libpaddle).
 paddleocr==2.8.1
