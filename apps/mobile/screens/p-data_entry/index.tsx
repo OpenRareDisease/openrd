@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Alert,
   Modal,
   ScrollView,
@@ -25,6 +26,7 @@ import {
   createSubmission,
   getMyPatientProfile,
   getMedications,
+  getPatientDocumentOcr,
   uploadPatientDocument,
   upsertPatientProfile,
 } from '../../lib/api';
@@ -80,6 +82,7 @@ const documentTypeMap: Record<ReportType, string> = {
 const DataEntryScreen = () => {
   const router = useRouter();
   const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ocrPollers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
     mri: '未上传',
@@ -88,6 +91,7 @@ const DataEntryScreen = () => {
   });
 
   const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([]);
+  const [parsingDocIds, setParsingDocIds] = useState<Record<string, true>>({});
 
   const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
     group: null,
@@ -198,6 +202,16 @@ const DataEntryScreen = () => {
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
   };
 
+  const getAnalysisStatus = (payload?: ReportHistoryItem['ocrPayload'] | null) => {
+    const status = payload?.fields?.analysisStatus ?? payload?.fields?.analysis_status;
+    return typeof status === 'string' ? status : undefined;
+  };
+
+  const isProcessing = (payload?: ReportHistoryItem['ocrPayload'] | null) => {
+    const status = getAnalysisStatus(payload);
+    return status === 'processing' || status === 'pending';
+  };
+
   const pickOcrField = (fields: Record<string, string> | undefined, keys: string[]) => {
     if (!fields) return undefined;
     for (const key of keys) {
@@ -211,6 +225,9 @@ const DataEntryScreen = () => {
 
   const buildReportSummary = (item: ReportHistoryItem) => {
     const fields = item.ocrPayload?.fields;
+    if (isProcessing(item.ocrPayload)) {
+      return '正在解析中...';
+    }
     const parts: string[] = [];
     const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
     const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
@@ -267,8 +284,37 @@ const DataEntryScreen = () => {
       setMuscleStrengthMap(buildStrengthMapFromProfile(data));
       setMedications(meds ?? []);
 
+      const documents = Array.isArray((data as any).documents)
+        ? ((data as any).documents as any[])
+        : [];
+      const history = documents
+        .map((doc) => {
+          const type = mapDocumentTypeToReportType(doc.documentType);
+          if (!type) return null;
+          return {
+            id: doc.id,
+            type,
+            source: '上传' as const,
+            timestamp: formatTimestamp(new Date(doc.uploadedAt ?? Date.now())),
+            fileName: doc.fileName ?? undefined,
+            ocrPayload: doc.ocrPayload ?? null,
+            ocrSummary:
+              doc.ocrPayload?.fields?.hint ??
+              doc.ocrPayload?.extractedText ??
+              doc.fileName ??
+              '已上传',
+          } satisfies ReportHistoryItem;
+        })
+        .filter(Boolean) as ReportHistoryItem[];
+
+      // Most recent first
+      setReportHistory(history.slice(0, 5));
+      history.slice(0, 5).forEach((item) => {
+        startOcrPollingIfNeeded(item.id, item.ocrPayload);
+      });
+
       const existingTypes = new Set(
-        (data.documents ?? []).map((doc: any) => mapDocumentTypeToReportType(doc.documentType)),
+        documents.map((doc: any) => mapDocumentTypeToReportType(doc.documentType)),
       );
       setUploadStatus({
         mri: existingTypes.has('mri') ? '已上传' : '未上传',
@@ -287,7 +333,78 @@ const DataEntryScreen = () => {
 
   useEffect(() => {
     loadProfile();
+    return () => {
+      Object.values(ocrPollers.current).forEach((t) => clearTimeout(t));
+      ocrPollers.current = {};
+    };
   }, []);
+
+  function upsertReportHistoryPayload(documentId: string, nextPayload: any) {
+    setReportHistory((prev) =>
+      prev.map((item) =>
+        item.id === documentId
+          ? {
+              ...item,
+              ocrPayload: nextPayload ?? null,
+              ocrSummary:
+                nextPayload?.fields?.hint ??
+                nextPayload?.extractedText ??
+                nextPayload?.error ??
+                item.ocrSummary ??
+                item.fileName ??
+                '已上传',
+            }
+          : item,
+      ),
+    );
+  }
+
+  function startOcrPollingIfNeeded(documentId: string, initialPayload: any) {
+    if (!documentId) return;
+    if (!isProcessing(initialPayload)) return;
+    if (ocrPollers.current[documentId]) return;
+
+    setParsingDocIds((prev) => ({ ...prev, [documentId]: true }));
+
+    const startedAt = Date.now();
+
+    const tick = async () => {
+      try {
+        const res = await getPatientDocumentOcr(documentId);
+        const payload = (res as any).ocrPayload ?? null;
+        upsertReportHistoryPayload(documentId, payload);
+
+        const status = getAnalysisStatus(payload);
+        if (status === 'completed' || status === 'failed') {
+          setParsingDocIds((prev) => {
+            const next = { ...prev };
+            delete next[documentId];
+            return next;
+          });
+          delete ocrPollers.current[documentId];
+          await loadProfile();
+          return;
+        }
+      } catch (error) {
+        console.error('轮询解析进度失败:', error);
+      }
+
+      if (Date.now() - startedAt > 10 * 60 * 1000) {
+        // Give up after 10 minutes; user can refresh later.
+        setParsingDocIds((prev) => {
+          const next = { ...prev };
+          delete next[documentId];
+          return next;
+        });
+        delete ocrPollers.current[documentId];
+        return;
+      }
+
+      ocrPollers.current[documentId] = setTimeout(tick, 2000);
+    };
+
+    ocrPollers.current[documentId] = setTimeout(tick, 1200);
+  }
 
   const ensureProfileExists = async () => {
     try {
@@ -381,6 +498,10 @@ const DataEntryScreen = () => {
           ...prev,
         ].slice(0, 5),
       );
+
+      if (response?.id) {
+        startOcrPollingIfNeeded(response.id, response.ocrPayload);
+      }
       await loadProfile();
     } catch (error) {
       console.error('文件上传失败:', error);
@@ -470,6 +591,10 @@ const DataEntryScreen = () => {
           ...prev,
         ].slice(0, 5),
       );
+
+      if (response?.id) {
+        startOcrPollingIfNeeded(response.id, response.ocrPayload);
+      }
       await loadProfile();
     } catch (error) {
       console.error('拍照失败:', error);
@@ -690,6 +815,54 @@ const DataEntryScreen = () => {
     }
   };
 
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(progressAnim, {
+          toValue: 1,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(progressAnim, {
+          toValue: 0,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [progressAnim]);
+
+  const ParsingBar = () => {
+    const translateX = progressAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-120, 120],
+    });
+    return (
+      <View
+        style={{
+          height: 8,
+          borderRadius: 999,
+          backgroundColor: 'rgba(148, 163, 184, 0.25)',
+          overflow: 'hidden',
+          marginTop: 8,
+        }}
+      >
+        <Animated.View
+          style={{
+            height: '100%',
+            width: 120,
+            backgroundColor: 'rgba(150, 159, 255, 0.7)',
+            transform: [{ translateX }],
+            borderRadius: 999,
+          }}
+        />
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -834,6 +1007,17 @@ const DataEntryScreen = () => {
                     </Text>
                   </View>
                   <Text style={styles.timelineDescription}>{event.description}</Text>
+                  {event.tag === '报告' &&
+                    (() => {
+                      const id = event.id.startsWith('report-')
+                        ? event.id.slice('report-'.length)
+                        : '';
+                      const payload =
+                        reportHistory.find((item) => item.id === id)?.ocrPayload ?? null;
+                      if (!payload) return null;
+                      const processing = isProcessing(payload) || Boolean(parsingDocIds[id]);
+                      return processing ? <ParsingBar /> : null;
+                    })()}
                   <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
                 </View>
               ))

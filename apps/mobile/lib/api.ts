@@ -302,6 +302,11 @@ export const uploadPatientDocument = async (input: {
   );
 };
 
+export const getPatientDocumentOcr = (documentId: string) =>
+  apiRequest<{ documentId: string; ocrPayload: PatientDocument['ocrPayload'] | null }>(
+    `/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`,
+  );
+
 export interface AuthResponse {
   user: {
     id: string;

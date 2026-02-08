@@ -15,6 +15,7 @@ import {
 import type { PatientProfileService } from './profile.service.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
+import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
 
@@ -147,6 +148,54 @@ export class PatientProfileController {
   getDocumentOcr = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
     const document = await this.service.getDocumentForUser(req.user.id, documentId);
+
+    // If this document was parsed via Report Manager async endpoint, the initial OCR payload
+    // may only contain a reportId + analysisStatus=processing. Refresh on demand.
+    const currentPayload = document.ocr_payload;
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    const payloadObj = isRecord(currentPayload) ? currentPayload : null;
+    const provider =
+      payloadObj && typeof payloadObj.provider === 'string' ? payloadObj.provider : null;
+    const fields =
+      payloadObj && isRecord(payloadObj.fields)
+        ? (payloadObj.fields as Record<string, unknown>)
+        : null;
+    const reportId =
+      fields && typeof fields.reportId === 'string' ? (fields.reportId as string) : '';
+    const analysisStatus =
+      fields && typeof fields.analysisStatus === 'string' ? (fields.analysisStatus as string) : '';
+    const documentType =
+      fields && typeof fields.documentType === 'string'
+        ? (fields.documentType as string)
+        : undefined;
+    const shouldRefresh =
+      provider === 'report_manager_002' &&
+      reportId &&
+      analysisStatus !== 'completed' &&
+      analysisStatus !== 'failed' &&
+      this.ocr instanceof ReportManagerOcrProvider;
+
+    if (shouldRefresh) {
+      try {
+        const refreshed = await this.ocr.fetch(reportId, documentType);
+        const updated = await this.service.updateDocumentOcrPayloadForUser(
+          req.user.id,
+          documentId,
+          refreshed,
+        );
+        return res.status(200).json({
+          documentId,
+          ocrPayload: updated.ocr_payload ?? null,
+        });
+      } catch (error) {
+        // Don't fail the whole request if refresh fails; return the last known payload.
+        // The UI can retry polling later.
+         
+        console.warn('Failed to refresh OCR payload from report-manager:', error);
+      }
+    }
+
     res.status(200).json({
       documentId,
       ocrPayload: document.ocr_payload ?? null,

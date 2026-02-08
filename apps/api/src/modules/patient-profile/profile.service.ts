@@ -752,6 +752,25 @@ export class PatientProfileService {
     };
   }
 
+  async updateDocumentOcrPayloadForUser(userId: string, documentId: string, ocrPayload: unknown) {
+    const result = await this.pool.query(
+      `UPDATE patient_documents d
+       SET ocr_payload = $3
+       FROM patient_profiles p
+       WHERE d.profile_id = p.id
+         AND p.user_id = $1
+         AND d.id = $2
+       RETURNING d.id, d.ocr_payload`,
+      [userId, documentId, ocrPayload],
+    );
+
+    if (!result.rowCount) {
+      throw new AppError('Document not found', 404);
+    }
+
+    return result.rows[0] as { id: string; ocr_payload: unknown | null };
+  }
+
   async addMedication(userId: string, payload: MedicationInput): Promise<PatientMedicationDTO> {
     const profileId = await this.ensureProfileForUser(userId);
 
