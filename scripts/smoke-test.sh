@@ -64,7 +64,7 @@ curl -s -X POST "$API_BASE_URL/api/ai/ask" \
   -d "{\"question\":\"什么是FSHD？\",\"userContext\":{\"language\":\"zh\"}}" >/dev/null
 
 echo "== Report Manager upload-and-analyze =="
-TMP_BASE="$(mktemp -t report)"
+TMP_BASE="$(mktemp /tmp/report.XXXXXX)"
 TMP_PDF="${TMP_BASE}.pdf"
 mv "$TMP_BASE" "$TMP_PDF"
 python3 - <<PY
