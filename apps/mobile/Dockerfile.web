@@ -15,7 +15,9 @@ RUN npm ci
 
 COPY apps/mobile ./apps/mobile
 
-RUN npx expo export --platform web --output-dir /app/apps/mobile/dist
+WORKDIR /app/apps/mobile
+
+RUN npx expo export --platform web --output-dir dist
 
 FROM nginx:1.27-alpine
 
