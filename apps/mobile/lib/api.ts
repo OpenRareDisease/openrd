@@ -321,11 +321,26 @@ export const login = (payload: { phoneNumber?: string; email?: string; password:
 
 export const register = (payload: {
   phoneNumber: string;
+  otpCode: string;
+  otpRequestId?: string;
   password: string;
   role?: string;
   email?: string;
 }) =>
   apiRequest<AuthResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export interface OtpSendResponse {
+  provider: string;
+  requestId: string;
+  sentTo: string;
+  mockCode?: string;
+}
+
+export const sendOtp = (payload: { phoneNumber: string; scene?: 'register' | 'login' | 'reset' }) =>
+  apiRequest<OtpSendResponse>('/auth/otp/send', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

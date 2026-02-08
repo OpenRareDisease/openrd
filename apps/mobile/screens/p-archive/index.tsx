@@ -646,27 +646,6 @@ const ArchiveScreen = () => {
         </View>
 
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, styles.sectionTitleAccent]}>最近肌力测量</Text>
-          {profile.measurements.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>暂无肌力记录，立即去录入吧。</Text>
-            </View>
-          ) : (
-            profile.measurements.slice(0, 3).map((item) => (
-              <View key={item.id} style={styles.measurementCard}>
-                <View>
-                  <Text style={styles.measurementMuscle}>{getMuscleLabel(item.muscleGroup)}</Text>
-                  <Text style={styles.measurementDate}>
-                    {new Date(item.recordedAt).toLocaleString()}
-                  </Text>
-                </View>
-                <Text style={styles.measurementScore}>{item.strengthScore}</Text>
-              </View>
-            ))
-          )}
-        </View>
-
-        <View style={styles.section}>
           <Text style={styles.sectionTitle}>肌力分析</Text>
           <View style={styles.radarCard}>
             <Text style={styles.sectionSubtitle}>肌群雷达图（0-5 级）</Text>

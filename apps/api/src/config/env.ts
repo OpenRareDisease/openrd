@@ -18,6 +18,14 @@ const envSchema = z
     CORS_ORIGIN: z.string().default('*'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
+    OTP_PROVIDER: z.enum(['mock', 'tencent']).default('mock'),
+    OTP_CODE_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
+    OTP_TTL_MINUTES: z.coerce.number().int().min(1).max(30).default(10),
+    OTP_RESEND_INTERVAL_SECONDS: z.coerce.number().int().min(10).default(60),
+    OTP_MAX_SEND_PER_DAY: z.coerce.number().int().min(1).default(10),
+    OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().min(1).default(5),
+    OTP_HASH_SECRET: z.string().min(8).default('change-me-otp-secret'),
+
     OPENAI_API_KEY: z.string().min(1).optional(),
     AI_API_KEY: z.string().min(1).optional(),
     AI_API_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),

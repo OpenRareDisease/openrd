@@ -164,3 +164,4 @@ tmp/
 temp/
 apps/api/uploads/
 minio-data/
+apps/report-manager/testfile/

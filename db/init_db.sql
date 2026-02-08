@@ -30,6 +30,25 @@ CREATE TABLE IF NOT EXISTS app_users (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- One-time password (OTP) records for verification (e.g. registration).
+CREATE TABLE IF NOT EXISTS auth_otps (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number    CITEXT NOT NULL,
+    purpose         TEXT NOT NULL,
+    code_hash       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'sent',
+    send_count      INTEGER NOT NULL DEFAULT 1,
+    verify_attempts INTEGER NOT NULL DEFAULT 0,
+    last_sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    verified_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_otps_phone_purpose_created_at
+    ON auth_otps (phone_number, purpose, created_at DESC);
+
 -- Patient profile data.
 CREATE TABLE IF NOT EXISTS patient_profiles (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -264,6 +283,25 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- OTP verification codes (SMS/email)
+CREATE TABLE IF NOT EXISTS otp_verification_codes (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number    CITEXT NOT NULL,
+    scene           TEXT NOT NULL DEFAULT 'register',
+    code_hash       TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    consumed_at     TIMESTAMPTZ,
+    attempt_count   INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_otp_phone_sent_at
+    ON otp_verification_codes (phone_number, sent_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_otp_request_id
+    ON otp_verification_codes (request_id);
+
 CREATE INDEX IF NOT EXISTS idx_medical_reports_user_id
     ON medical_reports (user_id);
 CREATE INDEX IF NOT EXISTS idx_community_posts_author_id
@@ -291,6 +329,12 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS app_users_set_updated_at ON app_users;
 CREATE TRIGGER app_users_set_updated_at
 BEFORE UPDATE ON app_users
+FOR EACH ROW
+EXECUTE PROCEDURE set_updated_at();
+
+DROP TRIGGER IF EXISTS auth_otps_set_updated_at ON auth_otps;
+CREATE TRIGGER auth_otps_set_updated_at
+BEFORE UPDATE ON auth_otps
 FOR EACH ROW
 EXECUTE PROCEDURE set_updated_at();
 

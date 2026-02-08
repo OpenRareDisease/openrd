@@ -21,7 +21,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, register, upsertPatientProfile } from '../../lib/api';
+import { ApiError, login, register, sendOtp, upsertPatientProfile } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface LoginFormData {
@@ -32,6 +32,7 @@ interface LoginFormData {
 interface RegisterFormData {
   phone: string;
   code: string;
+  otpRequestId?: string;
   password: string;
   confirmPassword: string;
   identity: 'doctor' | 'patient_family' | 'other';
@@ -65,6 +66,7 @@ const LoginRegisterScreen: React.FC = () => {
   const [registerForm, setRegisterForm] = useState<RegisterFormData>({
     phone: '',
     code: '',
+    otpRequestId: undefined,
     password: '',
     confirmPassword: '',
     identity: 'patient_family',
@@ -196,22 +198,38 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    // 开始倒计时
-    setCountdown(60);
-    countdownInterval.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          if (countdownInterval.current) {
-            clearInterval(countdownInterval.current);
-            countdownInterval.current = null;
-          }
-          return 0;
-        }
-        return prev - 1;
+    try {
+      const response = await sendOtp({
+        phoneNumber: formatPhoneNumber(registerForm.phone),
+        scene: 'register',
       });
-    }, 1000);
+      setRegisterForm((prev) => ({
+        ...prev,
+        otpRequestId: response.requestId,
+      }));
 
-    showModal('success', '成功', '验证码已发送');
+      setCountdown(60);
+      countdownInterval.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            if (countdownInterval.current) {
+              clearInterval(countdownInterval.current);
+              countdownInterval.current = null;
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      const message = response.mockCode
+        ? `验证码已发送（测试码：${response.mockCode}）`
+        : '验证码已发送';
+      showModal('success', '成功', message);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
+      showModal('error', '错误', message);
+    }
   };
 
   // 登录提交
@@ -341,6 +359,8 @@ const LoginRegisterScreen: React.FC = () => {
       } as const;
       const response = await register({
         phoneNumber: formatPhoneNumber(registerForm.phone),
+        otpCode: registerForm.code.trim(),
+        otpRequestId: registerForm.otpRequestId,
         password: registerForm.password,
         role: roleMap[registerForm.identity],
       });
