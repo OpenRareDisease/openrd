@@ -6,14 +6,15 @@ import tempfile
 from pdf2image import convert_from_path
 import traceback
 
-try:
-    from paddleocr import PaddleOCR
-    import numpy as np
-    _PADDLE_AVAILABLE = True
-except Exception:
-    PaddleOCR = None
-    np = None
-    _PADDLE_AVAILABLE = False
+PaddleOCR = None
+np = None
+_PADDLE_AVAILABLE = False
+
+def _paddle_disabled() -> bool:
+    """
+    Allow disabling PaddleOCR on platforms where Paddle may crash (e.g. Apple Silicon via emulation).
+    """
+    return os.getenv("REPORT_MANAGER_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/jpg"}
 
@@ -24,6 +25,22 @@ _tesseract_logged = False
 def _get_paddle_ocr():
     global _paddle_ocr
     if _paddle_ocr is None:
+        if _paddle_disabled():
+            return None
+        # Import lazily: importing Paddle/PaddleOCR can be heavy and may crash on some platforms.
+        global PaddleOCR, np, _PADDLE_AVAILABLE
+        if not _PADDLE_AVAILABLE:
+            try:
+                from paddleocr import PaddleOCR as _PaddleOCR  # type: ignore
+                import numpy as _np  # type: ignore
+                PaddleOCR = _PaddleOCR
+                np = _np
+                _PADDLE_AVAILABLE = True
+            except Exception as e:
+                # PaddleOCR is optional; fall back to Tesseract.
+                print(f"PaddleOCR unavailable, falling back to Tesseract: {e}")
+                _PADDLE_AVAILABLE = False
+                return None
         # use_angle_cls helps with rotated scans
         _paddle_ocr = PaddleOCR(use_angle_cls=True, lang="ch")
     return _paddle_ocr
@@ -32,7 +49,7 @@ def _paddle_image_to_string(image):
     """
     OCR an image using PaddleOCR. Returns concatenated text lines.
     """
-    if not _PADDLE_AVAILABLE:
+    if _paddle_disabled():
         return ""
     try:
         global _paddle_logged
@@ -40,6 +57,10 @@ def _paddle_image_to_string(image):
             print("OCR engine: PaddleOCR")
             _paddle_logged = True
         ocr = _get_paddle_ocr()
+        if ocr is None:
+            return ""
+        if np is None:
+            return ""
         img = np.array(image)
         try:
             result = ocr.ocr(img, cls=True)
