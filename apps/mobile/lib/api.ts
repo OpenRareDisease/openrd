@@ -202,6 +202,7 @@ export interface SubmissionItem {
     ocrPayload?: {
       extractedText?: string;
       fields?: Record<string, string>;
+      aiExtraction?: unknown;
     } | null;
   }>;
 }
@@ -262,6 +263,7 @@ export interface PatientDocument {
     extractedText?: string;
     fields?: Record<string, string>;
     provider?: string;
+    aiExtraction?: unknown;
   } | null;
 }
 
@@ -305,6 +307,12 @@ export const uploadPatientDocument = async (input: {
 export const getPatientDocumentOcr = (documentId: string) =>
   apiRequest<{ documentId: string; ocrPayload: PatientDocument['ocrPayload'] | null }>(
     `/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`,
+  );
+
+export const generatePatientDocumentSummary = (documentId: string) =>
+  apiRequest<{ documentId: string; summary: string }>(
+    `/profiles/me/documents/${encodeURIComponent(documentId)}/summary`,
+    { method: 'POST' },
   );
 
 export interface AuthResponse {

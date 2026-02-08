@@ -229,6 +229,7 @@ const DataEntryScreen = () => {
       return '正在解析中...';
     }
     const parts: string[] = [];
+    const aiSummary = pickOcrField(fields, ['aiSummary']);
     const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
     const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
     const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
@@ -240,6 +241,10 @@ const DataEntryScreen = () => {
     if (liverFunction) parts.push(`肝功能 ${liverFunction}`);
     if (creatineKinase) parts.push(`肌酸激酶 ${creatineKinase}`);
     if (parts.length === 0) {
+      if (aiSummary) {
+        parts.push(aiSummary.length > 80 ? `${aiSummary.slice(0, 80)}…` : aiSummary);
+        return parts.join('，');
+      }
       if (item.ocrPayload?.error) {
         parts.push(`解析失败：${item.ocrPayload.error}`);
         return parts.join('，');
@@ -984,43 +989,61 @@ const DataEntryScreen = () => {
             {sessionTimeline.length === 0 ? (
               <Text style={{ color: '#9CA3AF' }}>暂无记录，添加内容后会汇总在这里。</Text>
             ) : (
-              sessionTimeline.map((event, index) => (
-                <View
-                  key={event.id}
-                  style={[
-                    styles.timelineItem,
-                    index === sessionTimeline.length - 1 && styles.timelineItemLast,
-                  ]}
-                >
-                  <View style={styles.timelineHeader}>
-                    <Text style={styles.timelineTitle}>{event.title}</Text>
-                    <Text
+              sessionTimeline.map((event, index) =>
+                (() => {
+                  const isReportEvent = event.tag === '报告' && event.id.startsWith('report-');
+                  const documentId = isReportEvent ? event.id.slice('report-'.length) : '';
+                  const Container: any = isReportEvent ? TouchableOpacity : View;
+
+                  return (
+                    <Container
+                      key={event.id}
                       style={[
-                        styles.timelineTag,
-                        event.tag === '报告' && styles.timelineTagReport,
-                        event.tag === '肌力' && styles.timelineTagStrength,
-                        event.tag === '活动' && styles.timelineTagActivity,
-                        event.tag === '用药' && styles.timelineTagMedication,
+                        styles.timelineItem,
+                        index === sessionTimeline.length - 1 && styles.timelineItemLast,
                       ]}
+                      {...(isReportEvent
+                        ? {
+                            activeOpacity: 0.75,
+                            onPress: () =>
+                              router.push({
+                                pathname: '/p-report_detail',
+                                params: { documentId },
+                              }),
+                          }
+                        : {})}
                     >
-                      {event.tag}
-                    </Text>
-                  </View>
-                  <Text style={styles.timelineDescription}>{event.description}</Text>
-                  {event.tag === '报告' &&
-                    (() => {
-                      const id = event.id.startsWith('report-')
-                        ? event.id.slice('report-'.length)
-                        : '';
-                      const payload =
-                        reportHistory.find((item) => item.id === id)?.ocrPayload ?? null;
-                      if (!payload) return null;
-                      const processing = isProcessing(payload) || Boolean(parsingDocIds[id]);
-                      return processing ? <ParsingBar /> : null;
-                    })()}
-                  <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
-                </View>
-              ))
+                      <View style={styles.timelineHeader}>
+                        <Text style={styles.timelineTitle}>{event.title}</Text>
+                        <Text
+                          style={[
+                            styles.timelineTag,
+                            event.tag === '报告' && styles.timelineTagReport,
+                            event.tag === '肌力' && styles.timelineTagStrength,
+                            event.tag === '活动' && styles.timelineTagActivity,
+                            event.tag === '用药' && styles.timelineTagMedication,
+                          ]}
+                        >
+                          {event.tag}
+                        </Text>
+                      </View>
+                      <Text style={styles.timelineDescription}>{event.description}</Text>
+                      {event.tag === '报告' &&
+                        (() => {
+                          const id = event.id.startsWith('report-')
+                            ? event.id.slice('report-'.length)
+                            : '';
+                          const payload =
+                            reportHistory.find((item) => item.id === id)?.ocrPayload ?? null;
+                          if (!payload) return null;
+                          const processing = isProcessing(payload) || Boolean(parsingDocIds[id]);
+                          return processing ? <ParsingBar /> : null;
+                        })()}
+                      <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
+                    </Container>
+                  );
+                })(),
+              )
             )}
           </View>
         </View>

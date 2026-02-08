@@ -493,6 +493,7 @@ const ArchiveScreen = () => {
     const buildDocumentLines = (doc: SubmissionItem['documents'][number]) => {
       const fields = doc.ocrPayload?.fields ?? undefined;
       const lines: string[] = [];
+      const aiSummary = pickOcrField(fields, ['aiSummary']);
       const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
       const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
       const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
@@ -503,6 +504,9 @@ const ArchiveScreen = () => {
       if (serratus) lines.push(`前锯肌脂肪化等级 ${serratus}`);
       if (liverFunction) lines.push(`肝功能 ${liverFunction}`);
       if (creatineKinase) lines.push(`肌酸激酶 ${creatineKinase}`);
+      if (aiSummary) {
+        lines.push(`AI总结 ${aiSummary.length > 80 ? `${aiSummary.slice(0, 80)}…` : aiSummary}`);
+      }
       const strengthSummary = buildStrengthSummary(fields).summary;
       if (strengthSummary) lines.push(`肌力评估 ${strengthSummary}`);
       const hint = fields?.hint;
@@ -549,7 +553,17 @@ const ArchiveScreen = () => {
               <View style={styles.detailSection}>
                 <Text style={styles.detailTitle}>医疗报告</Text>
                 {item.documents.map((doc) => (
-                  <View key={doc.id} style={{ marginBottom: 6 }}>
+                  <TouchableOpacity
+                    key={doc.id}
+                    style={{ marginBottom: 10 }}
+                    activeOpacity={0.75}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/p-report_detail',
+                        params: { documentId: doc.id },
+                      })
+                    }
+                  >
                     <Text style={styles.detailItem}>
                       {mapDocumentTypeLabel(doc.documentType)} ·{' '}
                       {doc.fileName ?? doc.title ?? '已上传'}
@@ -559,7 +573,10 @@ const ArchiveScreen = () => {
                         {line}
                       </Text>
                     ))}
-                  </View>
+                    <Text style={[styles.detailItem, { color: '#969FFF', marginTop: 2 }]}>
+                      查看详情 →
+                    </Text>
+                  </TouchableOpacity>
                 ))}
               </View>
             )}

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import OpenAI from 'openai';
 import { PatientProfileController } from './profile.controller.js';
 import { PatientProfileService } from './profile.service.js';
 import { getPool } from '../../db/pool.js';
@@ -33,7 +34,22 @@ export const createPatientProfileRouter = (context: RouteContext) => {
           medicalEndpoint: context.env.BAIDU_OCR_MEDICAL_ENDPOINT,
         })
       : new MockOcrProvider();
-  const controller = new PatientProfileController(service, storage, ocr);
+
+  const aiApiKey = context.env.AI_API_KEY || context.env.OPENAI_API_KEY || '';
+  const aiClient = aiApiKey
+    ? new OpenAI({
+        apiKey: aiApiKey,
+        baseURL: context.env.AI_API_BASE_URL,
+        timeout: context.env.AI_API_TIMEOUT,
+      })
+    : null;
+
+  const controller = new PatientProfileController(
+    service,
+    storage,
+    ocr,
+    aiClient ? { client: aiClient, model: context.env.AI_API_MODEL } : undefined,
+  );
   const authMiddleware = requireAuth(context.env, context.logger);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -57,6 +73,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   );
   router.get('/me/documents/:id', asyncHandler(controller.getDocumentFile));
   router.get('/me/documents/:id/ocr', asyncHandler(controller.getDocumentOcr));
+  router.post('/me/documents/:id/summary', asyncHandler(controller.generateDocumentSummary));
   router.post('/me/submissions', asyncHandler(controller.createSubmission));
   router.get('/me/submissions', asyncHandler(controller.listSubmissions));
   router.patch('/me/submissions/:id/documents', asyncHandler(controller.attachSubmissionDocuments));

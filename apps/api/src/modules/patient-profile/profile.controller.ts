@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import OpenAI from 'openai';
 import {
   activityLogSchema,
   createProfileSchema,
@@ -19,11 +20,17 @@ import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
 
+type AiSummaryDeps = {
+  client: OpenAI;
+  model: string;
+};
+
 export class PatientProfileController {
   constructor(
     private readonly service: PatientProfileService,
     private readonly storage: StorageProvider,
     private readonly ocr: OcrProvider,
+    private readonly aiSummary?: AiSummaryDeps,
   ) {}
 
   createProfile = async (req: AuthenticatedRequest, res: Response) => {
@@ -191,7 +198,7 @@ export class PatientProfileController {
       } catch (error) {
         // Don't fail the whole request if refresh fails; return the last known payload.
         // The UI can retry polling later.
-         
+
         console.warn('Failed to refresh OCR payload from report-manager:', error);
       }
     }
@@ -200,6 +207,104 @@ export class PatientProfileController {
       documentId,
       ocrPayload: document.ocr_payload ?? null,
     });
+  };
+
+  generateDocumentSummary = async (req: AuthenticatedRequest, res: Response) => {
+    const documentId = req.params.id;
+
+    if (!this.aiSummary?.client || !this.aiSummary.model) {
+      throw new AppError('AI 总结服务未配置（缺少 AI_API_KEY/OPENAI_API_KEY）', 500);
+    }
+
+    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+    const currentPayload = document.ocr_payload;
+
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+    const payloadObj = isRecord(currentPayload) ? currentPayload : null;
+    if (!payloadObj) {
+      throw new AppError('该报告暂无可用的解析结果', 409);
+    }
+
+    const fields = isRecord(payloadObj.fields)
+      ? (payloadObj.fields as Record<string, unknown>)
+      : {};
+    const analysisStatusRaw = fields.analysisStatus ?? fields.analysis_status;
+    const analysisStatus =
+      typeof analysisStatusRaw === 'string'
+        ? analysisStatusRaw.trim()
+        : String(analysisStatusRaw ?? '');
+
+    const existingSummary = fields.aiSummary;
+    if (typeof existingSummary === 'string' && existingSummary.trim()) {
+      return res.status(200).json({ documentId, summary: existingSummary.trim() });
+    }
+
+    if (analysisStatus && analysisStatus !== 'completed') {
+      throw new AppError(`报告尚未解析完成（当前状态：${analysisStatus}）`, 409);
+    }
+
+    const documentType = typeof fields.documentType === 'string' ? fields.documentType : undefined;
+    const extractedText =
+      typeof payloadObj.extractedText === 'string'
+        ? payloadObj.extractedText
+        : typeof payloadObj.extracted_text === 'string'
+          ? payloadObj.extracted_text
+          : '';
+    const aiExtraction = payloadObj.aiExtraction ?? payloadObj.ai_extraction ?? null;
+
+    const promptPayload = {
+      documentId,
+      documentType,
+      reportName: typeof fields.reportName === 'string' ? fields.reportName : undefined,
+      reportTime: typeof fields.reportTime === 'string' ? fields.reportTime : undefined,
+      highlights: fields,
+      aiExtraction,
+      extractedText: extractedText ? extractedText.slice(0, 2000) : '',
+    };
+
+    const system = [
+      '你是医疗报告解读助手。请根据给定的结构化解析结果(aiExtraction/highlights)输出一个简洁的中文总结。',
+      '要求：',
+      '1) 仅输出纯文本，不要 Markdown。',
+      '2) 结构：一句总览 + 3~6 条要点（每条不超过 30 字）。',
+      '3) 不要编造数据；缺失则写“未提及/不明确”。',
+      '4) 适当提示：仅供参考，需结合医生意见。',
+    ].join('\n');
+
+    const user = `结构化信息(JSON)：\n${JSON.stringify(promptPayload, null, 2)}`;
+
+    let summary = '';
+    try {
+      const completion = await this.aiSummary.client.chat.completions.create({
+        model: this.aiSummary.model,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      });
+      summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new AppError(`生成 AI 总结失败：${message}`, 502);
+    }
+
+    if (!summary) {
+      throw new AppError('生成 AI 总结失败：空响应', 502);
+    }
+
+    const nextPayload = {
+      ...payloadObj,
+      fields: {
+        ...fields,
+        aiSummary: summary,
+      },
+    };
+
+    await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
+    res.status(200).json({ documentId, summary });
   };
 
   getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {
