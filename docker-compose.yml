@@ -41,7 +41,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
-      REPORT_MANAGER_OCR_URL: http://report-manager:8000/api/reports/upload-and-analyze
+      # Allow switching sync/async behavior via `.env` without editing compose.
+      REPORT_MANAGER_OCR_URL: ${REPORT_MANAGER_OCR_URL:-http://report-manager:8000/api/reports}
       KB_SERVICE_HOST: kb-service
       KB_SERVICE_PORT: 5010
     ports:
