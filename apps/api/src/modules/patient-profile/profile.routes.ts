@@ -1,15 +1,15 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { PatientProfileController } from './profile.controller';
-import { PatientProfileService } from './profile.service';
-import { getPool } from '../../db/pool';
-import { requireAuth } from '../../middleware/require-auth';
-import type { RouteContext } from '../../routes';
+import { PatientProfileController } from './profile.controller.js';
+import { PatientProfileService } from './profile.service.js';
+import { getPool } from '../../db/pool.js';
+import { requireAuth } from '../../middleware/require-auth.js';
+import type { RouteContext } from '../../routes/index.js';
 import { BaiduOcrProvider } from '../../services/ocr/baidu-ocr.js';
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
 import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import { LocalStorageProvider } from '../../services/storage/local-storage.js';
-import { asyncHandler } from '../../utils/async-handler';
+import { asyncHandler } from '../../utils/async-handler.js';
 
 export const createPatientProfileRouter = (context: RouteContext) => {
   const router = Router();

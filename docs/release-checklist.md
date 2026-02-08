@@ -5,6 +5,9 @@
 ### 1) 环境与依赖
 
 - `.env` 已配置并核对关键变量（`DATABASE_URL`、`JWT_SECRET`、`AI_API_KEY`、`CHROMA_API_KEY`、`CHROMA_TENANT_ID` 等）
+- 已为移动端配置 `EXPO_PUBLIC_API_URL`（指向云端 API）
+- 生产环境禁止使用默认 MinIO 账号与占位密钥
+- report-manager 已设置 `REPORT_MANAGER_API_KEY`（生产环境）
 - `requirements.txt` 已锁定版本，Python 依赖可复现
 - 数据库已初始化或迁移完成（`db/init_db.sql` 或迁移工具）
 
@@ -12,15 +15,18 @@
 
 - 先启动知识服务：`python apps/api/knowledge_service.py`
 - 再启动 Node API：`npm run dev:api`
+- 再启动报告解析服务：在 `apps/report-manager` 下执行 `python -m uvicorn main:app --reload --port 8000`
 - 最后启动移动端：`npm run dev:mobile`
 
 ### 3) 核心功能自测
 
 - `/api/healthz` 正常返回
+- `report-manager /healthz` 正常返回
 - 注册/登录流程正常
 - 资料/档案接口可写可读
 - 智能问答 `/api/ai/ask` 正常返回
 - 进度接口 `/api/ai/ask/progress/:id` 正常
+- 可选：运行 `scripts/smoke-test.sh` 执行完整冒烟
 
 ### 4) 日志与异常
 
@@ -33,11 +39,19 @@
 - 关键文档（架构/PRD/测试）更新
 - 变更记录已补充（如有）
 
+### 6) Docker/部署准备
+
+- Docker 镜像可构建并可启动
+- 数据库、MinIO、API、report-manager、知识服务的网络与端口已联通
+- 云服务器安全组放行所需端口（API、report-manager、MinIO、数据库）
+
 ## English
 
 ### 1) Environment & Dependencies
 
 - `.env` configured and validated (e.g. `DATABASE_URL`, `JWT_SECRET`, `AI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_TENANT_ID`)
+- `EXPO_PUBLIC_API_URL` configured for mobile (pointing to cloud API)
+- Production environment does not use default MinIO credentials or placeholder secrets
 - `requirements.txt` pinned for reproducible Python installs
 - Database initialized or migrations applied
 
@@ -54,6 +68,7 @@
 - Profile APIs read/write
 - Q&A `/api/ai/ask` returns answer
 - Progress endpoint `/api/ai/ask/progress/:id` responds
+- Optional: run `scripts/smoke-test.sh` for full smoke
 
 ### 4) Logs & Errors
 
@@ -65,3 +80,9 @@
 - README (CN/EN) up to date
 - Key docs updated (architecture/PRD/testing)
 - Changelog notes updated if needed
+
+### 6) Docker/Deployment
+
+- Docker images build and start successfully
+- Network/ports verified for database, MinIO, API, report-manager, KB service
+- Cloud security group allows required ports

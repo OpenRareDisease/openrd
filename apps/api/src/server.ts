@@ -1,13 +1,13 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
-import pinoHttp from 'pino-http';
-import type { AppEnv } from './config/env';
-import type { AppLogger } from './config/logger';
-import { initPool } from './db/pool';
-import { errorHandler } from './middleware/error-handler';
-import { notFoundHandler } from './middleware/not-found';
-import { registerRoutes } from './routes';
+import { pinoHttp } from 'pino-http';
+import type { AppEnv } from './config/env.js';
+import type { AppLogger } from './config/logger.js';
+import { initPool } from './db/pool.js';
+import { errorHandler } from './middleware/error-handler.js';
+import { notFoundHandler } from './middleware/not-found.js';
+import { registerRoutes } from './routes/index.js';
 
 interface CreateServerOptions {
   env: AppEnv;

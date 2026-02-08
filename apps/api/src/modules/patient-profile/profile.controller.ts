@@ -11,12 +11,12 @@ import {
   attachDocumentsSchema,
   muscleInsightQuerySchema,
   updateProfileSchema,
-} from './profile.schema';
-import type { PatientProfileService } from './profile.service';
-import type { AuthenticatedRequest } from '../../middleware/require-auth';
+} from './profile.schema.js';
+import type { PatientProfileService } from './profile.service.js';
+import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
-import { AppError } from '../../utils/app-error';
+import { AppError } from '../../utils/app-error.js';
 
 export class PatientProfileController {
   constructor(

@@ -7,9 +7,9 @@ import type {
   MeasurementInput,
   MedicationInput,
   UpdateProfileInput,
-} from './profile.schema';
-import type { AppLogger } from '../../config/logger';
-import { AppError } from '../../utils/app-error';
+} from './profile.schema.js';
+import type { AppLogger } from '../../config/logger.js';
+import { AppError } from '../../utils/app-error.js';
 
 interface ServiceDeps {
   pool: Pool;

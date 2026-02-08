@@ -148,9 +148,10 @@ export class ReportManagerOcrProvider implements OcrProvider {
       : (this.config.defaultUserId ?? 0);
 
     const form = new FormData();
+    const fileBytes = new Uint8Array(input.buffer);
     form.set(
       'file',
-      new Blob([input.buffer], {
+      new Blob([fileBytes], {
         type: input.mimeType ?? 'application/octet-stream',
       }),
       input.fileName ?? 'document.pdf',
@@ -171,7 +172,8 @@ export class ReportManagerOcrProvider implements OcrProvider {
 
     const payload = (await response.json().catch(() => null)) as
       | ReportManagerResponse
-      | { detail?: string };
+      | { detail?: string }
+      | null;
 
     if (!response.ok) {
       const detail =
@@ -187,52 +189,57 @@ export class ReportManagerOcrProvider implements OcrProvider {
       throw new AppError(`Report Manager OCR failed: ${message}`, 502);
     }
 
-    const aiExtraction = normalizeAiExtraction(payload?.ai_extraction);
+    if (!payload || typeof payload !== 'object') {
+      throw new AppError('Report Manager OCR returned empty payload', 502);
+    }
+
+    const report = payload as ReportManagerResponse;
+    const aiExtraction = normalizeAiExtraction(report.ai_extraction);
     const reportTime = pickReportTime(aiExtraction);
     const { findingText, impressionText } = pickFindingsSummary(aiExtraction);
     const fields: Record<string, string> = {
       documentType: input.documentType,
     };
 
-    const reportId = toStringField(payload?.id);
+    const reportId = toStringField(report.id);
     if (reportId) {
       fields.reportId = reportId;
     }
 
     const fieldMap: Record<string, unknown> = {
-      reportName: payload?.report_name,
+      reportName: report.report_name,
       reportTime,
       findingText,
       impressionText,
       hint: impressionText ?? findingText,
       d4z4Repeats:
-        payload?.d4z4_repeats ??
+        report.d4z4_repeats ??
         pickAiExtractionField(aiExtraction, ['D4Z4重复数', 'D4Z4重复', 'D4Z4 repeats']),
       methylationValue:
-        payload?.methylation_value ??
+        report.methylation_value ??
         pickAiExtractionField(aiExtraction, ['甲基化值', '甲基化', 'methylation']),
       serratusFatigueGrade:
-        payload?.serratus_fatigue_grade ??
+        report.serratus_fatigue_grade ??
         pickAiExtractionField(aiExtraction, ['前锯肌脂肪化等级', '前锯肌脂肪化', 'serratus']),
       deltoidStrength:
-        payload?.deltoid_strength ??
+        report.deltoid_strength ??
         pickAiExtractionField(aiExtraction, ['三角肌肌力', '三角肌', 'deltoid']),
       bicepsStrength:
-        payload?.biceps_strength ??
+        report.biceps_strength ??
         pickAiExtractionField(aiExtraction, ['肱二头肌肌力', '肱二头肌', 'biceps']),
       tricepsStrength:
-        payload?.triceps_strength ??
+        report.triceps_strength ??
         pickAiExtractionField(aiExtraction, ['肱三头肌肌力', '肱三头肌', 'triceps']),
       quadricepsStrength:
-        payload?.quadriceps_strength ??
+        report.quadriceps_strength ??
         pickAiExtractionField(aiExtraction, ['股四头肌肌力', '股四头肌', 'quadriceps']),
       liverFunction:
-        payload?.liver_function ?? pickAiExtractionField(aiExtraction, ['肝功能', 'ALT', 'AST']),
+        report.liver_function ?? pickAiExtractionField(aiExtraction, ['肝功能', 'ALT', 'AST']),
       creatineKinase:
-        payload?.creatine_kinase ??
+        report.creatine_kinase ??
         pickAiExtractionField(aiExtraction, ['肌酸激酶', 'CK', 'Creatine kinase']),
       stairTestResult:
-        payload?.stair_test_result ??
+        report.stair_test_result ??
         pickAiExtractionField(aiExtraction, ['楼梯测试', '爬楼', 'stair test']),
     };
 
@@ -245,7 +252,7 @@ export class ReportManagerOcrProvider implements OcrProvider {
 
     return {
       provider: 'report_manager_002',
-      extractedText: payload?.ocr_text ?? '',
+      extractedText: report.ocr_text ?? '',
       fields,
       aiExtraction,
     };

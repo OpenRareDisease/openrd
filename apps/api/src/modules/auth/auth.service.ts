@@ -1,10 +1,10 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { Pool } from 'pg';
-import type { LoginInput, RegisterInput } from './auth.schema';
-import type { AppEnv } from '../../config/env';
-import type { AppLogger } from '../../config/logger';
-import { AppError } from '../../utils/app-error';
+import type { LoginInput, RegisterInput } from './auth.schema.js';
+import type { AppEnv } from '../../config/env.js';
+import type { AppLogger } from '../../config/logger.js';
+import { AppError } from '../../utils/app-error.js';
 
 interface AuthServiceDeps {
   env: AppEnv;
@@ -41,13 +41,14 @@ export class AuthService {
   }
 
   private createToken(user: AuthenticatedUser) {
+    const expiresIn = this.env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'];
     return jwt.sign(
       {
         sub: user.id,
         role: user.role,
       },
       this.env.JWT_SECRET,
-      { expiresIn: this.env.JWT_EXPIRES_IN },
+      { expiresIn },
     );
   }
 
@@ -66,7 +67,15 @@ export class AuthService {
     };
   }
 
-  async register(payload: RegisterInput) {
+  private async logAudit(eventType: string, payload: Record<string, unknown>) {
+    await this.pool.query(
+      `INSERT INTO audit_logs (event_type, event_payload)
+       VALUES ($1, $2)`,
+      [eventType, payload],
+    );
+  }
+
+  async register(payload: RegisterInput, meta?: { ip?: string; userAgent?: string }) {
     const client = await this.pool.connect();
 
     try {
@@ -76,6 +85,13 @@ export class AuthService {
       );
 
       if (existing.rowCount) {
+        await this.logAudit('auth.register_failed', {
+          phoneNumber: payload.phoneNumber,
+          email: payload.email ?? null,
+          reason: 'exists',
+          ip: meta?.ip ?? null,
+          userAgent: meta?.userAgent ?? null,
+        });
         throw new AppError('User already exists with the provided credentials', 409);
       }
 
@@ -90,6 +106,13 @@ export class AuthService {
       const user = this.serializeUser(inserted.rows[0]);
       const token = this.createToken(user);
       this.logger.info({ userId: user.id }, 'User registered successfully');
+      await this.logAudit('auth.register_success', {
+        userId: user.id,
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
 
       return { user, token };
     } finally {
@@ -97,7 +120,7 @@ export class AuthService {
     }
   }
 
-  async login(payload: LoginInput) {
+  async login(payload: LoginInput, meta?: { ip?: string; userAgent?: string }) {
     const identifier = payload.phoneNumber ?? payload.email;
 
     const result = await this.pool.query<UserRow>(
@@ -108,6 +131,12 @@ export class AuthService {
     );
 
     if (!result.rowCount) {
+      await this.logAudit('auth.login_failed', {
+        identifier,
+        reason: 'not_found',
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
       throw new AppError('Invalid credentials', 401);
     }
 
@@ -115,18 +144,36 @@ export class AuthService {
     const passwordHash = userRow.password_hash;
 
     if (!passwordHash) {
+      await this.logAudit('auth.login_failed', {
+        identifier,
+        reason: 'no_password',
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
       throw new AppError('Invalid credentials', 401);
     }
 
     const isValid = await bcrypt.compare(payload.password, passwordHash);
 
     if (!isValid) {
+      await this.logAudit('auth.login_failed', {
+        identifier,
+        reason: 'invalid_password',
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
       throw new AppError('Invalid credentials', 401);
     }
 
     const user = this.serializeUser(userRow);
     const token = this.createToken(user);
     this.logger.info({ userId: user.id }, 'User logged in');
+    await this.logAudit('auth.login_success', {
+      userId: user.id,
+      phoneNumber: user.phoneNumber,
+      ip: meta?.ip ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
 
     return { user, token };
   }

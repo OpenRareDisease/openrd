@@ -6,7 +6,7 @@ import {
   GENDER_OPTIONS,
   MUSCLE_GROUPS,
   MEDICATION_STATUS,
-} from './profile.constants';
+} from './profile.constants.js';
 
 const isoDateString = z
   .string()

@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./db/init_db.sql:/docker-entrypoint-initdb.d/01-init-openrd.sql:ro
+      - ./apps/report-manager/db_init_script.sql:/docker-entrypoint-initdb.d/02-init-report-manager.sql:ro
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${REPORT_MANAGER_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${REPORT_MANAGER_MINIO_SECRET_KEY:-minioadmin12345678}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio-data:/data
+
+  kb-service:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile.kb
+    env_file:
+      - .env
+    ports:
+      - '5010:5010'
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
+      REPORT_MANAGER_OCR_URL: http://report-manager:8000/api/reports/upload-and-analyze
+      KB_SERVICE_HOST: kb-service
+      KB_SERVICE_PORT: 5010
+    ports:
+      - '4000:4000'
+    depends_on:
+      - postgres
+      - kb-service
+      - report-manager
+    volumes:
+      - api-uploads:/app/apps/api/uploads
+
+  report-manager:
+    build:
+      context: .
+      dockerfile: apps/report-manager/Dockerfile
+    env_file:
+      - .env
+    environment:
+      REPORT_MANAGER_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/report_manager
+      REPORT_MANAGER_MINIO_ENDPOINT: minio:9000
+      REPORT_MANAGER_MINIO_USE_HTTPS: 'false'
+    ports:
+      - '8000:8000'
+    depends_on:
+      - postgres
+      - minio
+
+volumes:
+  pg-data:
+  minio-data:
+  api-uploads:
