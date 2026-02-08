@@ -57,6 +57,7 @@ services:
     build:
       context: .
       dockerfile: apps/report-manager/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     environment:
