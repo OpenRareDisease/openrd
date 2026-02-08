@@ -80,14 +80,18 @@ npm install                   # 安装 workspace 依赖并初始化 Husky
 
 ### 3. 启动服务
 
-| 模块      | 命令                                              | 说明                                                        |
-| --------- | ------------------------------------------------- | ----------------------------------------------------------- |
-| 后端 API  | `npm run dev:api`                                 | 在 `http://localhost:4000` 启动开发服务器，暴露 `/api` 路径 |
-| 移动端    | `npm run dev:mobile`                              | 进入 Expo 开发工具，可选择 iOS/Android/Web                  |
-| 知识服务  | `python apps/api/knowledge_service.py`            | 启动本地知识检索服务（默认 `http://127.0.0.1:5010`）        |
-| 报告解析  | `python -m uvicorn main:app --reload --port 8000` | 在 `apps/report-manager` 下启动 OCR/AI 报告解析服务         |
-| 统一 lint | `npm run lint`                                    | 运行全部工作区的 ESLint 脚本                                |
-| 统一测试  | `npm run test`                                    | 执行所有工作区内的测试命令                                  |
+| 模块       | 命令                                              | 说明                                                        |
+| ---------- | ------------------------------------------------- | ----------------------------------------------------------- |
+| 后端 API   | `npm run dev:api`                                 | 在 `http://localhost:4000` 启动开发服务器，暴露 `/api` 路径 |
+| 移动端     | `npm run dev:mobile`                              | 进入 Expo 开发工具，可选择 iOS/Android/Web                  |
+| 知识服务   | `python apps/api/knowledge_service.py`            | 启动本地知识检索服务（默认 `http://127.0.0.1:5010`）        |
+| 报告解析   | `python -m uvicorn main:app --reload --port 8000` | 在 `apps/report-manager` 下启动 OCR/AI 报告解析服务         |
+| 静态前端   | `bash scripts/serve-ui.sh 8080`                   | 直接启动 `ui/` 静态站点（临时测试用）                       |
+| 前后端一体 | `docker-compose up -d web`                        | 通过 Nginx 启动前端，访问 `http://localhost:8080`           |
+| 统一 lint  | `npm run lint`                                    | 运行全部工作区的 ESLint 脚本                                |
+| 统一测试   | `npm run test`                                    | 执行所有工作区内的测试命令                                  |
+
+> `web` 容器会把 `/api/*` 反向代理到 `api:4000`，便于前后端联调。
 
 ## 🔐 后端基础能力
 

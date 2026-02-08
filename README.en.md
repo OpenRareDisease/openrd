@@ -85,8 +85,12 @@ psql -U postgres -f db/init_db.sql
 | Backend API       | `npm run dev:api`                      | Starts the API server on `http://localhost:4000`      |
 | Mobile app        | `npm run dev:mobile`                   | Launches the Expo developer tools                     |
 | Knowledge service | `python apps/api/knowledge_service.py` | Starts the local KB service (`http://127.0.0.1:5010`) |
+| Static web        | `bash scripts/serve-ui.sh 8080`        | Serves `ui/` directly for quick temporary testing     |
+| Full web service  | `docker-compose up -d web`             | Runs Nginx front-end at `http://localhost:8080`       |
 | Lint              | `npm run lint`                         | Runs ESLint for all workspaces                        |
 | Test              | `npm run test`                         | Executes workspace test suites                        |
+
+> The `web` container proxies `/api/*` requests to `api:4000`.
 
 ## 🔐 Backend capabilities
 

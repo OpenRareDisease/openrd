@@ -69,6 +69,16 @@ services:
       - postgres
       - minio
 
+  web:
+    image: nginx:1.27-alpine
+    depends_on:
+      - api
+    ports:
+      - '8080:80'
+    volumes:
+      - ./ui:/usr/share/nginx/html:ro
+      - ./config/nginx/web.conf:/etc/nginx/conf.d/default.conf:ro
+
 volumes:
   pg-data:
   minio-data:
