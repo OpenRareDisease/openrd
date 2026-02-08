@@ -199,6 +199,10 @@ def _process_report_async(report_id: int, temp_path: str, content_type: str):
         db.commit()
 
         ocr_text = extract_text_from_file(temp_path, content_type)
+        if not ocr_text or len(str(ocr_text).strip()) < 20:
+            # Fail fast instead of marking "completed" with empty content.
+            # This helps UI surface actionable errors (e.g., missing tesseract lang pack, unreadable scan).
+            raise RuntimeError("OCR extracted empty/too-short text (check image quality and OCR dependencies)")
         ai_results = analyze_medical_report(ocr_text)
 
         report.ocr_text = ocr_text
