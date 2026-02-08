@@ -62,6 +62,9 @@ cp .env.example .env          # 根据实际环境调整
 npm install                   # 安装 workspace 依赖并初始化 Husky
 ```
 
+> 如果你是用 `docker-compose` 启动（推荐），请注意：容器内不能用 `127.0.0.1/localhost` 访问其他服务。
+> 例如 `.env` 里的 `REPORT_MANAGER_OCR_URL` / `REPORT_MANAGER_DATABASE_URL` / `REPORT_MANAGER_MINIO_ENDPOINT` 应该使用 `report-manager` / `postgres` / `minio` 这类 service name。
+
 > 若需要运行 Python 知识服务：
 >
 > ```bash
