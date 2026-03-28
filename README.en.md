@@ -2,133 +2,171 @@
 
 [中文](./README.md)
 
----
+FSHD-openrd is a monorepo for the FSHD patient platform. It includes the mobile app, backend API, an embedded OCR/report parsing engine, and supporting docs/scripts.
 
-FSHD-openrd is a unified monorepo that powers the mobile application and backend services for managing Facioscapulohumeral muscular dystrophy (FSHD). The platform combines intelligent Q&A, dynamic health records, disease management tools, patient communities, and clinical trial matching.
+## Modules
 
-## 🎯 Overview
+- `apps/mobile`: Expo mobile app (iOS/Android/Web)
+- `apps/api`: Node.js + Express backend API
+- `apps/report-manager`: Python OCR/report parsing engine embedded by the main API
+- `db`: database bootstrap scripts
+- `docs`: engineering and release documentation
 
-The project empowers patients and caregivers with data-driven insights, AI-assisted recommendations, and collaboration features that connect medical experts, researchers, and the broader community.
+## Tech Stack
 
-## 🛠 Tech Stack
+- Mobile: Expo + React Native + TypeScript
+- API: Express + TypeScript + Zod
+- Database: PostgreSQL
+- Report/OCR: Python OCR + FSHD structured parsing embedded in the main API
+- Quality: ESLint + Prettier + Husky
 
-| Layer        | Technology                       | Notes                                                    |
-| ------------ | -------------------------------- | -------------------------------------------------------- |
-| Mobile       | Expo (React Native + TypeScript) | Shared codebase targeting iOS, Android, and Web          |
-| Backend API  | Express + TypeScript             | REST API surface for authentication, archives, Q&A, etc. |
-| Database     | PostgreSQL                       | Primary data store for transactional data                |
-| Code Quality | ESLint + Prettier + Husky        | Consistent style enforcement and git hooks               |
-| Logging      | pino + pino-http                 | Structured logging for observability                     |
+## Repository Layout
 
-## 📁 Repository Layout
-
-```
+```text
 openrd/
 ├── apps/
-│   ├── api/                # Express API service (TypeScript)
-│   │   ├── src/            # Configuration, modules, middleware
-│   │   ├── package.json    # Dependencies and scripts
-│   │   └── eslint.config.mjs
-│   └── mobile/             # Expo React Native application
-│       ├── app/            # Expo Router pages
-│       ├── screens/        # High-level UI compositions
-│       ├── assets/         # Fonts, icons, media
-│       └── package.json
-├── db/                     # PostgreSQL bootstrap scripts
-├── ui/                     # Static design prototypes
-├── .husky/                 # Git hooks (pre-commit runs lint-staged)
-├── .env.example            # Environment variable template
-├── package.json            # Workspace configuration & shared scripts
-└── prettier.config.cjs     # Formatting rules
+│   ├── api/
+│   ├── mobile/
+│   └── report-manager/
+├── db/
+├── docs/
+├── docker-compose.yml
+├── .env.example
+└── package.json
 ```
 
-## 🚀 Getting Started
+## Prerequisites
 
-### 1. Requirements
+- Node.js >= 18
+- npm >= 10
+- Python >= 3.10 (for embedded OCR engine / KB service)
+- PostgreSQL >= 14 (local mode)
+- Docker + Docker Compose v2 (container mode)
 
-- Node.js ≥ 18
-- npm ≥ 10
-- PostgreSQL ≥ 14
-- Optional: Expo Go for device testing
-- Optional: Python ≥ 3.10 (knowledge service)
+## Quick Start (Local)
 
-### 2. Installation
+1. Install dependencies
 
 ```bash
-git clone <repository-url>
+git clone <repo-url>
 cd openrd
-cp .env.example .env      # adjust for your environment
-npm install               # installs workspace dependencies & sets up Husky
+cp .env.example .env
+npm install
 ```
 
-If you want to run the Python knowledge service:
+2. Optional: start dependencies with Docker
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up -d postgres
 ```
 
-The knowledge service depends on Chroma Cloud. Make sure `.env` includes
-`CHROMA_API_KEY` and `CHROMA_TENANT_ID`.
-
-To bootstrap the database schema:
+If host port `5432` is already occupied by a local PostgreSQL instance, use:
 
 ```bash
-psql -U postgres -f db/init_db.sql
+POSTGRES_PORT=5433 docker compose up -d postgres
 ```
 
-### 3. Development commands
+3. Start API
 
-> We recommend Docker Compose v2 (`docker compose ...`). Legacy `docker-compose` (v1.29.x) may fail with `KeyError: 'ContainerConfig'` on some environments.
+```bash
+npm run dev:api
+```
 
-| Module            | Command                                | Description                                           |
-| ----------------- | -------------------------------------- | ----------------------------------------------------- |
-| Backend API       | `npm run dev:api`                      | Starts the API server on `http://localhost:4000`      |
-| Mobile app        | `npm run dev:mobile`                   | Launches the Expo developer tools                     |
-| Knowledge service | `python apps/api/knowledge_service.py` | Starts the local KB service (`http://127.0.0.1:5010`) |
-| Static prototype  | `bash scripts/serve-ui.sh 8080`        | Serves `ui/` prototype pages for quick demos          |
-| Real web frontend | `docker compose up -d web`             | Builds `apps/mobile` Expo Web and serves via Nginx    |
-| Lint              | `npm run lint`                         | Runs ESLint for all workspaces                        |
-| Test              | `npm run test`                         | Executes workspace test suites                        |
+4. Start mobile app
 
-> The `web` container proxies `/api/*` requests to `api:4000`. Configure `WEB_EXPO_PUBLIC_API_URL` in `.env` if needed (default: `/api`).
+```bash
+npm run dev:mobile
+```
 
-## 🔐 Backend capabilities
+5. Optional: install embedded OCR runtime for local API runs
 
-The API service (`apps/api`) currently exposes:
+```bash
+pip install -r apps/api/requirements-embedded-report.txt
+```
 
-- `GET /api/healthz` – health probe with database reachability check
-- `POST /api/auth/register` – phone/email registration with bcrypt password hashing
-- `POST /api/auth/login` – login via phone or email returning a JWT access token
-- Centralized logging and error handling powered by pino
-- Reusable PostgreSQL connection pool shared across modules
+6. Optional: start KB service for AI retrieval
 
-Environment variables are validated in `apps/api/src/config/env.ts`. Copy `.env.example` to configure local values.
+```bash
+python apps/api/knowledge_service.py
+```
 
-## 🧭 Git workflow
+Common local runtime settings:
 
-- Branching: keep `main` deployable; create feature branches as `feature/<scope>`
-- Pre-commit: Husky runs `lint-staged` to enforce ESLint and Prettier formatting
-- Pre-flight checks: run `npm run lint` and `npm run test` before opening a PR
-- Database changes: store SQL scripts or migrations inside `db/` and document them in PRs
+- `AI_API_BASE_URL=https://api.siliconflow.cn/v1`
+- `AI_API_MODEL=Qwen/Qwen3-VL-32B-Instruct`
+- `OCR_PROVIDER=embedded`
+- `OCR_PYTHON_BIN=/opt/anaconda3/envs/openrd-kb/bin/python` for a local conda runtime only
 
-See [`docs/WORKFLOW.md`](./docs/WORKFLOW.md) for the extended collaboration guide.
+## Docker End-to-End
 
-## 📄 Additional docs
+```bash
+docker compose up -d --build
+```
 
-- [System Architecture](./FSHD-openrd-系统架构设计文档.md)
-- [Product Requirements](./prd-v2.md)
-- [Database Bootstrap](./db/init_db.sql)
-- [AI Q&A Service](./docs/ai-chat.md)
+Container mode already pins the deployment-safe overrides:
+
+- API container uses `OCR_PYTHON_BIN=python3`
+- KB container binds to `0.0.0.0:5010`
+- API container talks to `KB_SERVICE_URL=http://kb-service:5010`
+
+If host port `5432` is already in use, override it when starting containers:
+
+```bash
+POSTGRES_PORT=5433 docker compose up -d --build
+```
+
+Default ports:
+
+- API: `http://localhost:4000`
+- KB service: `http://localhost:5010`
+- web (Expo web + nginx): `http://localhost:8080`
+
+## Common Commands
+
+```bash
+npm run dev:api
+npm run dev:mobile
+npm run db:migrate
+npm run lint
+npm run format
+npm run test:smoke
+npm run test:latest
+npm run test
+```
+
+Notes:
+
+- `npm run test:smoke` runs the fast API smoke path.
+- `npm run test:latest` runs the broadest end-to-end regression script currently in the repo.
+- `npm run db:migrate` bootstraps and applies database migrations.
+- `npm run test` executes all workspace test scripts.
+
+## API Snapshot
+
+- `GET /api/healthz`
+- `GET /api/healthz/live`
+- `GET /api/healthz/ready`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/otp/send`
+- `POST /api/auth/otp/verify`
+- `GET /api/profiles/me`
+- `POST /api/profiles/me/measurements`
+- `POST /api/profiles/me/activity-logs`
+- `POST /api/profiles/me/documents/upload`
+- `GET /api/profiles/me/documents/:id/ocr`
+- `POST /api/ai/ask`
+
+## Documentation
+
+- [Docs Index](./docs/README.md)
+- [Testing Guide](./docs/testing-guide.md)
 - [Release Checklist](./docs/release-checklist.md)
+- [Single-Node Cloud Deployment](./docs/cloud-tencent-docker.md)
+- [Workflow](./docs/WORKFLOW.md)
+- [AI Q&A](./docs/ai-chat.md)
+- [Patient Profile Model](./docs/patient-profile.md)
 
-## 💬 Support
+## License
 
-- Email: support@fshd-openrd.org
-- Community: join our patient forum
-- Documentation: more developer guides and API references coming soon
-
----
-
-We welcome contributions from the FSHD community, healthcare professionals, and developers. Please follow the shared workflow and quality standards to keep the platform reliable.
+[MIT](./LICENSE)

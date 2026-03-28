@@ -1,15 +1,23 @@
 import { Tabs } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 
 export default function Layout() {
   return (
     <Tabs
       backBehavior="order"
       screenOptions={{
-        tabBarActiveTintColor: '#969FFF',
-        tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
+        tabBarActiveTintColor: CLINICAL_COLORS.accent,
+        tabBarInactiveTintColor: CLINICAL_COLORS.textMuted,
         tabBarStyle: {
-          backgroundColor: '#0f0f23f2',
+          backgroundColor: CLINICAL_COLORS.panel,
+          borderTopColor: CLINICAL_COLORS.border,
+          height: 72,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '600',
+          paddingBottom: 6,
         },
       }}
     >

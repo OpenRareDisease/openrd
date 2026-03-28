@@ -1,11 +1,11 @@
-
-
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import ScreenBackButton from '../common/ScreenBackButton';
 import ToggleSwitch from './components/ToggleSwitch';
 import ConfirmModal from './components/ConfirmModal';
 import SuccessToast from './components/SuccessToast';
@@ -17,13 +17,13 @@ interface ToggleInfo {
 
 const PrivacySettingsScreen = () => {
   const router = useRouter();
-  
+
   // 开关状态管理
   const [isTrialPermissionEnabled, setIsTrialPermissionEnabled] = useState(true);
   const [isDonationPermissionEnabled, setIsDonationPermissionEnabled] = useState(false);
   const [isHospitalSyncEnabled, setIsHospitalSyncEnabled] = useState(true);
   const [isCommunityShareEnabled, setIsCommunityShareEnabled] = useState(true);
-  
+
   // 弹窗和提示状态
   const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
   const [isSuccessToastVisible, setIsSuccessToastVisible] = useState(false);
@@ -31,14 +31,8 @@ const PrivacySettingsScreen = () => {
   const [modalConfig, setModalConfig] = useState({
     title: '',
     message: '',
-    icon: ''
+    icon: '',
   });
-
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
-  };
 
   const handleDonationDetailsPress = () => {
     router.push('/p-data_donation');
@@ -52,7 +46,7 @@ const PrivacySettingsScreen = () => {
     switch (toggleId) {
       case 'trial-permission':
         title = newState ? '开启临床试验授权' : '关闭临床试验授权';
-        message = newState 
+        message = newState
           ? '开启后，临床试验机构将能够访问您的档案数据以评估入组资格。您可以随时在此页面关闭此授权。'
           : '关闭后，临床试验机构将无法访问您的档案数据，可能影响您参与临床试验的机会。';
         icon = newState ? 'check-circle' : 'exclamation-triangle';
@@ -125,17 +119,17 @@ const PrivacySettingsScreen = () => {
     if (!isDonationPermissionEnabled) {
       return {
         status: '未授权',
-        statusColor: '#8E8E93',
+        statusColor: CLINICAL_COLORS.textMuted,
         lastDonation: '--',
-        donatedCount: '0 条'
+        donatedCount: '0 条',
       };
     }
 
     return {
       status: '已授权',
-      statusColor: '#34C759',
+      statusColor: CLINICAL_COLORS.success,
       lastDonation: new Date().toLocaleDateString(),
-      donatedCount: '12 条'
+      donatedCount: '12 条',
     };
   };
 
@@ -145,9 +139,7 @@ const PrivacySettingsScreen = () => {
     <SafeAreaView style={styles.container}>
       {/* 顶部导航栏 */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
-          <FontAwesome6 name="chevron-left" size={16} color="#8E8E93" />
-        </TouchableOpacity>
+        <ScreenBackButton />
         <Text style={styles.headerTitle}>隐私设置</Text>
         <View style={styles.headerPlaceholder} />
       </View>
@@ -156,7 +148,7 @@ const PrivacySettingsScreen = () => {
         {/* 数据授权设置 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>数据授权</Text>
-          
+
           {/* 临床试验数据授权 */}
           <View style={styles.settingItem}>
             <View style={styles.settingContent}>
@@ -175,9 +167,7 @@ const PrivacySettingsScreen = () => {
           <View style={styles.settingItem}>
             <View style={styles.settingContent}>
               <Text style={styles.settingTitle}>匿名化数据捐赠</Text>
-              <Text style={styles.settingDescription}>
-                将您的匿名化数据捐赠给FSHD科研项目
-              </Text>
+              <Text style={styles.settingDescription}>将您的匿名化数据捐赠给FSHD科研项目</Text>
             </View>
             <ToggleSwitch
               isEnabled={isDonationPermissionEnabled}
@@ -203,9 +193,7 @@ const PrivacySettingsScreen = () => {
           <View style={styles.settingItem}>
             <View style={styles.settingContent}>
               <Text style={styles.settingTitle}>社区内容分享</Text>
-              <Text style={styles.settingDescription}>
-                允许在社区中分享您的康复经验和训练视频
-              </Text>
+              <Text style={styles.settingDescription}>允许在社区中分享您的康复经验和训练视频</Text>
             </View>
             <ToggleSwitch
               isEnabled={isCommunityShareEnabled}
@@ -217,18 +205,18 @@ const PrivacySettingsScreen = () => {
         {/* 数据捐赠详情 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>数据捐赠详情</Text>
-          
+
           <View style={styles.donationInfoCard}>
             <View style={styles.donationInfoHeader}>
               <Text style={styles.donationInfoTitle}>了解数据捐赠</Text>
               <TouchableOpacity onPress={handleDonationDetailsPress}>
                 <View style={styles.detailsButton}>
                   <Text style={styles.detailsButtonText}>查看详情</Text>
-                  <FontAwesome6 name="chevron-right" size={10} color="#969FFF" />
+                  <FontAwesome6 name="chevron-right" size={10} color={CLINICAL_COLORS.accent} />
                 </View>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.donationStatus}>
               <View style={styles.statusRow}>
                 <Text style={styles.statusLabel}>捐赠状态</Text>
@@ -253,7 +241,7 @@ const PrivacySettingsScreen = () => {
           <View style={styles.privacyNoticeCard}>
             <View style={styles.privacyNoticeHeader}>
               <View style={styles.privacyIconContainer}>
-                <FontAwesome6 name="shield-halved" size={14} color="#969FFF" />
+                <FontAwesome6 name="shield-halved" size={14} color={CLINICAL_COLORS.accent} />
               </View>
               <View style={styles.privacyNoticeContent}>
                 <Text style={styles.privacyNoticeTitle}>隐私保护承诺</Text>
@@ -266,20 +254,16 @@ const PrivacySettingsScreen = () => {
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>
-                      严格遵守HIPAA、GDPR等国际隐私标准
-                    </Text>
+                    <Text style={styles.privacyNoticeText}>严格遵守HIPAA、GDPR等国际隐私标准</Text>
+                  </View>
+                  <View style={styles.privacyNoticeItem}>
+                    <Text style={styles.bulletPoint}>•</Text>
+                    <Text style={styles.privacyNoticeText}>区块链存证数据操作日志，确保可追溯</Text>
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
                     <Text style={styles.privacyNoticeText}>
-                      区块链存证数据操作日志，确保可追溯
-                    </Text>
-                  </View>
-                  <View style={styles.privacyNoticeItem}>
-                    <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>
-                      支持"最小必要"授权原则，您可随时撤销
+                      支持“最小必要”授权原则，您可随时撤销
                     </Text>
                   </View>
                 </View>
@@ -300,13 +284,9 @@ const PrivacySettingsScreen = () => {
       />
 
       {/* 成功提示 */}
-      <SuccessToast
-        isVisible={isSuccessToastVisible}
-        message="设置已更新"
-      />
+      <SuccessToast isVisible={isSuccessToastVisible} message="设置已更新" />
     </SafeAreaView>
   );
 };
 
 export default PrivacySettingsScreen;
-

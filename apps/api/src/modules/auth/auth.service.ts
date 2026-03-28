@@ -29,6 +29,12 @@ interface AuthenticatedUser {
   createdAt: string;
 }
 
+interface LoginGuardRow {
+  identifier: string;
+  failure_count: number;
+  locked_until: Date | string | null;
+}
+
 export class AuthService {
   private readonly env: AppEnv;
   private readonly logger: AppLogger;
@@ -38,6 +44,90 @@ export class AuthService {
     this.env = env;
     this.logger = logger;
     this.pool = pool;
+  }
+
+  private normalizeIdentifier(identifier: string) {
+    return identifier.trim().toLowerCase();
+  }
+
+  private async getLoginGuard(identifier: string) {
+    const normalized = this.normalizeIdentifier(identifier);
+    const result = await this.pool.query<LoginGuardRow>(
+      `SELECT identifier, failure_count, locked_until
+       FROM auth_login_guards
+       WHERE identifier = $1`,
+      [normalized],
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  private async assertLoginAllowed(identifier: string) {
+    const guard = await this.getLoginGuard(identifier);
+    if (!guard?.locked_until) {
+      return;
+    }
+
+    const lockedUntil = new Date(guard.locked_until);
+    if (Number.isNaN(lockedUntil.getTime()) || lockedUntil.getTime() <= Date.now()) {
+      return;
+    }
+
+    const retryAfterSeconds = Math.max(Math.ceil((lockedUntil.getTime() - Date.now()) / 1000), 1);
+    throw new AppError('登录失败次数过多，请稍后再试', 429, {
+      retryAfterSeconds,
+      lockedUntil: lockedUntil.toISOString(),
+    });
+  }
+
+  private async clearLoginGuards(identifiers: Array<string | null | undefined>) {
+    const normalized = identifiers
+      .map((value) => (value ? this.normalizeIdentifier(value) : ''))
+      .filter(Boolean);
+
+    if (normalized.length === 0) {
+      return;
+    }
+
+    await this.pool.query(`DELETE FROM auth_login_guards WHERE identifier = ANY($1::citext[])`, [
+      normalized,
+    ]);
+  }
+
+  private async registerLoginFailure(identifier: string) {
+    const normalized = this.normalizeIdentifier(identifier);
+    const current = await this.getLoginGuard(normalized);
+    const nextFailureCount =
+      current?.locked_until && new Date(current.locked_until).getTime() <= Date.now()
+        ? 1
+        : (current?.failure_count ?? 0) + 1;
+    const shouldLock = nextFailureCount >= this.env.LOGIN_MAX_FAILURES;
+    const lockedUntil = shouldLock
+      ? new Date(Date.now() + this.env.LOGIN_LOCK_MINUTES * 60 * 1000)
+      : null;
+
+    await this.pool.query(
+      `INSERT INTO auth_login_guards (
+         identifier,
+         failure_count,
+         first_failed_at,
+         last_failed_at,
+         locked_until
+       )
+       VALUES ($1, $2, NOW(), NOW(), $3)
+       ON CONFLICT (identifier)
+       DO UPDATE SET
+         failure_count = EXCLUDED.failure_count,
+         last_failed_at = NOW(),
+         locked_until = EXCLUDED.locked_until,
+         first_failed_at = CASE
+           WHEN auth_login_guards.locked_until IS NOT NULL
+             AND auth_login_guards.locked_until <= NOW()
+           THEN NOW()
+           ELSE auth_login_guards.first_failed_at
+         END`,
+      [normalized, nextFailureCount, lockedUntil],
+    );
   }
 
   private createToken(user: AuthenticatedUser) {
@@ -122,6 +212,9 @@ export class AuthService {
 
   async login(payload: LoginInput, meta?: { ip?: string; userAgent?: string }) {
     const identifier = payload.phoneNumber ?? payload.email;
+    const normalizedIdentifier = this.normalizeIdentifier(identifier ?? '');
+
+    await this.assertLoginAllowed(normalizedIdentifier);
 
     const result = await this.pool.query<UserRow>(
       `SELECT id, phone_number, email, role, password_hash, created_at
@@ -131,6 +224,7 @@ export class AuthService {
     );
 
     if (!result.rowCount) {
+      await this.registerLoginFailure(normalizedIdentifier);
       await this.logAudit('auth.login_failed', {
         identifier,
         reason: 'not_found',
@@ -144,6 +238,7 @@ export class AuthService {
     const passwordHash = userRow.password_hash;
 
     if (!passwordHash) {
+      await this.registerLoginFailure(normalizedIdentifier);
       await this.logAudit('auth.login_failed', {
         identifier,
         reason: 'no_password',
@@ -156,6 +251,7 @@ export class AuthService {
     const isValid = await bcrypt.compare(payload.password, passwordHash);
 
     if (!isValid) {
+      await this.registerLoginFailure(normalizedIdentifier);
       await this.logAudit('auth.login_failed', {
         identifier,
         reason: 'invalid_password',
@@ -166,6 +262,7 @@ export class AuthService {
     }
 
     const user = this.serializeUser(userRow);
+    await this.clearLoginGuards([normalizedIdentifier, user.phoneNumber, user.email]);
     const token = this.createToken(user);
     this.logger.info({ userId: user.id }, 'User logged in');
     await this.logAudit('auth.login_success', {

@@ -1,9 +1,10 @@
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   keyboardAvoidingView: {
     flex: 1,
@@ -21,15 +22,15 @@ export default StyleSheet.create({
     flex: 1,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontSize: 14,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -42,7 +43,7 @@ export default StyleSheet.create({
   searchButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
@@ -58,14 +59,14 @@ export default StyleSheet.create({
     marginBottom: 12,
   },
   searchResultCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
     padding: 12,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -84,7 +85,7 @@ export default StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
@@ -95,12 +96,12 @@ export default StyleSheet.create({
   searchResultTitle: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
   },
   searchResultAnswer: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 18,
   },
   progressContainer: {
@@ -116,23 +117,23 @@ export default StyleSheet.create({
   progressTitle: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   progressStatus: {
     fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.6)',
+    color: CLINICAL_COLORS.textMuted,
   },
   progressBar: {
     height: 6,
     borderRadius: 999,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: CLINICAL_TINTS.panelStrong,
     overflow: 'hidden',
     marginBottom: 10,
   },
   progressFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
   },
   progressStages: {
     gap: 6,
@@ -146,29 +147,29 @@ export default StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    backgroundColor: CLINICAL_TINTS.disabledTrack,
   },
   progressStageDotActive: {
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
   },
   progressStageDotDone: {
-    backgroundColor: '#10B981',
+    backgroundColor: CLINICAL_COLORS.success,
   },
   progressStageDotError: {
-    backgroundColor: '#F97316',
+    backgroundColor: CLINICAL_COLORS.warning,
   },
   progressStageText: {
     fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.6)',
+    color: CLINICAL_COLORS.textMuted,
   },
   progressStageTextActive: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   progressStageTextDone: {
-    color: 'rgba(255, 255, 255, 0.85)',
+    color: CLINICAL_COLORS.text,
   },
   progressStageTextError: {
-    color: '#FCA5A5',
+    color: CLINICAL_COLORS.warning,
   },
   section: {
     paddingHorizontal: 24,
@@ -183,25 +184,25 @@ export default StyleSheet.create({
   sectionTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
   },
   viewAllButton: {
     fontSize: 12,
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
   hotQuestionsList: {
     gap: 8,
   },
   questionItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
     padding: 8,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -219,7 +220,7 @@ export default StyleSheet.create({
   questionText: {
     flex: 1,
     fontSize: 12,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginRight: 8,
   },
   chevronIcon: {
@@ -233,7 +234,7 @@ export default StyleSheet.create({
   },
   answerText: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 18,
   },
   knowledgeGrid: {
@@ -243,14 +244,14 @@ export default StyleSheet.create({
   },
   knowledgeItem: {
     width: '48%',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
     padding: 8,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -276,24 +277,24 @@ export default StyleSheet.create({
   knowledgeTitle: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   knowledgeDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   resourcesList: {
     gap: 8,
   },
   resourceCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
     padding: 8,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -322,37 +323,37 @@ export default StyleSheet.create({
   resourceName: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 2,
   },
   resourceDistance: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 2,
   },
   resourceDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   resourceRating: {
     alignItems: 'flex-end',
   },
   resourceRatingText: {
     fontSize: 12,
-    color: '#10B981',
+    color: CLINICAL_COLORS.success,
     marginBottom: 2,
   },
   resourceType: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   pathwaysList: {
     gap: 8,
   },
   pathwayItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
     padding: 8,
     flexDirection: 'row',
@@ -360,7 +361,7 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -389,10 +390,10 @@ export default StyleSheet.create({
   pathwayTitle: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   pathwayDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
 });

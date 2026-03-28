@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import {
   getAiAskProgress,
   initAiAskProgress,
 } from '../../lib/api';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import styles from './styles';
 
 interface HotQuestion {
@@ -122,28 +123,28 @@ const P_QNA = () => {
       title: '分型鉴别',
       description: 'FSHD1型与2型的区别',
       icon: 'dna',
-      color: '#969FFF',
+      color: CLINICAL_COLORS.accent,
     },
     {
       id: '2',
       title: '症状管理',
       description: '肌肉无力、疼痛处理',
       icon: 'stethoscope',
-      color: '#5147FF',
+      color: CLINICAL_COLORS.success,
     },
     {
       id: '3',
       title: '遗传咨询',
       description: '家族遗传风险评估',
       icon: 'users',
-      color: '#3E3987',
+      color: CLINICAL_COLORS.accentStrong,
     },
     {
       id: '4',
       title: '用药指导',
       description: '药物使用注意事项',
       icon: 'pills',
-      color: '#10B981',
+      color: CLINICAL_COLORS.warning,
     },
   ];
 
@@ -156,7 +157,7 @@ const P_QNA = () => {
       rating: '⭐ 4.8',
       type: '三甲医院',
       icon: 'hospital',
-      color: '#969FFF',
+      color: CLINICAL_COLORS.accent,
     },
     {
       id: '2',
@@ -166,7 +167,7 @@ const P_QNA = () => {
       rating: '⭐ 4.6',
       type: '医保定点',
       icon: 'heartbeat',
-      color: '#5147FF',
+      color: CLINICAL_COLORS.success,
     },
   ];
 
@@ -176,21 +177,21 @@ const P_QNA = () => {
       title: '初诊检查流程',
       description: '标准化诊断检查项目',
       icon: 'clipboard-list',
-      color: '#3B82F6',
+      color: CLINICAL_COLORS.accent,
     },
     {
       id: '2',
       title: '随访管理计划',
       description: '定期复查与评估安排',
       icon: 'calendar-check',
-      color: '#8B5CF6',
+      color: CLINICAL_COLORS.accentStrong,
     },
     {
       id: '3',
       title: '康复治疗指南',
       description: '个性化康复训练方案',
       icon: 'dumbbell',
-      color: '#F97316',
+      color: CLINICAL_COLORS.warning,
     },
   ];
 
@@ -312,7 +313,7 @@ const P_QNA = () => {
         <View style={styles.searchResultCard}>
           <View style={styles.searchResultHeader}>
             <View style={styles.searchResultIcon}>
-              <FontAwesome6 name="robot" size={12} color="#969FFF" />
+              <FontAwesome6 name="robot" size={12} color={CLINICAL_COLORS.accent} />
             </View>
             <View style={styles.searchResultContent}>
               <Text style={styles.searchResultTitle}>智能回答</Text>
@@ -389,7 +390,7 @@ const P_QNA = () => {
               <FontAwesome6
                 name="chevron-down"
                 size={10}
-                color="rgba(255, 255, 255, 0.5)"
+                color={CLINICAL_COLORS.textMuted}
                 style={[
                   styles.chevronIcon,
                   expandedQuestionId === item.id && styles.chevronIconExpanded,
@@ -487,7 +488,7 @@ const P_QNA = () => {
                 <Text style={styles.pathwayDescription}>{item.description}</Text>
               </View>
             </View>
-            <FontAwesome6 name="chevron-right" size={10} color="rgba(255, 255, 255, 0.5)" />
+            <FontAwesome6 name="chevron-right" size={10} color={CLINICAL_COLORS.textMuted} />
           </TouchableOpacity>
         ))}
       </View>
@@ -507,7 +508,7 @@ const P_QNA = () => {
               ref={searchInputRef}
               style={styles.searchInput}
               placeholder="请输入您的问题..."
-              placeholderTextColor="rgba(255, 255, 255, 0.5)"
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
               value={searchQuery}
               onChangeText={setSearchQuery}
               onSubmitEditing={handleSearchPress}
@@ -522,7 +523,7 @@ const P_QNA = () => {
               <FontAwesome6
                 name={isSearchLoading ? 'spinner' : 'magnifying-glass'}
                 size={14}
-                color="#FFFFFF"
+                color={CLINICAL_COLORS.text}
               />
             </TouchableOpacity>
           </View>

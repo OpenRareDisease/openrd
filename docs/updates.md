@@ -4,6 +4,63 @@
 
 ---
 
+## 2026-03-29
+
+### 完成事项
+
+1. 完成 `report-manager` 与主仓库整合，启用 embedded OCR / parser，新增 FSHD 专病结构化抽取、标准化摘要和报告详情页展示链路。
+2. 完成患者随访扩展能力，包括 submission、symptom score、daily impact、follow-up event、clinical passport、报告聚合视图和首页/病程页入口调整。
+3. 完成上线前安全与运维收口，包括日志脱敏、鉴权/AI 限流、登录失败锁定、生产 env fail-fast、移动端 `expo-secure-store` 接入。
+4. 完成 AI 与知识库链路联调，切换到可用模型，验证 AI 问答、报告摘要、KB readiness / warmup 与 fallback 行为。
+5. 完成 Docker 部署收口，修复 API 镜像迁移路径、容器 bootstrap 冲突、KB 冷启动缓存，并同步中英 README、测试文档和发布清单。
+
+### 验证
+
+```bash
+npm run build --workspace @openrd/api
+npx tsc --noEmit -p apps/mobile/tsconfig.json
+docker compose config
+POSTGRES_PORT=5433 docker compose up -d --build --remove-orphans
+RUN_AI_TESTS=1 bash scripts/smoke-test.sh
+RUN_AI_TESTS=1 bash scripts/latest-test.sh
+```
+
+### 当前结论
+
+- 当前仓库已达到 GitHub `v2.0.0` release 候选状态。
+- 代码、Docker、数据库迁移、AI 与 KB 主链路均已实际联调通过。
+- 正式公网部署前仍需替换生产环境密钥、短信通道、CORS 域名等运行参数。
+
+### 下一步建议
+
+1. 以 `release/v2` 或当前稳定分支提交本次改动并打 `v2.0.0` tag。
+2. 生成生产 `.env`，替换默认密钥和 mock 配置。
+3. 若面向公网生产，继续规划对象存储、反向代理、HTTPS 和备份策略。
+
+## 2026-03-17
+
+### 完成事项
+
+1. 系统性核对仓库文档与当前代码结构，重写根 README（中/英）并补充文档导航。
+2. 更新子模块文档：`apps/mobile/README.md`、`apps/api/README.md`、`apps/report-manager/README.md`，统一为 monorepo 使用方式。
+3. 更新协作与交付文档：`docs/WORKFLOW.md`、`docs/testing-guide.md`、`docs/release-checklist.md`，移除过期说明并校正命令。
+4. 新增 `docs/README.md` 作为文档索引入口。
+
+### 验证
+
+```bash
+npm run lint
+```
+
+- 结果：通过（API 与 mobile lint 均可执行）。
+
+### 备注
+
+- `apps/api` 当前无 Vitest 用例文件，`npm run test --workspace @openrd/api -- --run` 会因无测试文件返回非零。
+- `apps/mobile` `npm run test` 默认是 watch 模式，CI 需额外传参。
+
+---
+
 ## 2025-11-16
 
 ### 完成事项

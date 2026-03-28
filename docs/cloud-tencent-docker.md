@@ -7,11 +7,13 @@
 1. 选择一台 Ubuntu 22.04 或 20.04 的云服务器
 2. 开放安全组端口
 
-- 4000 (API)
-- 8000 (report-manager)
-- 5010 (KB service)
-- 5432 (PostgreSQL，如果不使用云数据库可关闭公网)
-- 9000/9001 (MinIO，如果不使用可关闭公网)
+- 80 / 443（推荐由反向代理统一入口）
+- 4000（如果暂时直连 API）
+
+不建议公网暴露：
+
+- 5010（KB service）
+- 5432（PostgreSQL）
 
 ## 2. 安装 Docker 与 Compose
 
@@ -24,10 +26,17 @@
 2. 拷贝并填写 .env
 
 - 基础：DATABASE_URL、JWT_SECRET、OTP_HASH_SECRET
-- AI：AI_API_KEY
+- 运行模式：`NODE_ENV=production`
+- AI：AI_API_BASE_URL、AI_API_MODEL、AI_API_KEY
 - Chroma：CHROMA_API_KEY、CHROMA_TENANT_ID
-- Report Manager：REPORT_MANAGER_API_KEY、REPORT_MANAGER_SECRET_KEY、REPORT_MANAGER_AI_API_KEY
-- MinIO：REPORT_MANAGER_MINIO_ACCESS_KEY、REPORT_MANAGER_MINIO_SECRET_KEY
+- OCR：OCR_PROVIDER
+- CORS：把 `CORS_ORIGIN` 设置为实际前端域名；本地 Docker 联调用 `http://localhost:8080`
+
+说明：
+
+- 如果直接使用仓库里的 `docker-compose.yml`，容器内 `OCR_PYTHON_BIN` 会固定为 `python3`，不要填本机 conda 路径。
+- 当前已验证可用的 SiliconFlow 文本模型配置是 `Qwen/Qwen3-VL-32B-Instruct`。
+- 如果宿主机已有 PostgreSQL 占用 `5432`，启动时可用 `POSTGRES_PORT=5433 docker compose up -d --build` 规避端口冲突。
 
 3. 移动端设置 EXPO_PUBLIC_API_URL 指向云端 API
 
@@ -36,18 +45,20 @@
 在仓库根目录执行：
 
 ```bash
+npm run db:migrate
+docker compose config
 docker compose up -d --build
 ```
 
 ## 5. 冒烟检查
 
 1. API 健康检查
-   `GET http://<server-ip>:4000/api/healthz`
-2. 报告服务健康检查
-   `GET http://<server-ip>:8000/healthz`
-3. AI 问答与报告解析
+   `GET http://<server-ip>:4000/api/healthz/live`
+   `GET http://<server-ip>:4000/api/healthz/ready`
+2. AI 问答与报告解析
 
 ## 6. 注意事项
 
 1. 单机版默认使用本地卷保存上传文件与数据库
 2. 如果要多实例，请改成对象存储与云数据库
+3. 不建议公网暴露 5010；`kb-service` 仅供 API 容器内网访问

@@ -1,17 +1,33 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
+import { useLocalSearchParams } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   ApiError,
   generatePatientDocumentSummary,
   getPatientDocumentOcr,
   type PatientDocument,
 } from '../../lib/api';
+import {
+  buildBodyMapFromFields,
+  CLINICAL_COLORS,
+  CLINICAL_GRADIENTS,
+  inferMriBodyMap,
+  inferReportKind,
+  summarizeBodyRegions,
+  type BodyView,
+} from '../../lib/clinical-visuals';
 import styles from './styles';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import ScreenBackButton from '../common/ScreenBackButton';
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
+type DebugPayload = OcrPayload & {
+  aiExtraction?: unknown;
+  ai_extraction?: unknown;
+  extracted_text?: string;
+};
 
 const getAnalysisStatus = (payload: OcrPayload | null) => {
   const status = payload?.fields?.analysisStatus ?? payload?.fields?.analysis_status;
@@ -34,8 +50,24 @@ const pickField = (fields: Record<string, string> | undefined, keys: string[]) =
   return undefined;
 };
 
+const formatKindLabel = (kind: string) => {
+  switch (kind) {
+    case 'genetic':
+      return '基因报告';
+    case 'mri':
+      return 'MRI / 影像';
+    case 'lab':
+      return '实验室';
+    case 'monitoring':
+      return '监测资料';
+    case 'strength':
+      return '肌力评估';
+    default:
+      return '综合报告';
+  }
+};
+
 export default function ReportDetailScreen() {
-  const router = useRouter();
   const params = useLocalSearchParams();
   const documentId = useMemo(() => {
     const raw = params.documentId;
@@ -48,17 +80,17 @@ export default function ReportDetailScreen() {
   const [payload, setPayload] = useState<OcrPayload | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
-
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summary, setSummary] = useState<string>('');
+  const [bodyView, setBodyView] = useState<BodyView>('front');
 
   const load = async (id: string) => {
     const res = await getPatientDocumentOcr(id);
-    const next = (res as any)?.ocrPayload ?? null;
+    const next = res.ocrPayload ?? null;
     setPayload(next);
     const maybeSummary = next?.fields?.aiSummary;
     setSummary(typeof maybeSummary === 'string' ? maybeSummary : '');
-    return next as OcrPayload | null;
+    return next;
   };
 
   useEffect(() => {
@@ -85,8 +117,8 @@ export default function ReportDetailScreen() {
               poller.current = null;
               return;
             }
-          } catch (error) {
-            // ignore; retry
+          } catch {
+            // retry on next poll
           }
 
           if (Date.now() - startedAt > 10 * 60 * 1000) {
@@ -122,15 +154,71 @@ export default function ReportDetailScreen() {
 
   const fields = payload?.fields ?? undefined;
   const status = getAnalysisStatus(payload) ?? 'unknown';
+  const reportKind = inferReportKind(payload);
+  const strengthRegions = useMemo(() => buildBodyMapFromFields(fields), [fields]);
+  const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
+  const activeRegions = reportKind === 'mri' ? mriInference.regions : strengthRegions;
+  const activeMode = reportKind === 'mri' ? 'mri' : 'strength';
+  const activeSummary = useMemo(
+    () => (reportKind === 'mri' ? mriInference.findings : summarizeBodyRegions(strengthRegions, 4)),
+    [mriInference.findings, reportKind, strengthRegions],
+  );
 
   const structuredItems = useMemo(() => {
     if (!fields) return [];
     const items: Array<{ label: string; value?: string }> = [
       { label: '解析状态', value: status },
+      { label: '识别类型', value: pickField(fields, ['classifiedType', 'classified_type']) },
+      {
+        label: '识别置信度',
+        value: pickField(fields, ['classifiedTypeConfidence', 'classified_type_confidence']),
+      },
       { label: '报告时间', value: pickField(fields, ['reportTime', 'report_time']) },
       { label: '报告名称', value: pickField(fields, ['reportName', 'report_name']) },
-      { label: 'D4Z4重复数', value: pickField(fields, ['d4z4Repeats', 'd4z4_repeats']) },
+      {
+        label: 'FSHD 分型',
+        value: pickField(fields, [
+          'diagnosisType',
+          'geneType',
+          'geneticType',
+          'diagnosis_type',
+          'genetic_type',
+        ]),
+      },
+      { label: '单倍型', value: pickField(fields, ['haplotype', 'haplotype4q']) },
+      {
+        label: 'EcoRI',
+        value: pickField(fields, [
+          'ecoRIFragment',
+          'ecoriFragmentKb',
+          'ecori_fragment_kb',
+          'EcoRI_kb',
+          'ecoriFragment',
+        ]),
+      },
+      {
+        label: 'D4Z4 重复',
+        value: pickField(fields, [
+          'd4z4Repeats',
+          'd4z4RepeatPathogenic',
+          'd4z4_repeat_pathogenic',
+          'd4z4_repeats',
+        ]),
+      },
       { label: '甲基化值', value: pickField(fields, ['methylationValue', 'methylation_value']) },
+      { label: 'MRI 印象', value: pickField(fields, ['reportImpression', 'report_impression']) },
+      {
+        label: '肺通气模式',
+        value: pickField(fields, ['ventilatoryPattern', 'ventilatory_pattern']),
+      },
+      { label: 'FVC %Pred', value: pickField(fields, ['fvcPredPct', 'fvc_pred_pct']) },
+      { label: 'DLCO %Pred', value: pickField(fields, ['dlcoPredPct', 'dlco_pred_pct']) },
+      {
+        label: '膈肌运动',
+        value: pickField(fields, ['diaphragmMotionSummary', 'diaphragm_motion_summary']),
+      },
+      { label: '心电结论', value: pickField(fields, ['ecgSummary', 'ecg_summary']) },
+      { label: 'LVEF', value: pickField(fields, ['LVEF', 'lvef']) },
       {
         label: '前锯肌脂肪化等级',
         value: pickField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']),
@@ -142,16 +230,20 @@ export default function ReportDetailScreen() {
         label: '股四头肌肌力',
         value: pickField(fields, ['quadricepsStrength', 'quadriceps_strength']),
       },
-      { label: '肝功能', value: pickField(fields, ['liverFunction', 'liver_function']) },
-      { label: '肌酸激酶', value: pickField(fields, ['creatineKinase', 'creatine_kinase']) },
+      { label: '肌酸激酶', value: pickField(fields, ['creatineKinase', 'creatine_kinase', 'ck']) },
+      { label: '肌红蛋白', value: pickField(fields, ['mb', 'myoglobin']) },
+      { label: 'LDH', value: pickField(fields, ['ldh', 'LDH']) },
+      { label: 'CKMB', value: pickField(fields, ['ckmb', 'CKMB']) },
       { label: '楼梯测试', value: pickField(fields, ['stairTestResult', 'stair_test_result']) },
     ];
     return items.filter((item) => item.value);
   }, [fields, status]);
 
+  const highlightItems = structuredItems.slice(0, 4);
+
   const rawText = useMemo(() => {
     if (!payload) return '';
-    const obj = payload as any;
+    const obj = payload as DebugPayload;
     const aiExtraction = obj.aiExtraction ?? obj.ai_extraction ?? null;
     const extractedText = obj.extractedText ?? obj.extracted_text ?? '';
     const compact = {
@@ -175,9 +267,8 @@ export default function ReportDetailScreen() {
       setSummary(res.summary);
       setPayload((prev) => {
         if (!prev) return prev;
-        const prevAny = prev as any;
-        const nextFields = { ...(prevAny.fields ?? {}), aiSummary: res.summary };
-        return { ...prevAny, fields: nextFields };
+        const nextFields = { ...(prev.fields ?? {}), aiSummary: res.summary };
+        return { ...prev, fields: nextFields };
       });
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '生成 AI 总结失败';
@@ -191,47 +282,120 @@ export default function ReportDetailScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <FontAwesome6 name="arrow-left" size={16} color="#FFFFFF" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>报告详情</Text>
+          <ScreenBackButton />
+          <View>
+            <Text style={styles.eyebrow}>REPORT READER</Text>
+            <Text style={styles.headerTitle}>报告详情</Text>
+          </View>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>概览</Text>
-          <View style={styles.kvRow}>
-            <Text style={styles.kvLabel}>documentId</Text>
-            <Text style={styles.kvValue}>{documentId ?? '--'}</Text>
-          </View>
-          <View style={[styles.kvRow, { borderBottomWidth: 0 }]}>
-            <Text style={styles.kvLabel}>状态</Text>
-            <Text style={styles.kvValue}>{status}</Text>
-          </View>
-          {isLoading && (
-            <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <ActivityIndicator color="#969FFF" />
-              <Text style={styles.smallText}>加载中...</Text>
+        <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+          <View style={styles.heroTopRow}>
+            <View style={styles.kindPill}>
+              <Text style={styles.kindPillText}>{formatKindLabel(reportKind)}</Text>
             </View>
-          )}
-          {errorMessage && <Text style={styles.smallText}>{errorMessage}</Text>}
-          {!isLoading && payload && isProcessing(payload) && (
-            <Text style={styles.smallText}>解析中，页面会自动刷新进度。</Text>
-          )}
-        </View>
+            <Text style={styles.statusText}>{status}</Text>
+          </View>
+          <Text style={styles.heroTitle}>
+            {pickField(fields, ['reportName', 'report_name']) || '结构化报告阅读视图'}
+          </Text>
+          <Text style={styles.heroDescription}>
+            documentId: {documentId ?? '--'} {isProcessing(payload) ? ' · 解析进行中' : ''}
+          </Text>
+
+          <View style={styles.highlightGrid}>
+            {highlightItems.length > 0 ? (
+              highlightItems.map((item) => (
+                <View key={item.label} style={styles.highlightItem}>
+                  <Text style={styles.highlightLabel}>{item.label}</Text>
+                  <Text style={styles.highlightValue}>{item.value}</Text>
+                </View>
+              ))
+            ) : (
+              <View style={styles.highlightItem}>
+                <Text style={styles.highlightLabel}>提示</Text>
+                <Text style={styles.highlightValue}>暂无结构化字段</Text>
+              </View>
+            )}
+          </View>
+        </LinearGradient>
+
+        {(Object.keys(activeRegions).length > 0 || reportKind === 'mri') && (
+          <View style={styles.card}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.cardTitle}>
+                {reportKind === 'mri' ? '人体受累示意图' : '肌力分布示意图'}
+              </Text>
+              <View style={styles.toggleRow}>
+                <TouchableOpacity
+                  style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
+                  onPress={() => setBodyView('front')}
+                >
+                  <Text
+                    style={[
+                      styles.toggleChipText,
+                      bodyView === 'front' && styles.toggleChipTextActive,
+                    ]}
+                  >
+                    正面
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
+                  onPress={() => setBodyView('back')}
+                >
+                  <Text
+                    style={[
+                      styles.toggleChipText,
+                      bodyView === 'back' && styles.toggleChipTextActive,
+                    ]}
+                  >
+                    背面
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <HumanBodyFigure
+              view={bodyView}
+              regions={activeRegions}
+              mode={activeMode}
+              subtitle={
+                reportKind === 'mri'
+                  ? '根据报告正文和结构化字段推断受累区域，重点突出分布与侧别信息。'
+                  : '根据结构化肌力字段生成的部位示意。'
+              }
+            />
+
+            <View style={styles.tagWrap}>
+              {activeSummary.length > 0 ? (
+                activeSummary.map((item) => (
+                  <View key={item} style={styles.summaryTag}>
+                    <Text style={styles.summaryTagText}>{item}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.smallText}>当前报告尚无可直接映射的人体区域。</Text>
+              )}
+            </View>
+          </View>
+        )}
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>结构化字段</Text>
+          <Text style={styles.cardTitle}>结构化证据</Text>
           {structuredItems.length === 0 ? (
             <Text style={styles.smallText}>暂无结构化字段（或仍在解析中）。</Text>
           ) : (
-            structuredItems.map((item) => (
-              <View key={item.label} style={styles.kvRow}>
-                <Text style={styles.kvLabel}>{item.label}</Text>
-                <Text style={styles.kvValue}>{item.value}</Text>
-              </View>
-            ))
+            <View style={styles.structuredGrid}>
+              {structuredItems.map((item) => (
+                <View key={item.label} style={styles.structuredItem}>
+                  <Text style={styles.structuredLabel}>{item.label}</Text>
+                  <Text style={styles.structuredValue}>{item.value}</Text>
+                </View>
+              ))}
+            </View>
           )}
         </View>
 
@@ -240,12 +404,14 @@ export default function ReportDetailScreen() {
           {summary ? (
             <>
               <Text style={styles.summaryText}>{summary}</Text>
-              <Text style={[styles.smallText, { marginTop: 10 }]}>仅供参考，需结合医生意见。</Text>
+              <Text style={[styles.smallText, { marginTop: 10 }]}>
+                仅供参考，仍需结合医生判断。
+              </Text>
             </>
           ) : (
             <>
               <Text style={styles.smallText}>
-                当前报告暂无 AI 总结（可按需生成，生成后会缓存到该报告）。
+                当前报告暂无 AI 总结，可在解析完成后按需生成并缓存。
               </Text>
               <View style={{ marginTop: 12 }}>
                 <TouchableOpacity
@@ -254,7 +420,7 @@ export default function ReportDetailScreen() {
                   onPress={onGenerateSummary}
                 >
                   {summaryLoading ? (
-                    <ActivityIndicator color="#FFFFFF" />
+                    <ActivityIndicator color={CLINICAL_COLORS.text} />
                   ) : (
                     <Text style={styles.buttonText}>
                       {isProcessing(payload) ? '解析完成后可生成' : '生成 AI 总结'}
@@ -267,10 +433,12 @@ export default function ReportDetailScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>原始解析结果</Text>
-          <Text style={styles.smallText}>用于调试/核对（包含字段、AI 抽取、OCR 文本片段）。</Text>
-          <TouchableOpacity style={styles.toggleLink} onPress={() => setShowRaw((v) => !v)}>
-            <Text style={styles.toggleLinkText}>{showRaw ? '收起' : '展开查看'}</Text>
+          <Text style={styles.cardTitle}>来源追溯</Text>
+          <Text style={styles.smallText}>
+            保留原始字段、AI 抽取结果和 OCR 文本，便于设计稿之外的临床核对。
+          </Text>
+          <TouchableOpacity style={styles.toggleLink} onPress={() => setShowRaw((value) => !value)}>
+            <Text style={styles.toggleLinkText}>{showRaw ? '收起原始结果' : '展开原始结果'}</Text>
           </TouchableOpacity>
           {showRaw && (
             <View style={styles.codeBlock}>
@@ -278,6 +446,19 @@ export default function ReportDetailScreen() {
             </View>
           )}
         </View>
+
+        {isLoading && (
+          <View style={styles.inlineState}>
+            <ActivityIndicator color={CLINICAL_COLORS.accent} />
+            <Text style={styles.smallText}>正在加载报告内容...</Text>
+          </View>
+        )}
+
+        {errorMessage && (
+          <View style={styles.inlineState}>
+            <Text style={styles.smallText}>{errorMessage}</Text>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );

@@ -7,6 +7,7 @@ import { getPool } from '../../db/pool.js';
 import { requireAuth } from '../../middleware/require-auth.js';
 import type { RouteContext } from '../../routes/index.js';
 import { BaiduOcrProvider } from '../../services/ocr/baidu-ocr.js';
+import { EmbeddedReportOcrProvider } from '../../services/ocr/embedded-report-ocr.js';
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
 import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import { LocalStorageProvider } from '../../services/storage/local-storage.js';
@@ -19,21 +20,29 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     logger: context.logger,
   });
   const storage = new LocalStorageProvider();
-  const ocr = context.env.REPORT_MANAGER_OCR_URL
-    ? new ReportManagerOcrProvider({
-        endpoint: context.env.REPORT_MANAGER_OCR_URL,
-        apiKey: context.env.REPORT_MANAGER_OCR_API_KEY,
-        defaultUserId: context.env.REPORT_MANAGER_OCR_USER_ID,
-      })
-    : context.env.BAIDU_OCR_API_KEY && context.env.BAIDU_OCR_SECRET_KEY
-      ? new BaiduOcrProvider({
-          apiKey: context.env.BAIDU_OCR_API_KEY,
-          secretKey: context.env.BAIDU_OCR_SECRET_KEY,
-          generalEndpoint: context.env.BAIDU_OCR_GENERAL_ENDPOINT,
-          accurateEndpoint: context.env.BAIDU_OCR_ACCURATE_ENDPOINT,
-          medicalEndpoint: context.env.BAIDU_OCR_MEDICAL_ENDPOINT,
+  const ocr =
+    context.env.OCR_PROVIDER === 'report_manager' && context.env.REPORT_MANAGER_OCR_URL
+      ? new ReportManagerOcrProvider({
+          endpoint: context.env.REPORT_MANAGER_OCR_URL,
+          apiKey: context.env.REPORT_MANAGER_OCR_API_KEY,
+          defaultUserId: context.env.REPORT_MANAGER_OCR_USER_ID,
         })
-      : new MockOcrProvider();
+      : context.env.OCR_PROVIDER === 'baidu' &&
+          context.env.BAIDU_OCR_API_KEY &&
+          context.env.BAIDU_OCR_SECRET_KEY
+        ? new BaiduOcrProvider({
+            apiKey: context.env.BAIDU_OCR_API_KEY,
+            secretKey: context.env.BAIDU_OCR_SECRET_KEY,
+            generalEndpoint: context.env.BAIDU_OCR_GENERAL_ENDPOINT,
+            accurateEndpoint: context.env.BAIDU_OCR_ACCURATE_ENDPOINT,
+            medicalEndpoint: context.env.BAIDU_OCR_MEDICAL_ENDPOINT,
+          })
+        : context.env.OCR_PROVIDER === 'mock'
+          ? new MockOcrProvider()
+          : new EmbeddedReportOcrProvider({
+              pythonBin: context.env.OCR_PYTHON_BIN,
+              timeoutMs: context.env.OCR_PARSER_TIMEOUT_MS,
+            });
 
   const aiApiKey = context.env.AI_API_KEY || context.env.OPENAI_API_KEY || '';
   const aiClient = aiApiKey
@@ -60,10 +69,17 @@ export const createPatientProfileRouter = (context: RouteContext) => {
 
   router.post('/', asyncHandler(controller.createProfile));
   router.get('/me', asyncHandler(controller.getMyProfile));
+  router.get('/me/baseline', asyncHandler(controller.getMyBaseline));
+  router.get('/me/passport', asyncHandler(controller.getMyPassport));
+  router.get('/me/passport/export', asyncHandler(controller.exportMyPassport));
   router.put('/me', asyncHandler(controller.updateMyProfile));
+  router.put('/me/baseline', asyncHandler(controller.updateMyBaseline));
 
   router.post('/me/measurements', asyncHandler(controller.addMeasurement));
   router.post('/me/function-tests', asyncHandler(controller.addFunctionTest));
+  router.post('/me/symptom-scores', asyncHandler(controller.addSymptomScore));
+  router.post('/me/daily-impacts', asyncHandler(controller.addDailyImpact));
+  router.post('/me/followup-events', asyncHandler(controller.addFollowupEvent));
   router.post('/me/activity-logs', asyncHandler(controller.addActivityLog));
   router.post('/me/documents', asyncHandler(controller.addDocument));
   router.post(
@@ -80,6 +96,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.post('/me/medications', asyncHandler(controller.addMedication));
   router.get('/me/medications', asyncHandler(controller.listMedications));
   router.get('/me/risk', asyncHandler(controller.getRiskSummary));
+  router.get('/me/progression-summary', asyncHandler(controller.getProgressionSummary));
   router.get('/me/insights/muscle', asyncHandler(controller.getMuscleInsight));
 
   return router;

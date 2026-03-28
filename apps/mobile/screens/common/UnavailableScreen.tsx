@@ -4,6 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FontAwesome6 } from '@expo/vector-icons';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { goBackOrFallback } from '../../lib/navigation';
 
 interface UnavailableScreenProps {
   title: string;
@@ -16,7 +18,7 @@ const UnavailableScreen: React.FC<UnavailableScreenProps> = ({ title, descriptio
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -24,16 +26,13 @@ const UnavailableScreen: React.FC<UnavailableScreenProps> = ({ title, descriptio
       >
         <View style={styles.content}>
           <View style={styles.iconCircle}>
-            <FontAwesome6 name="circle-exclamation" size={22} color="#FBBF24" />
+            <FontAwesome6 name="circle-exclamation" size={22} color={CLINICAL_COLORS.warning} />
           </View>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.description}>
             {description ?? '该服务当前仅面向试运行开放，暂未开放使用。'}
           </Text>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => (router.canGoBack() ? router.back() : router.replace('/p-home'))}
-          >
+          <TouchableOpacity style={styles.backButton} onPress={() => goBackOrFallback(router)}>
             <Text style={styles.backButtonText}>返回</Text>
           </TouchableOpacity>
         </View>
@@ -45,7 +44,7 @@ const UnavailableScreen: React.FC<UnavailableScreenProps> = ({ title, descriptio
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   backgroundGradient: {
     flex: 1,
@@ -62,18 +61,18 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(251, 191, 36, 0.2)',
+    backgroundColor: CLINICAL_TINTS.warningSoft,
     marginBottom: 16,
   },
   title: {
     fontSize: 18,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontWeight: '600',
     marginBottom: 8,
   },
   description: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 24,
@@ -82,10 +81,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: '#5147FF',
+    backgroundColor: CLINICAL_COLORS.accent,
   },
   backButtonText: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontSize: 14,
     fontWeight: '600',
   },

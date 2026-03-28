@@ -1,50 +1,52 @@
-# Welcome to your Expo app 👋
+# @openrd/mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo 客户端，提供 FSHD 患者场景的移动端体验（iOS / Android / Web）。
 
-## Get started
+## 运行方式
 
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-    npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+在仓库根目录执行：
 
 ```bash
-npm run reset-project
+npm install
+npm run dev:mobile
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+或在当前目录执行：
 
-## Learn more
+```bash
+npm install
+npm run start
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## 常用脚本
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+npm run start
+npm run ios
+npm run android
+npm run web
+npm run lint
+npm run test
+```
 
-## Join the community
+## 环境变量
 
-Join our community of developers creating universal apps.
+主要使用：
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `EXPO_PUBLIC_API_URL`（默认 `http://localhost:4000/api`）
+
+配置来源为根目录 `.env`，示例见 [`../../.env.example`](../../.env.example)。
+
+## 目录说明
+
+- `app/`: Expo Router 页面
+- `components/`: 可复用组件
+- `contexts/`: 全局状态（如认证上下文）
+- `lib/api.ts`: API 封装与请求入口
+- `assets/`: 图片、字体等静态资源
+
+## 联调建议
+
+1. 启动 API：`npm run dev:api`
+2. 启动移动端：`npm run dev:mobile`
+3. 先走注册/登录，再验证档案、问答、报告上传流程

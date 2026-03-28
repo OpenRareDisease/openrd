@@ -5,7 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -23,6 +22,8 @@ import Animated, {
 import styles from './styles';
 import { ApiError, login, register, sendOtp, upsertPatientProfile } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import ScreenBackButton from '../common/ScreenBackButton';
 
 interface LoginFormData {
   phone: string;
@@ -456,7 +457,7 @@ const LoginRegisterScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -474,6 +475,9 @@ const LoginRegisterScreen: React.FC = () => {
           >
             {/* Logo和产品名称区域 */}
             <View style={styles.header}>
+              <View style={styles.headerTopRow}>
+                <ScreenBackButton fallbackHref="/p-home" />
+              </View>
               <View style={styles.logoContainer}>
                 <Animated.View style={[styles.logoWrapper, logoAnimatedStyle]}>
                   <View style={styles.logoCard}>
@@ -533,7 +537,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入手机号"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={loginForm.phone}
                       onChangeText={(text) => setLoginForm((prev) => ({ ...prev, phone: text }))}
                       keyboardType="phone-pad"
@@ -547,7 +551,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请输入密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={loginForm.password}
                         onChangeText={(text) =>
                           setLoginForm((prev) => ({ ...prev, password: text }))
@@ -562,7 +566,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isLoginPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -574,7 +578,7 @@ const LoginRegisterScreen: React.FC = () => {
                     disabled={isLoading}
                   >
                     <LinearGradient
-                      colors={['#969FFF', '#5147FF']}
+                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={styles.primaryButtonGradient}
@@ -630,7 +634,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入姓名"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.fullName}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, fullName: text }))
@@ -642,7 +646,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="YYYY-MM-DD"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.dateOfBirth}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, dateOfBirth: text }))
@@ -690,7 +694,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入手机号"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.phone}
                       onChangeText={(text) => setRegisterForm((prev) => ({ ...prev, phone: text }))}
                       keyboardType="phone-pad"
@@ -704,7 +708,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.verificationCodeInput}
                         placeholder="请输入验证码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.code}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, code: text }))
@@ -733,7 +737,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请设置6-20位密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.password}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, password: text }))
@@ -748,7 +752,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isRegisterPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -760,7 +764,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请再次输入密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.confirmPassword}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, confirmPassword: text }))
@@ -775,7 +779,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isConfirmPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -787,7 +791,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="用于账号验证与平台通知"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       keyboardType="email-address"
                       value={registerForm.contactEmail}
                       onChangeText={(text) =>
@@ -802,7 +806,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="例如：浙江省"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.regionProvince}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, regionProvince: text }))
@@ -814,7 +818,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="例如：杭州市"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.regionCity}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, regionCity: text }))
@@ -826,7 +830,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="例如：西湖区"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.regionDistrict}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, regionDistrict: text }))
@@ -840,7 +844,7 @@ const LoginRegisterScreen: React.FC = () => {
                     disabled={isLoading}
                   >
                     <LinearGradient
-                      colors={['#969FFF', '#5147FF']}
+                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={styles.primaryButtonGradient}
@@ -913,7 +917,11 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.errorIconWrapper}>
-                  <FontAwesome6 name="triangle-exclamation" size={20} color="#FF4D4F" />
+                  <FontAwesome6
+                    name="triangle-exclamation"
+                    size={20}
+                    color={CLINICAL_COLORS.danger}
+                  />
                 </View>
               </View>
               <Text style={styles.modalTitle}>错误</Text>
@@ -933,7 +941,7 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.successIconWrapper}>
-                  <FontAwesome6 name="check" size={20} color="#52C41A" />
+                  <FontAwesome6 name="check" size={20} color={CLINICAL_COLORS.success} />
                 </View>
               </View>
               <Text style={styles.modalTitle}>成功</Text>
@@ -954,7 +962,7 @@ const LoginRegisterScreen: React.FC = () => {
               <View style={styles.agreementModalHeader}>
                 <Text style={styles.agreementModalTitle}>{modalState.title}</Text>
                 <TouchableOpacity onPress={closeModal}>
-                  <FontAwesome6 name="xmark" size={16} color="rgba(255, 255, 255, 0.5)" />
+                  <FontAwesome6 name="xmark" size={16} color={CLINICAL_COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
               <ScrollView style={styles.agreementModalScrollView}>

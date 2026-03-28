@@ -1,9 +1,10 @@
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   backgroundGradient: {
     flex: 1,
@@ -19,14 +20,14 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -39,7 +40,7 @@ export default StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   headerPlaceholder: {
     width: 40,
@@ -65,15 +66,15 @@ export default StyleSheet.create({
     borderWidth: 1,
   },
   feedbackError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderColor: 'rgba(239, 68, 68, 0.45)',
+    backgroundColor: CLINICAL_TINTS.dangerSurface,
+    borderColor: CLINICAL_TINTS.dangerBorder,
   },
   feedbackSuccess: {
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
-    borderColor: 'rgba(34, 197, 94, 0.45)',
+    backgroundColor: CLINICAL_TINTS.successSurface,
+    borderColor: CLINICAL_TINTS.successBorder,
   },
   feedbackText: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontSize: 13,
   },
   section: {
@@ -82,23 +83,23 @@ export default StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 6,
   },
   sectionSubtitle: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
+    color: CLINICAL_COLORS.textMuted,
     marginBottom: 12,
   },
   card: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.08,
         shadowRadius: 24,
@@ -108,16 +109,16 @@ export default StyleSheet.create({
   },
   inputLabel: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: CLINICAL_TINTS.borderStrong,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontSize: 14,
     marginBottom: 12,
   },
@@ -132,19 +133,19 @@ export default StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderColor: CLINICAL_TINTS.borderStrong,
+    backgroundColor: CLINICAL_TINTS.panel,
   },
   optionButtonActive: {
-    borderColor: '#969FFF',
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    borderColor: CLINICAL_COLORS.accent,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
   optionText: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   optionTextActive: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontWeight: '600',
   },
   primaryButton: {
@@ -163,6 +164,6 @@ export default StyleSheet.create({
   primaryButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 });

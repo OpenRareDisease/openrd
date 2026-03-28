@@ -1,119 +1,182 @@
 # Testing Guide
 
-## 后端 API（命令行）
+## 1. 前置条件
 
-1. **启动服务**
+测试脚本默认假设 API 已经启动，并且可从 `http://localhost:4000` 访问。
 
-   ```bash
-   npm run dev --workspace @openrd/api
-   ```
+脚本默认依赖 mock OTP，因此建议至少设置：
 
-2. **注册或登录获取 token**
+```bash
+OTP_PROVIDER=mock
+OCR_PROVIDER=embedded
+```
 
-   ```bash
-   curl -X POST http://localhost:4000/api/auth/login \
-     -H "Content-Type: application/json" \
-     -d '{"phoneNumber":"+8613900000000","password":"Passw0rd!"}'
-   ```
+如果要测试报告 OCR / 结构化链路，本地直跑 API 时还需要：
 
-   若未注册，将 `login` 替换为 `register`，手机号使用新的号码。
+```bash
+pip install -r apps/api/requirements-embedded-report.txt
+```
 
-3. **创建/更新档案**
+## 2. 启动服务
 
-   ```bash
-   TOKEN='上一步返回的 token'
-   curl -X POST http://localhost:4000/api/profiles \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"fullName":"张三","diagnosisStage":"Stage1"}'
-   ```
+```bash
+# 数据库
+docker compose up -d postgres
+npm run db:migrate
 
-4. **写入肌力测量**
+# API
+npm run dev:api
 
-   ```bash
-   curl -X POST http://localhost:4000/api/profiles/me/measurements \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"muscleGroup":"deltoid","strengthScore":4}'
-   ```
+# 移动端
+npm run dev:mobile
+```
 
-5. **查看档案**
+如果还要测试 AI 问答 / 报告总结，需要配置：
 
-   ```bash
-   curl -X GET http://localhost:4000/api/profiles/me \
-     -H "Authorization: Bearer $TOKEN"
-   ```
+```bash
+AI_API_KEY=...
+# 或
+OPENAI_API_KEY=...
+```
 
-6. **上传报告（本地存储 + 同步OCR占位）**
+## 3. 一键脚本
 
-   ```bash
-   curl -X POST http://localhost:4000/api/profiles/me/documents/upload \
-     -H "Authorization: Bearer $TOKEN" \
-     -F "documentType=mri" \
-     -F "title=MRI影像报告" \
-     -F "file=@/absolute/path/to/report.jpg"
-   ```
+### 3.1 快速冒烟
 
-   返回体内包含 `ocrPayload`（占位结果）与 `storageUri`。
+适合每次改完接口后先看主链路是否还通：
 
-7. **查看OCR结果**
+```bash
+npm run test:smoke
+# 或
+bash scripts/smoke-test.sh
+```
 
-   ```bash
-   DOC_ID='上一步返回的 document id'
-   curl -X GET http://localhost:4000/api/profiles/me/documents/$DOC_ID/ocr \
-     -H "Authorization: Bearer $TOKEN"
-   ```
+覆盖内容：
 
-8. **预览上传文件**
+- `/api/healthz`
+- OTP 发送、注册、登录
+- 创建档案
+- 测量、功能测试、活动日志
+- 报告上传
+- OCR 结果读取
+- `classifiedType` 与关键字段校验
+- 报告下载
+- `passport` / `risk` / `muscle insights`
 
-   ```bash
-   curl -X GET http://localhost:4000/api/profiles/me/documents/$DOC_ID \
-     -H "Authorization: Bearer $TOKEN" \
-     --output /tmp/openrd-report.bin
-   ```
+### 3.2 全量回归
 
-## 移动端（前端）
+适合发布前或改了 patient profile / report OCR 主链路之后运行：
 
-1. **启动 API（见上）**，确保数据库连通。
-2. **启动 Expo**
+```bash
+npm run test:latest
+# 或
+bash scripts/latest-test.sh
+```
 
-   ```bash
-   npm run start --workspace @openrd/mobile
-   ```
+覆盖内容：
 
-   按需在 Web、模拟器或 Expo Go 打开。
+- 健康检查、注册、登录
+- 创建档案与更新档案
+- baseline 建档
+- submission 创建与列表
+- measurement / function test / symptom score / daily impact
+- followup event / activity log / medication
+- 5 类合成报告上传
+- 报告与 submission 关联
+- OCR 分类与关键字段断言
+- 报告下载
+- `/me`、`passport`、`passport/export`
+- `/risk`、`/progression-summary`、`/insights/muscle`
 
-3. **注册/登录**
-   - 在登录注册页输入手机号+密码（验证码任意），点“注册”或“登录”。
-   - 成功后会自动跳转到首页。
+### 3.3 AI 链路
 
-4. **数据录入**
-   - 打开“数据录入”页（`p-data_entry`），填写姓名、诊断，选择肌群并拖动滑杆，点击“提交数据”。
-   - 看到“提交成功”提示后，可在命令行再用 `curl GET /api/profiles/me` 验证。
-   - 回到“档案”页（`p-archive`）确认姓名/诊断阶段与“最近更新”同步刷新。
+两个脚本默认只在检测到 `AI_API_KEY` 或 `OPENAI_API_KEY` 时才执行 AI 用例。
 
-5. **前端查看**
-   - 登录账号后进入“档案”页（`p-archive`），页面会加载 `/api/profiles/me` 的真实数据：顶部显示姓名/诊断，最近肌力测量列表会同步更新。
-   - 若没有档案数据，会提示“去录入”；填完数据录入页后返回档案页即可看到最新内容。
+也可以显式控制：
 
-6. **退出登录**
-   - 在“设置”页点击“退出登录”，确认后会清空本地 token 并跳回登录页。
-   - 刷新或重新进入应用时，应重新要求登录，证明会话状态已统一管理。
+```bash
+RUN_AI_TESTS=1 npm run test:smoke
+RUN_AI_TESTS=0 npm run test:latest
+```
 
-> **注**：`npm run lint --workspace @openrd/mobile` 仍受旧文件影响报 “React is defined but never used”，后续会单独清理。\*\*\*
+### 3.4 自定义地址
 
-## 新增说明（档案文件闭环）
+如果 API 不在本机 4000 端口：
 
-1. **本地存储目录**
-   - API 侧上传文件默认存放在 `apps/api/uploads/`，按用户 ID 分目录。
+```bash
+API_BASE_URL=http://127.0.0.1:4001 npm run test:smoke
+```
 
-2. **数据库字段**
-   - `patient_documents` 新增 `ocr_payload`（JSONB）字段。
-   - 旧库可手动执行：
-     ```sql
-     ALTER TABLE patient_documents ADD COLUMN IF NOT EXISTS ocr_payload JSONB;
-     ```
+## 4. 手工接口验证
 
-3. **移动端上传验证**
-   - 在 `p-data_entry` 的“医疗报告”卡片上传图片，状态应从“上传中...”变为“已上传”。
-   - “报告上传历史”应显示 OCR 摘要文案（占位结果）。
+### 4.1 发送 OTP
+
+```bash
+curl -X POST http://localhost:4000/api/auth/otp/send \
+  -H "Content-Type: application/json" \
+  -d '{"phoneNumber":"+8613900000000","scene":"register"}'
+```
+
+### 4.2 注册并拿 token
+
+```bash
+OTP_REQUEST_ID='<requestId>'
+OTP_CODE='<mockCode>'
+PHONE='+8613900000000'
+REGISTER=$(curl -s -X POST http://localhost:4000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d "{\"phoneNumber\":\"$PHONE\",\"password\":\"Passw0rd!\",\"otpCode\":\"$OTP_CODE\",\"otpRequestId\":\"$OTP_REQUEST_ID\"}")
+TOKEN=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+```
+
+### 4.3 上传报告并读取 OCR
+
+```bash
+curl -X POST http://localhost:4000/api/profiles/me/documents/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "documentType=genetic_report" \
+  -F "title=基因报告" \
+  -F "file=@/absolute/path/to/report.pdf"
+```
+
+```bash
+curl -X GET http://localhost:4000/api/profiles/me/documents/<documentId>/ocr \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+重点确认：
+
+- `ocrPayload.fields.classifiedType`
+- `ocrPayload.fields.classifiedTypeConfidence`
+- `ocrPayload.aiExtraction.fshd.structured_fields`
+- `ocrPayload.aiExtraction.fshd.normalized_summary`
+
+## 5. 移动端手工回归
+
+建议至少走一遍这些链路：
+
+1. 注册 / 登录
+2. 建档
+3. 录入测量、症状、活动、用药
+4. 上传报告并进入报告详情
+5. 查看护照页、风险页、时间线页
+6. 测试 AI 问答
+7. 退出登录
+
+## 6. 静态检查
+
+```bash
+npm run lint
+npm run test --workspace @openrd/api
+npm run build --workspace @openrd/api
+npx tsc --noEmit -p apps/mobile/tsconfig.json
+python3 -m compileall \
+  apps/report-manager/app/services/fshd_report_service.py \
+  apps/report-manager/embedded_parser.py \
+  apps/report-manager/app/services/ocr_service.py
+```
+
+说明：
+
+- 根 `npm run test` 仍然只会转发 workspace 自己的测试命令，不等于接口冒烟。
+- `apps/mobile` 的 Jest 已改为非 watch 模式，但当前覆盖仍以前端基础校验为主，后端联调仍建议以冒烟脚本和手工回归为准。

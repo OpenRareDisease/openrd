@@ -1,24 +1,23 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: CLINICAL_TINTS.modalOverlay,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 16,
   },
   modalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 24,
     width: '100%',
     maxWidth: 320,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -35,7 +34,7 @@ export default StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -43,13 +42,13 @@ export default StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
     textAlign: 'center',
   },
   modalMessage: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 24,
@@ -63,27 +62,26 @@ export default StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_TINTS.panel,
     borderRadius: 8,
     alignItems: 'center',
   },
   cancelButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   confirmButton: {
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     borderRadius: 8,
     alignItems: 'center',
   },
   confirmButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 });
-

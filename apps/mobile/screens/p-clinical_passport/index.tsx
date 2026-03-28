@@ -1,193 +1,116 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+  Share,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
-import { ApiError, getMyPatientProfile } from '../../lib/api';
-import { buildReportInsights } from '../../lib/report-insights';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import ScreenBackButton from '../common/ScreenBackButton';
+import {
+  ApiError,
+  exportClinicalPassportSummary,
+  getClinicalPassportSummary,
+  type ClinicalPassportSummary,
+} from '../../lib/api';
+import type { BodyRegionMap } from '../../lib/clinical-visuals';
+import {
+  CLINICAL_COLORS,
+  CLINICAL_GRADIENTS,
+  CLINICAL_TINTS,
+  formatDateLabel,
+} from '../../lib/clinical-visuals';
+
+const getFreshnessColors = (tone: ClinicalPassportSummary['diagnosis']['freshness']['tone']) => {
+  switch (tone) {
+    case 'success':
+      return {
+        backgroundColor: CLINICAL_TINTS.successSoft,
+        color: CLINICAL_COLORS.success,
+      };
+    case 'warning':
+      return {
+        backgroundColor: CLINICAL_TINTS.warningSoft,
+        color: CLINICAL_COLORS.warning,
+      };
+    case 'danger':
+      return {
+        backgroundColor: CLINICAL_TINTS.dangerSoft,
+        color: CLINICAL_COLORS.danger,
+      };
+    default:
+      return {
+        backgroundColor: CLINICAL_TINTS.neutralSoft,
+        color: CLINICAL_COLORS.textMuted,
+      };
+  }
+};
 
 const ClinicalPassportScreen = () => {
   const router = useRouter();
-
-  // 展开状态管理
-  const [isGeneticExpanded, setIsGeneticExpanded] = useState(false);
-  const [isStrengthExpanded, setIsStrengthExpanded] = useState(false);
-  const [isMriExpanded, setIsMriExpanded] = useState(false);
-  const [isBloodExpanded, setIsBloodExpanded] = useState(false);
-
-  const [profile, setProfile] = useState<any | null>(null);
+  const [passport, setPassport] = useState<ClinicalPassportSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // 导出PDF状态
   const [isExporting, setIsExporting] = useState(false);
+  const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
 
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
+  const loadPassport = async () => {
+    try {
+      setIsLoading(true);
+      setErrorMessage(null);
+      const data = await getClinicalPassportSummary();
+      setPassport(data);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '无法获取临床护照数据';
+      setErrorMessage(message);
+      setPassport(null);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleExportPdf = async () => {
-    setIsExporting(true);
+  useEffect(() => {
+    loadPassport();
+  }, []);
+
+  const handleExport = async () => {
+    if (!passport?.hasRecordedData) {
+      Alert.alert('无法导出', '当前没有足够的护照数据可供导出。');
+      return;
+    }
 
     try {
-      // 模拟PDF生成过程
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      Alert.alert('导出成功', 'PDF档案已生成，请查收！', [{ text: '确定', style: 'default' }]);
+      setIsExporting(true);
+      const exported = await exportClinicalPassportSummary();
+      await Share.share({
+        title: exported.documentTitle,
+        message: exported.markdown,
+      });
     } catch (error) {
-      Alert.alert('导出失败', 'PDF生成过程中出现错误，请重试。', [
-        { text: '确定', style: 'default' },
-      ]);
+      const message = error instanceof Error ? error.message : '护照摘要分享失败';
+      Alert.alert('操作失败', message);
     } finally {
       setIsExporting(false);
     }
   };
 
-  useEffect(() => {
-    let isMounted = true;
-    const loadProfile = async () => {
-      try {
-        setIsLoading(true);
-        setErrorMessage(null);
-        const data = await getMyPatientProfile();
-        if (!isMounted) {
-          return;
-        }
-        setProfile(data);
-      } catch (error) {
-        if (!isMounted) return;
-        const message = error instanceof ApiError ? error.message : '无法获取档案数据';
-        setErrorMessage(message);
-        setProfile(null);
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    };
-
-    loadProfile();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  const hasRecordedData = useMemo(() => {
-    if (!profile) return false;
-    return Boolean(
-      (profile.measurements?.length ?? 0) > 0 ||
-        (profile.activityLogs?.length ?? 0) > 0 ||
-        (profile.documents?.length ?? 0) > 0,
-    );
-  }, [profile]);
-
-  const reportInsights = useMemo(
-    () => buildReportInsights(profile?.documents ?? [], profile),
-    [profile],
-  );
-
-  const passportId = useMemo(() => {
-    if (!profile?.id) return 'FSHD-UNASSIGNED';
-    const compact = profile.id.replace(/-/g, '').slice(0, 10).toUpperCase();
-    return `FSHD-${compact}`;
-  }, [profile]);
-
-  const renderExpandableSection = (
-    title: string,
-    subtitle: string,
-    icon: string,
-    iconColor: string,
-    iconBgColor: string,
-    isExpanded: boolean,
-    onToggle: () => void,
-    children: React.ReactNode,
-  ) => (
-    <View style={styles.expandableCard}>
-      <TouchableOpacity style={styles.expandableHeader} onPress={onToggle} activeOpacity={0.7}>
-        <View style={styles.expandableHeaderLeft}>
-          <View style={[styles.expandableIconContainer, { backgroundColor: iconBgColor }]}>
-            <FontAwesome6 name={icon} size={14} color={iconColor} />
-          </View>
-          <View style={styles.expandableHeaderText}>
-            <Text style={styles.expandableTitle}>{title}</Text>
-            <Text style={styles.expandableSubtitle}>{subtitle}</Text>
-          </View>
-        </View>
-        <FontAwesome6
-          name="chevron-down"
-          size={12}
-          color="rgba(255, 255, 255, 0.5)"
-          style={[
-            styles.expandableArrow,
-            { transform: [{ rotate: isExpanded ? '180deg' : '0deg' }] },
-          ]}
-        />
-      </TouchableOpacity>
-      {isExpanded && <View style={styles.expandableContent}>{children}</View>}
-    </View>
-  );
-
-  const renderGeneticContent = () => (
-    <View style={styles.geneticContent}>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>基因类型</Text>
-        <Text style={styles.infoValue}>{reportInsights.geneticType}</Text>
-      </View>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>D4Z4重复数</Text>
-        <Text style={styles.infoValue}>{reportInsights.d4z4Repeats}</Text>
-      </View>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>甲基化值</Text>
-        <Text style={styles.infoValue}>{reportInsights.methylationValue}</Text>
-      </View>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>诊断日期</Text>
-        <Text style={styles.infoValue}>{reportInsights.diagnosisDate}</Text>
-      </View>
-    </View>
-  );
-
-  const renderStrengthContent = () => (
-    <View style={styles.strengthContent}>
-      <View style={styles.strengthItem}>
-        <View style={styles.strengthItemHeader}>
-          <Text style={styles.strengthDate}>最近记录</Text>
-          <Text style={styles.strengthAverage}>平均分: {reportInsights.strengthAverage}</Text>
-        </View>
-        <Text style={styles.strengthDetails}>{reportInsights.strengthSummary}</Text>
-      </View>
-    </View>
-  );
-
-  const renderMriContent = () => (
-    <View style={styles.mriContent}>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>最近MRI</Text>
-        <Text style={styles.infoValue}>{reportInsights.latestMriDate}</Text>
-      </View>
-      <Text style={styles.strengthDetails}>{reportInsights.mriSummary}</Text>
-    </View>
-  );
-
-  const renderBloodContent = () => (
-    <View style={styles.bloodContent}>
-      <View style={styles.infoRow}>
-        <Text style={styles.infoLabel}>最近血检</Text>
-        <Text style={styles.infoValue}>{reportInsights.latestBloodDate}</Text>
-      </View>
-      <Text style={styles.strengthDetails}>{reportInsights.bloodSummary}</Text>
-    </View>
+  const diagnosisFreshnessStyle = useMemo(
+    () => getFreshnessColors(passport?.diagnosis.freshness.tone ?? 'neutral'),
+    [passport?.diagnosis.freshness.tone],
   );
 
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -198,136 +121,535 @@ const ClinicalPassportScreen = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* 顶部导航栏 */}
           <View style={styles.header}>
+            <ScreenBackButton />
+            <Text style={styles.headerTitle}>FSHD 临床护照</Text>
             <TouchableOpacity
-              style={styles.backButton}
-              onPress={handleBackPress}
-              activeOpacity={0.7}
+              style={styles.headerAction}
+              activeOpacity={0.75}
+              onPress={handleExport}
+              disabled={isExporting || !passport?.hasRecordedData}
             >
-              <FontAwesome6 name="arrow-left" size={12} color="rgba(255, 255, 255, 0.7)" />
+              {isExporting ? (
+                <ActivityIndicator size="small" color={CLINICAL_COLORS.accentStrong} />
+              ) : (
+                <FontAwesome6
+                  name="share-nodes"
+                  size={14}
+                  color={
+                    passport?.hasRecordedData
+                      ? CLINICAL_COLORS.accentStrong
+                      : CLINICAL_COLORS.textMuted
+                  }
+                />
+              )}
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>FSHD临床护照</Text>
-            <View style={styles.headerPlaceholder} />
           </View>
 
-          {isLoading && (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator color="#969FFF" />
-            </View>
-          )}
-
-          {errorMessage && !isLoading && (
-            <View style={styles.errorContainer}>
+          {errorMessage && !passport ? (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorTitle}>护照数据暂时不可用</Text>
               <Text style={styles.errorText}>{errorMessage}</Text>
             </View>
-          )}
+          ) : null}
 
-          {/* 临床护照ID卡片 */}
-          <View style={styles.passportIdSection}>
-            <View style={styles.passportIdCard}>
-              <LinearGradient
-                colors={['#969FFF', '#5147FF']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.passportIdIcon}
-              >
-                <FontAwesome6 name="id-card" size={18} color="#FFFFFF" />
-              </LinearGradient>
-              <Text style={styles.passportIdTitle}>临床护照ID</Text>
-              <View style={styles.passportIdContainer}>
-                <Text style={styles.passportIdText}>{hasRecordedData ? passportId : '—'}</Text>
+          <LinearGradient
+            colors={CLINICAL_GRADIENTS.surface}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.heroCard}
+          >
+            <View style={styles.heroTopRow}>
+              <View style={styles.heroCopyBlock}>
+                <Text style={styles.heroEyebrow}>CLINICAL PASSPORT</Text>
+                <Text style={styles.heroTitle}>{passport?.patientName ?? '未命名病例'}</Text>
+                <Text style={styles.heroPassportId}>{passport?.passportId ?? '待生成'}</Text>
+                <Text style={styles.heroSubtitle}>
+                  这份护照摘要现在由后端统一生成，前端只负责展示与分享，避免多端逻辑分叉。
+                </Text>
               </View>
-              <Text style={styles.passportIdDescription}>
-                {hasRecordedData ? '唯一标识您的FSHD医疗档案' : '录入数据以获得临床护照'}
-              </Text>
+              <View style={styles.heroStatusPill}>
+                <Text style={styles.heroStatusText}>
+                  {passport
+                    ? `${passport.completion.completed}/${passport.completion.total} 已完成`
+                    : '整理中'}
+                </Text>
+              </View>
             </View>
-          </View>
 
-          {/* 基因信息 */}
-          <View style={styles.section}>
-            {renderExpandableSection(
-              '基因信息',
-              'FSHD分型与分子诊断',
-              'dna',
-              '#3E3987',
-              'rgba(62, 57, 135, 0.2)',
-              isGeneticExpanded,
-              () => setIsGeneticExpanded(!isGeneticExpanded),
-              renderGeneticContent(),
-            )}
-          </View>
-
-          {/* 肌力评估摘要 */}
-          <View style={styles.section}>
-            {renderExpandableSection(
-              '肌力评估摘要',
-              '最近3次评估结果',
-              'chart-line',
-              '#10B981',
-              'rgba(16, 185, 129, 0.2)',
-              isStrengthExpanded,
-              () => setIsStrengthExpanded(!isStrengthExpanded),
-              renderStrengthContent(),
-            )}
-          </View>
-
-          {/* MRI影像分析 */}
-          <View style={styles.section}>
-            {renderExpandableSection(
-              'MRI影像分析',
-              '肌肉脂肪化程度评估',
-              'images',
-              '#3B82F6',
-              'rgba(59, 130, 246, 0.2)',
-              isMriExpanded,
-              () => setIsMriExpanded(!isMriExpanded),
-              renderMriContent(),
-            )}
-          </View>
-
-          {/* 血检报告摘要 */}
-          <View style={styles.section}>
-            {renderExpandableSection(
-              '血检报告摘要',
-              '肝功能、肌酶等关键指标',
-              'tint',
-              '#EF4444',
-              'rgba(239, 68, 68, 0.2)',
-              isBloodExpanded,
-              () => setIsBloodExpanded(!isBloodExpanded),
-              renderBloodContent(),
-            )}
-          </View>
-
-          {/* 导出PDF按钮 */}
-          <View style={styles.exportSection}>
-            <TouchableOpacity
-              style={styles.exportButton}
-              onPress={handleExportPdf}
-              disabled={isExporting || !hasRecordedData}
-              activeOpacity={0.7}
-            >
-              {!isExporting ? (
-                <LinearGradient
-                  colors={['#969FFF', '#5147FF']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.exportIcon}
-                >
-                  <FontAwesome6 name="download" size={14} color="#FFFFFF" />
-                </LinearGradient>
-              ) : (
-                <View style={styles.exportIcon}>
-                  <FontAwesome6 name="spinner" size={14} color="#969FFF" />
-                </View>
-              )}
-              <View style={styles.exportTextContainer}>
-                <Text style={styles.exportTitle}>导出PDF档案</Text>
-                <Text style={styles.exportSubtitle}>生成符合医疗标准的PDF文档</Text>
+            <View style={styles.heroMetaRow}>
+              <View style={styles.heroMetaChip}>
+                <FontAwesome6 name="clock" size={12} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.heroMetaText}>
+                  最近更新 {formatDateLabel(passport?.latestUpdatedAt)}
+                </Text>
               </View>
-            </TouchableOpacity>
-          </View>
+              <View style={styles.heroMetaChip}>
+                <FontAwesome6 name="file-lines" size={12} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.heroMetaText}>
+                  {passport?.metrics.find((item) => item.label === '报告数')?.value ?? '0'}{' '}
+                  份来源报告
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.metricGrid}>
+              {(passport?.metrics ?? []).map((metric) => (
+                <View key={metric.label} style={styles.metricCard}>
+                  <Text style={styles.metricValue}>{metric.value}</Text>
+                  <Text style={styles.metricLabel}>{metric.label}</Text>
+                  <Text style={styles.metricHint}>{metric.hint}</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.heroActionRow}>
+              <TouchableOpacity
+                style={styles.heroActionButton}
+                activeOpacity={0.82}
+                onPress={() => router.push('/p-data_entry')}
+              >
+                <Text style={styles.heroActionButtonText}>去补录数据</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.heroActionButton, styles.heroActionButtonGhost]}
+                activeOpacity={0.82}
+                onPress={handleExport}
+                disabled={isExporting || !passport?.hasRecordedData}
+              >
+                <Text
+                  style={[
+                    styles.heroActionButtonText,
+                    styles.heroActionButtonTextGhost,
+                    !passport?.hasRecordedData && styles.heroActionButtonTextDisabled,
+                  ]}
+                >
+                  {isExporting ? '生成中...' : '分享护照摘要'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+
+          {isLoading ? (
+            <View style={styles.loadingCard}>
+              <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+              <Text style={styles.loadingText}>正在整理临床护照摘要...</Text>
+            </View>
+          ) : null}
+
+          {passport ? (
+            <>
+              <View style={styles.sectionShell}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={styles.sectionBadge}>
+                    <Text style={styles.sectionBadgeText}>01</Text>
+                  </View>
+                  <View style={styles.sectionHeadingGroup}>
+                    <Text style={styles.sectionHeading}>核心摘要</Text>
+                    <Text style={styles.sectionDescription}>
+                      这部分直接来自后端聚合后的护照 DTO，不再在前端重复判断完整度和摘要逻辑。
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.summaryGrid}>
+                  {passport.summaryCards.map((card) => (
+                    <View key={card.key} style={styles.summaryCard}>
+                      <View style={styles.summaryCardTop}>
+                        <View
+                          style={[
+                            styles.summaryIconWrap,
+                            {
+                              backgroundColor: card.ready
+                                ? CLINICAL_TINTS.successSoft
+                                : CLINICAL_TINTS.warningSoft,
+                            },
+                          ]}
+                        >
+                          <FontAwesome6
+                            name={
+                              card.key === 'diagnosis'
+                                ? 'dna'
+                                : card.key === 'motor'
+                                  ? 'person-running'
+                                  : card.key === 'imaging'
+                                    ? 'images'
+                                    : 'stethoscope'
+                            }
+                            size={15}
+                            color={card.ready ? CLINICAL_COLORS.success : CLINICAL_COLORS.warning}
+                          />
+                        </View>
+                        <View
+                          style={[
+                            styles.summaryStatusPill,
+                            {
+                              backgroundColor: card.ready
+                                ? CLINICAL_TINTS.successSoft
+                                : CLINICAL_TINTS.warningSoft,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.summaryStatusText,
+                              {
+                                color: card.ready
+                                  ? CLINICAL_COLORS.success
+                                  : CLINICAL_COLORS.warning,
+                              },
+                            ]}
+                          >
+                            {card.ready ? '已就绪' : '待补齐'}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.summaryCardTitle}>{card.title}</Text>
+                      <Text style={styles.summaryCardSummary}>{card.summary}</Text>
+                      <Text style={styles.summaryCardMeta}>{card.meta}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                <View style={styles.diagnosisCard}>
+                  <View style={styles.cardHeadingRow}>
+                    <View>
+                      <Text style={styles.cardTitle}>诊断证据与身份信息</Text>
+                      <Text style={styles.cardSubtitle}>
+                        由后端统一抽取基因与诊断证据，保证多端口径一致。
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.freshnessPill,
+                        { backgroundColor: diagnosisFreshnessStyle.backgroundColor },
+                      ]}
+                    >
+                      <Text
+                        style={[styles.freshnessText, { color: diagnosisFreshnessStyle.color }]}
+                      >
+                        {passport.diagnosis.freshness.label}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.infoGrid}>
+                    <View style={styles.infoCell}>
+                      <Text style={styles.infoLabel}>基因类型</Text>
+                      <Text style={styles.infoValue}>{passport.diagnosis.geneticType}</Text>
+                    </View>
+                    <View style={styles.infoCell}>
+                      <Text style={styles.infoLabel}>D4Z4 重复数</Text>
+                      <Text style={styles.infoValue}>{passport.diagnosis.d4z4Repeats}</Text>
+                    </View>
+                    <View style={styles.infoCell}>
+                      <Text style={styles.infoLabel}>甲基化值</Text>
+                      <Text style={styles.infoValue}>{passport.diagnosis.methylationValue}</Text>
+                    </View>
+                    <View style={styles.infoCell}>
+                      <Text style={styles.infoLabel}>诊断日期</Text>
+                      <Text style={styles.infoValue}>{passport.diagnosis.diagnosisDate}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.noteCard}>
+                    <Text style={styles.noteTitle}>证据摘要</Text>
+                    <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.sectionShell}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={styles.sectionBadge}>
+                    <Text style={styles.sectionBadgeText}>02</Text>
+                  </View>
+                  <View style={styles.sectionHeadingGroup}>
+                    <Text style={styles.sectionHeading}>受累分布</Text>
+                    <Text style={styles.sectionDescription}>
+                      肌力与 MRI 的人体分布现在由服务端汇总后下发，前端只负责图形化渲染。
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.segmentRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.segmentButton,
+                      bodyView === 'front' && styles.segmentButtonActive,
+                    ]}
+                    activeOpacity={0.82}
+                    onPress={() => setBodyView('front')}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentButtonText,
+                        bodyView === 'front' && styles.segmentButtonTextActive,
+                      ]}
+                    >
+                      正面
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.segmentButton,
+                      bodyView === 'back' && styles.segmentButtonActive,
+                    ]}
+                    activeOpacity={0.82}
+                    onPress={() => setBodyView('back')}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentButtonText,
+                        bodyView === 'back' && styles.segmentButtonTextActive,
+                      ]}
+                    >
+                      背面
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.figureStack}>
+                  <View style={styles.figureShell}>
+                    <HumanBodyFigure
+                      view={bodyView}
+                      regions={passport.motor.bodyRegions as BodyRegionMap}
+                      mode="strength"
+                      title="肌力受累分布"
+                      subtitle={
+                        passport.motor.highlights.length > 0
+                          ? `平均 ${passport.motor.average} 级，重点区域：${passport.motor.highlights.join('、')}`
+                          : passport.motor.summary
+                      }
+                    />
+                  </View>
+
+                  <View style={styles.figureShell}>
+                    <HumanBodyFigure
+                      view={bodyView}
+                      regions={passport.imaging.bodyRegions as BodyRegionMap}
+                      mode="mri"
+                      title="MRI 受累分布"
+                      subtitle={
+                        passport.imaging.highlights.length > 0
+                          ? `影像提示：${passport.imaging.highlights.join('、')}`
+                          : passport.imaging.summary
+                      }
+                    />
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.sectionShell}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={styles.sectionBadge}>
+                    <Text style={styles.sectionBadgeText}>03</Text>
+                  </View>
+                  <View style={styles.sectionHeadingGroup}>
+                    <Text style={styles.sectionHeading}>系统监测</Text>
+                    <Text style={styles.sectionDescription}>
+                      血检、呼吸和心脏监测已经进入后端护照摘要，不再只在前端零散展示。
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.monitoringStack}>
+                  {passport.monitoring.items.map((item) => {
+                    const freshnessStyle = getFreshnessColors(item.freshness.tone);
+                    return (
+                      <View key={item.key} style={styles.monitoringCard}>
+                        <View style={styles.monitoringCardTop}>
+                          <View style={styles.monitoringCardCopy}>
+                            <View style={styles.monitoringTitleRow}>
+                              <FontAwesome6
+                                name={
+                                  item.key === 'blood'
+                                    ? 'droplet'
+                                    : item.key === 'respiratory'
+                                      ? 'lungs'
+                                      : 'heart-pulse'
+                                }
+                                size={14}
+                                color={CLINICAL_COLORS.accentStrong}
+                              />
+                              <Text style={styles.monitoringTitle}>{item.title}</Text>
+                            </View>
+                            <Text style={styles.monitoringSummary}>{item.summary}</Text>
+                          </View>
+                          <View
+                            style={[
+                              styles.freshnessPill,
+                              { backgroundColor: freshnessStyle.backgroundColor },
+                            ]}
+                          >
+                            <Text style={[styles.freshnessText, { color: freshnessStyle.color }]}>
+                              {item.freshness.label}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.monitoringMeta}>最近日期 {item.latestDate ?? '—'}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View style={styles.sectionShell}>
+                <View style={styles.sectionHeaderRow}>
+                  <View style={styles.sectionBadge}>
+                    <Text style={styles.sectionBadgeText}>04</Text>
+                  </View>
+                  <View style={styles.sectionHeadingGroup}>
+                    <Text style={styles.sectionHeading}>时间轴与待补项</Text>
+                    <Text style={styles.sectionDescription}>
+                      待补项和最近来源都由服务端统一生成，方便后续 Web 和导出端复用。
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.gapList}>
+                  {passport.nextSteps.length === 0 ? (
+                    <View style={styles.gapCard}>
+                      <Text style={styles.gapTitle}>当前没有明显缺口</Text>
+                      <Text style={styles.gapDescription}>
+                        诊断、功能、影像和系统监测四个维度都已形成基础摘要。
+                      </Text>
+                    </View>
+                  ) : (
+                    passport.nextSteps.map((step) => (
+                      <View key={step.title} style={styles.gapCard}>
+                        <View style={styles.gapTopRow}>
+                          <FontAwesome6
+                            name="triangle-exclamation"
+                            size={13}
+                            color={CLINICAL_COLORS.warning}
+                          />
+                          <Text style={styles.gapTitle}>{step.title}</Text>
+                        </View>
+                        <Text style={styles.gapDescription}>{step.description}</Text>
+                      </View>
+                    ))
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.inlineActionButton}
+                  activeOpacity={0.84}
+                  onPress={() => router.push('/p-data_entry')}
+                >
+                  <Text style={styles.inlineActionText}>去数据录入补齐</Text>
+                  <FontAwesome6 name="arrow-right" size={12} color={CLINICAL_COLORS.accentStrong} />
+                </TouchableOpacity>
+
+                <View style={styles.timelineCard}>
+                  <View style={styles.cardHeadingRow}>
+                    <View>
+                      <Text style={styles.cardTitle}>最近来源时间轴</Text>
+                      <Text style={styles.cardSubtitle}>点击报告项可进入详情页查看原始内容。</Text>
+                    </View>
+                    <Text style={styles.timelineCount}>{passport.timeline.length} 条</Text>
+                  </View>
+
+                  {passport.timeline.length === 0 ? (
+                    <Text style={styles.emptyText}>
+                      暂无时间轴内容，录入或上传后会自动汇总到这里。
+                    </Text>
+                  ) : (
+                    passport.timeline.map((item, index) => {
+                      const isLast = index === passport.timeline.length - 1;
+                      const content = (
+                        <>
+                          <View style={styles.timelineHeader}>
+                            <Text style={styles.timelineTitle}>{item.title}</Text>
+                            <Text
+                              style={[
+                                styles.timelineTag,
+                                item.tag === '报告' && styles.timelineTagReport,
+                                item.tag === '肌力' && styles.timelineTagStrength,
+                                item.tag === '活动' && styles.timelineTagActivity,
+                              ]}
+                            >
+                              {item.tag}
+                            </Text>
+                          </View>
+                          <Text style={styles.timelineDescription}>{item.description}</Text>
+                          <Text style={styles.timelineTimestamp}>
+                            {formatDateLabel(item.timestamp)}
+                          </Text>
+                        </>
+                      );
+
+                      if (item.documentId) {
+                        return (
+                          <TouchableOpacity
+                            key={item.id}
+                            style={[styles.timelineItem, isLast && styles.timelineItemLast]}
+                            activeOpacity={0.8}
+                            onPress={() =>
+                              router.push({
+                                pathname: '/p-report_detail',
+                                params: { documentId: item.documentId },
+                              })
+                            }
+                          >
+                            {content}
+                          </TouchableOpacity>
+                        );
+                      }
+
+                      return (
+                        <View
+                          key={item.id}
+                          style={[styles.timelineItem, isLast && styles.timelineItemLast]}
+                        >
+                          {content}
+                        </View>
+                      );
+                    })
+                  )}
+                </View>
+              </View>
+
+              <View style={styles.exportCard}>
+                <View style={styles.cardHeadingRow}>
+                  <View>
+                    <Text style={styles.cardTitle}>分享护照摘要</Text>
+                    <Text style={styles.cardSubtitle}>
+                      当前由后端生成标准化 Markdown
+                      摘要，再通过系统分享面板发出，避免前端本地拼文本。
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.exportButton}
+                  onPress={handleExport}
+                  disabled={isExporting || !passport.hasRecordedData}
+                  activeOpacity={0.84}
+                >
+                  <LinearGradient
+                    colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.exportButtonGradient}
+                  >
+                    {isExporting ? (
+                      <ActivityIndicator color={CLINICAL_COLORS.background} />
+                    ) : (
+                      <>
+                        <FontAwesome6
+                          name="share-nodes"
+                          size={14}
+                          color={CLINICAL_COLORS.background}
+                        />
+                        <Text style={styles.exportButtonText}>生成并分享护照摘要</Text>
+                      </>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : null}
         </ScrollView>
       </LinearGradient>
     </SafeAreaView>

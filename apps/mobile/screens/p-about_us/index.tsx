@@ -1,21 +1,15 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Modal, Linking, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import ScreenBackButton from '../common/ScreenBackButton';
 
 const AboutUsScreen = () => {
-  const router = useRouter();
   const [isAgreementModalVisible, setIsAgreementModalVisible] = useState(false);
   const [isPrivacyModalVisible, setIsPrivacyModalVisible] = useState(false);
-
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
-  };
 
   const handlePhonePress = () => {
     const phoneNumber = 'tel:18099610336';
@@ -74,7 +68,7 @@ const AboutUsScreen = () => {
   ) => (
     <View style={styles.featureItem}>
       <View style={[styles.featureIconContainer, { backgroundColor: iconColor }]}>
-        <FontAwesome6 name={icon} size={14} color="#FFFFFF" />
+        <FontAwesome6 name={icon} size={14} color={CLINICAL_COLORS.text} />
       </View>
       <View style={styles.featureTextContainer}>
         <Text style={styles.featureTitle}>{title}</Text>
@@ -93,14 +87,14 @@ const AboutUsScreen = () => {
     <TouchableOpacity style={styles.contactItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.contactItemContent}>
         <View style={[styles.contactIconContainer, { backgroundColor: iconColor }]}>
-          <FontAwesome6 name={icon} size={14} color="#FFFFFF" />
+          <FontAwesome6 name={icon} size={14} color={CLINICAL_COLORS.text} />
         </View>
         <View style={styles.contactTextContainer}>
           <Text style={styles.contactTitle}>{title}</Text>
           <Text style={styles.contactDescription}>{description}</Text>
         </View>
       </View>
-      <FontAwesome6 name="chevron-right" size={12} color="rgba(255, 255, 255, 0.5)" />
+      <FontAwesome6 name="chevron-right" size={12} color={CLINICAL_COLORS.textMuted} />
     </TouchableOpacity>
   );
 
@@ -108,22 +102,20 @@ const AboutUsScreen = () => {
     <TouchableOpacity style={styles.linkItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.linkItemContent}>
         <View style={[styles.linkIconContainer, { backgroundColor: iconColor }]}>
-          <FontAwesome6 name={icon} size={14} color="#FFFFFF" />
+          <FontAwesome6 name={icon} size={14} color={CLINICAL_COLORS.text} />
         </View>
         <Text style={styles.linkTitle}>{title}</Text>
       </View>
-      <FontAwesome6 name="chevron-right" size={12} color="rgba(255, 255, 255, 0.5)" />
+      <FontAwesome6 name="chevron-right" size={12} color={CLINICAL_COLORS.textMuted} />
     </TouchableOpacity>
   );
 
   return (
-    <LinearGradient colors={['#0F0F23', '#1A1A3A', '#0F0F23']} style={styles.container}>
+    <LinearGradient colors={CLINICAL_GRADIENTS.page} style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBackPress} activeOpacity={0.7}>
-            <FontAwesome6 name="arrow-left" size={16} color="rgba(255, 255, 255, 0.7)" />
-          </TouchableOpacity>
+          <ScreenBackButton />
           <Text style={styles.headerTitle}>关于我们</Text>
           <View style={styles.headerPlaceholder} />
         </View>
@@ -132,7 +124,7 @@ const AboutUsScreen = () => {
           {/* App Info */}
           <View style={styles.appInfoSection}>
             <View style={styles.appLogo}>
-              <FontAwesome5 name="heartbeat" size={32} color="#969FFF" />
+              <FontAwesome5 name="heartbeat" size={32} color={CLINICAL_COLORS.accent} />
             </View>
             <Text style={styles.appName}>FSHD青年社区患者平台</Text>
             <Text style={styles.appVersion}>版本 1.0.0</Text>
@@ -159,19 +151,19 @@ const AboutUsScreen = () => {
                 'question-circle',
                 '智能问答',
                 '专业FSHD疾病知识库检索，支持个性化症状、用药、康复问题解答',
-                'rgba(150, 159, 255, 0.2)',
+                CLINICAL_TINTS.accentSoft,
               )}
               {renderFeatureItem(
                 'chart-line',
                 '病程管理',
                 '标准化肌力评估与趋势分析，辅助医患沟通决策',
-                'rgba(81, 71, 255, 0.2)',
+                CLINICAL_TINTS.accentStrong,
               )}
               {renderFeatureItem(
                 'users',
                 '患者社区',
                 '症状经验分享、康复方法探讨与心理互助陪伴',
-                'rgba(34, 197, 94, 0.2)',
+                CLINICAL_TINTS.successSoft,
               )}
             </View>
           </View>
@@ -184,21 +176,21 @@ const AboutUsScreen = () => {
                 'phone',
                 '联系方式',
                 '18099610336',
-                'rgba(59, 130, 246, 0.2)',
+                CLINICAL_TINTS.accentSoft,
                 handlePhonePress,
               )}
               {renderContactItem(
                 'envelope',
                 '邮箱',
                 'ailiyaer201025@outlook.com',
-                'rgba(34, 197, 94, 0.2)',
+                CLINICAL_TINTS.successSoft,
                 handleEmailPress,
               )}
               {renderContactItem(
                 'globe',
                 '网站',
                 'fshdyouth.com',
-                'rgba(168, 85, 247, 0.2)',
+                CLINICAL_TINTS.accentStrong,
                 handleWebsitePress,
               )}
             </View>
@@ -211,13 +203,13 @@ const AboutUsScreen = () => {
               {renderLinkItem(
                 'file-contract',
                 '用户协议',
-                'rgba(234, 179, 8, 0.2)',
+                CLINICAL_TINTS.warningSoft,
                 handleUserAgreementPress,
               )}
               {renderLinkItem(
                 'shield-alt',
                 '隐私政策',
-                'rgba(239, 68, 68, 0.2)',
+                CLINICAL_TINTS.dangerSoft,
                 handlePrivacyPolicyPress,
               )}
             </View>
@@ -248,7 +240,7 @@ const AboutUsScreen = () => {
                   <View style={styles.modalHeader}>
                     <Text style={styles.modalTitle}>用户协议</Text>
                     <TouchableOpacity style={styles.modalCloseButton} onPress={closeAgreementModal}>
-                      <FontAwesome5 name="times" size={14} color="rgba(255, 255, 255, 0.5)" />
+                      <FontAwesome5 name="times" size={14} color={CLINICAL_COLORS.textMuted} />
                     </TouchableOpacity>
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
@@ -303,7 +295,7 @@ const AboutUsScreen = () => {
                   <View style={styles.modalHeader}>
                     <Text style={styles.modalTitle}>隐私政策</Text>
                     <TouchableOpacity style={styles.modalCloseButton} onPress={closePrivacyModal}>
-                      <FontAwesome5 name="times" size={14} color="rgba(255, 255, 255, 0.5)" />
+                      <FontAwesome5 name="times" size={14} color={CLINICAL_COLORS.textMuted} />
                     </TouchableOpacity>
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>

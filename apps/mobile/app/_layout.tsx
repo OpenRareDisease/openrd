@@ -35,7 +35,6 @@ export default function RootLayout() {
     }
 
     const pageId = pathname.replace('/', '').toUpperCase();
-    console.log('当前pageId:', pageId, ', pathname:', pathname, ', search:', searchString);
     if (typeof window === 'object' && window.parent && window.parent.postMessage) {
       window.parent.postMessage(
         {

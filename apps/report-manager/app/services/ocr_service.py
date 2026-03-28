@@ -2,6 +2,7 @@ import PyPDF2
 from PIL import Image
 import pytesseract
 import os
+import sys
 import tempfile
 from pdf2image import convert_from_path
 import traceback
@@ -14,13 +15,20 @@ def _paddle_disabled() -> bool:
     """
     Allow disabling PaddleOCR on platforms where Paddle may crash (e.g. Apple Silicon via emulation).
     """
-    return os.getenv("REPORT_MANAGER_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
+    return (
+        os.getenv("OCR_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
+        or os.getenv("REPORT_MANAGER_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
+    )
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/jpg"}
 
 _paddle_ocr = None
 _paddle_logged = False
 _tesseract_logged = False
+
+
+def _log_ocr_message(message):
+    print(message, file=sys.stderr)
 
 def _get_paddle_ocr():
     global _paddle_ocr
@@ -38,7 +46,7 @@ def _get_paddle_ocr():
                 _PADDLE_AVAILABLE = True
             except Exception as e:
                 # PaddleOCR is optional; fall back to Tesseract.
-                print(f"PaddleOCR unavailable, falling back to Tesseract: {e}")
+                _log_ocr_message(f"PaddleOCR unavailable, falling back to Tesseract: {e}")
                 _PADDLE_AVAILABLE = False
                 return None
         # use_angle_cls helps with rotated scans
@@ -54,7 +62,7 @@ def _paddle_image_to_string(image):
     try:
         global _paddle_logged
         if not _paddle_logged:
-            print("OCR engine: PaddleOCR")
+            _log_ocr_message("OCR engine: PaddleOCR")
             _paddle_logged = True
         ocr = _get_paddle_ocr()
         if ocr is None:
@@ -121,8 +129,8 @@ def _paddle_image_to_string(image):
         texts = _extract_texts(result)
         return "\n".join(texts)
     except Exception as e:
-        print(f"PaddleOCR error: {e}")
-        print(traceback.format_exc())
+        _log_ocr_message(f"PaddleOCR error: {e}")
+        _log_ocr_message(traceback.format_exc())
         return ""
 
 def extract_text_from_pdf(pdf_path):
@@ -141,38 +149,42 @@ def extract_text_from_pdf(pdf_path):
                 page = reader.pages[page_num]
                 text += page.extract_text() or ""
     except Exception as e:
-        print(f"PyPDF2 extraction error: {e}")
+        _log_ocr_message(f"PyPDF2 extraction error: {e}")
     
     # 如果PyPDF2提取的文本较少，尝试使用OCR
     if len(text.strip()) < 100:
         try:
             # 将PDF转换为图像
-            images = convert_from_path(pdf_path)
+            images = convert_from_path(pdf_path, dpi=300)
             
             # 使用PaddleOCR优先，其次使用Tesseract提取图像中的文本
             ocr_text = ""
             for i, image in enumerate(images):
-                if _PADDLE_AVAILABLE:
-                    paddle_text = _paddle_image_to_string(image)
-                    if paddle_text:
-                        ocr_text += paddle_text + "\n"
-                        continue
-                if not _PADDLE_AVAILABLE or not ocr_text:
+                paddle_text = _paddle_image_to_string(image)
+                if paddle_text:
+                    ocr_text += paddle_text + "\n"
+                    continue
+                if not paddle_text:
                     global _tesseract_logged
                     if not _tesseract_logged:
-                        print("OCR engine: Tesseract (fallback)")
+                        _log_ocr_message("OCR engine: Tesseract (fallback)")
                         _tesseract_logged = True
                     # 保存图像到临时文件
                     temp_image_path = os.path.join(tempfile.gettempdir(), f"temp_image_{i}.png")
-                    image.save(temp_image_path, 'PNG')
-                    # 使用Tesseract提取文本
-                    ocr_text += pytesseract.image_to_string(Image.open(temp_image_path))
-                    # 删除临时图像文件
-                    os.remove(temp_image_path)
+                    try:
+                        image.save(temp_image_path, 'PNG')
+                        # 使用Tesseract提取文本
+                        ocr_text += pytesseract.image_to_string(
+                            Image.open(temp_image_path),
+                            lang="chi_sim+eng",
+                        )
+                    finally:
+                        if os.path.exists(temp_image_path):
+                            os.remove(temp_image_path)
             
             text = ocr_text
         except Exception as e:
-            print(f"OCR extraction error: {e}")
+            _log_ocr_message(f"OCR extraction error: {e}")
     
     return text
 
@@ -183,16 +195,15 @@ def extract_text_from_file(file_path, content_type):
     if content_type in SUPPORTED_IMAGE_TYPES:
         try:
             image = Image.open(file_path)
-            if _PADDLE_AVAILABLE:
-                paddle_text = _paddle_image_to_string(image)
-                if paddle_text:
-                    return paddle_text
+            paddle_text = _paddle_image_to_string(image)
+            if paddle_text:
+                return paddle_text
             global _tesseract_logged
             if not _tesseract_logged:
-                print("OCR engine: Tesseract (fallback)")
+                _log_ocr_message("OCR engine: Tesseract (fallback)")
                 _tesseract_logged = True
-            return pytesseract.image_to_string(image, lang="chi_sim")
+            return pytesseract.image_to_string(image, lang="chi_sim+eng")
         except Exception as e:
-            print(f"Image OCR error: {e}")
+            _log_ocr_message(f"Image OCR error: {e}")
             return ""
     return extract_text_from_pdf(file_path)

@@ -8,10 +8,14 @@
     "postinstall": "husky install",
     "dev:api": "npm run dev --workspace @openrd/api",
     "dev:mobile": "npm run start --workspace @openrd/mobile",
+    "db:migrate": "npm run migrate --workspace @openrd/api",
+    "db:migrate:status": "npm run migrate:status --workspace @openrd/api",
     "lint": "npm run lint --workspaces --if-present",
     "format": "npm run format --workspaces --if-present",
     "format:write": "npm run format:write --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "test:smoke": "bash scripts/smoke-test.sh",
+    "test:latest": "bash scripts/latest-test.sh"
   },
   "devDependencies": {
     "husky": "^9.1.6",

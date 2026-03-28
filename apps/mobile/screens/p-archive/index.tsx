@@ -1,853 +1,173 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Alert,
   ActivityIndicator,
   Dimensions,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart } from 'react-native-chart-kit';
-import Svg, { Polygon, Circle, Line, Text as SvgText } from 'react-native-svg';
-import styles from './styles';
 import {
   ApiError,
-  getMuscleInsight,
   getMyPatientProfile,
-  getSubmissionTimeline,
-  type MuscleInsight,
-  type SubmissionItem,
+  getProgressionSummary,
+  type PatientProfile,
+  type ProgressionSummary,
 } from '../../lib/api';
-import { buildReportInsights, buildStrengthSummary } from '../../lib/report-insights';
+import {
+  buildBodyMapFromMeasurements,
+  CLINICAL_COLORS,
+  CLINICAL_GRADIENTS,
+  CLINICAL_TINTS,
+  formatDateLabel,
+  summarizeBodyRegions,
+  type BodyView,
+} from '../../lib/clinical-visuals';
+import {
+  buildDiseaseBackgroundFacts,
+  buildDomainTrendCards,
+  buildProgressionTimeline,
+} from '../../lib/followup-analytics';
+import { buildReportInsights } from '../../lib/report-insights';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import styles from './styles';
 
-interface AlertItem {
-  id: string;
-  type: 'warning' | 'info' | 'success';
-  title: string;
-  description: string;
-  actionText?: string;
-  actionTarget?: 'data_entry' | 'manage';
-}
+const trendMeta: Record<
+  NonNullable<ProgressionSummary['changeCards']>[number]['trend'],
+  { label: string; color: string; backgroundColor: string }
+> = {
+  better: {
+    label: '改善',
+    color: CLINICAL_COLORS.success,
+    backgroundColor: CLINICAL_TINTS.successSoft,
+  },
+  stable: {
+    label: '平稳',
+    color: CLINICAL_COLORS.textSoft,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+  },
+  worse: {
+    label: '加重',
+    color: CLINICAL_COLORS.danger,
+    backgroundColor: CLINICAL_TINTS.dangerSoft,
+  },
+  new: {
+    label: '新增',
+    color: CLINICAL_COLORS.warning,
+    backgroundColor: CLINICAL_TINTS.warningSoft,
+  },
+};
 
-interface PatientMeasurement {
-  id: string;
-  muscleGroup: string;
-  strengthScore: number;
-  recordedAt: string;
-}
+const chartConfig = {
+  backgroundColor: CLINICAL_COLORS.panel,
+  backgroundGradientFrom: CLINICAL_COLORS.panel,
+  backgroundGradientTo: CLINICAL_COLORS.panel,
+  decimalPlaces: 1,
+  color: (opacity = 1) => `rgba(63, 122, 112, ${opacity})`,
+  labelColor: () => CLINICAL_COLORS.textMuted,
+  propsForDots: {
+    r: '3',
+    strokeWidth: '2',
+    stroke: CLINICAL_COLORS.accentStrong,
+  },
+};
 
-interface PatientActivityLog {
-  id: string;
-  logDate: string;
-  content: string | null;
-  createdAt: string;
-}
+const renderChartPoints = (points: Array<{ timestamp: string; value: number }>) => {
+  if (!points.length) {
+    return null;
+  }
 
-interface PatientDocument {
-  id: string;
-  documentType: string;
-  title: string | null;
-  fileName: string | null;
-  uploadedAt: string;
-  ocrPayload?: {
-    extractedText?: string;
-    fields?: Record<string, string>;
-  } | null;
-}
+  if (points.length === 1) {
+    return {
+      labels: [formatDateLabel(points[0].timestamp), formatDateLabel(points[0].timestamp)],
+      datasets: [{ data: [points[0].value, points[0].value] }],
+    };
+  }
 
-interface PatientProfile {
-  id: string;
-  fullName: string | null;
-  measurements: PatientMeasurement[];
-  activityLogs: PatientActivityLog[];
-  documents: PatientDocument[];
-  updatedAt: string;
-}
-
-const ArchiveScreen = () => {
-  const MUSCLE_LABELS: Record<string, string> = {
-    deltoid: '三角肌',
-    biceps: '肱二头肌',
-    triceps: '肱三头肌',
-    tibialis: '胫骨前肌',
-    quadriceps: '股四头肌',
-    hamstrings: '腘绳肌',
-    gluteus: '臀肌',
+  return {
+    labels: points.map((item) => formatDateLabel(item.timestamp)),
+    datasets: [{ data: points.map((item) => item.value) }],
   };
+};
 
-  const getMuscleLabel = (key: string) => MUSCLE_LABELS[key] || key;
-
+export default function ArchiveScreen() {
   const router = useRouter();
   const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [summary, setSummary] = useState<ProgressionSummary | null>(null);
+  const [bodyView, setBodyView] = useState<BodyView>('front');
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [selectedMuscle, setSelectedMuscle] = useState<keyof typeof MUSCLE_LABELS>('deltoid');
-  const [muscleInsight, setMuscleInsight] = useState<MuscleInsight | null>(null);
-  const [insightLoading, setInsightLoading] = useState(false);
-  const [insightError, setInsightError] = useState<string | null>(null);
-  const [submissions, setSubmissions] = useState<SubmissionItem[]>([]);
-  const [timelineLoading, setTimelineLoading] = useState(false);
-  const [timelineError, setTimelineError] = useState<string | null>(null);
-  const [timelinePage, setTimelinePage] = useState(1);
-  const [timelineTotal, setTimelineTotal] = useState(0);
-  const [expandedSubmissions, setExpandedSubmissions] = useState<Record<string, boolean>>({});
 
-  const latestUpdatedAt = React.useMemo(() => {
-    if (!profile) return null;
-    const timestamps = [
-      profile.updatedAt,
-      ...profile.measurements.map((item) => item.recordedAt),
-      ...profile.activityLogs.map((item) => item.createdAt ?? item.logDate),
-      ...profile.documents.map((doc) => doc.uploadedAt),
-    ]
-      .filter(Boolean)
-      .map((value) => new Date(value).getTime())
-      .filter((value) => !Number.isNaN(value));
+  const chartWidth = Math.max(260, Dimensions.get('window').width - 112);
 
-    if (timestamps.length === 0) return null;
-    return new Date(Math.max(...timestamps));
-  }, [profile]);
+  const loadData = async (refresh = false) => {
+    if (refresh) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
 
-  const formatDateTime = (value: Date) => {
-    const year = value.getFullYear();
-    const month = String(value.getMonth() + 1).padStart(2, '0');
-    const day = String(value.getDate()).padStart(2, '0');
-    const hour = String(value.getHours()).padStart(2, '0');
-    const minute = String(value.getMinutes()).padStart(2, '0');
-    const second = String(value.getSeconds()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-  };
-
-  const hasRecordedData = Boolean(
-    profile &&
-      (profile.measurements.length > 0 ||
-        profile.activityLogs.length > 0 ||
-        profile.documents.length > 0),
-  );
-
-  const getPassportId = () => {
-    if (!profile?.id) return 'FSHD-UNASSIGNED';
-    const compact = profile.id.replace(/-/g, '').slice(0, 10).toUpperCase();
-    return `FSHD-${compact}`;
-  };
-
-  const mapDocumentTypeLabel = (type?: string) => {
-    switch (type) {
-      case 'mri':
-        return 'MRI 影像报告';
-      case 'genetic_report':
-        return '基因检测报告';
-      case 'blood_panel':
-        return '血检报告';
-      default:
-        return '医学报告';
+    try {
+      setErrorMessage(null);
+      const [profileData, summaryData] = await Promise.all([
+        getMyPatientProfile(),
+        getProgressionSummary(),
+      ]);
+      setProfile(profileData);
+      setSummary(summaryData);
+    } catch (error) {
+      setProfile(null);
+      setSummary(null);
+      setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载完整病程档案。');
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
-  const chartWidth = Dimensions.get('window').width - 48;
-
-  const chartConfig = {
-    backgroundColor: '#0F0F23',
-    backgroundGradientFrom: '#0F0F23',
-    backgroundGradientTo: '#0F0F23',
-    decimalPlaces: 1,
-    color: (opacity = 1) => `rgba(150, 159, 255, ${opacity})`,
-    labelColor: () => '#9CA3AF',
-    propsForDots: {
-      r: '4',
-      strokeWidth: '2',
-      stroke: '#FFFFFF',
-    },
-  };
-
-  const RadarChart = ({
-    data,
-    maxValue = 5,
-    size = 220,
-  }: {
-    data: { label: string; value: number }[];
-    maxValue?: number;
-    size?: number;
-  }) => {
-    const center = size / 2;
-    const radius = size / 2 - 20;
-    const angleStep = (Math.PI * 2) / data.length;
-
-    const points = data
-      .map((item, index) => {
-        const angle = -Math.PI / 2 + index * angleStep;
-        const valueRatio = Math.max(0, Math.min(item.value, maxValue)) / maxValue;
-        const x = center + radius * valueRatio * Math.cos(angle);
-        const y = center + radius * valueRatio * Math.sin(angle);
-        return `${x},${y}`;
-      })
-      .join(' ');
-
-    return (
-      <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        {[1, 2, 3, 4, 5].map((level) => {
-          const r = (radius / 5) * level;
-          const polygonPoints = data
-            .map((_, index) => {
-              const angle = -Math.PI / 2 + index * angleStep;
-              const x = center + r * Math.cos(angle);
-              const y = center + r * Math.sin(angle);
-              return `${x},${y}`;
-            })
-            .join(' ');
-          return <Polygon key={level} points={polygonPoints} fill="none" stroke="#2F2F4A" />;
-        })}
-
-        {data.map((_, index) => {
-          const angle = -Math.PI / 2 + index * angleStep;
-          const x = center + radius * Math.cos(angle);
-          const y = center + radius * Math.sin(angle);
-          return <Line key={index} x1={center} y1={center} x2={x} y2={y} stroke="#2F2F4A" />;
-        })}
-
-        <Polygon points={points} fill="rgba(150, 159, 255, 0.2)" stroke="#969FFF" />
-        {data.map((item, index) => {
-          const angle = -Math.PI / 2 + index * angleStep;
-          const x = center + radius * Math.cos(angle);
-          const y = center + radius * Math.sin(angle);
-          return (
-            <React.Fragment key={item.label}>
-              <Circle cx={x} cy={y} r={3} fill="#969FFF" />
-              <SvgText
-                x={x}
-                y={y + (y < center ? -8 : 12)}
-                fill="#CBD5E1"
-                fontSize="10"
-                textAnchor="middle"
-              >
-                {item.label}
-              </SvgText>
-            </React.Fragment>
-          );
-        })}
-      </Svg>
-    );
-  };
-
-  const radarData = useMemo(() => {
-    const measurements = profile?.measurements ?? [];
-    const latestByGroup = new Map<string, PatientMeasurement>();
-    measurements.forEach((item) => {
-      const existing = latestByGroup.get(item.muscleGroup);
-      if (!existing || new Date(item.recordedAt) > new Date(existing.recordedAt)) {
-        latestByGroup.set(item.muscleGroup, item);
-      }
-    });
-    return Object.entries(MUSCLE_LABELS).map(([group, label]) => ({
-      label,
-      value: Number(latestByGroup.get(group)?.strengthScore ?? 0),
-    }));
-  }, [profile, MUSCLE_LABELS]);
+  useEffect(() => {
+    loadData().catch(() => undefined);
+  }, []);
 
   const reportInsights = useMemo(
     () => buildReportInsights(profile?.documents ?? [], profile),
     [profile],
   );
+  const backgroundFacts = useMemo(() => buildDiseaseBackgroundFacts(profile), [profile]);
+  const bodyRegions = useMemo(
+    () => buildBodyMapFromMeasurements(profile?.measurements ?? []),
+    [profile],
+  );
+  const focusAreas = useMemo(() => summarizeBodyRegions(bodyRegions, 6), [bodyRegions]);
+  const domainTrendCards = useMemo(() => buildDomainTrendCards(profile), [profile]);
+  const timelineItems = useMemo(
+    () => buildProgressionTimeline(profile, summary, 16),
+    [profile, summary],
+  );
 
-  const formatTrendLabel = (value: string) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hour = String(date.getHours()).padStart(2, '0');
-    const minute = String(date.getMinutes()).padStart(2, '0');
-    return `${month}-${day} ${hour}:${minute}`;
-  };
+  const lateralityOverview = [
+    ...(summary?.lateralOverview.leftDominant ?? []).map((item) => `左侧更重 · ${item}`),
+    ...(summary?.lateralOverview.rightDominant ?? []).map((item) => `右侧更重 · ${item}`),
+    ...(summary?.lateralOverview.bilateral ?? []).map((item) => `双侧受累 · ${item}`),
+  ];
 
-  const trendChartData = useMemo(() => {
-    if (!muscleInsight?.trend?.length) return null;
-    const points = muscleInsight.trend;
-    return {
-      labels: points.map((item) => formatTrendLabel(item.recordedAt)),
-      datasets: [
-        {
-          data: points.map((item) => Number(item.strengthScore)),
-          strokeWidth: 2,
-        },
-      ],
-    };
-  }, [muscleInsight]);
-
-  const distributionPosition = useMemo(() => {
-    if (!muscleInsight?.distribution || muscleInsight.userLatestScore === null) return null;
-    const { quartile25, medianScore, quartile75 } = muscleInsight.distribution;
-    const score = muscleInsight.userLatestScore;
-    if (score <= quartile25) return '前25%';
-    if (score <= medianScore) return '25%-50%';
-    if (score <= quartile75) return '50%-75%';
-    return '75%+';
-  }, [muscleInsight]);
-
-  const alertItems: AlertItem[] = (() => {
-    if (!profile) return [];
-    const items: AlertItem[] = [];
-    if (profile.measurements.length === 0) {
-      items.push({
-        id: 'no-measurements',
-        type: 'info',
-        title: '暂无肌力记录',
-        description: '录入肌力评估后会在此生成趋势。',
-        actionText: '去录入 →',
-        actionTarget: 'data_entry',
-      });
-    }
-    const lastActivity = profile.activityLogs[0];
-    if (!lastActivity) {
-      items.push({
-        id: 'no-activity',
-        type: 'warning',
-        title: '暂无活动记录',
-        description: '记录日常活动有助于病程评估。',
-        actionText: '去录入 →',
-        actionTarget: 'data_entry',
-      });
-    } else {
-      items.push({
-        id: 'activity-latest',
-        type: 'success',
-        title: '最近活动已记录',
-        description: lastActivity.content ?? '保持规律活动，继续加油！',
-      });
-    }
-    if (profile.documents.length === 0) {
-      items.push({
-        id: 'no-docs',
-        type: 'info',
-        title: '暂无影像报告',
-        description: '上传报告后可在时间轴查看。',
-        actionText: '去录入 →',
-        actionTarget: 'data_entry',
-      });
-    }
-    return items;
-  })();
-
-  const fetchProfile = async () => {
-    try {
-      setIsLoading(true);
-      setErrorMessage(null);
-      const data = await getMyPatientProfile();
-      setProfile({
-        id: data.id,
-        fullName: data.fullName,
-        measurements: data.measurements ?? [],
-        activityLogs: data.activityLogs ?? [],
-        documents: data.documents ?? [],
-        updatedAt: data.updatedAt,
-      });
-    } catch (error) {
-      const message = error instanceof ApiError ? error.message : '无法获取档案数据';
-      setErrorMessage(message);
-      setProfile(null);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchProfile();
-  }, []);
-
-  useEffect(() => {
-    let isMounted = true;
-    const loadTimeline = async () => {
-      if (!profile) {
-        setSubmissions([]);
-        setTimelineTotal(0);
-        return;
-      }
-      try {
-        setTimelineLoading(true);
-        setTimelineError(null);
-        const response = await getSubmissionTimeline(timelinePage, 10);
-        if (!isMounted) return;
-        setSubmissions(response.items);
-        setTimelineTotal(response.total);
-      } catch (error) {
-        if (!isMounted) return;
-        const message = error instanceof ApiError ? error.message : '无法获取时间轴数据';
-        setTimelineError(message);
-        setSubmissions([]);
-      } finally {
-        if (isMounted) {
-          setTimelineLoading(false);
-        }
-      }
-    };
-
-    loadTimeline();
-    return () => {
-      isMounted = false;
-    };
-  }, [profile, timelinePage]);
-
-  useEffect(() => {
-    if (!profile) {
-      setMuscleInsight(null);
-      setInsightError(null);
-      return;
-    }
-    let isMounted = true;
-    const loadInsight = async () => {
-      try {
-        setInsightLoading(true);
-        setInsightError(null);
-        const data = await getMuscleInsight(selectedMuscle);
-        if (!isMounted) return;
-        setMuscleInsight(data);
-      } catch (error) {
-        if (!isMounted) return;
-        const message = error instanceof ApiError ? error.message : '无法获取肌力趋势数据';
-        setInsightError(message);
-        setMuscleInsight(null);
-      } finally {
-        if (isMounted) {
-          setInsightLoading(false);
-        }
-      }
-    };
-
-    loadInsight();
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedMuscle, profile]);
-
-  const handleClinicalPassportPress = () => {
-    router.push('/p-clinical_passport');
-  };
-
-  const handleDataEntryPress = () => {
-    router.push('/p-data_entry');
-  };
-
-  const handleTimelineFilterPress = () => {
-    Alert.alert('筛选', '时间轴筛选功能');
-  };
-
-  const handleInterventionPlanPress = () => {
-    router.push('/p-manage');
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'warning':
-        return '#FF9F43';
-      case 'stable':
-        return '#4CAF50';
-      case 'info':
-        return '#2196F3';
-      default:
-        return '#FF9F43';
-    }
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'warning':
-        return 'triangle-exclamation';
-      case 'stable':
-        return 'check';
-      case 'info':
-        return 'info';
-      default:
-        return 'triangle-exclamation';
-    }
-  };
-
-  const toggleSubmission = (id: string) => {
-    setExpandedSubmissions((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
-  };
-
-  const renderSubmissionCard = (item: SubmissionItem) => {
-    const isExpanded = Boolean(expandedSubmissions[item.id]);
-    const measurementCount = item.measurements.length;
-    const activityCount = item.activityLogs.length;
-    const medicationCount = item.medications.length;
-    const documentCount = item.documents.length;
-
-    const pickOcrField = (fields: Record<string, string> | undefined, keys: string[]) => {
-      if (!fields) return undefined;
-      for (const key of keys) {
-        const value = fields[key];
-        if (value === null || value === undefined) continue;
-        const text = String(value).trim();
-        if (text) return text;
-      }
-      return undefined;
-    };
-
-    const buildDocumentLines = (doc: SubmissionItem['documents'][number]) => {
-      const fields = doc.ocrPayload?.fields ?? undefined;
-      const lines: string[] = [];
-      const aiSummary = pickOcrField(fields, ['aiSummary']);
-      const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
-      const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
-      const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
-      const liverFunction = pickOcrField(fields, ['liverFunction', 'liver_function']);
-      const creatineKinase = pickOcrField(fields, ['creatineKinase', 'creatine_kinase']);
-      if (d4z4Repeats) lines.push(`D4Z4重复数 ${d4z4Repeats}`);
-      if (methylation) lines.push(`甲基化值 ${methylation}`);
-      if (serratus) lines.push(`前锯肌脂肪化等级 ${serratus}`);
-      if (liverFunction) lines.push(`肝功能 ${liverFunction}`);
-      if (creatineKinase) lines.push(`肌酸激酶 ${creatineKinase}`);
-      if (aiSummary) {
-        lines.push(`AI总结 ${aiSummary.length > 80 ? `${aiSummary.slice(0, 80)}…` : aiSummary}`);
-      }
-      const strengthSummary = buildStrengthSummary(fields).summary;
-      if (strengthSummary) lines.push(`肌力评估 ${strengthSummary}`);
-      const hint = fields?.hint;
-      if (lines.length === 0 && hint) {
-        lines.push(hint);
-      }
-      const extracted = doc.ocrPayload?.extractedText;
-      if (extracted && lines.length === 0) {
-        lines.push(`OCR：${extracted}`);
-      }
-      if (lines.length === 0 && doc.ocrPayload?.error) {
-        lines.push(`解析失败：${doc.ocrPayload.error}`);
-      }
-      return lines;
-    };
-
-    return (
-      <View key={item.id} style={styles.submissionCard}>
-        <TouchableOpacity
-          style={styles.submissionHeader}
-          onPress={() => toggleSubmission(item.id)}
-          activeOpacity={0.7}
-        >
-          <View>
-            <Text style={styles.submissionTitle}>一次录入</Text>
-            <Text style={styles.submissionDate}>{formatDateTime(new Date(item.createdAt))}</Text>
-          </View>
-          <View style={styles.submissionMeta}>
-            <Text style={styles.submissionSummary}>
-              报告 {documentCount} · 肌力 {measurementCount} · 活动 {activityCount} · 用药{' '}
-              {medicationCount}
-            </Text>
-            <FontAwesome6
-              name={isExpanded ? 'chevron-up' : 'chevron-down'}
-              size={12}
-              color="#969FFF"
-            />
-          </View>
-        </TouchableOpacity>
-
-        {isExpanded && (
-          <View style={styles.submissionDetails}>
-            {documentCount > 0 && (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailTitle}>医疗报告</Text>
-                {item.documents.map((doc) => (
-                  <TouchableOpacity
-                    key={doc.id}
-                    style={{ marginBottom: 10 }}
-                    activeOpacity={0.75}
-                    onPress={() =>
-                      router.push({
-                        pathname: '/p-report_detail',
-                        params: { documentId: doc.id },
-                      })
-                    }
-                  >
-                    <Text style={styles.detailItem}>
-                      {mapDocumentTypeLabel(doc.documentType)} ·{' '}
-                      {doc.fileName ?? doc.title ?? '已上传'}
-                    </Text>
-                    {buildDocumentLines(doc).map((line, index) => (
-                      <Text key={`${doc.id}-${index}`} style={styles.detailItem}>
-                        {line}
-                      </Text>
-                    ))}
-                    <Text style={[styles.detailItem, { color: '#969FFF', marginTop: 2 }]}>
-                      查看详情 →
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            {measurementCount > 0 && (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailTitle}>肌力评估</Text>
-                {item.measurements.map((m) => (
-                  <Text key={m.id} style={styles.detailItem}>
-                    {getMuscleLabel(m.muscleGroup)} · {m.strengthScore} 级
-                  </Text>
-                ))}
-              </View>
-            )}
-
-            {activityCount > 0 && (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailTitle}>活动记录</Text>
-                {item.activityLogs.map((log) => (
-                  <Text key={log.id} style={styles.detailItem}>
-                    {log.content ?? '已记录活动'}
-                  </Text>
-                ))}
-              </View>
-            )}
-
-            {medicationCount > 0 && (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailTitle}>用药记录</Text>
-                {item.medications.map((med) => (
-                  <Text key={med.id} style={styles.detailItem}>
-                    {med.medicationName}
-                    {med.dosage ? ` · ${med.dosage}` : ''}
-                    {med.frequency ? ` · ${med.frequency}` : ''}
-                  </Text>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-      </View>
-    );
-  };
-
-  const renderContent = () => {
-    if (isLoading) {
-      return (
-        <View style={styles.stateContainer}>
-          <ActivityIndicator size="large" color="#969FFF" />
-          <Text style={styles.stateText}>正在加载档案数据...</Text>
-        </View>
-      );
-    }
-
-    if (errorMessage) {
-      return (
-        <View style={styles.stateContainer}>
-          <Text style={styles.stateText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={fetchProfile}>
-            <Text style={styles.retryButtonText}>重试</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
-    if (!profile) {
-      return (
-        <View style={styles.stateContainer}>
-          <Text style={styles.stateText}>还没有档案数据，快去录入吧！</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={handleDataEntryPress}>
-            <Text style={styles.retryButtonText}>去录入</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
-    return (
-      <>
-        <View style={styles.profileCard}>
-          <Text style={styles.profileName}>{profile.fullName ?? '未填写姓名'}</Text>
-          <Text style={styles.profileMeta}>
-            最近更新：{formatDateTime(latestUpdatedAt ?? new Date(profile.updatedAt))}
-          </Text>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>肌力分析</Text>
-          <View style={styles.radarCard}>
-            <Text style={styles.sectionSubtitle}>肌群雷达图（0-5 级）</Text>
-            <RadarChart data={radarData} />
-          </View>
-          <View style={styles.chartCard}>
-            <Text style={styles.sectionSubtitle}>选择肌肉部位</Text>
-            <View style={styles.muscleSelector}>
-              {Object.entries(MUSCLE_LABELS).map(([group, label]) => {
-                const isActive = selectedMuscle === group;
-                return (
-                  <TouchableOpacity
-                    key={group}
-                    style={[styles.muscleChip, isActive && styles.muscleChipActive]}
-                    onPress={() => setSelectedMuscle(group as keyof typeof MUSCLE_LABELS)}
-                  >
-                    <Text style={[styles.muscleChipText, isActive && styles.muscleChipTextActive]}>
-                      {label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {insightLoading ? (
-              <ActivityIndicator color="#969FFF" style={styles.insightLoading} />
-            ) : insightError ? (
-              <Text style={styles.emptyText}>{insightError}</Text>
-            ) : trendChartData ? (
-              <>
-                <LineChart
-                  data={trendChartData}
-                  width={chartWidth}
-                  height={220}
-                  chartConfig={chartConfig}
-                  bezier
-                  withShadow={false}
-                  style={styles.chart}
-                />
-                <View style={styles.chartLegend}>
-                  <View style={styles.chartLegendDot} />
-                  <Text style={styles.chartLegendText}>
-                    {MUSCLE_LABELS[selectedMuscle]}肌力趋势（按提交）
-                  </Text>
-                </View>
-              </>
-            ) : (
-              <Text style={styles.emptyText}>暂无趋势数据，录入后自动生成。</Text>
-            )}
-
-            <View style={styles.distributionCard}>
-              <Text style={styles.sectionSubtitle}>群体分布对比</Text>
-              {muscleInsight?.distribution ? (
-                <>
-                  <View style={styles.distributionBar}>
-                    <View style={styles.distributionRange} />
-                    {(() => {
-                      const dist = muscleInsight.distribution;
-                      const min = dist.minScore;
-                      const max = dist.maxScore;
-                      const range = max - min || 1;
-                      const getLeft = (value: number) =>
-                        `${Math.min(100, Math.max(0, ((value - min) / range) * 100))}%`;
-                      return (
-                        <>
-                          <View
-                            style={[styles.distributionMarker, { left: getLeft(dist.minScore) }]}
-                          />
-                          <View
-                            style={[styles.distributionMarker, { left: getLeft(dist.quartile25) }]}
-                          />
-                          <View
-                            style={[styles.distributionMarker, { left: getLeft(dist.medianScore) }]}
-                          />
-                          <View
-                            style={[styles.distributionMarker, { left: getLeft(dist.quartile75) }]}
-                          />
-                          <View
-                            style={[styles.distributionMarker, { left: getLeft(dist.maxScore) }]}
-                          />
-                          {muscleInsight.userLatestScore !== null && (
-                            <View
-                              style={[
-                                styles.distributionMarkerUser,
-                                { left: getLeft(muscleInsight.userLatestScore) },
-                              ]}
-                            />
-                          )}
-                        </>
-                      );
-                    })()}
-                  </View>
-                  <View style={styles.distributionLegend}>
-                    <Text style={styles.distributionText}>
-                      样本数：{muscleInsight.distribution.sampleCount}
-                    </Text>
-                    <Text style={styles.distributionText}>
-                      你的分位：{distributionPosition ?? '—'}
-                    </Text>
-                    <Text style={styles.distributionText}>
-                      当前评分：
-                      {muscleInsight.userLatestScore !== null
-                        ? muscleInsight.userLatestScore.toFixed(1)
-                        : '—'}
-                    </Text>
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.emptyText}>暂无分布数据</Text>
-              )}
-            </View>
-          </View>
-        </View>
-      </>
-    );
-  };
-
-  const renderAlertItem = (item: AlertItem, index: number) => {
-    const isMainAlert = index === 0;
-    const actionHandler =
-      item.actionTarget === 'data_entry' ? handleDataEntryPress : handleInterventionPlanPress;
-
-    if (isMainAlert) {
-      return (
-        <View key={item.id} style={styles.mainAlertCard}>
-          <View style={styles.alertHeader}>
-            <View style={styles.alertIconContainer}>
-              <FontAwesome6
-                name={getStatusIcon(item.type)}
-                size={12}
-                color={getStatusColor(item.type)}
-              />
-            </View>
-            <View style={styles.alertContent}>
-              <View style={styles.alertTitleRow}>
-                <Text style={styles.alertTitle}>{item.title}</Text>
-                <Text style={[styles.alertLevel, { color: getStatusColor(item.type) }]}>
-                  中等风险
-                </Text>
-              </View>
-              <Text style={styles.alertDescription}>{item.description}</Text>
-              {item.actionText && (
-                <TouchableOpacity onPress={actionHandler}>
-                  <Text style={[styles.alertAction, { color: getStatusColor(item.type) }]}>
-                    {item.actionText}
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-        </View>
-      );
-    }
-
-    return (
-      <View
-        key={item.id}
-        style={[styles.secondaryAlertCard, { borderLeftColor: getStatusColor(item.type) }]}
-      >
-        <View style={styles.secondaryAlertContent}>
-          <View
-            style={[
-              styles.secondaryAlertIcon,
-              { backgroundColor: `${getStatusColor(item.type)}20` },
-            ]}
-          >
-            <FontAwesome6
-              name={getStatusIcon(item.type)}
-              size={10}
-              color={getStatusColor(item.type)}
-            />
-          </View>
-          <View style={styles.secondaryAlertText}>
-            <Text style={styles.secondaryAlertTitle}>{item.title}</Text>
-            <Text style={styles.secondaryAlertDescription}>{item.description}</Text>
-          </View>
-        </View>
-      </View>
-    );
-  };
+  const displayName =
+    profile?.preferredName?.trim() || profile?.fullName?.trim() || 'FSHD 病程档案';
+  const passportId = profile?.id
+    ? `FSHD-${profile.id.replace(/-/g, '').slice(0, 10).toUpperCase()}`
+    : 'FSHD-UNASSIGNED';
 
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         style={styles.backgroundGradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -856,149 +176,300 @@ const ArchiveScreen = () => {
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => loadData(true).catch(() => undefined)}
+              tintColor={CLINICAL_COLORS.accentStrong}
+            />
+          }
         >
-          {/* 顶部标题栏 */}
           <View style={styles.header}>
-            <Text style={styles.pageTitle}>动态档案</Text>
+            <View style={styles.headerLead}>
+              <View>
+                <Text style={styles.eyebrow}>FULL CASEBOOK</Text>
+                <Text style={styles.pageTitle}>完整病程总册</Text>
+              </View>
+            </View>
             <View style={styles.headerActions}>
               <TouchableOpacity
-                style={styles.clinicalPassportButton}
-                onPress={handleClinicalPassportPress}
-                activeOpacity={0.7}
+                style={styles.outlineButton}
+                activeOpacity={0.88}
+                onPress={() => router.push('/p-manage')}
               >
-                <FontAwesome6 name="id-card" size={12} color="#969FFF" />
-                <Text style={styles.clinicalPassportText}>临床护照</Text>
+                <FontAwesome6 name="wave-square" size={13} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.outlineButtonText}>病程管理</Text>
               </TouchableOpacity>
-
               <TouchableOpacity
-                style={styles.dataEntryButton}
-                onPress={handleDataEntryPress}
-                activeOpacity={0.7}
+                style={styles.primaryButton}
+                activeOpacity={0.88}
+                onPress={() => router.push('/p-data_entry')}
               >
                 <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.dataEntryText}>
-                  {hasRecordedData ? '添加数据' : '录入数据'}
-                </Text>
+                <Text style={styles.primaryButtonText}>新增记录</Text>
               </TouchableOpacity>
             </View>
           </View>
 
-          {/* FSHD临床护照概览卡片 */}
-          <View style={styles.passportSection}>
-            <LinearGradient
-              colors={['rgba(150, 159, 255, 0.1)', 'rgba(81, 71, 255, 0.05)']}
-              style={styles.passportCard}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <View style={styles.passportHeader}>
-                <Text style={styles.passportTitle}>FSHD临床护照</Text>
-                <Text style={styles.passportId}>ID: {hasRecordedData ? getPassportId() : '—'}</Text>
-              </View>
-
-              {hasRecordedData ? (
-                <View style={styles.passportGrid}>
-                  <View style={styles.passportItem}>
-                    <Text style={styles.passportLabel}>基因类型</Text>
-                    <Text style={styles.passportValue}>{reportInsights.geneticType}</Text>
-                  </View>
-                  <View style={styles.passportItem}>
-                    <Text style={styles.passportLabel}>D4Z4重复数</Text>
-                    <Text style={styles.passportValue}>{reportInsights.d4z4Repeats}</Text>
-                  </View>
-                  <View style={styles.passportItem}>
-                    <Text style={styles.passportLabel}>甲基化值</Text>
-                    <Text style={styles.passportValue}>{reportInsights.methylationValue}</Text>
-                  </View>
-                  <View style={styles.passportItem}>
-                    <Text style={styles.passportLabel}>初诊时间</Text>
-                    <Text style={styles.passportValue}>{reportInsights.diagnosisDate}</Text>
-                  </View>
-                </View>
-              ) : (
-                <Text style={styles.passportHint}>录入数据以获得临床护照</Text>
-              )}
+          <View style={styles.section}>
+            <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+              <Text style={styles.heroEyebrow}>病例身份与长期随访</Text>
+              <Text style={styles.heroTitle}>{displayName}</Text>
+              <Text style={styles.heroMeta}>
+                {passportId}
+                {summary?.currentStatus.lastFollowupAt
+                  ? ` · 最近随访 ${formatDateLabel(summary.currentStatus.lastFollowupAt)}`
+                  : ' · 还没有完成随访'}
+              </Text>
+              <Text style={styles.heroSummary}>
+                {summary?.currentStatus.detail ??
+                  '这里会把疾病背景、左右差异、趋势和病程事件整合成一份患者自己也能读懂的总册。'}
+              </Text>
             </LinearGradient>
           </View>
 
-          {renderContent()}
-
-          {/* 可视化时间轴 */}
-          <View style={styles.timelineSection}>
-            <View style={styles.timelineHeader}>
-              <Text style={styles.timelineTitle}>病程时间轴</Text>
-              <TouchableOpacity onPress={handleTimelineFilterPress} activeOpacity={0.7}>
-                <View style={styles.filterButton}>
-                  <FontAwesome6 name="filter" size={10} color="#969FFF" />
-                  <Text style={styles.filterText}>筛选</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.timelineToggleRow}>
-              <Text style={styles.timelineHint}>
-                {timelineTotal === 0 ? '暂无记录' : `共 ${timelineTotal} 次录入`}
-              </Text>
-            </View>
-
-            <View style={styles.timelineContainer}>
-              {timelineLoading ? (
-                <View style={styles.emptyCard}>
-                  <ActivityIndicator color="#969FFF" />
-                </View>
-              ) : timelineError ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>{timelineError}</Text>
-                </View>
-              ) : submissions.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>暂无录入记录</Text>
-                </View>
-              ) : (
-                submissions.map((item) => renderSubmissionCard(item))
-              )}
-            </View>
-
-            {timelineTotal > 0 && (
-              <View style={styles.paginationRow}>
+          {errorMessage ? (
+            <View style={styles.section}>
+              <View style={styles.stateWrap}>
+                <Text style={styles.stateText}>{errorMessage}</Text>
                 <TouchableOpacity
-                  style={[styles.pageButton, timelinePage <= 1 && styles.pageButtonDisabled]}
-                  onPress={() => setTimelinePage((prev) => Math.max(1, prev - 1))}
-                  disabled={timelinePage <= 1}
+                  style={styles.primaryButton}
+                  activeOpacity={0.88}
+                  onPress={() => loadData().catch(() => undefined)}
                 >
-                  <Text style={styles.pageButtonText}>上一页</Text>
+                  <Text style={styles.primaryButtonText}>重新加载</Text>
                 </TouchableOpacity>
-                <Text style={styles.pageIndicator}>
-                  第 {timelinePage} / {Math.max(1, Math.ceil(timelineTotal / 10))} 页
+              </View>
+            </View>
+          ) : null}
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>疾病背景</Text>
+            <View style={styles.backgroundGrid}>
+              {backgroundFacts.map((item) => (
+                <View key={item.label} style={styles.backgroundCard}>
+                  <Text style={styles.backgroundLabel}>{item.label}</Text>
+                  <Text style={styles.backgroundValue}>{item.value}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>长期变化摘要</Text>
+            {summary?.changeCards?.length ? (
+              <View style={styles.summaryGrid}>
+                {summary.changeCards.map((item) => {
+                  const meta = trendMeta[item.trend];
+                  return (
+                    <View key={item.id} style={styles.summaryCard}>
+                      <View style={styles.summaryTopRow}>
+                        <Text style={styles.summaryTitle}>{item.title}</Text>
+                        <View
+                          style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
+                        >
+                          <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
+                            {meta.label}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.summaryDate}>
+                        {item.evidenceAt
+                          ? `记录于 ${formatDateLabel(item.evidenceAt)}`
+                          : '等待更多记录'}
+                      </Text>
+                      <Text style={styles.summaryText}>{item.detail}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={styles.stateWrap}>
+                <Text style={styles.stateText}>
+                  还没有足够的随访记录，先补一次快速随访后这里会自动总结变化。
                 </Text>
-                <TouchableOpacity
-                  style={[
-                    styles.pageButton,
-                    timelinePage >= Math.ceil(timelineTotal / 10) && styles.pageButtonDisabled,
-                  ]}
-                  onPress={() =>
-                    setTimelinePage((prev) => Math.min(prev + 1, Math.ceil(timelineTotal / 10)))
-                  }
-                  disabled={timelinePage >= Math.ceil(timelineTotal / 10)}
-                >
-                  <Text style={styles.pageButtonText}>下一页</Text>
-                </TouchableOpacity>
               </View>
             )}
           </View>
 
-          {/* 风险预警看板 */}
-          <View style={styles.riskAlertSection}>
-            <Text style={styles.riskAlertTitle}>风险预警</Text>
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>左右体图</Text>
+              <View style={styles.toggleRow}>
+                <TouchableOpacity
+                  style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
+                  activeOpacity={0.88}
+                  onPress={() => setBodyView('front')}
+                >
+                  <Text
+                    style={[
+                      styles.toggleChipText,
+                      bodyView === 'front' && styles.toggleChipTextActive,
+                    ]}
+                  >
+                    正面
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
+                  activeOpacity={0.88}
+                  onPress={() => setBodyView('back')}
+                >
+                  <Text
+                    style={[
+                      styles.toggleChipText,
+                      bodyView === 'back' && styles.toggleChipTextActive,
+                    ]}
+                  >
+                    背面
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
-            <View style={styles.alertsContainer}>
-              {alertItems.map((item, index) => renderAlertItem(item, index))}
+            <View style={styles.card}>
+              <HumanBodyFigure
+                view={bodyView}
+                regions={bodyRegions}
+                title="根据左右分开的功能/肌力记录生成"
+                subtitle="没有数据的区域不会自动填色。后续可继续补录左右侧差异。"
+              />
+              <View style={styles.focusWrap}>
+                {lateralityOverview.length ? (
+                  lateralityOverview.map((item) => (
+                    <View key={item} style={styles.focusTag}>
+                      <Text style={styles.focusTagText}>{item}</Text>
+                    </View>
+                  ))
+                ) : focusAreas.length ? (
+                  focusAreas.map((item) => (
+                    <View key={item} style={styles.focusTag}>
+                      <Text style={styles.focusTagText}>{item}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyText}>暂无体图数据，补录后自动生成。</Text>
+                )}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>多域趋势</Text>
+            <View style={styles.trendGrid}>
+              {domainTrendCards.map((item) => {
+                const chartData = renderChartPoints(item.points);
+                const meta = trendMeta[item.trend];
+                return (
+                  <View key={item.key} style={styles.trendCard}>
+                    <View style={styles.summaryTopRow}>
+                      <Text style={styles.trendCardTitle}>{item.label}</Text>
+                      <View
+                        style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
+                      >
+                        <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
+                          {meta.label}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.trendValue}>
+                      {item.currentValue === null ? '未记录' : `${item.currentValue.toFixed(1)}/10`}
+                    </Text>
+                    <Text style={styles.trendSummary}>{item.summary}</Text>
+                    {chartData ? (
+                      <LineChart
+                        data={chartData}
+                        width={chartWidth}
+                        height={170}
+                        chartConfig={chartConfig}
+                        withInnerLines={false}
+                        withOuterLines={false}
+                        withVerticalLines={false}
+                        fromZero
+                        yAxisInterval={2}
+                        style={styles.chart}
+                        bezier
+                      />
+                    ) : (
+                      <View style={styles.chartEmpty}>
+                        <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>病程事件时间线</Text>
+            {timelineItems.length ? (
+              <View style={styles.timelineWrap}>
+                {timelineItems.map((item, index) => (
+                  <View key={`${item.id}-${item.timestamp}`} style={styles.timelineItem}>
+                    <View style={styles.timelineRail}>
+                      <View style={styles.timelineDot} />
+                      {index !== timelineItems.length - 1 ? (
+                        <View style={styles.timelineLine} />
+                      ) : null}
+                    </View>
+                    <View style={styles.timelineContent}>
+                      <View style={styles.timelineHeaderRow}>
+                        <View style={styles.timelineTag}>
+                          <Text style={styles.timelineTagText}>{item.tag}</Text>
+                        </View>
+                        <Text style={styles.timelineTime}>{formatDateLabel(item.timestamp)}</Text>
+                      </View>
+                      <Text style={styles.timelineTitle}>{item.title}</Text>
+                      <Text style={styles.timelineText}>{item.description}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.stateWrap}>
+                <Text style={styles.stateText}>还没有病程事件或报告记录。</Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>历史报告与患者版摘要</Text>
+            <View style={styles.reportGrid}>
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryTitle}>基因摘要</Text>
+                <Text style={styles.summaryDate}>{reportInsights.diagnosisDate}</Text>
+                <Text style={styles.summaryText}>
+                  {reportInsights.geneEvidence || '暂无基因摘要'}
+                </Text>
+              </View>
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryTitle}>MRI 摘要</Text>
+                <Text style={styles.summaryDate}>{reportInsights.latestMriDate}</Text>
+                <Text style={styles.summaryText}>{reportInsights.mriSummary}</Text>
+              </View>
+              <View style={styles.summaryCard}>
+                <Text style={styles.summaryTitle}>监测摘要</Text>
+                <Text style={styles.summaryDate}>
+                  {reportInsights.latestRespiratoryDate || reportInsights.latestBloodDate}
+                </Text>
+                <Text style={styles.summaryText}>
+                  {reportInsights.respiratorySummary !== '暂无呼吸监测数据'
+                    ? reportInsights.respiratorySummary
+                    : reportInsights.bloodSummary}
+                </Text>
+              </View>
             </View>
           </View>
         </ScrollView>
+
+        {isLoading ? (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.loadingText}>正在生成完整病程总册...</Text>
+          </View>
+        ) : null}
       </LinearGradient>
     </SafeAreaView>
   );
-};
-
-export default ArchiveScreen;
+}

@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 import { useAuth } from '../../contexts/AuthContext';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 
 const SettingsScreen = () => {
   const router = useRouter();
@@ -36,8 +37,7 @@ const SettingsScreen = () => {
       await logout();
       setIsLogoutModalVisible(false);
       router.replace('/p-login_register');
-    } catch (error) {
-      console.error('退出登录失败:', error);
+    } catch {
       Alert.alert('错误', '退出登录失败，请重试');
     }
   };
@@ -59,9 +59,11 @@ const SettingsScreen = () => {
       >
         {/* 顶部标题区域 */}
         <View style={styles.header}>
-          <View style={styles.titleSection}>
-            <Text style={styles.pageTitle}>设置</Text>
-            <Text style={styles.pageSubtitle}>管理您的应用偏好和账户设置</Text>
+          <View style={styles.headerRow}>
+            <View style={styles.titleSection}>
+              <Text style={styles.pageTitle}>设置</Text>
+              <Text style={styles.pageSubtitle}>管理您的应用偏好和账户设置</Text>
+            </View>
           </View>
         </View>
 
@@ -85,7 +87,7 @@ const SettingsScreen = () => {
                 onPress={handleEditProfilePress}
                 activeOpacity={0.7}
               >
-                <FontAwesome6 name="pen" size={14} color="#969FFF" />
+                <FontAwesome6 name="pen" size={14} color={CLINICAL_COLORS.accent} />
               </TouchableOpacity>
             </View>
           </View>
@@ -103,14 +105,14 @@ const SettingsScreen = () => {
               <View style={styles.settingItemContent}>
                 <View style={styles.settingItemLeft}>
                   <View style={[styles.settingIconContainer, styles.blueIconContainer]}>
-                    <FontAwesome6 name="shield-halved" size={18} color="#60A5FA" />
+                    <FontAwesome6 name="shield-halved" size={18} color={CLINICAL_COLORS.accent} />
                   </View>
                   <View style={styles.settingTextContainer}>
                     <Text style={styles.settingTitle}>隐私设置</Text>
                     <Text style={styles.settingSubtitle}>管理数据授权和隐私偏好</Text>
                   </View>
                 </View>
-                <FontAwesome6 name="chevron-right" size={14} color="rgba(255, 255, 255, 0.5)" />
+                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
               </View>
             </TouchableOpacity>
 
@@ -123,14 +125,14 @@ const SettingsScreen = () => {
               <View style={styles.settingItemContent}>
                 <View style={styles.settingItemLeft}>
                   <View style={[styles.settingIconContainer, styles.greenIconContainer]}>
-                    <FontAwesome6 name="palette" size={18} color="#4ADE80" />
+                    <FontAwesome6 name="palette" size={18} color={CLINICAL_COLORS.success} />
                   </View>
                   <View style={styles.settingTextContainer}>
                     <Text style={styles.settingTitle}>个性化设置</Text>
                     <Text style={styles.settingSubtitle}>大字体、语音读屏、高对比度</Text>
                   </View>
                 </View>
-                <FontAwesome6 name="chevron-right" size={14} color="rgba(255, 255, 255, 0.5)" />
+                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
               </View>
             </TouchableOpacity>
 
@@ -143,14 +145,18 @@ const SettingsScreen = () => {
               <View style={styles.settingItemContent}>
                 <View style={styles.settingItemLeft}>
                   <View style={[styles.settingIconContainer, styles.purpleIconContainer]}>
-                    <FontAwesome6 name="circle-info" size={18} color="#A78BFA" />
+                    <FontAwesome6
+                      name="circle-info"
+                      size={18}
+                      color={CLINICAL_COLORS.accentStrong}
+                    />
                   </View>
                   <View style={styles.settingTextContainer}>
                     <Text style={styles.settingTitle}>关于我们</Text>
                     <Text style={styles.settingSubtitle}>产品介绍、版本信息、联系方式</Text>
                   </View>
                 </View>
-                <FontAwesome6 name="chevron-right" size={14} color="rgba(255, 255, 255, 0.5)" />
+                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
               </View>
             </TouchableOpacity>
 
@@ -161,7 +167,7 @@ const SettingsScreen = () => {
               activeOpacity={0.7}
             >
               <View style={styles.logoutItemContent}>
-                <FontAwesome6 name="right-from-bracket" size={18} color="#EF4444" />
+                <FontAwesome6 name="right-from-bracket" size={18} color={CLINICAL_COLORS.danger} />
                 <Text style={styles.logoutText}>退出登录</Text>
               </View>
             </TouchableOpacity>
@@ -196,7 +202,7 @@ const SettingsScreen = () => {
               onPress={() => {}} // 阻止事件冒泡
             >
               <View style={styles.modalIconContainer}>
-                <FontAwesome6 name="right-from-bracket" size={24} color="#EF4444" />
+                <FontAwesome6 name="right-from-bracket" size={24} color={CLINICAL_COLORS.danger} />
               </View>
               <Text style={styles.modalTitle}>确认退出登录</Text>
               <Text style={styles.modalMessage}>您确定要退出当前账户吗？</Text>

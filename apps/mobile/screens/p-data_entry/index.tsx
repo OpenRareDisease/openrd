@@ -1,1183 +1,1173 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   Alert,
-  Modal,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import Slider from '@react-native-community/slider';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
-  ApiError,
   addActivityLog,
+  addDailyImpact,
+  addFollowupEvent,
+  addFunctionTest,
   addPatientMeasurement,
-  addMedication,
-  attachSubmissionDocuments,
+  addSymptomScore,
   createSubmission,
+  getMyBaseline,
   getMyPatientProfile,
-  getMedications,
-  getPatientDocumentOcr,
+  type BaselineProfilePayload,
+  type PatientProfile,
+  updateMyBaseline,
   uploadPatientDocument,
   upsertPatientProfile,
 } from '../../lib/api';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
-type ReportType = 'mri' | 'genetic' | 'blood';
+type EntryMode = 'baseline' | 'followup' | 'event';
+type Feeling = 'better' | 'same' | 'worse';
+type YesNo = 'yes' | 'no' | 'unknown';
+type EventType =
+  | 'fall'
+  | 'new_foot_drop'
+  | 'new_arm_raise_difficulty'
+  | 'new_breathing_discomfort'
+  | 'started_afo'
+  | 'started_wheelchair'
+  | 'started_niv'
+  | 'uploaded_report'
+  | 'other';
+type Severity = 'mild' | 'moderate' | 'severe';
 
-interface UploadStatus {
-  mri: '未上传' | '上传中...' | '已上传';
-  genetic: '未上传' | '上传中...' | '已上传';
-  blood: '未上传' | '上传中...' | '已上传';
-}
+type UploadDraft = {
+  name: string;
+  title: string;
+  documentType: 'mri' | 'genetic_report' | 'blood_panel' | 'other';
+  file:
+    | {
+        uri: string;
+        name: string;
+        type: string;
+      }
+    | File
+    | null;
+};
 
-interface MuscleStrengthData {
-  group: string | null;
-  value: number;
-}
+const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 
-interface ReportHistoryItem {
-  id: string;
-  type: ReportType;
-  source: '相册' | '相机' | '上传';
-  timestamp: string;
-  fileName?: string;
-  ocrSummary?: string;
-  ocrPayload?: {
-    extractedText?: string;
-    fields?: Record<string, string>;
-    error?: string;
-  } | null;
-}
-
-interface TimelineEvent {
-  id: string;
+const modeCards: Array<{
+  key: EntryMode;
+  icon: ComponentProps<typeof FontAwesome6>['name'];
   title: string;
   description: string;
-  timestamp: string;
-  tag: '报告' | '肌力' | '活动' | '用药';
-}
+}> = [
+  {
+    key: 'baseline',
+    icon: 'seedling',
+    title: '基线建档',
+    description: '第一次使用时建立疾病背景和当前状态。',
+  },
+  {
+    key: 'followup',
+    icon: 'bolt',
+    title: '快速随访',
+    description: '2 到 5 分钟记录“和上次相比有没有变化”。',
+  },
+  {
+    key: 'event',
+    icon: 'flag',
+    title: '事件记录',
+    description: '跌倒、足下垂、辅具变化或新报告单独登记。',
+  },
+];
 
-const reportLabels: Record<ReportType, string> = {
-  mri: 'MRI 影像报告',
-  genetic: '基因检测报告',
-  blood: '血检报告',
+const eventOptions: Array<{ key: EventType; label: string }> = [
+  { key: 'fall', label: '跌倒' },
+  { key: 'new_foot_drop', label: '新增足下垂' },
+  { key: 'new_arm_raise_difficulty', label: '新增抬手困难' },
+  { key: 'new_breathing_discomfort', label: '新增呼吸不适' },
+  { key: 'started_afo', label: '开始使用 AFO' },
+  { key: 'started_wheelchair', label: '开始使用轮椅' },
+  { key: 'started_niv', label: '开始无创通气' },
+  { key: 'uploaded_report', label: '上传新报告' },
+  { key: 'other', label: '其他事件' },
+];
+
+const yesNoOptions: Array<{ key: YesNo; label: string }> = [
+  { key: 'yes', label: '有' },
+  { key: 'no', label: '没有' },
+  { key: 'unknown', label: '不确定' },
+];
+
+const feelingOptions: Array<{ key: Feeling; label: string }> = [
+  { key: 'better', label: '更好' },
+  { key: 'same', label: '差不多' },
+  { key: 'worse', label: '更差' },
+];
+
+const severityOptions: Array<{ key: Severity; label: string }> = [
+  { key: 'mild', label: '轻' },
+  { key: 'moderate', label: '中' },
+  { key: 'severe', label: '重' },
+];
+
+const documentTypeLabels: Record<UploadDraft['documentType'], string> = {
+  mri: 'MRI',
+  genetic_report: '基因',
+  blood_panel: '血检/肺功',
+  other: '其他',
 };
 
-const documentTypeMap: Record<ReportType, string> = {
-  mri: 'mri',
-  genetic: 'genetic_report',
-  blood: 'blood_panel',
-};
+const renderScoreChips = (
+  label: string,
+  value: number,
+  onChange: (next: number) => void,
+  max = 5,
+  hint?: string,
+) => (
+  <View style={styles.scoreBlock}>
+    <View style={styles.fieldHeaderRow}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text style={styles.fieldHint}>{hint ?? `${value}/${max}`}</Text>
+    </View>
+    <View style={styles.scoreRow}>
+      {Array.from({ length: max + 1 }, (_, index) => (
+        <TouchableOpacity
+          key={`${label}-${index}`}
+          style={[styles.scoreChip, value === index && styles.scoreChipActive]}
+          activeOpacity={0.88}
+          onPress={() => onChange(index)}
+        >
+          <Text style={[styles.scoreChipText, value === index && styles.scoreChipTextActive]}>
+            {index}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  </View>
+);
+
+const renderSingleChoice = <T extends string>(
+  label: string,
+  value: T,
+  options: Array<{ key: T; label: string }>,
+  onChange: (next: T) => void,
+) => (
+  <View style={styles.fieldBlock}>
+    <Text style={styles.fieldLabel}>{label}</Text>
+    <View style={styles.choiceRow}>
+      {options.map((option) => (
+        <TouchableOpacity
+          key={option.key}
+          style={[styles.choiceChip, value === option.key && styles.choiceChipActive]}
+          activeOpacity={0.88}
+          onPress={() => onChange(option.key)}
+        >
+          <Text
+            style={[styles.choiceChipText, value === option.key && styles.choiceChipTextActive]}
+          >
+            {option.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  </View>
+);
 
 const DataEntryScreen = () => {
   const router = useRouter();
-  const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const ocrPollers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [entryMode, setEntryMode] = useState<EntryMode>('followup');
+  const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
-    mri: '未上传',
-    genetic: '未上传',
-    blood: '未上传',
+  const [baselineForm, setBaselineForm] = useState({
+    fullName: '',
+    diagnosisYear: '',
+    regionLabel: '',
+    diagnosisType: '',
+    onsetRegion: '',
+    independentlyAmbulatory: 'yes' as YesNo,
+    armRaiseDifficulty: 'unknown' as YesNo,
+    footDrop: 'unknown' as YesNo,
+    breathingSymptoms: 'unknown' as YesNo,
+    fatigue: 2,
+    pain: 1,
+    stairs: 2,
+    dressing: 1,
+    reachingUp: 2,
+    walkingStability: 2,
+    notes: '',
   });
 
-  const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([]);
-  const [parsingDocIds, setParsingDocIds] = useState<Record<string, true>>({});
-
-  const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
-    group: null,
-    value: 0,
+  const [followupForm, setFollowupForm] = useState({
+    feeling: 'same' as Feeling,
+    hasNewProblem: 'no' as YesNo,
+    armRaiseLeft: 2,
+    armRaiseRight: 2,
+    walkingDifficulty: 2,
+    stairsDifficulty: 2,
+    footDropLeft: 1,
+    footDropRight: 1,
+    fatigue: 3,
+    pain: 2,
+    dyspnea: 1,
+    sleepQuality: 7,
+    tenMeterSeconds: '',
+    fallCount: '0',
+    interventionChange: '',
+    note: '',
   });
-  const [muscleStrengthMap, setMuscleStrengthMap] = useState<Record<string, number>>({});
 
-  const [isTimerRunning, setIsTimerRunning] = useState(false);
-  const [timerSeconds, setTimerSeconds] = useState(0);
-  const [isRecording, setIsRecording] = useState(false);
-  const [activityText, setActivityText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [medicationForm, setMedicationForm] = useState({
-    medicationName: '',
-    dosage: '',
-    frequency: '',
-    route: '',
+  const [eventForm, setEventForm] = useState({
+    eventType: 'fall' as EventType,
+    severity: 'moderate' as Severity,
+    occurredAt: todayIsoDate(),
+    description: '',
   });
-  const [medications, setMedications] = useState<any[]>([]);
-  const [uploadedDocumentIds, setUploadedDocumentIds] = useState<string[]>([]);
 
-  const muscleGroups = [
-    { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
-    { id: 'biceps', name: '肱二头肌', icon: 'dumbbell', color: '#5147FF' },
-    { id: 'triceps', name: '肱三头肌', icon: 'hand-fist', color: '#3E3987' },
-    { id: 'tibialis', name: '胫骨前肌', icon: 'person-running', color: '#10B981' },
-    { id: 'quadriceps', name: '股四头肌', icon: 'person-running', color: '#F97316' },
-    { id: 'hamstrings', name: '腘绳肌', icon: 'person-running', color: '#EF4444' },
-    { id: 'gluteus', name: '臀肌', icon: 'person-running', color: '#22D3EE' },
-  ];
+  const [uploadDraft, setUploadDraft] = useState<UploadDraft>({
+    name: '',
+    title: '',
+    documentType: 'other',
+    file: null,
+  });
 
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
-  };
+  const loadContext = async () => {
+    setIsLoading(true);
 
-  const handleMuscleGroupSelect = (group: string) => {
-    setMuscleStrength({
-      group,
-      value: muscleStrengthMap[group] ?? 0,
-    });
-  };
-
-  const handleStrengthValueChange = (value: number) => {
-    const rounded = Math.round(value);
-    setMuscleStrength((prev) => ({
-      ...prev,
-      value: rounded,
-    }));
-    setMuscleStrengthMap((prev) => {
-      if (!muscleStrength.group) return prev;
-      return {
-        ...prev,
-        [muscleStrength.group]: rounded,
-      };
-    });
-  };
-
-  const startTimer = () => {
-    setIsTimerRunning(true);
-    setTimerSeconds(0);
-    timerInterval.current = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-  };
-
-  const stopTimer = () => {
-    setIsTimerRunning(false);
-    if (timerInterval.current) {
-      clearInterval(timerInterval.current);
-      timerInterval.current = null;
-    }
-  };
-
-  const handleTimerToggle = () => {
-    if (isTimerRunning) {
-      stopTimer();
-    } else {
-      startTimer();
-    }
-  };
-
-  const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const handleVoiceToggle = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      return;
-    }
-    setIsRecording(true);
-    setTimeout(() => {
-      setActivityText('今天完成 20 分钟肩部康复训练，下午散步 40 分钟。');
-      setIsRecording(false);
-    }, 3000);
-  };
-
-  const formatTimestamp = (date: Date) => {
-    const yyyy = date.getFullYear();
-    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
-    const dd = `${date.getDate()}`.padStart(2, '0');
-    const hh = `${date.getHours()}`.padStart(2, '0');
-    const min = `${date.getMinutes()}`.padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
-  };
-
-  const getAnalysisStatus = (payload?: ReportHistoryItem['ocrPayload'] | null) => {
-    const status = payload?.fields?.analysisStatus ?? payload?.fields?.analysis_status;
-    return typeof status === 'string' ? status : undefined;
-  };
-
-  const isProcessing = (payload?: ReportHistoryItem['ocrPayload'] | null) => {
-    const status = getAnalysisStatus(payload);
-    return status === 'processing' || status === 'pending';
-  };
-
-  const pickOcrField = (fields: Record<string, string> | undefined, keys: string[]) => {
-    if (!fields) return undefined;
-    for (const key of keys) {
-      const value = fields[key];
-      if (value === null || value === undefined) continue;
-      const text = String(value).trim();
-      if (text) return text;
-    }
-    return undefined;
-  };
-
-  const buildReportSummary = (item: ReportHistoryItem) => {
-    const fields = item.ocrPayload?.fields;
-    if (isProcessing(item.ocrPayload)) {
-      return '正在解析中...';
-    }
-    const parts: string[] = [];
-    const aiSummary = pickOcrField(fields, ['aiSummary']);
-    const d4z4Repeats = pickOcrField(fields, ['d4z4Repeats', 'd4z4_repeats']);
-    const methylation = pickOcrField(fields, ['methylationValue', 'methylation_value']);
-    const serratus = pickOcrField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
-    const liverFunction = pickOcrField(fields, ['liverFunction', 'liver_function']);
-    const creatineKinase = pickOcrField(fields, ['creatineKinase', 'creatine_kinase']);
-    if (d4z4Repeats) parts.push(`D4Z4重复数 ${d4z4Repeats}`);
-    if (methylation) parts.push(`甲基化值 ${methylation}`);
-    if (serratus) parts.push(`前锯肌脂肪化等级 ${serratus}`);
-    if (liverFunction) parts.push(`肝功能 ${liverFunction}`);
-    if (creatineKinase) parts.push(`肌酸激酶 ${creatineKinase}`);
-    if (parts.length === 0) {
-      if (aiSummary) {
-        parts.push(aiSummary.length > 80 ? `${aiSummary.slice(0, 80)}…` : aiSummary);
-        return parts.join('，');
-      }
-      if (item.ocrPayload?.error) {
-        parts.push(`解析失败：${item.ocrPayload.error}`);
-        return parts.join('，');
-      }
-      const summary =
-        item.ocrSummary ?? item.ocrPayload?.extractedText ?? item.fileName ?? '已上传';
-      parts.push(summary);
-    }
-    return parts.join('，');
-  };
-
-  const mapDocumentTypeToReportType = (documentType?: string): ReportType | null => {
-    switch (documentType) {
-      case 'mri':
-        return 'mri';
-      case 'genetic_report':
-        return 'genetic';
-      case 'blood_panel':
-        return 'blood';
-      default:
-        return null;
-    }
-  };
-
-  const buildStrengthMapFromProfile = (profile: any) => {
-    if (!profile?.measurements?.length) {
-      return {};
-    }
-    const map: Record<string, number> = {};
-    profile.measurements.forEach((item: any) => {
-      const existing = map[item.muscleGroup];
-      if (existing === undefined) {
-        map[item.muscleGroup] = Number(item.strengthScore);
-      }
-    });
-    return map;
-  };
-
-  const loadProfile = async () => {
     try {
-      const [data, meds] = await Promise.all([getMyPatientProfile(), getMedications()]);
-      setMuscleStrengthMap(buildStrengthMapFromProfile(data));
-      setMedications(meds ?? []);
+      const profileData = await getMyPatientProfile();
+      setProfile(profileData);
 
-      const documents = Array.isArray((data as any).documents)
-        ? ((data as any).documents as any[])
-        : [];
-      const history = documents
-        .map((doc) => {
-          const type = mapDocumentTypeToReportType(doc.documentType);
-          if (!type) return null;
-          return {
-            id: doc.id,
-            type,
-            source: '上传' as const,
-            timestamp: formatTimestamp(new Date(doc.uploadedAt ?? Date.now())),
-            fileName: doc.fileName ?? undefined,
-            ocrPayload: doc.ocrPayload ?? null,
-            ocrSummary:
-              doc.ocrPayload?.fields?.hint ??
-              doc.ocrPayload?.extractedText ??
-              doc.fileName ??
-              '已上传',
-          } satisfies ReportHistoryItem;
-        })
-        .filter(Boolean) as ReportHistoryItem[];
-
-      // Most recent first
-      setReportHistory(history.slice(0, 5));
-      history.slice(0, 5).forEach((item) => {
-        startOcrPollingIfNeeded(item.id, item.ocrPayload);
-      });
-
-      const existingTypes = new Set(
-        documents.map((doc: any) => mapDocumentTypeToReportType(doc.documentType)),
-      );
-      setUploadStatus({
-        mri: existingTypes.has('mri') ? '已上传' : '未上传',
-        genetic: existingTypes.has('genetic') ? '已上传' : '未上传',
-        blood: existingTypes.has('blood') ? '已上传' : '未上传',
-      });
-    } catch (error) {
-      if (!(error instanceof ApiError && error.status === 404)) {
-        console.error('加载档案失败:', error);
+      try {
+        const baseline = await getMyBaseline();
+        const payload = baseline.baseline;
+        setBaselineForm((prev) => ({
+          ...prev,
+          fullName: payload?.foundation?.fullName ?? profileData.fullName ?? prev.fullName,
+          diagnosisYear:
+            payload?.foundation?.diagnosisYear !== null &&
+            payload?.foundation?.diagnosisYear !== undefined
+              ? String(payload.foundation.diagnosisYear)
+              : prev.diagnosisYear,
+          regionLabel: payload?.foundation?.regionLabel ?? prev.regionLabel,
+          diagnosisType: payload?.diseaseBackground?.diagnosisType ?? prev.diagnosisType,
+          onsetRegion: payload?.diseaseBackground?.onsetRegion ?? prev.onsetRegion,
+          independentlyAmbulatory:
+            payload?.currentStatus?.independentlyAmbulatory === true
+              ? 'yes'
+              : payload?.currentStatus?.independentlyAmbulatory === false
+                ? 'no'
+                : prev.independentlyAmbulatory,
+          armRaiseDifficulty:
+            payload?.currentStatus?.armRaiseDifficulty === true
+              ? 'yes'
+              : payload?.currentStatus?.armRaiseDifficulty === false
+                ? 'no'
+                : prev.armRaiseDifficulty,
+          footDrop:
+            payload?.currentStatus?.footDrop === true
+              ? 'yes'
+              : payload?.currentStatus?.footDrop === false
+                ? 'no'
+                : prev.footDrop,
+          breathingSymptoms:
+            payload?.currentStatus?.breathingSymptoms === true
+              ? 'yes'
+              : payload?.currentStatus?.breathingSymptoms === false
+                ? 'no'
+                : prev.breathingSymptoms,
+          fatigue: payload?.currentChallenges?.fatigue ?? prev.fatigue,
+          pain: payload?.currentChallenges?.pain ?? prev.pain,
+          stairs: payload?.currentChallenges?.stairs ?? prev.stairs,
+          dressing: payload?.currentChallenges?.dressing ?? prev.dressing,
+          reachingUp: payload?.currentChallenges?.reachingUp ?? prev.reachingUp,
+          walkingStability: payload?.currentChallenges?.walkingStability ?? prev.walkingStability,
+          notes: payload?.notes ?? prev.notes,
+        }));
+      } catch {
+        setBaselineForm((prev) => ({
+          ...prev,
+          fullName: profileData.fullName ?? prev.fullName,
+        }));
       }
-      setMuscleStrengthMap({});
-      setReportHistory([]);
-      setMedications([]);
+    } catch {
+      setProfile(null);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadProfile();
-    return () => {
-      Object.values(ocrPollers.current).forEach((t) => clearTimeout(t));
-      ocrPollers.current = {};
-    };
+    loadContext().catch(() => undefined);
   }, []);
 
-  function upsertReportHistoryPayload(documentId: string, nextPayload: any) {
-    setReportHistory((prev) =>
-      prev.map((item) =>
-        item.id === documentId
-          ? {
-              ...item,
-              ocrPayload: nextPayload ?? null,
-              ocrSummary:
-                nextPayload?.fields?.hint ??
-                nextPayload?.extractedText ??
-                nextPayload?.error ??
-                item.ocrSummary ??
-                item.fileName ??
-                '已上传',
-            }
-          : item,
-      ),
-    );
-  }
+  const ensureProfileReady = async (fullName: string) => {
+    if (profile) {
+      return profile;
+    }
 
-  function startOcrPollingIfNeeded(documentId: string, initialPayload: any) {
-    if (!documentId) return;
-    if (!isProcessing(initialPayload)) return;
-    if (ocrPollers.current[documentId]) return;
+    const created = (await upsertPatientProfile({
+      fullName: fullName.trim() || 'FSHD 患者',
+    })) as PatientProfile;
+    setProfile(created);
+    return created;
+  };
 
-    setParsingDocIds((prev) => ({ ...prev, [documentId]: true }));
+  const pickDocument = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      multiple: false,
+      copyToCacheDirectory: true,
+    });
 
-    const startedAt = Date.now();
+    if (result.canceled || !result.assets?.length) {
+      return;
+    }
 
-    const tick = async () => {
-      try {
-        const res = await getPatientDocumentOcr(documentId);
-        const payload = (res as any).ocrPayload ?? null;
-        upsertReportHistoryPayload(documentId, payload);
-
-        const status = getAnalysisStatus(payload);
-        if (status === 'completed' || status === 'failed') {
-          setParsingDocIds((prev) => {
-            const next = { ...prev };
-            delete next[documentId];
-            return next;
-          });
-          delete ocrPollers.current[documentId];
-          await loadProfile();
-          return;
-        }
-      } catch (error) {
-        console.error('轮询解析进度失败:', error);
-      }
-
-      if (Date.now() - startedAt > 10 * 60 * 1000) {
-        // Give up after 10 minutes; user can refresh later.
-        setParsingDocIds((prev) => {
-          const next = { ...prev };
-          delete next[documentId];
-          return next;
-        });
-        delete ocrPollers.current[documentId];
-        return;
-      }
-
-      ocrPollers.current[documentId] = setTimeout(tick, 2000);
+    const asset = result.assets[0] as DocumentPicker.DocumentPickerAsset & {
+      file?: File;
     };
 
-    ocrPollers.current[documentId] = setTimeout(tick, 1200);
-  }
-
-  const ensureProfileExists = async () => {
-    try {
-      await getMyPatientProfile();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        await upsertPatientProfile({});
-      } else {
-        throw error;
-      }
-    }
-  };
-
-  const handleFileUpload = async (type: ReportType) => {
-    try {
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '上传中...',
-      }));
-      await ensureProfileExists();
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled) {
-        setUploadStatus((prev) => ({
-          ...prev,
-          [type]: '未上传',
-        }));
-        return;
-      }
-      const asset = result.assets?.[0];
-      if (!asset?.uri) {
-        throw new Error('无法读取文件');
-      }
-      if (
-        asset.mimeType &&
-        !asset.mimeType.startsWith('application/pdf') &&
-        !asset.mimeType.startsWith('image/')
-      ) {
-        throw new Error('仅支持上传PDF或图片文件');
-      }
-      const guessExt = asset.mimeType?.startsWith('image/')
-        ? asset.mimeType.split('/')[1] || 'jpg'
-        : 'pdf';
-      const baseName = asset.fileName ?? `report-${type}-${Date.now()}`;
-      const fileName = baseName.includes('.') ? baseName : `${baseName}.${guessExt}`;
-      const uploadFile =
-        Platform.OS === 'web'
-          ? await (async () => {
-              const response = await fetch(asset.uri);
-              const blob = await response.blob();
-              return new File([blob], fileName, {
-                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
-              });
-            })()
+    setUploadDraft((prev) => ({
+      ...prev,
+      name: asset.name,
+      title: prev.title || asset.name.replace(/\.[^.]+$/, ''),
+      file:
+        asset.file instanceof File
+          ? asset.file
           : {
               uri: asset.uri,
-              name: fileName,
+              name: asset.name,
               type: asset.mimeType ?? 'application/octet-stream',
-            };
-      const response = await uploadPatientDocument({
-        documentType: documentTypeMap[type],
-        title: reportLabels[type],
-        file: uploadFile,
-      });
-      if (response?.id) {
-        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
-      }
-      const ocrSummary =
-        response?.ocrPayload?.extractedText ??
-        response?.ocrPayload?.fields?.hint ??
-        response?.ocrPayload?.error ??
-        'OCR解析完成';
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '已上传',
-      }));
-      setReportHistory((prev) =>
-        [
-          {
-            id: response?.id ?? `report-${Date.now()}`,
-            type,
-            ocrPayload: response?.ocrPayload ?? null,
-            source: '相册',
-            timestamp: formatTimestamp(new Date()),
-            fileName,
-            ocrSummary,
-          },
-          ...prev,
-        ].slice(0, 5),
-      );
+            },
+    }));
+  };
 
-      if (response?.id) {
-        startOcrPollingIfNeeded(response.id, response.ocrPayload);
-      }
-      await loadProfile();
+  const maybeUploadDocument = async (submissionId: string) => {
+    if (!uploadDraft.file) {
+      return;
+    }
+
+    await uploadPatientDocument({
+      documentType: uploadDraft.documentType,
+      title: uploadDraft.title || uploadDraft.name,
+      submissionId,
+      file: uploadDraft.file,
+    });
+  };
+
+  const resetUploadDraft = () => {
+    setUploadDraft({
+      name: '',
+      title: '',
+      documentType: 'other',
+      file: null,
+    });
+  };
+
+  const handleBaselineSubmit = async () => {
+    setIsSubmitting(true);
+
+    try {
+      await ensureProfileReady(baselineForm.fullName);
+
+      const summary = await createSubmission({
+        submissionKind: 'baseline',
+        summary: '完成基线建档',
+        changedSinceLast: null,
+      });
+
+      const baselinePayload: BaselineProfilePayload = {
+        foundation: {
+          fullName: baselineForm.fullName || null,
+          diagnosisYear: baselineForm.diagnosisYear ? Number(baselineForm.diagnosisYear) : null,
+          regionLabel: baselineForm.regionLabel || null,
+        },
+        diseaseBackground: {
+          diagnosisType: baselineForm.diagnosisType || null,
+          onsetRegion: baselineForm.onsetRegion || null,
+        },
+        currentStatus: {
+          independentlyAmbulatory:
+            baselineForm.independentlyAmbulatory === 'yes'
+              ? true
+              : baselineForm.independentlyAmbulatory === 'no'
+                ? false
+                : null,
+          armRaiseDifficulty:
+            baselineForm.armRaiseDifficulty === 'yes'
+              ? true
+              : baselineForm.armRaiseDifficulty === 'no'
+                ? false
+                : null,
+          footDrop:
+            baselineForm.footDrop === 'yes' ? true : baselineForm.footDrop === 'no' ? false : null,
+          breathingSymptoms:
+            baselineForm.breathingSymptoms === 'yes'
+              ? true
+              : baselineForm.breathingSymptoms === 'no'
+                ? false
+                : null,
+        },
+        currentChallenges: {
+          fatigue: baselineForm.fatigue,
+          pain: baselineForm.pain,
+          stairs: baselineForm.stairs,
+          dressing: baselineForm.dressing,
+          reachingUp: baselineForm.reachingUp,
+          walkingStability: baselineForm.walkingStability,
+        },
+        notes: baselineForm.notes || null,
+      };
+
+      await updateMyBaseline(baselinePayload);
+      await Promise.all([
+        addSymptomScore({
+          submissionId: summary.id,
+          symptomKey: 'fatigue',
+          score: baselineForm.fatigue,
+          scaleMax: 5,
+        }),
+        addSymptomScore({
+          submissionId: summary.id,
+          symptomKey: 'pain',
+          score: baselineForm.pain,
+          scaleMax: 5,
+        }),
+        addDailyImpact({
+          submissionId: summary.id,
+          adlKey: 'stairs',
+          difficultyLevel: baselineForm.stairs,
+        }),
+        addDailyImpact({
+          submissionId: summary.id,
+          adlKey: 'dressing',
+          difficultyLevel: baselineForm.dressing,
+        }),
+        addDailyImpact({
+          submissionId: summary.id,
+          adlKey: 'reaching_up',
+          difficultyLevel: baselineForm.reachingUp,
+        }),
+        addDailyImpact({
+          submissionId: summary.id,
+          adlKey: 'walking_outdoors',
+          difficultyLevel: baselineForm.walkingStability,
+        }),
+        maybeUploadDocument(summary.id),
+      ]);
+
+      resetUploadDraft();
+      await loadContext();
+      Alert.alert('已保存', '基线建档已更新。');
+      router.replace('/p-home');
     } catch (error) {
-      console.error('文件上传失败:', error);
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '未上传',
-      }));
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '文件上传过程中出现错误，请稍后再试。';
-      Alert.alert('上传失败', message);
+      const message = error instanceof Error ? error.message : '基线建档保存失败';
+      Alert.alert('保存失败', message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleCameraCapture = async (type: ReportType) => {
+  const handleFollowupSubmit = async () => {
+    setIsSubmitting(true);
+
     try {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('权限不足', '需要访问相机权限才能拍照');
-        return;
-      }
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '上传中...',
-      }));
-      await ensureProfileExists();
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 1,
-      });
-      if (result.canceled) {
-        setUploadStatus((prev) => ({
-          ...prev,
-          [type]: '未上传',
-        }));
-        return;
-      }
-      const asset = result.assets?.[0];
-      if (!asset?.uri) {
-        throw new Error('无法读取文件');
-      }
-      const fileName = asset.fileName ?? `camera-${type}-${Date.now()}`;
-      const uploadFile =
-        Platform.OS === 'web'
-          ? await (async () => {
-              const response = await fetch(asset.uri);
-              const blob = await response.blob();
-              return new File([blob], fileName, {
-                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
-              });
-            })()
-          : {
-              uri: asset.uri,
-              name: fileName,
-              type: asset.mimeType ?? 'application/octet-stream',
-            };
-      const response = await uploadPatientDocument({
-        documentType: documentTypeMap[type],
-        title: reportLabels[type],
-        file: uploadFile,
-      });
-      if (response?.id) {
-        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
-      }
-      const ocrSummary =
-        response?.ocrPayload?.extractedText ??
-        response?.ocrPayload?.fields?.hint ??
-        response?.ocrPayload?.error ??
-        'OCR解析完成';
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '已上传',
-      }));
-      setReportHistory((prev) =>
-        [
-          {
-            id: response?.id ?? `report-${Date.now()}`,
-            type,
-            ocrPayload: response?.ocrPayload ?? null,
-            source: '相机',
-            timestamp: formatTimestamp(new Date()),
-            fileName,
-            ocrSummary,
-          },
-          ...prev,
-        ].slice(0, 5),
-      );
+      const ensuredProfile = await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const hasChanges =
+        followupForm.feeling !== 'same' ||
+        followupForm.hasNewProblem === 'yes' ||
+        Number(followupForm.fallCount || '0') > 0;
 
-      if (response?.id) {
-        startOcrPollingIfNeeded(response.id, response.ocrPayload);
-      }
-      await loadProfile();
-    } catch (error) {
-      console.error('拍照失败:', error);
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '未上传',
-      }));
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '拍照过程中出现错误，请稍后再试。';
-      Alert.alert('拍照失败', message);
-    }
-  };
+      const summaryText =
+        followupForm.feeling === 'better'
+          ? '最近整体感觉比上次更好'
+          : followupForm.feeling === 'worse'
+            ? '最近整体感觉比上次更差'
+            : '最近整体感觉和上次差不多';
 
-  const handleSubmit = async () => {
-    try {
-      setIsLoading(true);
-
-      await ensureProfileExists();
-
-      const hasMeasurements = Object.values(muscleStrengthMap).some((value) => value > 0);
-      const hasActivity = timerSeconds > 0 || Boolean(activityText.trim());
-      const hasMedication = Boolean(medicationForm.medicationName.trim());
-      const hasDocuments = uploadedDocumentIds.length > 0;
-      if (!hasMeasurements && !hasActivity && !hasMedication && !hasDocuments) {
-        Alert.alert('提示', '请至少录入一项数据');
-        return;
-      }
-
-      const submission = await createSubmission();
-      const submissionId = submission.id;
-
-      const requests: Promise<unknown>[] = [];
-
-      // 提交肌力测量
-      Object.entries(muscleStrengthMap).forEach(([group, value]) => {
-        if (value > 0) {
-          requests.push(
-            addPatientMeasurement({
-              muscleGroup: group,
-              strengthScore: value,
-              recordedAt: new Date().toISOString(),
-              submissionId,
-            }),
-          );
-        }
+      const submission = await createSubmission({
+        submissionKind: 'followup',
+        summary: summaryText,
+        changedSinceLast: hasChanges,
       });
 
-      const nowIso = new Date().toISOString();
+      const requests: Array<Promise<unknown>> = [
+        addPatientMeasurement({
+          submissionId: submission.id,
+          muscleGroup: 'deltoid',
+          metricKey: 'arm_raise_over_head',
+          bodyRegion: 'shoulder_girdle',
+          side: 'left',
+          strengthScore: Math.max(0, 5 - followupForm.armRaiseLeft),
+          entryMode: 'self_report',
+          notes: '患者自评左侧抬手困难程度',
+        }),
+        addPatientMeasurement({
+          submissionId: submission.id,
+          muscleGroup: 'deltoid',
+          metricKey: 'arm_raise_over_head',
+          bodyRegion: 'shoulder_girdle',
+          side: 'right',
+          strengthScore: Math.max(0, 5 - followupForm.armRaiseRight),
+          entryMode: 'self_report',
+          notes: '患者自评右侧抬手困难程度',
+        }),
+        addPatientMeasurement({
+          submissionId: submission.id,
+          muscleGroup: 'tibialis',
+          metricKey: 'ankle_dorsiflexion',
+          bodyRegion: 'ankle',
+          side: 'left',
+          strengthScore: Math.max(0, 5 - followupForm.footDropLeft),
+          entryMode: 'self_report',
+          notes: '患者自评左侧足下垂影响',
+        }),
+        addPatientMeasurement({
+          submissionId: submission.id,
+          muscleGroup: 'tibialis',
+          metricKey: 'ankle_dorsiflexion',
+          bodyRegion: 'ankle',
+          side: 'right',
+          strengthScore: Math.max(0, 5 - followupForm.footDropRight),
+          entryMode: 'self_report',
+          notes: '患者自评右侧足下垂影响',
+        }),
+        addSymptomScore({
+          submissionId: submission.id,
+          symptomKey: 'fatigue',
+          score: followupForm.fatigue,
+        }),
+        addSymptomScore({
+          submissionId: submission.id,
+          symptomKey: 'pain',
+          score: followupForm.pain,
+        }),
+        addSymptomScore({
+          submissionId: submission.id,
+          symptomKey: 'dyspnea',
+          score: followupForm.dyspnea,
+        }),
+        addSymptomScore({
+          submissionId: submission.id,
+          symptomKey: 'sleep_quality',
+          score: followupForm.sleepQuality,
+        }),
+        addDailyImpact({
+          submissionId: submission.id,
+          adlKey: 'reaching_up',
+          difficultyLevel: Math.max(followupForm.armRaiseLeft, followupForm.armRaiseRight),
+        }),
+        addDailyImpact({
+          submissionId: submission.id,
+          adlKey: 'stairs',
+          difficultyLevel: followupForm.stairsDifficulty,
+        }),
+        addDailyImpact({
+          submissionId: submission.id,
+          adlKey: 'walking_outdoors',
+          difficultyLevel: followupForm.walkingDifficulty,
+        }),
+        maybeUploadDocument(submission.id),
+      ];
 
-      // 提交楼梯测试结果作为活动日志
-      if (timerSeconds > 0) {
+      const walkSeconds = Number(followupForm.tenMeterSeconds);
+      if (!Number.isNaN(walkSeconds) && walkSeconds > 0) {
         requests.push(
-          addActivityLog({
-            logDate: nowIso,
-            source: 'stair_test',
-            content: `楼梯测试用时 ${formatTime(timerSeconds)}`,
-            submissionId,
+          addFunctionTest({
+            submissionId: submission.id,
+            testType: 'ten_meter_walk',
+            measuredValue: walkSeconds,
+            unit: 'seconds',
+            notes: '患者自测 10 米步行',
           }),
         );
       }
 
-      // 提交日常活动
-      if (activityText.trim()) {
+      const fallCount = Number(followupForm.fallCount || '0');
+      if (!Number.isNaN(fallCount) && fallCount > 0) {
+        requests.push(
+          addFollowupEvent({
+            submissionId: submission.id,
+            eventType: 'fall',
+            severity: fallCount >= 3 ? 'severe' : fallCount >= 2 ? 'moderate' : 'mild',
+            occurredAt: todayIsoDate(),
+            description: `最近跌倒 ${fallCount} 次`,
+          }),
+        );
+      }
+
+      if (followupForm.interventionChange.trim()) {
+        requests.push(
+          addFollowupEvent({
+            submissionId: submission.id,
+            eventType: 'other',
+            severity: 'moderate',
+            occurredAt: todayIsoDate(),
+            description: `干预/辅具变化：${followupForm.interventionChange.trim()}`,
+          }),
+        );
+      }
+
+      if (followupForm.note.trim()) {
         requests.push(
           addActivityLog({
-            logDate: nowIso,
+            submissionId: submission.id,
+            logDate: todayIsoDate(),
             source: 'manual',
-            content: activityText.trim(),
-            submissionId,
-          }),
-        );
-      }
-
-      if (medicationForm.medicationName.trim()) {
-        requests.push(
-          addMedication({
-            medicationName: medicationForm.medicationName.trim(),
-            dosage: medicationForm.dosage.trim() || null,
-            frequency: medicationForm.frequency.trim() || null,
-            route: medicationForm.route.trim() || null,
-            submissionId,
+            content: followupForm.note.trim(),
           }),
         );
       }
 
       await Promise.all(requests);
 
-      if (uploadedDocumentIds.length > 0) {
-        await attachSubmissionDocuments(submissionId, uploadedDocumentIds);
-      }
-
-      setMedicationForm({
-        medicationName: '',
-        dosage: '',
-        frequency: '',
-        route: '',
-      });
-      setUploadedDocumentIds([]);
-
-      await loadProfile();
-      Alert.alert('提交成功', '数据已成功添加/更新！', [
-        { text: '继续添加/更新' },
-        {
-          text: '返回上一页',
-          onPress: () => {
-            if (router.canGoBack()) {
-              router.back();
-            }
-          },
-        },
-      ]);
+      resetUploadDraft();
+      setProfile(ensuredProfile);
+      await loadContext();
+      Alert.alert('已保存', '快速随访已完成。');
+      router.replace('/p-home');
     } catch (error) {
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '数据提交过程中出现错误，请稍后再试。';
-      console.error('提交失败:', error);
-      Alert.alert('提交失败', message);
+      const message = error instanceof Error ? error.message : '随访保存失败';
+      Alert.alert('保存失败', message);
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const getMuscleGroupName = (group: string | null): string => {
-    if (!group) return '请选择肌群';
-    const muscleGroup = muscleGroups.find((mg) => mg.id === group);
-    return muscleGroup ? muscleGroup.name : '请选择肌群';
-  };
+  const handleEventSubmit = async () => {
+    setIsSubmitting(true);
 
-  const sessionTimeline = React.useMemo(() => {
-    const now = formatTimestamp(new Date());
-    const items: Array<{ event: TimelineEvent; sortKey: number }> = [];
-
-    reportHistory.forEach((item) => {
-      const time = new Date(item.timestamp);
-      items.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `report-${item.id}`,
-          title: `${reportLabels[item.type]}已上传`,
-          description: buildReportSummary(item),
-          timestamp: item.timestamp,
-          tag: '报告',
-        },
+    try {
+      await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const submission = await createSubmission({
+        submissionKind: 'event',
+        summary: eventOptions.find((item) => item.key === eventForm.eventType)?.label ?? '事件记录',
+        changedSinceLast: true,
       });
-    });
 
-    Object.entries(muscleStrengthMap).forEach(([group, value]) => {
-      if (value <= 0) return;
-      items.push({
-        sortKey: Date.now(),
-        event: {
-          id: `strength-${group}`,
-          title: `${getMuscleGroupName(group)}肌力记录`,
-          description: `肌力 ${value} 级`,
-          timestamp: now,
-          tag: '肌力',
-        },
-      });
-    });
-
-    if (timerSeconds > 0) {
-      items.push({
-        sortKey: Date.now(),
-        event: {
-          id: 'activity-stair-test',
-          title: '楼梯测试',
-          description: `用时 ${formatTime(timerSeconds)}`,
-          timestamp: now,
-          tag: '活动',
-        },
-      });
-    }
-
-    if (activityText.trim()) {
-      items.push({
-        sortKey: Date.now(),
-        event: {
-          id: 'activity-manual',
-          title: '日常活动记录',
-          description: activityText.trim(),
-          timestamp: now,
-          tag: '活动',
-        },
-      });
-    }
-
-    if (medicationForm.medicationName.trim()) {
-      const meta = [medicationForm.dosage, medicationForm.frequency, medicationForm.route]
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .join(' · ');
-      items.push({
-        sortKey: Date.now(),
-        event: {
-          id: 'medication-entry',
-          title: `用药记录：${medicationForm.medicationName.trim()}`,
-          description: meta || '已记录用药',
-          timestamp: now,
-          tag: '用药',
-        },
-      });
-    }
-
-    return items.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
-  }, [activityText, medicationForm, muscleStrengthMap, reportHistory, timerSeconds]);
-
-  const getStatusColor = (status: string): string => {
-    switch (status) {
-      case '已上传':
-        return '#10B981';
-      case '上传中...':
-        return '#F59E0B';
-      default:
-        return '#9CA3AF';
-    }
-  };
-
-  const progressAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(progressAnim, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
+      await Promise.all([
+        addFollowupEvent({
+          submissionId: submission.id,
+          eventType: eventForm.eventType,
+          severity: eventForm.severity,
+          occurredAt: eventForm.occurredAt,
+          description: eventForm.description || null,
         }),
-        Animated.timing(progressAnim, {
-          toValue: 0,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [progressAnim]);
+        maybeUploadDocument(submission.id),
+      ]);
 
-  const ParsingBar = () => {
-    const translateX = progressAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [-120, 120],
-    });
-    return (
-      <View
-        style={{
-          height: 8,
-          borderRadius: 999,
-          backgroundColor: 'rgba(148, 163, 184, 0.25)',
-          overflow: 'hidden',
-          marginTop: 8,
-        }}
-      >
-        <Animated.View
-          style={{
-            height: '100%',
-            width: 120,
-            backgroundColor: 'rgba(150, 159, 255, 0.7)',
-            transform: [{ translateX }],
-            borderRadius: 999,
-          }}
+      resetUploadDraft();
+      setEventForm({
+        eventType: 'fall',
+        severity: 'moderate',
+        occurredAt: todayIsoDate(),
+        description: '',
+      });
+      await loadContext();
+      Alert.alert('已保存', '事件记录已添加。');
+      router.replace('/p-home');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '事件保存失败';
+      Alert.alert('保存失败', message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const renderUploadSection = () => (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionTitle}>可选上传报告</Text>
+      <Text style={styles.sectionSubtitle}>
+        报告是辅助信息源。提交后系统会把它和这次随访或事件放进同一条病程线。
+      </Text>
+
+      <View style={styles.fieldBlock}>
+        <Text style={styles.fieldLabel}>报告类型</Text>
+        <View style={styles.choiceRow}>
+          {Object.entries(documentTypeLabels).map(([key, label]) => (
+            <TouchableOpacity
+              key={key}
+              style={[
+                styles.choiceChip,
+                uploadDraft.documentType === key && styles.choiceChipActive,
+              ]}
+              activeOpacity={0.88}
+              onPress={() =>
+                setUploadDraft((prev) => ({
+                  ...prev,
+                  documentType: key as UploadDraft['documentType'],
+                }))
+              }
+            >
+              <Text
+                style={[
+                  styles.choiceChipText,
+                  uploadDraft.documentType === key && styles.choiceChipTextActive,
+                ]}
+              >
+                {label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.fieldBlock}>
+        <Text style={styles.fieldLabel}>报告标题</Text>
+        <TextInput
+          value={uploadDraft.title}
+          onChangeText={(value) => setUploadDraft((prev) => ({ ...prev, title: value }))}
+          placeholder="例如：2026-03 肺功能复查"
+          placeholderTextColor={CLINICAL_COLORS.textMuted}
+          style={styles.input}
         />
       </View>
-    );
-  };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
-          <FontAwesome6 name="arrow-left" size={16} color="#9CA3AF" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>添加/更新数据</Text>
-        <View style={styles.headerPlaceholder} />
+      <TouchableOpacity style={styles.uploadButton} activeOpacity={0.88} onPress={pickDocument}>
+        <FontAwesome6 name="file-arrow-up" size={14} color={CLINICAL_COLORS.accentStrong} />
+        <Text style={styles.uploadButtonText}>
+          {uploadDraft.name ? `已选择：${uploadDraft.name}` : '选择 PDF、图片或其他文件'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderBaselineForm = () => (
+    <View style={styles.formStack}>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>基础信息</Text>
+        <Text style={styles.sectionSubtitle}>只填你现在愿意填的，后面都可以补。</Text>
+
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>姓名或昵称</Text>
+          <TextInput
+            value={baselineForm.fullName}
+            onChangeText={(value) => setBaselineForm((prev) => ({ ...prev, fullName: value }))}
+            placeholder="例如：小李"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+          />
+        </View>
+
+        <View style={styles.row}>
+          <View style={styles.rowItem}>
+            <Text style={styles.fieldLabel}>确诊年份</Text>
+            <TextInput
+              value={baselineForm.diagnosisYear}
+              onChangeText={(value) =>
+                setBaselineForm((prev) => ({ ...prev, diagnosisYear: value.replace(/[^\d]/g, '') }))
+              }
+              placeholder="例如：2022"
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              keyboardType="number-pad"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.rowItem}>
+            <Text style={styles.fieldLabel}>所在地区</Text>
+            <TextInput
+              value={baselineForm.regionLabel}
+              onChangeText={(value) => setBaselineForm((prev) => ({ ...prev, regionLabel: value }))}
+              placeholder="例如：上海"
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              style={styles.input}
+            />
+          </View>
+        </View>
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>医疗报告</Text>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>疾病背景</Text>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>分型或诊断方式</Text>
+          <TextInput
+            value={baselineForm.diagnosisType}
+            onChangeText={(value) => setBaselineForm((prev) => ({ ...prev, diagnosisType: value }))}
+            placeholder="例如：FSHD1"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+          />
+        </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>你最早注意到哪里受影响</Text>
+          <TextInput
+            value={baselineForm.onsetRegion}
+            onChangeText={(value) => setBaselineForm((prev) => ({ ...prev, onsetRegion: value }))}
+            placeholder="例如：抬手、面部、上楼"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+          />
+        </View>
+      </View>
 
-          {(['mri', 'genetic', 'blood'] as ReportType[]).map((type) => (
-            <View style={styles.uploadCard} key={type}>
-              <View style={styles.uploadHeader}>
-                <Text style={styles.uploadTitle}>{reportLabels[type]}</Text>
-                <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus[type]) }]}>
-                  {uploadStatus[type]}
-                </Text>
-              </View>
-              <View style={styles.uploadArea}>
-                <TouchableOpacity
-                  style={[styles.cameraButton, { backgroundColor: 'rgba(150, 159, 255, 0.2)' }]}
-                  onPress={() => handleCameraCapture(type)}
-                >
-                  <FontAwesome6 name="camera" size={18} color="#969FFF" />
-                </TouchableOpacity>
-                <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
-                <TouchableOpacity onPress={() => handleFileUpload(type)}>
-                  <Text style={[styles.uploadButtonText, { color: '#969FFF' }]}>选择文件</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>当前总体状态</Text>
+        {renderSingleChoice(
+          '目前能否独立行走',
+          baselineForm.independentlyAmbulatory,
+          yesNoOptions,
+          (value) => setBaselineForm((prev) => ({ ...prev, independentlyAmbulatory: value })),
+        )}
+        {renderSingleChoice(
+          '最近是否明显抬手困难',
+          baselineForm.armRaiseDifficulty,
+          yesNoOptions,
+          (value) => setBaselineForm((prev) => ({ ...prev, armRaiseDifficulty: value })),
+        )}
+        {renderSingleChoice('是否有足下垂', baselineForm.footDrop, yesNoOptions, (value) =>
+          setBaselineForm((prev) => ({ ...prev, footDrop: value })),
+        )}
+        {renderSingleChoice(
+          '是否有气短或睡眠呼吸问题',
+          baselineForm.breathingSymptoms,
+          yesNoOptions,
+          (value) => setBaselineForm((prev) => ({ ...prev, breathingSymptoms: value })),
+        )}
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>当前困扰</Text>
+        {renderScoreChips('疲劳', baselineForm.fatigue, (value) =>
+          setBaselineForm((prev) => ({ ...prev, fatigue: value })),
+        )}
+        {renderScoreChips('疼痛', baselineForm.pain, (value) =>
+          setBaselineForm((prev) => ({ ...prev, pain: value })),
+        )}
+        {renderScoreChips('上下楼', baselineForm.stairs, (value) =>
+          setBaselineForm((prev) => ({ ...prev, stairs: value })),
+        )}
+        {renderScoreChips('穿脱衣', baselineForm.dressing, (value) =>
+          setBaselineForm((prev) => ({ ...prev, dressing: value })),
+        )}
+        {renderScoreChips('抬手取物', baselineForm.reachingUp, (value) =>
+          setBaselineForm((prev) => ({ ...prev, reachingUp: value })),
+        )}
+        {renderScoreChips('走路稳定性', baselineForm.walkingStability, (value) =>
+          setBaselineForm((prev) => ({ ...prev, walkingStability: value })),
+        )}
+
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>补充说明</Text>
+          <TextInput
+            value={baselineForm.notes}
+            onChangeText={(value) => setBaselineForm((prev) => ({ ...prev, notes: value }))}
+            placeholder="例如：右侧肩带比左侧明显更早受累"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            multiline
+            style={[styles.input, styles.textarea]}
+          />
+        </View>
+      </View>
+
+      {renderUploadSection()}
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleBaselineSubmit}
+      >
+        <Text style={styles.submitButtonText}>保存基线建档</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderFollowupForm = () => (
+    <View style={styles.formStack}>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>先回答变化</Text>
+        {renderSingleChoice(
+          '今天和上次相比，整体感觉如何',
+          followupForm.feeling,
+          feelingOptions,
+          (value) => setFollowupForm((prev) => ({ ...prev, feeling: value })),
+        )}
+        {renderSingleChoice(
+          '这次是否有新问题需要记录',
+          followupForm.hasNewProblem,
+          yesNoOptions,
+          (value) => setFollowupForm((prev) => ({ ...prev, hasNewProblem: value })),
+        )}
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>核心功能域</Text>
+        {renderScoreChips('左侧抬手困难', followupForm.armRaiseLeft, (value) =>
+          setFollowupForm((prev) => ({ ...prev, armRaiseLeft: value })),
+        )}
+        {renderScoreChips('右侧抬手困难', followupForm.armRaiseRight, (value) =>
+          setFollowupForm((prev) => ({ ...prev, armRaiseRight: value })),
+        )}
+        {renderScoreChips('走路更费力', followupForm.walkingDifficulty, (value) =>
+          setFollowupForm((prev) => ({ ...prev, walkingDifficulty: value })),
+        )}
+        {renderScoreChips('上楼更困难', followupForm.stairsDifficulty, (value) =>
+          setFollowupForm((prev) => ({ ...prev, stairsDifficulty: value })),
+        )}
+        {renderScoreChips('左侧足下垂影响', followupForm.footDropLeft, (value) =>
+          setFollowupForm((prev) => ({ ...prev, footDropLeft: value })),
+        )}
+        {renderScoreChips('右侧足下垂影响', followupForm.footDropRight, (value) =>
+          setFollowupForm((prev) => ({ ...prev, footDropRight: value })),
+        )}
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>症状影响</Text>
+        {renderScoreChips(
+          '疲劳',
+          followupForm.fatigue,
+          (value) => setFollowupForm((prev) => ({ ...prev, fatigue: value })),
+          10,
+        )}
+        {renderScoreChips(
+          '疼痛',
+          followupForm.pain,
+          (value) => setFollowupForm((prev) => ({ ...prev, pain: value })),
+          10,
+        )}
+        {renderScoreChips(
+          '气短',
+          followupForm.dyspnea,
+          (value) => setFollowupForm((prev) => ({ ...prev, dyspnea: value })),
+          10,
+        )}
+        {renderScoreChips(
+          '睡眠质量',
+          followupForm.sleepQuality,
+          (value) => setFollowupForm((prev) => ({ ...prev, sleepQuality: value })),
+          10,
+        )}
+
+        <View style={styles.row}>
+          <View style={styles.rowItem}>
+            <Text style={styles.fieldLabel}>10 米步行耗时（秒，可跳过）</Text>
+            <TextInput
+              value={followupForm.tenMeterSeconds}
+              onChangeText={(value) =>
+                setFollowupForm((prev) => ({
+                  ...prev,
+                  tenMeterSeconds: value.replace(/[^\d.]/g, ''),
+                }))
+              }
+              placeholder="例如：18.5"
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              keyboardType="decimal-pad"
+              style={styles.input}
+            />
+          </View>
+          <View style={styles.rowItem}>
+            <Text style={styles.fieldLabel}>最近跌倒次数</Text>
+            <TextInput
+              value={followupForm.fallCount}
+              onChangeText={(value) =>
+                setFollowupForm((prev) => ({ ...prev, fallCount: value.replace(/[^\d]/g, '') }))
+              }
+              placeholder="0"
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              keyboardType="number-pad"
+              style={styles.input}
+            />
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>干预与备注</Text>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>这次有没有新的辅具、训练或用药变化</Text>
+          <TextInput
+            value={followupForm.interventionChange}
+            onChangeText={(value) =>
+              setFollowupForm((prev) => ({ ...prev, interventionChange: value }))
+            }
+            placeholder="例如：开始使用 AFO，每周增加 2 次康复训练"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            multiline
+            style={[styles.input, styles.textarea]}
+          />
+        </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>补充说明</Text>
+          <TextInput
+            value={followupForm.note}
+            onChangeText={(value) => setFollowupForm((prev) => ({ ...prev, note: value }))}
+            placeholder="例如：下午明显更累，右脚容易绊地"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            multiline
+            style={[styles.input, styles.textarea]}
+          />
+        </View>
+      </View>
+
+      {renderUploadSection()}
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleFollowupSubmit}
+      >
+        <Text style={styles.submitButtonText}>完成快速随访</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderEventForm = () => (
+    <View style={styles.formStack}>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>事件类型</Text>
+        <View style={styles.choiceRow}>
+          {eventOptions.map((option) => (
+            <TouchableOpacity
+              key={option.key}
+              style={[
+                styles.choiceChip,
+                eventForm.eventType === option.key && styles.choiceChipActive,
+              ]}
+              activeOpacity={0.88}
+              onPress={() => setEventForm((prev) => ({ ...prev, eventType: option.key }))}
+            >
+              <Text
+                style={[
+                  styles.choiceChipText,
+                  eventForm.eventType === option.key && styles.choiceChipTextActive,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </TouchableOpacity>
           ))}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>用药记录</Text>
-          <View style={styles.profileCard}>
-            <Text style={styles.inputLabel}>药物名称</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：维生素D"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.medicationName}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  medicationName: value,
-                }))
-              }
-            />
+        {renderSingleChoice('严重程度', eventForm.severity, severityOptions, (value) =>
+          setEventForm((prev) => ({ ...prev, severity: value })),
+        )}
 
-            <Text style={styles.inputLabel}>剂量</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：1片"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.dosage}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  dosage: value,
-                }))
-              }
-            />
-
-            <Text style={styles.inputLabel}>频次</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：每日一次"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.frequency}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  frequency: value,
-                }))
-              }
-            />
-
-            <Text style={styles.inputLabel}>用药途径</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：口服"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.route}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  route: value,
-                }))
-              }
-            />
-          </View>
-
-          <View style={styles.historyCard}>
-            <Text style={styles.historyTitle}>当前用药</Text>
-            {medications.length === 0 ? (
-              <Text style={styles.historyMeta}>暂无用药记录，提交后会展示在此处。</Text>
-            ) : (
-              medications.slice(0, 3).map((item) => (
-                <View key={item.id} style={{ marginTop: 8 }}>
-                  <Text style={styles.historyMeta}>{item.medicationName}</Text>
-                  <Text style={styles.historyMeta}>
-                    {item.dosage ?? '--'} · {item.frequency ?? '--'}
-                  </Text>
-                </View>
-              ))
-            )}
-          </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>发生日期</Text>
+          <TextInput
+            value={eventForm.occurredAt}
+            onChangeText={(value) => setEventForm((prev) => ({ ...prev, occurredAt: value }))}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+          />
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>本次录入记录</Text>
-          <View style={styles.timelineCard}>
-            {sessionTimeline.length === 0 ? (
-              <Text style={{ color: '#9CA3AF' }}>暂无记录，添加内容后会汇总在这里。</Text>
-            ) : (
-              sessionTimeline.map((event, index) =>
-                (() => {
-                  const isReportEvent = event.tag === '报告' && event.id.startsWith('report-');
-                  const documentId = isReportEvent ? event.id.slice('report-'.length) : '';
-                  const Container: any = isReportEvent ? TouchableOpacity : View;
-
-                  return (
-                    <Container
-                      key={event.id}
-                      style={[
-                        styles.timelineItem,
-                        index === sessionTimeline.length - 1 && styles.timelineItemLast,
-                      ]}
-                      {...(isReportEvent
-                        ? {
-                            activeOpacity: 0.75,
-                            onPress: () =>
-                              router.push({
-                                pathname: '/p-report_detail',
-                                params: { documentId },
-                              }),
-                          }
-                        : {})}
-                    >
-                      <View style={styles.timelineHeader}>
-                        <Text style={styles.timelineTitle}>{event.title}</Text>
-                        <Text
-                          style={[
-                            styles.timelineTag,
-                            event.tag === '报告' && styles.timelineTagReport,
-                            event.tag === '肌力' && styles.timelineTagStrength,
-                            event.tag === '活动' && styles.timelineTagActivity,
-                            event.tag === '用药' && styles.timelineTagMedication,
-                          ]}
-                        >
-                          {event.tag}
-                        </Text>
-                      </View>
-                      <Text style={styles.timelineDescription}>{event.description}</Text>
-                      {event.tag === '报告' &&
-                        (() => {
-                          const id = event.id.startsWith('report-')
-                            ? event.id.slice('report-'.length)
-                            : '';
-                          const payload =
-                            reportHistory.find((item) => item.id === id)?.ocrPayload ?? null;
-                          if (!payload) return null;
-                          const processing = isProcessing(payload) || Boolean(parsingDocIds[id]);
-                          return processing ? <ParsingBar /> : null;
-                        })()}
-                      <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
-                    </Container>
-                  );
-                })(),
-              )
-            )}
-          </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>发生了什么</Text>
+          <TextInput
+            value={eventForm.description}
+            onChangeText={(value) => setEventForm((prev) => ({ ...prev, description: value }))}
+            placeholder="例如：这一周开始更容易绊脚，右侧明显重于左侧"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            multiline
+            style={[styles.input, styles.textarea]}
+          />
         </View>
+      </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>肌力评分</Text>
-          <View style={styles.muscleGroupGrid}>
-            {muscleGroups.map((group) => (
+      {renderUploadSection()}
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleEventSubmit}
+      >
+        <Text style={styles.submitButtonText}>保存事件记录</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <LinearGradient
+        colors={CLINICAL_GRADIENTS.page}
+        style={styles.backgroundGradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <ScreenBackButton fallbackHref="/p-home" />
+              <View>
+                <Text style={styles.eyebrow}>PATIENT ENTRY</Text>
+                <Text style={styles.pageTitle}>患者自录与随访</Text>
+              </View>
+            </View>
+          </View>
+
+          <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+            <Text style={styles.heroTitle}>先选这次要完成的任务</Text>
+            <Text style={styles.heroDescription}>
+              不再按“报告 / 肌力 / 活动 /
+              用药”堆表单。你只需要告诉系统，这次是建档、随访，还是记录一个新事件。
+            </Text>
+            <View style={styles.heroMetaRow}>
+              <View style={styles.heroMetaCard}>
+                <Text style={styles.heroMetaValue}>{profile?.fullName ?? '未建档'}</Text>
+                <Text style={styles.heroMetaLabel}>当前档案</Text>
+              </View>
+              <View style={styles.heroMetaCard}>
+                <Text style={styles.heroMetaValue}>{profile?.baseline ? '已完成' : '待补'}</Text>
+                <Text style={styles.heroMetaLabel}>基线状态</Text>
+              </View>
+            </View>
+          </LinearGradient>
+
+          <View style={styles.modeGrid}>
+            {modeCards.map((item) => (
               <TouchableOpacity
-                key={group.id}
-                style={[
-                  styles.muscleGroupItem,
-                  muscleStrength.group === group.id && styles.muscleGroupItemActive,
-                ]}
-                onPress={() => handleMuscleGroupSelect(group.id)}
+                key={item.key}
+                style={[styles.modeCard, entryMode === item.key && styles.modeCardActive]}
+                activeOpacity={0.88}
+                onPress={() => setEntryMode(item.key)}
               >
                 <FontAwesome6
-                  name={group.icon}
-                  size={16}
-                  color={group.color}
-                  style={styles.muscleGroupIcon}
+                  name={item.icon}
+                  size={18}
+                  color={
+                    entryMode === item.key ? CLINICAL_COLORS.accentStrong : CLINICAL_COLORS.textSoft
+                  }
                 />
-                <Text style={styles.muscleGroupName}>{group.name}</Text>
+                <Text style={styles.modeTitle}>{item.title}</Text>
+                <Text style={styles.modeDescription}>{item.description}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          <View style={styles.strengthSliderCard}>
-            <View style={styles.strengthHeader}>
-              <Text style={styles.selectedMuscle}>{getMuscleGroupName(muscleStrength.group)}</Text>
-              <Text style={styles.strengthValue}>{muscleStrength.value}</Text>
-            </View>
+          {entryMode === 'baseline' ? renderBaselineForm() : null}
+          {entryMode === 'followup' ? renderFollowupForm() : null}
+          {entryMode === 'event' ? renderEventForm() : null}
+        </ScrollView>
 
-            <View style={styles.sliderContainer}>
-              <Slider
-                style={styles.slider}
-                minimumValue={0}
-                maximumValue={5}
-                step={1}
-                value={muscleStrength.value}
-                onValueChange={handleStrengthValueChange}
-                minimumTrackTintColor="#969FFF"
-                maximumTrackTintColor="rgba(255, 255, 255, 0.1)"
-                disabled={!muscleStrength.group}
-              />
-            </View>
-
-            <View style={styles.strengthLabels}>
-              {[0, 1, 2, 3, 4, 5].map((level) => (
-                <Text key={level} style={styles.strengthLabel}>
-                  {level}级
-                </Text>
-              ))}
-            </View>
+        {(isLoading || isSubmitting) && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.loadingText}>
+              {isSubmitting ? '正在保存这次记录...' : '正在加载录入页面...'}
+            </Text>
           </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>楼梯测试</Text>
-          <View style={styles.timerCard}>
-            <View style={styles.timerIconContainer}>
-              <FontAwesome6
-                name={isTimerRunning ? 'stop' : timerSeconds > 0 ? 'check' : 'stopwatch'}
-                size={24}
-                color={isTimerRunning ? '#EF4444' : '#10B981'}
-              />
-            </View>
-            <Text style={styles.timerTitle}>爬楼计时</Text>
-            <Text style={styles.timerDescription}>记录 10 级楼梯所需时间</Text>
-            <Text style={styles.timerDisplay}>{formatTime(timerSeconds)}</Text>
-            <TouchableOpacity
-              style={[styles.timerButton, isTimerRunning && styles.timerButtonActive]}
-              onPress={handleTimerToggle}
-            >
-              <Text
-                style={[styles.timerButtonText, isTimerRunning && styles.timerButtonTextActive]}
-              >
-                {isTimerRunning ? '停止计时' : timerSeconds > 0 ? '重新计时' : '开始计时'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>日常活动</Text>
-          <View style={styles.activityCard}>
-            <View style={styles.activityHeader}>
-              <Text style={styles.activityTitle}>活动记录</Text>
-              <TouchableOpacity
-                style={[styles.voiceButton, isRecording && styles.voiceButtonActive]}
-                onPress={handleVoiceToggle}
-              >
-                <FontAwesome6
-                  name={isRecording ? 'stop' : 'micro.phone'}
-                  size={14}
-                  color={isRecording ? '#EF4444' : '#3B82F6'}
-                />
-              </TouchableOpacity>
-            </View>
-            <TextInput
-              style={styles.activityTextarea}
-              placeholder="记录今天的活动情况，如：上午完成 20 分钟康复训练，下午散步 1 小时..."
-              placeholderTextColor="#9CA3AF"
-              value={activityText}
-              onChangeText={setActivityText}
-              multiline
-              textAlignVertical="top"
-            />
-            {isRecording && (
-              <View style={styles.voiceStatus}>
-                <FontAwesome6 name="microphone" size={12} color="#9CA3AF" />
-                <Text style={styles.voiceStatusText}>正在录音...</Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        <View style={styles.submitSection}>
-          <TouchableOpacity style={styles.submitButton} onPress={handleSubmit}>
-            <Text style={styles.submitButtonText}>添加/更新数据</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-
-      <Modal visible={isLoading} transparent animationType="fade">
-        <View style={styles.loadingOverlay}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#969FFF" style={styles.loadingSpinner} />
-            <Text style={styles.loadingText}>正在保存数据...</Text>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 档案编辑已移至设置页 */}
+        )}
+      </LinearGradient>
     </SafeAreaView>
   );
 };

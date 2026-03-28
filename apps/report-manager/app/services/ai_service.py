@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from json_repair import repair_json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from app.services.fshd_report_service import analyze_fshd_report
 
 def _build_session():
     # urllib3 Retry API changed over time:
@@ -512,22 +513,8 @@ Return only the JSON object.
 
 def analyze_medical_report(ocr_text):
     """
-    Analyze medical report text using Silicon Flow AI API and extract required data fields.
-    Splits long OCR into chunks and runs parallel calls, then merges.
+    Analyze OCR text using the FSHD-specific structured parser.
+    The legacy LLM utilities above are retained for future fallback use,
+    but the primary path is now deterministic and disease-specific.
     """
-    chunks = _split_text(ocr_text, Config.AI_CHUNK_CHARS)
-    if len(chunks) == 1 or Config.AI_PARALLELISM <= 1 or not Config.AI_ENABLE_PARALLEL:
-        result = _call_ai(chunks[0])
-        return result if isinstance(result, dict) else _empty_result()
-
-    results = []
-    workers = min(Config.AI_PARALLELISM, len(chunks))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(_call_ai, chunk): idx for idx, chunk in enumerate(chunks)}
-        for future in as_completed(future_map):
-            try:
-                results.append(future.result())
-            except Exception as e:
-                results.append({"error": "chunk_failed", "detail": str(e)})
-
-    return _merge_results(results)
+    return analyze_fshd_report(ocr_text)

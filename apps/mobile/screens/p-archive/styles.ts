@@ -1,9 +1,24 @@
-import { StyleSheet, Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+
+const cardShadow =
+  Platform.select({
+    ios: {
+      shadowColor: '#182B36',
+      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.12,
+      shadowRadius: 24,
+    },
+    android: {
+      elevation: 7,
+    },
+    default: {},
+  }) ?? {};
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   backgroundGradient: {
     flex: 1,
@@ -12,686 +27,372 @@ export default StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 80,
+    paddingBottom: 120,
   },
-  section: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  sectionSubtitle: {
-    fontSize: 13,
-    color: '#D1D5DB',
-    marginBottom: 12,
-  },
-  sectionTitleAccent: {
-    color: '#E0E4FF',
-    letterSpacing: 0.5,
-  },
-  stateContainer: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-    padding: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    gap: 12,
-  },
-  stateText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  retryButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#969FFF',
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '500',
-    fontSize: 13,
-  },
-  profileCard: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-    padding: 20,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    gap: 8,
-  },
-  profileName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  profileMeta: {
-    fontSize: 13,
-    color: '#9CA3AF',
-  },
-  editButton: {
-    alignSelf: 'flex-start',
-    marginTop: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#969FFF',
-  },
-  editButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  emptyCard: {
-    padding: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-  },
-  emptyText: {
-    color: '#9CA3AF',
-    fontSize: 13,
-  },
-  radarCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  chartCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  muscleSelector: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  muscleChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-  },
-  muscleChipActive: {
-    borderColor: '#969FFF',
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
-  },
-  muscleChipText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  muscleChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  insightLoading: {
-    marginVertical: 16,
-  },
-  chart: {
-    borderRadius: 12,
-    marginLeft: -12,
-  },
-  chartLegend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  chartLegendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#969FFF',
-    marginRight: 6,
-  },
-  chartLegendText: {
-    color: '#9CA3AF',
-    fontSize: 12,
-  },
-  distributionCard: {
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  distributionBar: {
-    height: 8,
-    borderRadius: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    marginTop: 12,
-    marginBottom: 12,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  distributionRange: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(150, 159, 255, 0.18)',
-  },
-  distributionMarker: {
-    position: 'absolute',
-    top: -4,
-    width: 2,
-    height: 16,
-    backgroundColor: '#CBD5E1',
-  },
-  distributionMarkerUser: {
-    position: 'absolute',
-    top: -6,
-    width: 6,
-    height: 20,
-    borderRadius: 3,
-    backgroundColor: '#969FFF',
-  },
-  distributionLegend: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  distributionText: {
-    color: '#9CA3AF',
-    fontSize: 12,
-  },
-  measurementCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    marginBottom: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-    width: '100%',
-  },
-  measurementMuscle: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  measurementDate: {
-    color: '#9CA3AF',
-    fontSize: 12,
-    marginTop: 4,
-  },
-  measurementScore: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#969FFF',
-  },
-
-  // 顶部标题栏
   header: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 14,
+    gap: 14,
+  },
+  headerLead: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+    gap: 12,
+  },
+  eyebrow: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    letterSpacing: 1.4,
   },
   pageTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
+    marginTop: 2,
+    color: CLINICAL_COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
   },
   headerActions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+    gap: 10,
+    flexWrap: 'wrap',
   },
-  clinicalPassportButton: {
+  outlineButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  clinicalPassportText: {
-    fontSize: 12,
-    color: '#FFFFFF',
-  },
-  dataEntryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#969FFF',
-    borderRadius: 8,
+    gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 6,
-  },
-  dataEntryText: {
-    fontSize: 12,
-    color: '#FFFFFF',
-    fontWeight: '500',
-  },
-
-  // 临床护照概览卡片
-  passportSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  passportCard: {
-    borderRadius: 8,
-    padding: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_TINTS.accentBorder,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
-  passportHeader: {
+  outlineButtonText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  section: {
+    marginHorizontal: 20,
+    marginBottom: 22,
+  },
+  heroCard: {
+    padding: 20,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+    backgroundColor: CLINICAL_COLORS.panel,
+    ...cardShadow,
+  },
+  heroEyebrow: {
+    color: CLINICAL_COLORS.accentStrong,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+  },
+  heroTitle: {
+    marginTop: 10,
+    color: CLINICAL_COLORS.text,
+    fontSize: 25,
+    fontWeight: '800',
+  },
+  heroMeta: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+  },
+  heroSummary: {
+    marginTop: 12,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  sectionHeader: {
+    marginBottom: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
   },
-  passportTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  sectionTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 18,
+    fontWeight: '800',
   },
-  passportId: {
-    fontSize: 12,
-    color: '#969FFF',
-    fontWeight: '500',
-  },
-  passportGrid: {
+  backgroundGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-  },
-  passportItem: {
-    width: '48%',
-    alignItems: 'center',
-  },
-  passportLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  passportValue: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  passportHint: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    textAlign: 'center',
-    paddingVertical: 12,
-  },
-
-  // 时间轴
-  timelineSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  timelineHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  timelineToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  timelineHint: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  timelineToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  timelineToggleText: {
-    fontSize: 12,
-    color: '#969FFF',
-  },
-  timelineTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  filterButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  filterText: {
-    fontSize: 12,
-    color: '#969FFF',
-  },
-  timelineContainer: {
     gap: 12,
   },
-  submissionCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 10,
+  backgroundCard: {
+    width: '48%',
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
   },
-  submissionHeader: {
+  backgroundLabel: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+  },
+  backgroundValue: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.text,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  summaryGrid: {
+    gap: 12,
+  },
+  summaryCard: {
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  summaryTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: 12,
+  },
+  summaryTitle: {
+    flex: 1,
+    color: CLINICAL_COLORS.text,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  summaryBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  summaryBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  summaryDate: {
+    marginTop: 10,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+  },
+  summaryText: {
+    marginTop: 10,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  toggleRow: {
+    flexDirection: 'row',
     gap: 8,
   },
-  submissionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  toggleChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_COLORS.panel,
   },
-  submissionDate: {
+  toggleChipActive: {
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  toggleChipText: {
+    color: CLINICAL_COLORS.textMuted,
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 2,
+    fontWeight: '700',
   },
-  submissionMeta: {
-    alignItems: 'flex-end',
-    gap: 6,
+  toggleChipTextActive: {
+    color: CLINICAL_COLORS.text,
   },
-  submissionSummary: {
-    fontSize: 11,
-    color: '#9CA3AF',
+  card: {
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
   },
-  submissionDetails: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  focusWrap: {
+    marginTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
-  detailSection: {
-    gap: 4,
-  },
-  detailTitle: {
-    fontSize: 12,
-    color: '#E5E7EB',
-    fontWeight: '600',
-  },
-  detailItem: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  paginationRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  pageButton: {
+  focusTag: {
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: CLINICAL_TINTS.accentBorder,
   },
-  pageButtonDisabled: {
-    opacity: 0.5,
-  },
-  pageButtonText: {
+  focusTagText: {
+    color: CLINICAL_COLORS.text,
     fontSize: 12,
-    color: '#FFFFFF',
+    fontWeight: '700',
   },
-  pageIndicator: {
-    fontSize: 12,
-    color: '#9CA3AF',
-  },
-  eventCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
+  trendGrid: {
     gap: 12,
   },
-  timelineLeft: {
+  trendCard: {
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  trendCardTitle: {
+    flex: 1,
+    color: CLINICAL_COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  trendValue: {
+    marginTop: 12,
+    color: CLINICAL_COLORS.accentStrong,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  trendSummary: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  chart: {
+    marginTop: 12,
+    marginLeft: -24,
+    borderRadius: 16,
+  },
+  chartEmpty: {
+    marginTop: 12,
+    minHeight: 100,
+    borderRadius: 18,
     alignItems: 'center',
-    position: 'relative',
+    justifyContent: 'center',
+    backgroundColor: CLINICAL_TINTS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.borderSubtle,
+  },
+  timelineWrap: {
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  timelineItem: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  timelineRail: {
+    width: 18,
+    alignItems: 'center',
   },
   timelineDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.3,
-        shadowRadius: 20,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+    marginTop: 8,
   },
   timelineLine: {
-    position: 'absolute',
-    top: 12,
     width: 2,
-    height: 48,
-  },
-  eventContent: {
     flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    padding: 8,
+    marginTop: 6,
+    marginBottom: -10,
+    backgroundColor: CLINICAL_TINTS.accentBorder,
+  },
+  timelineContent: {
+    flex: 1,
+    paddingBottom: 18,
+  },
+  timelineHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  timelineTag: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+  },
+  timelineTagText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  timelineTime: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+  },
+  timelineTitle: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.text,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  timelineText: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  reportGrid: {
+    gap: 12,
+  },
+  stateWrap: {
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  eventHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
-    marginBottom: 4,
+    gap: 12,
   },
-  eventHeaderLeft: {
-    flexDirection: 'row',
+  stateText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  emptyText: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(248, 242, 234, 0.76)',
   },
-  eventChevron: {
-    marginLeft: 6,
-  },
-  eventTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  eventDate: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  eventDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 4,
-  },
-  eventDetails: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-    gap: 6,
-  },
-  muscleDetail: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  muscleName: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 2,
-  },
-  muscleStrength: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#969FFF',
-  },
-  eventStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  statusText: {
-    fontSize: 12,
-  },
-
-  // 风险预警
-  riskAlertSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  riskAlertTitle: {
-    fontSize: 14,
+  loadingText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
     fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  alertsContainer: {
-    gap: 6,
-  },
-  mainAlertCard: {
-    backgroundColor: 'rgba(255, 159, 64, 0.1)',
-    borderRadius: 8,
-    padding: 12,
-    borderLeftWidth: 3,
-    borderLeftColor: '#FF9F43',
-    marginBottom: 8,
-  },
-  alertHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  alertIconContainer: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 159, 64, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexShrink: 0,
-  },
-  alertContent: {
-    flex: 1,
-  },
-  alertTitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  alertTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  alertLevel: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  alertDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 4,
-  },
-  alertAction: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  secondaryAlertCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    padding: 8,
-    borderLeftWidth: 2,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  secondaryAlertContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  secondaryAlertIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  secondaryAlertText: {
-    flex: 1,
-  },
-  secondaryAlertTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  secondaryAlertDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
   },
 });

@@ -1,88 +1,41 @@
-# 发布/部署清单 (Release Checklist)
+# 发布/部署清单
 
-## 中文
+## 1. 配置核对
 
-### 1) 环境与依赖
+- `.env` 已按目标环境填写。
+- 关键密钥已替换默认值（JWT、OCR、AI）。
+- 生产环境未使用 `OTP_PROVIDER=mock`、`OCR_PROVIDER=mock`、`CORS_ORIGIN=*`。
+- `EXPO_PUBLIC_API_URL` / `WEB_EXPO_PUBLIC_API_URL` 指向目标 API。
+- `OCR_PROVIDER` 已确认，生产默认使用 `embedded`。
 
-- `.env` 已配置并核对关键变量（`DATABASE_URL`、`JWT_SECRET`、`AI_API_KEY`、`CHROMA_API_KEY`、`CHROMA_TENANT_ID` 等）
-- 已为移动端配置 `EXPO_PUBLIC_API_URL`（指向云端 API）
-- 生产环境禁止使用默认 MinIO 账号与占位密钥
-- report-manager 已设置 `REPORT_MANAGER_API_KEY`（生产环境）
-- `requirements.txt` 已锁定版本，Python 依赖可复现
-- 数据库已初始化或迁移完成（`db/init_db.sql` 或迁移工具）
+## 2. 构建与启动验证
 
-### 2) 服务启动顺序
+- 本地 `npm run lint` 通过。
+- `npm run db:migrate` 已执行并成功。
+- `docker compose config` 通过。
+- `docker compose up -d --build` 可正常拉起服务。
+- 健康检查可用：
+  - `GET /api/healthz/live`
+  - `GET /api/healthz/ready`
 
-- 先启动知识服务：`python apps/api/knowledge_service.py`
-- 再启动 Node API：`npm run dev:api`
-- 再启动报告解析服务：在 `apps/report-manager` 下执行 `python -m uvicorn main:app --reload --port 8000`
-- 最后启动移动端：`npm run dev:mobile`
+## 3. 核心流程冒烟
 
-### 3) 核心功能自测
+- 注册/登录（含 OTP 发送与校验，如启用）。
+- 档案创建/更新/查询。
+- 测量、活动、用药写入和读取。
+- 报告上传与 OCR 状态查询。
+- AI 问答与进度轮询。
+- AI 主模型链路已验证可用，不是 fallback 假通过。
 
-- `/api/healthz` 正常返回
-- `report-manager /healthz` 正常返回
-- 注册/登录流程正常
-- 资料/档案接口可写可读
-- 智能问答 `/api/ai/ask` 正常返回
-- 进度接口 `/api/ai/ask/progress/:id` 正常
-- 可选：运行 `scripts/smoke-test.sh` 执行完整冒烟
+## 4. 数据与安全
 
-### 4) 日志与异常
+- 数据库初始化脚本/迁移已执行。
+- 日志不含敏感信息明文。
+- 对外端口与安全组策略已收敛。
 
-- 无明显报错（API、知识服务、移动端）
-- 关键错误已记录并可定位
+## 5. 发布交付
 
-### 5) 文档与交付
-
-- README 中英文一致
-- 关键文档（架构/PRD/测试）更新
-- 变更记录已补充（如有）
-
-### 6) Docker/部署准备
-
-- Docker 镜像可构建并可启动
-- 数据库、MinIO、API、report-manager、知识服务的网络与端口已联通
-- 云服务器安全组放行所需端口（API、report-manager、MinIO、数据库）
-
-## English
-
-### 1) Environment & Dependencies
-
-- `.env` configured and validated (e.g. `DATABASE_URL`, `JWT_SECRET`, `AI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_TENANT_ID`)
-- `EXPO_PUBLIC_API_URL` configured for mobile (pointing to cloud API)
-- Production environment does not use default MinIO credentials or placeholder secrets
-- `requirements.txt` pinned for reproducible Python installs
-- Database initialized or migrations applied
-
-### 2) Startup Order
-
-- Start KB service: `python apps/api/knowledge_service.py`
-- Start Node API: `npm run dev:api`
-- Start mobile app: `npm run dev:mobile`
-
-### 3) Core Smoke Tests
-
-- `/api/healthz` returns OK
-- Auth register/login works
-- Profile APIs read/write
-- Q&A `/api/ai/ask` returns answer
-- Progress endpoint `/api/ai/ask/progress/:id` responds
-- Optional: run `scripts/smoke-test.sh` for full smoke
-
-### 4) Logs & Errors
-
-- No blocking errors across services
-- Critical failures are traceable
-
-### 5) Docs & Delivery
-
-- README (CN/EN) up to date
-- Key docs updated (architecture/PRD/testing)
-- Changelog notes updated if needed
-
-### 6) Docker/Deployment
-
-- Docker images build and start successfully
-- Network/ports verified for database, MinIO, API, report-manager, KB service
-- Cloud security group allows required ports
+- README（中/英）已同步。
+- `docs/testing-guide.md` 与线上版本一致。
+- `docs/updates.md` 已记录本次发布变化。
+- 回滚方案已准备（镜像 tag / 版本切换 / 数据回滚策略）。

@@ -2,139 +2,169 @@
 
 [English](./README.en.md)
 
----
+面向 FSHD（面肩肱型肌营养不良）患者的移动端与后端一体化项目，当前以 monorepo 形式维护。仓库包含：
 
-专为 FSHD（面肩肱型肌营养不良症）患者设计的综合性移动应用平台，提供智能问答、动态健康档案、病程管理、患者社区功能和临床试验匹配能力。本仓库现已升级为统一管理移动端与后端服务的 **monorepo**，便于团队协作与持续扩展。
+- `apps/mobile`：Expo 移动应用（iOS / Android / Web）
+- `apps/api`：Node.js + Express API
+- `apps/report-manager`：供主 API 内嵌调用的 Python OCR/解析引擎
+- `db`：数据库初始化脚本
+- `docs`：研发与发布文档
 
-## 🎯 项目概述
+## 技术栈
 
-FSHD-openrd 是一个以移动端为主的平台，为 FSHD 患者提供自我管理工具、知识获取、社区支持和临床试验参与功能。该应用集成了 AI 驱动的洞察与全面的数据跟踪，提供个性化护理和支持。
+- 移动端：Expo + React Native + TypeScript
+- API：Express + TypeScript + Zod
+- 数据库：PostgreSQL
+- OCR/报告：主 API 内嵌 Python OCR/结构化解析
+- 代码质量：ESLint + Prettier + Husky
 
-## 🛠 技术栈
+## 仓库结构
 
-| 层级     | 技术                             | 说明                                    |
-| -------- | -------------------------------- | --------------------------------------- |
-| 移动端   | Expo (React Native + TypeScript) | 面向 iOS / Android / Web 的统一代码仓库 |
-| 后端 API | Express + TypeScript             | 提供认证、档案、问答等核心 REST API     |
-| 数据库   | PostgreSQL                       | 结构化业务数据存储与扩展                |
-| 代码规范 | ESLint + Prettier + Husky        | 统一的代码风格和提交校验                |
-| 日志     | pino/pino-http                   | 结构化日志输出，便于排错与监控          |
-
-## 📁 Monorepo 目录结构
-
-```
+```text
 openrd/
 ├── apps/
-│   ├── api/                # TypeScript Express API 服务
-│   │   ├── src/            # 应用源码（配置、认证模块等）
-│   │   ├── package.json    # 服务依赖与脚本
-│   │   └── eslint.config.mjs
-│   ├── report-manager/     # Python FastAPI 报告解析服务（OCR/AI）
-│   └── mobile/             # Expo React Native 应用
-│       ├── app/            # Expo Router 页面
-│       ├── screens/        # 复杂页面的 UI 组件
-│       ├── assets/         # 图片、图标、字体
-│       └── package.json
-├── db/                     # PostgreSQL 初始化脚本与迁移
-├── ui/                     # 静态原型页面
-├── .husky/                 # Git hooks（pre-commit 运行 lint-staged）
-├── .env.example            # 环境变量示例
-├── package.json            # 顶层工作区配置及统一脚本
-└── prettier.config.cjs     # 项目级代码格式化配置
+│   ├── api/
+│   ├── mobile/
+│   └── report-manager/
+├── db/
+├── docs/
+├── docker-compose.yml
+├── .env.example
+└── package.json
 ```
 
-## 🚀 快速开始
+## 环境要求
 
-### 1. 环境准备
+- Node.js >= 18
+- npm >= 10
+- Python >= 3.10（报告 OCR 引擎 / KB 服务需要）
+- PostgreSQL >= 14（本地模式）
+- Docker + Docker Compose v2（容器模式）
 
-- Node.js ≥ 18
-- npm ≥ 10（随 Node 一起安装）
-- PostgreSQL ≥ 14
-- 可选：Expo Go（移动端调试）
-- 可选：Python ≥ 3.10（知识服务）
+## 快速开始（本地开发）
 
-### 2. 克隆与依赖安装
+1. 安装依赖
 
 ```bash
-git clone <仓库地址>
+git clone <repo-url>
 cd openrd
-cp .env.example .env          # 根据实际环境调整
-npm install                   # 安装 workspace 依赖并初始化 Husky
+cp .env.example .env
+npm install
 ```
 
-> 推荐使用 Docker Compose v2（命令为 `docker compose ...`），避免旧版 `docker-compose`（v1.29.x）在部分环境触发 `KeyError: 'ContainerConfig'`。
->
-> 使用容器编排时请注意：容器内不能用 `127.0.0.1/localhost` 访问其他服务。
-> 例如 `.env` 里的 `REPORT_MANAGER_OCR_URL` / `REPORT_MANAGER_DATABASE_URL` / `REPORT_MANAGER_MINIO_ENDPOINT` 应该使用 `report-manager` / `postgres` / `minio` 这类 service name。
+2. 启动基础依赖（可选：使用 Docker）
 
-> 若需要运行 Python 知识服务：
->
-> ```bash
-> python -m venv .venv
-> source .venv/bin/activate
-> pip install -r requirements.txt
-> ```
->
-> 知识服务依赖 Chroma Cloud，请确保 `.env` 已设置 `CHROMA_API_KEY` 与 `CHROMA_TENANT_ID`。
+```bash
+docker compose up -d postgres
+```
 
-> 如需初始化数据库，可使用 `db/init_db.sql`：
->
-> ```bash
-> psql -U postgres -f db/init_db.sql
-> ```
+如果宿主机的 `5432` 已经被本地 PostgreSQL 占用，可改成：
 
-### 3. 启动服务
+```bash
+POSTGRES_PORT=5433 docker compose up -d postgres
+```
 
-| 模块      | 命令                                              | 说明                                                        |
-| --------- | ------------------------------------------------- | ----------------------------------------------------------- |
-| 后端 API  | `npm run dev:api`                                 | 在 `http://localhost:4000` 启动开发服务器，暴露 `/api` 路径 |
-| 移动端    | `npm run dev:mobile`                              | 进入 Expo 开发工具，可选择 iOS/Android/Web                  |
-| 知识服务  | `python apps/api/knowledge_service.py`            | 启动本地知识检索服务（默认 `http://127.0.0.1:5010`）        |
-| 报告解析  | `python -m uvicorn main:app --reload --port 8000` | 在 `apps/report-manager` 下启动 OCR/AI 报告解析服务         |
-| 静态原型  | `bash scripts/serve-ui.sh 8080`                   | 直接启动 `ui/` 原型页面（临时演示用）                       |
-| 真实前端  | `docker compose up -d web`                        | 构建 `apps/mobile` 的 Expo Web 并通过 Nginx 提供服务        |
-| 统一 lint | `npm run lint`                                    | 运行全部工作区的 ESLint 脚本                                |
-| 统一测试  | `npm run test`                                    | 执行所有工作区内的测试命令                                  |
+3. 启动 API
 
-> `web` 容器会把 `/api/*` 反向代理到 `api:4000`，便于前后端联调。可在 `.env` 里设置 `WEB_EXPO_PUBLIC_API_URL`（默认 `/api`）。
+```bash
+npm run dev:api
+```
 
-## 🔐 后端基础能力
+4. 启动移动端
 
-后端服务位于 `apps/api`，目前提供：
+```bash
+npm run dev:mobile
+```
 
-- `/api/healthz`：基础健康检查，包含数据库连通性探测
-- `/api/auth/register`：手机号/邮箱注册，采用 `bcrypt` 存储密码摘要
-- `/api/auth/login`：手机号或邮箱登录，返回 JWT 令牌
-- 统一日志与错误处理：使用 `pino` 输出结构化日志，并对 API 错误进行集中捕获
-- PostgreSQL 连接池：集中初始化并在路由中复用
+5. 可选：安装内嵌 OCR 运行时（本地直跑 API 时需要）
 
-所有配置项均由 `.env` 管理，可通过 `apps/api/src/config/env.ts` 查看默认值与校验规则。
+```bash
+pip install -r apps/api/requirements-embedded-report.txt
+```
 
-## 🧭 Git 工作流
+6. 可选：启动知识服务（用于 AI 问答检索）
 
-- **分支策略**：`main` 保持可部署状态，功能迭代以 `feature/<scope>` 命名
-- **提交校验**：提交前自动执行 `lint-staged`（包含 ESLint、Prettier），确保代码质量
-- **代码检查**：建议在提交前手动运行 `npm run lint` 与 `npm run test`
-- **数据库迁移**：`db` 目录用于保存 SQL 脚本，PR 中需说明对应变更
+```bash
+python apps/api/knowledge_service.py
+```
 
-更多细节请参考 [`docs/WORKFLOW.md`](./docs/WORKFLOW.md)。
+本地直跑常见关键配置：
 
-## 📄 其他文档
+- `AI_API_BASE_URL=https://api.siliconflow.cn/v1`
+- `AI_API_MODEL=Qwen/Qwen3-VL-32B-Instruct`
+- `OCR_PROVIDER=embedded`
+- `OCR_PYTHON_BIN=/opt/anaconda3/envs/openrd-kb/bin/python`（仅本机 conda 方案）
 
-- [系统架构设计文档](./FSHD-openrd-系统架构设计文档.md)
-- [产品需求文档](./prd-v2.md)
-- [数据库初始化脚本](./db/init_db.sql)
-- [智能问答服务说明](./docs/ai-chat.md)
-- [发布/部署清单](./docs/release-checklist.md)
+## Docker 一键联调
 
-## 📞 支持与反馈
+```bash
+docker compose up -d --build
+```
 
-如需技术支持或有关应用的疑问：
+容器模式下已内置这些覆盖，不需要把本机 conda 路径写进容器：
 
-- 邮箱：support@fshd-openrd.org
-- 社区：加入我们的患者论坛
-- 文档：持续更新中的开发规范与 API 文档
+- API 容器固定使用 `OCR_PYTHON_BIN=python3`
+- KB 容器固定监听 `0.0.0.0:5010`
+- API 容器固定访问 `KB_SERVICE_URL=http://kb-service:5010`
 
----
+如果宿主机 `5432` 已被占用，可在启动时覆盖：
 
-欢迎为 FSHD 社区、医疗专业人员和开发者贡献力量。请遵循仓库内的开发规范和 Git 工作流，共建可信赖的医疗健康平台。
+```bash
+POSTGRES_PORT=5433 docker compose up -d --build
+```
+
+默认端口：
+
+- API: `http://localhost:4000`
+- KB service: `http://localhost:5010`
+- web (Expo web + nginx): `http://localhost:8080`
+
+## 常用命令
+
+```bash
+npm run dev:api
+npm run dev:mobile
+npm run db:migrate
+npm run lint
+npm run format
+npm run test:smoke
+npm run test:latest
+npm run test
+```
+
+说明：
+
+- `npm run test:smoke` 运行快速接口冒烟。
+- `npm run test:latest` 运行当前最完整的一体化回归脚本。
+- `npm run db:migrate` 执行数据库迁移与首次 bootstrap。
+- `npm run test` 会跑所有 workspace 测试脚本。
+
+## 主要 API（摘要）
+
+- `GET /api/healthz`
+- `GET /api/healthz/live`
+- `GET /api/healthz/ready`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/otp/send`
+- `POST /api/auth/otp/verify`
+- `GET /api/profiles/me`
+- `POST /api/profiles/me/measurements`
+- `POST /api/profiles/me/activity-logs`
+- `POST /api/profiles/me/documents/upload`
+- `GET /api/profiles/me/documents/:id/ocr`
+- `POST /api/ai/ask`
+
+## 文档导航
+
+- [文档总览](./docs/README.md)
+- [测试指南](./docs/testing-guide.md)
+- [发布清单](./docs/release-checklist.md)
+- [单机云部署说明](./docs/cloud-tencent-docker.md)
+- [协作工作流](./docs/WORKFLOW.md)
+- [AI 问答说明](./docs/ai-chat.md)
+- [档案模型设计](./docs/patient-profile.md)
+
+## 许可证
+
+[MIT](./LICENSE)

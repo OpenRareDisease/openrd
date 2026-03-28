@@ -1,5 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import type { ReactNode } from 'react';
 import {
@@ -8,6 +7,8 @@ import {
   type AuthResponse,
   setAuthToken,
 } from '../lib/api';
+import { CLINICAL_COLORS } from '../lib/clinical-visuals';
+import { getSessionValue, removeSessionValue, setSessionValue } from '../lib/session-storage';
 
 type AuthUser = AuthResponse['user'];
 
@@ -30,8 +31,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const hydrate = async () => {
       try {
         const [storedToken, storedUser] = await Promise.all([
-          AsyncStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
-          AsyncStorage.getItem(AUTH_USER_STORAGE_KEY),
+          getSessionValue(AUTH_TOKEN_STORAGE_KEY),
+          getSessionValue(AUTH_USER_STORAGE_KEY),
         ]);
 
         if (storedToken) {
@@ -56,14 +57,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const setSession = async (session: AuthResponse) => {
     await Promise.all([
       setAuthToken(session.token),
-      AsyncStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(session.user)),
+      setSessionValue(AUTH_USER_STORAGE_KEY, JSON.stringify(session.user)),
     ]);
     setToken(session.token);
     setUser(session.user);
   };
 
   const logout = async () => {
-    await Promise.all([setAuthToken(null), AsyncStorage.removeItem(AUTH_USER_STORAGE_KEY)]);
+    await Promise.all([setAuthToken(null), removeSessionValue(AUTH_USER_STORAGE_KEY)]);
     setToken(null);
     setUser(null);
   };
@@ -81,8 +82,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   if (!isHydrated) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator size="large" color="#969FFF" />
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: CLINICAL_COLORS.background,
+        }}
+      >
+        <ActivityIndicator size="large" color={CLINICAL_COLORS.accent} />
       </View>
     );
   }

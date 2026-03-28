@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 
 export interface TimelineItem {
   title: string;
@@ -31,17 +32,17 @@ const RecordTimelineScreen: React.FC<{ items: TimelineItem[] }> = ({ items }) =>
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: CLINICAL_COLORS.border,
     gap: 12,
   },
   title: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   item: {
     flexDirection: 'row',
@@ -51,7 +52,7 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     marginTop: 6,
   },
   content: {
@@ -61,19 +62,19 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   itemDesc: {
     fontSize: 12,
-    color: '#D1D5DB',
+    color: CLINICAL_COLORS.textSoft,
   },
   itemTime: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: CLINICAL_COLORS.textMuted,
   },
   emptyText: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: CLINICAL_COLORS.textMuted,
   },
 });
 

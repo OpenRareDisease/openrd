@@ -1,56 +1,66 @@
 # @openrd/api
 
-TypeScript Express service that powers the FSHD-openrd backend.
-
-## Features
-
-- Structured configuration with Zod-validated environment variables (`src/config/env.ts`)
-- PostgreSQL connection pool and health checks
-- Authentication module with register/login endpoints and JWT token issuance
-- Centralized logging via `pino` and unified error handling middleware
-- ESLint + Prettier + Husky enforced code style
+TypeScript + Express backend for the openrd platform.
 
 ## Scripts
 
 ```bash
-npm run dev          # start the API in watch mode (loads ../../.env)
-npm run build        # compile TypeScript to dist/
-npm run start        # run the compiled JavaScript
-npm run lint         # static analysis
-npm run lint:fix     # fixable lint issues
-npm run format       # prettier check
-npm run format:write # prettier write
-npm run test         # placeholder for Vitest suites
+npm run dev          # watch mode, loads ../../.env
+npm run build        # compile to dist/
+npm run start        # run compiled build
+npm run lint
+npm run lint:fix
+npm run format
+npm run format:write
+npm run test
 ```
 
-## Environment variables
+## Environment
 
-Copy the repository `.env.example` to `.env` and adjust as needed. Key variables include database connection, JWT secret, and log level.
-For OCR integration, you can either:
+Copy root `.env.example` to `.env` and configure at least:
 
-- Use Report Manager 002 by setting `REPORT_MANAGER_OCR_URL` (and optional `REPORT_MANAGER_OCR_API_KEY`).
-- Or use Baidu OCR by setting `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` (and optional endpoint overrides).
+- `PORT`
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `AI_API_BASE_URL`
+- `AI_API_MODEL`
+- `AI_API_KEY` or `OPENAI_API_KEY` (for AI features)
+- `OCR_PROVIDER=embedded`
+- `OCR_PYTHON_BIN` (default `python3`; in Docker keep it as `python3`)
+- `CHROMA_API_KEY`
+- `CHROMA_TENANT_ID`
 
-## Folder layout
-
-```
-src/
-├── config/       # env + logger factories
-├── db/           # PostgreSQL pool
-├── middleware/   # common Express middlewares
-├── modules/
-│   └── auth/     # registration & login flows
-├── routes/       # API routing entrypoint
-└── utils/        # helpers (AppError, async wrapper)
-```
-
-## API summary
+## Key Routes
 
 - `GET /api/healthz`
+- `GET /api/healthz/live`
+- `GET /api/healthz/ready`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/otp/send`
+- `POST /api/auth/otp/verify`
+- `POST /api/ai/ask`
+- `POST /api/ai/ask/progress/init`
+- `GET /api/ai/ask/progress/:progressId`
+- `GET /api/profiles/me`
+- `POST /api/profiles/me/measurements`
+- `POST /api/profiles/me/function-tests`
+- `POST /api/profiles/me/activity-logs`
 - `POST /api/profiles/me/documents/upload`
-- `GET /api/profiles/me/documents/:id`
-- `GET /api/profiles/me/documents/:id/ocr`
+- `POST /api/profiles/me/documents/:id/summary`
+- `POST /api/profiles/me/medications`
+- `GET /api/profiles/me/risk`
 
-Extend modules under `src/modules/<domain>` to grow the service in a modular fashion.
+## Structure
+
+```text
+src/
+├── config/
+├── db/
+├── middleware/
+├── modules/
+│   ├── auth/
+│   └── patient-profile/
+├── routes/
+└── services/
+```

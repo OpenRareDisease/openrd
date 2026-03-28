@@ -1,11 +1,12 @@
 import { StyleSheet, Dimensions, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 const { width } = Dimensions.get('window');
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   backgroundGradient: {
     flex: 1,
@@ -26,6 +27,11 @@ export default StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 48,
   },
+  headerTopRow: {
+    width: '100%',
+    marginBottom: 24,
+    alignItems: 'flex-start',
+  },
   logoContainer: {
     alignItems: 'center',
   },
@@ -36,14 +42,14 @@ export default StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -54,17 +60,17 @@ export default StyleSheet.create({
     }),
   },
   logoIcon: {
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
   appName: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
     marginBottom: 8,
   },
   appSlogan: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
 
   // Main content styles
@@ -83,7 +89,7 @@ export default StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
   },
   tabButtonLeft: {
     borderTopLeftRadius: 8,
@@ -96,16 +102,16 @@ export default StyleSheet.create({
     borderLeftWidth: 0,
   },
   tabButtonActive: {
-    backgroundColor: '#969FFF',
-    borderColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
+    borderColor: CLINICAL_COLORS.accent,
   },
   tabButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   tabButtonTextActive: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 
   // Form styles
@@ -118,14 +124,14 @@ export default StyleSheet.create({
   registerSectionTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 12,
     marginTop: 8,
   },
   inputLabel: {
     fontSize: 14,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 8,
   },
   textInput: {
@@ -133,10 +139,10 @@ export default StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    color: '#FFFFFF',
+    borderColor: CLINICAL_COLORS.border,
+    color: CLINICAL_COLORS.text,
     fontSize: 16,
   },
 
@@ -149,21 +155,21 @@ export default StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
   },
   identityButtonActive: {
-    borderColor: '#969FFF',
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    borderColor: CLINICAL_COLORS.accent,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
   identityButtonText: {
     fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   identityButtonTextActive: {
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontWeight: '600',
   },
 
@@ -171,16 +177,16 @@ export default StyleSheet.create({
   passwordInputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     borderRadius: 8,
   },
   passwordInput: {
     flex: 1,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     fontSize: 16,
   },
   passwordToggleButton: {
@@ -198,10 +204,10 @@ export default StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    color: '#FFFFFF',
+    borderColor: CLINICAL_COLORS.border,
+    color: CLINICAL_COLORS.text,
     fontSize: 16,
   },
   getCodeButton: {
@@ -209,15 +215,15 @@ export default StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#969FFF',
+    borderColor: CLINICAL_COLORS.accent,
   },
   getCodeButtonDisabled: {
-    borderColor: 'rgba(150, 159, 255, 0.3)',
+    borderColor: CLINICAL_TINTS.accentBorder,
   },
   getCodeButtonText: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
 
   // Primary button styles
@@ -237,7 +243,7 @@ export default StyleSheet.create({
   primaryButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 
   // Forgot password styles
@@ -247,7 +253,7 @@ export default StyleSheet.create({
   },
   forgotPasswordText: {
     fontSize: 14,
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
 
   // Divider styles
@@ -259,12 +265,12 @@ export default StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: CLINICAL_COLORS.border,
   },
   dividerText: {
     paddingHorizontal: 16,
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
 
   // Third party login styles
@@ -278,15 +284,15 @@ export default StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 10,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     gap: 12,
   },
   thirdPartyButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 
   // Agreement styles
@@ -296,12 +302,12 @@ export default StyleSheet.create({
   },
   agreementText: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
     textAlign: 'center',
     lineHeight: 20,
   },
   agreementLink: {
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
 
   // Modal styles
@@ -311,7 +317,7 @@ export default StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: CLINICAL_TINTS.modalOverlay,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
@@ -322,15 +328,15 @@ export default StyleSheet.create({
     width: '100%',
   },
   modalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -347,7 +353,7 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 77, 79, 0.2)',
+    backgroundColor: CLINICAL_TINTS.dangerSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -355,19 +361,19 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(82, 196, 26, 0.2)',
+    backgroundColor: CLINICAL_TINTS.successSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalTitle: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
   },
   modalMessage: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     marginBottom: 16,
     lineHeight: 20,
@@ -376,27 +382,27 @@ export default StyleSheet.create({
     width: '100%',
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalButtonText: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 
   // Agreement modal styles
   agreementModalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     maxHeight: 384,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -415,14 +421,14 @@ export default StyleSheet.create({
   agreementModalTitle: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   agreementModalScrollView: {
     maxHeight: 320,
   },
   agreementModalText: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 22,
   },
 });

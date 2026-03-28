@@ -1,78 +1,84 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports:
-      - '5432:5432'
+      - '${POSTGRES_PORT:-5432}:5432'
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./db/init_db.sql:/docker-entrypoint-initdb.d/01-init-openrd.sql:ro
-      - ./apps/report-manager/db_init_script.sql:/docker-entrypoint-initdb.d/02-init-report-manager.sql:ro
-
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${REPORT_MANAGER_MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${REPORT_MANAGER_MINIO_SECRET_KEY:-minioadmin12345678}
-    ports:
-      - '9000:9000'
-      - '9001:9001'
-    volumes:
-      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   kb-service:
     build:
       context: .
       dockerfile: apps/api/Dockerfile.kb
+    restart: unless-stopped
     env_file:
       - .env
+    environment:
+      KB_SERVICE_HOST: 0.0.0.0
+      KB_SERVICE_PORT: 5010
+      HF_HOME: /root/.cache/huggingface
+      SENTENCE_TRANSFORMERS_HOME: /root/.cache/sentence_transformers
     ports:
       - '5010:5010'
+    volumes:
+      - kb-model-cache:/root/.cache
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5010/health/ready', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
 
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
-      # Allow switching sync/async behavior via `.env` without editing compose.
-      #
-      # NOTE: avoid `/api/reports` (no trailing slash) because FastAPI may 307-redirect
-      # and break multipart uploads (boundary parsing error). Use the async endpoint.
-      REPORT_MANAGER_OCR_URL: ${REPORT_MANAGER_OCR_URL:-http://report-manager:8000/api/reports/upload-and-analyze}
-      KB_SERVICE_HOST: kb-service
-      KB_SERVICE_PORT: 5010
-    ports:
-      - '4000:4000'
-    depends_on:
-      - postgres
-      - kb-service
-      - report-manager
-    volumes:
-      - api-uploads:/app/apps/api/uploads
-
-  report-manager:
-    build:
-      context: .
-      dockerfile: apps/report-manager/Dockerfile
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      REPORT_MANAGER_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/report_manager
-      REPORT_MANAGER_MINIO_ENDPOINT: minio:9000
-      REPORT_MANAGER_MINIO_USE_HTTPS: 'false'
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
+      OCR_PROVIDER: ${OCR_PROVIDER:-embedded}
+      OCR_PYTHON_BIN: python3
+      KB_SERVICE_HOST: kb-service
+      KB_SERVICE_PORT: 5010
+      KB_SERVICE_URL: http://kb-service:5010
     ports:
-      - '8000:8000'
+      - '4000:4000'
     depends_on:
-      - postgres
-      - minio
+      postgres:
+        condition: service_healthy
+      kb-service:
+        condition: service_healthy
+    volumes:
+      - api-uploads:/app/apps/api/uploads
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4000/api/healthz/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
 
   web:
     build:
@@ -80,12 +86,14 @@ services:
       dockerfile: apps/mobile/Dockerfile.web
       args:
         EXPO_PUBLIC_API_URL: ${WEB_EXPO_PUBLIC_API_URL:-/api}
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - '8080:80'
 
 volumes:
   pg-data:
-  minio-data:
   api-uploads:
+  kb-model-cache:

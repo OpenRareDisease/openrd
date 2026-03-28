@@ -1,9 +1,24 @@
-import { StyleSheet, Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+
+const cardShadow =
+  Platform.select({
+    ios: {
+      shadowColor: CLINICAL_COLORS.accentStrong,
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.1,
+      shadowRadius: 26,
+    },
+    android: {
+      elevation: 8,
+    },
+    default: {},
+  }) ?? {};
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   backgroundGradient: {
     flex: 1,
@@ -12,342 +27,604 @@ export default StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 24,
+    paddingHorizontal: 24,
+    paddingBottom: 40,
   },
-
-  // 顶部导航栏
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+    paddingVertical: 16,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    ...cardShadow,
   },
   headerTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
   },
-  headerPlaceholder: {
-    width: 32,
-  },
-  loadingContainer: {
-    paddingVertical: 12,
+  headerAction: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
+    ...cardShadow,
   },
-  errorContainer: {
-    marginHorizontal: 24,
-    marginBottom: 12,
-    padding: 10,
-    borderRadius: 8,
+  errorCard: {
+    marginTop: 4,
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: CLINICAL_TINTS.dangerSurface,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.4)',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderColor: CLINICAL_TINTS.dangerBorder,
+  },
+  errorTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+    marginBottom: 6,
   },
   errorText: {
-    color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
   },
-
-  // 临床护照ID卡片
-  passportIdSection: {
-    marginHorizontal: 24,
-    marginBottom: 16,
-  },
-  passportIdCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
+  heroCard: {
+    borderRadius: 26,
+    padding: 20,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
-    alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    borderColor: CLINICAL_TINTS.accentBorder,
+    overflow: 'hidden',
+    ...cardShadow,
   },
-  passportIdIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
+  heroTopRow: {
+    gap: 16,
   },
-  passportIdTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 4,
+  heroCopyBlock: {
+    gap: 6,
   },
-  passportIdContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    marginBottom: 8,
-  },
-  passportIdText: {
-    fontSize: 14,
-    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
-    color: '#969FFF',
-    letterSpacing: 1,
-    fontWeight: '500',
-  },
-  passportIdDescription: {
+  heroEyebrow: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    textAlign: 'center',
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+    color: CLINICAL_COLORS.accentStrong,
   },
-
-  // 通用section样式
-  section: {
-    marginHorizontal: 24,
-    marginBottom: 12,
+  heroTitle: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
   },
-
-  // 可展开卡片样式
-  expandableCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  expandableHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 12,
-  },
-  expandableHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  expandableIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  expandableHeaderText: {
-    flex: 1,
-  },
-  expandableTitle: {
+  heroPassportId: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 2,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.accentStrong,
+    letterSpacing: 0.7,
   },
-  expandableSubtitle: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+  heroSubtitle: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: CLINICAL_COLORS.textSoft,
   },
-  expandableArrow: {
-    marginLeft: 8,
-  },
-  expandableContent: {
+  heroStatusPill: {
+    alignSelf: 'flex-start',
     paddingHorizontal: 12,
-    paddingBottom: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(248, 242, 234, 0.76)',
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
   },
-
-  // 基因信息内容
-  geneticContent: {
-    gap: 8,
+  heroStatusText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.accentStrong,
   },
-  infoRow: {
+  heroMetaRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 18,
+  },
+  heroMetaChip: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(248, 242, 234, 0.62)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  heroMetaText: {
+    fontSize: 12,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 18,
+  },
+  metricCard: {
+    width: '48.5%',
+    minHeight: 108,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: 'rgba(248, 242, 234, 0.68)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  metricValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  metricLabel: {
+    marginTop: 8,
+    fontSize: 13,
+    fontWeight: '600',
+    color: CLINICAL_COLORS.textSoft,
+  },
+  metricHint: {
+    marginTop: 6,
+    fontSize: 12,
+    lineHeight: 18,
+    color: CLINICAL_COLORS.textMuted,
+  },
+  heroActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 18,
+  },
+  heroActionButton: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 16,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+  },
+  heroActionButtonGhost: {
+    backgroundColor: 'rgba(248, 242, 234, 0.72)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  heroActionButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.background,
+  },
+  heroActionButtonTextGhost: {
+    color: CLINICAL_COLORS.accentStrong,
+  },
+  heroActionButtonTextDisabled: {
+    color: CLINICAL_COLORS.textMuted,
+  },
+  loadingCard: {
+    marginTop: 18,
+    paddingVertical: 20,
+    borderRadius: 20,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    ...cardShadow,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  sectionShell: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 24,
+    backgroundColor: CLINICAL_TINTS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.borderSubtle,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  sectionBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.accentStrong,
+  },
+  sectionHeadingGroup: {
+    flex: 1,
+    gap: 4,
+  },
+  sectionHeading: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  sectionDescription: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  summaryGrid: {
+    marginTop: 16,
+    gap: 12,
+  },
+  summaryCard: {
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  summaryCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  summaryIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryStatusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  summaryStatusText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  summaryCardTitle: {
+    marginTop: 14,
+    fontSize: 15,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  summaryCardSummary: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  summaryCardMeta: {
+    marginTop: 8,
+    fontSize: 12,
+    color: CLINICAL_COLORS.textMuted,
+  },
+  diagnosisCard: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 22,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  cardHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  cardSubtitle: {
+    marginTop: 4,
+    fontSize: 13,
+    lineHeight: 19,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  freshnessPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  freshnessText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  infoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 16,
+  },
+  infoCell: {
+    width: '48.5%',
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: CLINICAL_COLORS.backgroundRaised,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
   },
   infoLabel: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textMuted,
+    marginBottom: 6,
   },
   infoValue: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
   },
-
-  // 肌力评估内容
-  strengthContent: {
-    gap: 12,
+  noteCard: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: CLINICAL_COLORS.backgroundRaised,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
   },
-  strengthItem: {
-    borderLeftWidth: 2,
-    borderLeftColor: '#969FFF',
-    paddingLeft: 8,
+  noteTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+    marginBottom: 6,
   },
-  strengthItemHeader: {
+  noteText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  segmentRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  strengthDate: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  strengthAverage: {
-    fontSize: 12,
-    color: '#969FFF',
-  },
-  strengthDetails: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-
-  // MRI影像分析内容
-  mriContent: {
-    gap: 8,
-  },
-  mriMuscleList: {
-    gap: 8,
-  },
-  mriMuscleItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  mriProgressContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  mriProgressBar: {
-    width: 48,
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  mriProgressFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  mriGrade: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-
-  // 血检报告内容
-  bloodContent: {
-    gap: 8,
-  },
-  bloodGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  bloodItem: {
-    width: '48%',
-    alignItems: 'center',
-  },
-  bloodItemTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  bloodItemValue: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 2,
-  },
-  bloodItemStatus: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-
-  // 导出PDF按钮
-  exportSection: {
-    marginHorizontal: 24,
+    gap: 10,
     marginTop: 16,
   },
-  exportButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 6,
+  segmentButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 14,
+    backgroundColor: CLINICAL_COLORS.backgroundRaised,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  exportIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
   },
-  exportTextContainer: {
+  segmentButtonActive: {
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  segmentButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: CLINICAL_COLORS.textMuted,
+  },
+  segmentButtonTextActive: {
+    color: CLINICAL_COLORS.accentStrong,
+  },
+  figureStack: {
+    marginTop: 16,
+    gap: 14,
+  },
+  figureShell: {
+    padding: 16,
+    borderRadius: 22,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  monitoringStack: {
+    marginTop: 16,
+    gap: 12,
+  },
+  monitoringCard: {
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  monitoringCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  monitoringCardCopy: {
     flex: 1,
   },
-  exportTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 2,
+  monitoringTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  exportSubtitle: {
+  monitoringTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  monitoringSummary: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  monitoringMeta: {
+    marginTop: 10,
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
+  },
+  gapList: {
+    marginTop: 16,
+    gap: 10,
+  },
+  gapCard: {
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  gapTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  gapTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  gapDescription: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  inlineActionButton: {
+    marginTop: 14,
+    minHeight: 46,
+    borderRadius: 16,
+    backgroundColor: CLINICAL_COLORS.backgroundRaised,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inlineActionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.accentStrong,
+  },
+  timelineCard: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 22,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  timelineCount: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.textMuted,
+  },
+  emptyText: {
+    marginTop: 14,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textMuted,
+  },
+  timelineItem: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: CLINICAL_TINTS.borderSubtle,
+  },
+  timelineItemLast: {
+    borderBottomWidth: 0,
+    paddingBottom: 2,
+  },
+  timelineHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  timelineTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+  },
+  timelineTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.text,
+    overflow: 'hidden',
+  },
+  timelineTagReport: {
+    backgroundColor: CLINICAL_TINTS.successSoft,
+  },
+  timelineTagStrength: {
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  timelineTagActivity: {
+    backgroundColor: CLINICAL_TINTS.warningSoft,
+  },
+  timelineDescription: {
+    marginTop: 8,
+    fontSize: 13,
+    lineHeight: 20,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  timelineTimestamp: {
+    marginTop: 8,
+    fontSize: 12,
+    color: CLINICAL_COLORS.textMuted,
+  },
+  exportCard: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 24,
+    backgroundColor: CLINICAL_TINTS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.borderSubtle,
+  },
+  exportButton: {
+    marginTop: 14,
+    borderRadius: 18,
+    overflow: 'hidden',
+    ...cardShadow,
+  },
+  exportButtonGradient: {
+    minHeight: 52,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  exportButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: CLINICAL_COLORS.background,
   },
 });
