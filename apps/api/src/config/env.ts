@@ -13,6 +13,9 @@ const booleanish = () =>
     return value;
   }, z.boolean());
 
+const optionalNonEmptyString = () =>
+  z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional());
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -98,6 +101,13 @@ const envSchema = z
       z.coerce.number().int().positive().optional(),
     ),
 
+    STORAGE_PROVIDER: z.enum(['local', 'minio']).default('local'),
+    MINIO_ENDPOINT: optionalNonEmptyString(),
+    MINIO_ACCESS_KEY: optionalNonEmptyString(),
+    MINIO_SECRET_KEY: optionalNonEmptyString(),
+    MINIO_BUCKET_NAME: z.string().default('medical-reports'),
+    MINIO_USE_HTTPS: booleanish().default(false),
+
     KB_SERVICE_URL: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().url().optional(),
@@ -155,12 +165,67 @@ const validateProductionEnv = (env: AppEnv) => {
   return errors;
 };
 
+const validateStorageEnv = (env: AppEnv) => {
+  const errors: string[] = [];
+
+  if (env.STORAGE_PROVIDER !== 'minio') {
+    return errors;
+  }
+
+  if (!env.MINIO_ENDPOINT) {
+    errors.push('MINIO_ENDPOINT must be configured when STORAGE_PROVIDER=minio');
+  }
+  if (!env.MINIO_ACCESS_KEY) {
+    errors.push('MINIO_ACCESS_KEY must be configured when STORAGE_PROVIDER=minio');
+  }
+  if (!env.MINIO_SECRET_KEY) {
+    errors.push('MINIO_SECRET_KEY must be configured when STORAGE_PROVIDER=minio');
+  }
+  if (!env.MINIO_BUCKET_NAME?.trim()) {
+    errors.push('MINIO_BUCKET_NAME must be configured when STORAGE_PROVIDER=minio');
+  }
+
+  if (env.isProduction) {
+    if (env.MINIO_ACCESS_KEY === 'minioadmin') {
+      errors.push('MINIO_ACCESS_KEY must be replaced in production');
+    }
+    if (env.MINIO_SECRET_KEY === 'minioadmin12345678') {
+      errors.push('MINIO_SECRET_KEY must be replaced in production');
+    }
+  }
+
+  return errors;
+};
+
+const normalizeEnvAliases = (source: NodeJS.ProcessEnv) => {
+  const next = { ...source };
+  const aliases: Array<[keyof NodeJS.ProcessEnv, keyof NodeJS.ProcessEnv]> = [
+    ['MINIO_ENDPOINT', 'REPORT_MANAGER_MINIO_ENDPOINT'],
+    ['MINIO_ACCESS_KEY', 'REPORT_MANAGER_MINIO_ACCESS_KEY'],
+    ['MINIO_SECRET_KEY', 'REPORT_MANAGER_MINIO_SECRET_KEY'],
+    ['MINIO_BUCKET_NAME', 'REPORT_MANAGER_MINIO_BUCKET_NAME'],
+    ['MINIO_USE_HTTPS', 'REPORT_MANAGER_MINIO_USE_HTTPS'],
+  ];
+
+  aliases.forEach(([target, fallback]) => {
+    const targetValue = next[target];
+    if ((targetValue === undefined || targetValue === '') && next[fallback]) {
+      next[target] = next[fallback];
+    }
+  });
+
+  return next;
+};
+
 export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
   if (!cachedEnv) {
     loadEnv();
-    const parsed = envSchema.safeParse({
+    const rawEnv = normalizeEnvAliases({
       ...process.env,
       ...overrides,
+    });
+    const parsed = envSchema.safeParse({
+      ...rawEnv,
     });
 
     if (!parsed.success) {
@@ -171,8 +236,10 @@ export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
     }
 
     const productionErrors = validateProductionEnv(parsed.data);
-    if (productionErrors.length > 0) {
-      throw new Error(`Unsafe production environment: ${productionErrors.join(', ')}`);
+    const storageErrors = validateStorageEnv(parsed.data);
+    const allErrors = [...productionErrors, ...storageErrors];
+    if (allErrors.length > 0) {
+      throw new Error(`Invalid environment configuration: ${allErrors.join(', ')}`);
     }
 
     cachedEnv = parsed.data;
@@ -218,6 +285,7 @@ export const getEnvSummary = (env: AppEnv) => {
       vectorDatabase: 'ChromaDB Cloud',
       aiModel: env.AI_API_MODEL,
       reportOcrProvider: env.OCR_PROVIDER,
+      storageProvider: env.STORAGE_PROVIDER,
     },
     knowledgeBase: {
       database: env.CHROMA_DATABASE,

@@ -16,7 +16,7 @@ describe('loadAppEnv', () => {
         OTP_PROVIDER: 'mock',
         CORS_ORIGIN: '*',
       }),
-    ).toThrow(/Unsafe production environment/);
+    ).toThrow(/Invalid environment configuration/);
   });
 
   it('accepts explicit production configuration', () => {
@@ -35,5 +35,31 @@ describe('loadAppEnv', () => {
     expect(env.isProduction).toBe(true);
     expect(env.CORS_ORIGIN).toBe('https://app.example.com');
     expect(env.OTP_PROVIDER).toBe('tencent');
+  });
+
+  it('requires MinIO settings when STORAGE_PROVIDER=minio', () => {
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'development',
+        STORAGE_PROVIDER: 'minio',
+      }),
+    ).toThrow(/MINIO_ENDPOINT must be configured/);
+  });
+
+  it('maps legacy report-manager MinIO variables to the new storage config', () => {
+    const env = loadAppEnv({
+      STORAGE_PROVIDER: 'minio',
+      REPORT_MANAGER_MINIO_ENDPOINT: 'minio.internal:9000',
+      REPORT_MANAGER_MINIO_ACCESS_KEY: 'legacy-access-key',
+      REPORT_MANAGER_MINIO_SECRET_KEY: 'legacy-secret-key',
+      REPORT_MANAGER_MINIO_BUCKET_NAME: 'legacy-bucket',
+      REPORT_MANAGER_MINIO_USE_HTTPS: 'false',
+    });
+
+    expect(env.MINIO_ENDPOINT).toBe('minio.internal:9000');
+    expect(env.MINIO_ACCESS_KEY).toBe('legacy-access-key');
+    expect(env.MINIO_SECRET_KEY).toBe('legacy-secret-key');
+    expect(env.MINIO_BUCKET_NAME).toBe('legacy-bucket');
+    expect(env.MINIO_USE_HTTPS).toBe(false);
   });
 });

@@ -27,8 +27,16 @@ Copy root `.env.example` to `.env` and configure at least:
 - `AI_API_KEY` or `OPENAI_API_KEY` (for AI features)
 - `OCR_PROVIDER=embedded`
 - `OCR_PYTHON_BIN` (default `python3`; in Docker keep it as `python3`)
+- `STORAGE_PROVIDER=local` or `STORAGE_PROVIDER=minio`
+- if `STORAGE_PROVIDER=minio`: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET_NAME`
 - `CHROMA_API_KEY`
 - `CHROMA_TENANT_ID`
+
+Notes:
+
+- `v2` defaults to local file storage for uploaded reports.
+- The API can now load both `local://...` and `minio://...` document URIs.
+- Legacy `REPORT_MANAGER_MINIO_*` variables are also accepted and mapped to the new `MINIO_*` config.
 
 ## Key Routes
 

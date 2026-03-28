@@ -11,6 +11,8 @@ import { EmbeddedReportOcrProvider } from '../../services/ocr/embedded-report-oc
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
 import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import { LocalStorageProvider } from '../../services/storage/local-storage.js';
+import { MinioStorageProvider } from '../../services/storage/minio-storage.js';
+import { RoutedStorageProvider } from '../../services/storage/routed-storage.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 
 export const createPatientProfileRouter = (context: RouteContext) => {
@@ -19,7 +21,23 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     pool: getPool(),
     logger: context.logger,
   });
-  const storage = new LocalStorageProvider();
+  const localStorage = new LocalStorageProvider();
+  const minioStorage =
+    context.env.MINIO_ENDPOINT && context.env.MINIO_ACCESS_KEY && context.env.MINIO_SECRET_KEY
+      ? new MinioStorageProvider({
+          endpoint: context.env.MINIO_ENDPOINT,
+          accessKey: context.env.MINIO_ACCESS_KEY,
+          secretKey: context.env.MINIO_SECRET_KEY,
+          bucketName: context.env.MINIO_BUCKET_NAME,
+          useSSL: context.env.MINIO_USE_HTTPS,
+        })
+      : null;
+  const primaryStorage =
+    context.env.STORAGE_PROVIDER === 'minio' && minioStorage ? minioStorage : localStorage;
+  const storage = new RoutedStorageProvider({
+    primary: primaryStorage,
+    providers: [localStorage, ...(minioStorage ? [minioStorage] : [])],
+  });
   const ocr =
     context.env.OCR_PROVIDER === 'report_manager' && context.env.REPORT_MANAGER_OCR_URL
       ? new ReportManagerOcrProvider({

@@ -93,6 +93,7 @@ python apps/api/knowledge_service.py
 - `AI_API_BASE_URL=https://api.siliconflow.cn/v1`
 - `AI_API_MODEL=Qwen/Qwen3-VL-32B-Instruct`
 - `OCR_PROVIDER=embedded`
+- `STORAGE_PROVIDER=local` 或 `STORAGE_PROVIDER=minio`
 - `OCR_PYTHON_BIN=/opt/anaconda3/envs/openrd-kb/bin/python`（仅本机 conda 方案）
 
 ## Docker 一键联调
@@ -118,6 +119,26 @@ POSTGRES_PORT=5433 docker compose up -d --build
 - API: `http://localhost:4000`
 - KB service: `http://localhost:5010`
 - web (Expo web + nginx): `http://localhost:8080`
+
+如果要启用 MinIO 作为报告文件存储：
+
+```bash
+docker compose --profile minio up -d --build
+```
+
+并在 `.env` 中设置：
+
+- `STORAGE_PROVIDER=minio`
+- `MINIO_ENDPOINT=minio:9000`（容器内 MinIO）
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET_NAME`
+
+说明：
+
+- `v2` 默认使用 API 本地卷存储上传文件。
+- 如果你从 `v1` 升级并且想保留原有 MinIO 中的历史报告，建议继续使用 `STORAGE_PROVIDER=minio`。
+- 当前实现支持同时读取 `local://...` 与 `minio://...`，因此切换存储后不会影响旧记录下载。
 
 ## 常用命令
 

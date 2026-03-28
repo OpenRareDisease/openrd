@@ -23,6 +23,7 @@
     "express": "^4.21.2",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "minio": "^8.0.7",
     "multer": "^2.0.2",
     "openai": "^6.9.1",
     "pg": "^8.13.1",
