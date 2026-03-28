@@ -145,6 +145,26 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.text,
     fontSize: 16,
   },
+  pickerRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  pickerColumn: {
+    flex: 1,
+  },
+  pickerWrapper: {
+    width: '100%',
+    borderRadius: 8,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    overflow: 'hidden',
+  },
+  picker: {
+    width: '100%',
+    color: CLINICAL_COLORS.text,
+    backgroundColor: CLINICAL_COLORS.panel,
+  },
 
   identityRow: {
     flexDirection: 'row',

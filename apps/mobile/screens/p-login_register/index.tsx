@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Picker } from '@react-native-picker/picker';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
@@ -23,6 +24,17 @@ import styles from './styles';
 import { ApiError, login, register, sendOtp, upsertPatientProfile } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import {
+  birthMonthOptions,
+  birthYearOptions,
+  composeDate,
+  genderOptions,
+  getBirthDayOptions,
+  getCityOptions,
+  getDistrictOptions,
+  parseDateParts,
+  provinceOptions,
+} from '../../lib/demographics-options';
 import ScreenBackButton from '../common/ScreenBackButton';
 
 interface LoginFormData {
@@ -283,12 +295,12 @@ const LoginRegisterScreen: React.FC = () => {
     }
 
     if (!registerForm.dateOfBirth.trim()) {
-      showModal('error', '错误', '请输入出生日期');
+      showModal('error', '错误', '请选择出生日期');
       return;
     }
 
     if (!isValidDate(registerForm.dateOfBirth.trim())) {
-      showModal('error', '错误', '出生日期格式应为YYYY-MM-DD');
+      showModal('error', '错误', '请选择完整有效的出生日期');
       return;
     }
 
@@ -328,17 +340,17 @@ const LoginRegisterScreen: React.FC = () => {
     }
 
     if (!registerForm.regionProvince.trim()) {
-      showModal('error', '错误', '请输入所在省份');
+      showModal('error', '错误', '请选择所在省份');
       return;
     }
 
     if (!registerForm.regionCity.trim()) {
-      showModal('error', '错误', '请输入所在城市');
+      showModal('error', '错误', '请选择所在城市');
       return;
     }
 
     if (!registerForm.regionDistrict.trim()) {
-      showModal('error', '错误', '请输入所在区县');
+      showModal('error', '错误', '请选择所在区县');
       return;
     }
 
@@ -454,6 +466,49 @@ const LoginRegisterScreen: React.FC = () => {
     };
   }, []);
 
+  const birthDateParts = parseDateParts(registerForm.dateOfBirth);
+  const cityOptions = getCityOptions(registerForm.regionProvince);
+  const districtOptions = getDistrictOptions(registerForm.regionProvince, registerForm.regionCity);
+  const birthDayOptions = getBirthDayOptions(birthDateParts.year, birthDateParts.month);
+
+  const updateBirthDatePart = (part: 'year' | 'month' | 'day', value: string) => {
+    const nextParts = {
+      ...birthDateParts,
+      [part]: value,
+    };
+
+    if (part !== 'day' && nextParts.year && nextParts.month && nextParts.day) {
+      const validDays = getBirthDayOptions(nextParts.year, nextParts.month).map(
+        (option) => option.value,
+      );
+      if (!validDays.includes(nextParts.day)) {
+        nextParts.day = '';
+      }
+    }
+
+    setRegisterForm((prev) => ({
+      ...prev,
+      dateOfBirth: composeDate(nextParts.year, nextParts.month, nextParts.day),
+    }));
+  };
+
+  const updateRegionProvince = (value: string) => {
+    setRegisterForm((prev) => ({
+      ...prev,
+      regionProvince: value,
+      regionCity: '',
+      regionDistrict: '',
+    }));
+  };
+
+  const updateRegionCity = (value: string) => {
+    setRegisterForm((prev) => ({
+      ...prev,
+      regionCity: value,
+      regionDistrict: '',
+    }));
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
@@ -476,7 +531,7 @@ const LoginRegisterScreen: React.FC = () => {
             {/* Logo和产品名称区域 */}
             <View style={styles.header}>
               <View style={styles.headerTopRow}>
-                <ScreenBackButton fallbackHref="/p-home" />
+                <ScreenBackButton fallbackHref="/p-login_register" />
               </View>
               <View style={styles.logoContainer}>
                 <Animated.View style={[styles.logoWrapper, logoAnimatedStyle]}>
@@ -643,25 +698,61 @@ const LoginRegisterScreen: React.FC = () => {
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>出生日期</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.dateOfBirth}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, dateOfBirth: text }))
-                      }
-                    />
+                    <View style={styles.pickerRow}>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateParts.year}
+                          onValueChange={(value) => updateBirthDatePart('year', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="年份" value="" />
+                          {birthYearOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateParts.month}
+                          onValueChange={(value) => updateBirthDatePart('month', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="月份" value="" />
+                          {birthMonthOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateParts.day}
+                          onValueChange={(value) => updateBirthDatePart('day', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="日期" value="" />
+                          {birthDayOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>性别</Text>
                     <View style={styles.identityRow}>
-                      {[
-                        { value: 'male', label: '男' },
-                        { value: 'female', label: '女' },
-                        { value: 'non_binary', label: '非二元' },
-                        { value: 'prefer_not_to_say', label: '不透露' },
-                      ].map((option) => {
+                      {genderOptions.map((option) => {
                         const isActive = registerForm.gender === option.value;
                         return (
                           <TouchableOpacity
@@ -803,39 +894,64 @@ const LoginRegisterScreen: React.FC = () => {
                   <Text style={styles.registerSectionTitle}>所在地区</Text>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>省份</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：浙江省"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.regionProvince}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionProvince: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionProvince}
+                        onValueChange={(value) => updateRegionProvince(String(value))}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择省份" value="" />
+                        {provinceOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>城市</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：杭州市"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.regionCity}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionCity: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionCity}
+                        onValueChange={(value) => updateRegionCity(String(value))}
+                        enabled={cityOptions.length > 0}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择城市" value="" />
+                        {cityOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>区县</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：西湖区"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.regionDistrict}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionDistrict: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionDistrict}
+                        onValueChange={(value) =>
+                          setRegisterForm((prev) => ({ ...prev, regionDistrict: String(value) }))
+                        }
+                        enabled={districtOptions.length > 0}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择区县" value="" />
+                        {districtOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
 
                   <TouchableOpacity

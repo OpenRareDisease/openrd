@@ -30,6 +30,8 @@ import {
   upsertPatientProfile,
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { buildRegionLabel } from '../../lib/demographics-options';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
@@ -62,7 +64,114 @@ type UploadDraft = {
     | null;
 };
 
+type BaselineFormState = {
+  fullName: string;
+  diagnosisYear: string;
+  regionLabel: string;
+  diagnosisType: string;
+  onsetRegion: string;
+  independentlyAmbulatory: YesNo;
+  armRaiseDifficulty: YesNo;
+  footDrop: YesNo;
+  breathingSymptoms: YesNo;
+  fatigue: number;
+  pain: number;
+  stairs: number;
+  dressing: number;
+  reachingUp: number;
+  walkingStability: number;
+  notes: string;
+};
+
+type FollowupFormState = {
+  feeling: Feeling;
+  hasNewProblem: YesNo;
+  armRaiseLeft: number;
+  armRaiseRight: number;
+  walkingDifficulty: number;
+  stairsDifficulty: number;
+  footDropLeft: number;
+  footDropRight: number;
+  fatigue: number;
+  pain: number;
+  dyspnea: number;
+  sleepQuality: number;
+  tenMeterSeconds: string;
+  fallCount: string;
+  interventionChange: string;
+  note: string;
+};
+
+type EventFormState = {
+  eventType: EventType;
+  severity: Severity;
+  occurredAt: string;
+  description: string;
+};
+
+type UploadDraftPersisted = Pick<UploadDraft, 'title' | 'documentType'>;
+
 const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+const DEFAULT_BASELINE_FORM: BaselineFormState = {
+  fullName: '',
+  diagnosisYear: '',
+  regionLabel: '',
+  diagnosisType: '',
+  onsetRegion: '',
+  independentlyAmbulatory: 'yes',
+  armRaiseDifficulty: 'unknown',
+  footDrop: 'unknown',
+  breathingSymptoms: 'unknown',
+  fatigue: 2,
+  pain: 1,
+  stairs: 2,
+  dressing: 1,
+  reachingUp: 2,
+  walkingStability: 2,
+  notes: '',
+};
+
+const DEFAULT_FOLLOWUP_FORM: FollowupFormState = {
+  feeling: 'same',
+  hasNewProblem: 'no',
+  armRaiseLeft: 2,
+  armRaiseRight: 2,
+  walkingDifficulty: 2,
+  stairsDifficulty: 2,
+  footDropLeft: 1,
+  footDropRight: 1,
+  fatigue: 3,
+  pain: 2,
+  dyspnea: 1,
+  sleepQuality: 7,
+  tenMeterSeconds: '',
+  fallCount: '0',
+  interventionChange: '',
+  note: '',
+};
+
+const DEFAULT_EVENT_FORM: EventFormState = {
+  eventType: 'fall',
+  severity: 'moderate',
+  occurredAt: todayIsoDate(),
+  description: '',
+};
+
+const DEFAULT_UPLOAD_DRAFT: UploadDraft = {
+  name: '',
+  title: '',
+  documentType: 'other',
+  file: null,
+};
+
+const DATA_ENTRY_DRAFT_KEYS = {
+  entryMode: 'openrd.dataEntry.entryMode',
+  baseline: 'openrd.dataEntry.baseline',
+  followup: 'openrd.dataEntry.followup',
+  event: 'openrd.dataEntry.event',
+  upload: 'openrd.dataEntry.upload',
+} as const;
 
 const modeCards: Array<{
   key: EntryMode;
@@ -127,6 +236,183 @@ const documentTypeLabels: Record<UploadDraft['documentType'], string> = {
   other: '其他',
 };
 
+const parseStoredDraft = async <T,>(key: string): Promise<Partial<T> | null> => {
+  try {
+    const raw = await getSessionValue(key);
+    if (!raw) {
+      return null;
+    }
+
+    return JSON.parse(raw) as Partial<T>;
+  } catch {
+    return null;
+  }
+};
+
+const persistDraft = async (key: string, value: unknown) => {
+  try {
+    await setSessionValue(key, JSON.stringify(value));
+  } catch {
+    // Draft persistence should never block data entry.
+  }
+};
+
+const normalizeEntryMode = (value: string | null | undefined): EntryMode =>
+  value === 'baseline' || value === 'followup' || value === 'event' ? value : 'followup';
+
+const normalizeEventType = (value: string | null | undefined): EventType =>
+  eventOptions.some((option) => option.key === value) ? (value as EventType) : 'fall';
+
+const normalizeSeverity = (value: string | null | undefined): Severity =>
+  severityOptions.some((option) => option.key === value) ? (value as Severity) : 'moderate';
+
+const normalizeDocumentType = (value: string | null | undefined): UploadDraft['documentType'] =>
+  value === 'mri' || value === 'genetic_report' || value === 'blood_panel' || value === 'other'
+    ? value
+    : 'other';
+
+const getLatestMeasurementDifficulty = (
+  profile: PatientProfile,
+  metricKey: string,
+  side: 'left' | 'right',
+) => {
+  const item = profile.measurements.find(
+    (measurement) => measurement.metricKey === metricKey && measurement.side === side,
+  );
+
+  if (!item) {
+    return null;
+  }
+
+  return Math.min(5, Math.max(0, 5 - Math.round(item.strengthScore)));
+};
+
+const getLatestImpactValue = (profile: PatientProfile, adlKey: string) =>
+  profile.dailyImpacts.find((item) => item.adlKey === adlKey)?.difficultyLevel ?? null;
+
+const getLatestSymptomValue = (profile: PatientProfile, symptomKey: string) =>
+  profile.symptomScores.find((item) => item.symptomKey === symptomKey)?.score ?? null;
+
+const getLatestFunctionValue = (profile: PatientProfile, testType: string) =>
+  profile.functionTests.find((item) => item.testType === testType)?.measuredValue ?? null;
+
+const getLatestInterventionChange = (profile: PatientProfile) => {
+  const item = profile.followupEvents.find(
+    (event) => event.eventType === 'other' && typeof event.description === 'string',
+  );
+  if (!item?.description) {
+    return '';
+  }
+
+  return item.description.replace(/^干预\/辅具变化[:：]\s*/u, '').trim();
+};
+
+const getLatestFallCount = (profile: PatientProfile) => {
+  const item = profile.followupEvents.find((event) => event.eventType === 'fall');
+  if (!item) {
+    return null;
+  }
+
+  const matched = item.description?.match(/(\d+)/);
+  if (matched?.[1]) {
+    return matched[1];
+  }
+
+  if (item.severity === 'severe') return '3';
+  if (item.severity === 'moderate') return '2';
+  return '1';
+};
+
+const deriveFollowupForm = (profile: PatientProfile): Partial<FollowupFormState> => {
+  const tenMeterSeconds = getLatestFunctionValue(profile, 'ten_meter_walk');
+
+  return {
+    armRaiseLeft:
+      getLatestMeasurementDifficulty(profile, 'arm_raise_over_head', 'left') ??
+      DEFAULT_FOLLOWUP_FORM.armRaiseLeft,
+    armRaiseRight:
+      getLatestMeasurementDifficulty(profile, 'arm_raise_over_head', 'right') ??
+      DEFAULT_FOLLOWUP_FORM.armRaiseRight,
+    footDropLeft:
+      getLatestMeasurementDifficulty(profile, 'ankle_dorsiflexion', 'left') ??
+      DEFAULT_FOLLOWUP_FORM.footDropLeft,
+    footDropRight:
+      getLatestMeasurementDifficulty(profile, 'ankle_dorsiflexion', 'right') ??
+      DEFAULT_FOLLOWUP_FORM.footDropRight,
+    walkingDifficulty:
+      getLatestImpactValue(profile, 'walking_outdoors') ?? DEFAULT_FOLLOWUP_FORM.walkingDifficulty,
+    stairsDifficulty:
+      getLatestImpactValue(profile, 'stairs') ?? DEFAULT_FOLLOWUP_FORM.stairsDifficulty,
+    fatigue: getLatestSymptomValue(profile, 'fatigue') ?? DEFAULT_FOLLOWUP_FORM.fatigue,
+    pain: getLatestSymptomValue(profile, 'pain') ?? DEFAULT_FOLLOWUP_FORM.pain,
+    dyspnea: getLatestSymptomValue(profile, 'dyspnea') ?? DEFAULT_FOLLOWUP_FORM.dyspnea,
+    sleepQuality:
+      getLatestSymptomValue(profile, 'sleep_quality') ?? DEFAULT_FOLLOWUP_FORM.sleepQuality,
+    tenMeterSeconds:
+      typeof tenMeterSeconds === 'number' && Number.isFinite(tenMeterSeconds)
+        ? String(tenMeterSeconds)
+        : DEFAULT_FOLLOWUP_FORM.tenMeterSeconds,
+    fallCount: getLatestFallCount(profile) ?? DEFAULT_FOLLOWUP_FORM.fallCount,
+    interventionChange: getLatestInterventionChange(profile),
+    note: profile.activityLogs[0]?.content ?? DEFAULT_FOLLOWUP_FORM.note,
+  };
+};
+
+const deriveEventForm = (profile: PatientProfile): Partial<EventFormState> => {
+  const latestEvent = profile.followupEvents[0];
+  if (!latestEvent) {
+    return {};
+  }
+
+  return {
+    eventType: normalizeEventType(latestEvent.eventType),
+    severity: normalizeSeverity(latestEvent.severity),
+    occurredAt: latestEvent.occurredAt?.slice(0, 10) || DEFAULT_EVENT_FORM.occurredAt,
+    description: latestEvent.description ?? '',
+  };
+};
+
+const deriveUploadDraft = (profile: PatientProfile): Partial<UploadDraftPersisted> => {
+  const latestDocument = profile.documents[0];
+  if (!latestDocument) {
+    return {};
+  }
+
+  const documentType =
+    latestDocument.documentType === 'mri' || latestDocument.documentType === 'muscle_mri'
+      ? 'mri'
+      : latestDocument.documentType === 'genetic_report'
+        ? 'genetic_report'
+        : latestDocument.documentType === 'blood_panel' ||
+            latestDocument.documentType === 'biochemistry' ||
+            latestDocument.documentType === 'muscle_enzyme' ||
+            latestDocument.documentType === 'pulmonary_function'
+          ? 'blood_panel'
+          : 'other';
+
+  return {
+    documentType,
+  };
+};
+
+const getProfileBirthYear = (profile: PatientProfile | null) => {
+  if (!profile?.dateOfBirth) {
+    return null;
+  }
+
+  const matched = profile.dateOfBirth.match(/^(\d{4})-/);
+  return matched?.[1] ? Number(matched[1]) : null;
+};
+
+const getProfileRegionLabel = (profile: PatientProfile | null) =>
+  profile
+    ? buildRegionLabel({
+        regionProvince: profile.regionProvince,
+        regionCity: profile.regionCity,
+        regionDistrict: profile.regionDistrict,
+      }) || null
+    : null;
+
 const renderScoreChips = (
   label: string,
   value: number,
@@ -189,121 +475,139 @@ const DataEntryScreen = () => {
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const [baselineForm, setBaselineForm] = useState({
-    fullName: '',
-    diagnosisYear: '',
-    regionLabel: '',
-    diagnosisType: '',
-    onsetRegion: '',
-    independentlyAmbulatory: 'yes' as YesNo,
-    armRaiseDifficulty: 'unknown' as YesNo,
-    footDrop: 'unknown' as YesNo,
-    breathingSymptoms: 'unknown' as YesNo,
-    fatigue: 2,
-    pain: 1,
-    stairs: 2,
-    dressing: 1,
-    reachingUp: 2,
-    walkingStability: 2,
-    notes: '',
-  });
-
-  const [followupForm, setFollowupForm] = useState({
-    feeling: 'same' as Feeling,
-    hasNewProblem: 'no' as YesNo,
-    armRaiseLeft: 2,
-    armRaiseRight: 2,
-    walkingDifficulty: 2,
-    stairsDifficulty: 2,
-    footDropLeft: 1,
-    footDropRight: 1,
-    fatigue: 3,
-    pain: 2,
-    dyspnea: 1,
-    sleepQuality: 7,
-    tenMeterSeconds: '',
-    fallCount: '0',
-    interventionChange: '',
-    note: '',
-  });
-
-  const [eventForm, setEventForm] = useState({
-    eventType: 'fall' as EventType,
-    severity: 'moderate' as Severity,
-    occurredAt: todayIsoDate(),
-    description: '',
-  });
-
-  const [uploadDraft, setUploadDraft] = useState<UploadDraft>({
-    name: '',
-    title: '',
-    documentType: 'other',
-    file: null,
-  });
+  const [isDraftsHydrated, setIsDraftsHydrated] = useState(false);
+  const [baselineForm, setBaselineForm] = useState<BaselineFormState>(DEFAULT_BASELINE_FORM);
+  const [followupForm, setFollowupForm] = useState<FollowupFormState>(DEFAULT_FOLLOWUP_FORM);
+  const [eventForm, setEventForm] = useState<EventFormState>(DEFAULT_EVENT_FORM);
+  const [uploadDraft, setUploadDraft] = useState<UploadDraft>(DEFAULT_UPLOAD_DRAFT);
 
   const loadContext = async () => {
     setIsLoading(true);
+    setIsDraftsHydrated(false);
 
     try {
-      const profileData = await getMyPatientProfile();
-      setProfile(profileData);
+      const [savedBaseline, savedFollowup, savedEvent, savedUpload, savedEntryMode] =
+        await Promise.all([
+          parseStoredDraft<BaselineFormState>(DATA_ENTRY_DRAFT_KEYS.baseline),
+          parseStoredDraft<FollowupFormState>(DATA_ENTRY_DRAFT_KEYS.followup),
+          parseStoredDraft<EventFormState>(DATA_ENTRY_DRAFT_KEYS.event),
+          parseStoredDraft<UploadDraftPersisted>(DATA_ENTRY_DRAFT_KEYS.upload),
+          getSessionValue(DATA_ENTRY_DRAFT_KEYS.entryMode),
+        ]);
 
+      setEntryMode(normalizeEntryMode(savedEntryMode));
+
+      let profileData: PatientProfile | null = null;
+      let baselinePayload: BaselineProfilePayload | null = null;
       try {
-        const baseline = await getMyBaseline();
-        const payload = baseline.baseline;
-        setBaselineForm((prev) => ({
-          ...prev,
-          fullName: payload?.foundation?.fullName ?? profileData.fullName ?? prev.fullName,
-          diagnosisYear:
-            payload?.foundation?.diagnosisYear !== null &&
-            payload?.foundation?.diagnosisYear !== undefined
-              ? String(payload.foundation.diagnosisYear)
-              : prev.diagnosisYear,
-          regionLabel: payload?.foundation?.regionLabel ?? prev.regionLabel,
-          diagnosisType: payload?.diseaseBackground?.diagnosisType ?? prev.diagnosisType,
-          onsetRegion: payload?.diseaseBackground?.onsetRegion ?? prev.onsetRegion,
-          independentlyAmbulatory:
-            payload?.currentStatus?.independentlyAmbulatory === true
-              ? 'yes'
-              : payload?.currentStatus?.independentlyAmbulatory === false
-                ? 'no'
-                : prev.independentlyAmbulatory,
-          armRaiseDifficulty:
-            payload?.currentStatus?.armRaiseDifficulty === true
-              ? 'yes'
-              : payload?.currentStatus?.armRaiseDifficulty === false
-                ? 'no'
-                : prev.armRaiseDifficulty,
-          footDrop:
-            payload?.currentStatus?.footDrop === true
-              ? 'yes'
-              : payload?.currentStatus?.footDrop === false
-                ? 'no'
-                : prev.footDrop,
-          breathingSymptoms:
-            payload?.currentStatus?.breathingSymptoms === true
-              ? 'yes'
-              : payload?.currentStatus?.breathingSymptoms === false
-                ? 'no'
-                : prev.breathingSymptoms,
-          fatigue: payload?.currentChallenges?.fatigue ?? prev.fatigue,
-          pain: payload?.currentChallenges?.pain ?? prev.pain,
-          stairs: payload?.currentChallenges?.stairs ?? prev.stairs,
-          dressing: payload?.currentChallenges?.dressing ?? prev.dressing,
-          reachingUp: payload?.currentChallenges?.reachingUp ?? prev.reachingUp,
-          walkingStability: payload?.currentChallenges?.walkingStability ?? prev.walkingStability,
-          notes: payload?.notes ?? prev.notes,
-        }));
+        profileData = await getMyPatientProfile();
+        setProfile(profileData);
+
+        try {
+          const baseline = await getMyBaseline();
+          baselinePayload = baseline.baseline;
+        } catch {
+          baselinePayload = null;
+        }
       } catch {
-        setBaselineForm((prev) => ({
-          ...prev,
-          fullName: profileData.fullName ?? prev.fullName,
-        }));
+        profileData = null;
+        setProfile(null);
       }
+
+      const baselineSeed: Partial<BaselineFormState> = {
+        fullName: profileData?.fullName ?? DEFAULT_BASELINE_FORM.fullName,
+        regionLabel: getProfileRegionLabel(profileData) ?? DEFAULT_BASELINE_FORM.regionLabel,
+      };
+
+      if (baselinePayload) {
+        baselineSeed.fullName = baselinePayload.foundation?.fullName ?? baselineSeed.fullName;
+        baselineSeed.diagnosisYear =
+          baselinePayload.foundation?.diagnosisYear !== null &&
+          baselinePayload.foundation?.diagnosisYear !== undefined
+            ? String(baselinePayload.foundation.diagnosisYear)
+            : DEFAULT_BASELINE_FORM.diagnosisYear;
+        baselineSeed.regionLabel =
+          baselinePayload.foundation?.regionLabel ?? DEFAULT_BASELINE_FORM.regionLabel;
+        baselineSeed.diagnosisType =
+          baselinePayload.diseaseBackground?.diagnosisType ?? DEFAULT_BASELINE_FORM.diagnosisType;
+        baselineSeed.onsetRegion =
+          baselinePayload.diseaseBackground?.onsetRegion ?? DEFAULT_BASELINE_FORM.onsetRegion;
+        baselineSeed.independentlyAmbulatory =
+          baselinePayload.currentStatus?.independentlyAmbulatory === true
+            ? 'yes'
+            : baselinePayload.currentStatus?.independentlyAmbulatory === false
+              ? 'no'
+              : DEFAULT_BASELINE_FORM.independentlyAmbulatory;
+        baselineSeed.armRaiseDifficulty =
+          baselinePayload.currentStatus?.armRaiseDifficulty === true
+            ? 'yes'
+            : baselinePayload.currentStatus?.armRaiseDifficulty === false
+              ? 'no'
+              : DEFAULT_BASELINE_FORM.armRaiseDifficulty;
+        baselineSeed.footDrop =
+          baselinePayload.currentStatus?.footDrop === true
+            ? 'yes'
+            : baselinePayload.currentStatus?.footDrop === false
+              ? 'no'
+              : DEFAULT_BASELINE_FORM.footDrop;
+        baselineSeed.breathingSymptoms =
+          baselinePayload.currentStatus?.breathingSymptoms === true
+            ? 'yes'
+            : baselinePayload.currentStatus?.breathingSymptoms === false
+              ? 'no'
+              : DEFAULT_BASELINE_FORM.breathingSymptoms;
+        baselineSeed.fatigue =
+          baselinePayload.currentChallenges?.fatigue ?? DEFAULT_BASELINE_FORM.fatigue;
+        baselineSeed.pain = baselinePayload.currentChallenges?.pain ?? DEFAULT_BASELINE_FORM.pain;
+        baselineSeed.stairs =
+          baselinePayload.currentChallenges?.stairs ?? DEFAULT_BASELINE_FORM.stairs;
+        baselineSeed.dressing =
+          baselinePayload.currentChallenges?.dressing ?? DEFAULT_BASELINE_FORM.dressing;
+        baselineSeed.reachingUp =
+          baselinePayload.currentChallenges?.reachingUp ?? DEFAULT_BASELINE_FORM.reachingUp;
+        baselineSeed.walkingStability =
+          baselinePayload.currentChallenges?.walkingStability ??
+          DEFAULT_BASELINE_FORM.walkingStability;
+        baselineSeed.notes = baselinePayload.notes ?? DEFAULT_BASELINE_FORM.notes;
+      }
+
+      setBaselineForm({
+        ...DEFAULT_BASELINE_FORM,
+        ...baselineSeed,
+        ...(savedBaseline ?? {}),
+      });
+      setFollowupForm({
+        ...DEFAULT_FOLLOWUP_FORM,
+        ...(profileData ? deriveFollowupForm(profileData) : {}),
+        ...(savedFollowup ?? {}),
+      });
+      setEventForm({
+        ...DEFAULT_EVENT_FORM,
+        ...(profileData ? deriveEventForm(profileData) : {}),
+        ...(savedEvent
+          ? {
+              ...savedEvent,
+              eventType: normalizeEventType(savedEvent.eventType),
+              severity: normalizeSeverity(savedEvent.severity),
+            }
+          : {}),
+      });
+      setUploadDraft({
+        ...DEFAULT_UPLOAD_DRAFT,
+        ...(profileData ? deriveUploadDraft(profileData) : {}),
+        ...(savedUpload
+          ? {
+              ...savedUpload,
+              documentType: normalizeDocumentType(savedUpload.documentType),
+            }
+          : {}),
+        name: '',
+        file: null,
+      });
     } catch {
       setProfile(null);
     } finally {
+      setIsDraftsHydrated(true);
       setIsLoading(false);
     }
   };
@@ -311,6 +615,49 @@ const DataEntryScreen = () => {
   useEffect(() => {
     loadContext().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void setSessionValue(DATA_ENTRY_DRAFT_KEYS.entryMode, entryMode);
+  }, [entryMode, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.baseline, baselineForm);
+  }, [baselineForm, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.followup, followupForm);
+  }, [followupForm, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.event, eventForm);
+  }, [eventForm, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.upload, {
+      title: uploadDraft.title,
+      documentType: uploadDraft.documentType,
+    } satisfies UploadDraftPersisted);
+  }, [uploadDraft.documentType, uploadDraft.title, isDraftsHydrated]);
 
   const ensureProfileReady = async (fullName: string) => {
     if (profile) {
@@ -367,12 +714,10 @@ const DataEntryScreen = () => {
   };
 
   const resetUploadDraft = () => {
-    setUploadDraft({
-      name: '',
-      title: '',
-      documentType: 'other',
-      file: null,
-    });
+    setUploadDraft((prev) => ({
+      ...DEFAULT_UPLOAD_DRAFT,
+      documentType: prev.documentType,
+    }));
   };
 
   const handleBaselineSubmit = async () => {
@@ -390,8 +735,9 @@ const DataEntryScreen = () => {
       const baselinePayload: BaselineProfilePayload = {
         foundation: {
           fullName: baselineForm.fullName || null,
+          birthYear: getProfileBirthYear(profile),
           diagnosisYear: baselineForm.diagnosisYear ? Number(baselineForm.diagnosisYear) : null,
-          regionLabel: baselineForm.regionLabel || null,
+          regionLabel: baselineForm.regionLabel || getProfileRegionLabel(profile),
         },
         diseaseBackground: {
           diagnosisType: baselineForm.diagnosisType || null,
@@ -668,12 +1014,6 @@ const DataEntryScreen = () => {
       ]);
 
       resetUploadDraft();
-      setEventForm({
-        eventType: 'fall',
-        severity: 'moderate',
-        occurredAt: todayIsoDate(),
-        description: '',
-      });
       await loadContext();
       Alert.alert('已保存', '事件记录已添加。');
       router.replace('/p-home');
