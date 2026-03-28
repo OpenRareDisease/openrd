@@ -6,22 +6,20 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  Share,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import styles from './styles';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
-import {
-  ApiError,
-  exportClinicalPassportSummary,
-  getClinicalPassportSummary,
-  type ClinicalPassportSummary,
-} from '../../lib/api';
+import { ApiError, getClinicalPassportSummary, type ClinicalPassportSummary } from '../../lib/api';
 import type { BodyRegionMap } from '../../lib/clinical-visuals';
+import { buildClinicalPassportPdfHtml } from '../../lib/clinical-passport-pdf';
 import {
   CLINICAL_COLORS,
   CLINICAL_GRADIENTS,
@@ -89,13 +87,41 @@ const ClinicalPassportScreen = () => {
 
     try {
       setIsExporting(true);
-      const exported = await exportClinicalPassportSummary();
-      await Share.share({
-        title: exported.documentTitle,
-        message: exported.markdown,
+      const html = buildClinicalPassportPdfHtml(passport);
+
+      if (Platform.OS === 'web') {
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+          throw new Error('浏览器拦截了 PDF 预览窗口，请允许弹出新窗口后重试。');
+        }
+
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.focus();
+        printWindow.onload = () => {
+          printWindow.print();
+        };
+        return;
+      }
+
+      const exported = await Print.printToFileAsync({
+        html,
+        base64: false,
       });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(exported.uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: `${passport.patientName} 临床护照`,
+        });
+        return;
+      }
+
+      await Print.printAsync({ html });
     } catch (error) {
-      const message = error instanceof Error ? error.message : '护照摘要分享失败';
+      const message = error instanceof Error ? error.message : '临床护照 PDF 导出失败';
       Alert.alert('操作失败', message);
     } finally {
       setIsExporting(false);
@@ -134,7 +160,7 @@ const ClinicalPassportScreen = () => {
                 <ActivityIndicator size="small" color={CLINICAL_COLORS.accentStrong} />
               ) : (
                 <FontAwesome6
-                  name="share-nodes"
+                  name="file-pdf"
                   size={14}
                   color={
                     passport?.hasRecordedData
@@ -165,7 +191,7 @@ const ClinicalPassportScreen = () => {
                 <Text style={styles.heroTitle}>{passport?.patientName ?? '未命名病例'}</Text>
                 <Text style={styles.heroPassportId}>{passport?.passportId ?? '待生成'}</Text>
                 <Text style={styles.heroSubtitle}>
-                  这份护照摘要现在由后端统一生成，前端只负责展示与分享，避免多端逻辑分叉。
+                  汇总近阶段的诊断、运动功能、影像和系统监测，方便门诊、住院或研究登记时快速出示。
                 </Text>
               </View>
               <View style={styles.heroStatusPill}>
@@ -224,7 +250,7 @@ const ClinicalPassportScreen = () => {
                     !passport?.hasRecordedData && styles.heroActionButtonTextDisabled,
                   ]}
                 >
-                  {isExporting ? '生成中...' : '分享护照摘要'}
+                  {isExporting ? '生成中...' : '导出 PDF'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -247,7 +273,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>核心摘要</Text>
                     <Text style={styles.sectionDescription}>
-                      这部分直接来自后端聚合后的护照 DTO，不再在前端重复判断完整度和摘要逻辑。
+                      用最短时间看清当前记录完整度和需要优先关注的模块。
                     </Text>
                   </View>
                 </View>
@@ -316,7 +342,7 @@ const ClinicalPassportScreen = () => {
                     <View>
                       <Text style={styles.cardTitle}>诊断证据与身份信息</Text>
                       <Text style={styles.cardSubtitle}>
-                        由后端统一抽取基因与诊断证据，保证多端口径一致。
+                        集中查看基因结果、诊断日期和证据摘要。
                       </Text>
                     </View>
                     <View
@@ -367,7 +393,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>受累分布</Text>
                     <Text style={styles.sectionDescription}>
-                      肌力与 MRI 的人体分布现在由服务端汇总后下发，前端只负责图形化渲染。
+                      从肌力和 MRI 两个角度查看主要受累部位。
                     </Text>
                   </View>
                 </View>
@@ -448,7 +474,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>系统监测</Text>
                     <Text style={styles.sectionDescription}>
-                      血检、呼吸和心脏监测已经进入后端护照摘要，不再只在前端零散展示。
+                      集中查看血检、呼吸和心脏相关监测。
                     </Text>
                   </View>
                 </View>
@@ -502,7 +528,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>时间轴与待补项</Text>
                     <Text style={styles.sectionDescription}>
-                      待补项和最近来源都由服务端统一生成，方便后续 Web 和导出端复用。
+                      最近记录和仍待补充的信息都会汇总在这里。
                     </Text>
                   </View>
                 </View>
@@ -613,11 +639,8 @@ const ClinicalPassportScreen = () => {
               <View style={styles.exportCard}>
                 <View style={styles.cardHeadingRow}>
                   <View>
-                    <Text style={styles.cardTitle}>分享护照摘要</Text>
-                    <Text style={styles.cardSubtitle}>
-                      当前由后端生成标准化 Markdown
-                      摘要，再通过系统分享面板发出，避免前端本地拼文本。
-                    </Text>
+                    <Text style={styles.cardTitle}>导出临床护照</Text>
+                    <Text style={styles.cardSubtitle}>生成 PDF，便于保存、打印或发送给医生。</Text>
                   </View>
                 </View>
 
@@ -638,11 +661,11 @@ const ClinicalPassportScreen = () => {
                     ) : (
                       <>
                         <FontAwesome6
-                          name="share-nodes"
+                          name="file-pdf"
                           size={14}
                           color={CLINICAL_COLORS.background}
                         />
-                        <Text style={styles.exportButtonText}>生成并分享护照摘要</Text>
+                        <Text style={styles.exportButtonText}>生成 PDF</Text>
                       </>
                     )}
                   </LinearGradient>
