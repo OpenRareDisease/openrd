@@ -109,7 +109,7 @@ type EventFormState = {
   description: string;
 };
 
-type UploadDraftPersisted = Pick<UploadDraft, 'title' | 'documentType'>;
+type UploadDraftPersisted = Pick<UploadDraft, 'documentType'>;
 
 const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 
@@ -597,7 +597,6 @@ const DataEntryScreen = () => {
         ...(profileData ? deriveUploadDraft(profileData) : {}),
         ...(savedUpload
           ? {
-              ...savedUpload,
               documentType: normalizeDocumentType(savedUpload.documentType),
             }
           : {}),
@@ -654,10 +653,9 @@ const DataEntryScreen = () => {
     }
 
     void persistDraft(DATA_ENTRY_DRAFT_KEYS.upload, {
-      title: uploadDraft.title,
       documentType: uploadDraft.documentType,
     } satisfies UploadDraftPersisted);
-  }, [uploadDraft.documentType, uploadDraft.title, isDraftsHydrated]);
+  }, [uploadDraft.documentType, isDraftsHydrated]);
 
   const ensureProfileReady = async (fullName: string) => {
     if (profile) {
@@ -688,7 +686,7 @@ const DataEntryScreen = () => {
     setUploadDraft((prev) => ({
       ...prev,
       name: asset.name,
-      title: prev.title || asset.name.replace(/\.[^.]+$/, ''),
+      title: '',
       file:
         asset.file instanceof File
           ? asset.file
@@ -707,7 +705,7 @@ const DataEntryScreen = () => {
 
     await uploadPatientDocument({
       documentType: uploadDraft.documentType,
-      title: uploadDraft.title || uploadDraft.name,
+      title: uploadDraft.title.trim() || undefined,
       submissionId,
       file: uploadDraft.file,
     });
@@ -1064,11 +1062,11 @@ const DataEntryScreen = () => {
       </View>
 
       <View style={styles.fieldBlock}>
-        <Text style={styles.fieldLabel}>报告标题</Text>
+        <Text style={styles.fieldLabel}>报告标题（可选）</Text>
         <TextInput
           value={uploadDraft.title}
           onChangeText={(value) => setUploadDraft((prev) => ({ ...prev, title: value }))}
-          placeholder="例如：2026-03 肺功能复查"
+          placeholder="可留空，系统会按识别结果展示名称"
           placeholderTextColor={CLINICAL_COLORS.textMuted}
           style={styles.input}
         />

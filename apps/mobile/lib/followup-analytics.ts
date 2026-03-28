@@ -359,6 +359,10 @@ export const buildProgressionTimeline = (
       other: '医学报告',
     };
     const payload = item.ocrPayload?.fields ?? {};
+    const reportTypeLabel =
+      (typeof payload.reportTypeLabel === 'string' && payload.reportTypeLabel.trim()) ||
+      (typeof payload.report_type_label === 'string' && payload.report_type_label.trim()) ||
+      null;
     const classifiedType =
       (typeof payload.classifiedType === 'string' && payload.classifiedType) ||
       (typeof payload.classified_type === 'string' && payload.classified_type) ||
@@ -366,7 +370,7 @@ export const buildProgressionTimeline = (
     const aiSummary = typeof payload.aiSummary === 'string' ? payload.aiSummary.trim() : undefined;
     items.push({
       id: item.id,
-      title: item.title?.trim() || labels[classifiedType] || '新报告',
+      title: reportTypeLabel || labels[classifiedType] || item.title?.trim() || '新报告',
       description: aiSummary || '已上传新报告，可查看患者版摘要。',
       timestamp: item.uploadedAt,
       tag: '报告',

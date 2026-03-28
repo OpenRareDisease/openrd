@@ -334,6 +334,26 @@ const asRecord = (value: unknown): Record<string, unknown> | null => {
   return value as Record<string, unknown>;
 };
 
+const pickTextField = (record: Record<string, unknown> | null, keys: string[]) => {
+  if (!record) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    const text = value.trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  return null;
+};
+
 const sideLabels: Record<string, string> = {
   left: '左侧',
   right: '右侧',
@@ -461,6 +481,32 @@ const summarizeDocumentForPatient = (document: PatientDocumentDTO) => {
   }
 
   return `${documentTypeLabels[document.documentType] ?? '报告'}已上传，可继续查看患者版摘要。`;
+};
+
+const getDocumentDisplayTitle = (document: PatientDocumentDTO) => {
+  const payload = asRecord(document.ocrPayload);
+  const fields = asRecord(payload?.fields);
+  const reportTypeLabel = pickTextField(fields, ['reportTypeLabel', 'report_type_label']);
+  if (reportTypeLabel) {
+    return reportTypeLabel;
+  }
+
+  const classifiedType = pickTextField(fields, [
+    'classifiedType',
+    'classified_type',
+    'reportType',
+    'report_type',
+  ]);
+  if (classifiedType && documentTypeLabels[classifiedType]) {
+    return documentTypeLabels[classifiedType];
+  }
+
+  const manualTitle = document.title?.trim();
+  if (manualTitle) {
+    return manualTitle;
+  }
+
+  return documentTypeLabels[document.documentType] ?? '新报告';
 };
 
 export class PatientProfileService {
@@ -2111,7 +2157,7 @@ export class PatientProfileService {
       })),
       ...profile.documents.map((item) => ({
         id: item.id,
-        title: item.title?.trim() || documentTypeLabels[item.documentType] || '新报告',
+        title: getDocumentDisplayTitle(item),
         description: summarizeDocumentForPatient(item),
         timestamp: item.uploadedAt,
         tag: '报告' as const,
@@ -2123,7 +2169,7 @@ export class PatientProfileService {
 
     const recentReports = profile.documents.slice(0, 3).map((item) => ({
       id: item.id,
-      title: item.title?.trim() || documentTypeLabels[item.documentType] || '新报告',
+      title: getDocumentDisplayTitle(item),
       documentType: item.documentType,
       uploadedAt: item.uploadedAt,
       summary: summarizeDocumentForPatient(item),
