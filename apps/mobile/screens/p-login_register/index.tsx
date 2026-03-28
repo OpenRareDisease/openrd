@@ -25,6 +25,7 @@ import { ApiError, login, register, sendOtp, upsertPatientProfile } from '../../
 import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import {
+  type DateParts,
   birthMonthOptions,
   birthYearOptions,
   composeDate,
@@ -91,6 +92,7 @@ const LoginRegisterScreen: React.FC = () => {
     regionCity: '',
     regionDistrict: '',
   });
+  const [birthDateDraft, setBirthDateDraft] = useState<DateParts>(() => parseDateParts(''));
 
   // UI状态
   const [isLoginPasswordVisible, setIsLoginPasswordVisible] = useState(false);
@@ -284,6 +286,12 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 注册提交
   const handleRegisterSubmit = async () => {
+    const selectedDateOfBirth = composeDate(
+      birthDateDraft.year,
+      birthDateDraft.month,
+      birthDateDraft.day,
+    );
+
     if (!registerForm.identity) {
       showModal('error', '错误', '请选择身份');
       return;
@@ -294,12 +302,12 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    if (!registerForm.dateOfBirth.trim()) {
+    if (!selectedDateOfBirth) {
       showModal('error', '错误', '请选择出生日期');
       return;
     }
 
-    if (!isValidDate(registerForm.dateOfBirth.trim())) {
+    if (!isValidDate(selectedDateOfBirth)) {
       showModal('error', '错误', '请选择完整有效的出生日期');
       return;
     }
@@ -381,7 +389,7 @@ const LoginRegisterScreen: React.FC = () => {
       await setSession(response);
       await upsertPatientProfile({
         fullName: registerForm.fullName.trim(),
-        dateOfBirth: registerForm.dateOfBirth.trim(),
+        dateOfBirth: selectedDateOfBirth,
         gender: registerForm.gender,
         contactPhone: formatPhoneNumber(registerForm.phone),
         contactEmail: registerForm.contactEmail.trim() || null,
@@ -466,14 +474,13 @@ const LoginRegisterScreen: React.FC = () => {
     };
   }, []);
 
-  const birthDateParts = parseDateParts(registerForm.dateOfBirth);
   const cityOptions = getCityOptions(registerForm.regionProvince);
   const districtOptions = getDistrictOptions(registerForm.regionProvince, registerForm.regionCity);
-  const birthDayOptions = getBirthDayOptions(birthDateParts.year, birthDateParts.month);
+  const birthDayOptions = getBirthDayOptions(birthDateDraft.year, birthDateDraft.month);
 
   const updateBirthDatePart = (part: 'year' | 'month' | 'day', value: string) => {
     const nextParts = {
-      ...birthDateParts,
+      ...birthDateDraft,
       [part]: value,
     };
 
@@ -486,9 +493,11 @@ const LoginRegisterScreen: React.FC = () => {
       }
     }
 
+    const nextDateOfBirth = composeDate(nextParts.year, nextParts.month, nextParts.day);
+    setBirthDateDraft(nextParts);
     setRegisterForm((prev) => ({
       ...prev,
-      dateOfBirth: composeDate(nextParts.year, nextParts.month, nextParts.day),
+      dateOfBirth: nextDateOfBirth,
     }));
   };
 
@@ -701,7 +710,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <View style={styles.pickerRow}>
                       <View style={[styles.pickerWrapper, styles.pickerColumn]}>
                         <Picker
-                          selectedValue={birthDateParts.year}
+                          selectedValue={birthDateDraft.year}
                           onValueChange={(value) => updateBirthDatePart('year', String(value))}
                           style={styles.picker}
                         >
@@ -717,7 +726,7 @@ const LoginRegisterScreen: React.FC = () => {
                       </View>
                       <View style={[styles.pickerWrapper, styles.pickerColumn]}>
                         <Picker
-                          selectedValue={birthDateParts.month}
+                          selectedValue={birthDateDraft.month}
                           onValueChange={(value) => updateBirthDatePart('month', String(value))}
                           style={styles.picker}
                         >
@@ -733,7 +742,7 @@ const LoginRegisterScreen: React.FC = () => {
                       </View>
                       <View style={[styles.pickerWrapper, styles.pickerColumn]}>
                         <Picker
-                          selectedValue={birthDateParts.day}
+                          selectedValue={birthDateDraft.day}
                           onValueChange={(value) => updateBirthDatePart('day', String(value))}
                           style={styles.picker}
                         >
