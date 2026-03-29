@@ -317,8 +317,21 @@ const getDocumentType = (document: PatientDocumentDTO) => {
 const latestDocByType = (documents: PatientDocumentDTO[], type: string) =>
   latestDoc(documents, (document) => getDocumentType(document) === type);
 
+const filterDocsByTypes = (documents: PatientDocumentDTO[], types: string[]) =>
+  documents
+    .filter((document) => types.includes(getDocumentType(document)))
+    .sort((a, b) => getTimestamp(b.uploadedAt) - getTimestamp(a.uploadedAt));
+
 const latestDocByTypes = (documents: PatientDocumentDTO[], types: string[]) =>
   latestDoc(documents, (document) => types.includes(getDocumentType(document)));
+
+const filterDocsContainingText = (documents: PatientDocumentDTO[], patterns: string[]) =>
+  documents
+    .filter((document) => {
+      const text = getPayloadText(toPayload(document.ocrPayload));
+      return patterns.some((pattern) => text.includes(pattern.toLowerCase()));
+    })
+    .sort((a, b) => getTimestamp(b.uploadedAt) - getTimestamp(a.uploadedAt));
 
 const latestDocContainingText = (documents: PatientDocumentDTO[], patterns: string[]) =>
   latestDoc(documents, (document) => {
@@ -374,10 +387,24 @@ const buildStrengthSummary = (fields?: Record<string, unknown>) => {
   };
 };
 
+const MRI_TEXT_PATTERNS = ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前'];
+
+const collectMriDocuments = (documents: PatientDocumentDTO[]) => {
+  const byId = new Map<string, PatientDocumentDTO>();
+  [
+    ...filterDocsByTypes(documents, ['muscle_mri', 'mri']),
+    ...filterDocsContainingText(documents, MRI_TEXT_PATTERNS),
+  ].forEach((document) => {
+    byId.set(document.id, document);
+  });
+
+  return [...byId.values()].sort((a, b) => getTimestamp(b.uploadedAt) - getTimestamp(a.uploadedAt));
+};
+
 const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   const documents = profile.documents;
   const latestGenetic = latestDocByType(documents, 'genetic_report');
-  const latestMri = latestDocByTypes(documents, ['muscle_mri', 'mri']);
+  const latestMri = collectMriDocuments(documents)[0] ?? null;
   const latestBlood = latestDocByTypes(documents, [
     'blood_panel',
     'biochemistry',
@@ -443,9 +470,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     formatDate(pickField(geneticFields, ['diagnosisDate', 'diagnosis_date'])) ||
     '—';
 
-  const mriDoc =
-    latestMri ||
-    latestDocContainingText(documents, ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前']);
+  const mriDoc = latestMri;
   const mriPayload = toPayload(mriDoc?.ocrPayload);
   const mriFields = mriPayload?.fields;
   const mriGrade = pickField(mriFields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
@@ -774,6 +799,44 @@ const inferMriBodyMap = (payload: OcrPayloadLike) => {
   };
 };
 
+const mergeBodyRegionMaps = (
+  base: PassportBodyRegionMap,
+  incoming: PassportBodyRegionMap,
+): PassportBodyRegionMap => {
+  const next = { ...base };
+
+  Object.entries(incoming).forEach(([regionId, datum]) => {
+    if (!datum) {
+      return;
+    }
+
+    const key = regionId as BodyRegionId;
+    const existing = next[key];
+    if (!existing || datum.intensity > existing.intensity) {
+      next[key] = datum;
+    }
+  });
+
+  return next;
+};
+
+const buildAggregateMriBodyMap = (documents: PatientDocumentDTO[]) => {
+  let regions: PassportBodyRegionMap = {};
+  const findings = new Set<string>();
+
+  documents.forEach((document) => {
+    const inferred = inferMriBodyMap(toPayload(document.ocrPayload));
+    regions = mergeBodyRegionMaps(regions, inferred.regions);
+    inferred.findings.forEach((item) => findings.add(item));
+  });
+
+  return {
+    regions,
+    findings: [...findings],
+    hasFindings: Object.keys(regions).length > 0,
+  };
+};
+
 const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) =>
   Object.values(regions)
     .sort((a, b) => b.intensity - a.intensity)
@@ -890,6 +953,7 @@ export const buildClinicalPassportSummary = (
   profile: PatientProfileDTO,
 ): ClinicalPassportSummaryDTO => {
   const reportInsights = buildReportInsights(profile);
+  const mriDocuments = collectMriDocuments(profile.documents);
   const latestMeasurementsByGroup = pickLatestMeasurementsByGroup(profile.measurements);
   const measurementScores = Object.values(latestMeasurementsByGroup)
     .map((item) => parseScore(String(item.strengthScore)))
@@ -901,12 +965,7 @@ export const buildClinicalPassportSummary = (
         ).toFixed(1)
       : reportInsights.strengthAverage;
   const strengthBodyRegions = buildBodyMapFromMeasurements(profile.measurements);
-  const mriBodyMap = inferMriBodyMap(
-    toPayload(
-      profile.documents.find((document) => document.id === reportInsights.latestMriDocumentId)
-        ?.ocrPayload ?? null,
-    ),
-  );
+  const mriBodyMap = buildAggregateMriBodyMap(mriDocuments);
 
   const latestMeasurementAt = Object.values(latestMeasurementsByGroup).reduce<string | null>(
     (latest, item) =>
@@ -1053,7 +1112,10 @@ export const buildClinicalPassportSummary = (
           ? mriHighlights.join('、')
           : reportInsights.mriSummary
         : '缺少 MRI 报告或影像提取结果',
-      meta: `最近 MRI ${formatDateLabel(reportInsights.latestMriDate)}`,
+      meta:
+        mriDocuments.length > 1
+          ? `最近 MRI ${formatDateLabel(reportInsights.latestMriDate)} · 累计 ${mriDocuments.length} 份`
+          : `最近 MRI ${formatDateLabel(reportInsights.latestMriDate)}`,
     },
     {
       key: 'monitoring',
