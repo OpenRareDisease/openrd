@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   ApiError,
+  deletePatientDocument,
   generatePatientDocumentSummary,
   getPatientDocumentOcr,
   type PatientDocument,
@@ -68,6 +69,7 @@ const formatKindLabel = (kind: string) => {
 };
 
 export default function ReportDetailScreen() {
+  const router = useRouter();
   const params = useLocalSearchParams();
   const documentId = useMemo(() => {
     const raw = params.documentId;
@@ -81,6 +83,7 @@ export default function ReportDetailScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const [summary, setSummary] = useState<string>('');
   const [bodyView, setBodyView] = useState<BodyView>('front');
 
@@ -278,6 +281,41 @@ export default function ReportDetailScreen() {
     }
   };
 
+  const runDelete = async () => {
+    if (!documentId) return;
+
+    try {
+      setDeleteLoading(true);
+      await deletePatientDocument(documentId);
+      Alert.alert('已删除', '这份报告已移除，相关汇总会在返回后按最新数据重新计算。', [
+        {
+          text: '知道了',
+          onPress: () => {
+            router.replace('/p-archive');
+          },
+        },
+      ]);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '删除报告失败';
+      Alert.alert('删除失败', message);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const onDelete = () => {
+    Alert.alert('删除报告', '删除后将从病程、临床护照和汇总视图中移除，且无法恢复。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: deleteLoading ? '删除中...' : '删除',
+        style: 'destructive',
+        onPress: () => {
+          runDelete().catch(() => undefined);
+        },
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -445,6 +483,24 @@ export default function ReportDetailScreen() {
               <Text style={styles.codeText}>{rawText}</Text>
             </View>
           )}
+        </View>
+
+        <View style={[styles.card, styles.dangerCard]}>
+          <Text style={styles.cardTitle}>删除报告</Text>
+          <Text style={styles.smallText}>
+            如果这份报告传错了、识别错了，或只是重复上传，可以直接删除。删除后护照和病程摘要会按剩余数据重新计算。
+          </Text>
+          <TouchableOpacity
+            style={[styles.button, styles.dangerButton, deleteLoading && styles.buttonDisabled]}
+            disabled={deleteLoading}
+            onPress={onDelete}
+          >
+            {deleteLoading ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.dangerButtonText}>删除这份报告</Text>
+            )}
+          </TouchableOpacity>
         </View>
 
         {isLoading && (

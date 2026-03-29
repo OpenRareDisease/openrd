@@ -205,8 +205,22 @@ export default StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: CLINICAL_COLORS.accent,
   },
+  buttonDisabled: {
+    opacity: 0.72,
+  },
   buttonText: {
     color: CLINICAL_COLORS.text,
+    fontWeight: '800',
+  },
+  dangerCard: {
+    borderColor: CLINICAL_TINTS.dangerBorder,
+  },
+  dangerButton: {
+    marginTop: 14,
+    backgroundColor: CLINICAL_COLORS.danger,
+  },
+  dangerButtonText: {
+    color: '#FFFFFF',
     fontWeight: '800',
   },
   summaryText: {

@@ -364,6 +364,28 @@ export class PatientProfileController {
     loaded.stream.pipe(res);
   };
 
+  deleteDocument = async (req: AuthenticatedRequest, res: Response) => {
+    const documentId = req.params.id;
+    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId);
+
+    let storageCleanupStatus: 'removed' | 'missing' | 'failed' = 'removed';
+    try {
+      await this.storage.remove(deleted.storageUri);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 404) {
+        storageCleanupStatus = 'missing';
+      } else {
+        storageCleanupStatus = 'failed';
+      }
+    }
+
+    res.status(200).json({
+      documentId: deleted.id,
+      deleted: true,
+      storageCleanupStatus,
+    });
+  };
+
   getDocumentOcr = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
     const document = await this.service.getDocumentForUser(req.user.id, documentId);

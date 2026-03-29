@@ -157,4 +157,18 @@ export class MinioStorageProvider implements StorageProvider {
       throw error;
     }
   }
+
+  async remove(storageUri: string): Promise<void> {
+    const { bucketName, objectName } = parseStorageUri(storageUri);
+
+    try {
+      await this.client.removeObject(bucketName, objectName);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (/not found|no such key|not exist/i.test(message)) {
+        throw new AppError('File not found', 404);
+      }
+      throw error;
+    }
+  }
 }

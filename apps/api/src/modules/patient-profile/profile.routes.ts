@@ -105,6 +105,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     upload.single('file'),
     asyncHandler(controller.uploadDocument),
   );
+  router.delete('/me/documents/:id', asyncHandler(controller.deleteDocument));
   router.get('/me/documents/:id', asyncHandler(controller.getDocumentFile));
   router.get('/me/documents/:id/ocr', asyncHandler(controller.getDocumentOcr));
   router.post('/me/documents/:id/summary', asyncHandler(controller.generateDocumentSummary));

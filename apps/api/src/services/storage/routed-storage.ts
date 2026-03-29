@@ -35,4 +35,12 @@ export class RoutedStorageProvider implements StorageProvider {
     }
     return provider.load(storageUri);
   }
+
+  async remove(storageUri: string): Promise<void> {
+    const provider = this.providers.find((candidate) => candidate.canHandle(storageUri));
+    if (!provider) {
+      throw new AppError('Unsupported storage uri', 400);
+    }
+    await provider.remove(storageUri);
+  }
 }

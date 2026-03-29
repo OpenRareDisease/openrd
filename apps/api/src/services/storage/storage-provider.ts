@@ -21,5 +21,6 @@ export interface StorageProvider {
     buffer: Buffer;
   }) => Promise<StoredFile>;
   load: (storageUri: string) => Promise<StoredFileStream>;
+  remove: (storageUri: string) => Promise<void>;
   canHandle: (storageUri: string) => boolean;
 }

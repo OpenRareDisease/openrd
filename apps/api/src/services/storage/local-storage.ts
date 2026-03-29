@@ -76,4 +76,20 @@ export class LocalStorageProvider implements StorageProvider {
       mimeType: null,
     };
   }
+
+  async remove(storageUri: string): Promise<void> {
+    const root = await ensureUploadsRoot();
+    const relativePath = parseStorageUri(storageUri);
+    const absolutePath = path.join(root, relativePath);
+
+    try {
+      await fs.unlink(absolutePath);
+    } catch (error) {
+      const errorCode = typeof error === 'object' && error ? (error as { code?: string }).code : '';
+      if (errorCode === 'ENOENT') {
+        throw new AppError('File not found', 404);
+      }
+      throw error;
+    }
+  }
 }

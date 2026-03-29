@@ -650,6 +650,15 @@ export const getPatientDocumentOcr = (documentId: string) =>
     `/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`,
   );
 
+export const deletePatientDocument = (documentId: string) =>
+  apiRequest<{
+    documentId: string;
+    deleted: true;
+    storageCleanupStatus: 'removed' | 'missing' | 'failed';
+  }>(`/profiles/me/documents/${encodeURIComponent(documentId)}`, {
+    method: 'DELETE',
+  });
+
 export const generatePatientDocumentSummary = (documentId: string) =>
   apiRequest<{ documentId: string; summary: string }>(
     `/profiles/me/documents/${encodeURIComponent(documentId)}/summary`,

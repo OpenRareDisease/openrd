@@ -109,6 +109,13 @@ export interface PatientDocumentDTO {
   submissionId: string | null;
 }
 
+interface DeletedPatientDocumentResult {
+  id: string;
+  documentType: string;
+  title: string | null;
+  storageUri: string;
+}
+
 export interface PatientMedicationDTO {
   id: string;
   medicationName: string;
@@ -1248,6 +1255,33 @@ export class PatientProfileService {
       file_name: string | null;
       mime_type: string | null;
       ocr_payload: unknown | null;
+    };
+  }
+
+  async deleteDocumentForUser(
+    userId: string,
+    documentId: string,
+  ): Promise<DeletedPatientDocumentResult> {
+    const result = await this.pool.query(
+      `DELETE FROM patient_documents d
+       USING patient_profiles p
+       WHERE d.profile_id = p.id
+         AND p.user_id = $1
+         AND d.id = $2
+       RETURNING d.id, d.document_type, d.title, d.storage_uri`,
+      [userId, documentId],
+    );
+
+    if (!result.rowCount) {
+      throw new AppError('Document not found', 404);
+    }
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      documentType: row.document_type,
+      title: row.title ?? null,
+      storageUri: row.storage_uri,
     };
   }
 

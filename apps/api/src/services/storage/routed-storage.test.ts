@@ -16,6 +16,7 @@ const createProvider = (prefix: string): StorageProvider => ({
     fileName: storageUri.slice(prefix.length),
     mimeType: 'application/octet-stream',
   }),
+  remove: async () => undefined,
 });
 
 describe('RoutedStorageProvider', () => {
