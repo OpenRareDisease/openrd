@@ -314,6 +314,26 @@ const getDocumentType = (document: PatientDocumentDTO) => {
   );
 };
 
+const getDocumentDisplayTitle = (document: PatientDocumentDTO) => {
+  const payload = toPayload(document.ocrPayload);
+  const reportTypeLabel = pickField(payload?.fields, ['reportTypeLabel', 'report_type_label']);
+  if (reportTypeLabel) {
+    return reportTypeLabel;
+  }
+
+  const classifiedType = getDocumentType(document);
+  if (documentLabels[classifiedType]) {
+    return documentLabels[classifiedType];
+  }
+
+  const manualTitle = document.title?.trim();
+  if (manualTitle) {
+    return manualTitle;
+  }
+
+  return documentLabels[document.documentType] ?? '临床报告';
+};
+
 const latestDocByType = (documents: PatientDocumentDTO[], type: string) =>
   latestDoc(documents, (document) => getDocumentType(document) === type);
 
@@ -893,7 +913,7 @@ const buildTimeline = (
       sortKey: getTimestamp(document.uploadedAt),
       value: {
         id: `doc-${document.id}`,
-        title: documentLabels[document.documentType] ?? document.title ?? '临床报告',
+        title: getDocumentDisplayTitle(document),
         description: compactText(
           typeof payload?.extractedText === 'string'
             ? payload.extractedText

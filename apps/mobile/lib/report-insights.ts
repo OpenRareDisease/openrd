@@ -69,6 +69,11 @@ const latestDocByTypes = (docs: DocumentLike[], docTypes: string[]) => {
   });
 };
 
+const filterDocsByTypes = (docs: DocumentLike[], docTypes: string[]) =>
+  docs
+    .filter((doc) => docTypes.includes(getDocumentType(doc)))
+    .sort((a, b) => new Date(b.uploadedAt ?? 0).getTime() - new Date(a.uploadedAt ?? 0).getTime());
+
 const latestDocWithFields = (docs: DocumentLike[], keys: string[]) => {
   const candidates = docs.filter((doc) => {
     const fields = doc.ocrPayload?.fields;
@@ -97,6 +102,16 @@ const latestDocContainingText = (docs: DocumentLike[], patterns: string[]) => {
   });
 };
 
+const filterDocsContainingText = (docs: DocumentLike[], patterns: string[]) =>
+  docs
+    .filter((doc) => {
+      const fullText = `${JSON.stringify(doc.ocrPayload?.fields ?? {})} ${
+        doc.ocrPayload?.extractedText ?? ''
+      }`.toLowerCase();
+      return patterns.some((pattern) => fullText.includes(pattern.toLowerCase()));
+    })
+    .sort((a, b) => new Date(b.uploadedAt ?? 0).getTime() - new Date(a.uploadedAt ?? 0).getTime());
+
 const getDocumentType = (doc: DocumentLike) => {
   const fields = doc.ocrPayload?.fields;
   return (
@@ -118,6 +133,25 @@ const compactText = (value?: string | null, fallback = '暂无数据') => {
   const text = value?.trim();
   if (!text) return fallback;
   return text.length > 88 ? `${text.slice(0, 88)}...` : text;
+};
+
+const MRI_TEXT_PATTERNS = ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前'];
+
+const collectMriDocuments = (docs: DocumentLike[]) => {
+  const byKey = new Map<string, DocumentLike>();
+  [
+    ...filterDocsByTypes(docs, ['muscle_mri', 'mri']),
+    ...filterDocsContainingText(docs, MRI_TEXT_PATTERNS),
+  ].forEach((doc, index) => {
+    const mapKey =
+      `${doc.uploadedAt ?? 'no-time'}::${getDocumentType(doc)}::${JSON.stringify(doc.ocrPayload?.fields ?? {})}` ||
+      `fallback-${index}`;
+    byKey.set(mapKey, doc);
+  });
+
+  return [...byKey.values()].sort(
+    (a, b) => new Date(b.uploadedAt ?? 0).getTime() - new Date(a.uploadedAt ?? 0).getTime(),
+  );
 };
 
 export const buildStrengthSummary = (fields?: Record<string, string | number>) => {
@@ -154,7 +188,7 @@ export const buildStrengthSummary = (fields?: Record<string, string | number>) =
 
 export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike | null) => {
   const latestGenetic = latestDocByType(docs, 'genetic_report');
-  const latestMri = latestDocByTypes(docs, ['muscle_mri', 'mri']);
+  const latestMri = collectMriDocuments(docs)[0];
   const latestBlood = latestDocByTypes(docs, [
     'blood_panel',
     'biochemistry',
@@ -216,9 +250,7 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     formatDate(pickField(geneticFields, ['diagnosisDate', 'diagnosis_date'])) ||
     null;
 
-  const mriDoc =
-    latestMri ||
-    latestDocContainingText(docs, ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前']);
+  const mriDoc = latestMri;
   const mriFields = mriDoc?.ocrPayload?.fields;
   const mriGrade = pickField(mriFields, ['serratusFatigueGrade', 'serratus_fatigue_grade']);
   const mriImpression = pickFieldValue(mriDoc, [
