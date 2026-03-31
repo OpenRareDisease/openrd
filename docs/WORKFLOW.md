@@ -4,14 +4,13 @@
 
 ## 分支策略
 
-- `main`：保持可发布状态，仅通过 PR 合入。
-- 功能分支：`feature/<scope>`。
-- 缺陷修复：`fix/<scope>`。
+- `master`：保持可发布状态，仅通过 PR 合入。
+- 变更分支：`pr/<scope>`。
 - 发布分支（可选）：`release/<version>`。
 
 ## 提交流程
 
-1. 同步主分支并新建分支。
+1. 同步 `master` 并新建 `pr/<scope>` 分支。
 2. 完成开发后本地执行：
 
 ```bash
@@ -34,4 +33,4 @@ npm run test
 1. 代码冻结后切 `release/<version>`（可选）。
 2. 回归核心流程：鉴权、档案、问答、报告上传。
 3. 更新 README / `docs/release-checklist.md` / `docs/updates.md`。
-4. 合并 `main` 后打 tag 并部署。
+4. 合并 `master` 后打 tag 并部署。

@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 
 - `app/` holds the FastAPI application code, organized by `dependencies/`, `models/`, `routes/`, and `services/`.
-- `main.py` is the FastAPI entrypoint; `app.py` and `run.py` provide alternate run hooks.
+- `main.py` is the FastAPI entrypoint when you need to run report-manager as a standalone HTTP service.
 - `config.py` contains configuration defaults; database/MinIO/AI settings are typically overridden via `.env`.
 - `db_init_script.sql` and `minio_init_script.py` initialize PostgreSQL and MinIO.
 - `test_upload_and_analyze.py` is a local integration-style test script.

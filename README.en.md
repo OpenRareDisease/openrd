@@ -203,7 +203,7 @@ Notes:
 - [Version History / Changelog](./CHANGELOG.md)
 - [v2.3.0 Release Notes](./docs/releases/v2.3.0.md)
 - [v1.0.0 Release Notes](./docs/releases/v1.0.0.md)
-- [v2.0.0 Release Notes](./docs/release-v2.md)
+- [v2.0.0 Release Notes](./docs/releases/v2.0.0.md)
 
 ### Collaboration and delivery
 

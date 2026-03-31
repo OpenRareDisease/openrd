@@ -203,7 +203,7 @@ npm run test:latest
 - [版本历史 / Changelog](./CHANGELOG.md)
 - [v2.3.0 发布说明](./docs/releases/v2.3.0.md)
 - [v1.0.0 发布说明](./docs/releases/v1.0.0.md)
-- [v2.0.0 发布说明](./docs/release-v2.md)
+- [v2.0.0 发布说明](./docs/releases/v2.0.0.md)
 
 ### 协作与交付
 
