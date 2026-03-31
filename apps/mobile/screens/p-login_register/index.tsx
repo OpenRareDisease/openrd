@@ -21,7 +21,14 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, register, sendOtp, upsertPatientProfile } from '../../lib/api';
+import {
+  ApiError,
+  login,
+  register,
+  sendOtp,
+  updateMyBaseline,
+  upsertPatientProfile,
+} from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import {
@@ -33,6 +40,7 @@ import {
   getBirthDayOptions,
   getCityOptions,
   getDistrictOptions,
+  buildRegionLabel,
   parseDateParts,
   provinceOptions,
 } from '../../lib/demographics-options';
@@ -52,6 +60,7 @@ interface RegisterFormData {
   identity: 'doctor' | 'patient_family' | 'other';
   fullName: string;
   dateOfBirth: string;
+  diagnosisYear: string;
   gender: 'male' | 'female' | 'non_binary' | 'prefer_not_to_say' | '';
   contactEmail: string;
   regionProvince: string;
@@ -86,6 +95,7 @@ const LoginRegisterScreen: React.FC = () => {
     identity: 'patient_family',
     fullName: '',
     dateOfBirth: '',
+    diagnosisYear: '',
     gender: '',
     contactEmail: '',
     regionProvince: '',
@@ -370,6 +380,11 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
+    if (registerForm.diagnosisYear.trim() && !/^\d{4}$/.test(registerForm.diagnosisYear.trim())) {
+      showModal('error', '错误', '确诊年份请填写 4 位年份');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -397,7 +412,22 @@ const LoginRegisterScreen: React.FC = () => {
         regionCity: registerForm.regionCity.trim(),
         regionDistrict: registerForm.regionDistrict.trim(),
       });
-      showModal('success', '注册成功', '账户已创建并完成档案');
+      await updateMyBaseline({
+        foundation: {
+          fullName: registerForm.fullName.trim(),
+          birthYear: Number(selectedDateOfBirth.slice(0, 4)),
+          diagnosisYear: registerForm.diagnosisYear.trim()
+            ? Number(registerForm.diagnosisYear.trim())
+            : null,
+          regionLabel:
+            buildRegionLabel({
+              regionProvince: registerForm.regionProvince.trim(),
+              regionCity: registerForm.regionCity.trim(),
+              regionDistrict: registerForm.regionDistrict.trim(),
+            }) || null,
+        },
+      });
+      showModal('success', '注册成功', '账户已创建并完成基础档案');
       router.replace('/p-home');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '注册失败，请重试';
@@ -786,6 +816,28 @@ const LoginRegisterScreen: React.FC = () => {
                         );
                       })}
                     </View>
+                  </View>
+
+                  <Text style={styles.registerSectionTitle}>基础建档</Text>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>确诊年份（可选）</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：2022"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.diagnosisYear}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({
+                          ...prev,
+                          diagnosisYear: text.replace(/[^\d]/g, ''),
+                        }))
+                      }
+                      keyboardType="number-pad"
+                      maxLength={4}
+                    />
+                    <Text style={styles.fieldHintText}>
+                      分型或诊断方式后续通过报告识别补全，这里不需要主观填写。
+                    </Text>
                   </View>
 
                   <Text style={styles.registerSectionTitle}>账号信息</Text>

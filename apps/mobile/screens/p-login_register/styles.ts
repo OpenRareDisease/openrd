@@ -134,6 +134,12 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.textSoft,
     marginBottom: 8,
   },
+  fieldHintText: {
+    marginTop: 8,
+    fontSize: 12,
+    lineHeight: 18,
+    color: CLINICAL_COLORS.textMuted,
+  },
   textInput: {
     width: '100%',
     paddingHorizontal: 12,

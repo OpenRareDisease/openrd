@@ -1,5 +1,19 @@
-import { StyleSheet, Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+
+const cardShadow =
+  Platform.select({
+    ios: {
+      shadowColor: '#182B36',
+      shadowOffset: { width: 0, height: 12 },
+      shadowOpacity: 0.1,
+      shadowRadius: 24,
+    },
+    android: {
+      elevation: 5,
+    },
+    default: {},
+  }) ?? {};
 
 export default StyleSheet.create({
   container: {
@@ -10,133 +24,208 @@ export default StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
   },
-  searchContainer: {
+  eyebrow: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    letterSpacing: 1.2,
+  },
+  pageTitle: {
+    marginTop: 4,
+    color: CLINICAL_COLORS.text,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  pageSubtitle: {
+    marginTop: 8,
+    maxWidth: 240,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  headerAction: {
+    marginTop: 4,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  searchInput: {
-    flex: 1,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
     borderWidth: 1,
     borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
   },
-  searchButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: CLINICAL_COLORS.accent,
-    borderRadius: 8,
+  headerActionText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  memoryBanner: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 24,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+    ...cardShadow,
+  },
+  memoryIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  memoryContent: {
+    flex: 1,
+  },
+  memoryTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  memoryText: {
+    marginTop: 6,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 20,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+    gap: 14,
   },
-  searchResultContainer: {
-    paddingHorizontal: 24,
-    marginBottom: 12,
-  },
-  searchResultCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    padding: 12,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  searchResultHeader: {
+  messageRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
+    alignItems: 'flex-end',
+    gap: 10,
   },
-  searchResultIcon: {
-    width: 24,
-    height: 24,
+  messageRowAssistant: {
+    justifyContent: 'flex-start',
+  },
+  messageRowUser: {
+    justifyContent: 'flex-end',
+  },
+  avatar: {
+    width: 34,
+    height: 34,
     borderRadius: 12,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
-    flexShrink: 0,
   },
-  searchResultContent: {
-    flex: 1,
+  avatarAssistant: {
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
-  searchResultTitle: {
-    fontSize: 12,
-    fontWeight: '600',
+  avatarError: {
+    backgroundColor: CLINICAL_TINTS.warningSoft,
+  },
+  messageBubble: {
+    maxWidth: '82%',
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1,
+    ...cardShadow,
+  },
+  messageBubbleAssistant: {
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderColor: CLINICAL_COLORS.border,
+    borderBottomLeftRadius: 8,
+  },
+  messageBubbleUser: {
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+    borderColor: CLINICAL_COLORS.accentStrong,
+    borderBottomRightRadius: 8,
+  },
+  messageBubbleError: {
+    backgroundColor: CLINICAL_TINTS.warningSurface,
+    borderColor: CLINICAL_TINTS.warningBorder,
+  },
+  messageAuthor: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  messageText: {
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  messageTextAssistant: {
     color: CLINICAL_COLORS.text,
-    marginBottom: 4,
   },
-  searchResultAnswer: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    lineHeight: 18,
+  messageTextUser: {
+    color: '#FFFFFF',
   },
-  progressContainer: {
-    paddingHorizontal: 24,
-    marginBottom: 12,
-  },
-  progressHeader: {
+  messageMetaRow: {
+    marginTop: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    gap: 12,
+  },
+  messageTime: {
+    color: CLINICAL_TINTS.textFaint,
+    fontSize: 11,
+  },
+  messageStateText: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  progressCard: {
+    marginTop: 4,
+    padding: 16,
+    borderRadius: 22,
+    backgroundColor: 'rgba(248, 242, 234, 0.8)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  progressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
   },
   progressTitle: {
-    fontSize: 12,
-    fontWeight: '600',
     color: CLINICAL_COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
   },
   progressStatus: {
-    fontSize: 11,
     color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
   },
   progressBar: {
+    marginTop: 10,
     height: 6,
     borderRadius: 999,
     backgroundColor: CLINICAL_TINTS.panelStrong,
     overflow: 'hidden',
-    marginBottom: 10,
   },
   progressFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.accent,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
   },
   progressStages: {
-    gap: 6,
+    marginTop: 12,
+    gap: 8,
   },
   progressStageItem: {
     flexDirection: 'row',
@@ -150,7 +239,7 @@ export default StyleSheet.create({
     backgroundColor: CLINICAL_TINTS.disabledTrack,
   },
   progressStageDotActive: {
-    backgroundColor: CLINICAL_COLORS.accent,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
   },
   progressStageDotDone: {
     backgroundColor: CLINICAL_COLORS.success,
@@ -159,8 +248,8 @@ export default StyleSheet.create({
     backgroundColor: CLINICAL_COLORS.warning,
   },
   progressStageText: {
-    fontSize: 11,
     color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
   },
   progressStageTextActive: {
     color: CLINICAL_COLORS.text,
@@ -171,229 +260,53 @@ export default StyleSheet.create({
   progressStageTextError: {
     color: CLINICAL_COLORS.warning,
   },
-  section: {
-    paddingHorizontal: 24,
-    marginBottom: 24,
+  composerShell: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 16,
+    backgroundColor: CLINICAL_TINTS.surfaceOverlay,
+    borderTopWidth: 1,
+    borderTopColor: CLINICAL_COLORS.border,
   },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
-  },
-  viewAllButton: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.accent,
-  },
-  hotQuestionsList: {
-    gap: 8,
-  },
-  questionItem: {
+  composerCard: {
+    minHeight: 66,
+    borderRadius: 24,
     backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
     borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    padding: 8,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  questionHeader: {
+    paddingLeft: 16,
+    paddingRight: 10,
+    paddingVertical: 10,
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  questionText: {
-    flex: 1,
-    fontSize: 12,
-    color: CLINICAL_COLORS.text,
-    marginRight: 8,
-  },
-  chevronIcon: {
-    transform: [{ rotate: '0deg' }],
-  },
-  chevronIconExpanded: {
-    transform: [{ rotate: '180deg' }],
-  },
-  answerPanel: {
-    marginTop: 4,
-  },
-  answerText: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    lineHeight: 18,
-  },
-  knowledgeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  knowledgeItem: {
-    width: '48%',
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    padding: 8,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  knowledgeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  knowledgeIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  knowledgeTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-  },
-  knowledgeDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  resourcesList: {
-    gap: 8,
-  },
-  resourceCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    padding: 8,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  resourceContent: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  resourceIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  resourceInfo: {
-    flex: 1,
-  },
-  resourceName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 2,
-  },
-  resourceDistance: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    marginBottom: 2,
-  },
-  resourceDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  resourceRating: {
     alignItems: 'flex-end',
+    gap: 12,
+    ...cardShadow,
   },
-  resourceRatingText: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.success,
-    marginBottom: 2,
-  },
-  resourceType: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  pathwaysList: {
-    gap: 8,
-  },
-  pathwayItem: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-    padding: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  pathwayContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  composerInput: {
     flex: 1,
+    minHeight: 44,
+    maxHeight: 140,
+    color: CLINICAL_COLORS.text,
+    fontSize: 14,
+    lineHeight: 21,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
-  pathwayIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+  sendButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: CLINICAL_COLORS.accentStrong,
   },
-  pathwayInfo: {
-    flex: 1,
+  sendButtonDisabled: {
+    opacity: 0.5,
   },
-  pathwayTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-  },
-  pathwayDescription: {
-    fontSize: 12,
+  composerHint: {
+    marginTop: 10,
     color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
   },
 });
