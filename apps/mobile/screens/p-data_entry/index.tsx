@@ -1,948 +1,1021 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import Slider from '@react-native-community/slider';
+import * as DocumentPicker from 'expo-document-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
-  ApiError,
-  addActivityLog,
-  addPatientMeasurement,
-  addMedication,
-  attachSubmissionDocuments,
+  addDailyImpact,
+  addFunctionTest,
+  addFollowupEvent,
+  addSymptomScore,
   createSubmission,
   getMyPatientProfile,
-  getMedications,
+  type PatientProfile,
   uploadPatientDocument,
   upsertPatientProfile,
 } from '../../lib/api';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
+import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
-type ReportType = 'mri' | 'genetic' | 'blood';
+type EntryMode = 'followup' | 'event' | 'report';
+type EventType =
+  | 'fall'
+  | 'new_foot_drop'
+  | 'new_arm_raise_difficulty'
+  | 'new_breathing_discomfort'
+  | 'started_afo'
+  | 'started_wheelchair'
+  | 'started_niv'
+  | 'other';
+type Severity = 'mild' | 'moderate' | 'severe';
 
-interface UploadStatus {
-  mri: '未上传' | '上传中...' | '已上传';
-  genetic: '未上传' | '上传中...' | '已上传';
-  blood: '未上传' | '上传中...' | '已上传';
-}
+type UploadDraft = {
+  name: string;
+  title: string;
+  file:
+    | {
+        uri: string;
+        name: string;
+        type: string;
+      }
+    | File
+    | null;
+};
 
-interface MuscleStrengthData {
-  group: string | null;
-  value: number;
-}
+type FollowupFormState = {
+  stairClimbSeconds: string;
+  sleepScore: string;
+  fallCount: string;
+};
 
-interface ReportHistoryItem {
-  id: string;
-  type: ReportType;
-  source: '相册' | '相机' | '上传';
-  timestamp: string;
-  fileName?: string;
-  ocrSummary?: string;
-}
+type EventFormState = {
+  eventType: EventType;
+  severity: Severity;
+  occurredAt: string;
+  description: string;
+};
 
-interface TimelineEvent {
-  id: string;
+const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+const DEFAULT_FOLLOWUP_FORM: FollowupFormState = {
+  stairClimbSeconds: '',
+  sleepScore: '6',
+  fallCount: '0',
+};
+
+const DEFAULT_EVENT_FORM: EventFormState = {
+  eventType: 'other',
+  severity: 'moderate',
+  occurredAt: todayIsoDate(),
+  description: '',
+};
+
+const DEFAULT_UPLOAD_DRAFT: UploadDraft = {
+  name: '',
+  title: '',
+  file: null,
+};
+
+const DATA_ENTRY_DRAFT_KEYS = {
+  entryMode: 'openrd.dataEntry.entryMode',
+  followup: 'openrd.dataEntry.followup',
+  event: 'openrd.dataEntry.event',
+} as const;
+
+const modeCards: Array<{
+  key: EntryMode;
+  icon: ComponentProps<typeof FontAwesome6>['name'];
+  order: string;
+  eyebrow: string;
   title: string;
   description: string;
-  timestamp: string;
-  tag: '报告' | '肌力' | '活动';
-}
+  cta: string;
+}> = [
+  {
+    key: 'followup',
+    icon: 'bolt',
+    order: '01',
+    eyebrow: 'FOLLOW-UP',
+    title: '快速随访',
+    description: '记录睡眠评分、10 级台阶用时和最近跌倒次数。',
+    cta: '进入随访',
+  },
+  {
+    key: 'event',
+    icon: 'flag',
+    order: '02',
+    eyebrow: 'EVENT',
+    title: '事件记录',
+    description: '记录新问题和辅具、训练、用药等变化。',
+    cta: '进入事件',
+  },
+  {
+    key: 'report',
+    icon: 'file-arrow-up',
+    order: '03',
+    eyebrow: 'REPORT',
+    title: '报告上传',
+    description: '上传检查报告，系统自动识别分类、日期和指标。',
+    cta: '进入上传',
+  },
+];
 
-const reportLabels: Record<ReportType, string> = {
-  mri: 'MRI 影像报告',
-  genetic: '基因检测报告',
-  blood: '血检报告',
+const eventOptions: Array<{ key: EventType; label: string }> = [
+  { key: 'fall', label: '跌倒' },
+  { key: 'new_foot_drop', label: '新增足下垂' },
+  { key: 'new_arm_raise_difficulty', label: '新增抬手困难' },
+  { key: 'new_breathing_discomfort', label: '新增呼吸不适' },
+  { key: 'started_afo', label: '开始使用 AFO' },
+  { key: 'started_wheelchair', label: '开始使用轮椅' },
+  { key: 'started_niv', label: '开始无创通气' },
+  { key: 'other', label: '干预/用药变化 / 其他' },
+];
+
+const severityOptions: Array<{ key: Severity; label: string }> = [
+  { key: 'mild', label: '轻' },
+  { key: 'moderate', label: '中' },
+  { key: 'severe', label: '重' },
+];
+
+const sleepScoreRangeHints = ['0-2 很差', '3-4 较差', '5-6 一般', '7-8 较好', '9-10 很好'];
+
+const parseStoredDraft = async <T,>(key: string): Promise<Partial<T> | null> => {
+  try {
+    const raw = await getSessionValue(key);
+    if (!raw) {
+      return null;
+    }
+
+    return JSON.parse(raw) as Partial<T>;
+  } catch {
+    return null;
+  }
 };
 
-const documentTypeMap: Record<ReportType, string> = {
-  mri: 'mri',
-  genetic: 'genetic_report',
-  blood: 'blood_panel',
+const persistDraft = async (key: string, value: unknown) => {
+  try {
+    await setSessionValue(key, JSON.stringify(value));
+  } catch {
+    // Draft persistence should never block data entry.
+  }
 };
+
+const normalizeEntryMode = (value: string | null | undefined): EntryMode =>
+  value === 'followup' || value === 'event' || value === 'report' ? value : 'followup';
+
+const normalizeEventType = (value: string | null | undefined): EventType =>
+  eventOptions.some((option) => option.key === value) ? (value as EventType) : 'other';
+
+const normalizeSeverity = (value: string | null | undefined): Severity =>
+  severityOptions.some((option) => option.key === value) ? (value as Severity) : 'moderate';
+
+const normalizeIntegerText = (value: unknown, fallback = '0') => {
+  const text = String(value ?? '')
+    .replace(/[^\d]/g, '')
+    .slice(0, 2);
+  return text || fallback;
+};
+
+const sanitizeIntegerText = (value: string) => value.replace(/[^\d]/g, '').slice(0, 2);
+
+const sanitizeDecimalText = (value: string) => {
+  const normalized = value.replace(/[^\d.]/g, '');
+  const parts = normalized.split('.');
+  if (parts.length <= 1) {
+    return normalized.slice(0, 5);
+  }
+  return `${parts[0].slice(0, 3)}.${parts.slice(1).join('').slice(0, 1)}`;
+};
+
+const normalizeDecimalText = (value: unknown) => {
+  const text = sanitizeDecimalText(String(value ?? ''));
+  if (!text) {
+    return '';
+  }
+  const number = Number(text);
+  if (Number.isNaN(number)) {
+    return '';
+  }
+  return number.toFixed(text.includes('.') ? 1 : 0);
+};
+
+const normalizeSleepScore = (value: unknown) => {
+  const numeric = Number(String(value ?? '').replace(/[^\d]/g, ''));
+  if (Number.isNaN(numeric)) {
+    return DEFAULT_FOLLOWUP_FORM.sleepScore;
+  }
+  return String(Math.min(10, Math.max(0, numeric)));
+};
+
+const getLatestSymptomValue = (profile: PatientProfile, symptomKey: string) =>
+  profile.symptomScores.find((item) => item.symptomKey === symptomKey)?.score ?? null;
+
+const getLatestFunctionTestValue = (profile: PatientProfile, testType: string) => {
+  const item = profile.functionTests
+    .filter((entry) => entry.testType === testType && entry.measuredValue !== null)
+    .sort((a, b) => new Date(b.performedAt).getTime() - new Date(a.performedAt).getTime())[0];
+
+  return item?.measuredValue ?? null;
+};
+
+const getLatestFallCount = (profile: PatientProfile) => {
+  const item = profile.followupEvents.find((event) => event.eventType === 'fall');
+  if (!item) {
+    return null;
+  }
+
+  const matched = item.description?.match(/(\d+)/);
+  if (matched?.[1]) {
+    return matched[1];
+  }
+
+  if (item.severity === 'severe') return '3';
+  if (item.severity === 'moderate') return '2';
+  return '1';
+};
+
+const deriveFollowupForm = (profile: PatientProfile): Partial<FollowupFormState> => {
+  const latestStairClimb = getLatestFunctionTestValue(profile, 'stair_climb');
+
+  return {
+    stairClimbSeconds: latestStairClimb !== null ? String(latestStairClimb) : '',
+    sleepScore: normalizeSleepScore(getLatestSymptomValue(profile, 'sleep_quality')),
+    fallCount: getLatestFallCount(profile) ?? DEFAULT_FOLLOWUP_FORM.fallCount,
+  };
+};
+
+const deriveStairDifficultyLevel = (seconds: number) => {
+  if (seconds <= 10) return 1;
+  if (seconds <= 18) return 2;
+  if (seconds <= 28) return 3;
+  if (seconds <= 40) return 4;
+  return 5;
+};
+
+const deriveEventForm = (profile: PatientProfile): Partial<EventFormState> => {
+  const latestEvent = profile.followupEvents[0];
+  if (!latestEvent) {
+    return {};
+  }
+
+  return {
+    eventType: normalizeEventType(latestEvent.eventType),
+    severity: normalizeSeverity(latestEvent.severity),
+    occurredAt: latestEvent.occurredAt?.slice(0, 10) || DEFAULT_EVENT_FORM.occurredAt,
+    description: latestEvent.description ?? '',
+  };
+};
+
+const renderSingleChoice = <T extends string>(
+  label: string,
+  value: T,
+  options: Array<{ key: T; label: string }>,
+  onChange: (next: T) => void,
+) => (
+  <View style={styles.fieldBlock}>
+    <Text style={styles.fieldLabel}>{label}</Text>
+    <View style={styles.choiceRow}>
+      {options.map((option) => (
+        <TouchableOpacity
+          key={option.key}
+          style={[styles.choiceChip, value === option.key && styles.choiceChipActive]}
+          activeOpacity={0.88}
+          onPress={() => onChange(option.key)}
+        >
+          <Text
+            style={[styles.choiceChipText, value === option.key && styles.choiceChipTextActive]}
+          >
+            {option.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  </View>
+);
+
+const renderSleepScorePicker = (value: string, onChange: (next: string) => void) => (
+  <View style={styles.scoreBlock}>
+    <View style={styles.fieldHeaderRow}>
+      <Text style={styles.fieldLabel}>最近一周睡眠质量评分</Text>
+      <Text style={styles.fieldHint}>0 到 10 分</Text>
+    </View>
+    <Text style={styles.sectionSubtitle}>0 表示几乎没睡好，10 表示睡得很好且醒后比较恢复。</Text>
+    <View style={styles.scoreRow}>
+      {Array.from({ length: 11 }, (_, index) => {
+        const active = value === String(index);
+        return (
+          <TouchableOpacity
+            key={index}
+            style={[styles.scoreChip, active && styles.scoreChipActive]}
+            activeOpacity={0.88}
+            onPress={() => onChange(String(index))}
+          >
+            <Text style={[styles.scoreChipText, active && styles.scoreChipTextActive]}>
+              {index}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+    <View style={styles.scoreHintWrap}>
+      {sleepScoreRangeHints.map((item) => (
+        <View key={item} style={styles.scoreHintChip}>
+          <Text style={styles.scoreHintText}>{item}</Text>
+        </View>
+      ))}
+    </View>
+  </View>
+);
 
 const DataEntryScreen = () => {
   const router = useRouter();
-  const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [entryMode, setEntryMode] = useState<EntryMode>('followup');
+  const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDraftsHydrated, setIsDraftsHydrated] = useState(false);
+  const [followupForm, setFollowupForm] = useState<FollowupFormState>(DEFAULT_FOLLOWUP_FORM);
+  const [eventForm, setEventForm] = useState<EventFormState>(DEFAULT_EVENT_FORM);
+  const [uploadDraft, setUploadDraft] = useState<UploadDraft>(DEFAULT_UPLOAD_DRAFT);
 
-  const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
-    mri: '未上传',
-    genetic: '未上传',
-    blood: '未上传',
-  });
+  const loadContext = async () => {
+    setIsLoading(true);
+    setIsDraftsHydrated(false);
 
-  const [reportHistory, setReportHistory] = useState<ReportHistoryItem[]>([]);
-
-  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
-
-  const [muscleStrength, setMuscleStrength] = useState<MuscleStrengthData>({
-    group: null,
-    value: 0,
-  });
-  const [muscleStrengthMap, setMuscleStrengthMap] = useState<Record<string, number>>({});
-
-  const [isTimerRunning, setIsTimerRunning] = useState(false);
-  const [timerSeconds, setTimerSeconds] = useState(0);
-  const [isRecording, setIsRecording] = useState(false);
-  const [activityText, setActivityText] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [medicationForm, setMedicationForm] = useState({
-    medicationName: '',
-    dosage: '',
-    frequency: '',
-    route: '',
-  });
-  const [medications, setMedications] = useState<any[]>([]);
-  const [uploadedDocumentIds, setUploadedDocumentIds] = useState<string[]>([]);
-
-  const muscleGroups = [
-    { id: 'deltoid', name: '三角肌', icon: 'shield-halved', color: '#969FFF' },
-    { id: 'biceps', name: '肱二头肌', icon: 'dumbbell', color: '#5147FF' },
-    { id: 'triceps', name: '肱三头肌', icon: 'hand-fist', color: '#3E3987' },
-    { id: 'tibialis', name: '胫骨前肌', icon: 'person-running', color: '#10B981' },
-    { id: 'quadriceps', name: '股四头肌', icon: 'person-running', color: '#F97316' },
-    { id: 'hamstrings', name: '腘绳肌', icon: 'person-running', color: '#EF4444' },
-    { id: 'gluteus', name: '臀肌', icon: 'person-running', color: '#22D3EE' },
-  ];
-
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
-  };
-
-  const handleMuscleGroupSelect = (group: string) => {
-    setMuscleStrength({
-      group,
-      value: muscleStrengthMap[group] ?? 0,
-    });
-  };
-
-  const handleStrengthValueChange = (value: number) => {
-    const rounded = Math.round(value);
-    setMuscleStrength((prev) => ({
-      ...prev,
-      value: rounded,
-    }));
-    setMuscleStrengthMap((prev) => {
-      if (!muscleStrength.group) return prev;
-      return {
-        ...prev,
-        [muscleStrength.group]: rounded,
-      };
-    });
-  };
-
-  const startTimer = () => {
-    setIsTimerRunning(true);
-    setTimerSeconds(0);
-    timerInterval.current = setInterval(() => {
-      setTimerSeconds((prev) => prev + 1);
-    }, 1000);
-  };
-
-  const stopTimer = () => {
-    setIsTimerRunning(false);
-    if (timerInterval.current) {
-      clearInterval(timerInterval.current);
-      timerInterval.current = null;
-    }
-  };
-
-  const handleTimerToggle = () => {
-    if (isTimerRunning) {
-      stopTimer();
-    } else {
-      startTimer();
-    }
-  };
-
-  const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const handleVoiceToggle = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      return;
-    }
-    setIsRecording(true);
-    setTimeout(() => {
-      setActivityText('今天完成 20 分钟肩部康复训练，下午散步 40 分钟。');
-      setIsRecording(false);
-    }, 3000);
-  };
-
-  const formatTimestamp = (date: Date) => {
-    const yyyy = date.getFullYear();
-    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
-    const dd = `${date.getDate()}`.padStart(2, '0');
-    const hh = `${date.getHours()}`.padStart(2, '0');
-    const min = `${date.getMinutes()}`.padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
-  };
-
-  const mapDocumentTypeToReportType = (documentType?: string): ReportType | null => {
-    switch (documentType) {
-      case 'mri':
-        return 'mri';
-      case 'genetic_report':
-        return 'genetic';
-      case 'blood_panel':
-        return 'blood';
-      default:
-        return null;
-    }
-  };
-
-  const buildStrengthMapFromProfile = (profile: any) => {
-    if (!profile?.measurements?.length) {
-      return {};
-    }
-    const map: Record<string, number> = {};
-    profile.measurements.forEach((item: any) => {
-      const existing = map[item.muscleGroup];
-      if (existing === undefined) {
-        map[item.muscleGroup] = Number(item.strengthScore);
-      }
-    });
-    return map;
-  };
-
-  const buildReportHistoryFromProfile = (profile: any) => {
-    if (!profile?.documents?.length) {
-      return [];
-    }
-    return profile.documents
-      .map((doc: any) => {
-        const type = mapDocumentTypeToReportType(doc.documentType);
-        if (!type) return null;
-        const timestamp = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
-        return {
-          id: doc.id,
-          type,
-          source: '上传' as const,
-          timestamp: formatTimestamp(timestamp),
-          fileName: doc.fileName ?? doc.title ?? undefined,
-          ocrSummary: doc.ocrPayload?.extractedText ?? doc.ocrPayload?.fields?.hint ?? undefined,
-        };
-      })
-      .filter(Boolean)
-      .sort(
-        (a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-      ) as ReportHistoryItem[];
-  };
-
-  const buildTimelineFromProfile = (profile: any) => {
-    const events: Array<{ event: TimelineEvent; sortKey: number }> = [];
-
-    profile?.documents?.forEach((doc: any) => {
-      const type = mapDocumentTypeToReportType(doc.documentType);
-      if (!type) return;
-      const time = doc.uploadedAt ? new Date(doc.uploadedAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `doc-${doc.id}`,
-          title: `${reportLabels[type]}已上传`,
-          description:
-            doc.ocrPayload?.extractedText ??
-            doc.ocrPayload?.fields?.hint ??
-            doc.fileName ??
-            '已上传',
-          timestamp: formatTimestamp(time),
-          tag: '报告',
-        },
-      });
-    });
-
-    profile?.measurements?.forEach((item: any) => {
-      const time = item.recordedAt ? new Date(item.recordedAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `measurement-${item.id}`,
-          title: `${getMuscleGroupName(item.muscleGroup)}肌力更新`,
-          description: `肌力 ${Number(item.strengthScore)} 级`,
-          timestamp: formatTimestamp(time),
-          tag: '肌力',
-        },
-      });
-    });
-
-    profile?.activityLogs?.forEach((item: any) => {
-      const time = item.createdAt ? new Date(item.createdAt) : new Date();
-      events.push({
-        sortKey: time.getTime(),
-        event: {
-          id: `activity-${item.id}`,
-          title: '日常活动记录',
-          description: item.content ?? '已记录活动',
-          timestamp: formatTimestamp(time),
-          tag: '活动',
-        },
-      });
-    });
-
-    return events.sort((a, b) => b.sortKey - a.sortKey).map((item) => item.event);
-  };
-
-  const loadProfile = async () => {
     try {
-      const [data, meds] = await Promise.all([getMyPatientProfile(), getMedications()]);
-      setMuscleStrengthMap(buildStrengthMapFromProfile(data));
-      setReportHistory(buildReportHistoryFromProfile(data));
-      setTimelineEvents(buildTimelineFromProfile(data));
-      setMedications(meds ?? []);
+      const [savedFollowup, savedEvent, savedEntryMode] = await Promise.all([
+        parseStoredDraft<FollowupFormState>(DATA_ENTRY_DRAFT_KEYS.followup),
+        parseStoredDraft<EventFormState>(DATA_ENTRY_DRAFT_KEYS.event),
+        getSessionValue(DATA_ENTRY_DRAFT_KEYS.entryMode),
+      ]);
 
-      const existingTypes = new Set(
-        (data.documents ?? []).map((doc: any) => mapDocumentTypeToReportType(doc.documentType)),
-      );
-      setUploadStatus({
-        mri: existingTypes.has('mri') ? '已上传' : '未上传',
-        genetic: existingTypes.has('genetic') ? '已上传' : '未上传',
-        blood: existingTypes.has('blood') ? '已上传' : '未上传',
-      });
-    } catch (error) {
-      if (!(error instanceof ApiError && error.status === 404)) {
-        console.error('加载档案失败:', error);
+      setEntryMode(normalizeEntryMode(savedEntryMode));
+
+      try {
+        const profileData = await getMyPatientProfile();
+        setProfile(profileData);
+        const normalizedSavedFollowup = savedFollowup
+          ? {
+              stairClimbSeconds: normalizeDecimalText(
+                (savedFollowup as Record<string, unknown>).stairClimbSeconds,
+              ),
+              sleepScore: normalizeSleepScore(
+                (savedFollowup as Record<string, unknown>).sleepScore,
+              ),
+              fallCount: normalizeIntegerText(savedFollowup.fallCount, '0'),
+            }
+          : null;
+        setFollowupForm({
+          ...DEFAULT_FOLLOWUP_FORM,
+          ...deriveFollowupForm(profileData),
+          ...(normalizedSavedFollowup ?? {}),
+        });
+        setEventForm({
+          ...DEFAULT_EVENT_FORM,
+          ...deriveEventForm(profileData),
+          ...(savedEvent
+            ? {
+                ...savedEvent,
+                eventType: normalizeEventType(savedEvent.eventType),
+                severity: normalizeSeverity(savedEvent.severity),
+              }
+            : {}),
+        });
+      } catch {
+        setProfile(null);
+        const normalizedSavedFollowup = savedFollowup
+          ? {
+              stairClimbSeconds: normalizeDecimalText(
+                (savedFollowup as Record<string, unknown>).stairClimbSeconds,
+              ),
+              sleepScore: normalizeSleepScore(
+                (savedFollowup as Record<string, unknown>).sleepScore,
+              ),
+              fallCount: normalizeIntegerText(savedFollowup.fallCount, '0'),
+            }
+          : null;
+        setFollowupForm({
+          ...DEFAULT_FOLLOWUP_FORM,
+          ...(normalizedSavedFollowup ?? {}),
+        });
+        setEventForm({
+          ...DEFAULT_EVENT_FORM,
+          ...(savedEvent
+            ? {
+                ...savedEvent,
+                eventType: normalizeEventType(savedEvent.eventType),
+                severity: normalizeSeverity(savedEvent.severity),
+              }
+            : {}),
+        });
       }
-      setMuscleStrengthMap({});
-      setReportHistory([]);
-      setTimelineEvents([]);
-      setMedications([]);
+
+      setUploadDraft(DEFAULT_UPLOAD_DRAFT);
+    } catch {
+      setProfile(null);
+    } finally {
+      setIsDraftsHydrated(true);
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadProfile();
+    loadContext().catch(() => undefined);
   }, []);
 
-  const ensureProfileExists = async () => {
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void setSessionValue(DATA_ENTRY_DRAFT_KEYS.entryMode, entryMode);
+  }, [entryMode, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.followup, followupForm);
+  }, [followupForm, isDraftsHydrated]);
+
+  useEffect(() => {
+    if (!isDraftsHydrated) {
+      return;
+    }
+
+    void persistDraft(DATA_ENTRY_DRAFT_KEYS.event, eventForm);
+  }, [eventForm, isDraftsHydrated]);
+
+  const ensureProfileReady = async (fullName: string) => {
+    if (profile) {
+      return profile;
+    }
+
+    const created = (await upsertPatientProfile({
+      fullName: fullName.trim() || 'FSHD 患者',
+    })) as PatientProfile;
+    setProfile(created);
+    return created;
+  };
+
+  const pickDocument = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      multiple: false,
+      copyToCacheDirectory: true,
+    });
+
+    if (result.canceled || !result.assets?.length) {
+      return;
+    }
+
+    const asset = result.assets[0] as DocumentPicker.DocumentPickerAsset & {
+      file?: File;
+    };
+
+    setUploadDraft((prev) => ({
+      ...prev,
+      name: asset.name,
+      title: '',
+      file:
+        asset.file instanceof File
+          ? asset.file
+          : {
+              uri: asset.uri,
+              name: asset.name,
+              type: asset.mimeType ?? 'application/octet-stream',
+            },
+    }));
+  };
+
+  const uploadDocument = async (submissionId?: string) => {
+    if (!uploadDraft.file) {
+      throw new Error('请先选择要上传的报告文件');
+    }
+
+    await uploadPatientDocument({
+      documentType: 'other',
+      title: uploadDraft.title.trim() || undefined,
+      submissionId,
+      file: uploadDraft.file,
+    });
+  };
+
+  const resetUploadDraft = () => {
+    setUploadDraft(DEFAULT_UPLOAD_DRAFT);
+  };
+
+  const handleFollowupSubmit = async () => {
+    setIsSubmitting(true);
+
     try {
-      await getMyPatientProfile();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        await upsertPatientProfile({});
+      const ensuredProfile = await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const stairClimbSeconds = Number(followupForm.stairClimbSeconds);
+      const sleepScore = Number(followupForm.sleepScore);
+      const fallCount = Number(followupForm.fallCount || '0');
+
+      if (Number.isNaN(stairClimbSeconds) || stairClimbSeconds <= 0) {
+        Alert.alert('请补充上楼计时', '请按“连续上 10 级台阶”的标准填写本次用时。');
+        return;
+      }
+
+      if (Number.isNaN(sleepScore) || sleepScore < 0 || sleepScore > 10) {
+        Alert.alert('请补充睡眠评分', '睡眠质量请按 0 到 10 分选择。');
+        return;
+      }
+
+      if (Number.isNaN(fallCount) || fallCount < 0) {
+        Alert.alert('请检查跌倒次数', '跌倒次数请填写 0 或更大的整数。');
+        return;
+      }
+
+      const previousStairClimbSeconds = getLatestFunctionTestValue(
+        profile ?? ensuredProfile,
+        'stair_climb',
+      );
+      const previousSleepScore = getLatestSymptomValue(profile ?? ensuredProfile, 'sleep_quality');
+      const hasChanges =
+        fallCount > 0 ||
+        (typeof previousStairClimbSeconds === 'number' &&
+          Math.abs(previousStairClimbSeconds - stairClimbSeconds) >= 2) ||
+        (typeof previousSleepScore === 'number' && Math.abs(previousSleepScore - sleepScore) >= 1);
+
+      const summaryParts = [
+        `睡眠评分 ${sleepScore}/10`,
+        `10 级台阶用时 ${stairClimbSeconds.toFixed(1)} 秒`,
+      ];
+
+      if (fallCount > 0) {
+        summaryParts.push(`最近跌倒 ${fallCount} 次`);
       } else {
-        throw error;
-      }
-    }
-  };
-
-  const handleFileUpload = async (type: ReportType) => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('权限不足', '需要访问相册权限才能上传文件');
-        return;
-      }
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '上传中...',
-      }));
-      await ensureProfileExists();
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 1,
-      });
-      if (result.canceled) {
-        setUploadStatus((prev) => ({
-          ...prev,
-          [type]: '未上传',
-        }));
-        return;
-      }
-      const asset = result.assets?.[0];
-      if (!asset?.uri) {
-        throw new Error('无法读取文件');
-      }
-      const fileName = asset.fileName ?? `report-${type}-${Date.now()}`;
-      const uploadFile =
-        Platform.OS === 'web'
-          ? await (async () => {
-              const response = await fetch(asset.uri);
-              const blob = await response.blob();
-              return new File([blob], fileName, {
-                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
-              });
-            })()
-          : {
-              uri: asset.uri,
-              name: fileName,
-              type: asset.mimeType ?? 'application/octet-stream',
-            };
-      const response = await uploadPatientDocument({
-        documentType: documentTypeMap[type],
-        title: reportLabels[type],
-        file: uploadFile,
-      });
-      if (response?.id) {
-        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
-      }
-      const ocrSummary =
-        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '已上传',
-      }));
-      setReportHistory((prev) =>
-        [
-          {
-            id: `report-${Date.now()}`,
-            type,
-            source: '相册',
-            timestamp: formatTimestamp(new Date()),
-            fileName,
-            ocrSummary,
-          },
-          ...prev,
-        ].slice(0, 5),
-      );
-      await loadProfile();
-    } catch (error) {
-      console.error('文件上传失败:', error);
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '未上传',
-      }));
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '文件上传过程中出现错误，请稍后再试。';
-      Alert.alert('上传失败', message);
-    }
-  };
-
-  const handleCameraCapture = async (type: ReportType) => {
-    try {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('权限不足', '需要访问相机权限才能拍照');
-        return;
-      }
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '上传中...',
-      }));
-      await ensureProfileExists();
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 1,
-      });
-      if (result.canceled) {
-        setUploadStatus((prev) => ({
-          ...prev,
-          [type]: '未上传',
-        }));
-        return;
-      }
-      const asset = result.assets?.[0];
-      if (!asset?.uri) {
-        throw new Error('无法读取文件');
-      }
-      const fileName = asset.fileName ?? `camera-${type}-${Date.now()}`;
-      const uploadFile =
-        Platform.OS === 'web'
-          ? await (async () => {
-              const response = await fetch(asset.uri);
-              const blob = await response.blob();
-              return new File([blob], fileName, {
-                type: asset.mimeType ?? blob.type ?? 'application/octet-stream',
-              });
-            })()
-          : {
-              uri: asset.uri,
-              name: fileName,
-              type: asset.mimeType ?? 'application/octet-stream',
-            };
-      const response = await uploadPatientDocument({
-        documentType: documentTypeMap[type],
-        title: reportLabels[type],
-        file: uploadFile,
-      });
-      if (response?.id) {
-        setUploadedDocumentIds((prev) => Array.from(new Set([...prev, response.id])));
-      }
-      const ocrSummary =
-        response?.ocrPayload?.extractedText ?? response?.ocrPayload?.fields?.hint ?? 'OCR解析完成';
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '已上传',
-      }));
-      setReportHistory((prev) =>
-        [
-          {
-            id: `report-${Date.now()}`,
-            type,
-            source: '相机',
-            timestamp: formatTimestamp(new Date()),
-            fileName,
-            ocrSummary,
-          },
-          ...prev,
-        ].slice(0, 5),
-      );
-      await loadProfile();
-    } catch (error) {
-      console.error('拍照失败:', error);
-      setUploadStatus((prev) => ({
-        ...prev,
-        [type]: '未上传',
-      }));
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '拍照过程中出现错误，请稍后再试。';
-      Alert.alert('拍照失败', message);
-    }
-  };
-
-  const handleSubmit = async () => {
-    try {
-      setIsLoading(true);
-
-      await ensureProfileExists();
-
-      const hasMeasurements = Object.values(muscleStrengthMap).some((value) => value > 0);
-      const hasActivity = timerSeconds > 0 || Boolean(activityText.trim());
-      const hasMedication = Boolean(medicationForm.medicationName.trim());
-      const hasDocuments = uploadedDocumentIds.length > 0;
-      if (!hasMeasurements && !hasActivity && !hasMedication && !hasDocuments) {
-        Alert.alert('提示', '请至少录入一项数据');
-        return;
+        summaryParts.push('最近未记录跌倒');
       }
 
-      const submission = await createSubmission();
-      const submissionId = submission.id;
-
-      const requests: Promise<unknown>[] = [];
-
-      // 提交肌力测量
-      Object.entries(muscleStrengthMap).forEach(([group, value]) => {
-        if (value > 0) {
-          requests.push(
-            addPatientMeasurement({
-              muscleGroup: group,
-              strengthScore: value,
-              recordedAt: new Date().toISOString(),
-              submissionId,
-            }),
-          );
-        }
+      const submission = await createSubmission({
+        submissionKind: 'followup',
+        summary: summaryParts.join('；'),
+        changedSinceLast: hasChanges,
       });
 
-      const nowIso = new Date().toISOString();
+      const requests: Array<Promise<unknown>> = [
+        addSymptomScore({
+          submissionId: submission.id,
+          symptomKey: 'sleep_quality',
+          score: sleepScore,
+          scaleMin: 0,
+          scaleMax: 10,
+          notes: '0=很差，10=很好',
+        }),
+        addFunctionTest({
+          submissionId: submission.id,
+          testType: 'stair_climb',
+          measuredValue: stairClimbSeconds,
+          unit: 'sec',
+          protocol: '连续上 10 级台阶',
+          notes: '患者端快速随访量化记录',
+        }),
+        addDailyImpact({
+          submissionId: submission.id,
+          adlKey: 'stairs',
+          difficultyLevel: deriveStairDifficultyLevel(stairClimbSeconds),
+          notes: `标准：连续上 10 级台阶；本次用时 ${stairClimbSeconds.toFixed(1)} 秒`,
+        }),
+      ];
 
-      // 提交楼梯测试结果作为活动日志
-      if (timerSeconds > 0) {
+      if (fallCount > 0) {
         requests.push(
-          addActivityLog({
-            logDate: nowIso,
-            source: 'stair_test',
-            content: `楼梯测试用时 ${formatTime(timerSeconds)}`,
-            submissionId,
-          }),
-        );
-      }
-
-      // 提交日常活动
-      if (activityText.trim()) {
-        requests.push(
-          addActivityLog({
-            logDate: nowIso,
-            source: 'manual',
-            content: activityText.trim(),
-            submissionId,
-          }),
-        );
-      }
-
-      if (medicationForm.medicationName.trim()) {
-        requests.push(
-          addMedication({
-            medicationName: medicationForm.medicationName.trim(),
-            dosage: medicationForm.dosage.trim() || null,
-            frequency: medicationForm.frequency.trim() || null,
-            route: medicationForm.route.trim() || null,
-            submissionId,
+          addFollowupEvent({
+            submissionId: submission.id,
+            eventType: 'fall',
+            severity: fallCount >= 3 ? 'severe' : fallCount >= 2 ? 'moderate' : 'mild',
+            occurredAt: todayIsoDate(),
+            description: `最近跌倒 ${fallCount} 次`,
           }),
         );
       }
 
       await Promise.all(requests);
 
-      if (uploadedDocumentIds.length > 0) {
-        await attachSubmissionDocuments(submissionId, uploadedDocumentIds);
-      }
-
-      setMedicationForm({
-        medicationName: '',
-        dosage: '',
-        frequency: '',
-        route: '',
-      });
-      setUploadedDocumentIds([]);
-
-      await loadProfile();
-      Alert.alert('提交成功', '数据已成功添加/更新！', [
-        { text: '继续添加/更新' },
-        {
-          text: '返回上一页',
-          onPress: () => {
-            if (router.canGoBack()) {
-              router.back();
-            }
-          },
-        },
-      ]);
+      resetUploadDraft();
+      setProfile(ensuredProfile);
+      await loadContext();
+      Alert.alert('已保存', '快速随访已完成。');
+      router.replace('/p-home');
     } catch (error) {
-      const message =
-        error instanceof ApiError && error.message
-          ? error.message
-          : '数据提交过程中出现错误，请稍后再试。';
-      console.error('提交失败:', error);
-      Alert.alert('提交失败', message);
+      const message = error instanceof Error ? error.message : '随访保存失败';
+      Alert.alert('保存失败', message);
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const getMuscleGroupName = (group: string | null): string => {
-    if (!group) return '请选择肌群';
-    const muscleGroup = muscleGroups.find((mg) => mg.id === group);
-    return muscleGroup ? muscleGroup.name : '请选择肌群';
-  };
+  const handleEventSubmit = async () => {
+    setIsSubmitting(true);
 
-  const getStatusColor = (status: string): string => {
-    switch (status) {
-      case '已上传':
-        return '#10B981';
-      case '上传中...':
-        return '#F59E0B';
-      default:
-        return '#9CA3AF';
+    try {
+      await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const submission = await createSubmission({
+        submissionKind: 'event',
+        summary: eventOptions.find((item) => item.key === eventForm.eventType)?.label ?? '事件记录',
+        changedSinceLast: true,
+      });
+
+      await Promise.all([
+        addFollowupEvent({
+          submissionId: submission.id,
+          eventType: eventForm.eventType,
+          severity: eventForm.severity,
+          occurredAt: eventForm.occurredAt,
+          description: eventForm.description || null,
+        }),
+      ]);
+
+      resetUploadDraft();
+      await loadContext();
+      Alert.alert('已保存', '事件记录已添加。');
+      router.replace('/p-home');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '事件保存失败';
+      Alert.alert('保存失败', message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
-          <FontAwesome6 name="arrow-left" size={16} color="#9CA3AF" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>添加/更新数据</Text>
-        <View style={styles.headerPlaceholder} />
+  const handleReportSubmit = async () => {
+    setIsSubmitting(true);
+
+    try {
+      await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const submission = await createSubmission({
+        submissionKind: 'event',
+        summary: uploadDraft.title.trim() || uploadDraft.name || '上传报告',
+        changedSinceLast: false,
+      });
+
+      await uploadDocument(submission.id);
+
+      resetUploadDraft();
+      await loadContext();
+      Alert.alert('已上传', '报告已上传，系统会自动识别报告类型和关键指标。');
+      router.replace('/p-home');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '报告上传失败';
+      Alert.alert('上传失败', message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const renderUploadSection = () => (
+    <View style={styles.sectionCard}>
+      <Text style={styles.sectionTitle}>报告上传</Text>
+      <Text style={styles.sectionSubtitle}>
+        无需选择类别，系统会根据报告内容自动识别类型、报告时间和关键指标。
+      </Text>
+
+      <View style={styles.fieldBlock}>
+        <Text style={styles.fieldLabel}>报告标题（可选）</Text>
+        <TextInput
+          value={uploadDraft.title}
+          onChangeText={(value) => setUploadDraft((prev) => ({ ...prev, title: value }))}
+          placeholder="可留空，系统会按识别结果展示名称"
+          placeholderTextColor={CLINICAL_COLORS.textMuted}
+          style={styles.input}
+        />
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>医疗报告</Text>
+      <TouchableOpacity style={styles.uploadButton} activeOpacity={0.88} onPress={pickDocument}>
+        <FontAwesome6 name="file-arrow-up" size={14} color={CLINICAL_COLORS.accentStrong} />
+        <Text style={styles.uploadButtonText}>
+          {uploadDraft.name ? `已选择：${uploadDraft.name}` : '选择 PDF、图片或其他文件'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
 
-          {(['mri', 'genetic', 'blood'] as ReportType[]).map((type) => (
-            <View style={styles.uploadCard} key={type}>
-              <View style={styles.uploadHeader}>
-                <Text style={styles.uploadTitle}>{reportLabels[type]}</Text>
-                <Text style={[styles.uploadStatus, { color: getStatusColor(uploadStatus[type]) }]}>
-                  {uploadStatus[type]}
-                </Text>
+  const renderFollowupForm = () => (
+    <View style={styles.formStack}>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>量化随访</Text>
+        <Text style={styles.sectionSubtitle}>
+          这里直接记录患者端仍在持续追踪的量化数据；新问题、辅具、训练和用药变化请放到“事件记录”。
+        </Text>
+        <View style={styles.fieldBlock}>
+          <View style={styles.fieldHeaderRow}>
+            <Text style={styles.fieldLabel}>标准化上楼记录</Text>
+            <Text style={styles.fieldHint}>连续上 10 级台阶</Text>
+          </View>
+          <Text style={styles.sectionSubtitle}>
+            请填写这次完成 10
+            级台阶所用的秒数；如果今天中途停顿、扶栏或无法完成，可在“事件记录”补充说明。
+          </Text>
+          <TextInput
+            value={followupForm.stairClimbSeconds}
+            onChangeText={(value) =>
+              setFollowupForm((prev) => ({
+                ...prev,
+                stairClimbSeconds: sanitizeDecimalText(value),
+              }))
+            }
+            placeholder="例如 18.5"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            keyboardType="decimal-pad"
+            style={styles.input}
+          />
+          <View style={styles.scoreHintWrap}>
+            {['≤10 秒 较轻松', '11-20 秒 一般', '21-30 秒 偏慢', '>30 秒 需关注'].map((item) => (
+              <View key={item} style={styles.scoreHintChip}>
+                <Text style={styles.scoreHintText}>{item}</Text>
               </View>
-              <View style={styles.uploadArea}>
-                <TouchableOpacity
-                  style={[styles.cameraButton, { backgroundColor: 'rgba(150, 159, 255, 0.2)' }]}
-                  onPress={() => handleCameraCapture(type)}
-                >
-                  <FontAwesome6 name="camera" size={18} color="#969FFF" />
-                </TouchableOpacity>
-                <Text style={styles.uploadHint}>拍照上传或选择文件</Text>
-                <TouchableOpacity onPress={() => handleFileUpload(type)}>
-                  <Text style={[styles.uploadButtonText, { color: '#969FFF' }]}>选择文件</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+            ))}
+          </View>
+        </View>
+        {renderSleepScorePicker(followupForm.sleepScore, (value) =>
+          setFollowupForm((prev) => ({ ...prev, sleepScore: value })),
+        )}
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>最近跌倒次数</Text>
+          <Text style={styles.sectionSubtitle}>
+            按最近一段时间内发生的实际跌倒次数填写；没有跌倒就填 0。
+          </Text>
+          <TextInput
+            value={followupForm.fallCount}
+            onChangeText={(value) =>
+              setFollowupForm((prev) => ({
+                ...prev,
+                fallCount: sanitizeIntegerText(value),
+              }))
+            }
+            placeholder="0"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleFollowupSubmit}
+      >
+        <Text style={styles.submitButtonText}>完成快速随访</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderReportForm = () => (
+    <View style={styles.formStack}>
+      {renderUploadSection()}
+
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>上传后会自动完成这些事</Text>
+        <Text style={styles.sectionSubtitle}>
+          系统会自动识别报告分类、提取日期和结构化指标，并在时间轴、报告管理和检查结果里更新展示。
+        </Text>
+        <View style={styles.tipList}>
+          <View style={styles.tipItem}>
+            <FontAwesome6 name="check" size={12} color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.tipText}>支持 PDF、拍照图片和常见文档文件</Text>
+          </View>
+          <View style={styles.tipItem}>
+            <FontAwesome6 name="check" size={12} color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.tipText}>不需要患者手动选择报告类别</Text>
+          </View>
+          <View style={styles.tipItem}>
+            <FontAwesome6 name="check" size={12} color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.tipText}>上传后可在“报告管理”里查看和删除</Text>
+          </View>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleReportSubmit}
+      >
+        <Text style={styles.submitButtonText}>上传这份报告</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderEventForm = () => (
+    <View style={styles.formStack}>
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>事件与干预记录</Text>
+        <Text style={styles.sectionSubtitle}>
+          辅具、训练、用药变化和补充说明都放在这里，不再和随访分开填。
+        </Text>
+        <View style={styles.choiceRow}>
+          {eventOptions.map((option) => (
+            <TouchableOpacity
+              key={option.key}
+              style={[
+                styles.choiceChip,
+                eventForm.eventType === option.key && styles.choiceChipActive,
+              ]}
+              activeOpacity={0.88}
+              onPress={() => setEventForm((prev) => ({ ...prev, eventType: option.key }))}
+            >
+              <Text
+                style={[
+                  styles.choiceChipText,
+                  eventForm.eventType === option.key && styles.choiceChipTextActive,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </TouchableOpacity>
           ))}
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>用药记录</Text>
-          <View style={styles.profileCard}>
-            <Text style={styles.inputLabel}>药物名称</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：维生素D"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.medicationName}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  medicationName: value,
-                }))
-              }
-            />
+        {renderSingleChoice('严重程度', eventForm.severity, severityOptions, (value) =>
+          setEventForm((prev) => ({ ...prev, severity: value })),
+        )}
 
-            <Text style={styles.inputLabel}>剂量</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：1片"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.dosage}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  dosage: value,
-                }))
-              }
-            />
-
-            <Text style={styles.inputLabel}>频次</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：每日一次"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.frequency}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  frequency: value,
-                }))
-              }
-            />
-
-            <Text style={styles.inputLabel}>用药途径</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="例如：口服"
-              placeholderTextColor="#9CA3AF"
-              value={medicationForm.route}
-              onChangeText={(value) =>
-                setMedicationForm((prev) => ({
-                  ...prev,
-                  route: value,
-                }))
-              }
-            />
-          </View>
-
-          <View style={styles.historyCard}>
-            <Text style={styles.historyTitle}>当前用药</Text>
-            {medications.length === 0 ? (
-              <Text style={styles.historyMeta}>暂无用药记录，提交后会展示在此处。</Text>
-            ) : (
-              medications.slice(0, 3).map((item) => (
-                <View key={item.id} style={{ marginTop: 8 }}>
-                  <Text style={styles.historyMeta}>{item.medicationName}</Text>
-                  <Text style={styles.historyMeta}>
-                    {item.dosage ?? '--'} · {item.frequency ?? '--'}
-                  </Text>
-                </View>
-              ))
-            )}
-          </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>发生日期</Text>
+          <TextInput
+            value={eventForm.occurredAt}
+            onChangeText={(value) => setEventForm((prev) => ({ ...prev, occurredAt: value }))}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+          />
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>报告上传历史</Text>
-          {reportHistory.length === 0 ? (
-            <View style={styles.historyCard}>
-              <Text style={styles.historyMeta}>暂无报告记录，上传后会展示在此处。</Text>
-            </View>
-          ) : (
-            reportHistory.map((item) => (
-              <View key={item.id} style={styles.historyCard}>
-                <View style={styles.historyHeader}>
-                  <Text style={styles.historyTitle}>{reportLabels[item.type]}</Text>
-                  <Text style={[styles.historyStatus, { color: '#10B981' }]}>已保存</Text>
-                </View>
-                <Text style={styles.historyMeta}>
-                  {item.timestamp} · {item.source}
-                </Text>
-                {item.fileName && <Text style={styles.historyMeta}>文件：{item.fileName}</Text>}
-                {item.ocrSummary && <Text style={styles.historyMeta}>OCR：{item.ocrSummary}</Text>}
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>发生了什么 / 这次做了什么调整</Text>
+          <TextInput
+            value={eventForm.description}
+            onChangeText={(value) => setEventForm((prev) => ({ ...prev, description: value }))}
+            placeholder="例如：开始使用 AFO，每周增加 2 次康复训练；这一周更容易绊脚"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            multiline
+            style={[styles.input, styles.textarea]}
+          />
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={handleEventSubmit}
+      >
+        <Text style={styles.submitButtonText}>保存事件记录</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const activeModeCard = modeCards.find((item) => item.key === entryMode) ?? modeCards[0];
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <LinearGradient
+        colors={CLINICAL_GRADIENTS.page}
+        style={styles.backgroundGradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <ScreenBackButton fallbackHref="/p-home" />
+              <View>
+                <Text style={styles.eyebrow}>PATIENT ENTRY</Text>
+                <Text style={styles.pageTitle}>患者自录与上传</Text>
               </View>
-            ))
-          )}
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>肌力评分</Text>
-          <View style={styles.muscleGroupGrid}>
-            {muscleGroups.map((group) => (
-              <TouchableOpacity
-                key={group.id}
-                style={[
-                  styles.muscleGroupItem,
-                  muscleStrength.group === group.id && styles.muscleGroupItemActive,
-                ]}
-                onPress={() => handleMuscleGroupSelect(group.id)}
-              >
-                <FontAwesome6
-                  name={group.icon}
-                  size={16}
-                  color={group.color}
-                  style={styles.muscleGroupIcon}
-                />
-                <Text style={styles.muscleGroupName}>{group.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <View style={styles.strengthSliderCard}>
-            <View style={styles.strengthHeader}>
-              <Text style={styles.selectedMuscle}>{getMuscleGroupName(muscleStrength.group)}</Text>
-              <Text style={styles.strengthValue}>{muscleStrength.value}</Text>
-            </View>
-
-            <View style={styles.sliderContainer}>
-              <Slider
-                style={styles.slider}
-                minimumValue={0}
-                maximumValue={5}
-                step={1}
-                value={muscleStrength.value}
-                onValueChange={handleStrengthValueChange}
-                minimumTrackTintColor="#969FFF"
-                maximumTrackTintColor="rgba(255, 255, 255, 0.1)"
-                disabled={!muscleStrength.group}
-              />
-            </View>
-
-            <View style={styles.strengthLabels}>
-              {[0, 1, 2, 3, 4, 5].map((level) => (
-                <Text key={level} style={styles.strengthLabel}>
-                  {level}级
-                </Text>
-              ))}
             </View>
           </View>
-        </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>楼梯测试</Text>
-          <View style={styles.timerCard}>
-            <View style={styles.timerIconContainer}>
-              <FontAwesome6
-                name={isTimerRunning ? 'stop' : timerSeconds > 0 ? 'check' : 'stopwatch'}
-                size={24}
-                color={isTimerRunning ? '#EF4444' : '#10B981'}
-              />
-            </View>
-            <Text style={styles.timerTitle}>爬楼计时</Text>
-            <Text style={styles.timerDescription}>记录 10 级楼梯所需时间</Text>
-            <Text style={styles.timerDisplay}>{formatTime(timerSeconds)}</Text>
-            <TouchableOpacity
-              style={[styles.timerButton, isTimerRunning && styles.timerButtonActive]}
-              onPress={handleTimerToggle}
-            >
-              <Text
-                style={[styles.timerButtonText, isTimerRunning && styles.timerButtonTextActive]}
-              >
-                {isTimerRunning ? '停止计时' : timerSeconds > 0 ? '重新计时' : '开始计时'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>日常活动</Text>
-          <View style={styles.activityCard}>
-            <View style={styles.activityHeader}>
-              <Text style={styles.activityTitle}>活动记录</Text>
-              <TouchableOpacity
-                style={[styles.voiceButton, isRecording && styles.voiceButtonActive]}
-                onPress={handleVoiceToggle}
-              >
-                <FontAwesome6
-                  name={isRecording ? 'stop' : 'micro.phone'}
-                  size={14}
-                  color={isRecording ? '#EF4444' : '#3B82F6'}
-                />
-              </TouchableOpacity>
-            </View>
-            <TextInput
-              style={styles.activityTextarea}
-              placeholder="记录今天的活动情况，如：上午完成 20 分钟康复训练，下午散步 1 小时..."
-              placeholderTextColor="#9CA3AF"
-              value={activityText}
-              onChangeText={setActivityText}
-              multiline
-              textAlignVertical="top"
-            />
-            {isRecording && (
-              <View style={styles.voiceStatus}>
-                <FontAwesome6 name="microphone" size={12} color="#9CA3AF" />
-                <Text style={styles.voiceStatusText}>正在录音...</Text>
+          <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+            <Text style={styles.heroTitle}>先选这次要完成的任务</Text>
+            <Text style={styles.heroDescription}>
+              选一个最符合这次目的的入口即可，填完后会自动更新时间轴、报告管理和检查结果。
+            </Text>
+            <View style={styles.heroMetaRow}>
+              <View style={styles.heroMetaCard}>
+                <Text style={styles.heroMetaValue}>{profile?.fullName ?? '未建档'}</Text>
+                <Text style={styles.heroMetaLabel}>当前档案</Text>
               </View>
-            )}
+              <View style={styles.heroMetaCard}>
+                <Text style={styles.heroMetaValue}>
+                  {profile?.baseline ? '已完成' : '注册时补'}
+                </Text>
+                <Text style={styles.heroMetaLabel}>基础档案</Text>
+              </View>
+            </View>
+          </LinearGradient>
+
+          <View style={styles.modeSection}>
+            <View style={styles.modeSectionHeader}>
+              <View>
+                <Text style={styles.modeSectionTitle}>选择本次任务</Text>
+                <Text style={styles.modeSectionSubtitle}>
+                  轻点下面任一入口，页面只展开当前对应的填写内容。
+                </Text>
+              </View>
+              <View style={styles.modeSectionPill}>
+                <Text style={styles.modeSectionPillText}>当前 {activeModeCard.order}</Text>
+              </View>
+            </View>
+
+            <View style={styles.modeGrid}>
+              {modeCards.map((item) => {
+                const active = entryMode === item.key;
+                return (
+                  <TouchableOpacity
+                    key={item.key}
+                    style={[styles.modeCard, active && styles.modeCardActive]}
+                    activeOpacity={0.9}
+                    onPress={() => setEntryMode(item.key)}
+                  >
+                    <View style={styles.modeCardTopRow}>
+                      <View style={styles.modeOrderWrap}>
+                        <Text style={styles.modeOrderText}>{item.order}</Text>
+                      </View>
+                      <View
+                        style={[styles.modeStatusBadge, active && styles.modeStatusBadgeActive]}
+                      >
+                        <Text
+                          style={[
+                            styles.modeStatusBadgeText,
+                            active && styles.modeStatusBadgeTextActive,
+                          ]}
+                        >
+                          {active ? '当前任务' : '可进入'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.modeIconWrap}>
+                      <FontAwesome6
+                        name={item.icon}
+                        size={18}
+                        color={active ? CLINICAL_COLORS.accentStrong : CLINICAL_COLORS.textSoft}
+                      />
+                    </View>
+
+                    <Text style={styles.modeEyebrow}>{item.eyebrow}</Text>
+                    <Text style={styles.modeTitle}>{item.title}</Text>
+                    <Text style={styles.modeDescription}>{item.description}</Text>
+
+                    <View style={styles.modeFooter}>
+                      <Text style={[styles.modeCtaText, active && styles.modeCtaTextActive]}>
+                        {item.cta}
+                      </Text>
+                      <FontAwesome6
+                        name="arrow-right"
+                        size={12}
+                        color={active ? CLINICAL_COLORS.accentStrong : CLINICAL_COLORS.textMuted}
+                      />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.modeCurrentCard}>
+              <Text style={styles.modeCurrentLabel}>当前已选择</Text>
+              <Text style={styles.modeCurrentTitle}>{activeModeCard.title}</Text>
+              <Text style={styles.modeCurrentText}>{activeModeCard.description}</Text>
+            </View>
           </View>
-        </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>医疗时间轴</Text>
-          <View style={styles.timelineCard}>
-            {timelineEvents.length === 0 ? (
-              <Text style={{ color: '#9CA3AF' }}>暂无记录，添加/更新后会自动生成时间轴。</Text>
-            ) : (
-              timelineEvents.map((event, index) => (
-                <View
-                  key={event.id}
-                  style={[
-                    styles.timelineItem,
-                    index === timelineEvents.length - 1 && styles.timelineItemLast,
-                  ]}
-                >
-                  <View style={styles.timelineHeader}>
-                    <Text style={styles.timelineTitle}>{event.title}</Text>
-                    <Text
-                      style={[
-                        styles.timelineTag,
-                        event.tag === '报告' && styles.timelineTagReport,
-                        event.tag === '肌力' && styles.timelineTagStrength,
-                        event.tag === '活动' && styles.timelineTagActivity,
-                      ]}
-                    >
-                      {event.tag}
-                    </Text>
-                  </View>
-                  <Text style={styles.timelineDescription}>{event.description}</Text>
-                  <Text style={styles.timelineTimestamp}>{event.timestamp}</Text>
-                </View>
-              ))
-            )}
+          {entryMode === 'followup' ? renderFollowupForm() : null}
+          {entryMode === 'event' ? renderEventForm() : null}
+          {entryMode === 'report' ? renderReportForm() : null}
+        </ScrollView>
+
+        {(isLoading || isSubmitting) && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.loadingText}>
+              {isSubmitting ? '正在保存这次记录...' : '正在加载录入页面...'}
+            </Text>
           </View>
-        </View>
-
-        <View style={styles.submitSection}>
-          <TouchableOpacity style={styles.submitButton} onPress={handleSubmit}>
-            <Text style={styles.submitButtonText}>添加/更新数据</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-
-      <Modal visible={isLoading} transparent animationType="fade">
-        <View style={styles.loadingOverlay}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color="#969FFF" style={styles.loadingSpinner} />
-            <Text style={styles.loadingText}>正在保存数据...</Text>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 档案编辑已移至设置页 */}
+        )}
+      </LinearGradient>
     </SafeAreaView>
   );
 };

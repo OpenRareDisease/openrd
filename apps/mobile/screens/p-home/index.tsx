@@ -1,357 +1,318 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import {
+  ApiError,
+  getMyPatientProfile,
+  getProgressionSummary,
+  type PatientProfile,
+  type ProgressionSummary,
+} from '../../lib/api';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS, formatDateLabel } from '../../lib/clinical-visuals';
 import styles from './styles';
-import { ApiError, getMyPatientProfile, getRiskSummary } from '../../lib/api';
+
+const quickActions: Array<{
+  title: string;
+  description: string;
+  order: string;
+  icon: keyof typeof FontAwesome6.glyphMap;
+  color: string;
+  route:
+    | '/p-archive'
+    | '/p-data_entry'
+    | '/p-clinical_passport'
+    | '/p-manage'
+    | '/p-report_management'
+    | '/p-qna'
+    | '/p-community';
+  badge?: string;
+}> = [
+  {
+    order: '01',
+    title: '我的档案',
+    description: '查看基本信息、FSHD 背景、受累可视化和患者端数据可视化。',
+    icon: 'address-card',
+    color: CLINICAL_COLORS.accentStrong,
+    route: '/p-archive',
+    badge: '主入口',
+  },
+  {
+    order: '02',
+    title: '患者自录与上传',
+    description: '进入统一录入页，完成量化随访、事件记录或上传一份报告。',
+    icon: 'file-circle-plus',
+    color: CLINICAL_COLORS.warning,
+    route: '/p-data_entry',
+    badge: '录入',
+  },
+  {
+    order: '03',
+    title: '问答',
+    description: '进入连续对话，围绕 FSHD 和当前资料继续追问。',
+    icon: 'comments',
+    color: '#2563EB',
+    route: '/p-qna',
+  },
+  {
+    order: '04',
+    title: '临床护照',
+    description: '查看门诊和住院可直接出示的结构化摘要。',
+    icon: 'id-card',
+    color: CLINICAL_COLORS.accent,
+    route: '/p-clinical_passport',
+  },
+  {
+    order: '05',
+    title: '报告管理',
+    description: '按分类和日期整理全部系统检测报告。',
+    icon: 'folder-open',
+    color: CLINICAL_COLORS.success,
+    route: '/p-report_management',
+  },
+  {
+    order: '06',
+    title: '病程管理',
+    description: '集中查看时间轴、患者端趋势和检查结果。',
+    icon: 'wave-square',
+    color: '#C98A33',
+    route: '/p-manage',
+  },
+  {
+    order: '07',
+    title: '社区',
+    description: '社区功能暂未开放，先保留入口。',
+    icon: 'users',
+    color: CLINICAL_COLORS.textMuted,
+    route: '/p-community',
+    badge: '未开放',
+  },
+];
+
+const buildPassportId = (profile: PatientProfile | null) =>
+  profile?.id
+    ? `FSHD-${profile.id.replace(/-/g, '').slice(0, 10).toUpperCase()}`
+    : 'FSHD-UNASSIGNED';
 
 const HomeScreen = () => {
   const router = useRouter();
-  const [isNotificationModalVisible, setIsNotificationModalVisible] = useState(false);
-  const [profile, setProfile] = useState<any | null>(null);
-  const [riskSummary, setRiskSummary] = useState<any | null>(null);
+  const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [summary, setSummary] = useState<ProgressionSummary | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const loadData = async (refresh = false) => {
+    if (refresh) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoading(true);
+    }
+
+    try {
+      setErrorMessage(null);
+      const [profileData, summaryData] = await Promise.all([
+        getMyPatientProfile(),
+        getProgressionSummary(),
+      ]);
+      setProfile(profileData);
+      setSummary(summaryData);
+    } catch (error) {
+      setProfile(null);
+      setSummary(null);
+      setErrorMessage(
+        error instanceof ApiError ? error.message : '暂时无法整理首页总览，请稍后重试。',
+      );
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const [profileData, riskData] = await Promise.all([
-          getMyPatientProfile(),
-          getRiskSummary(),
-        ]);
-        setProfile(profileData);
-        setRiskSummary(riskData);
-      } catch (error) {
-        if (!(error instanceof ApiError && error.status === 404)) {
-          console.warn('首页数据加载失败:', error);
-        }
-        setProfile(null);
-        setRiskSummary(null);
-      }
-    };
-
-    loadData();
+    loadData().catch(() => undefined);
   }, []);
 
-  const displayName = useMemo(() => {
-    const fullName = profile?.fullName?.trim();
-    if (fullName) {
-      return fullName;
-    }
-    return '未填写姓名';
-  }, [profile]);
-
-  const averageStrength = useMemo(() => {
-    const measurements = profile?.measurements ?? [];
-    if (!measurements.length) return null;
-    const sum = measurements.reduce(
-      (total: number, item: any) => total + Number(item.strengthScore),
-      0,
-    );
-    return sum / measurements.length;
-  }, [profile]);
-
-  const riskSummaryText = useMemo(() => {
-    if (!riskSummary) return '暂无风险评估数据';
-    if (riskSummary.overallLevel === 'high') return '近期风险偏高，建议及时关注';
-    if (riskSummary.overallLevel === 'medium') return '风险中等，保持规律复查';
-    return '整体稳定，保持当前节奏';
-  }, [riskSummary]);
-
-  const handleNotificationPress = () => {
-    setIsNotificationModalVisible(true);
-  };
-
-  const handleCloseNotification = () => {
-    setIsNotificationModalVisible(false);
-  };
-
-  const handleUserAvatarPress = () => {
-    router.push('/p-settings');
-  };
-
-  const handleHealthCardPress = () => {
-    router.push('/p-archive');
-  };
-
-  const handleRiskAlertPress = () => {
-    router.push('/p-manage');
-  };
-
-  const handleFeatureQNAPress = () => {
-    router.push('/p-qna');
-  };
-
-  const handleFeatureArchivePress = () => {
-    router.push('/p-archive');
-  };
-
-  const handleFeatureManagePress = () => {
-    router.push('/p-manage');
-  };
-
-  const handleFeatureCommunityPress = () => {
-    router.push('/p-community');
-  };
-
-  const handleTrialRecommendationPress = () => {
-    router.push('/p-trial_square');
-  };
-
-  const handleRehabRecommendationPress = () => {
-    router.push('/p-rehab_share');
-  };
+  const displayName = profile?.preferredName?.trim() || profile?.fullName?.trim() || 'FSHD 患者';
+  const passportId = buildPassportId(profile);
+  const reportCount = profile?.documents.length ?? 0;
+  const latestReportDate = useMemo(() => {
+    const latest = [...(profile?.documents ?? [])]
+      .map(
+        (item) =>
+          item.ocrPayload?.fields?.reportTime ??
+          item.ocrPayload?.fields?.report_time ??
+          item.uploadedAt,
+      )
+      .filter(Boolean)
+      .sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0];
+    return latest ? formatDateLabel(String(latest)) : '—';
+  }, [profile?.documents]);
+  const reviewItems = summary?.recommendedReviewItems?.slice(0, 3) ?? [];
 
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
-        locations={[0, 0.5, 1]}
+        colors={CLINICAL_GRADIENTS.page}
+        style={styles.backgroundGradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
       >
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => loadData(true).catch(() => undefined)}
+              tintColor={CLINICAL_COLORS.accentStrong}
+            />
+          }
         >
-          {/* 顶部用户信息区域 */}
           <View style={styles.header}>
-            <View style={styles.userInfo}>
-              <View style={styles.userProfile}>
-                <TouchableOpacity onPress={handleUserAvatarPress}>
-                  <LinearGradient
-                    colors={['#969FFF', '#5147FF']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.userAvatar}
-                  >
-                    <Image
-                      source={{ uri: 'https://s.coze.cn/image/ya2aI2K_pOI/' }}
-                      style={styles.avatarImage}
-                    />
-                  </LinearGradient>
-                </TouchableOpacity>
-                <View style={styles.userDetails}>
-                  <Text style={styles.userName}>{displayName}</Text>
-                  <Text style={styles.userGreeting}>今天也要保持健康哦</Text>
-                </View>
+            <View style={styles.headerLeft}>
+              <View>
+                <Text style={styles.eyebrow}>PATIENT HUB</Text>
+                <Text style={styles.pageTitle}>{displayName}</Text>
               </View>
-              <TouchableOpacity style={styles.notificationButton} onPress={handleNotificationPress}>
-                <FontAwesome6 name="bell" size={16} color="rgba(255, 255, 255, 0.7)" />
-                <View style={styles.notificationBadge} />
-              </TouchableOpacity>
             </View>
+            <TouchableOpacity
+              style={styles.settingsButton}
+              activeOpacity={0.88}
+              onPress={() => router.push('/p-settings')}
+            >
+              <FontAwesome6 name="gear" size={15} color={CLINICAL_COLORS.textSoft} />
+            </TouchableOpacity>
           </View>
 
-          {/* 健康状态概览卡片 */}
-          <View style={styles.healthOverviewSection}>
-            <TouchableOpacity style={styles.healthCard} onPress={handleHealthCardPress}>
-              <View style={styles.healthHeader}>
-                <Text style={styles.healthTitle}>健康概览</Text>
-                <View style={styles.healthStatus}>
-                  <View style={styles.statusIndicator} />
-                  <Text style={styles.statusText}>稳定</Text>
-                </View>
+          <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+            <View style={styles.heroHeader}>
+              <View style={styles.heroTag}>
+                <Text style={styles.heroTagText}>病程总览</Text>
               </View>
+            </View>
 
-              {/* 肌力雷达图 */}
-              <View style={styles.muscleStrengthContainer}>
-                <View style={styles.muscleRingContainer}>
-                  <View style={styles.muscleRing}>
-                    <View style={styles.muscleRingInner}>
-                      <LinearGradient
-                        colors={['#969FFF', '#5147FF']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.gradientTextWrapper}
-                      >
-                        <Text style={styles.averageScore}>
-                          {averageStrength !== null ? averageStrength.toFixed(1) : '--'}
-                        </Text>
-                      </LinearGradient>
-                      <Text style={styles.averageLabel}>平均分</Text>
+            <Text style={styles.heroTitle}>{passportId}</Text>
+            <Text style={styles.heroDescription}>
+              已建立患者档案、临床护照和系统检查入口。最近记录{' '}
+              {summary?.currentStatus.lastFollowupAt
+                ? formatDateLabel(summary.currentStatus.lastFollowupAt)
+                : formatDateLabel(profile?.updatedAt)}
+              ， 最近一份报告 {latestReportDate}。
+            </Text>
+
+            <View style={styles.heroMetrics}>
+              <View style={styles.metricCard}>
+                <Text style={styles.metricValue}>
+                  {summary?.currentStatus.lastFollowupAt
+                    ? formatDateLabel(summary.currentStatus.lastFollowupAt)
+                    : '—'}
+                </Text>
+                <Text style={styles.metricLabel}>最近记录</Text>
+              </View>
+              <View style={styles.metricCard}>
+                <Text style={styles.metricValue}>{reportCount}</Text>
+                <Text style={styles.metricLabel}>报告总数</Text>
+              </View>
+              <View style={styles.metricCard}>
+                <Text style={styles.metricValue}>{profile?.baseline ? '已完成' : '待补充'}</Text>
+                <Text style={styles.metricLabel}>基础档案</Text>
+              </View>
+            </View>
+          </LinearGradient>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>快捷入口</Text>
+
+            <View style={styles.quickActionMiniGrid}>
+              {quickActions.map((item) => (
+                <TouchableOpacity
+                  key={item.title}
+                  style={[
+                    styles.quickActionMiniCard,
+                    item.badge === '未开放' && styles.quickActionMiniCardMuted,
+                  ]}
+                  activeOpacity={0.88}
+                  onPress={() => router.push(item.route)}
+                >
+                  <View style={styles.quickActionMiniTopRow}>
+                    <View style={styles.quickActionOrderBadge}>
+                      <Text style={styles.quickActionOrderText}>{item.order}</Text>
                     </View>
+                    {item.badge ? (
+                      <View style={styles.quickActionMiniBadge}>
+                        <Text style={styles.quickActionMiniBadgeText}>{item.badge}</Text>
+                      </View>
+                    ) : null}
                   </View>
-                </View>
-              </View>
-
-              {/* 快速数据 */}
-              <View style={styles.quickStats}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>--</Text>
-                  <Text style={styles.statLabel}>爬楼时间</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#5147FF' }]}>--</Text>
-                  <Text style={styles.statLabel}>今日步数</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={[styles.statValue, { color: '#3E3987' }]}>--</Text>
-                  <Text style={styles.statLabel}>连续记录</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {/* 风险预警 */}
-          <View style={styles.riskAlertSection}>
-            <TouchableOpacity style={styles.alertCard} onPress={handleRiskAlertPress}>
-              <View style={styles.alertContent}>
-                <View style={styles.alertIconContainer}>
-                  <FontAwesome6 name="triangle-exclamation" size={14} color="#FBBF24" />
-                </View>
-                <View style={styles.alertTextContainer}>
-                  <Text style={styles.alertTitle}>注意</Text>
-                  <Text style={styles.alertDescription}>{riskSummaryText}</Text>
-                </View>
-                <FontAwesome6 name="chevron-right" size={12} color="#FBBF24" />
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {/* 核心功能模块 */}
-          <View style={styles.featuresSection}>
-            <Text style={styles.sectionTitle}>核心功能</Text>
-            <View style={styles.featuresGrid}>
-              <TouchableOpacity style={styles.featureCard} onPress={handleFeatureQNAPress}>
-                <View
-                  style={[
-                    styles.featureIconContainer,
-                    { backgroundColor: 'rgba(150, 159, 255, 0.2)' },
-                  ]}
-                >
-                  <FontAwesome6 name="circle-question" size={18} color="#969FFF" />
-                </View>
-                <Text style={styles.featureTitle}>智能问答</Text>
-                <Text style={styles.featureDescription}>专业知识查询</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.featureCard} onPress={handleFeatureArchivePress}>
-                <View
-                  style={[
-                    styles.featureIconContainer,
-                    { backgroundColor: 'rgba(81, 71, 255, 0.2)' },
-                  ]}
-                >
-                  <FontAwesome6 name="file-medical" size={18} color="#5147FF" />
-                </View>
-                <Text style={styles.featureTitle}>我的档案</Text>
-                <Text style={styles.featureDescription}>医疗数据管理</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.featureCard} onPress={handleFeatureManagePress}>
-                <View
-                  style={[
-                    styles.featureIconContainer,
-                    { backgroundColor: 'rgba(62, 57, 135, 0.2)' },
-                  ]}
-                >
-                  <FontAwesome6 name="chart-line" size={14} color="#3E3987" />
-                </View>
-                <Text style={styles.featureTitle}>病程管理</Text>
-                <Text style={styles.featureDescription}>肌力趋势分析</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.featureCard} onPress={handleFeatureCommunityPress}>
-                <View
-                  style={[
-                    styles.featureIconContainer,
-                    { backgroundColor: 'rgba(34, 197, 94, 0.2)' },
-                  ]}
-                >
-                  <FontAwesome6 name="users" size={14} color="#22C55E" />
-                </View>
-                <Text style={styles.featureTitle}>患者社区</Text>
-                <Text style={styles.featureDescription}>经验交流分享</Text>
-              </TouchableOpacity>
+                  <View
+                    style={[styles.quickActionMiniIconWrap, { backgroundColor: `${item.color}20` }]}
+                  >
+                    <FontAwesome6 name={item.icon} size={15} color={item.color} />
+                  </View>
+                  <Text style={styles.quickActionMiniTitle}>{item.title}</Text>
+                  <Text style={styles.quickActionMiniText}>{item.description}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
-          {/* 个性化推荐 */}
-          <View style={styles.recommendationsSection}>
-            <Text style={styles.sectionTitle}>为您推荐</Text>
-
-            {/* 临床试验匹配 */}
-            <TouchableOpacity
-              style={styles.recommendationCard}
-              onPress={handleTrialRecommendationPress}
-            >
-              <View style={styles.recommendationHeader}>
-                <Text style={styles.recommendationTitle}>临床试验匹配</Text>
-                <View style={styles.matchBadge}>
-                  <Text style={styles.matchBadgeText}>83%匹配</Text>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>下一步建议</Text>
+            {reviewItems.length ? (
+              reviewItems.map((item) => (
+                <View key={item} style={styles.reviewItem}>
+                  <FontAwesome6
+                    name="circle-check"
+                    size={12}
+                    color={CLINICAL_COLORS.accentStrong}
+                  />
+                  <Text style={styles.reviewItemText}>{item}</Text>
                 </View>
+              ))
+            ) : (
+              <View style={styles.reviewItem}>
+                <FontAwesome6 name="circle-check" size={12} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.reviewItemText}>
+                  当前已建立基础档案与系统检查入口，可继续补充量化随访、事件记录或新报告。
+                </Text>
               </View>
-              <Text style={styles.recommendationDescription}>
-                您符合"FSHD基因治疗试验"的主要入组条件
-              </Text>
-              <Text style={styles.recommendationAction}>查看详情 →</Text>
-            </TouchableOpacity>
-
-            {/* 康复建议 */}
-            <TouchableOpacity
-              style={styles.recommendationCard}
-              onPress={handleRehabRecommendationPress}
-            >
-              <View style={styles.rehabHeader}>
-                <View style={styles.rehabIconContainer}>
-                  <FontAwesome6 name="play" size={12} color="#3B82F6" />
-                </View>
-                <View style={styles.rehabTextContainer}>
-                  <Text style={styles.recommendationTitle}>个性化康复训练</Text>
-                  <Text style={styles.recommendationDescription}>针对三角肌的3个训练视频</Text>
-                </View>
-              </View>
-              <Text style={styles.rehabAction}>立即训练 →</Text>
-            </TouchableOpacity>
+            )}
           </View>
+
+          {errorMessage ? (
+            <View style={styles.section}>
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyTitle}>加载失败</Text>
+                <Text style={styles.emptyText}>{errorMessage}</Text>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  activeOpacity={0.88}
+                  onPress={() => loadData().catch(() => undefined)}
+                >
+                  <Text style={styles.retryButtonText}>重新加载</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
         </ScrollView>
 
-        {/* 通知弹窗 */}
-        <Modal
-          visible={isNotificationModalVisible}
-          transparent={true}
-          animationType="fade"
-          onRequestClose={handleCloseNotification}
-        >
-          <TouchableOpacity
-            style={styles.modalOverlay}
-            activeOpacity={1}
-            onPress={handleCloseNotification}
-          >
-            <TouchableOpacity
-              style={styles.notificationModal}
-              activeOpacity={1}
-              onPress={(e) => e.stopPropagation()}
-            >
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>消息通知</Text>
-                <TouchableOpacity onPress={handleCloseNotification}>
-                  <FontAwesome6 name="xmark" size={16} color="rgba(255, 255, 255, 0.5)" />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.notificationList}>
-                <View style={styles.notificationItem}>
-                  <View style={[styles.notificationDot, { backgroundColor: '#969FFF' }]} />
-                  <View style={styles.notificationContent}>
-                    <Text style={styles.notificationText}>您的肌力评估数据已更新</Text>
-                    <Text style={styles.notificationTime}>2小时前</Text>
-                  </View>
-                </View>
-                <View style={styles.notificationItem}>
-                  <View style={[styles.notificationDot, { backgroundColor: '#22C55E' }]} />
-                  <View style={styles.notificationContent}>
-                    <Text style={styles.notificationText}>新的临床试验匹配结果</Text>
-                    <Text style={styles.notificationTime}>1天前</Text>
-                  </View>
-                </View>
-              </View>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </Modal>
+        {isLoading ? (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.loadingText}>正在整理首页总览...</Text>
+          </View>
+        ) : null}
       </LinearGradient>
     </SafeAreaView>
   );

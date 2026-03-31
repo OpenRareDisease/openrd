@@ -1,17 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome6 } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   ApiError,
@@ -20,51 +20,107 @@ import {
   getAiAskProgress,
   initAiAskProgress,
 } from '../../lib/api';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import styles from './styles';
 
-interface HotQuestion {
-  id: string;
-  question: string;
-  answer: string;
-}
+type ChatRole = 'assistant' | 'user';
+type ChatMessageStatus = 'sent' | 'loading' | 'error';
 
-interface KnowledgeCategory {
+type ChatMessage = {
   id: string;
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-}
+  role: ChatRole;
+  content: string;
+  createdAt: string;
+  status: ChatMessageStatus;
+};
 
-interface LocalResource {
-  id: string;
-  name: string;
-  distance: string;
-  description: string;
-  rating: string;
-  type: string;
-  icon: string;
-  color: string;
-}
+const CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
+const MAX_STORED_MESSAGES = 24;
 
-interface ClinicalPathway {
-  id: string;
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-}
+const defaultProgressStages: AiAskProgressStage[] = [
+  { id: 'received', label: '接收问题', status: 'pending' },
+  { id: 'query_gen', label: '生成检索问题', status: 'pending' },
+  { id: 'kb_search', label: '检索知识库', status: 'pending' },
+  { id: 'final_answer', label: '生成回答', status: 'pending' },
+  { id: 'done', label: '整理结果', status: 'pending' },
+];
+
+const createProgressId = () =>
+  `qna_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+const createMessageId = (prefix: string) =>
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+const createWelcomeMessage = (): ChatMessage => ({
+  id: 'welcome',
+  role: 'assistant',
+  content:
+    '可以直接问我 FSHD 相关问题，也可以连续追问。最近几轮对话会保留在本地，并一并提供给问答接口，方便上下文延续。',
+  createdAt: new Date().toISOString(),
+  status: 'sent',
+});
+
+const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+
+    const messages = parsed.filter((item): item is ChatMessage => {
+      if (!item || typeof item !== 'object') return false;
+      const candidate = item as Partial<ChatMessage>;
+      return (
+        typeof candidate.id === 'string' &&
+        (candidate.role === 'assistant' || candidate.role === 'user') &&
+        typeof candidate.content === 'string' &&
+        typeof candidate.createdAt === 'string' &&
+        (candidate.status === 'sent' ||
+          candidate.status === 'loading' ||
+          candidate.status === 'error')
+      );
+    });
+
+    return messages.length ? messages : null;
+  } catch {
+    return null;
+  }
+};
+
+const formatMessageTime = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const getFriendlyErrorMessage = (error: unknown) => {
+  const message =
+    error instanceof ApiError
+      ? (error.data as { message?: string; error?: string })?.message ||
+        (error.data as { message?: string; error?: string })?.error ||
+        error.message
+      : error instanceof Error
+        ? error.message
+        : '暂时无法获取回答，请稍后再试。';
+
+  return message.includes('知识库服务不可用')
+    ? '知识库服务未启动，请联系管理员或稍后再试。'
+    : message;
+};
 
 const P_QNA = () => {
-  const router = useRouter();
-  const searchInputRef = useRef<TextInput>(null);
   const { token } = useAuth();
+  const scrollViewRef = useRef<ScrollView | null>(null);
+  const inputRef = useRef<TextInput | null>(null);
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [expandedQuestionId, setExpandedQuestionId] = useState<string | null>(null);
-  const [isSearchLoading, setIsSearchLoading] = useState(false);
-  const [showSearchResult, setShowSearchResult] = useState(false);
-  const [searchResultAnswer, setSearchResultAnswer] = useState('');
+  const [draft, setDraft] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([createWelcomeMessage()]);
   const [askProgress, setAskProgress] = useState<{
     progressId: string;
     status: 'running' | 'done' | 'error';
@@ -73,17 +129,22 @@ const P_QNA = () => {
     stages: AiAskProgressStage[];
     error?: string;
   } | null>(null);
-  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const defaultProgressStages: AiAskProgressStage[] = [
-    { id: 'received', label: '接收问题', status: 'pending' },
-    { id: 'query_gen', label: '生成检索问题', status: 'pending' },
-    { id: 'kb_search', label: '检索知识库', status: 'pending' },
-    { id: 'final_answer', label: '生成回答', status: 'pending' },
-    { id: 'done', label: '整理结果', status: 'pending' },
-  ];
 
   useEffect(() => {
+    const hydrate = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(CHAT_STORAGE_KEY);
+        const parsed = parseStoredMessages(stored);
+        if (parsed?.length) {
+          setMessages(parsed);
+        }
+      } finally {
+        setIsHydrated(true);
+      }
+    };
+
+    hydrate();
+
     return () => {
       if (progressTimerRef.current) {
         clearInterval(progressTimerRef.current);
@@ -92,120 +153,85 @@ const P_QNA = () => {
     };
   }, []);
 
-  const createProgressId = () =>
-    `qna_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  useEffect(() => {
+    if (!isHydrated) return;
+    AsyncStorage.setItem(
+      CHAT_STORAGE_KEY,
+      JSON.stringify(messages.slice(-MAX_STORED_MESSAGES)),
+    ).catch(() => {
+      // Persistence should never block chatting.
+    });
+  }, [isHydrated, messages]);
 
-  const hotQuestions: HotQuestion[] = [
-    {
-      id: '1',
-      question: 'FSHD患者如何进行家庭康复训练？',
-      answer:
-        'FSHD患者的家庭康复训练应遵循个体化原则，重点包括：\n\n1. 肌力训练：使用弹力带进行抗阻训练，重点训练肩带肌、上臂肌和下肢肌群\n2. 关节活动度训练：每日进行关节的全范围活动，预防关节挛缩\n3. 呼吸训练：腹式呼吸和深呼吸练习，改善呼吸功能\n4. 平衡训练：单腿站立、足跟走等练习，预防跌倒\n\n建议在专业康复师指导下制定训练计划，避免过度疲劳。',
-    },
-    {
-      id: '2',
-      question: 'FSHD的遗传方式是什么？',
-      answer:
-        'FSHD主要有两种遗传方式：\n\n1. FSHD1型（占95%）：常染色体显性遗传，由4号染色体长臂（4q35）上的D4Z4重复序列缺失引起\n2. FSHD2型（占5%）：常染色体显性遗传，由SMCHD1基因突变引起\n\n患者子女有50%的概率遗传该疾病，但临床表现可能存在差异。建议进行遗传咨询和基因检测。',
-    },
-    {
-      id: '3',
-      question: 'FSHD患者可以参加哪些运动？',
-      answer:
-        'FSHD患者适合的运动包括：\n\n✅ 推荐：游泳、水中运动、太极拳、瑜伽、散步\n⚠️ 谨慎：慢跑、骑自行车（需注意安全）\n❌ 避免：高强度力量训练、剧烈运动、举重\n\n运动时应注意：\n• 避免过度疲劳和肌肉疼痛\n• 运动前后充分热身和拉伸\n• 如有不适立即停止\n• 最好在专业指导下进行',
-    },
-  ];
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 60);
 
-  const knowledgeCategories: KnowledgeCategory[] = [
-    {
-      id: '1',
-      title: '分型鉴别',
-      description: 'FSHD1型与2型的区别',
-      icon: 'dna',
-      color: '#969FFF',
-    },
-    {
-      id: '2',
-      title: '症状管理',
-      description: '肌肉无力、疼痛处理',
-      icon: 'stethoscope',
-      color: '#5147FF',
-    },
-    {
-      id: '3',
-      title: '遗传咨询',
-      description: '家族遗传风险评估',
-      icon: 'users',
-      color: '#3E3987',
-    },
-    {
-      id: '4',
-      title: '用药指导',
-      description: '药物使用注意事项',
-      icon: 'pills',
-      color: '#10B981',
-    },
-  ];
+    return () => clearTimeout(timer);
+  }, [messages, askProgress]);
 
-  const localResources: LocalResource[] = [
-    {
-      id: '1',
-      name: '华西医院FSHD诊疗中心',
-      distance: '距离您 2.3 公里',
-      description: '专业FSHD诊断与治疗',
-      rating: '⭐ 4.8',
-      type: '三甲医院',
-      icon: 'hospital',
-      color: '#969FFF',
-    },
-    {
-      id: '2',
-      name: '康复之家理疗中心',
-      distance: '距离您 1.8 公里',
-      description: '专业康复训练指导',
-      rating: '⭐ 4.6',
-      type: '医保定点',
-      icon: 'heartbeat',
-      color: '#5147FF',
-    },
-  ];
+  const handleClearConversation = () => {
+    Alert.alert('清空对话', '将删除本地聊天记录并重新开始一个新会话。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '清空',
+        style: 'destructive',
+        onPress: () => {
+          if (progressTimerRef.current) {
+            clearInterval(progressTimerRef.current);
+            progressTimerRef.current = null;
+          }
+          setAskProgress(null);
+          setDraft('');
+          setMessages([createWelcomeMessage()]);
+          AsyncStorage.removeItem(CHAT_STORAGE_KEY).catch(() => {
+            // Ignore storage cleanup failures.
+          });
+        },
+      },
+    ]);
+  };
 
-  const clinicalPathways: ClinicalPathway[] = [
-    {
-      id: '1',
-      title: '初诊检查流程',
-      description: '标准化诊断检查项目',
-      icon: 'clipboard-list',
-      color: '#3B82F6',
-    },
-    {
-      id: '2',
-      title: '随访管理计划',
-      description: '定期复查与评估安排',
-      icon: 'calendar-check',
-      color: '#8B5CF6',
-    },
-    {
-      id: '3',
-      title: '康复治疗指南',
-      description: '个性化康复训练方案',
-      icon: 'dumbbell',
-      color: '#F97316',
-    },
-  ];
+  const handleSendPress = async () => {
+    const question = draft.trim();
+    if (!question || isSending) return;
 
-  const handleSearchPress = async () => {
-    if (!searchQuery.trim()) return;
     if (!token) {
       Alert.alert('请先登录', '登录后才能使用智能问答功能。');
       return;
     }
 
-    setIsSearchLoading(true);
-    setShowSearchResult(false);
-    setSearchResultAnswer('');
-
     const progressId = createProgressId();
+    const userMessage: ChatMessage = {
+      id: createMessageId('user'),
+      role: 'user',
+      content: question,
+      createdAt: new Date().toISOString(),
+      status: 'sent',
+    };
+    const assistantMessageId = createMessageId('assistant');
+    const assistantPlaceholder: ChatMessage = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '正在整理回答...',
+      createdAt: new Date().toISOString(),
+      status: 'loading',
+    };
+    const recentConversation = [
+      ...messages
+        .filter((item) => item.status !== 'error' && item.content.trim())
+        .slice(-6)
+        .map((item) => ({
+          role: item.role,
+          content: item.content,
+        })),
+      { role: 'user' as const, content: question },
+    ];
+
+    setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
+    setDraft('');
+    setIsSending(true);
     setAskProgress({
       progressId,
       status: 'running',
@@ -221,48 +247,69 @@ const P_QNA = () => {
         const response = await getAiAskProgress(progressId);
         setAskProgress(response.data);
       } catch {
-        // ignore progress polling failures
+        // Ignore polling failures and let the main request decide the result.
       }
     };
 
     if (progressTimerRef.current) {
       clearInterval(progressTimerRef.current);
     }
+
     await initAiAskProgress(progressId);
     progressTimerRef.current = setInterval(pollProgress, 1200);
     pollProgress();
 
     try {
-      const response = await askAiQuestion(searchQuery, { language: 'zh' }, progressId);
-      setShowSearchResult(true);
-      setSearchResultAnswer(response.data.answer);
-      setSearchQuery('');
-      searchInputRef.current?.blur();
-      setTimeout(() => {
-        setAskProgress((prev) =>
-          prev
+      const response = await askAiQuestion(
+        question,
+        {
+          language: 'zh',
+          memoryMode: 'recent_messages',
+          conversationHistory: recentConversation.slice(-8),
+        },
+        progressId,
+      );
+      const answer = response.data.answer?.trim() || '暂时没有生成有效回答。';
+
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === assistantMessageId
             ? {
-                ...prev,
-                status: 'done',
-                percent: 100,
-                stages: prev.stages.map((stage) =>
-                  stage.id === 'done' ? { ...stage, status: 'done' } : stage,
-                ),
+                ...item,
+                content: answer,
+                createdAt: response.data.timestamp || new Date().toISOString(),
+                status: 'sent',
               }
-            : prev,
-        );
-      }, 0);
+            : item,
+        ),
+      );
+      setAskProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'done',
+              percent: 100,
+              stageId: 'done',
+              stages: prev.stages.map((stage) => ({
+                ...stage,
+                status: 'done',
+              })),
+            }
+          : prev,
+      );
     } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? (error.data as { message?: string; error?: string })?.message ||
-            (error.data as { message?: string; error?: string })?.error ||
-            error.message
-          : '暂时无法获取回答，请稍后再试。';
-      const friendlyMessage = message.includes('知识库服务不可用')
-        ? '知识库服务未启动，请联系管理员或稍后再试。'
-        : message;
-      Alert.alert('智能问答失败', friendlyMessage);
+      const friendlyMessage = getFriendlyErrorMessage(error);
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: friendlyMessage,
+                status: 'error',
+              }
+            : item,
+        ),
+      );
       setAskProgress((prev) =>
         prev
           ? {
@@ -276,7 +323,7 @@ const P_QNA = () => {
           : prev,
       );
     } finally {
-      setIsSearchLoading(false);
+      setIsSending(false);
       if (progressTimerRef.current) {
         clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
@@ -284,62 +331,22 @@ const P_QNA = () => {
     }
   };
 
-  const handleQuestionToggle = (questionId: string) => {
-    setExpandedQuestionId(expandedQuestionId === questionId ? null : questionId);
-  };
-
-  const handleKnowledgeCategoryPress = (category: KnowledgeCategory) => {
-    Alert.alert('知识分类', `正在加载"${category.title}"相关知识...`);
-  };
-
-  const handleResourcePress = () => {
-    router.push('/p-resource_map');
-  };
-
-  const handleViewAllResourcesPress = () => {
-    router.push('/p-resource_map');
-  };
-
-  const handleClinicalPathwayPress = (pathway: ClinicalPathway) => {
-    Alert.alert('临床路径', `正在加载"${pathway.title}"详细内容...`);
-  };
-
-  const renderSearchResult = () => {
-    if (!showSearchResult) return null;
-
-    return (
-      <View style={styles.searchResultContainer}>
-        <View style={styles.searchResultCard}>
-          <View style={styles.searchResultHeader}>
-            <View style={styles.searchResultIcon}>
-              <FontAwesome6 name="robot" size={12} color="#969FFF" />
-            </View>
-            <View style={styles.searchResultContent}>
-              <Text style={styles.searchResultTitle}>智能回答</Text>
-              <Text style={styles.searchResultAnswer}>{searchResultAnswer}</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-    );
-  };
-
-  const renderProgress = () => {
+  const renderProgressCard = () => {
     if (!askProgress) return null;
 
     const stages = askProgress.stages.length ? askProgress.stages : defaultProgressStages;
     const percent = Math.min(100, Math.max(0, askProgress.percent));
     const statusText =
       askProgress.status === 'error'
-        ? '连接中断，正在重试'
+        ? '连接中断'
         : askProgress.status === 'done'
           ? '已完成'
           : '处理中';
 
     return (
-      <View style={styles.progressContainer}>
+      <View style={styles.progressCard}>
         <View style={styles.progressHeader}>
-          <Text style={styles.progressTitle}>回答进度</Text>
+          <Text style={styles.progressTitle}>本轮回答进度</Text>
           <Text style={styles.progressStatus}>{statusText}</Text>
         </View>
         <View style={styles.progressBar}>
@@ -373,183 +380,131 @@ const P_QNA = () => {
     );
   };
 
-  const renderHotQuestions = () => (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>热门问题</Text>
-      <View style={styles.hotQuestionsList}>
-        {hotQuestions.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.questionItem}
-            onPress={() => handleQuestionToggle(item.id)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.questionHeader}>
-              <Text style={styles.questionText}>{item.question}</Text>
-              <FontAwesome6
-                name="chevron-down"
-                size={10}
-                color="rgba(255, 255, 255, 0.5)"
-                style={[
-                  styles.chevronIcon,
-                  expandedQuestionId === item.id && styles.chevronIconExpanded,
-                ]}
-              />
-            </View>
-            {expandedQuestionId === item.id && (
-              <View style={styles.answerPanel}>
-                <Text style={styles.answerText}>{item.answer}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderKnowledgeCategories = () => (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>知识分类</Text>
-      <View style={styles.knowledgeGrid}>
-        {knowledgeCategories.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.knowledgeItem}
-            onPress={() => handleKnowledgeCategoryPress(item)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.knowledgeHeader}>
-              <View style={[styles.knowledgeIcon, { backgroundColor: `${item.color}20` }]}>
-                <FontAwesome6 name={item.icon} size={12} color={item.color} />
-              </View>
-              <Text style={styles.knowledgeTitle}>{item.title}</Text>
-            </View>
-            <Text style={styles.knowledgeDescription}>{item.description}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderLocalResources = () => (
-    <View style={styles.section}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>附近资源</Text>
-        <TouchableOpacity onPress={handleViewAllResourcesPress} activeOpacity={0.7}>
-          <Text style={styles.viewAllButton}>查看全部</Text>
-        </TouchableOpacity>
-      </View>
-      <View style={styles.resourcesList}>
-        {localResources.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.resourceCard}
-            onPress={handleResourcePress}
-            activeOpacity={0.7}
-          >
-            <View style={styles.resourceContent}>
-              <View style={[styles.resourceIcon, { backgroundColor: `${item.color}20` }]}>
-                <FontAwesome6 name={item.icon} size={12} color={item.color} />
-              </View>
-              <View style={styles.resourceInfo}>
-                <Text style={styles.resourceName}>{item.name}</Text>
-                <Text style={styles.resourceDistance}>{item.distance}</Text>
-                <Text style={styles.resourceDescription}>{item.description}</Text>
-              </View>
-              <View style={styles.resourceRating}>
-                <Text style={styles.resourceRatingText}>{item.rating}</Text>
-                <Text style={styles.resourceType}>{item.type}</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderClinicalPathways = () => (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>临床路径</Text>
-      <View style={styles.pathwaysList}>
-        {clinicalPathways.map((item) => (
-          <TouchableOpacity
-            key={item.id}
-            style={styles.pathwayItem}
-            onPress={() => handleClinicalPathwayPress(item)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.pathwayContent}>
-              <View style={[styles.pathwayIcon, { backgroundColor: `${item.color}20` }]}>
-                <FontAwesome6 name={item.icon} size={12} color={item.color} />
-              </View>
-              <View style={styles.pathwayInfo}>
-                <Text style={styles.pathwayTitle}>{item.title}</Text>
-                <Text style={styles.pathwayDescription}>{item.description}</Text>
-              </View>
-            </View>
-            <FontAwesome6 name="chevron-right" size={10} color="rgba(255, 255, 255, 0.5)" />
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        {/* 顶部搜索区域 */}
         <View style={styles.header}>
-          <View style={styles.searchContainer}>
+          <View>
+            <Text style={styles.eyebrow}>SMART CHAT</Text>
+            <Text style={styles.pageTitle}>智能问答</Text>
+            <Text style={styles.pageSubtitle}>保留最近对话，方便连续追问和补充上下文。</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.headerAction}
+            activeOpacity={0.82}
+            onPress={handleClearConversation}
+          >
+            <FontAwesome6 name="trash-can" size={12} color={CLINICAL_COLORS.text} />
+            <Text style={styles.headerActionText}>清空</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.memoryBanner}>
+          <View style={styles.memoryIconWrap}>
+            <FontAwesome6 name="brain" size={14} color={CLINICAL_COLORS.accentStrong} />
+          </View>
+          <View style={styles.memoryContent}>
+            <Text style={styles.memoryTitle}>连续对话已开启</Text>
+            <Text style={styles.memoryText}>
+              页面会保留最近聊天内容；下一次提问时，会把最近几轮对话一起发给问答接口。
+            </Text>
+          </View>
+        </View>
+
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {messages.map((message) => {
+            const isUser = message.role === 'user';
+            const isError = message.status === 'error';
+            const isLoading = message.status === 'loading';
+
+            return (
+              <View
+                key={message.id}
+                style={[
+                  styles.messageRow,
+                  isUser ? styles.messageRowUser : styles.messageRowAssistant,
+                ]}
+              >
+                {!isUser ? (
+                  <View
+                    style={[styles.avatar, isError ? styles.avatarError : styles.avatarAssistant]}
+                  >
+                    <FontAwesome6
+                      name={isError ? 'triangle-exclamation' : 'robot'}
+                      size={12}
+                      color={isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.accentStrong}
+                    />
+                  </View>
+                ) : null}
+
+                <View
+                  style={[
+                    styles.messageBubble,
+                    isUser ? styles.messageBubbleUser : styles.messageBubbleAssistant,
+                    isError && styles.messageBubbleError,
+                  ]}
+                >
+                  {!isUser ? (
+                    <Text style={styles.messageAuthor}>{isError ? '系统提示' : 'OpenRD 助手'}</Text>
+                  ) : null}
+                  <Text
+                    style={[
+                      styles.messageText,
+                      isUser ? styles.messageTextUser : styles.messageTextAssistant,
+                    ]}
+                  >
+                    {message.content}
+                  </Text>
+                  <View style={styles.messageMetaRow}>
+                    <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
+                    {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+
+          {renderProgressCard()}
+        </ScrollView>
+
+        <View style={styles.composerShell}>
+          <View style={styles.composerCard}>
             <TextInput
-              ref={searchInputRef}
-              style={styles.searchInput}
-              placeholder="请输入您的问题..."
-              placeholderTextColor="rgba(255, 255, 255, 0.5)"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              onSubmitEditing={handleSearchPress}
-              returnKeyType="search"
+              ref={inputRef}
+              style={styles.composerInput}
+              placeholder="输入你的问题，支持连续追问..."
+              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              value={draft}
+              onChangeText={setDraft}
+              multiline
+              textAlignVertical="top"
+              returnKeyType="send"
+              onSubmitEditing={handleSendPress}
             />
             <TouchableOpacity
-              style={styles.searchButton}
-              onPress={handleSearchPress}
-              activeOpacity={0.7}
-              disabled={isSearchLoading}
+              style={[styles.sendButton, (!draft.trim() || isSending) && styles.sendButtonDisabled]}
+              activeOpacity={0.85}
+              onPress={handleSendPress}
+              disabled={!draft.trim() || isSending}
             >
               <FontAwesome6
-                name={isSearchLoading ? 'spinner' : 'magnifying-glass'}
+                name={isSending ? 'spinner' : 'paper-plane'}
                 size={14}
                 color="#FFFFFF"
               />
             </TouchableOpacity>
           </View>
+          <Text style={styles.composerHint}>适合连续追问，例如“结合我上一条再解释一下”。</Text>
         </View>
-
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {renderProgress()}
-
-          {/* 搜索结果 */}
-          {renderSearchResult()}
-
-          {/* 热门问题 */}
-          {renderHotQuestions()}
-
-          {/* 知识分类 */}
-          {renderKnowledgeCategories()}
-
-          {/* 附近资源 */}
-          {renderLocalResources()}
-
-          {/* 临床路径 */}
-          {renderClinicalPathways()}
-        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

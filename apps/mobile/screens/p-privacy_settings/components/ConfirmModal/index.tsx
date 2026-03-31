@@ -1,9 +1,8 @@
-
-
 import React from 'react';
 import { View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback } from 'react-native';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
+import { CLINICAL_COLORS } from '../../../../lib/clinical-visuals';
 
 interface ConfirmModalProps {
   isVisible: boolean;
@@ -23,23 +22,18 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({
   onConfirm,
 }) => {
   return (
-    <Modal
-      visible={isVisible}
-      transparent
-      animationType="fade"
-      onRequestClose={onCancel}
-    >
+    <Modal visible={isVisible} transparent animationType="fade" onRequestClose={onCancel}>
       <TouchableWithoutFeedback onPress={onCancel}>
         <View style={styles.modalOverlay}>
           <TouchableWithoutFeedback onPress={() => {}}>
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
-                <FontAwesome6 name={icon} size={20} color="#969FFF" />
+                <FontAwesome6 name={icon} size={20} color={CLINICAL_COLORS.accent} />
               </View>
-              
+
               <Text style={styles.modalTitle}>{title}</Text>
               <Text style={styles.modalMessage}>{message}</Text>
-              
+
               <View style={styles.modalButtons}>
                 <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
                   <Text style={styles.cancelButtonText}>取消</Text>
@@ -57,4 +51,3 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({
 };
 
 export default ConfirmModal;
-

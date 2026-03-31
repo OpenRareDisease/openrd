@@ -1,461 +1,527 @@
-import DataComparisonFeature from '../p-data_comparison_feature/DataComparisonFeature';
-import RecordTimelineScreen from '../p-record_timeline_screen/RecordTimelineScreen';
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { LineChart } from 'react-native-chart-kit';
+import {
+  ApiError,
+  getMyPatientProfile,
+  getProgressionSummary,
+  getRiskSummary,
+  type PatientProfile,
+  type ProgressionSummary,
+} from '../../lib/api';
+import {
+  CLINICAL_COLORS,
+  CLINICAL_GRADIENTS,
+  CLINICAL_TINTS,
+  formatDateLabel,
+  getRiskMeta,
+} from '../../lib/clinical-visuals';
+import {
+  buildMedicationHighlights,
+  buildPatientVisualizationCards,
+  buildProgressionTimeline,
+} from '../../lib/followup-analytics';
+import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import ScreenBackButton from '../common/ScreenBackButton';
+import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
+import TimelineSectionCard from '../common/TimelineSectionCard';
 import styles from './styles';
-import { ApiError, getMedications, getMyPatientProfile, getRiskSummary } from '../../lib/api';
 
-const PMANAGE = () => {
-  const router = useRouter();
-  const MUSCLE_LABELS: Record<string, string> = {
-    deltoid: '三角肌',
-    biceps: '肱二头肌',
-    triceps: '肱三头肌',
-    tibialis: '胫骨前肌',
-    quadriceps: '股四头肌',
-    hamstrings: '腘绳肌',
-    gluteus: '臀肌',
+const trendMeta: Record<
+  NonNullable<ProgressionSummary['changeCards']>[number]['trend'],
+  { label: string; color: string; backgroundColor: string }
+> = {
+  better: {
+    label: '改善',
+    color: CLINICAL_COLORS.success,
+    backgroundColor: CLINICAL_TINTS.successSoft,
+  },
+  stable: {
+    label: '平稳',
+    color: CLINICAL_COLORS.textSoft,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+  },
+  worse: {
+    label: '加重',
+    color: CLINICAL_COLORS.danger,
+    backgroundColor: CLINICAL_TINTS.dangerSoft,
+  },
+  new: {
+    label: '新增',
+    color: CLINICAL_COLORS.warning,
+    backgroundColor: CLINICAL_TINTS.warningSoft,
+  },
+};
+
+const toRgba = (hex: string, opacity = 1) => {
+  const normalized = hex.replace('#', '');
+  const safeHex =
+    normalized.length === 3
+      ? normalized
+          .split('')
+          .map((part) => `${part}${part}`)
+          .join('')
+      : normalized;
+
+  const red = Number.parseInt(safeHex.slice(0, 2), 16);
+  const green = Number.parseInt(safeHex.slice(2, 4), 16);
+  const blue = Number.parseInt(safeHex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+};
+
+const createChartConfig = (lineColor: string) => ({
+  backgroundColor: CLINICAL_COLORS.panel,
+  backgroundGradientFrom: CLINICAL_COLORS.panel,
+  backgroundGradientTo: CLINICAL_COLORS.panel,
+  decimalPlaces: 1,
+  color: (opacity = 1) => toRgba(lineColor, opacity),
+  labelColor: () => CLINICAL_COLORS.textMuted,
+  propsForDots: {
+    r: '3',
+    strokeWidth: '2',
+    stroke: lineColor,
+  },
+});
+
+const renderChartPoints = (points: Array<{ timestamp: string; value: number }>) => {
+  if (!points.length) {
+    return null;
+  }
+
+  if (points.length === 1) {
+    return {
+      labels: [formatDateLabel(points[0].timestamp), formatDateLabel(points[0].timestamp)],
+      datasets: [{ data: [points[0].value, points[0].value] }],
+    };
+  }
+
+  return {
+    labels: points.map((item) => formatDateLabel(item.timestamp)),
+    datasets: [{ data: points.map((item) => item.value) }],
   };
-  const [profile, setProfile] = useState<any | null>(null);
-  const [medications, setMedications] = useState<any[]>([]);
-  const [riskSummary, setRiskSummary] = useState<any | null>(null);
+};
+
+export default function ManageScreen() {
+  const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
+  const [profile, setProfile] = useState<PatientProfile | null>(null);
+  const [summary, setSummary] = useState<ProgressionSummary | null>(null);
+  const [riskSummary, setRiskSummary] = useState<{
+    overallLevel?: string | null;
+    notes?: string[];
+  } | null>(null);
+  const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
+  const [visualizationExpanded, setVisualizationExpanded] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const loadData = async () => {
-    try {
+  const loadData = async (refresh = false) => {
+    if (refresh) {
+      setIsRefreshing(true);
+    } else {
       setIsLoading(true);
+    }
+
+    try {
       setErrorMessage(null);
-      const [profileData, medicationData, riskData] = await Promise.all([
+      const [profileData, summaryData, riskData] = await Promise.all([
         getMyPatientProfile(),
-        getMedications(),
+        getProgressionSummary(),
         getRiskSummary(),
       ]);
       setProfile(profileData);
-      setMedications(medicationData);
-      setRiskSummary(riskData);
+      setSummary(summaryData);
+      setRiskSummary(riskData as { overallLevel?: string | null; notes?: string[] });
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : '数据加载失败';
-      setErrorMessage(message);
+      setProfile(null);
+      setSummary(null);
+      setRiskSummary(null);
+      setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载病程管理页。');
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useEffect(() => {
-    loadData();
+    loadData().catch(() => undefined);
   }, []);
 
-  const handleDataEntryPress = () => {
-    router.push('/p-data_entry');
-  };
-
-  const handleMuscleDetailPress = () => {
-    console.log('显示肌力详细数据');
-  };
-
-  const handleMuscleGroupPress = (muscleGroup: string) => {
-    console.log('查看肌群详细信息:', muscleGroup);
-  };
-
-  const handleAlertDetailPress = () => {
-    console.log('查看活动预警详情');
-  };
-
-  const handlePredictionDetailPress = () => {
-    console.log('查看AI预测详情');
-  };
-
-  const handleInterventionPlanPress = () => {
-    router.push('/p-rehab_share');
-  };
-
-  const handleMedicationDetailPress = () => {
-    console.log('查看用药安全详情');
-  };
-
-  const latestMeasurementsByGroup = useMemo(() => {
-    if (!profile?.measurements) return {};
-    const map: Record<string, { strengthScore: number; recordedAt: string }> = {};
-    profile.measurements.forEach((m: any) => {
-      const existing = map[m.muscleGroup];
-      if (!existing || new Date(m.recordedAt) > new Date(existing.recordedAt)) {
-        map[m.muscleGroup] = { strengthScore: Number(m.strengthScore), recordedAt: m.recordedAt };
-      }
-    });
-    return map;
-  }, [profile]);
-
-  const averageStrength = useMemo(() => {
-    const values = Object.values(latestMeasurementsByGroup).map((item) => item.strengthScore);
-    if (!values.length) return null;
-    return values.reduce((sum, v) => sum + v, 0) / values.length;
-  }, [latestMeasurementsByGroup]);
-
-  const formattedLastActivity = useMemo(() => {
-    if (!riskSummary?.lastActivityAt) return '暂无记录';
-    const date = new Date(riskSummary.lastActivityAt);
-    return isNaN(date.getTime()) ? '暂无记录' : date.toLocaleDateString();
-  }, [riskSummary]);
-
-  const timelineItems = useMemo(() => {
-    if (!profile) return [];
-    const items: { title: string; description: string; time: string; ts: number }[] = [];
-    (profile.documents ?? []).forEach((doc: any) => {
-      const ts = doc.uploadedAt ? new Date(doc.uploadedAt).getTime() : 0;
-      items.push({
-        title: '报告上传',
-        description:
-          doc.ocrPayload?.extractedText ??
-          doc.ocrPayload?.fields?.hint ??
-          doc.fileName ??
-          '已上传报告',
-        time: doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleDateString() : '',
-        ts,
-      });
-    });
-    (profile.measurements ?? []).forEach((item: any) => {
-      const ts = item.recordedAt ? new Date(item.recordedAt).getTime() : 0;
-      items.push({
-        title: `${MUSCLE_LABELS[item.muscleGroup] || item.muscleGroup} 肌力评估`,
-        description: `肌力 ${Number(item.strengthScore)} 分`,
-        time: item.recordedAt ? new Date(item.recordedAt).toLocaleDateString() : '',
-        ts,
-      });
-    });
-    (profile.activityLogs ?? []).forEach((item: any) => {
-      const ts = item.createdAt ? new Date(item.createdAt).getTime() : 0;
-      items.push({
-        title: '日常活动记录',
-        description: item.content ?? '已记录活动',
-        time: item.createdAt ? new Date(item.createdAt).toLocaleDateString() : '',
-        ts,
-      });
-    });
-    return items.sort((a, b) => b.ts - a.ts).slice(0, 6);
-  }, [profile]);
-
-  const riskLevelColor = (level: string) => {
-    switch (level) {
-      case 'high':
-        return '#f87171';
-      case 'medium':
-        return '#fbbf24';
-      default:
-        return '#10b981';
-    }
-  };
-
-  if (isLoading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
-          <ActivityIndicator size="large" color="#969FFF" />
-          <Text style={{ color: '#9CA3AF', marginTop: 12 }}>正在加载病程数据...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (errorMessage) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={[styles.container, { alignItems: 'center', justifyContent: 'center' }]}>
-          <Text style={{ color: '#9CA3AF', marginBottom: 12 }}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.dataEntryButton} onPress={loadData}>
-            <FontAwesome6 name="arrow-rotate-right" size={14} color="#969FFF" />
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  const riskMeta = getRiskMeta(riskSummary?.overallLevel);
+  const reportInsights = useMemo(
+    () => buildReportInsights(profile?.documents ?? [], profile),
+    [profile],
+  );
+  const patientVisualizationCards = useMemo(
+    () => buildPatientVisualizationCards(profile),
+    [profile],
+  );
+  const latestMriVisualization = useMemo(
+    () => buildLatestMriVisualization(profile?.documents ?? []),
+    [profile],
+  );
+  const timelineItems = useMemo(
+    () => buildProgressionTimeline(profile, summary, 8),
+    [profile, summary],
+  );
+  const medicationHighlights = useMemo(() => buildMedicationHighlights(profile), [profile]);
+  const assistiveDevices =
+    profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];
+  const evidencePanels = [reportInsights.diagnosisPanel, reportInsights.imagingPanel];
+  const systemPanels = reportInsights.systemPanels;
+  const chartWidth = Math.max(220, windowWidth - 92);
 
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
-        locations={[0, 0.5, 1]}
+        colors={CLINICAL_GRADIENTS.page}
+        style={styles.backgroundGradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
       >
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-          {/* 顶部标题区域 */}
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => loadData(true).catch(() => undefined)}
+              tintColor={CLINICAL_COLORS.accentStrong}
+            />
+          }
+        >
           <View style={styles.header}>
-            <Text style={styles.pageTitle}>病程管理</Text>
-            <TouchableOpacity style={styles.dataEntryButton} onPress={handleDataEntryPress}>
-              <FontAwesome6 name="plus" size={16} color="#969FFF" />
+            <View style={styles.headerLead}>
+              <ScreenBackButton fallbackHref="/p-home" />
+              <View>
+                <Text style={styles.eyebrow}>PROGRESSION MANAGEMENT</Text>
+                <Text style={styles.pageTitle}>病程管理</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.addButton}
+              activeOpacity={0.88}
+              onPress={() => router.push('/p-data_entry')}
+            >
+              <FontAwesome6 name="plus" size={14} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
 
-          {/* 肌力评估区域 */}
           <View style={styles.section}>
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>肌力评估</Text>
-                <TouchableOpacity onPress={handleMuscleDetailPress}>
-                  <View style={styles.detailButton}>
-                    <Text style={styles.detailButtonText}>查看详情</Text>
-                    <FontAwesome6 name="chevron-right" size={10} color="#969FFF" />
-                  </View>
+            <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+              <View style={styles.heroTopRow}>
+                <View style={styles.riskChip}>
+                  <View style={[styles.riskDot, { backgroundColor: riskMeta.color }]} />
+                  <Text style={[styles.riskText, { color: riskMeta.color }]}>{riskMeta.label}</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.secondaryAction}
+                  activeOpacity={0.88}
+                  onPress={() => router.push('/p-report_management')}
+                >
+                  <Text style={styles.secondaryActionText}>报告管理</Text>
                 </TouchableOpacity>
               </View>
+              <Text style={styles.heroTitle}>
+                {summary?.currentStatus.headline ?? '从一次快速随访开始管理病程'}
+              </Text>
+              <Text style={styles.heroText}>
+                {riskSummary?.notes?.join('； ') ||
+                  summary?.currentStatus.detail ||
+                  '这里不展示原始数据堆叠，只告诉你接下来更该补什么、看什么。'}
+              </Text>
+              <View style={styles.heroMetrics}>
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricValue}>
+                    {summary?.currentStatus.lastFollowupAt
+                      ? formatDateLabel(summary.currentStatus.lastFollowupAt)
+                      : '—'}
+                  </Text>
+                  <Text style={styles.metricLabel}>最近随访</Text>
+                </View>
+                <View style={styles.metricCard}>
+                  <Text style={[styles.metricValue, { color: riskMeta.color }]}>
+                    {riskMeta.label}
+                  </Text>
+                  <Text style={styles.metricLabel}>风险提示</Text>
+                </View>
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricValue}>{summary?.changeCards?.length ?? 0}</Text>
+                  <Text style={styles.metricLabel}>变化摘要</Text>
+                </View>
+              </View>
+            </LinearGradient>
+          </View>
 
-              {/* 肌力雷达图 */}
-              <View style={styles.radarChartContainer}>
-                <View style={styles.radarChartWrapper}>
-                  <View style={styles.radarChart}>
-                    <View style={styles.radarChartCenter}>
-                      <Text style={styles.averageScore}>
-                        {averageStrength !== null ? averageStrength.toFixed(1) : '--'}
+          {errorMessage ? (
+            <View style={styles.section}>
+              <View style={styles.stateWrap}>
+                <Text style={styles.stateText}>{errorMessage}</Text>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  activeOpacity={0.88}
+                  onPress={() => loadData().catch(() => undefined)}
+                >
+                  <Text style={styles.retryText}>重新加载</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>当前干预与工具</Text>
+                <Text style={styles.sectionSubtitle}>
+                  集中查看当前用药、辅具和最近一次记录到的功能变化。
+                </Text>
+              </View>
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.cardHeading}>药物和辅具</Text>
+              <View style={styles.pillWrap}>
+                {medicationHighlights.length ? (
+                  medicationHighlights.map((item) => (
+                    <View key={item.id} style={styles.pill}>
+                      <Text style={styles.pillText}>{item.title}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyText}>暂无用药记录。</Text>
+                )}
+                {assistiveDevices.map((item) => (
+                  <View key={item} style={styles.pill}>
+                    <Text style={styles.pillText}>{item}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={styles.monitorDivider} />
+              <Text style={styles.cardHeading}>最近记录的变化</Text>
+              {(summary?.changeCards?.slice(0, 3) ?? []).map((item) => {
+                const meta = trendMeta[item.trend];
+                return (
+                  <View key={item.id} style={styles.changeRow}>
+                    <View style={styles.changeCopy}>
+                      <Text style={styles.changeTitle}>{item.title}</Text>
+                      <Text style={styles.changeDetail}>{item.detail}</Text>
+                    </View>
+                    <View style={[styles.changeBadge, { backgroundColor: meta.backgroundColor }]}>
+                      <Text style={[styles.changeBadgeText, { color: meta.color }]}>
+                        {meta.label}
                       </Text>
-                      <Text style={styles.averageLabel}>平均分</Text>
                     </View>
                   </View>
-                </View>
-              </View>
-
-              {/* 肌群详细数据 */}
-              <View style={styles.muscleGroupsGrid}>
-                {Object.entries(latestMeasurementsByGroup).length === 0 ? (
-                  <Text style={{ color: '#9CA3AF' }}>暂无肌力评估，去录入吧</Text>
-                ) : (
-                  Object.entries(latestMeasurementsByGroup).map(([group, data]) => {
-                    const widthPercent = Math.min(100, (data.strengthScore / 5) * 100);
-                    return (
-                      <TouchableOpacity
-                        key={group}
-                        style={styles.muscleGroupCard}
-                        onPress={() => handleMuscleGroupPress(group)}
-                      >
-                        <View style={styles.muscleGroupHeader}>
-                          <Text style={styles.muscleGroupName}>
-                            {MUSCLE_LABELS[group] || group}
-                          </Text>
-                          <Text style={[styles.muscleGroupScore, { color: '#969FFF' }]}>
-                            {data.strengthScore.toFixed(1)}
-                          </Text>
-                        </View>
-                        <View style={styles.progressBarContainer}>
-                          <View
-                            style={[
-                              styles.progressBar,
-                              { width: `${widthPercent}%`, backgroundColor: '#969FFF' },
-                            ]}
-                          />
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })
-                )}
-              </View>
+                );
+              })}
             </View>
           </View>
 
-          {/* 异常活动预警 */}
           <View style={styles.section}>
-            <View style={[styles.card, styles.alertCard]}>
-              <View style={styles.cardHeader}>
-                <View style={styles.alertHeaderLeft}>
-                  <View style={styles.alertIconContainer}>
-                    <FontAwesome6 name="triangle-exclamation" size={14} color="#fbbf24" />
-                  </View>
-                  <Text style={styles.cardTitle}>活动预警</Text>
-                </View>
-                <TouchableOpacity onPress={handleAlertDetailPress}>
-                  <View style={styles.detailButton}>
-                    <Text style={[styles.detailButtonText, { color: '#fbbf24' }]}>查看详情</Text>
-                    <FontAwesome6 name="chevron-right" size={10} color="#fbbf24" />
-                  </View>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.alertContent}>
-                <Text style={styles.alertDescription}>最近活动记录：{formattedLastActivity}</Text>
-                <Text style={styles.alertRecommendation}>
-                  活动风险：{' '}
-                  <Text style={{ color: riskLevelColor(riskSummary?.activityLevel || 'low') }}>
-                    {riskSummary?.activityLevel === 'high'
-                      ? '需尽快增加活动'
-                      : riskSummary?.activityLevel === 'medium'
-                        ? '建议保持规律运动'
-                        : '良好'}
-                  </Text>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>FSHD 关键证据</Text>
+                <Text style={styles.sectionSubtitle}>
+                  汇总诊断分型和 MRI 相关结构化证据，方便快速回顾。
                 </Text>
-
-                <View style={styles.activityStats}>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>
-                      {riskSummary?.latestMeasurement?.strengthScore ?? '--'}
-                    </Text>
-                    <Text style={styles.statLabel}>最近肌力</Text>
-                  </View>
-                  <View style={styles.statItem}>
-                    <Text style={[styles.statValue, { color: 'rgba(255, 255, 255, 0.7)' }]}>
-                      {formattedLastActivity}
-                    </Text>
-                    <Text style={styles.statLabel}>上次活动</Text>
-                  </View>
-                </View>
               </View>
             </View>
-          </View>
-
-          {/* 动态记录时间线 */}
-          <View style={styles.section}>
-            <View style={styles.card}>
-              <RecordTimelineScreen items={timelineItems} />
-            </View>
-          </View>
-
-          {/* 数据对比功能 */}
-          <View style={styles.section}>
-            <View style={styles.card}>
-              <DataComparisonFeature measurements={profile?.measurements ?? []} />
-            </View>
-          </View>
-
-          {/* AI病程预测 */}
-          <View style={styles.section}>
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>AI病程预测</Text>
-                <TouchableOpacity onPress={handlePredictionDetailPress}>
-                  <View style={styles.detailButton}>
-                    <Text style={styles.detailButtonText}>查看详情</Text>
-                    <FontAwesome6 name="chevron-right" size={10} color="#969FFF" />
+            <View style={styles.insightGrid}>
+              {evidencePanels.map((panel) => (
+                <View key={panel.key} style={styles.insightCard}>
+                  <View style={styles.insightTopRow}>
+                    <Text style={styles.insightTitle}>{panel.title}</Text>
+                    <Text style={styles.insightDate}>{panel.latestDate}</Text>
                   </View>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.predictionContent}>
-                <View style={styles.predictionHeader}>
-                  <Text style={styles.predictionLabel}>基础风险评估</Text>
-                  <Text
-                    style={[
-                      styles.predictionRisk,
-                      { color: riskLevelColor(riskSummary?.overallLevel || 'low') },
-                    ]}
-                  >
-                    {riskSummary?.overallLevel === 'high'
-                      ? '高风险'
-                      : riskSummary?.overallLevel === 'medium'
-                        ? '中等风险'
-                        : '低风险'}
-                  </Text>
+                  <Text style={styles.insightSummary}>{panel.summary}</Text>
+                  <View style={styles.metricWrap}>
+                    {panel.metrics.length > 0 ? (
+                      panel.metrics.map((metric) => (
+                        <View key={`${panel.key}-${metric.label}`} style={styles.metricPill}>
+                          <Text style={styles.metricPillLabel}>{metric.label}</Text>
+                          <Text style={styles.metricPillValue}>{metric.value}</Text>
+                        </View>
+                      ))
+                    ) : (
+                      <Text style={styles.emptyText}>当前还没有可直接展示的结构化指标。</Text>
+                    )}
+                  </View>
                 </View>
-                <Text style={styles.predictionDescription}>
-                  {riskSummary?.notes?.join('； ') || '暂无评估数据'}
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>患者端数据可视化</Text>
+                <Text style={styles.sectionSubtitle}>
+                  优先显示 MRI 受累图，并继续合并患者端随访趋势。
                 </Text>
-
-                <View style={styles.riskLevels}>
-                  <View style={styles.riskItem}>
-                    <Text
-                      style={[
-                        styles.riskValue,
-                        { color: riskLevelColor(riskSummary?.strengthLevel || 'low') },
-                      ]}
-                    >
-                      {riskSummary?.strengthLevel === 'high'
-                        ? '偏高风险'
-                        : riskSummary?.strengthLevel === 'medium'
-                          ? '需关注'
-                          : '良好'}
-                    </Text>
-                    <Text style={styles.riskLabel}>肌力风险</Text>
-                  </View>
-                  <View style={styles.riskItem}>
-                    <Text
-                      style={[
-                        styles.riskValue,
-                        { color: riskLevelColor(riskSummary?.activityLevel || 'low') },
-                      ]}
-                    >
-                      {riskSummary?.activityLevel === 'high'
-                        ? '偏高风险'
-                        : riskSummary?.activityLevel === 'medium'
-                          ? '需关注'
-                          : '良好'}
-                    </Text>
-                    <Text style={styles.riskLabel}>活动风险</Text>
-                  </View>
-                  <View style={styles.riskItem}>
-                    <Text style={[styles.riskValue, { color: '#3b82f6' }]}>
-                      {averageStrength !== null ? `${averageStrength.toFixed(1)} 分` : '--'}
-                    </Text>
-                    <Text style={styles.riskLabel}>平均肌力</Text>
-                  </View>
-                </View>
               </View>
-
               <TouchableOpacity
-                style={styles.interventionButton}
-                onPress={handleInterventionPlanPress}
+                style={styles.inlineAction}
+                activeOpacity={0.88}
+                onPress={() => setVisualizationExpanded((prev) => !prev)}
               >
-                <Text style={styles.interventionButtonText}>查看个性化干预计划</Text>
+                <FontAwesome6
+                  name={visualizationExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={12}
+                  color={CLINICAL_COLORS.accentStrong}
+                />
+                <Text style={styles.inlineActionText}>
+                  {visualizationExpanded ? '收起' : '展开'}
+                </Text>
               </TouchableOpacity>
             </View>
-          </View>
-
-          {/* 用药安全管理 */}
-          <View style={styles.section}>
-            <View style={[styles.card, styles.medicationCard]}>
-              <View style={styles.cardHeader}>
-                <View style={styles.medicationHeaderLeft}>
-                  <View style={styles.medicationIconContainer}>
-                    <FontAwesome6 name="shield-halved" size={14} color="#10b981" />
-                  </View>
-                  <Text style={styles.cardTitle}>用药安全</Text>
-                </View>
-                <TouchableOpacity onPress={handleMedicationDetailPress}>
-                  <View style={styles.detailButton}>
-                    <Text style={[styles.detailButtonText, { color: '#10b981' }]}>查看详情</Text>
-                    <FontAwesome6 name="chevron-right" size={10} color="#10b981" />
-                  </View>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.medicationContent}>
-                <Text style={styles.medicationStatus}>
-                  当前用药 {medications.length || 0} 项，保持按时服用并关注不良反应
-                </Text>
-
-                <View style={styles.medicationList}>
-                  {medications.length === 0 ? (
-                    <Text style={{ color: '#9CA3AF' }}>暂无用药记录，去录入一条吧</Text>
-                  ) : (
-                    medications.map((item) => (
-                      <View key={item.id} style={styles.medicationItem}>
-                        <Text style={styles.medicationName}>{item.medicationName}</Text>
-                        <View
+            {visualizationExpanded ? (
+              <View style={styles.visualizationChartStack}>
+                <View style={styles.card}>
+                  <View style={styles.visualizationSectionHeader}>
+                    <Text style={styles.cardHeading}>受累可视化</Text>
+                    <View style={styles.toggleRow}>
+                      <TouchableOpacity
+                        style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
+                        activeOpacity={0.88}
+                        onPress={() => setBodyView('front')}
+                      >
+                        <Text
                           style={[
-                            styles.medicationBadge,
-                            {
-                              backgroundColor: `${riskLevelColor(
-                                item.status === 'active' ? 'low' : 'medium',
-                              )}22`,
-                            },
+                            styles.toggleChipText,
+                            bodyView === 'front' && styles.toggleChipTextActive,
                           ]}
                         >
-                          <Text style={styles.medicationBadgeText}>
-                            {item.status === 'active' ? '进行中' : item.status}
+                          正面
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
+                        activeOpacity={0.88}
+                        onPress={() => setBodyView('back')}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleChipText,
+                            bodyView === 'back' && styles.toggleChipTextActive,
+                          ]}
+                        >
+                          背面
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <HumanBodyFigure
+                    view={bodyView}
+                    regions={latestMriVisualization.regions}
+                    mode="mri"
+                    title="MRI 受累分布"
+                    subtitle={latestMriVisualization.summary}
+                  />
+                </View>
+
+                {patientVisualizationCards.map((item) => {
+                  const meta = trendMeta[item.trend];
+                  const chartData = renderChartPoints(item.points);
+                  return (
+                    <View key={item.key} style={styles.visualizationChartCard}>
+                      <View style={styles.visualizationChartHeader}>
+                        <View style={styles.visualizationChartHeaderMain}>
+                          <Text style={styles.visualizationChartTitle}>{item.label}</Text>
+                          <Text style={styles.visualizationChartValue}>{item.latestDisplay}</Text>
+                        </View>
+                        <View
+                          style={[styles.changeBadge, { backgroundColor: meta.backgroundColor }]}
+                        >
+                          <Text style={[styles.changeBadgeText, { color: meta.color }]}>
+                            {meta.label}
                           </Text>
                         </View>
                       </View>
-                    ))
-                  )}
-                </View>
+                      <Text style={styles.visualizationChartSummary}>{item.summary}</Text>
+                      <Text style={styles.visualizationChartHint}>{item.helperText}</Text>
+                      {chartData ? (
+                        <View style={styles.chartWrap}>
+                          <LineChart
+                            data={chartData}
+                            width={chartWidth}
+                            height={164}
+                            chartConfig={createChartConfig(item.chartColor)}
+                            withInnerLines={false}
+                            withOuterLines={false}
+                            withVerticalLines={false}
+                            fromZero
+                            yAxisInterval={2}
+                            style={styles.chart}
+                            bezier
+                          />
+                        </View>
+                      ) : (
+                        <View style={styles.chartEmpty}>
+                          <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>病程时间轴</Text>
+                <Text style={styles.sectionSubtitle}>病程变化、事件和报告统一整理在这里。</Text>
               </View>
             </View>
+            <View style={styles.timelineSectionCard}>
+              <TimelineSectionCard
+                items={timelineItems}
+                subtitle="点击卡片可进入详情；报告类记录可继续跳转到报告详情页。"
+                emptyText="还没有病程事件或报告更新。"
+              />
+            </View>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>检查结果</Text>
+                <Text style={styles.sectionSubtitle}>
+                  按实验室、呼吸和心脏三个系统查看当前已识别的检查结果。
+                </Text>
+              </View>
+            </View>
+            <SystemMonitoringPanels
+              panels={systemPanels}
+              emptyText="当前还没有可归入检查结果的结构化数据。"
+            />
           </View>
         </ScrollView>
+
+        {isLoading ? (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <Text style={styles.loadingText}>正在整理病程管理重点...</Text>
+          </View>
+        ) : null}
       </LinearGradient>
     </SafeAreaView>
   );
-};
-
-export default PMANAGE;
+}

@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+minio-data
+uploads
+.git
+.DS_Store

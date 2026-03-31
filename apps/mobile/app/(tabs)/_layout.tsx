@@ -1,15 +1,23 @@
 import { Tabs } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 
 export default function Layout() {
   return (
     <Tabs
       backBehavior="order"
       screenOptions={{
-        tabBarActiveTintColor: '#969FFF',
-        tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
+        tabBarActiveTintColor: CLINICAL_COLORS.accent,
+        tabBarInactiveTintColor: CLINICAL_COLORS.textMuted,
         tabBarStyle: {
-          backgroundColor: '#0f0f23f2',
+          backgroundColor: CLINICAL_COLORS.panel,
+          borderTopColor: CLINICAL_COLORS.border,
+          height: 72,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '600',
+          paddingBottom: 6,
         },
       }}
     >
@@ -38,7 +46,7 @@ export default function Layout() {
       <Tabs.Screen
         name="p-archive"
         options={{
-          title: '档案',
+          title: '我的档案',
           headerShown: false,
           tabBarIcon: ({ color }) => <FontAwesome6 name="file-medical" size={18} color={color} />,
         }}

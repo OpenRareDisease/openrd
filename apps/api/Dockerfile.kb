@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+ENV KB_SERVICE_HOST=0.0.0.0
+ENV KB_SERVICE_PORT=5010
+
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY apps/api/knowledge.py apps/api/knowledge_service.py ./apps/api/
+
+WORKDIR /app/apps/api
+
+EXPOSE 5010
+
+CMD ["python", "knowledge_service.py"]

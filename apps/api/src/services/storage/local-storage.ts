@@ -4,7 +4,8 @@ import path from 'node:path';
 import type { StorageProvider, StoredFile, StoredFileStream } from './storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
 
-const LOCAL_PREFIX = 'local://';
+export const LOCAL_PREFIX = 'local://';
+export const isLocalStorageUri = (storageUri: string) => storageUri.startsWith(LOCAL_PREFIX);
 
 const getUploadsRoot = () => {
   return path.resolve(process.cwd(), 'uploads');
@@ -19,13 +20,17 @@ const ensureUploadsRoot = async () => {
 const buildStorageUri = (relativePath: string) => `${LOCAL_PREFIX}${relativePath}`;
 
 const parseStorageUri = (storageUri: string) => {
-  if (!storageUri.startsWith(LOCAL_PREFIX)) {
+  if (!isLocalStorageUri(storageUri)) {
     throw new AppError('Unsupported storage uri', 400);
   }
   return storageUri.slice(LOCAL_PREFIX.length);
 };
 
 export class LocalStorageProvider implements StorageProvider {
+  canHandle(storageUri: string) {
+    return isLocalStorageUri(storageUri);
+  }
+
   async save(input: {
     userId: string;
     fileName: string;
@@ -70,5 +75,21 @@ export class LocalStorageProvider implements StorageProvider {
       fileName: path.basename(absolutePath),
       mimeType: null,
     };
+  }
+
+  async remove(storageUri: string): Promise<void> {
+    const root = await ensureUploadsRoot();
+    const relativePath = parseStorageUri(storageUri);
+    const absolutePath = path.join(root, relativePath);
+
+    try {
+      await fs.unlink(absolutePath);
+    } catch (error) {
+      const errorCode = typeof error === 'object' && error ? (error as { code?: string }).code : '';
+      if (errorCode === 'ENOENT') {
+        throw new AppError('File not found', 404);
+      }
+      throw error;
+    }
   }
 }

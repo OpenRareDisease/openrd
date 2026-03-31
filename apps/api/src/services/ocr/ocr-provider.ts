@@ -3,6 +3,7 @@ export interface OcrResult {
   extractedText: string;
   fields: Record<string, string>;
   confidence?: number;
+  aiExtraction?: unknown;
 }
 
 export interface OcrProvider {
@@ -10,5 +11,8 @@ export interface OcrProvider {
     buffer: Buffer;
     mimeType: string | null;
     documentType: string;
+    userId?: string | number;
+    fileName?: string;
+    reportName?: string;
   }) => Promise<OcrResult>;
 }

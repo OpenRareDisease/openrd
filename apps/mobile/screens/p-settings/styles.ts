@@ -1,11 +1,10 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   scrollView: {
     flex: 1,
@@ -17,18 +16,22 @@ export default StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 16,
   },
+  headerRow: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   titleSection: {
     alignItems: 'center',
   },
   pageTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
     marginBottom: 8,
   },
   pageSubtitle: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
   },
   userInfoSection: {
@@ -36,14 +39,14 @@ export default StyleSheet.create({
     marginBottom: 24,
   },
   userInfoCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -69,23 +72,23 @@ export default StyleSheet.create({
   userName: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
   },
   userId: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 2,
   },
   userJoinDate: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   editProfileButton: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -97,14 +100,14 @@ export default StyleSheet.create({
     gap: 8,
   },
   settingItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -133,13 +136,13 @@ export default StyleSheet.create({
     marginRight: 12,
   },
   blueIconContainer: {
-    backgroundColor: 'rgba(96, 165, 250, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
   greenIconContainer: {
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
+    backgroundColor: CLINICAL_TINTS.successSoft,
   },
   purpleIconContainer: {
-    backgroundColor: 'rgba(167, 139, 250, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentStrong,
   },
   settingTextContainer: {
     flex: 1,
@@ -147,23 +150,23 @@ export default StyleSheet.create({
   settingTitle: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 2,
   },
   settingSubtitle: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   logoutItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     marginTop: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -182,7 +185,7 @@ export default StyleSheet.create({
   logoutText: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#EF4444',
+    color: CLINICAL_COLORS.danger,
   },
   versionInfoSection: {
     marginHorizontal: 24,
@@ -193,16 +196,16 @@ export default StyleSheet.create({
   },
   versionText: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
     marginBottom: 4,
   },
   copyrightText: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: CLINICAL_TINTS.modalOverlay,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 16,
@@ -212,15 +215,15 @@ export default StyleSheet.create({
     maxWidth: 320,
   },
   modalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 24,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -234,7 +237,7 @@ export default StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    backgroundColor: CLINICAL_TINTS.dangerSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -242,13 +245,13 @@ export default StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
     textAlign: 'center',
   },
   modalMessage: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 24,
     textAlign: 'center',
   },
@@ -262,26 +265,25 @@ export default StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     alignItems: 'center',
   },
   cancelButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   confirmButton: {
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 8,
-    backgroundColor: '#EF4444',
+    backgroundColor: CLINICAL_COLORS.danger,
     alignItems: 'center',
   },
   confirmButtonText: {
     fontSize: 16,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 });
-

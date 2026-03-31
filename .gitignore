@@ -163,3 +163,6 @@ Thumbs.db
 tmp/
 temp/
 apps/api/uploads/
+minio-data/
+apps/report-manager/testfile/
+kb-model-cache.tar.gz

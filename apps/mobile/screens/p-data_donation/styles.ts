@@ -1,11 +1,10 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   scrollView: {
     flex: 1,
@@ -21,14 +20,14 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     alignItems: 'center',
     justifyContent: 'center',
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -41,7 +40,7 @@ export default StyleSheet.create({
   pageTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   headerSpacer: {
     width: 40,
@@ -51,15 +50,15 @@ export default StyleSheet.create({
     marginBottom: 24,
   },
   introCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -80,13 +79,13 @@ export default StyleSheet.create({
   introTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
     textAlign: 'center',
   },
   introDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     lineHeight: 18,
   },
@@ -97,23 +96,23 @@ export default StyleSheet.create({
   sectionTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
   },
   processSteps: {
     gap: 8,
   },
   processStep: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -132,28 +131,28 @@ export default StyleSheet.create({
     marginRight: 8,
   },
   stepNumberPrimary: {
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
   stepNumberSecondary: {
-    backgroundColor: 'rgba(81, 71, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.successSoft,
   },
   stepNumberAccent: {
-    backgroundColor: 'rgba(62, 57, 135, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentStrong,
   },
   stepNumberTextPrimary: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
   },
   stepNumberTextSecondary: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#5147FF',
+    color: CLINICAL_COLORS.success,
   },
   stepNumberTextAccent: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#3E3987',
+    color: CLINICAL_COLORS.accentStrong,
   },
   stepContent: {
     flex: 1,
@@ -161,26 +160,26 @@ export default StyleSheet.create({
   stepTitle: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 2,
   },
   stepDescription: {
     fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   privacyProtectionSection: {
     marginHorizontal: 24,
     marginBottom: 24,
   },
   privacyCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -206,20 +205,20 @@ export default StyleSheet.create({
     marginRight: 8,
   },
   privacyIconGreen: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    backgroundColor: CLINICAL_TINTS.successSoft,
   },
   privacyIconBlue: {
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
   },
   privacyIconPurple: {
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentStrong,
   },
   privacyIconYellow: {
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    backgroundColor: CLINICAL_TINTS.warningSoft,
   },
   privacyText: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     flex: 1,
   },
   donationToggleSection: {
@@ -227,14 +226,14 @@ export default StyleSheet.create({
     marginBottom: 24,
   },
   toggleCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -255,29 +254,29 @@ export default StyleSheet.create({
   toggleTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
   },
   toggleDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   toggleSwitch: {
     width: 48,
     height: 24,
     borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
     justifyContent: 'center',
     paddingHorizontal: 2,
   },
   toggleSwitchActive: {
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
   },
   toggleThumb: {
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: CLINICAL_COLORS.text,
     alignSelf: 'flex-start',
     ...Platform.select({
       ios: {
@@ -299,15 +298,15 @@ export default StyleSheet.create({
     marginBottom: 32,
   },
   notDonatingCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -321,7 +320,7 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(156, 163, 175, 0.2)',
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
@@ -329,19 +328,19 @@ export default StyleSheet.create({
   notDonatingTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
     textAlign: 'center',
   },
   notDonatingDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     marginBottom: 12,
     lineHeight: 16,
   },
   enableDonationButton: {
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     paddingHorizontal: 20,
     paddingVertical: 6,
     borderRadius: 8,
@@ -349,18 +348,18 @@ export default StyleSheet.create({
   enableDonationButtonText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   donatingCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -391,19 +390,19 @@ export default StyleSheet.create({
   donatingTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
     textAlign: 'center',
   },
   donatingDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     textAlign: 'center',
     marginBottom: 4,
   },
   lastDonationTime: {
     fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
     textAlign: 'center',
     marginBottom: 12,
   },
@@ -417,31 +416,31 @@ export default StyleSheet.create({
   statValue: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
     marginBottom: 2,
   },
   statLabel: {
     fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: CLINICAL_TINTS.modalOverlay,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 12,
     padding: 16,
     marginHorizontal: 24,
     width: '100%',
     maxWidth: 320,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -454,12 +453,12 @@ export default StyleSheet.create({
   modalTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
   },
   modalDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 18,
     marginBottom: 16,
   },
@@ -469,7 +468,7 @@ export default StyleSheet.create({
   },
   modalCancelButton: {
     flex: 1,
-    backgroundColor: 'rgba(156, 163, 175, 0.2)',
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 8,
@@ -478,11 +477,11 @@ export default StyleSheet.create({
   modalCancelButtonText: {
     fontSize: 12,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   modalConfirmButton: {
     flex: 1,
-    backgroundColor: '#969FFF',
+    backgroundColor: CLINICAL_COLORS.accent,
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 8,
@@ -491,14 +490,14 @@ export default StyleSheet.create({
   modalConfirmButtonText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   successToast: {
     position: 'absolute',
     top: 80,
     left: '50%',
     transform: [{ translateX: -75 }],
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -506,10 +505,10 @@ export default StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -521,7 +520,6 @@ export default StyleSheet.create({
   },
   successToastText: {
     fontSize: 12,
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
 });
-

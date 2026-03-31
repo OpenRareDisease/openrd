@@ -1,7 +1,7 @@
 import type { ErrorRequestHandler, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import type { AppLogger } from '../config/logger';
-import { AppError } from '../utils/app-error';
+import type { AppLogger } from '../config/logger.js';
+import { AppError } from '../utils/app-error.js';
 
 interface ErrorHandlerOptions {
   logger: AppLogger;

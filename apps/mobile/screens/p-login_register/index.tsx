@@ -5,12 +5,12 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Picker } from '@react-native-picker/picker';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
@@ -21,8 +21,30 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, register, upsertPatientProfile } from '../../lib/api';
+import {
+  ApiError,
+  login,
+  register,
+  sendOtp,
+  updateMyBaseline,
+  upsertPatientProfile,
+} from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import {
+  type DateParts,
+  birthMonthOptions,
+  birthYearOptions,
+  composeDate,
+  genderOptions,
+  getBirthDayOptions,
+  getCityOptions,
+  getDistrictOptions,
+  buildRegionLabel,
+  parseDateParts,
+  provinceOptions,
+} from '../../lib/demographics-options';
+import ScreenBackButton from '../common/ScreenBackButton';
 
 interface LoginFormData {
   phone: string;
@@ -32,11 +54,13 @@ interface LoginFormData {
 interface RegisterFormData {
   phone: string;
   code: string;
+  otpRequestId?: string;
   password: string;
   confirmPassword: string;
   identity: 'doctor' | 'patient_family' | 'other';
   fullName: string;
   dateOfBirth: string;
+  diagnosisYear: string;
   gender: 'male' | 'female' | 'non_binary' | 'prefer_not_to_say' | '';
   contactEmail: string;
   regionProvince: string;
@@ -65,17 +89,20 @@ const LoginRegisterScreen: React.FC = () => {
   const [registerForm, setRegisterForm] = useState<RegisterFormData>({
     phone: '',
     code: '',
+    otpRequestId: undefined,
     password: '',
     confirmPassword: '',
     identity: 'patient_family',
     fullName: '',
     dateOfBirth: '',
+    diagnosisYear: '',
     gender: '',
     contactEmail: '',
     regionProvince: '',
     regionCity: '',
     regionDistrict: '',
   });
+  const [birthDateDraft, setBirthDateDraft] = useState<DateParts>(() => parseDateParts(''));
 
   // UI状态
   const [isLoginPasswordVisible, setIsLoginPasswordVisible] = useState(false);
@@ -196,22 +223,38 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    // 开始倒计时
-    setCountdown(60);
-    countdownInterval.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          if (countdownInterval.current) {
-            clearInterval(countdownInterval.current);
-            countdownInterval.current = null;
-          }
-          return 0;
-        }
-        return prev - 1;
+    try {
+      const response = await sendOtp({
+        phoneNumber: formatPhoneNumber(registerForm.phone),
+        scene: 'register',
       });
-    }, 1000);
+      setRegisterForm((prev) => ({
+        ...prev,
+        otpRequestId: response.requestId,
+      }));
 
-    showModal('success', '成功', '验证码已发送');
+      setCountdown(60);
+      countdownInterval.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            if (countdownInterval.current) {
+              clearInterval(countdownInterval.current);
+              countdownInterval.current = null;
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      const message = response.mockCode
+        ? `验证码已发送（测试码：${response.mockCode}）`
+        : '验证码已发送';
+      showModal('success', '成功', message);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
+      showModal('error', '错误', message);
+    }
   };
 
   // 登录提交
@@ -253,6 +296,12 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 注册提交
   const handleRegisterSubmit = async () => {
+    const selectedDateOfBirth = composeDate(
+      birthDateDraft.year,
+      birthDateDraft.month,
+      birthDateDraft.day,
+    );
+
     if (!registerForm.identity) {
       showModal('error', '错误', '请选择身份');
       return;
@@ -263,13 +312,13 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    if (!registerForm.dateOfBirth.trim()) {
-      showModal('error', '错误', '请输入出生日期');
+    if (!selectedDateOfBirth) {
+      showModal('error', '错误', '请选择出生日期');
       return;
     }
 
-    if (!isValidDate(registerForm.dateOfBirth.trim())) {
-      showModal('error', '错误', '出生日期格式应为YYYY-MM-DD');
+    if (!isValidDate(selectedDateOfBirth)) {
+      showModal('error', '错误', '请选择完整有效的出生日期');
       return;
     }
 
@@ -309,17 +358,17 @@ const LoginRegisterScreen: React.FC = () => {
     }
 
     if (!registerForm.regionProvince.trim()) {
-      showModal('error', '错误', '请输入所在省份');
+      showModal('error', '错误', '请选择所在省份');
       return;
     }
 
     if (!registerForm.regionCity.trim()) {
-      showModal('error', '错误', '请输入所在城市');
+      showModal('error', '错误', '请选择所在城市');
       return;
     }
 
     if (!registerForm.regionDistrict.trim()) {
-      showModal('error', '错误', '请输入所在区县');
+      showModal('error', '错误', '请选择所在区县');
       return;
     }
 
@@ -328,6 +377,11 @@ const LoginRegisterScreen: React.FC = () => {
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.contactEmail.trim())
     ) {
       showModal('error', '错误', '请输入正确的邮箱格式');
+      return;
+    }
+
+    if (registerForm.diagnosisYear.trim() && !/^\d{4}$/.test(registerForm.diagnosisYear.trim())) {
+      showModal('error', '错误', '确诊年份请填写 4 位年份');
       return;
     }
 
@@ -341,6 +395,8 @@ const LoginRegisterScreen: React.FC = () => {
       } as const;
       const response = await register({
         phoneNumber: formatPhoneNumber(registerForm.phone),
+        otpCode: registerForm.code.trim(),
+        otpRequestId: registerForm.otpRequestId,
         password: registerForm.password,
         role: roleMap[registerForm.identity],
       });
@@ -348,7 +404,7 @@ const LoginRegisterScreen: React.FC = () => {
       await setSession(response);
       await upsertPatientProfile({
         fullName: registerForm.fullName.trim(),
-        dateOfBirth: registerForm.dateOfBirth.trim(),
+        dateOfBirth: selectedDateOfBirth,
         gender: registerForm.gender,
         contactPhone: formatPhoneNumber(registerForm.phone),
         contactEmail: registerForm.contactEmail.trim() || null,
@@ -356,7 +412,22 @@ const LoginRegisterScreen: React.FC = () => {
         regionCity: registerForm.regionCity.trim(),
         regionDistrict: registerForm.regionDistrict.trim(),
       });
-      showModal('success', '注册成功', '账户已创建并完成档案');
+      await updateMyBaseline({
+        foundation: {
+          fullName: registerForm.fullName.trim(),
+          birthYear: Number(selectedDateOfBirth.slice(0, 4)),
+          diagnosisYear: registerForm.diagnosisYear.trim()
+            ? Number(registerForm.diagnosisYear.trim())
+            : null,
+          regionLabel:
+            buildRegionLabel({
+              regionProvince: registerForm.regionProvince.trim(),
+              regionCity: registerForm.regionCity.trim(),
+              regionDistrict: registerForm.regionDistrict.trim(),
+            }) || null,
+        },
+      });
+      showModal('success', '注册成功', '账户已创建并完成基础档案');
       router.replace('/p-home');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '注册失败，请重试';
@@ -433,10 +504,54 @@ const LoginRegisterScreen: React.FC = () => {
     };
   }, []);
 
+  const cityOptions = getCityOptions(registerForm.regionProvince);
+  const districtOptions = getDistrictOptions(registerForm.regionProvince, registerForm.regionCity);
+  const birthDayOptions = getBirthDayOptions(birthDateDraft.year, birthDateDraft.month);
+
+  const updateBirthDatePart = (part: 'year' | 'month' | 'day', value: string) => {
+    const nextParts = {
+      ...birthDateDraft,
+      [part]: value,
+    };
+
+    if (part !== 'day' && nextParts.year && nextParts.month && nextParts.day) {
+      const validDays = getBirthDayOptions(nextParts.year, nextParts.month).map(
+        (option) => option.value,
+      );
+      if (!validDays.includes(nextParts.day)) {
+        nextParts.day = '';
+      }
+    }
+
+    const nextDateOfBirth = composeDate(nextParts.year, nextParts.month, nextParts.day);
+    setBirthDateDraft(nextParts);
+    setRegisterForm((prev) => ({
+      ...prev,
+      dateOfBirth: nextDateOfBirth,
+    }));
+  };
+
+  const updateRegionProvince = (value: string) => {
+    setRegisterForm((prev) => ({
+      ...prev,
+      regionProvince: value,
+      regionCity: '',
+      regionDistrict: '',
+    }));
+  };
+
+  const updateRegionCity = (value: string) => {
+    setRegisterForm((prev) => ({
+      ...prev,
+      regionCity: value,
+      regionDistrict: '',
+    }));
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -454,6 +569,9 @@ const LoginRegisterScreen: React.FC = () => {
           >
             {/* Logo和产品名称区域 */}
             <View style={styles.header}>
+              <View style={styles.headerTopRow}>
+                <ScreenBackButton fallbackHref="/p-login_register" />
+              </View>
               <View style={styles.logoContainer}>
                 <Animated.View style={[styles.logoWrapper, logoAnimatedStyle]}>
                   <View style={styles.logoCard}>
@@ -513,7 +631,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入手机号"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={loginForm.phone}
                       onChangeText={(text) => setLoginForm((prev) => ({ ...prev, phone: text }))}
                       keyboardType="phone-pad"
@@ -527,7 +645,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请输入密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={loginForm.password}
                         onChangeText={(text) =>
                           setLoginForm((prev) => ({ ...prev, password: text }))
@@ -542,7 +660,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isLoginPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -554,7 +672,7 @@ const LoginRegisterScreen: React.FC = () => {
                     disabled={isLoading}
                   >
                     <LinearGradient
-                      colors={['#969FFF', '#5147FF']}
+                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={styles.primaryButtonGradient}
@@ -610,7 +728,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入姓名"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.fullName}
                       onChangeText={(text) =>
                         setRegisterForm((prev) => ({ ...prev, fullName: text }))
@@ -619,25 +737,61 @@ const LoginRegisterScreen: React.FC = () => {
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>出生日期</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
-                      value={registerForm.dateOfBirth}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, dateOfBirth: text }))
-                      }
-                    />
+                    <View style={styles.pickerRow}>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateDraft.year}
+                          onValueChange={(value) => updateBirthDatePart('year', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="年份" value="" />
+                          {birthYearOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateDraft.month}
+                          onValueChange={(value) => updateBirthDatePart('month', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="月份" value="" />
+                          {birthMonthOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
+                        <Picker
+                          selectedValue={birthDateDraft.day}
+                          onValueChange={(value) => updateBirthDatePart('day', String(value))}
+                          style={styles.picker}
+                        >
+                          <Picker.Item label="日期" value="" />
+                          {birthDayOptions.map((option) => (
+                            <Picker.Item
+                              key={option.value}
+                              label={option.label}
+                              value={option.value}
+                            />
+                          ))}
+                        </Picker>
+                      </View>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>性别</Text>
                     <View style={styles.identityRow}>
-                      {[
-                        { value: 'male', label: '男' },
-                        { value: 'female', label: '女' },
-                        { value: 'non_binary', label: '非二元' },
-                        { value: 'prefer_not_to_say', label: '不透露' },
-                      ].map((option) => {
+                      {genderOptions.map((option) => {
                         const isActive = registerForm.gender === option.value;
                         return (
                           <TouchableOpacity
@@ -664,13 +818,35 @@ const LoginRegisterScreen: React.FC = () => {
                     </View>
                   </View>
 
+                  <Text style={styles.registerSectionTitle}>基础建档</Text>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>确诊年份（可选）</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：2022"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.diagnosisYear}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({
+                          ...prev,
+                          diagnosisYear: text.replace(/[^\d]/g, ''),
+                        }))
+                      }
+                      keyboardType="number-pad"
+                      maxLength={4}
+                    />
+                    <Text style={styles.fieldHintText}>
+                      分型或诊断方式后续通过报告识别补全，这里不需要主观填写。
+                    </Text>
+                  </View>
+
                   <Text style={styles.registerSectionTitle}>账号信息</Text>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>手机号</Text>
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入手机号"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={registerForm.phone}
                       onChangeText={(text) => setRegisterForm((prev) => ({ ...prev, phone: text }))}
                       keyboardType="phone-pad"
@@ -684,7 +860,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.verificationCodeInput}
                         placeholder="请输入验证码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.code}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, code: text }))
@@ -713,7 +889,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请设置6-20位密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.password}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, password: text }))
@@ -728,7 +904,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isRegisterPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -740,7 +916,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请再次输入密码"
-                        placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                        placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.confirmPassword}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, confirmPassword: text }))
@@ -755,7 +931,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <FontAwesome6
                           name={isConfirmPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color="rgba(255, 255, 255, 0.5)"
+                          color={CLINICAL_COLORS.textMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -767,7 +943,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="用于账号验证与平台通知"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
                       keyboardType="email-address"
                       value={registerForm.contactEmail}
                       onChangeText={(text) =>
@@ -779,39 +955,64 @@ const LoginRegisterScreen: React.FC = () => {
                   <Text style={styles.registerSectionTitle}>所在地区</Text>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>省份</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：浙江省"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
-                      value={registerForm.regionProvince}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionProvince: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionProvince}
+                        onValueChange={(value) => updateRegionProvince(String(value))}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择省份" value="" />
+                        {provinceOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>城市</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：杭州市"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
-                      value={registerForm.regionCity}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionCity: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionCity}
+                        onValueChange={(value) => updateRegionCity(String(value))}
+                        enabled={cityOptions.length > 0}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择城市" value="" />
+                        {cityOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>区县</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：西湖区"
-                      placeholderTextColor="rgba(255, 255, 255, 0.5)"
-                      value={registerForm.regionDistrict}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, regionDistrict: text }))
-                      }
-                    />
+                    <View style={styles.pickerWrapper}>
+                      <Picker
+                        selectedValue={registerForm.regionDistrict}
+                        onValueChange={(value) =>
+                          setRegisterForm((prev) => ({ ...prev, regionDistrict: String(value) }))
+                        }
+                        enabled={districtOptions.length > 0}
+                        style={styles.picker}
+                      >
+                        <Picker.Item label="请选择区县" value="" />
+                        {districtOptions.map((option) => (
+                          <Picker.Item
+                            key={option.value}
+                            label={option.label}
+                            value={option.value}
+                          />
+                        ))}
+                      </Picker>
+                    </View>
                   </View>
 
                   <TouchableOpacity
@@ -820,7 +1021,7 @@ const LoginRegisterScreen: React.FC = () => {
                     disabled={isLoading}
                   >
                     <LinearGradient
-                      colors={['#969FFF', '#5147FF']}
+                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={styles.primaryButtonGradient}
@@ -893,7 +1094,11 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.errorIconWrapper}>
-                  <FontAwesome6 name="triangle-exclamation" size={20} color="#FF4D4F" />
+                  <FontAwesome6
+                    name="triangle-exclamation"
+                    size={20}
+                    color={CLINICAL_COLORS.danger}
+                  />
                 </View>
               </View>
               <Text style={styles.modalTitle}>错误</Text>
@@ -913,7 +1118,7 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.successIconWrapper}>
-                  <FontAwesome6 name="check" size={20} color="#52C41A" />
+                  <FontAwesome6 name="check" size={20} color={CLINICAL_COLORS.success} />
                 </View>
               </View>
               <Text style={styles.modalTitle}>成功</Text>
@@ -934,7 +1139,7 @@ const LoginRegisterScreen: React.FC = () => {
               <View style={styles.agreementModalHeader}>
                 <Text style={styles.agreementModalTitle}>{modalState.title}</Text>
                 <TouchableOpacity onPress={closeModal}>
-                  <FontAwesome6 name="xmark" size={16} color="rgba(255, 255, 255, 0.5)" />
+                  <FontAwesome6 name="xmark" size={16} color={CLINICAL_COLORS.textMuted} />
                 </TouchableOpacity>
               </View>
               <ScrollView style={styles.agreementModalScrollView}>

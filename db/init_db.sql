@@ -30,6 +30,25 @@ CREATE TABLE IF NOT EXISTS app_users (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- One-time password (OTP) records for verification (e.g. registration).
+CREATE TABLE IF NOT EXISTS auth_otps (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number    CITEXT NOT NULL,
+    purpose         TEXT NOT NULL,
+    code_hash       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'sent',
+    send_count      INTEGER NOT NULL DEFAULT 1,
+    verify_attempts INTEGER NOT NULL DEFAULT 0,
+    last_sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    verified_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_otps_phone_purpose_created_at
+    ON auth_otps (phone_number, purpose, created_at DESC);
+
 -- Patient profile data.
 CREATE TABLE IF NOT EXISTS patient_profiles (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -51,6 +70,7 @@ CREATE TABLE IF NOT EXISTS patient_profiles (
     region_province     TEXT,
     region_city         TEXT,
     region_district     TEXT,
+    baseline_payload    JSONB,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -69,7 +89,8 @@ ALTER TABLE patient_profiles
     ADD COLUMN IF NOT EXISTS primary_physician TEXT,
     ADD COLUMN IF NOT EXISTS region_province TEXT,
     ADD COLUMN IF NOT EXISTS region_city TEXT,
-    ADD COLUMN IF NOT EXISTS region_district TEXT;
+    ADD COLUMN IF NOT EXISTS region_district TEXT,
+    ADD COLUMN IF NOT EXISTS baseline_payload JSONB;
 
 ALTER TABLE patient_profiles
     DROP COLUMN IF EXISTS muscle_strength;
@@ -91,13 +112,21 @@ $$ LANGUAGE plpgsql;
 
 -- Submission batches (one per data-entry action).
 CREATE TABLE IF NOT EXISTS patient_submissions (
-    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    profile_id  UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id          UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_kind     TEXT NOT NULL DEFAULT 'followup',
+    summary             TEXT,
+    changed_since_last  BOOLEAN,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_patient_submissions_profile
     ON patient_submissions (profile_id, created_at DESC);
+
+ALTER TABLE patient_submissions
+    ADD COLUMN IF NOT EXISTS submission_kind TEXT NOT NULL DEFAULT 'followup',
+    ADD COLUMN IF NOT EXISTS summary TEXT,
+    ADD COLUMN IF NOT EXISTS changed_since_last BOOLEAN;
 
 -- Muscle strength measurements linked to a patient profile.
 CREATE TABLE IF NOT EXISTS patient_measurements (
@@ -106,8 +135,13 @@ CREATE TABLE IF NOT EXISTS patient_measurements (
     submission_id   UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     muscle_group    TEXT NOT NULL,
+    metric_key      TEXT,
+    body_region     TEXT,
+    side            TEXT NOT NULL DEFAULT 'none',
     strength_score  SMALLINT NOT NULL CHECK (strength_score BETWEEN 0 AND 5),
     method          TEXT,
+    entry_mode      TEXT NOT NULL DEFAULT 'self_report',
+    device_used     TEXT,
     notes           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -118,13 +152,28 @@ CREATE INDEX IF NOT EXISTS idx_patient_measurements_profile
 CREATE INDEX IF NOT EXISTS idx_patient_measurements_latest
     ON patient_measurements (profile_id, muscle_group, recorded_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_patient_measurements_metric_side
+    ON patient_measurements (profile_id, COALESCE(metric_key, muscle_group), side, recorded_at DESC);
+
+ALTER TABLE patient_measurements
+    ADD COLUMN IF NOT EXISTS metric_key TEXT,
+    ADD COLUMN IF NOT EXISTS body_region TEXT,
+    ADD COLUMN IF NOT EXISTS side TEXT NOT NULL DEFAULT 'none',
+    ADD COLUMN IF NOT EXISTS entry_mode TEXT NOT NULL DEFAULT 'self_report',
+    ADD COLUMN IF NOT EXISTS device_used TEXT;
+
 -- Functional test results (e.g., stair climb time, six-minute walk).
 CREATE TABLE IF NOT EXISTS patient_function_tests (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     profile_id      UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id   UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
     test_type       TEXT NOT NULL,
     measured_value  NUMERIC(10,2),
+    side            TEXT,
+    protocol        TEXT,
     unit            TEXT,
+    device_used     TEXT,
+    assistance_required BOOLEAN,
     performed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     notes           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -132,6 +181,13 @@ CREATE TABLE IF NOT EXISTS patient_function_tests (
 
 CREATE INDEX IF NOT EXISTS idx_patient_function_tests_profile
     ON patient_function_tests (profile_id, performed_at DESC);
+
+ALTER TABLE patient_function_tests
+    ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS side TEXT,
+    ADD COLUMN IF NOT EXISTS protocol TEXT,
+    ADD COLUMN IF NOT EXISTS device_used TEXT,
+    ADD COLUMN IF NOT EXISTS assistance_required BOOLEAN;
 
 -- Daily activity logs captured via manual entry or voice transcription.
 CREATE TABLE IF NOT EXISTS patient_activity_logs (
@@ -202,6 +258,53 @@ ALTER TABLE patient_medications
 ALTER TABLE patient_documents
     ADD COLUMN IF NOT EXISTS submission_id UUID REFERENCES patient_submissions(id) ON DELETE SET NULL;
 
+CREATE TABLE IF NOT EXISTS patient_symptom_scores (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id      UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id   UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
+    symptom_key     TEXT NOT NULL,
+    score           SMALLINT NOT NULL,
+    scale_min       SMALLINT NOT NULL DEFAULT 0,
+    scale_max       SMALLINT NOT NULL DEFAULT 10,
+    notes           TEXT,
+    recorded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_symptom_scores_profile
+    ON patient_symptom_scores (profile_id, symptom_key, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS patient_daily_impacts (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id          UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id       UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
+    adl_key             TEXT NOT NULL,
+    difficulty_level    SMALLINT NOT NULL,
+    needs_assistance    BOOLEAN,
+    notes               TEXT,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_daily_impacts_profile
+    ON patient_daily_impacts (profile_id, adl_key, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS patient_followup_events (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id          UUID NOT NULL REFERENCES patient_profiles(id) ON DELETE CASCADE,
+    submission_id       UUID REFERENCES patient_submissions(id) ON DELETE SET NULL,
+    event_type          TEXT NOT NULL,
+    severity            TEXT,
+    occurred_at         TIMESTAMPTZ NOT NULL,
+    resolved_at         TIMESTAMPTZ,
+    description         TEXT,
+    linked_document_id  UUID REFERENCES patient_documents(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_followup_events_profile
+    ON patient_followup_events (profile_id, occurred_at DESC);
+
 -- Medical reports (metadata only, files stored elsewhere).
 CREATE TABLE IF NOT EXISTS medical_reports (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -264,6 +367,38 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- OTP verification codes (SMS/email)
+CREATE TABLE IF NOT EXISTS otp_verification_codes (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone_number    CITEXT NOT NULL,
+    scene           TEXT NOT NULL DEFAULT 'register',
+    code_hash       TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    consumed_at     TIMESTAMPTZ,
+    attempt_count   INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_otp_phone_sent_at
+    ON otp_verification_codes (phone_number, sent_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_otp_request_id
+    ON otp_verification_codes (request_id);
+
+CREATE TABLE IF NOT EXISTS auth_login_guards (
+    identifier       CITEXT PRIMARY KEY,
+    failure_count    INTEGER NOT NULL DEFAULT 0,
+    first_failed_at  TIMESTAMPTZ,
+    last_failed_at   TIMESTAMPTZ,
+    locked_until     TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_login_guards_locked_until
+    ON auth_login_guards (locked_until);
+
 CREATE INDEX IF NOT EXISTS idx_medical_reports_user_id
     ON medical_reports (user_id);
 CREATE INDEX IF NOT EXISTS idx_community_posts_author_id
@@ -291,6 +426,18 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS app_users_set_updated_at ON app_users;
 CREATE TRIGGER app_users_set_updated_at
 BEFORE UPDATE ON app_users
+FOR EACH ROW
+EXECUTE PROCEDURE set_updated_at();
+
+DROP TRIGGER IF EXISTS auth_otps_set_updated_at ON auth_otps;
+CREATE TRIGGER auth_otps_set_updated_at
+BEFORE UPDATE ON auth_otps
+FOR EACH ROW
+EXECUTE PROCEDURE set_updated_at();
+
+DROP TRIGGER IF EXISTS auth_login_guards_set_updated_at ON auth_login_guards;
+CREATE TRIGGER auth_login_guards_set_updated_at
+BEFORE UPDATE ON auth_login_guards
 FOR EACH ROW
 EXECUTE PROCEDURE set_updated_at();
 

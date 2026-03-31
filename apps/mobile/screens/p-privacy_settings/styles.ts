@@ -1,11 +1,10 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
+import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: CLINICAL_COLORS.background,
   },
   header: {
     flexDirection: 'row',
@@ -13,9 +12,9 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 24,
     paddingVertical: 16,
-    backgroundColor: 'rgba(15, 15, 35, 0.95)',
+    backgroundColor: CLINICAL_COLORS.backgroundRaised,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -32,14 +31,16 @@ export default StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   headerPlaceholder: {
     width: 40,
@@ -55,22 +56,22 @@ export default StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 16,
   },
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -87,23 +88,23 @@ export default StyleSheet.create({
   settingTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 4,
   },
   settingDescription: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 16,
   },
   donationInfoCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -122,7 +123,7 @@ export default StyleSheet.create({
   donationInfoTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
   },
   detailsButton: {
     flexDirection: 'row',
@@ -131,7 +132,7 @@ export default StyleSheet.create({
   detailsButtonText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
     marginRight: 4,
   },
   donationStatus: {
@@ -144,21 +145,21 @@ export default StyleSheet.create({
   },
   statusLabel: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
   },
   statusValue: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: CLINICAL_COLORS.textMuted,
   },
   privacyNoticeCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: CLINICAL_COLORS.panel,
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: CLINICAL_COLORS.border,
     ...Platform.select({
       ios: {
-        shadowColor: '#969FFF',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -176,7 +177,7 @@ export default StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -188,7 +189,7 @@ export default StyleSheet.create({
   privacyNoticeTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: CLINICAL_COLORS.text,
     marginBottom: 8,
   },
   privacyNoticeList: {
@@ -200,15 +201,14 @@ export default StyleSheet.create({
   },
   bulletPoint: {
     fontSize: 12,
-    color: '#969FFF',
+    color: CLINICAL_COLORS.accent,
     marginRight: 8,
     marginTop: 2,
   },
   privacyNoticeText: {
     flex: 1,
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: CLINICAL_COLORS.textSoft,
     lineHeight: 16,
   },
 });
-

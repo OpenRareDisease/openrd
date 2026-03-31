@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { RequestHandler } from 'express';
 import OpenAI from 'openai';
 import type { RouteContext } from './index.js';
+import { createRateLimitMiddleware } from '../middleware/rate-limit.js';
 import { requireAuth } from '../middleware/require-auth.js';
 
 type QueryGenResult = {
@@ -137,31 +138,6 @@ const setProgressStage = (
 
 const cleanJsonText = (s: string) => s.replace(/^\uFEFF/, '').trim();
 
-const getKbServiceUrl = () => {
-  if (process.env.KB_SERVICE_URL) {
-    return process.env.KB_SERVICE_URL;
-  }
-
-  const host = process.env.KB_SERVICE_HOST || '127.0.0.1';
-  const port = process.env.KB_SERVICE_PORT || '5010';
-  return `http://${host}:${port}`;
-};
-
-const isUuid = (s: unknown) =>
-  typeof s === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
-
-const apiKey = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
-const openai = new OpenAI({
-  apiKey,
-  baseURL: process.env.AI_API_BASE_URL || 'https://api.siliconflow.cn/v1',
-  timeout: Number(process.env.AI_API_TIMEOUT) || 30000,
-});
-
-if (!apiKey) {
-  process.stdout.write('⚠️ Missing AI_API_KEY/OPENAI_API_KEY in env. DeepSeek call will fail.\n');
-}
-
 const safeJsonParse = <T = unknown>(s: string): T | null => {
   try {
     return JSON.parse(cleanJsonText(s)) as T;
@@ -214,8 +190,7 @@ const getErrorMessage = (error: unknown) => {
   return String(error);
 };
 
-const requestKnowledgeBase = async (payload: KnowledgePayload) => {
-  const kbServiceUrl = getKbServiceUrl();
+const requestKnowledgeBase = async (payload: KnowledgePayload, kbServiceUrl: string) => {
   let response: Response;
 
   try {
@@ -260,8 +235,32 @@ const requestKnowledgeBase = async (payload: KnowledgePayload) => {
 const createAiChatRoutes = (context: RouteContext) => {
   const router = Router();
   const authMiddleware: RequestHandler = requireAuth(context.env, context.logger);
+  const aiAskLimiter = createRateLimitMiddleware({
+    keyPrefix: 'ai:ask',
+    windowMs: context.env.AI_RATE_LIMIT_WINDOW_SECONDS * 1000,
+    maxRequests: context.env.AI_RATE_LIMIT_MAX_REQUESTS,
+    message: 'AI 请求过于频繁，请稍后再试',
+  });
+  const aiProgressLimiter = createRateLimitMiddleware({
+    keyPrefix: 'ai:progress',
+    windowMs: context.env.AI_PROGRESS_RATE_LIMIT_WINDOW_SECONDS * 1000,
+    maxRequests: context.env.AI_PROGRESS_RATE_LIMIT_MAX_REQUESTS,
+    message: '进度轮询过于频繁，请稍后再试',
+  });
+  const aiApiKey = context.env.AI_API_KEY || context.env.OPENAI_API_KEY || '';
+  const openai = aiApiKey
+    ? new OpenAI({
+        apiKey: aiApiKey,
+        baseURL: context.env.AI_API_BASE_URL,
+        timeout: context.env.AI_API_TIMEOUT,
+      })
+    : null;
 
-  router.post('/ask', authMiddleware, async (req, res) => {
+  if (!openai) {
+    context.logger.warn('AI API key missing; /api/ai/ask will use KB fallback only');
+  }
+
+  router.post('/ask', authMiddleware, aiAskLimiter, async (req, res) => {
     const progressId =
       req.body && typeof req.body.progressId === 'string' ? req.body.progressId : null;
     if (progressId) {
@@ -270,8 +269,6 @@ const createAiChatRoutes = (context: RouteContext) => {
     }
 
     try {
-      process.stdout.write('\n🔥 HIT POST /api/ai/ask\n');
-
       const { question, userContext } = req.body || {};
       if (!question || !String(question).trim()) {
         if (progressId) {
@@ -281,11 +278,15 @@ const createAiChatRoutes = (context: RouteContext) => {
       }
 
       const userId = (req as { user?: { id?: string } }).user?.id;
-      process.stdout.write(`👤 userId = ${String(userId)} (uuid=${isUuid(userId)})\n`);
-      process.stdout.write(`❓ question = ${String(question)}\n`);
-      process.stdout.write(`🔧 cwd = ${process.cwd()}\n`);
-      const kbServiceUrl = getKbServiceUrl();
-      process.stdout.write(`🧠 kbServiceUrl = ${kbServiceUrl}\n`);
+      const kbServiceUrl = context.env.kbServiceUrl;
+      context.logger.debug(
+        {
+          userId: userId ?? null,
+          questionLength: String(question).trim().length,
+          kbServiceUrl,
+        },
+        'AI ask request received',
+      );
 
       let queries: string[] = [String(question)];
       let where: Record<string, unknown> | null = null;
@@ -295,7 +296,9 @@ const createAiChatRoutes = (context: RouteContext) => {
         if (progressId) {
           setProgressStage(progressId, 'query_gen');
         }
-        process.stdout.write('🧩 generating retrieval queries via DeepSeek...\n');
+        if (!openai) {
+          throw new Error('AI query generation disabled');
+        }
 
         const queryGenSystem = `你是一个RAG检索查询生成器。你的任务：把用户问题改写成多条“更利于向医学知识库检索”的查询语句。
 要求：
@@ -315,7 +318,7 @@ const createAiChatRoutes = (context: RouteContext) => {
 用户信息：${JSON.stringify(userContext || {})}`;
 
         const qgen = await openai.chat.completions.create({
-          model: process.env.AI_API_MODEL || 'deepseek-ai/DeepSeek-V3',
+          model: context.env.AI_API_MODEL,
           messages: [
             { role: 'system', content: queryGenSystem },
             { role: 'user', content: queryGenUser },
@@ -325,7 +328,6 @@ const createAiChatRoutes = (context: RouteContext) => {
         });
 
         queryGenRaw = qgen.choices?.[0]?.message?.content?.trim() || '';
-        process.stdout.write(`🧩 queryGenRaw(first400) = ${queryGenRaw.slice(0, 400)}\n`);
 
         const rawObj = extractJsonObject(queryGenRaw);
         const obj = rawObj && typeof rawObj === 'object' ? (rawObj as QueryGenResult) : null;
@@ -345,13 +347,13 @@ const createAiChatRoutes = (context: RouteContext) => {
         ) {
           where = whereCandidate as Record<string, unknown>;
         }
-
-        process.stdout.write(`🧩 queries(final) = ${JSON.stringify(queries)}\n`);
-        process.stdout.write(`🧩 where(final) = ${JSON.stringify(where)}\n`);
       } catch (error) {
-        console.error(
-          '❌ query generation failed, fallback to [question]:',
-          getErrorMessage(error),
+        context.logger.warn(
+          {
+            userId: userId ?? null,
+            error: getErrorMessage(error),
+          },
+          'AI query generation failed; falling back to original question',
         );
         queries = [String(question)];
         where = null;
@@ -370,9 +372,7 @@ const createAiChatRoutes = (context: RouteContext) => {
       if (progressId) {
         setProgressStage(progressId, 'kb_search');
       }
-      const kb = await requestKnowledgeBase(payload);
-
-      process.stdout.write(`📦 python chunks(raw) = ${kb.rawChunks.length}\n`);
+      const kb = await requestKnowledgeBase(payload, kbServiceUrl);
 
       const contextText =
         kb.ragContext && kb.ragContext.trim().length > 0
@@ -431,9 +431,11 @@ ${knowledgeContext}
         if (progressId) {
           setProgressStage(progressId, 'final_answer');
         }
-        process.stdout.write('🤖 calling DeepSeek for final answer...\n');
+        if (!openai) {
+          throw new Error('AI final answer disabled');
+        }
         const completion = await openai.chat.completions.create({
-          model: process.env.AI_API_MODEL || 'deepseek-ai/DeepSeek-V3',
+          model: context.env.AI_API_MODEL,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
@@ -441,12 +443,17 @@ ${knowledgeContext}
           temperature: 0.7,
           max_tokens: 2000,
         });
-        process.stdout.write('🤖 DeepSeek done.\n');
 
         finalAnswer =
           completion.choices?.[0]?.message?.content?.trim() || '抱歉，我暂时无法生成回答。';
       } catch (error) {
-        console.error('❌ DeepSeek call failed:', getErrorMessage(error));
+        context.logger.warn(
+          {
+            userId: userId ?? null,
+            error: getErrorMessage(error),
+          },
+          'AI final answer failed; using KB fallback',
+        );
         finalAnswer = kb.parsed?.answer || '抱歉，AI 服务暂时不可用，请稍后重试。';
       }
 
@@ -473,7 +480,12 @@ ${knowledgeContext}
     } catch (error) {
       const detail = getErrorMessage(error);
       const isKbDown = detail.includes('知识库服务不可用');
-      console.error('❌ /api/ai/ask error:', detail);
+      context.logger.error(
+        {
+          error: detail,
+        },
+        'AI ask route failed',
+      );
       if (progressId) {
         setProgressStage(progressId, 'done', 'error', detail);
       }
@@ -486,7 +498,7 @@ ${knowledgeContext}
     }
   });
 
-  router.post('/ask/progress/init', authMiddleware, (req, res) => {
+  router.post('/ask/progress/init', authMiddleware, aiProgressLimiter, (req, res) => {
     const progressId =
       req.body && typeof req.body.progressId === 'string' ? req.body.progressId : null;
     if (!progressId) {
@@ -505,7 +517,7 @@ ${knowledgeContext}
     });
   });
 
-  router.get('/ask/progress/:progressId', authMiddleware, (req, res) => {
+  router.get('/ask/progress/:progressId', authMiddleware, aiProgressLimiter, (req, res) => {
     pruneProgressStore();
     const progressId = req.params.progressId;
     const state = progressStore.get(progressId);

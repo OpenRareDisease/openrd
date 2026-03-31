@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   Text,
   TextInput,
@@ -10,11 +9,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
 import { ApiError, getMyPatientProfile, upsertPatientProfile } from '../../lib/api';
+import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { useAuth } from '../../contexts/AuthContext';
+import ScreenBackButton from '../common/ScreenBackButton';
 
 const genderOptions = [
   { value: 'male', label: '男' },
@@ -56,12 +56,6 @@ const RegisterProfileScreen: React.FC = () => {
     }
     return '请输入手机号或邮箱';
   }, [form.contactPhone, form.contactEmail]);
-
-  const handleBackPress = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
-  };
 
   useEffect(() => {
     let isMounted = true;
@@ -163,16 +157,14 @@ const RegisterProfileScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <LinearGradient
-        colors={['#0F0F23', '#1A1A3A', '#0F0F23']}
+        colors={CLINICAL_GRADIENTS.page}
         locations={[0, 0.5, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.backgroundGradient}
       >
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={handleBackPress}>
-            <FontAwesome6 name="angle-left" size={18} color="#FFFFFF" />
-          </TouchableOpacity>
+          <ScreenBackButton />
           <Text style={styles.headerTitle}>编辑档案</Text>
           <View style={styles.headerPlaceholder} />
         </View>
@@ -180,7 +172,7 @@ const RegisterProfileScreen: React.FC = () => {
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
           {isLoading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator color="#969FFF" />
+              <ActivityIndicator color={CLINICAL_COLORS.accent} />
             </View>
           ) : (
             <>
@@ -202,7 +194,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="请输入姓名"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     value={form.fullName}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, fullName: text }))}
                   />
@@ -211,7 +203,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="YYYY-MM-DD"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     value={form.dateOfBirth}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, dateOfBirth: text }))}
                   />
@@ -247,7 +239,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="请输入手机号"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     keyboardType="phone-pad"
                     value={form.contactPhone}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, contactPhone: text }))}
@@ -257,7 +249,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="请输入邮箱"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     keyboardType="email-address"
                     value={form.contactEmail}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, contactEmail: text }))}
@@ -273,7 +265,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="例如：浙江省"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     value={form.regionProvince}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, regionProvince: text }))}
                   />
@@ -282,7 +274,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="例如：杭州市"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     value={form.regionCity}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, regionCity: text }))}
                   />
@@ -291,7 +283,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="例如：西湖区"
-                    placeholderTextColor="rgba(255, 255, 255, 0.5)"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
                     value={form.regionDistrict}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, regionDistrict: text }))}
                   />
@@ -304,13 +296,13 @@ const RegisterProfileScreen: React.FC = () => {
                 disabled={isSaving}
               >
                 <LinearGradient
-                  colors={['#969FFF', '#5147FF']}
+                  colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
                   style={styles.primaryButtonGradient}
                 >
                   {isSaving ? (
-                    <ActivityIndicator color="#FFFFFF" />
+                    <ActivityIndicator color={CLINICAL_COLORS.text} />
                   ) : (
                     <Text style={styles.primaryButtonText}>保存</Text>
                   )}

@@ -89,7 +89,26 @@ class FSHDKnowledgeBaseCloud:
 
         # Local embedding model (do NOT bind to collection)
         logger.info("Loading local embedding model: all-MiniLM-L6-v2")
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        model_name = os.getenv("KB_EMBED_MODEL", "all-MiniLM-L6-v2").strip()
+        local_only_env = os.getenv("KB_LOCAL_FILES_ONLY", "").strip() == "1"
+
+        try:
+            self.model = SentenceTransformer(model_name, local_files_only=local_only_env)
+        except Exception as first_error:
+            if not local_only_env:
+                logger.warning(
+                    "Embedding model download failed, retrying with local_files_only=True: %s",
+                    first_error,
+                )
+                try:
+                    self.model = SentenceTransformer(model_name, local_files_only=True)
+                except Exception as second_error:
+                    raise RuntimeError(
+                        "Failed to load embedding model. If you are offline, pre-download the model "
+                        "and set KB_LOCAL_FILES_ONLY=1."
+                    ) from second_error
+            else:
+                raise
 
         logger.info(f"Opening collection (NO embedding_function passed): {self.collection_name}")
         self.collection = self.client.get_collection(name=self.collection_name)

@@ -2,127 +2,215 @@
 
 [中文](./README.md)
 
----
+FSHD-openrd is a monorepo for an FSHD patient-facing platform. It combines the mobile client, backend API, embedded OCR/report parsing, AI Q&A, and deployment tooling in one repository. The current repo is meant to support a real end-to-end workflow, not just isolated demos.
 
-FSHD-openrd is a unified monorepo that powers the mobile application and backend services for managing Facioscapulohumeral muscular dystrophy (FSHD). The platform combines intelligent Q&A, dynamic health records, disease management tools, patient communities, and clinical trial matching.
+Current working version: `v2.3.1`
+Baseline version: `master` / `v1.0.0`
 
-## 🎯 Overview
+## What is in the repo
 
-The project empowers patients and caregivers with data-driven insights, AI-assisted recommendations, and collaboration features that connect medical experts, researchers, and the broader community.
+- `apps/mobile`: Expo client for iOS / Android / Web
+- `apps/api`: Node.js + Express API for auth, profile, follow-up, reports, and AI flows
+- `apps/report-manager`: Python OCR / report parsing logic embedded by the main API
+- `db`: database bootstrap and migration-related scripts
+- `docs`: runbooks, testing, release notes, design notes, and historical records
 
-## 🛠 Tech Stack
+## Main flows currently covered
 
-| Layer        | Technology                       | Notes                                                    |
-| ------------ | -------------------------------- | -------------------------------------------------------- |
-| Mobile       | Expo (React Native + TypeScript) | Shared codebase targeting iOS, Android, and Web          |
-| Backend API  | Express + TypeScript             | REST API surface for authentication, archives, Q&A, etc. |
-| Database     | PostgreSQL                       | Primary data store for transactional data                |
-| Code Quality | ESLint + Prettier + Husky        | Consistent style enforcement and git hooks               |
-| Logging      | pino + pino-http                 | Structured logging for observability                     |
+- Auth, patient profile, measurements, symptoms, activities, and medications
+- Submission and follow-up event flows, clinical passport, timeline, and aggregate views
+- Report upload, embedded OCR, FSHD-specific structured extraction, and report detail views
+- AI Q&A, KB retrieval, progress polling, and fallback handling
+- Docker startup, DB migration, health checks, and regression scripts
 
-## 📁 Repository Layout
+## Tech stack
 
-```
+- Mobile: Expo + React Native + TypeScript
+- API: Express + TypeScript + Zod
+- Database: PostgreSQL
+- Report processing: embedded Python OCR / parser
+- Tooling: ESLint + Prettier + Husky + npm workspaces
+
+## Repository layout
+
+```text
 openrd/
 ├── apps/
-│   ├── api/                # Express API service (TypeScript)
-│   │   ├── src/            # Configuration, modules, middleware
-│   │   ├── package.json    # Dependencies and scripts
-│   │   └── eslint.config.mjs
-│   └── mobile/             # Expo React Native application
-│       ├── app/            # Expo Router pages
-│       ├── screens/        # High-level UI compositions
-│       ├── assets/         # Fonts, icons, media
-│       └── package.json
-├── db/                     # PostgreSQL bootstrap scripts
-├── ui/                     # Static design prototypes
-├── .husky/                 # Git hooks (pre-commit runs lint-staged)
-├── .env.example            # Environment variable template
-├── package.json            # Workspace configuration & shared scripts
-└── prettier.config.cjs     # Formatting rules
+│   ├── api/
+│   ├── mobile/
+│   └── report-manager/
+├── db/
+├── docs/
+├── scripts/
+├── docker-compose.yml
+├── .env.example
+└── package.json
 ```
 
-## 🚀 Getting Started
+## How to read the docs
 
-### 1. Requirements
+- Start with this file for the project overview, startup paths, and common commands.
+- Use [docs/README.md](./docs/README.md) as the structured documentation index.
+- Go deeper through module-level docs:
+  - [apps/api/README.md](./apps/api/README.md)
+  - [apps/mobile/README.md](./apps/mobile/README.md)
+  - [apps/report-manager/README.md](./apps/report-manager/README.md)
 
-- Node.js ≥ 18
-- npm ≥ 10
-- PostgreSQL ≥ 14
-- Optional: Expo Go for device testing
-- Optional: Python ≥ 3.10 (knowledge service)
+## Prerequisites
 
-### 2. Installation
+- Node.js >= 18
+- npm >= 10
+- Python >= 3.10 for local OCR / KB runs
+- PostgreSQL >= 14 for local mode
+- Docker + Docker Compose v2 for container mode
+
+## Quick start
+
+### Option A: local development
+
+1. Prepare dependencies and env file
 
 ```bash
-git clone <repository-url>
+git clone <repo-url>
 cd openrd
-cp .env.example .env      # adjust for your environment
-npm install               # installs workspace dependencies & sets up Husky
+cp .env.example .env
+npm install
 ```
 
-If you want to run the Python knowledge service:
+2. Start PostgreSQL, or provide your own database
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up -d postgres
 ```
 
-The knowledge service depends on Chroma Cloud. Make sure `.env` includes
-`CHROMA_API_KEY` and `CHROMA_TENANT_ID`.
-
-To bootstrap the database schema:
+If host port `5432` is already occupied:
 
 ```bash
-psql -U postgres -f db/init_db.sql
+POSTGRES_PORT=5433 docker compose up -d postgres
 ```
 
-### 3. Development commands
+3. Run DB bootstrap / migrations
 
-| Module            | Command                                | Description                                           |
-| ----------------- | -------------------------------------- | ----------------------------------------------------- |
-| Backend API       | `npm run dev:api`                      | Starts the API server on `http://localhost:4000`      |
-| Mobile app        | `npm run dev:mobile`                   | Launches the Expo developer tools                     |
-| Knowledge service | `python apps/api/knowledge_service.py` | Starts the local KB service (`http://127.0.0.1:5010`) |
-| Lint              | `npm run lint`                         | Runs ESLint for all workspaces                        |
-| Test              | `npm run test`                         | Executes workspace test suites                        |
+```bash
+npm run db:migrate
+```
 
-## 🔐 Backend capabilities
+4. Install Python dependencies if you want embedded OCR locally
 
-The API service (`apps/api`) currently exposes:
+```bash
+pip install -r apps/api/requirements-embedded-report.txt
+```
 
-- `GET /api/healthz` – health probe with database reachability check
-- `POST /api/auth/register` – phone/email registration with bcrypt password hashing
-- `POST /api/auth/login` – login via phone or email returning a JWT access token
-- Centralized logging and error handling powered by pino
-- Reusable PostgreSQL connection pool shared across modules
+5. Start the API
 
-Environment variables are validated in `apps/api/src/config/env.ts`. Copy `.env.example` to configure local values.
+```bash
+npm run dev:api
+```
 
-## 🧭 Git workflow
+6. Start the KB service if you want to test AI retrieval
 
-- Branching: keep `main` deployable; create feature branches as `feature/<scope>`
-- Pre-commit: Husky runs `lint-staged` to enforce ESLint and Prettier formatting
-- Pre-flight checks: run `npm run lint` and `npm run test` before opening a PR
-- Database changes: store SQL scripts or migrations inside `db/` and document them in PRs
+```bash
+python apps/api/knowledge_service.py
+```
 
-See [`docs/WORKFLOW.md`](./docs/WORKFLOW.md) for the extended collaboration guide.
+7. Start the mobile client
 
-## 📄 Additional docs
+```bash
+npm run dev:mobile
+```
 
-- [System Architecture](./FSHD-openrd-系统架构设计文档.md)
-- [Product Requirements](./prd-v2.md)
-- [Database Bootstrap](./db/init_db.sql)
-- [AI Q&A Service](./docs/ai-chat.md)
+Common local settings:
+
+- `OTP_PROVIDER=mock`
+- `OCR_PROVIDER=embedded`
+- `STORAGE_PROVIDER=local` or `STORAGE_PROVIDER=minio`
+- `EXPO_PUBLIC_API_URL=http://localhost:4000/api`
+- `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY` / `OPENAI_API_KEY`
+- `OCR_PYTHON_BIN=/path/to/python` when running the API locally
+
+### Option B: Docker end-to-end
+
+```bash
+docker compose up -d --build
+```
+
+If host port `5432` is already occupied:
+
+```bash
+POSTGRES_PORT=5433 docker compose up -d --build
+```
+
+Default ports:
+
+- API: `http://localhost:4000`
+- KB service: `http://localhost:5010`
+- Web (Expo Web + nginx): `http://localhost:8080`
+
+Container mode already provides these overrides:
+
+- API uses `OCR_PYTHON_BIN=python3`
+- KB binds to `0.0.0.0:5010`
+- API reaches KB via `KB_SERVICE_URL=http://kb-service:5010`
+
+If you need MinIO compatibility for historical `v1` report files:
+
+```bash
+docker compose --profile minio up -d --build
+```
+
+And set in `.env`:
+
+- `STORAGE_PROVIDER=minio`
+- `MINIO_ENDPOINT=minio:9000`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET_NAME`
+
+## Common commands
+
+```bash
+npm run dev:api
+npm run dev:mobile
+npm run db:migrate
+npm run db:migrate:status
+npm run lint
+npm run format
+npm run format:write
+npm run test
+npm run test:smoke
+npm run test:latest
+```
+
+Notes:
+
+- `npm run test` executes the tests defined by each workspace.
+- `npm run test:smoke` is the fast API smoke path for day-to-day changes.
+- `npm run test:latest` is the broadest end-to-end regression script in the repo.
+- `npm run db:migrate` applies DB migrations and bootstrap steps.
+
+## Recommended documentation entry points
+
+### Runbooks and local validation
+
+- [Docs Index](./docs/README.md)
+- [Testing Guide](./docs/testing-guide.md)
+- [Single-node Cloud Deployment](./docs/cloud-tencent-docker.md)
+
+### Features and architecture
+
+- [AI Q&A](./docs/ai-chat.md)
+- [Patient Profile Data Model](./docs/patient-profile.md)
+- [Version History / Changelog](./CHANGELOG.md)
+- [v2.3.1 Release Notes](./docs/releases/v2.3.1.md)
+- [v1.0.0 Release Notes](./docs/releases/v1.0.0.md)
+- [v2.0.0 Release Notes](./docs/releases/v2.0.0.md)
+
+### Collaboration and delivery
+
+- [Workflow](./docs/WORKFLOW.md)
 - [Release Checklist](./docs/release-checklist.md)
+- [Updates Log](./docs/updates.md)
 
-## 💬 Support
+## License
 
-- Email: support@fshd-openrd.org
-- Community: join our patient forum
-- Documentation: more developer guides and API references coming soon
-
----
-
-We welcome contributions from the FSHD community, healthcare professionals, and developers. Please follow the shared workflow and quality standards to keep the platform reliable.
+[MIT](./LICENSE)

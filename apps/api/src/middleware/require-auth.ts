@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import type { AppEnv } from '../config/env';
-import type { AppLogger } from '../config/logger';
-import { AppError } from '../utils/app-error';
+import type { AppEnv } from '../config/env.js';
+import type { AppLogger } from '../config/logger.js';
+import { AppError } from '../utils/app-error.js';
 
 interface JwtPayload {
   sub: string;

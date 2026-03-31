@@ -1,17 +1,19 @@
 {
   "name": "@openrd/api",
-  "version": "0.1.0",
+  "version": "2.3.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file ../../.env src/index.ts",
     "build": "tsc --project tsconfig.json",
+    "migrate": "tsx --env-file ../../.env src/db/migrate.ts",
+    "migrate:status": "tsx --env-file ../../.env src/db/migrate.ts --status",
     "start": "node --enable-source-maps dist/index.js",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" --fix",
     "format": "prettier \"src/**/*.{ts,tsx,js,json}\" --check",
     "format:write": "prettier \"src/**/*.{ts,tsx,js,json}\" --write",
-    "test": "vitest"
+    "test": "vitest run"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,6 +23,7 @@
     "express": "^4.21.2",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
+    "minio": "^8.0.7",
     "multer": "^2.0.2",
     "openai": "^6.9.1",
     "pg": "^8.13.1",

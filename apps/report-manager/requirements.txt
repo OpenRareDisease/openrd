@@ -1,0 +1,7 @@
+PyPDF2==3.0.1
+Pillow==12.0.0
+pytesseract==0.3.10
+pdf2image==1.17.0
+# NOTE: Paddle runtime is usually provided by the execution environment.
+# Installing paddlepaddle via pip here can break the runtime (conflicting libpaddle).
+paddleocr==2.8.1

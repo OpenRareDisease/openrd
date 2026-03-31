@@ -1,13 +1,13 @@
 import { useRouter } from 'expo-router';
 import { StyleSheet, View, Text, Pressable, Platform } from 'react-native';
+import { CLINICAL_COLORS } from '../lib/clinical-visuals';
+import { goBackOrFallback } from '../lib/navigation';
 
 export default function NotFoundScreen() {
   const router = useRouter();
 
   const goBack = () => {
-    if (router.canGoBack()) {
-      router.back();
-    }
+    goBackOrFallback(router);
   };
 
   return (
@@ -27,13 +27,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f3f5ff',
-    padding: 16,
+    backgroundColor: CLINICAL_COLORS.background,
+    padding: 24,
   },
   heading: {
     fontSize: 120,
     fontWeight: '900',
-    color: '#4a5568',
+    color: CLINICAL_COLORS.accent,
     textShadowColor: 'rgba(0, 0, 0, 0.05)',
     textShadowOffset: { width: 0, height: 4 },
     textShadowRadius: 8,
@@ -43,11 +43,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: -16,
     marginBottom: 16,
-    color: '#4a5568',
+    color: CLINICAL_COLORS.text,
   },
   subTextStyle: {
     fontSize: 16,
-    color: '#718096',
+    color: CLINICAL_COLORS.textSoft,
     marginBottom: 32,
     maxWidth: 400,
     textAlign: 'center',
@@ -55,13 +55,13 @@ const styles = StyleSheet.create({
   button: {
     paddingVertical: 12,
     paddingHorizontal: 24,
-    backgroundColor: '#6366f1',
+    backgroundColor: CLINICAL_COLORS.accent,
     borderRadius: 9999,
     ...Platform.select({
       ios: {
-        shadowColor: 'rgba(0, 0, 0, 0.1)',
+        shadowColor: CLINICAL_COLORS.accent,
         shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 1,
+        shadowOpacity: 0.25,
         shadowRadius: 15,
       },
       android: {
@@ -72,6 +72,6 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#ffffff',
+    color: CLINICAL_COLORS.text,
   },
 });
