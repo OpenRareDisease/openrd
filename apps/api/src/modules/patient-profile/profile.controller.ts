@@ -113,6 +113,7 @@ const buildFallbackDocumentSummary = (documentType: string, fields: Record<strin
     default: {
       const summary = joinParts([
         pickText(fields, ['ck']) && `CK ${pickText(fields, ['ck'])}`,
+        pickText(fields, ['mb', 'myoglobin']) && `Mb ${pickText(fields, ['mb', 'myoglobin'])}`,
         pickText(fields, ['ldh']) && `LDH ${pickText(fields, ['ldh'])}`,
         pickText(fields, ['ckmb']) && `CKMB ${pickText(fields, ['ckmb'])}`,
         pickText(fields, ['reportImpression', 'ecgSummary', 'echoSummary']),

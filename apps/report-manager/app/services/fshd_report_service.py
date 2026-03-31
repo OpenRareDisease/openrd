@@ -71,15 +71,18 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("fev1", 5),
         ("dlco", 5),
         ("tlc", 4),
+        ("pulmonary ventilation", 5),
+        ("ventilation", 3),
     ],
     "diaphragm_ultrasound": [
         ("膈肌", 6),
-        ("qb", 3),
-        ("db", 3),
-        ("vs", 3),
-        ("ee", 3),
-        ("ei", 3),
-        ("di", 3),
+        ("qb", 1),
+        ("db", 1),
+        ("vs", 1),
+        ("ee", 1),
+        ("ei", 1),
+        ("di", 1),
+        ("diaphragm", 4),
     ],
     "ecg": [
         ("心电图", 5),
@@ -88,6 +91,7 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("pr", 3),
         ("窦性心律", 4),
         ("束支传导阻滞", 4),
+        ("ecg", 5),
     ],
     "echocardiography": [
         ("超声心动图", 6),
@@ -96,6 +100,8 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("射血分数", 4),
         ("fs", 4),
         ("心动过缓", 3),
+        ("tdi", 3),
+        ("echocardiography", 5),
     ],
     "biochemistry": [
         ("生化", 4),
@@ -104,6 +110,15 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("ast", 3),
         ("肌酸激酶", 3),
         ("ckmb", 3),
+        ("生化全套", 6),
+        ("总胆红素", 4),
+        ("ggt", 3),
+        ("alp", 3),
+        ("胆固醇", 3),
+        ("甘油三酯", 3),
+        ("il-6", 4),
+        ("il6", 4),
+        ("routine biochemistry", 5),
     ],
     "muscle_enzyme": [
         ("肌酶", 6),
@@ -112,6 +127,8 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("ldh", 4),
         ("肌红蛋白", 4),
         ("ckmb", 4),
+        ("myo", 3),
+        ("mb", 2),
     ],
     "blood_routine": [
         ("血常规", 6),
@@ -120,6 +137,9 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("plt", 4),
         ("红细胞", 2),
         ("白细胞", 2),
+        ("blood routine", 6),
+        ("mcv", 3),
+        ("mchc", 3),
     ],
     "thyroid_function": [
         ("甲功", 6),
@@ -127,6 +147,7 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("tsh", 5),
         ("ft3", 5),
         ("ft4", 5),
+        ("thyroid", 5),
     ],
     "coagulation": [
         ("凝血", 6),
@@ -136,6 +157,8 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("纤维蛋白原", 4),
         ("d-二聚体", 4),
         ("d二聚体", 4),
+        ("d-dimer", 5),
+        ("coagulation", 5),
     ],
     "urinalysis": [
         ("尿常规", 6),
@@ -143,6 +166,8 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("尿糖", 4),
         ("红细胞/ul", 3),
         ("白细胞/ul", 3),
+        ("urinalysis", 6),
+        ("尿液分析", 5),
     ],
     "infection_screening": [
         ("感染筛查", 6),
@@ -150,6 +175,12 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("hiv", 4),
         ("梅毒", 4),
         ("hcv", 4),
+        ("乙肝两对半", 6),
+        ("hbsag", 5),
+        ("tppa", 5),
+        ("trust", 5),
+        ("syphilis", 5),
+        ("hbv", 5),
     ],
     "stool_test": [
         ("粪便", 5),
@@ -157,6 +188,10 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("便常规", 6),
         ("潜血", 4),
         ("幽门螺杆菌", 5),
+        ("13c呼气", 6),
+        ("dob", 5),
+        ("hp", 3),
+        ("stool", 4),
     ],
     "abdominal_ultrasound": [
         ("腹部超声", 6),
@@ -164,6 +199,10 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("腹部彩超", 6),
         ("胆囊", 3),
         ("肝脏", 3),
+        ("胰腺", 3),
+        ("脾脏", 3),
+        ("腹膜后", 3),
+        ("abdomen", 4),
     ],
 }
 
@@ -176,8 +215,15 @@ CRITICAL_FIELDS: Dict[str, List[str]] = {
     "diaphragm_ultrasound": ["diaphragm_motion_summary"],
     "ecg": ["ecg_summary", "heart_rate"],
     "echocardiography": ["lvef", "echo_summary"],
-    "biochemistry": ["ck"],
-    "muscle_enzyme": ["ck", "ldh"],
+    "biochemistry": ["alt", "ast", "creatinine"],
+    "muscle_enzyme": ["mb"],
+    "blood_routine": ["wbc", "hgb", "plt"],
+    "thyroid_function": ["ft3", "ft4", "tsh"],
+    "coagulation": ["pt", "aptt"],
+    "urinalysis": ["urine_protein", "urine_occult_blood"],
+    "infection_screening": ["hbsag", "hiv_ab"],
+    "stool_test": ["stool_occult_blood"],
+    "abdominal_ultrasound": ["abdominal_ultrasound_impression"],
 }
 
 MUSCLE_KEYWORDS: Dict[str, Dict[str, Any]] = {
@@ -297,6 +343,108 @@ STRUCTURED_KEY_ALIASES = {
     "uric_acid": "uricAcid",
     "alt": "alt",
     "ast": "ast",
+    "wbc": "wbc",
+    "neut_pct": "neutPct",
+    "neut_abs": "neutAbs",
+    "lymph_pct": "lymphPct",
+    "lymph_abs": "lymphAbs",
+    "mono_pct": "monoPct",
+    "mono_abs": "monoAbs",
+    "eos_pct": "eosPct",
+    "eos_abs": "eosAbs",
+    "baso_pct": "basoPct",
+    "baso_abs": "basoAbs",
+    "rbc": "rbc",
+    "hgb": "hgb",
+    "hct": "hct",
+    "mcv": "mcv",
+    "mch": "mch",
+    "mchc": "mchc",
+    "rdw_sd": "rdwSd",
+    "rdw_cv": "rdwCv",
+    "plt": "plt",
+    "mpv": "mpv",
+    "pct": "pct",
+    "pdw": "pdw",
+    "plcr": "plcr",
+    "nrbc": "nrbc",
+    "ft3": "ft3",
+    "ft4": "ft4",
+    "tsh": "tsh",
+    "pt": "pt",
+    "inr": "inr",
+    "aptt": "aptt",
+    "fibrinogen": "fibrinogen",
+    "tt": "tt",
+    "d_dimer": "dDimer",
+    "tbil": "tbil",
+    "dbil": "dbil",
+    "ibil": "ibil",
+    "tp": "tp",
+    "alb": "alb",
+    "globulin": "globulin",
+    "a_g_ratio": "aGRatio",
+    "alp": "alp",
+    "ggt": "ggt",
+    "urea": "urea",
+    "bun": "bun",
+    "glucose": "glucose",
+    "cholesterol": "cholesterol",
+    "triglyceride": "triglyceride",
+    "hdl_c": "hdlC",
+    "ldl_c": "ldlC",
+    "vldl_c": "vldlC",
+    "apo_a1": "apoA1",
+    "apo_b": "apoB",
+    "lp_a": "lpA",
+    "phosphorus": "phosphorus",
+    "magnesium": "magnesium",
+    "co2cp": "co2cp",
+    "potassium": "potassium",
+    "sodium": "sodium",
+    "chloride": "chloride",
+    "calcium": "calcium",
+    "il6": "il6",
+    "urine_color": "urineColor",
+    "urine_clarity": "urineClarity",
+    "urine_glucose": "urineGlucose",
+    "urine_ketone": "urineKetone",
+    "urine_bilirubin": "urineBilirubin",
+    "urine_specific_gravity": "urineSpecificGravity",
+    "urine_ph": "urinePh",
+    "urine_protein": "urineProtein",
+    "urine_nitrite": "urineNitrite",
+    "urine_occult_blood": "urineOccultBlood",
+    "urine_leukocyte": "urineLeukocyte",
+    "urine_leukocyte_esterase": "urineLeukocyteEsterase",
+    "urine_urobilinogen": "urineUrobilinogen",
+    "urine_rbc": "urineRbc",
+    "urine_wbc": "urineWbc",
+    "urine_bacteria": "urineBacteria",
+    "urine_epithelial_cells": "urineEpithelialCells",
+    "urine_mucus": "urineMucus",
+    "hbsag": "hbsAg",
+    "anti_hbs": "antiHbs",
+    "hbeag": "hbeAg",
+    "anti_hbe": "antiHbe",
+    "anti_hbc": "antiHbc",
+    "hiv_ab": "hivAb",
+    "anti_hcv": "antiHcv",
+    "tppa": "tppa",
+    "trust_ab": "trustAb",
+    "trust_titer": "trustTiter",
+    "stool_color": "stoolColor",
+    "stool_consistency": "stoolConsistency",
+    "stool_blood": "stoolBlood",
+    "stool_mucus": "stoolMucus",
+    "stool_rbc": "stoolRbc",
+    "stool_wbc": "stoolWbc",
+    "stool_fat_globules": "stoolFatGlobules",
+    "stool_occult_blood": "stoolOccultBlood",
+    "hp_dob": "hpDob",
+    "hp_result": "hpResult",
+    "abdominal_ultrasound_finding": "abdominalUltrasoundFinding",
+    "abdominal_ultrasound_impression": "abdominalUltrasoundImpression",
 }
 
 
@@ -333,6 +481,18 @@ def _normalized_search_text(text: str) -> str:
 
 def _extract_lines(text: str) -> List[str]:
     return [line.strip() for line in _normalize_text(text).split("\n") if line.strip()]
+
+
+def _build_line_windows(lines: List[str], max_window: int = 2) -> List[str]:
+    windows: List[str] = list(lines)
+    for index in range(len(lines)):
+        merged = lines[index]
+        for width in range(1, max_window):
+            if index + width >= len(lines):
+                break
+            merged = f"{merged}{lines[index + width]}"
+            windows.append(merged)
+    return windows
 
 
 def _extract_sentences(text: str) -> List[str]:
@@ -380,6 +540,16 @@ def _find_regex(text: str, patterns: Iterable[str], flags: int = re.IGNORECASE) 
     return None, None
 
 
+def _find_line_regex(
+    lines: Iterable[str], patterns: Iterable[str], flags: int = re.IGNORECASE
+) -> Tuple[Optional[re.Match], Optional[str]]:
+    for line in lines:
+        match, pattern = _find_regex(line, patterns, flags)
+        if match:
+            return match, pattern
+    return None, None
+
+
 def _extract_named_number(text: str, patterns: Iterable[str], unit: Optional[str] = None) -> Tuple[Optional[str], Optional[float], Optional[str]]:
     match, _ = _find_regex(text, patterns)
     if not match:
@@ -391,6 +561,132 @@ def _extract_named_number(text: str, patterns: Iterable[str], unit: Optional[str
         if maybe_unit and maybe_unit.strip():
             detected_unit = maybe_unit.strip()
     return raw_value, _safe_float(raw_value), detected_unit
+
+
+def _extract_named_text(text: str, patterns: Iterable[str]) -> Optional[str]:
+    match, _ = _find_regex(text, patterns)
+    if not match:
+        return None
+    group_index = 1 if match.lastindex else 0
+    value = match.group(group_index)
+    return value.strip() if isinstance(value, str) else None
+
+
+def _normalize_qualitative_value(value: str) -> str:
+    normalized = value.strip().replace("（", "(").replace("）", ")")
+    normalized = normalized.replace(" ", "")
+    mapping = {
+        "(-)": "阴性(-)",
+        "(+)": "阳性(+)",
+        "阴性-": "阴性(-)",
+        "阳性+": "阳性(+)",
+    }
+    return mapping.get(normalized, normalized)
+
+
+def _panel_source_line(lines: List[str], keywords: Iterable[str], fallback: str) -> str:
+    line = _find_best_line(lines, keywords)
+    return line or fallback
+
+
+def _append_panel_number(
+    fields: List[Dict[str, Any]],
+    panel: Dict[str, Any],
+    *,
+    field_name: str,
+    raw_value: str,
+    normalized_value: Optional[float],
+    unit: Optional[str],
+    source_text: str,
+    confidence: float = 0.93,
+) -> None:
+    panel[field_name] = normalized_value if normalized_value is not None else raw_value
+    _append_field(
+        fields,
+        _build_field(
+            field_name,
+            raw_value,
+            normalized_value=normalized_value,
+            unit=unit,
+            source_text=source_text,
+            confidence=confidence,
+        ),
+    )
+
+
+def _append_panel_text(
+    fields: List[Dict[str, Any]],
+    panel: Dict[str, Any],
+    *,
+    field_name: str,
+    raw_value: str,
+    source_text: str,
+    confidence: float = 0.88,
+) -> None:
+    panel[field_name] = raw_value
+    _append_field(
+        fields,
+        _build_field(
+            field_name,
+            raw_value,
+            source_text=source_text,
+            confidence=confidence,
+        ),
+    )
+
+
+def _extract_numeric_panel(
+    text: str,
+    lines: List[str],
+    fields: List[Dict[str, Any]],
+    panel: Dict[str, Any],
+    definitions: Dict[str, Dict[str, Any]],
+    *,
+    confidence: float = 0.93,
+) -> None:
+    for field_name, meta in definitions.items():
+        raw_value, normalized_value, unit = _extract_named_number(
+            text,
+            meta.get("patterns", []),
+            meta.get("unit"),
+        )
+        if raw_value is None:
+            continue
+        _append_panel_number(
+            fields,
+            panel,
+            field_name=field_name,
+            raw_value=raw_value,
+            normalized_value=normalized_value,
+            unit=unit,
+            source_text=_panel_source_line(lines, meta.get("keywords", []), raw_value),
+            confidence=meta.get("confidence", confidence),
+        )
+
+
+def _extract_text_panel(
+    text: str,
+    lines: List[str],
+    fields: List[Dict[str, Any]],
+    panel: Dict[str, Any],
+    definitions: Dict[str, Dict[str, Any]],
+    *,
+    confidence: float = 0.88,
+) -> None:
+    for field_name, meta in definitions.items():
+        raw_value = _extract_named_text(text, meta.get("patterns", []))
+        if raw_value is None:
+            continue
+        if meta.get("normalize_qualitative"):
+            raw_value = _normalize_qualitative_value(raw_value)
+        _append_panel_text(
+            fields,
+            panel,
+            field_name=field_name,
+            raw_value=raw_value,
+            source_text=_panel_source_line(lines, meta.get("keywords", []), raw_value),
+            confidence=meta.get("confidence", confidence),
+        )
 
 
 def _build_field(
@@ -449,8 +745,15 @@ def _muscle_from_sentence(sentence: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _classify_report(text: str, document_type_hint: Optional[str] = None) -> Tuple[str, float, List[str]]:
-    normalized = _normalized_search_text(text)
+def _classify_report(
+    text: str,
+    document_type_hint: Optional[str] = None,
+    report_name: Optional[str] = None,
+) -> Tuple[str, float, List[str]]:
+    classification_text = text
+    if report_name:
+        classification_text = f"{report_name}\n{text}"
+    normalized = _normalized_search_text(classification_text)
     scores: Dict[str, int] = {}
     reasons: Dict[str, List[str]] = {}
 
@@ -496,6 +799,7 @@ def _classify_report(text: str, document_type_hint: Optional[str] = None) -> Tup
 
 def _extract_patient_info(lines: List[str]) -> Dict[str, Any]:
     text = "\n".join(lines)
+    search_lines = _build_line_windows(lines)
     patient_name = None
     sex = None
     age = None
@@ -503,16 +807,25 @@ def _extract_patient_info(lines: List[str]) -> Dict[str, Any]:
     visit_id = None
     barcode = None
 
-    name_match, _ = _find_regex(text, [r"姓名[: ]*([\u4e00-\u9fa5A-Za-z·]{2,24})"])
+    name_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:姓名|名)[: ]*([\u4e00-\u9fa5A-Za-z·]{2,24})$"],
+    )
+    if not name_match:
+        name_match, _ = _find_regex(text, [r"(?:姓名|名)[: ]*([\u4e00-\u9fa5A-Za-z·]{2,24})"])
     if name_match:
         patient_name = name_match.group(1).strip()
 
-    sex_match, _ = _find_regex(text, [r"性别[: ]*(男|女|male|female)"])
+    sex_match, _ = _find_line_regex(search_lines, [r"(?:性别|别)[: ]*(男|女|male|female)$"])
+    if not sex_match:
+        sex_match, _ = _find_regex(text, [r"(?:性别|别)[: ]*(男|女|male|female)"])
     if sex_match:
         raw_sex = sex_match.group(1).strip().lower()
         sex = "male" if raw_sex in {"男", "male"} else "female" if raw_sex in {"女", "female"} else raw_sex
 
-    age_match, _ = _find_regex(text, [r"年龄[: ]*(\d{1,3})"])
+    age_match, _ = _find_line_regex(search_lines, [r"(?:年龄|龄)[: ]*(\d{1,3})岁?$"])
+    if not age_match:
+        age_match, _ = _find_regex(text, [r"(?:年龄|龄)[: ]*(\d{1,3})"])
     if age_match:
         age = int(age_match.group(1))
 
@@ -520,11 +833,21 @@ def _extract_patient_info(lines: List[str]) -> Dict[str, Any]:
     if patient_id_match:
         patient_id = patient_id_match.group(1)
 
-    visit_match, _ = _find_regex(text, [r"(?:病历号|门诊号|住院号|就诊号|检查号)[: ]*([A-Za-z0-9-]+)"])
+    visit_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:病历号|门诊号|住院号|就诊号|检查号)[: ]*([A-Za-z0-9-]+)$"],
+    )
+    if not visit_match:
+        visit_match, _ = _find_regex(text, [r"(?:病历号|门诊号|住院号|就诊号|检查号)[: ]*([A-Za-z0-9-]+)"])
     if visit_match:
         visit_id = visit_match.group(1)
 
-    barcode_match, _ = _find_regex(text, [r"(?:样品编号|样本编号|条码号|条形码号|资料编号)[: ]*([A-Za-z0-9-]+)"])
+    barcode_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:样品编号|样本编号|条码号|条形码号|资料编号)[: ]*([A-Za-z0-9-]+)$"],
+    )
+    if not barcode_match:
+        barcode_match, _ = _find_regex(text, [r"(?:样品编号|样本编号|条码号|条形码号|资料编号)[: ]*([A-Za-z0-9-]+)"])
     if barcode_match:
         barcode = barcode_match.group(1)
 
@@ -542,25 +865,59 @@ def _extract_patient_info(lines: List[str]) -> Dict[str, Any]:
 
 def _extract_encounter_info(lines: List[str]) -> Dict[str, Any]:
     text = "\n".join(lines)
+    search_lines = _build_line_windows(lines)
     facility = None
     department = None
     clinical_diagnosis = None
     report_time = None
     collect_time = None
     request_time = None
+    receive_time = None
+    specimen = None
+    bed_no = None
+    ordering_doctor = None
 
     for line in lines[:8]:
+        facility_match = re.search(r"([\u4e00-\u9fa5A-Za-z0-9()（）]+(?:医院|中心|研究所))", line)
+        if facility_match:
+            facility = facility_match.group(1).strip()
+            break
         if "医院" in line or "中心" in line or "研究所" in line:
             facility = line.strip()
             break
 
-    department_match, _ = _find_regex(text, [r"(?:科室|送检科室|申请科室)[: ]*([^\n]+)"])
+    department_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:科室|送检科室|申请科室|科别)[: ]*([^\d:：]{2,20})$"],
+    )
+    if not department_match:
+        department_match, _ = _find_regex(text, [r"(?:科室|送检科室|申请科室|科别)[: ]*([^\n]+)"])
     if department_match:
         department = department_match.group(1).strip()
 
-    diagnosis_match, _ = _find_regex(text, [r"(?:临床诊断|诊断)[: ]*([^\n]+)"])
+    diagnosis_match, _ = _find_line_regex(search_lines, [r"(?:临床诊断|诊断)[: ]*([^\n]+)$"])
+    if not diagnosis_match:
+        diagnosis_match, _ = _find_regex(text, [r"(?:临床诊断|诊断)[: ]*([^\n]+)"])
     if diagnosis_match:
         clinical_diagnosis = diagnosis_match.group(1).strip()
+
+    specimen_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:标本|样本|检材|本)[: ]*([^\s:：]{1,12})$"],
+    )
+    if specimen_match:
+        specimen = specimen_match.group(1).strip()
+
+    bed_match, _ = _find_line_regex(search_lines, [r"(?:床号|床位)[: ]*([A-Za-z0-9-]+)$"])
+    if bed_match:
+        bed_no = bed_match.group(1).strip()
+
+    doctor_match, _ = _find_line_regex(
+        search_lines,
+        [r"(?:送检医生|申请医生|开单医生)[: ]*([^\s/]{2,20})(?:/[A-Za-z0-9-]+)?$"],
+    )
+    if doctor_match:
+        ordering_doctor = doctor_match.group(1).strip()
 
     time_patterns = [
         r"(?:报告日期|报告时间|报告打印时间)[: ]*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:[ T]\d{1,2}:\d{2})?)",
@@ -578,22 +935,54 @@ def _extract_encounter_info(lines: List[str]) -> Dict[str, Any]:
     if request_match:
         request_time = request_match.group(1)
 
+    receive_match, _ = _find_regex(
+        text,
+        [r"(?:接收时间|签收时间)[: ]*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:[ T]\d{1,2}:\d{2})?)"],
+    )
+    if receive_match:
+        receive_time = receive_match.group(1)
+
     return {
         "facility": facility,
         "department": department,
-        "bed_no": None,
-        "specimen": None,
-        "ordering_doctor": None,
+        "bed_no": bed_no,
+        "specimen": specimen,
+        "ordering_doctor": ordering_doctor,
         "clinical_diagnosis": clinical_diagnosis,
         "request_time": request_time,
         "collect_time": collect_time,
-        "receive_time": None,
+        "receive_time": receive_time,
         "report_time": report_time,
     }
 
 
 def _extract_summary_line(lines: List[str], keywords: Iterable[str]) -> Optional[str]:
     return _find_best_line(lines, keywords)
+
+
+def _extract_block_after_header(
+    lines: List[str],
+    start_keywords: Iterable[str],
+    stop_keywords: Iterable[str],
+) -> Optional[str]:
+    capture = False
+    parts: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not capture and any(keyword in stripped for keyword in start_keywords):
+            capture = True
+            inline = re.split(r"[:：]", stripped, maxsplit=1)
+            if len(inline) == 2 and inline[1].strip():
+                parts.append(inline[1].strip())
+            continue
+        if capture:
+            if any(keyword in stripped for keyword in stop_keywords):
+                break
+            parts.append(stripped)
+    joined = " ".join(parts).strip()
+    return joined or None
 
 
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -1027,7 +1416,11 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
                 ),
             )
 
-    report_impression = _extract_summary_line(lines, ["印象", "结论", "提示"])
+    report_impression = _extract_block_after_header(
+        lines,
+        ["印象", "结论", "提示"],
+        ["报告医师", "审核医师", "报告日期", "检查日期"],
+    ) or _extract_summary_line(lines, ["印象", "结论", "提示"])
     if report_impression:
         _append_field(fields, _build_field("report_impression", report_impression, source_text=report_impression, confidence=0.8))
         findings.append(
@@ -1082,6 +1475,49 @@ def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings:
                 confidence=0.94,
             ),
         )
+
+    table_patterns = {
+        "fvc": [r"\bFVC\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "fev1": [r"\bFEV ?1\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "fev1_fvc": [r"FEV ?1\s*[%/ ]\s*FVC[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "tlc": [r"\bTLC[- ]?SB\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "dlco": [r"\bDLCO[- ]?SB\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "dlco_va": [r"\bDLCO\s*/\s*VA\b[^\n]*?(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+    }
+
+    for field_name, patterns in table_patterns.items():
+        match, _ = _find_regex(text, patterns)
+        if not match:
+            continue
+        actual_value = match.group(2)
+        actual_numeric = _safe_float(actual_value)
+        pct_value = match.group(3)
+        pct_numeric = _safe_float(pct_value)
+        panel[field_name] = actual_numeric if actual_numeric is not None else actual_value
+        _append_field(
+            fields,
+            _build_field(
+                field_name,
+                actual_value,
+                normalized_value=actual_numeric,
+                source_text=_panel_source_line(lines, [field_name.upper().replace("_", "/"), field_name.upper()], actual_value),
+                confidence=0.96,
+            ),
+        )
+        if field_name in {"fvc", "fev1", "tlc", "dlco"} and pct_numeric is not None:
+            pct_field = f"{field_name}_pred_pct"
+            panel[pct_field] = pct_numeric
+            _append_field(
+                fields,
+                _build_field(
+                    pct_field,
+                    pct_value,
+                    normalized_value=pct_numeric,
+                    unit="%",
+                    source_text=_panel_source_line(lines, [field_name.upper().replace("_", "/"), field_name.upper()], pct_value),
+                    confidence=0.95,
+                ),
+            )
 
     ventilatory_pattern = None
     if _find_best_line(lines, ["限制性通气"]):
@@ -1156,7 +1592,37 @@ def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
             _build_field(field_name, raw_value, normalized_value=normalized_value, source_text=raw_value, confidence=0.9),
         )
 
-    motion_summary = _extract_summary_line(lines, ["膈肌运动", "运动幅度", "活动度"])
+    row_patterns = {
+        "right": [r"右侧膈肌[^\d]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "left": [r"左侧膈肌[^\d]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+    }
+    row_field_order = ["qb", "db", "vs", "ee", "ei", "di"]
+
+    for side, patterns in row_patterns.items():
+        match, _ = _find_regex(text, patterns)
+        if not match:
+            continue
+        for offset, suffix in enumerate(row_field_order, start=1):
+            raw_value = match.group(offset)
+            normalized_value = _safe_float(raw_value)
+            field_name = f"{side}_{suffix}"
+            panel[field_name] = normalized_value if normalized_value is not None else raw_value
+            _append_field(
+                fields,
+                _build_field(
+                    field_name,
+                    raw_value,
+                    normalized_value=normalized_value,
+                    source_text=_panel_source_line(lines, [f"{'右' if side == 'right' else '左'}侧膈肌"], raw_value),
+                    confidence=0.95,
+                ),
+            )
+
+    motion_summary = _extract_block_after_header(
+        lines,
+        ["检查提示", "印象"],
+        ["诊断医生", "记录医生", "审核医生", "检查日期", "打印日期"],
+    ) or _extract_summary_line(lines, ["未见明显异常声像", "膈肌运动", "运动幅度"])
     thickening_summary = _extract_summary_line(lines, ["增厚率", "厚度", "thickening"])
     if motion_summary:
         _append_field(fields, _build_field("diaphragm_motion_summary", motion_summary, source_text=motion_summary, confidence=0.82))
@@ -1180,8 +1646,8 @@ def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
 def _extract_ecg(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_patterns = {
-        "heart_rate": [r"(?:HR|心率)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
-        "pr_interval_ms": [r"\bPR\b[^\d]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
+        "heart_rate": [r"(?:HR|心率|房率|室率)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
+        "pr_interval_ms": [r"(?:\bPR\b|P-R间期)[^\d]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
         "qrs_duration_ms": [r"\bQRS\b[^\d]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
         "qt_ms": [r"\bQT\b[^\d]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
         "qtc_ms": [r"\bQTc\b[^\d]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
@@ -1203,7 +1669,11 @@ def _extract_ecg(lines: List[str], fields: List[Dict[str, Any]], findings: List[
 
     rhythm = _extract_summary_line(lines, ["窦性心律", "窦性心律不齐", "心律", "sinus rhythm", "sinus arrhythmia"])
     conduction = _extract_summary_line(lines, ["束支传导阻滞", "传导阻滞", "房室传导", "bundle branch block", "atrioventricular block"])
-    ecg_summary = _extract_summary_line(lines, ["窦性", "传导阻滞", "心电图提示", "诊断", "sinus rhythm", "bundle branch block", "ecg impression"])
+    ecg_summary = _extract_block_after_header(
+        lines,
+        ["心电图诊断", "诊断"],
+        ["检查日期", "报告日期", "审核医师", "审校医师"],
+    ) or _extract_summary_line(lines, ["窦性", "传导阻滞", "心电图提示", "sinus rhythm", "bundle branch block", "ecg impression"])
 
     if rhythm:
         _append_field(fields, _build_field("ecg_rhythm", rhythm, source_text=rhythm, confidence=0.9))
@@ -1285,14 +1755,261 @@ def _extract_echo(lines: List[str], fields: List[Dict[str, Any]], findings: List
     normalized_summary["cardio_respiratory_panel"] = panel
 
 
+def _extract_blood_routine(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    definitions = {
+        "wbc": {"patterns": [r"(?:白细胞计数|WBC)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞计数", "WBC"]},
+        "neut_pct": {"patterns": [r"(?:中性粒细胞比率|NEUT%|%NEUT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["中性粒细胞比率", "NEUT"]},
+        "neut_abs": {"patterns": [r"(?:中性粒细胞数|NEUT#|#NEUT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["中性粒细胞数", "NEUT"]},
+        "lymph_pct": {"patterns": [r"(?:淋巴细胞比率|LYMPH%|%LYMPH)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["淋巴细胞比率", "LYMPH"]},
+        "lymph_abs": {"patterns": [r"(?:淋巴细胞数|LYMPH#|#LYMPH)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["淋巴细胞数", "LYMPH"]},
+        "mono_pct": {"patterns": [r"(?:单核细胞比率|MONO%|%MONO)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["单核细胞比率", "MONO"]},
+        "mono_abs": {"patterns": [r"(?:单核细胞数|MONO#|#MONO)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["单核细胞数", "MONO"]},
+        "eos_pct": {"patterns": [r"(?:嗜酸细胞百分比|EOS%|%EOS)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜酸细胞百分比", "EOS"]},
+        "eos_abs": {"patterns": [r"(?:嗜酸细胞数|EOS#|#EOS)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜酸细胞数", "EOS"]},
+        "baso_pct": {"patterns": [r"(?:嗜碱细胞百分比|BASO%|%BASO)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜碱细胞百分比", "BASO"]},
+        "baso_abs": {"patterns": [r"(?:嗜碱细胞数|BASO#|#BASO)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜碱细胞数", "BASO"]},
+        "rbc": {"patterns": [r"(?:红细胞计数|RBC)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞计数", "RBC"]},
+        "hgb": {"patterns": [r"(?:血红蛋白量|血红蛋白|HGB)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血红蛋白", "HGB"]},
+        "hct": {"patterns": [r"(?:红细胞比积|HCT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞比积", "HCT"]},
+        "mcv": {"patterns": [r"(?:平均红细胞体积|MCV)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均红细胞体积", "MCV"]},
+        "mch": {"patterns": [r"(?:平均血红蛋白含量|MCH)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白含量", "MCH"]},
+        "mchc": {"patterns": [r"(?:平均血红蛋白浓度|MCHC)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白浓度", "MCHC"]},
+        "rdw_sd": {"patterns": [r"(?:红细胞分布宽度标准差|RDW-SD)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度标准差", "RDW-SD"]},
+        "rdw_cv": {"patterns": [r"(?:红细胞分布宽度变异系数|RDW-CV|RDW)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度变异系数", "RDW"]},
+        "plt": {"patterns": [r"(?:血小板计数|PLT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板计数", "PLT"]},
+        "mpv": {"patterns": [r"(?:血小板平均体积|MPV)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板平均体积", "MPV"]},
+        "pct": {"patterns": [r"(?:血小板比积|PCT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板比积", "PCT"]},
+        "pdw": {"patterns": [r"(?:血小板分布宽度|PDW)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板分布宽度", "PDW"]},
+        "plcr": {"patterns": [r"(?:大型血小板比率|P-LCR|PLCR)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["大型血小板比率", "P-LCR"]},
+        "nrbc": {"patterns": [r"(?:有核红细胞|NRBC)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["有核红细胞", "NRBC"]},
+    }
+    _extract_numeric_panel(text, lines, fields, panel, definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_thyroid_function(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    definitions = {
+        "ft3": {"patterns": [r"(?:游离T3(?:\(FT3\))?|FT3结果?)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T3", "FT3"]},
+        "ft4": {"patterns": [r"(?:游离T4(?:\(FT4\))?|FT4结果?)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T4", "FT4"]},
+        "tsh": {
+            "patterns": [
+                r"(?:超敏促甲状腺素(?:\(TSH3?\))?|促甲状腺激素(?:\(TSH3?\))?)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)",
+                r"(?:^|\n)\s*(?:TSH3?|sTSH)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)",
+            ],
+            "keywords": ["促甲状腺激素", "TSH"],
+        },
+    }
+    _extract_numeric_panel(text, lines, fields, panel, definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_coagulation(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    definitions = {
+        "pt": {"patterns": [r"(?:凝血酶原时间|PT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶原时间", "PT"]},
+        "inr": {"patterns": [r"(?:国际标准化比值|PT-INR|INR)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["国际标准化比值", "INR"]},
+        "aptt": {"patterns": [r"(?:活化部分凝血活酶时间|APTT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["活化部分凝血活酶时间", "APTT"]},
+        "fibrinogen": {"patterns": [r"(?:纤维蛋白原|FIB|Fg)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["纤维蛋白原", "FIB", "Fg"]},
+        "tt": {"patterns": [r"(?:凝血酶时间|TT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶时间", "TT"]},
+        "d_dimer": {"patterns": [r"(?:D[ -]?二聚体定量|D-Dimer|D二聚体)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["D-二聚体", "D-Dimer"]},
+    }
+    _extract_numeric_panel(text, lines, fields, panel, definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    text_definitions = {
+        "urine_color": {"patterns": [r"(?:颜色)[^\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["颜色"]},
+        "urine_clarity": {"patterns": [r"(?:透明度|浊度|清晰度)[^\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["透明度", "浊度"]},
+        "urine_glucose": {"patterns": [r"(?:葡萄糖(?:\(GLU\))?|GLU)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "GLU"], "normalize_qualitative": True},
+        "urine_ketone": {"patterns": [r"(?:酮体(?:\(KET\))?|KET)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["酮体", "KET"], "normalize_qualitative": True},
+        "urine_bilirubin": {"patterns": [r"(?:胆红素(?:\(BIL\))?|BIL)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["胆红素", "BIL"], "normalize_qualitative": True},
+        "urine_protein": {"patterns": [r"(?:蛋白质(?:\(PRO\))?|PRO)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "PRO"], "normalize_qualitative": True},
+        "urine_nitrite": {"patterns": [r"(?:亚硝酸盐(?:\(NIT\))?|NIT)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
+        "urine_occult_blood": {"patterns": [r"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
+        "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "白细胞", "LEU"], "normalize_qualitative": True},
+        "urine_urobilinogen": {"patterns": [r"(?:尿胆原(?:\(URO\))?|URO)[^\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["尿胆原", "URO"]},
+    }
+    numeric_definitions = {
+        "urine_specific_gravity": {"patterns": [r"(?:比重|SG)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["比重", "SG"]},
+        "urine_ph": {"patterns": [r"(?:pH值|pH)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["pH值", "pH"]},
+        "urine_rbc": {"patterns": [r"(?:红细胞\(RBC\)|红细胞/HPF|红细胞)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞", "RBC"]},
+        "urine_wbc": {"patterns": [r"(?:白细胞\(WBC\)|白细胞/HPF|白细胞)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞", "WBC"]},
+        "urine_bacteria": {"patterns": [r"(?:细菌|BACT)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["细菌", "BACT"]},
+        "urine_epithelial_cells": {"patterns": [r"(?:上皮细胞|EC)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["上皮细胞", "EC"]},
+        "urine_mucus": {"patterns": [r"(?:粘液丝|MUCS)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["粘液丝", "MUCS"]},
+    }
+    _extract_text_panel(text, lines, fields, panel, text_definitions)
+    _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_infection_screening(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    text_definitions = {
+        "hbsag": {"patterns": [r"(?:HBsAg|乙型肝炎病毒表面抗原)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["HBsAg", "表面抗原"], "normalize_qualitative": True},
+        "anti_hbs": {"patterns": [r"(?:Anti-HBs|抗乙型肝炎病毒表面抗体)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["Anti-HBs", "表面抗体"], "normalize_qualitative": True},
+        "hbeag": {"patterns": [r"(?:HBeAg|乙型肝炎病毒e抗原)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["HBeAg", "e抗原"], "normalize_qualitative": True},
+        "anti_hbe": {"patterns": [r"(?:Anti-HBe|抗乙型肝炎病毒e抗体)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["Anti-HBe", "e抗体"], "normalize_qualitative": True},
+        "anti_hbc": {"patterns": [r"(?:Anti-HBc|抗乙型肝炎病毒核心抗体)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["Anti-HBc", "核心抗体"], "normalize_qualitative": True},
+        "hiv_ab": {"patterns": [r"(?:HIV|人类免疫缺陷病毒抗原抗体联合检测)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["HIV"], "normalize_qualitative": True},
+        "anti_hcv": {"patterns": [r"(?:Anti-HCV|丙型肝炎病毒抗体)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["Anti-HCV", "丙型肝炎病毒抗体"], "normalize_qualitative": True},
+        "tppa": {"patterns": [r"(?:TPPA|抗梅毒螺旋体抗体)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["TPPA", "抗梅毒螺旋体抗体"], "normalize_qualitative": True},
+        "trust_ab": {"patterns": [r"(?:TRUST(?:非特异性抗体)?)[^\n]{0,24}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["TRUST"], "normalize_qualitative": True},
+    }
+    _extract_text_panel(text, lines, fields, panel, text_definitions)
+
+    numeric_definitions = {
+        "trust_titer": {"patterns": [r"(?:TRUST滴度)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["TRUST滴度"]},
+    }
+    _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_stool_test(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    text = "\n".join(lines)
+    panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
+    text_definitions = {
+        "stool_color": {"patterns": [r"(?:颜色)[^\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["颜色"]},
+        "stool_consistency": {"patterns": [r"(?:硬度|性状)[^\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["硬度", "性状"]},
+        "stool_blood": {"patterns": [r"(?:血液)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["血液"], "normalize_qualitative": True},
+        "stool_mucus": {"patterns": [r"(?:粘液)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["粘液"], "normalize_qualitative": True},
+        "stool_rbc": {"patterns": [r"(?:红细胞)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["红细胞"], "normalize_qualitative": True},
+        "stool_wbc": {"patterns": [r"(?:白细胞)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["白细胞"], "normalize_qualitative": True},
+        "stool_fat_globules": {"patterns": [r"(?:脂肪球)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["脂肪球"], "normalize_qualitative": True},
+        "stool_occult_blood": {"patterns": [r"(?:隐血试验(?:\(OBT\))?|OBT)[^\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["隐血试验", "OBT"], "normalize_qualitative": True},
+        "hp_result": {"patterns": [r"(?:检测结果|样本次检测结果为)(阴性\+?|阳性\+?)"], "keywords": ["检测结果", "样本次检测结果"]},
+    }
+    numeric_definitions = {
+        "hp_dob": {"patterns": [r"(?:DOB|DPM值)[^\d]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["DOB", "DPM值"]},
+    }
+    _extract_text_panel(text, lines, fields, panel, text_definitions)
+    _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
+    normalized_summary["lab_panel"] = panel
+
+
+def _extract_abdominal_ultrasound(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
+    finding_text = _extract_block_after_header(
+        lines,
+        ["检查所见", "超声所见"],
+        ["检查提示", "印象", "诊断医生", "记录医生", "审核医生", "检查日期", "打印日期"],
+    )
+    impression_text = _extract_block_after_header(
+        lines,
+        ["检查提示", "印象"],
+        ["诊断医生", "记录医生", "审核医生", "检查日期", "打印日期"],
+    )
+    if finding_text:
+        _append_field(
+            fields,
+            _build_field(
+                "abdominal_ultrasound_finding",
+                finding_text,
+                source_text=finding_text,
+                confidence=0.9,
+            ),
+        )
+        findings.append(
+            {
+                "modality": "Ultrasound",
+                "body_part": "abdomen",
+                "finding_text": finding_text,
+                "impression_text": impression_text or finding_text,
+                "source_evidence": {"raw_snippet": finding_text[:120], "line_hint": "finding block"},
+            }
+        )
+    if impression_text:
+        _append_field(
+            fields,
+            _build_field(
+                "abdominal_ultrasound_impression",
+                impression_text,
+                source_text=impression_text,
+                confidence=0.92,
+            ),
+        )
+    normalized_summary["abdominal_ultrasound_summary"] = {
+        "finding_text": finding_text,
+        "impression_text": impression_text,
+    }
+
+
 def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    for line in lines:
-        lowered = line.lower()
-        if not any(keyword.lower() in lowered for keyword in keywords):
-            continue
+    keyword_tokens = [keyword.lower().strip() for keyword in keywords if keyword and keyword.strip()]
+
+    def extract_numeric_value(line: str) -> Tuple[Optional[str], Optional[str]]:
         match = re.search(r"([<>]?\d+(?:\.\d+)?)\s*([A-Za-z/%μµ·/\-]+)?", line)
-        if match:
-            return match.group(1), (match.group(2) or "").strip() or None, line
+        if not match:
+            return None, None
+        return match.group(1), (match.group(2) or "").strip() or None
+
+    def search_segment(line: str) -> str:
+        lowered_line = line.lower()
+        matched = next((keyword for keyword in keyword_tokens if keyword in lowered_line), None)
+        if not matched:
+            return line
+        keyword_pos = lowered_line.find(matched)
+        segment = line[keyword_pos + len(matched) :] if keyword_pos >= 0 else line
+        segment = re.sub(r"^\s*\([^)]+\)\s*", "", segment)
+        return segment
+
+    def is_reference_range(line: str) -> bool:
+        return bool(
+            re.fullmatch(
+                r"[<>]?\d+(?:\.\d+)?\s*[-~]\s*[<>]?\d+(?:\.\d+)?(?:\s*[A-Za-z/%μµ·/\-]+)?",
+                line.strip(),
+            )
+        )
+
+    def is_unit_only(line: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z/%μµ·/\-]+", line.strip()))
+
+    for index, line in enumerate(lines):
+        lowered = line.lower()
+        matched_keyword = next((keyword for keyword in keyword_tokens if keyword in lowered), None)
+        if not matched_keyword:
+            continue
+
+        raw_value, unit = extract_numeric_value(search_segment(line))
+        if raw_value is not None and not is_reference_range(line):
+            return raw_value, unit, line
+
+        source_parts = [line]
+        for offset in range(1, 5):
+            next_index = index + offset
+            if next_index >= len(lines):
+                break
+            candidate = lines[next_index].strip()
+            if not candidate:
+                continue
+            source_parts.append(candidate)
+
+            if re.fullmatch(r"[↑↓→]+", candidate):
+                continue
+
+            if raw_value is None:
+                candidate_value, candidate_unit = extract_numeric_value(search_segment(candidate))
+                if candidate_value is not None and not is_reference_range(candidate):
+                    raw_value = candidate_value
+                    unit = candidate_unit or unit
+                    if unit:
+                        return raw_value, unit, " ".join(source_parts)
+                    continue
+
+            if raw_value is not None and unit is None and is_unit_only(candidate):
+                unit = candidate
+                return raw_value, unit, " ".join(source_parts)
+
+        if raw_value is not None:
+            return raw_value, unit, " ".join(source_parts)
     return None, None, None
 
 
@@ -1306,6 +2023,33 @@ def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_sum
         "uric_acid": ["尿酸", "uric acid", "ua"],
         "alt": ["alt", "谷丙转氨酶"],
         "ast": ["ast", "谷草转氨酶"],
+        "tbil": ["总胆红素", "tbil"],
+        "dbil": ["直接胆红素", "dbil"],
+        "ibil": ["间接胆红素", "ibil"],
+        "tp": ["总蛋白", "tp"],
+        "alb": ["白蛋白", "alb"],
+        "globulin": ["球蛋白", "globulin", "glo"],
+        "a_g_ratio": ["白球比例", "a/g"],
+        "alp": ["碱性磷酸酶", "alp"],
+        "ggt": ["谷氨酰转肽酶", "谷氨酰基转移酶", "ggt"],
+        "urea": ["尿素", "urea", "bun"],
+        "glucose": ["葡萄糖", "血糖", "glu"],
+        "cholesterol": ["总胆固醇", "tcho", "cholesterol"],
+        "triglyceride": ["甘油三酯", "tg"],
+        "hdl_c": ["高密度脂蛋白", "hdl-c", "hdl"],
+        "ldl_c": ["低密度脂蛋白", "ldl-c", "ldl"],
+        "vldl_c": ["极低密度脂蛋白", "vldl-c", "vldl"],
+        "apo_a1": ["载脂蛋白a1", "apoa1", "apo-a1"],
+        "apo_b": ["载脂蛋白b", "apob", "apo-b"],
+        "lp_a": ["脂蛋白a", "lp(a)", "lpa"],
+        "phosphorus": ["无机磷", "磷", "p"],
+        "magnesium": ["镁", "mg"],
+        "co2cp": ["碳酸氢根", "co2cp"],
+        "potassium": ["钾", "k"],
+        "sodium": ["钠", "na"],
+        "chloride": ["氯", "cl"],
+        "calcium": ["钙", "ca"],
+        "il6": ["白介素6", "il-6", "il6"],
     }
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
 
@@ -1463,10 +2207,18 @@ def _legacy_aliases(normalized_summary: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def analyze_fshd_report(ocr_text: str, document_type_hint: Optional[str] = None) -> Dict[str, Any]:
+def analyze_fshd_report(
+    ocr_text: str,
+    document_type_hint: Optional[str] = None,
+    report_name: Optional[str] = None,
+) -> Dict[str, Any]:
     normalized_text = _normalize_text(ocr_text)
     lines = _extract_lines(normalized_text)
-    report_type, report_confidence, classification_reasons = _classify_report(normalized_text, document_type_hint)
+    report_type, report_confidence, classification_reasons = _classify_report(
+        normalized_text,
+        document_type_hint,
+        report_name,
+    )
 
     structured_fields: List[Dict[str, Any]] = []
     findings: List[Dict[str, Any]] = []
@@ -1488,17 +2240,24 @@ def analyze_fshd_report(ocr_text: str, document_type_hint: Optional[str] = None)
         _extract_ecg(lines, structured_fields, findings, normalized_summary)
     elif report_type == "echocardiography":
         _extract_echo(lines, structured_fields, findings, normalized_summary)
+    elif report_type == "blood_routine":
+        _extract_blood_routine(lines, structured_fields, normalized_summary)
+    elif report_type == "thyroid_function":
+        _extract_thyroid_function(lines, structured_fields, normalized_summary)
+    elif report_type == "coagulation":
+        _extract_coagulation(lines, structured_fields, normalized_summary)
+    elif report_type == "urinalysis":
+        _extract_urinalysis(lines, structured_fields, normalized_summary)
+    elif report_type == "infection_screening":
+        _extract_infection_screening(lines, structured_fields, normalized_summary)
+    elif report_type == "stool_test":
+        _extract_stool_test(lines, structured_fields, normalized_summary)
+    elif report_type == "abdominal_ultrasound":
+        _extract_abdominal_ultrasound(lines, structured_fields, findings, normalized_summary)
 
     if report_type in {
         "muscle_enzyme",
         "biochemistry",
-        "blood_routine",
-        "thyroid_function",
-        "coagulation",
-        "urinalysis",
-        "infection_screening",
-        "stool_test",
-        "abdominal_ultrasound",
         "other",
     }:
         _extract_labs(lines, structured_fields, normalized_summary)

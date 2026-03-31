@@ -26,7 +26,11 @@ def main() -> int:
             raise FileNotFoundError(f"Input file not found: {args.file_path}")
 
         extracted_text = extract_text_from_file(args.file_path, args.mime_type)
-        analysis = analyze_fshd_report(extracted_text, args.document_type_hint or None)
+        analysis = analyze_fshd_report(
+            extracted_text,
+            args.document_type_hint or None,
+            args.report_name or os.path.basename(args.file_path),
+        )
 
         payload = {
             "provider": "embedded_report_pipeline_v1",

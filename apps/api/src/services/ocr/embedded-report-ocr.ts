@@ -175,6 +175,30 @@ const buildFields = (
   if (patientName) {
     fields.patientName = patientName;
   }
+  const patientSex = toStringField(patientInfo?.sex);
+  if (patientSex) {
+    fields.patientSex = patientSex;
+  }
+  const patientAge = toStringField(patientInfo?.age);
+  if (patientAge) {
+    fields.patientAge = patientAge;
+  }
+  const department = toStringField(encounter?.department);
+  if (department) {
+    fields.department = department;
+  }
+  const specimen = toStringField(encounter?.specimen);
+  if (specimen) {
+    fields.specimen = specimen;
+  }
+  const bedNo = toStringField(encounter?.bed_no);
+  if (bedNo) {
+    fields.bedNo = bedNo;
+  }
+  const orderingDoctor = toStringField(encounter?.ordering_doctor);
+  if (orderingDoctor) {
+    fields.orderingDoctor = orderingDoctor;
+  }
 
   for (const field of structuredFields) {
     const fieldName = toStringField(field.field_name);
@@ -305,6 +329,9 @@ const buildFields = (
     }
     if (fields.ck) {
       fields.creatineKinase = fields.ck;
+    }
+    if (fields.mb) {
+      fields.myoglobin = fields.mb;
     }
   }
 
