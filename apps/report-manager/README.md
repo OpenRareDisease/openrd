@@ -1,14 +1,12 @@
 # @openrd/report-manager
 
-主 API 内嵌调用的 Python 报告 OCR / 结构化解析引擎。目录中仍保留 FastAPI 代码，但当前主链路优先通过嵌入式脚本调用 `embedded_parser.py`，不再要求独立数据库和独立部署。
+主 API 内嵌调用的 Python 报告 OCR / 结构化解析引擎。当前目录只保留嵌入式解析所需文件，不再保留旧的独立 HTTP 服务模式。
 
 ## 在本仓库中的定位
 
 当前主链路由 `apps/api` 直接调用：
 
 - `apps/report-manager/embedded_parser.py`
-
-只有在将 API 配置为 `OCR_PROVIDER=report_manager` 时，才会重新走独立 HTTP 服务模式。
 
 ## 本地依赖
 
@@ -27,29 +25,16 @@ pip install -r ../api/requirements-embedded-report.txt
 
 完整示例见根目录 [`../../.env.example`](../../.env.example)。
 
-## 常用接口
+## 文件作用概览
 
-- `GET /healthz`
-- `POST /api/reports/`
-- `POST /api/reports/upload-and-analyze`
-- `GET /api/reports/{report_id}`
-- `GET /api/reports/user/{user_id}`
-- `GET /api/reports/{report_id}/file`
+- `embedded_parser.py`：当前默认主链路入口，`apps/api` 直接调用。
+- `app/services/fshd_report_service.py`：FSHD 专病结构化解析与指标归一化。
+- `app/services/ocr_service.py`：PDF / 图片 OCR 提取。
+- `tests/test_fshd_report_service.py`：当前仓库保留的自动化回归测试。
+- `apps/report-manager/.env`：不是当前生效配置来源；统一使用仓库根目录 `.env`。
 
-## 独立服务模式（可选）
+## 当前约束
 
-如果确实需要保留旧的独立 HTTP 服务，再执行：
-
-```bash
-cd apps/report-manager
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --port 8000
-```
-
-并在主 API 中设置 `OCR_PROVIDER=report_manager` 与 `REPORT_MANAGER_OCR_URL`。
-
-## Docker
-
-主仓库 `docker-compose.yml` 已默认改为由 `api` 容器内嵌运行 OCR 引擎，不再单独启动 `report-manager` 服务。
-
-如需旧模式，可手动构建该目录的 Dockerfile。
+- 主仓库只支持由 `apps/api` 通过嵌入式脚本调用 OCR / parser。
+- 不再支持 `OCR_PROVIDER=report_manager` 或独立 `report-manager` HTTP 服务。
+- Docker 部署也不再单独构建或运行 `report-manager` 服务。

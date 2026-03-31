@@ -80,25 +80,12 @@ const envSchema = z
       z.string().optional(),
     ),
 
-    OCR_PROVIDER: z.enum(['embedded', 'baidu', 'mock', 'report_manager']).default('embedded'),
+    OCR_PROVIDER: z.enum(['embedded', 'baidu', 'mock']).default('embedded'),
     OCR_PYTHON_BIN: z.string().default('python3'),
     OCR_PARSER_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
     OCR_DISABLE_PADDLE: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().optional(),
-    ),
-
-    REPORT_MANAGER_OCR_URL: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.string().url().optional(),
-    ),
-    REPORT_MANAGER_OCR_API_KEY: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.string().min(1).optional(),
-    ),
-    REPORT_MANAGER_OCR_USER_ID: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.coerce.number().int().positive().optional(),
     ),
 
     STORAGE_PROVIDER: z.enum(['local', 'minio']).default('local'),
@@ -197,33 +184,13 @@ const validateStorageEnv = (env: AppEnv) => {
   return errors;
 };
 
-const normalizeEnvAliases = (source: NodeJS.ProcessEnv) => {
-  const next = { ...source };
-  const aliases: Array<[keyof NodeJS.ProcessEnv, keyof NodeJS.ProcessEnv]> = [
-    ['MINIO_ENDPOINT', 'REPORT_MANAGER_MINIO_ENDPOINT'],
-    ['MINIO_ACCESS_KEY', 'REPORT_MANAGER_MINIO_ACCESS_KEY'],
-    ['MINIO_SECRET_KEY', 'REPORT_MANAGER_MINIO_SECRET_KEY'],
-    ['MINIO_BUCKET_NAME', 'REPORT_MANAGER_MINIO_BUCKET_NAME'],
-    ['MINIO_USE_HTTPS', 'REPORT_MANAGER_MINIO_USE_HTTPS'],
-  ];
-
-  aliases.forEach(([target, fallback]) => {
-    const targetValue = next[target];
-    if ((targetValue === undefined || targetValue === '') && next[fallback]) {
-      next[target] = next[fallback];
-    }
-  });
-
-  return next;
-};
-
 export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
   if (!cachedEnv) {
     loadEnv();
-    const rawEnv = normalizeEnvAliases({
+    const rawEnv = {
       ...process.env,
       ...overrides,
-    });
+    };
     const parsed = envSchema.safeParse({
       ...rawEnv,
     });

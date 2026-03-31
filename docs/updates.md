@@ -195,12 +195,12 @@ curl -X GET http://localhost:4000/api/profiles/me \
 
 ### 当前状态
 
-- `git status` 显示主要变动集中在 `docs/patient-profile.md`、`docs/update-2025-11-06.md`、`db/init_db.sql`、患者档案模块源码及鉴权中间件。
+- `git status` 当时的主要变动集中在 `docs/patient-profile.md`、`db/init_db.sql`、患者档案模块源码及鉴权中间件。
 - 所有变更经 ESLint 自动修复；暂未补充自动化测试，可后续使用 Vitest + Supertest。
 
 ### 后续建议
 
-1. **提交与推送**：在 `feature/patient-profile` 分支提交并推送，创建 PR 时附上测试步骤。
+1. **提交与推送**：在对应功能分支提交并推送，创建 PR 时附上测试步骤。
 2. **移动端联调**：把 Expo 表单和展示页接到 `/api/profiles` 系列接口（已在 11-14 完成）。
 3. **测试与文档**：追加端到端测试，持续在 `docs/updates.md` 与 `docs/testing-guide.md` 记录流程。
 

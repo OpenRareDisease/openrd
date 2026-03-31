@@ -36,7 +36,6 @@ Notes:
 
 - `v2` defaults to local file storage for uploaded reports.
 - The API can now load both `local://...` and `minio://...` document URIs.
-- Legacy `REPORT_MANAGER_MINIO_*` variables are also accepted and mapped to the new `MINIO_*` config.
 
 ## Key Routes
 

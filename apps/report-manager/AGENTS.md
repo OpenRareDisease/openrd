@@ -2,11 +2,10 @@
 
 ## Project Structure & Module Organization
 
-- `app/` holds the FastAPI application code, organized by `dependencies/`, `models/`, `routes/`, and `services/`.
-- `main.py` is the FastAPI entrypoint when you need to run report-manager as a standalone HTTP service.
-- `config.py` contains configuration defaults; database/MinIO/AI settings are typically overridden via `.env`.
-- `db_init_script.sql` and `minio_init_script.py` initialize PostgreSQL and MinIO.
-- `test_upload_and_analyze.py` is a local integration-style test script.
+- `embedded_parser.py` is the only supported entrypoint and is invoked by `apps/api`.
+- `app/services/fshd_report_service.py` holds FSHD-specific classification, extraction, and normalization logic.
+- `app/services/ocr_service.py` handles PDF/image OCR extraction.
+- `tests/test_fshd_report_service.py` is the committed regression suite for the parser layer.
 
 ## Build, Test, and Development Commands
 
@@ -14,27 +13,13 @@
   ```bash
   pip install -r requirements.txt
   ```
-- Run the API locally:
+- Run the embedded parser locally:
   ```bash
-  python -m uvicorn main:app --reload --port 8000
+  python embedded_parser.py --file-path /absolute/path/to/report.pdf --mime-type application/pdf
   ```
-- Initialize the database:
+- Run the checked-in regression test:
   ```bash
-  psql -h <db_host> -U <user> -f db_init_script.sql
-  # or
-  python init_db.py
-  ```
-- Initialize MinIO:
-  ```bash
-  python minio_init_script.py
-  ```
-- Run tests (if pytest is installed):
-  ```bash
-  pytest
-  ```
-- Run the example upload script:
-  ```bash
-  python test_upload_and_analyze.py
+  python -m unittest tests.test_fshd_report_service
   ```
 
 ## Coding Style & Naming Conventions
@@ -49,7 +34,7 @@
 
 ## Testing Guidelines
 
-- `pytest` is the recommended runner; currently, tests are minimal and include an integration-style script.
+- `python -m unittest tests.test_fshd_report_service` is the current committed regression path.
 - Name tests with the `test_*.py` convention and add API tests under a `tests/` folder if you expand coverage.
 - Validate both success and failure cases for API endpoints.
 
@@ -61,5 +46,6 @@
 
 ## Security & Configuration Tips
 
-- Store secrets in `.env`; do not commit API keys or credentials.
-- Confirm MinIO and PostgreSQL endpoints match your local environment before running initialization scripts.
+- Store secrets in the repository root `.env`; do not commit API keys or credentials.
+- The local `apps/report-manager/.env` file is not part of the active repository configuration path.
+- Prefer updating `apps/api/requirements-embedded-report.txt` together with this package when parser dependencies change.

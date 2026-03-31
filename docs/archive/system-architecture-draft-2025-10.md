@@ -2,14 +2,14 @@
 
 ## 文档信息
 
-| 项目 | 内容 |
-|------|------|
-| **文档名称** | FSHD-openrd 系统架构设计文档 |
+| 项目         | 内容                                           |
+| ------------ | ---------------------------------------------- |
+| **文档名称** | FSHD-openrd 系统架构设计文档                   |
 | **项目名称** | FSHD-openrd - 面肩肱型肌营养不良症智能管理平台 |
-| **版本** | v1.0 |
-| **创建日期** | 2025-10-10 |
-| **最后更新** | 2025-10-10 |
-| **文档状态** | 草案 |
+| **版本**     | v1.0                                           |
+| **创建日期** | 2025-10-10                                     |
+| **最后更新** | 2025-10-10                                     |
+| **文档状态** | 草案                                           |
 
 ## 1. 系统概述
 
@@ -83,22 +83,26 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 ### 2.2 技术架构层次
 
 #### 2.2.1 表现层
+
 - **移动端**：React Native (iOS & Android)
 - **Web端**：响应式Web界面
 - **API接口**：RESTful API + GraphQL
 
 #### 2.2.2 应用层
+
 - **API网关**：统一入口、认证、限流
 - **微服务集群**：业务逻辑处理
 - **消息队列**：异步任务处理
 
 #### 2.2.3 数据层
+
 - **关系数据库**：结构化数据存储
 - **缓存系统**：性能优化
 - **文件存储**：大文件管理
 - **搜索引擎**：全文检索
 
 #### 2.2.4 基础设施层
+
 - **容器编排**：Kubernetes
 - **服务网格**：Istio
 - **监控告警**：Prometheus + Grafana
@@ -109,13 +113,16 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 ### 3.1 服务拆分策略
 
 #### 3.1.1 用户服务 (User Service)
+
 **职责范围：**
+
 - 用户身份认证与授权
 - 用户信息管理
 - 隐私权限控制
 - 第三方登录集成
 
 **核心功能：**
+
 - 手机号注册/登录
 - 微信/支付宝第三方登录
 - 密码找回与重置
@@ -123,13 +130,16 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 - 权限角色管理
 
 #### 3.1.2 档案服务 (Archive Service)
+
 **职责范围：**
+
 - 医疗数据采集与存储
 - 多模态数据解析
 - 时间轴数据管理
 - 风险评估与预警
 
 **核心功能：**
+
 - 医疗报告OCR解析
 - 肌力数据记录与分析
 - 日常活动数据采集
@@ -137,26 +147,32 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 - FSHD临床护照生成
 
 #### 3.1.3 问答服务 (QnA Service)
+
 **职责范围：**
+
 - FSHD专业知识库管理
 - 智能问答引擎
 - 临床路径管理
 - 地域化资源推荐
 
 **核心功能：**
+
 - 自然语言处理问答
 - 知识图谱构建
 - 临床路径指引
 - 医疗资源智能推荐
 
 #### 3.1.4 社区服务 (Community Service)
+
 **职责范围：**
+
 - 社区内容管理
 - 用户互动功能
 - 内容审核系统
 - 康复经验分享
 
 **核心功能：**
+
 - 帖子发布与管理
 - 评论与点赞功能
 - 内容审核机制
@@ -164,26 +180,32 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 - 动作捕捉纠错
 
 #### 3.1.5 试验服务 (Trial Service)
+
 **职责范围：**
+
 - 临床试验信息管理
 - 智能匹配算法
 - 入组申请处理
 - 数据导出服务
 
 **核心功能：**
+
 - 试验信息同步
 - 用户档案匹配
 - 入组申请管理
 - 标准化数据导出
 
 #### 3.1.6 资源服务 (Resource Service)
+
 **职责范围：**
+
 - 医疗资源管理
 - 地理位置服务
 - 专家咨询管理
 - 推荐系统
 
 **核心功能：**
+
 - 医疗资源地图
 - 地理位置服务
 - 专家排班管理
@@ -192,16 +214,19 @@ FSHD-openrd 是一款专为 FSHD（面肩肱型肌营养不良症）患者设计
 ### 3.2 服务间通信
 
 #### 3.2.1 同步通信
+
 - **RESTful API**：服务间直接调用
 - **GraphQL**：复杂数据查询
 - **gRPC**：高性能内部通信
 
 #### 3.2.2 异步通信
+
 - **消息队列**：Redis Pub/Sub
 - **事件驱动**：领域事件发布
 - **任务队列**：后台任务处理
 
 #### 3.2.3 数据一致性
+
 - **Saga模式**：分布式事务管理
 - **事件溯源**：关键操作追溯
 - **最终一致性**：非关键数据
@@ -329,12 +354,14 @@ CREATE TABLE user_trial_matches (
 #### 4.1.2 Redis - 缓存与会话存储
 
 **缓存策略：**
+
 - **会话缓存**：用户登录状态
 - **热点数据**：热门帖子、知识库内容
 - **地理缓存**：医疗资源位置信息
 - **限流缓存**：API访问频率控制
 
 **数据结构：**
+
 ```redis
 # 用户会话
 SET session:{session_id} {user_data}
@@ -352,6 +379,7 @@ INCR api_limit:{user_id}:{endpoint}
 #### 4.1.3 MinIO/S3 - 文件存储
 
 **存储结构：**
+
 ```
 medical-reports/
 ├── {user_id}/
@@ -374,16 +402,19 @@ community/
 #### 4.2.1 加密策略
 
 **传输层加密：**
+
 - TLS 1.3 全链路加密
 - 证书双向验证
 - HSTS 强制HTTPS
 
 **存储层加密：**
+
 - 数据库字段级加密 (AES-256)
 - 文件存储服务端加密
 - 密钥管理服务 (KMS)
 
 **应用层加密：**
+
 - 敏感数据客户端加密
 - 数字签名验证
 - 防篡改机制
@@ -391,16 +422,19 @@ community/
 #### 4.2.2 隐私保护
 
 **数据最小化：**
+
 - 仅收集必要数据
 - 匿名化数据处理
 - 数据生命周期管理
 
 **用户授权控制：**
+
 - 细粒度权限管理
 - 数据访问审计
 - 区块链操作存证
 
 **合规性要求：**
+
 - HIPAA 医疗数据保护
 - GDPR 个人数据保护
 - 中国网络安全法
@@ -547,27 +581,17 @@ Authorization: Bearer {access_token}
 type Query {
   # 用户相关
   userProfile: UserProfile
-  timelineEvents(
-    startDate: String!
-    endDate: String!
-    types: [EventType]
-  ): [TimelineEvent]
+  timelineEvents(startDate: String!, endDate: String!, types: [EventType]): [TimelineEvent]
 
   # 问答相关
   askQuestion(question: String!): QnAResult
   knowledgeCategories: [KnowledgeCategory]
 
   # 社区相关
-  communityPosts(
-    forum: String
-    page: Int
-    limit: Int
-  ): PostConnection
+  communityPosts(forum: String, page: Int, limit: Int): PostConnection
 
   # 试验相关
-  clinicalTrials(
-    filters: TrialFilters
-  ): [ClinicalTrial]
+  clinicalTrials(filters: TrialFilters): [ClinicalTrial]
   trialMatches: [TrialMatch]
 }
 
@@ -598,11 +622,13 @@ type Subscription {
 #### 6.1.1 认证机制
 
 **多因素认证：**
+
 - 手机号 + 密码
 - 微信/支付宝第三方登录
 - 生物特征识别（可选）
 
 **令牌管理：**
+
 - JWT Access Token (短期)
 - Refresh Token (长期)
 - 设备绑定机制
@@ -610,6 +636,7 @@ type Subscription {
 #### 6.1.2 授权控制
 
 **基于角色的访问控制 (RBAC)：**
+
 ```yaml
 roles:
   patient:
@@ -632,6 +659,7 @@ roles:
 ```
 
 **属性基访问控制 (ABAC)：**
+
 ```
 规则：允许用户访问自己的医疗数据
 条件：user.id == resource.owner_id
@@ -642,12 +670,14 @@ roles:
 #### 6.2.1 数据分类与保护
 
 **数据分类：**
+
 - **PII数据**：姓名、电话、地址等
 - **医疗数据**：基因信息、诊断报告、影像数据
 - **行为数据**：活动记录、社区互动
 - **匿名数据**：科研用脱敏数据
 
 **保护措施：**
+
 - 字段级加密敏感数据
 - 数据脱敏处理
 - 访问日志记录
@@ -656,12 +686,14 @@ roles:
 #### 6.2.2 区块链存证
 
 **存证内容：**
+
 - 用户数据授权记录
 - 医疗数据访问日志
 - 数据捐赠授权记录
 - 关键操作审计记录
 
 **技术实现：**
+
 - Hyperledger Fabric
 - 智能合约管理
 - 不可篡改存证
@@ -672,6 +704,7 @@ roles:
 #### 6.3.1 网络隔离
 
 **VPC网络架构：**
+
 ```
 公有子网：
 - API Gateway
@@ -690,12 +723,14 @@ roles:
 #### 6.3.2 安全防护
 
 **WAF防护：**
+
 - SQL注入防护
 - XSS攻击防护
 - DDoS防护
 - 爬虫识别
 
 **API安全：**
+
 - 请求签名验证
 - 频率限制控制
 - 参数校验过滤
@@ -710,25 +745,26 @@ roles:
 ```yaml
 # 命名空间设计
 namespaces:
-  - production    # 生产环境
-  - staging       # 预发布环境
-  - development   # 开发环境
-  - monitoring    # 监控组件
-  - security      # 安全组件
+  - production # 生产环境
+  - staging # 预发布环境
+  - development # 开发环境
+  - monitoring # 监控组件
+  - security # 安全组件
 
 # 节点分组
 nodeGroups:
-  - system:       # 系统组件
-      taints: ["system=true:NoSchedule"]
-  - application:  # 应用服务
-      labels: ["app=backend"]
-  - database:     # 数据库
-      labels: ["app=database"]
+  - system: # 系统组件
+      taints: ['system=true:NoSchedule']
+  - application: # 应用服务
+      labels: ['app=backend']
+  - database: # 数据库
+      labels: ['app=database']
 ```
 
 #### 7.1.2 服务部署策略
 
 **无状态服务：**
+
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -744,42 +780,43 @@ spec:
   template:
     spec:
       containers:
-      - name: user-service
-        image: fshd-openrd/user-service:v1.0.0
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
+        - name: user-service
+          image: fshd-openrd/user-service:v1.0.0
+          resources:
+            requests:
+              memory: '256Mi'
+              cpu: '250m'
+            limits:
+              memory: '512Mi'
+              cpu: '500m'
 ```
 
 **有状态服务：**
+
 ```yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgresql
 spec:
-  serviceName: "postgresql"
+  serviceName: 'postgresql'
   replicas: 3
   template:
     spec:
       containers:
-      - name: postgresql
-        image: postgres:14
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/postgresql/data
+        - name: postgresql
+          image: postgres:14
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
   volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      resources:
-        requests:
-          storage: 100Gi
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 100Gi
 ```
 
 ### 7.2 监控与告警
@@ -787,18 +824,21 @@ spec:
 #### 7.2.1 监控体系
 
 **应用性能监控：**
+
 - 响应时间监控
 - 错误率监控
 - 吞吐量监控
 - 依赖服务监控
 
 **业务指标监控：**
+
 - 用户活跃度
 - 数据录入量
 - 问答使用率
 - 社区互动指标
 
 **基础设施监控：**
+
 - 资源使用率
 - 网络流量
 - 存储容量
@@ -814,8 +854,8 @@ alert_rules:
     labels:
       severity: critical
     annotations:
-      summary: "高错误率告警"
-      description: "5xx错误率超过10%"
+      summary: '高错误率告警'
+      description: '5xx错误率超过10%'
 
   - alert: ServiceDown
     expr: up == 0
@@ -823,8 +863,8 @@ alert_rules:
     labels:
       severity: critical
     annotations:
-      summary: "服务不可用"
-      description: "{{ $labels.job }} 服务已下线"
+      summary: '服务不可用'
+      description: '{{ $labels.job }} 服务已下线'
 ```
 
 ### 7.3 备份与容灾
@@ -832,12 +872,14 @@ alert_rules:
 #### 7.3.1 数据备份策略
 
 **数据库备份：**
+
 - 实时流复制
 - 每日全量备份
 - 每小时增量备份
 - 跨区域备份
 
 **文件备份：**
+
 - 版本化存储
 - 跨区域复制
 - 定期快照
@@ -846,6 +888,7 @@ alert_rules:
 #### 7.3.2 容灾方案
 
 **多可用区部署：**
+
 ```
 主区域：北京
 备区域：上海
@@ -857,6 +900,7 @@ alert_rules:
 ```
 
 **数据同步：**
+
 - 数据库主从复制
 - 缓存数据同步
 - 文件跨区域复制
@@ -873,40 +917,41 @@ name: Deploy to Production
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Run tests
-      run: |
-        npm install
-        npm test
+      - uses: actions/checkout@v2
+      - name: Run tests
+        run: |
+          npm install
+          npm test
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Build Docker image
-      run: |
-        docker build -t ${{ secrets.REGISTRY }}/user-service:${{ github.sha }} .
-        docker push ${{ secrets.REGISTRY }}/user-service:${{ github.sha }}
+      - uses: actions/checkout@v2
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.REGISTRY }}/user-service:${{ github.sha }} .
+          docker push ${{ secrets.REGISTRY }}/user-service:${{ github.sha }}
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - name: Deploy to Kubernetes
-      run: |
-        kubectl set image deployment/user-service user-service=${{ secrets.REGISTRY }}/user-service:${{ github.sha }}
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl set image deployment/user-service user-service=${{ secrets.REGISTRY }}/user-service:${{ github.sha }}
 ```
 
 #### 8.1.2 环境管理
 
 **环境配置：**
+
 ```yaml
 environments:
   development:
@@ -936,16 +981,19 @@ environments:
 #### 8.2.1 测试策略
 
 **单元测试：**
+
 - 业务逻辑测试
 - 工具函数测试
 - 模型验证测试
 
 **集成测试：**
+
 - API接口测试
 - 数据库操作测试
 - 服务间调用测试
 
 **端到端测试：**
+
 - 用户流程测试
 - 跨服务场景测试
 - 性能压力测试
@@ -953,12 +1001,14 @@ environments:
 #### 8.2.2 代码质量
 
 **代码规范：**
+
 - ESLint + Prettier
 - TypeScript严格模式
 - Git提交规范
 - 代码审查流程
 
 **安全扫描：**
+
 - 依赖漏洞扫描
 - 代码安全扫描
 - 容器镜像扫描
@@ -971,11 +1021,13 @@ environments:
 #### 9.1.1 应用层扩展
 
 **无状态设计：**
+
 - 会话外部化存储
 - 配置中心化管理
 - 服务发现机制
 
 **负载均衡：**
+
 ```yaml
 apiVersion: v1
 kind: Service
@@ -985,19 +1037,21 @@ spec:
   selector:
     app: user-service
   ports:
-  - port: 80
-    targetPort: 3000
+    - port: 80
+      targetPort: 3000
   type: LoadBalancer
 ```
 
 #### 9.1.2 数据层扩展
 
 **数据库扩展：**
+
 - 读写分离
 - 分库分表
 - 连接池优化
 
 **缓存扩展：**
+
 - Redis集群
 - 本地缓存
 - CDN加速
@@ -1007,12 +1061,14 @@ spec:
 #### 9.2.1 应用性能优化
 
 **API优化：**
+
 - 请求合并
 - 数据压缩
 - 缓存策略
 - 异步处理
 
 **数据库优化：**
+
 - 索引优化
 - 查询优化
 - 连接管理
@@ -1021,6 +1077,7 @@ spec:
 #### 9.2.2 前端性能优化
 
 **移动端优化：**
+
 - 图片懒加载
 - 数据分页
 - 离线缓存
@@ -1087,6 +1144,7 @@ AI服务：
 
 **风险：** 医疗数据泄露
 **应对：**
+
 - 端到端加密
 - 访问权限控制
 - 安全审计
@@ -1096,6 +1154,7 @@ AI服务：
 
 **风险：** 服务不可用
 **应对：**
+
 - 多可用区部署
 - 自动故障转移
 - 容量规划
@@ -1107,6 +1166,7 @@ AI服务：
 
 **风险：** 违反医疗数据法规
 **应对：**
+
 - 法律顾问咨询
 - 合规性审查
 - 用户知情同意
@@ -1116,6 +1176,7 @@ AI服务：
 
 **风险：** 用户对数据隐私担忧
 **应对：**
+
 - 透明隐私政策
 - 用户授权控制
 - 数据使用说明
@@ -1125,13 +1186,13 @@ AI服务：
 
 ### 12.1 术语表
 
-| 术语 | 解释 |
-|------|------|
-| FSHD | 面肩肱型肌营养不良症 |
-| MMT | 徒手肌力测试 |
-| OCR | 光学字符识别 |
+| 术语  | 解释                   |
+| ----- | ---------------------- |
+| FSHD  | 面肩肱型肌营养不良症   |
+| MMT   | 徒手肌力测试           |
+| OCR   | 光学字符识别           |
 | HIPAA | 健康保险流通与责任法案 |
-| GDPR | 通用数据保护条例 |
+| GDPR  | 通用数据保护条例       |
 
 ### 12.2 参考资料
 
@@ -1144,6 +1205,6 @@ AI服务：
 
 **文档版本历史**
 
-| 版本 | 日期 | 修改内容 | 修改人 |
-|------|------|----------|--------|
+| 版本 | 日期       | 修改内容     | 修改人 |
+| ---- | ---------- | ------------ | ------ |
 | v1.0 | 2025-10-10 | 初始版本创建 | Claude |

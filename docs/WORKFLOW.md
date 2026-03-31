@@ -33,4 +33,4 @@ npm run test
 1. 代码冻结后切 `release/<version>`（可选）。
 2. 回归核心流程：鉴权、档案、问答、报告上传。
 3. 更新 README / `docs/release-checklist.md` / `docs/updates.md`。
-4. 合并 `master` 后打 tag 并部署。
+4. 将 `release/<version>` 或最终 PR 栈合入 `master` 后打 tag 并部署。

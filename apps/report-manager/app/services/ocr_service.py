@@ -17,7 +17,6 @@ def _paddle_disabled() -> bool:
     """
     return (
         os.getenv("OCR_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
-        or os.getenv("REPORT_MANAGER_DISABLE_PADDLE", "").strip().lower() in {"1", "true", "yes", "y"}
     )
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/jpg"}

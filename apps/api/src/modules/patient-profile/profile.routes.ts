@@ -9,7 +9,6 @@ import type { RouteContext } from '../../routes/index.js';
 import { BaiduOcrProvider } from '../../services/ocr/baidu-ocr.js';
 import { EmbeddedReportOcrProvider } from '../../services/ocr/embedded-report-ocr.js';
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
-import { ReportManagerOcrProvider } from '../../services/ocr/report-manager-ocr.js';
 import { LocalStorageProvider } from '../../services/storage/local-storage.js';
 import { MinioStorageProvider } from '../../services/storage/minio-storage.js';
 import { RoutedStorageProvider } from '../../services/storage/routed-storage.js';
@@ -39,28 +38,22 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     providers: [localStorage, ...(minioStorage ? [minioStorage] : [])],
   });
   const ocr =
-    context.env.OCR_PROVIDER === 'report_manager' && context.env.REPORT_MANAGER_OCR_URL
-      ? new ReportManagerOcrProvider({
-          endpoint: context.env.REPORT_MANAGER_OCR_URL,
-          apiKey: context.env.REPORT_MANAGER_OCR_API_KEY,
-          defaultUserId: context.env.REPORT_MANAGER_OCR_USER_ID,
+    context.env.OCR_PROVIDER === 'baidu' &&
+    context.env.BAIDU_OCR_API_KEY &&
+    context.env.BAIDU_OCR_SECRET_KEY
+      ? new BaiduOcrProvider({
+          apiKey: context.env.BAIDU_OCR_API_KEY,
+          secretKey: context.env.BAIDU_OCR_SECRET_KEY,
+          generalEndpoint: context.env.BAIDU_OCR_GENERAL_ENDPOINT,
+          accurateEndpoint: context.env.BAIDU_OCR_ACCURATE_ENDPOINT,
+          medicalEndpoint: context.env.BAIDU_OCR_MEDICAL_ENDPOINT,
         })
-      : context.env.OCR_PROVIDER === 'baidu' &&
-          context.env.BAIDU_OCR_API_KEY &&
-          context.env.BAIDU_OCR_SECRET_KEY
-        ? new BaiduOcrProvider({
-            apiKey: context.env.BAIDU_OCR_API_KEY,
-            secretKey: context.env.BAIDU_OCR_SECRET_KEY,
-            generalEndpoint: context.env.BAIDU_OCR_GENERAL_ENDPOINT,
-            accurateEndpoint: context.env.BAIDU_OCR_ACCURATE_ENDPOINT,
-            medicalEndpoint: context.env.BAIDU_OCR_MEDICAL_ENDPOINT,
-          })
-        : context.env.OCR_PROVIDER === 'mock'
-          ? new MockOcrProvider()
-          : new EmbeddedReportOcrProvider({
-              pythonBin: context.env.OCR_PYTHON_BIN,
-              timeoutMs: context.env.OCR_PARSER_TIMEOUT_MS,
-            });
+      : context.env.OCR_PROVIDER === 'mock'
+        ? new MockOcrProvider()
+        : new EmbeddedReportOcrProvider({
+            pythonBin: context.env.OCR_PYTHON_BIN,
+            timeoutMs: context.env.OCR_PARSER_TIMEOUT_MS,
+          });
 
   const aiApiKey = context.env.AI_API_KEY || context.env.OPENAI_API_KEY || '';
   const aiClient = aiApiKey

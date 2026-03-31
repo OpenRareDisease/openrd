@@ -2,6 +2,20 @@
 
 All notable release-level changes for FSHD-openrd are tracked here.
 
+## v2.3.1 - 2026-03-31
+
+Current release line on `release/v2.3.1`.
+
+### Highlights
+
+- Removed the legacy standalone `report-manager` HTTP service mode and kept only the embedded OCR/parser pipeline.
+- Pruned obsolete environment variables, dead service files, and assistant-only residue that no longer matches the release path.
+- Reorganized active docs, proposals, and archive materials so the current release path is easier to follow.
+
+### Detailed Notes
+
+- [v2.3.1 Release Notes](./docs/releases/v2.3.1.md)
+
 ## v2.3.0 - 2026-03-31
 
 Current release line on `release/v2`.

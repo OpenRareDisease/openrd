@@ -4,7 +4,7 @@
 
 FSHD-openrd is a monorepo for an FSHD patient-facing platform. It combines the mobile client, backend API, embedded OCR/report parsing, AI Q&A, and deployment tooling in one repository. The current repo is meant to support a real end-to-end workflow, not just isolated demos.
 
-Current working version: `v2.3.0`  
+Current working version: `v2.3.1`
 Baseline version: `master` / `v1.0.0`
 
 ## What is in the repo
@@ -201,7 +201,7 @@ Notes:
 - [AI Q&A](./docs/ai-chat.md)
 - [Patient Profile Data Model](./docs/patient-profile.md)
 - [Version History / Changelog](./CHANGELOG.md)
-- [v2.3.0 Release Notes](./docs/releases/v2.3.0.md)
+- [v2.3.1 Release Notes](./docs/releases/v2.3.1.md)
 - [v1.0.0 Release Notes](./docs/releases/v1.0.0.md)
 - [v2.0.0 Release Notes](./docs/releases/v2.0.0.md)
 
