@@ -275,6 +275,9 @@ export default StyleSheet.create({
     lineHeight: 19,
     color: CLINICAL_COLORS.textSoft,
   },
+  sectionContentBlock: {
+    marginTop: 16,
+  },
   summaryGrid: {
     marginTop: 16,
     gap: 12,
@@ -529,6 +532,14 @@ export default StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: CLINICAL_COLORS.accentStrong,
+  },
+  supportCard: {
+    marginTop: 20,
+    padding: 18,
+    borderRadius: 24,
+    backgroundColor: CLINICAL_TINTS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.borderSubtle,
   },
   timelineCard: {
     marginTop: 16,

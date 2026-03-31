@@ -2266,20 +2266,26 @@ export class PatientProfileService {
 
     const recommendedReviewItems: string[] = [];
     if (!profile.baseline) {
-      recommendedReviewItems.push('先完成基线建档，后续系统才能更准确比较变化。');
+      recommendedReviewItems.push('先在注册时补齐基础档案，后续系统才能更准确比较变化。');
     }
     if (!submissions.some((item) => item.submissionKind === 'followup')) {
       recommendedReviewItems.push('补一次快速随访，系统才能回答“和上次相比有没有变化”。');
     }
-    if (profile.symptomScores.length === 0) {
-      recommendedReviewItems.push('补录疲劳、疼痛和呼吸评分，能更快看出主观变化。');
+    const hasSleepRecord = profile.symptomScores.some(
+      (item) => item.symptomKey === 'sleep_quality',
+    );
+    if (!hasSleepRecord) {
+      recommendedReviewItems.push('先保留一条睡眠记录，后续可切换为 Apple Watch 报告识别。');
     }
-    const hasRecentFunctionTest = profile.functionTests.some((item) => {
-      const days = (Date.now() - new Date(item.performedAt).getTime()) / (1000 * 60 * 60 * 24);
+    const hasRecentStairsRecord = profile.dailyImpacts.some((item) => {
+      if (item.adlKey !== 'stairs') {
+        return false;
+      }
+      const days = (Date.now() - new Date(item.recordedAt).getTime()) / (1000 * 60 * 60 * 24);
       return !Number.isNaN(days) && days <= 90;
     });
-    if (!hasRecentFunctionTest) {
-      recommendedReviewItems.push('最近补一次上楼或 10 米步行测试，便于观察功能趋势。');
+    if (!hasRecentStairsRecord) {
+      recommendedReviewItems.push('最近补一次上楼变化记录，便于观察功能趋势。');
     }
     if (profile.documents.length === 0) {
       recommendedReviewItems.push('有新检查时上传报告，系统会自动生成患者版摘要。');
@@ -2296,7 +2302,7 @@ export class PatientProfileService {
         ? '最近一次记录提示和上次相比有变化。'
         : '最近一次记录显示整体变化不大。';
     } else if (latestSubmission?.submissionKind === 'baseline') {
-      headline = '已完成基线建档';
+      headline = '已完成基础档案';
       detail = '以后只需要在变化时补快速随访或事件记录。';
     } else if (changeCards[0]) {
       headline = changeCards[0].title;

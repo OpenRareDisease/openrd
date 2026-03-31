@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } fr
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import { FontAwesome6 } from '@expo/vector-icons';
 import {
   ApiError,
   deletePatientDocument,
@@ -11,17 +12,17 @@ import {
   type PatientDocument,
 } from '../../lib/api';
 import {
-  buildBodyMapFromFields,
   CLINICAL_COLORS,
   CLINICAL_GRADIENTS,
   inferMriBodyMap,
   inferReportKind,
-  summarizeBodyRegions,
   type BodyView,
 } from '../../lib/clinical-visuals';
+import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
 import styles from './styles';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
+import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
 type DebugPayload = OcrPayload & {
@@ -158,18 +159,34 @@ export default function ReportDetailScreen() {
   const fields = payload?.fields ?? undefined;
   const status = getAnalysisStatus(payload) ?? 'unknown';
   const reportKind = inferReportKind(payload);
-  const strengthRegions = useMemo(() => buildBodyMapFromFields(fields), [fields]);
   const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
-  const activeRegions = reportKind === 'mri' ? mriInference.regions : strengthRegions;
-  const activeMode = reportKind === 'mri' ? 'mri' : 'strength';
-  const activeSummary = useMemo(
-    () => (reportKind === 'mri' ? mriInference.findings : summarizeBodyRegions(strengthRegions, 4)),
-    [mriInference.findings, reportKind, strengthRegions],
-  );
+  const activeRegions = mriInference.regions;
+  const activeSummary = mriInference.findings;
+  const relevantSystemPanels = useMemo(() => {
+    if (!payload) return [];
+    const classifiedType = pickField(fields, [
+      'classifiedType',
+      'classified_type',
+      'reportType',
+      'report_type',
+    ]);
+    const reportTime = pickField(fields, ['reportTime', 'report_time']);
+    const insights = buildReportInsights([
+      {
+        documentType: classifiedType ?? 'other',
+        uploadedAt: reportTime ?? new Date().toISOString(),
+        ocrPayload: payload,
+      },
+    ]);
 
-  const structuredItems = useMemo(() => {
+    return insights.systemPanels.filter(
+      (panel) => panel.metrics.length > 0 || panel.coverage.length > 0,
+    );
+  }, [fields, payload]);
+
+  const structuredSections = useMemo(() => {
     if (!fields) return [];
-    const items: Array<{ label: string; value?: string }> = [
+    const reportItems: Array<{ label: string; value?: string }> = [
       { label: '解析状态', value: status },
       { label: '识别类型', value: pickField(fields, ['classifiedType', 'classified_type']) },
       {
@@ -178,6 +195,16 @@ export default function ReportDetailScreen() {
       },
       { label: '报告时间', value: pickField(fields, ['reportTime', 'report_time']) },
       { label: '报告名称', value: pickField(fields, ['reportName', 'report_name']) },
+      { label: '医院', value: pickField(fields, ['facility']) },
+      { label: '科室', value: pickField(fields, ['department']) },
+      { label: '标本', value: pickField(fields, ['specimen']) },
+      { label: '送检医生', value: pickField(fields, ['orderingDoctor', 'ordering_doctor']) },
+      { label: '患者姓名', value: pickField(fields, ['patientName']) },
+      { label: '性别', value: pickField(fields, ['patientSex']) },
+      { label: '年龄', value: pickField(fields, ['patientAge']) },
+    ];
+
+    const fshdItems: Array<{ label: string; value?: string }> = [
       {
         label: 'FSHD 分型',
         value: pickField(fields, [
@@ -211,38 +238,29 @@ export default function ReportDetailScreen() {
       { label: '甲基化值', value: pickField(fields, ['methylationValue', 'methylation_value']) },
       { label: 'MRI 印象', value: pickField(fields, ['reportImpression', 'report_impression']) },
       {
-        label: '肺通气模式',
-        value: pickField(fields, ['ventilatoryPattern', 'ventilatory_pattern']),
+        label: '腹部超声提示',
+        value: pickField(fields, [
+          'abdominalUltrasoundImpression',
+          'abdominal_ultrasound_impression',
+        ]),
       },
-      { label: 'FVC %Pred', value: pickField(fields, ['fvcPredPct', 'fvc_pred_pct']) },
-      { label: 'DLCO %Pred', value: pickField(fields, ['dlcoPredPct', 'dlco_pred_pct']) },
-      {
-        label: '膈肌运动',
-        value: pickField(fields, ['diaphragmMotionSummary', 'diaphragm_motion_summary']),
-      },
-      { label: '心电结论', value: pickField(fields, ['ecgSummary', 'ecg_summary']) },
-      { label: 'LVEF', value: pickField(fields, ['LVEF', 'lvef']) },
-      {
-        label: '前锯肌脂肪化等级',
-        value: pickField(fields, ['serratusFatigueGrade', 'serratus_fatigue_grade']),
-      },
-      { label: '三角肌肌力', value: pickField(fields, ['deltoidStrength', 'deltoid_strength']) },
-      { label: '肱二头肌肌力', value: pickField(fields, ['bicepsStrength', 'biceps_strength']) },
-      { label: '肱三头肌肌力', value: pickField(fields, ['tricepsStrength', 'triceps_strength']) },
-      {
-        label: '股四头肌肌力',
-        value: pickField(fields, ['quadricepsStrength', 'quadriceps_strength']),
-      },
-      { label: '肌酸激酶', value: pickField(fields, ['creatineKinase', 'creatine_kinase', 'ck']) },
-      { label: '肌红蛋白', value: pickField(fields, ['mb', 'myoglobin']) },
-      { label: 'LDH', value: pickField(fields, ['ldh', 'LDH']) },
-      { label: 'CKMB', value: pickField(fields, ['ckmb', 'CKMB']) },
-      { label: '楼梯测试', value: pickField(fields, ['stairTestResult', 'stair_test_result']) },
     ];
-    return items.filter((item) => item.value);
+
+    return [
+      { title: '报告信息', items: reportItems.filter((item) => item.value) },
+      { title: 'FSHD 关键结果', items: fshdItems.filter((item) => item.value) },
+    ].filter((section) => section.items.length > 0);
   }, [fields, status]);
 
-  const highlightItems = structuredItems.slice(0, 4);
+  const highlightItems = useMemo(() => {
+    const systemHighlights = relevantSystemPanels.flatMap((panel) =>
+      getSystemPanelHeroMetrics(panel),
+    );
+    if (systemHighlights.length > 0) {
+      return systemHighlights.slice(0, 4);
+    }
+    return structuredSections.flatMap((section) => section.items).slice(0, 4);
+  }, [relevantSystemPanels, structuredSections]);
 
   const rawText = useMemo(() => {
     if (!payload) return '';
@@ -291,7 +309,7 @@ export default function ReportDetailScreen() {
         {
           text: '知道了',
           onPress: () => {
-            router.replace('/p-archive');
+            router.replace('/p-report_management');
           },
         },
       ]);
@@ -360,81 +378,89 @@ export default function ReportDetailScreen() {
           </View>
         </LinearGradient>
 
-        {(Object.keys(activeRegions).length > 0 || reportKind === 'mri') && (
-          <View style={styles.card}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.cardTitle}>
-                {reportKind === 'mri' ? '人体受累示意图' : '肌力分布示意图'}
-              </Text>
-              <View style={styles.toggleRow}>
-                <TouchableOpacity
-                  style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
-                  onPress={() => setBodyView('front')}
-                >
-                  <Text
-                    style={[
-                      styles.toggleChipText,
-                      bodyView === 'front' && styles.toggleChipTextActive,
-                    ]}
+        {reportKind === 'mri' &&
+          (Object.keys(activeRegions).length > 0 || activeSummary.length > 0) && (
+            <View style={styles.card}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.cardTitle}>MRI 受累示意图</Text>
+                <View style={styles.toggleRow}>
+                  <TouchableOpacity
+                    style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
+                    onPress={() => setBodyView('front')}
                   >
-                    正面
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
-                  onPress={() => setBodyView('back')}
-                >
-                  <Text
-                    style={[
-                      styles.toggleChipText,
-                      bodyView === 'back' && styles.toggleChipTextActive,
-                    ]}
+                    <Text
+                      style={[
+                        styles.toggleChipText,
+                        bodyView === 'front' && styles.toggleChipTextActive,
+                      ]}
+                    >
+                      正面
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
+                    onPress={() => setBodyView('back')}
                   >
-                    背面
-                  </Text>
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.toggleChipText,
+                        bodyView === 'back' && styles.toggleChipTextActive,
+                      ]}
+                    >
+                      背面
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <HumanBodyFigure
+                view={bodyView}
+                regions={activeRegions}
+                mode="mri"
+                subtitle="根据 MRI 报告正文和结构化字段推断受累区域，重点突出分布与侧别信息。"
+              />
+
+              <View style={styles.tagWrap}>
+                {activeSummary.length > 0 ? (
+                  activeSummary.map((item) => (
+                    <View key={item} style={styles.summaryTag}>
+                      <Text style={styles.summaryTagText}>{item}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.smallText}>当前报告尚无可直接映射的人体区域。</Text>
+                )}
               </View>
             </View>
-
-            <HumanBodyFigure
-              view={bodyView}
-              regions={activeRegions}
-              mode={activeMode}
-              subtitle={
-                reportKind === 'mri'
-                  ? '根据报告正文和结构化字段推断受累区域，重点突出分布与侧别信息。'
-                  : '根据结构化肌力字段生成的部位示意。'
-              }
-            />
-
-            <View style={styles.tagWrap}>
-              {activeSummary.length > 0 ? (
-                activeSummary.map((item) => (
-                  <View key={item} style={styles.summaryTag}>
-                    <Text style={styles.summaryTagText}>{item}</Text>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.smallText}>当前报告尚无可直接映射的人体区域。</Text>
-              )}
-            </View>
-          </View>
-        )}
+          )}
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>结构化证据</Text>
-          {structuredItems.length === 0 ? (
+          {structuredSections.length === 0 ? (
             <Text style={styles.smallText}>暂无结构化字段（或仍在解析中）。</Text>
           ) : (
-            <View style={styles.structuredGrid}>
-              {structuredItems.map((item) => (
-                <View key={item.label} style={styles.structuredItem}>
-                  <Text style={styles.structuredLabel}>{item.label}</Text>
-                  <Text style={styles.structuredValue}>{item.value}</Text>
+            structuredSections.map((section) => (
+              <View key={section.title} style={styles.structuredSection}>
+                <Text style={styles.structuredSectionTitle}>{section.title}</Text>
+                <View style={styles.structuredGrid}>
+                  {section.items.map((item) => (
+                    <View key={`${section.title}-${item.label}`} style={styles.structuredItem}>
+                      <Text style={styles.structuredLabel}>{item.label}</Text>
+                      <Text style={styles.structuredValue}>{item.value}</Text>
+                    </View>
+                  ))}
                 </View>
-              ))}
-            </View>
+              </View>
+            ))
           )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>检查结果</Text>
+          <SystemMonitoringPanels
+            panels={relevantSystemPanels}
+            emptyText="这份报告暂无可归入检查结果的结构化结果。"
+          />
         </View>
 
         <View style={styles.card}>

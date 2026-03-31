@@ -25,12 +25,29 @@ export interface DiseaseBackgroundFact {
   value: string;
 }
 
+export type PatientVisualizationKey = 'sleep_quality' | 'stair_climb' | 'fall_count';
+
+export interface PatientVisualizationCard {
+  key: PatientVisualizationKey;
+  label: string;
+  latestDisplay: string;
+  latestValue: number | null;
+  previousValue: number | null;
+  trend: 'better' | 'stable' | 'worse' | 'new';
+  summary: string;
+  helperText: string;
+  points: DomainTrendPoint[];
+  unit?: string;
+  chartColor: string;
+}
+
 export interface ProgressionTimelineItem {
   id: string;
   title: string;
   description: string;
   timestamp: string;
   tag: '事件' | '报告' | '功能测试' | '随访';
+  documentId?: string | null;
 }
 
 const upperLimbKeys = new Set([
@@ -103,6 +120,19 @@ const finalizeTrendPoints = (
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     .slice(-limit);
 
+const finalizeSummedPoints = (
+  buckets: Map<string, { timestamp: string; value: number }>,
+  limit = 6,
+): DomainTrendPoint[] =>
+  Array.from(buckets.entries())
+    .map(([date, item]) => ({
+      date,
+      timestamp: item.timestamp,
+      value: roundOne(item.value),
+    }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-limit);
+
 const toBurdenFromStrength = (score: number) => roundOne((5 - score) * 2);
 
 const formatTrendSummary = (label: string, current: number | null, delta: number | null) => {
@@ -154,6 +184,138 @@ const buildTrendCard = (
     summary: formatTrendSummary(label, currentValue, delta),
     points,
     hasData: currentValue !== null,
+  };
+};
+
+const resolveComparisonTrend = (
+  currentValue: number | null,
+  previousValue: number | null,
+  direction: 'higher_better' | 'lower_better',
+): PatientVisualizationCard['trend'] => {
+  if (currentValue === null) {
+    return 'stable';
+  }
+
+  if (previousValue === null) {
+    return 'new';
+  }
+
+  if (currentValue === previousValue) {
+    return 'stable';
+  }
+
+  if (direction === 'higher_better') {
+    return currentValue > previousValue ? 'better' : 'worse';
+  }
+
+  return currentValue < previousValue ? 'better' : 'worse';
+};
+
+const getSleepSummary = (
+  currentValue: number | null,
+  previousValue: number | null,
+): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
+  if (currentValue === null) {
+    return {
+      latestDisplay: '未记录',
+      summary: '最近还没有新的睡眠评分。',
+      helperText: '0-2 很差，3-4 较差，5-6 一般，7-8 较好，9-10 很好。',
+    };
+  }
+
+  const level =
+    currentValue >= 9
+      ? '睡得很好'
+      : currentValue >= 7
+        ? '整体较好'
+        : currentValue >= 5
+          ? '一般'
+          : currentValue >= 3
+            ? '偏差'
+            : '很差';
+  const comparison =
+    previousValue === null
+      ? '已建立第一条睡眠记录。'
+      : currentValue === previousValue
+        ? '和上次相比变化不大。'
+        : currentValue > previousValue
+          ? '比上次更好。'
+          : '比上次更差。';
+
+  return {
+    latestDisplay: `${Math.round(currentValue)}/10`,
+    summary: `最近一次睡眠评分${level}，${comparison}`,
+    helperText: '0-2 很差，3-4 较差，5-6 一般，7-8 较好，9-10 很好。',
+  };
+};
+
+const getStairSummary = (
+  currentValue: number | null,
+  previousValue: number | null,
+  hasLegacyImpact: boolean,
+): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
+  if (currentValue === null) {
+    return {
+      latestDisplay: hasLegacyImpact ? '待量化' : '未记录',
+      summary: hasLegacyImpact
+        ? '已记录上楼变化，但还没有“连续上 10 级台阶”的标准化秒数。'
+        : '最近还没有新的标准化上楼计时。',
+      helperText: '统一按“连续上 10 级台阶”填写用时，越短通常表示完成越轻松。',
+    };
+  }
+
+  const level =
+    currentValue <= 10
+      ? '较轻松'
+      : currentValue <= 20
+        ? '尚可'
+        : currentValue <= 30
+          ? '偏慢'
+          : '较慢';
+  const comparison =
+    previousValue === null
+      ? '已建立第一条上楼计时。'
+      : currentValue === previousValue
+        ? '和上次差不多。'
+        : currentValue < previousValue
+          ? '比上次更快。'
+          : '比上次更慢。';
+
+  return {
+    latestDisplay: `${currentValue.toFixed(1)} 秒`,
+    summary: `最近一次 10 级台阶用时${currentValue.toFixed(1)} 秒，整体${level}，${comparison}`,
+    helperText: '统一按“连续上 10 级台阶”填写用时，越短通常表示完成越轻松。',
+  };
+};
+
+const getFallSummary = (
+  currentValue: number | null,
+  previousValue: number | null,
+): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
+  if (currentValue === null) {
+    return {
+      latestDisplay: '未记录',
+      summary: '最近还没有新的跌倒次数记录。',
+      helperText: '每次快速随访都可以补充“最近跌倒次数”，便于看风险变化。',
+    };
+  }
+
+  const comparison =
+    previousValue === null
+      ? '已建立第一条跌倒记录。'
+      : currentValue === previousValue
+        ? '和上次相比次数接近。'
+        : currentValue < previousValue
+          ? '比上次更少。'
+          : '比上次更多。';
+
+  return {
+    latestDisplay: `${Math.round(currentValue)} 次`,
+    summary:
+      currentValue === 0
+        ? `最近一次记录未填跌倒次数，${comparison}`
+        : `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
+    helperText: '每次快速随访都可以补充“最近跌倒次数”，便于看风险变化。',
   };
 };
 
@@ -232,6 +394,109 @@ export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTre
     buildTrendCard('face', '面部', finalizeTrendPoints(faceBuckets)),
     buildTrendCard('breathing', '呼吸', finalizeTrendPoints(breathingBuckets)),
     buildTrendCard('symptoms', '疲劳/疼痛', finalizeTrendPoints(symptomBuckets)),
+  ];
+};
+
+export const buildPatientVisualizationCards = (
+  profile: PatientProfile | null,
+): PatientVisualizationCard[] => {
+  const sleepBuckets = new Map<string, { timestamp: string; values: number[] }>();
+  const stairBuckets = new Map<string, { timestamp: string; values: number[] }>();
+  const fallBuckets = new Map<string, { timestamp: string; value: number }>();
+
+  profile?.symptomScores.forEach((item) => {
+    if (item.symptomKey === 'sleep_quality') {
+      pushBucketValue(sleepBuckets, item.recordedAt, Number(item.score));
+    }
+  });
+
+  profile?.functionTests.forEach((item) => {
+    if (item.testType === 'stair_climb' && item.measuredValue !== null) {
+      pushBucketValue(stairBuckets, item.performedAt, Number(item.measuredValue));
+    }
+  });
+
+  profile?.followupEvents.forEach((item) => {
+    if (item.eventType !== 'fall') {
+      return;
+    }
+
+    const countMatch = item.description?.match(/(\d+(?:\.\d+)?)/);
+    const count =
+      countMatch?.[1] !== undefined
+        ? Number(countMatch[1])
+        : item.severity === 'severe'
+          ? 3
+          : item.severity === 'moderate'
+            ? 2
+            : 1;
+
+    const key = toIsoDate(item.occurredAt);
+    const current = fallBuckets.get(key);
+    if (current) {
+      current.value += count;
+      if (new Date(item.occurredAt).getTime() > new Date(current.timestamp).getTime()) {
+        current.timestamp = item.occurredAt;
+      }
+      return;
+    }
+
+    fallBuckets.set(key, {
+      timestamp: item.occurredAt,
+      value: count,
+    });
+  });
+
+  const sleepPoints = finalizeTrendPoints(sleepBuckets);
+  const stairPoints = finalizeTrendPoints(stairBuckets);
+  const fallPoints = finalizeSummedPoints(fallBuckets);
+  const latestLegacyStairs = profile?.dailyImpacts.find((item) => item.adlKey === 'stairs') ?? null;
+
+  const sleepCurrent = sleepPoints.length ? sleepPoints[sleepPoints.length - 1].value : null;
+  const sleepPrevious = sleepPoints.length > 1 ? sleepPoints[sleepPoints.length - 2].value : null;
+  const stairCurrent = stairPoints.length ? stairPoints[stairPoints.length - 1].value : null;
+  const stairPrevious = stairPoints.length > 1 ? stairPoints[stairPoints.length - 2].value : null;
+  const fallCurrent = fallPoints.length ? fallPoints[fallPoints.length - 1].value : null;
+  const fallPrevious = fallPoints.length > 1 ? fallPoints[fallPoints.length - 2].value : null;
+
+  const sleepText = getSleepSummary(sleepCurrent, sleepPrevious);
+  const stairText = getStairSummary(stairCurrent, stairPrevious, Boolean(latestLegacyStairs));
+  const fallText = getFallSummary(fallCurrent, fallPrevious);
+
+  return [
+    {
+      key: 'sleep_quality',
+      label: '睡眠质量',
+      latestValue: sleepCurrent,
+      previousValue: sleepPrevious,
+      trend: resolveComparisonTrend(sleepCurrent, sleepPrevious, 'higher_better'),
+      points: sleepPoints,
+      unit: '/10',
+      chartColor: '#3F7A70',
+      ...sleepText,
+    },
+    {
+      key: 'stair_climb',
+      label: '上楼计时',
+      latestValue: stairCurrent,
+      previousValue: stairPrevious,
+      trend: resolveComparisonTrend(stairCurrent, stairPrevious, 'lower_better'),
+      points: stairPoints,
+      unit: '秒',
+      chartColor: '#C98A33',
+      ...stairText,
+    },
+    {
+      key: 'fall_count',
+      label: '跌倒次数',
+      latestValue: fallCurrent,
+      previousValue: fallPrevious,
+      trend: resolveComparisonTrend(fallCurrent, fallPrevious, 'lower_better'),
+      points: fallPoints,
+      unit: '次',
+      chartColor: '#D46A54',
+      ...fallText,
+    },
   ];
 };
 
@@ -374,6 +639,7 @@ export const buildProgressionTimeline = (
       description: aiSummary || '已上传新报告，可查看患者版摘要。',
       timestamp: item.uploadedAt,
       tag: '报告',
+      documentId: item.id,
     });
   });
 

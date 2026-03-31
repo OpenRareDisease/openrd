@@ -46,7 +46,7 @@ export default function Layout() {
       <Tabs.Screen
         name="p-archive"
         options={{
-          title: '档案',
+          title: '我的档案',
           headerShown: false,
           tabBarIcon: ({ color }) => <FontAwesome6 name="file-medical" size={18} color={color} />,
         }}

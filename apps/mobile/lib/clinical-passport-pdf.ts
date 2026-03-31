@@ -313,14 +313,14 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
       <section class="section">
         <div class="section-header">
           <div>
-            <h2>运动功能与影像</h2>
-            <p class="section-copy">结合肌力记录、活动日志和 MRI 摘要快速查看当前受累情况。</p>
+            <h2>影像受累与功能变化</h2>
+            <p class="section-copy">以 MRI 结构化结果和最近随访变化为主，不再强调主观肌力体图。</p>
           </div>
         </div>
         <div class="info-grid">
           <article class="info-card">
-            <p class="info-label">平均肌力</p>
-            <p class="info-value">${safeText(summary.motor.average)} 级</p>
+            <p class="info-label">最近随访</p>
+            <p class="info-value">${safeDate(summary.motor.latestActivityAt || summary.motor.latestMeasurementAt)}</p>
           </article>
           <article class="info-card">
             <p class="info-label">最近 MRI</p>
@@ -328,11 +328,11 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
           </article>
         </div>
         <div class="list-block">
-          <p class="note-title">重点区域</p>
-          <ul>${renderList(summary.motor.highlights, '暂无结构化肌力重点区域')}</ul>
+          <p class="note-title">MRI 重点区域</p>
+          <ul>${renderList(summary.imaging.highlights, '暂无 MRI 重点区域')}</ul>
         </div>
         <div class="note">
-          <p class="note-title">活动摘要</p>
+          <p class="note-title">最近功能变化</p>
           <p class="info-value">${safeText(summary.motor.activitySummary)}</p>
         </div>
         <div class="note">
@@ -344,7 +344,7 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
       <section class="section">
         <div class="section-header">
           <div>
-            <h2>系统监测</h2>
+            <h2>检查结果</h2>
             <p class="section-copy">血检、呼吸和心脏相关结果的最新摘要。</p>
           </div>
         </div>
@@ -379,7 +379,7 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
       <section class="section">
         <div class="section-header">
           <div>
-            <h2>最近来源时间轴</h2>
+            <h2>时间轴</h2>
             <p class="section-copy">便于和医生快速核对近期录入和上传的内容。</p>
           </div>
         </div>

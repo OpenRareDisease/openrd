@@ -65,6 +65,28 @@ export default StyleSheet.create({
     marginHorizontal: 20,
     marginBottom: 22,
   },
+  sectionHeader: {
+    marginBottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  inlineAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  inlineActionText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   heroCard: {
     padding: 20,
     borderRadius: 28,
@@ -146,16 +168,16 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.textMuted,
     fontSize: 12,
   },
-  sectionHeader: {
-    marginBottom: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
   sectionTitle: {
     color: CLINICAL_COLORS.text,
     fontSize: 18,
     fontWeight: '800',
+  },
+  sectionSubtitle: {
+    marginTop: 6,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
   },
   stateWrap: {
     borderRadius: 22,
@@ -296,81 +318,165 @@ export default StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  toggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  toggleChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.panel,
-  },
-  toggleChipActive: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  toggleChipText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  toggleChipTextActive: {
-    color: CLINICAL_COLORS.text,
-  },
-  focusWrap: {
-    marginTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  focusTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  focusTagText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  trendGrid: {
+  insightGrid: {
+    marginTop: 2,
     gap: 12,
   },
-  trendCard: {
+  insightCard: {
     borderRadius: 22,
-    padding: 16,
+    padding: 18,
     backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
     borderColor: CLINICAL_COLORS.border,
     ...cardShadow,
   },
-  summaryRow: {
+  insightTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
     gap: 12,
   },
-  trendTitle: {
+  insightTitle: {
     flex: 1,
     color: CLINICAL_COLORS.text,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
   },
-  trendValue: {
+  insightDate: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  insightSummary: {
     marginTop: 10,
-    color: CLINICAL_COLORS.accentStrong,
-    fontSize: 22,
-    fontWeight: '800',
-  },
-  trendText: {
-    marginTop: 8,
     color: CLINICAL_COLORS.textSoft,
     fontSize: 13,
     lineHeight: 20,
+  },
+  metricWrap: {
+    marginTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  metricPill: {
+    minWidth: 112,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  metricPillLabel: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  metricPillValue: {
+    marginTop: 4,
+    color: CLINICAL_COLORS.text,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  visualizationChartStack: {
+    marginTop: 2,
+    gap: 12,
+  },
+  visualizationSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  visualizationChartCard: {
+    borderRadius: 24,
+    padding: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    ...cardShadow,
+  },
+  visualizationChartHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  visualizationChartHeaderMain: {
+    flex: 1,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  toggleChip: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleChipActive: {
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+    borderColor: CLINICAL_COLORS.accentStrong,
+  },
+  toggleChipText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  toggleChipTextActive: {
+    color: '#FFFFFF',
+  },
+  visualizationChartTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  visualizationChartValue: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  visualizationChartSummary: {
+    marginTop: 12,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  visualizationChartHint: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  chartWrap: {
+    marginTop: 12,
+    marginHorizontal: -2,
+    borderRadius: 16,
+    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  chart: {
+    borderRadius: 16,
+  },
+  chartEmpty: {
+    marginTop: 12,
+    minHeight: 100,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: CLINICAL_TINTS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.borderSubtle,
+  },
+  timelineSectionCard: {
+    marginTop: 2,
   },
   timelineItem: {
     flexDirection: 'row',
@@ -430,20 +536,23 @@ export default StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
-  monitorGrid: {
+  systemStack: {
     gap: 12,
   },
-  monitorCard: {
+  systemCard: {
     borderRadius: 22,
     padding: 16,
     backgroundColor: CLINICAL_COLORS.panel,
     borderWidth: 1,
     borderColor: CLINICAL_COLORS.border,
-    flexDirection: 'row',
-    gap: 12,
     ...cardShadow,
   },
-  monitorIconWrap: {
+  systemCardTop: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  systemIconWrap: {
     width: 40,
     height: 40,
     borderRadius: 20,
@@ -451,24 +560,166 @@ export default StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: CLINICAL_TINTS.accentSoft,
   },
-  monitorCopy: {
+  systemCardCopy: {
     flex: 1,
   },
-  monitorTitle: {
+  systemBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  systemStateBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  systemStateBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  systemCoverageChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+  },
+  systemCoverageChipText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  systemTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  systemTitle: {
+    flex: 1,
     color: CLINICAL_COLORS.text,
     fontSize: 15,
     fontWeight: '800',
   },
-  monitorDate: {
-    marginTop: 4,
+  systemDate: {
     color: CLINICAL_COLORS.textMuted,
     fontSize: 12,
+    fontWeight: '700',
   },
-  monitorText: {
+  systemSummary: {
     marginTop: 8,
     color: CLINICAL_COLORS.textSoft,
     fontSize: 13,
     lineHeight: 20,
+  },
+  systemMetaGrid: {
+    marginTop: 14,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  systemMetaCard: {
+    flex: 1,
+    borderRadius: 16,
+    padding: 12,
+    backgroundColor: 'rgba(248, 242, 234, 0.78)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+  },
+  systemMetaLabel: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  systemMetaValue: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  systemMetricHeroGrid: {
+    marginTop: 14,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  systemMetricHeroCard: {
+    width: '47%',
+    minHeight: 84,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  systemMetricHeroLabel: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  systemMetricHeroValue: {
+    marginTop: 10,
+    color: CLINICAL_COLORS.text,
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '800',
+  },
+  systemSectionStack: {
+    marginTop: 16,
+    gap: 14,
+  },
+  systemSectionBlock: {
+    borderTopWidth: 1,
+    borderTopColor: CLINICAL_COLORS.border,
+    paddingTop: 14,
+  },
+  systemSectionTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  systemExpandAction: {
+    marginTop: 14,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  systemExpandText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  systemMetricGrid: {
+    marginTop: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  systemMetricCard: {
+    width: '47%',
+    minHeight: 74,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: CLINICAL_COLORS.panelMuted,
+  },
+  systemMetricLabel: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  systemMetricValue: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '800',
   },
   emptyText: {
     color: CLINICAL_COLORS.textMuted,

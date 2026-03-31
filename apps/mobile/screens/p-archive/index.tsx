@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   RefreshControl,
   ScrollView,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,33 +15,25 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart } from 'react-native-chart-kit';
 import {
   ApiError,
+  getClinicalPassportSummary,
   getMyPatientProfile,
-  getProgressionSummary,
+  type ClinicalPassportSummary,
   type PatientProfile,
-  type ProgressionSummary,
 } from '../../lib/api';
 import {
-  buildBodyMapFromMeasurements,
   CLINICAL_COLORS,
   CLINICAL_GRADIENTS,
   CLINICAL_TINTS,
   formatDateLabel,
-  summarizeBodyRegions,
+  type BodyRegionMap,
   type BodyView,
 } from '../../lib/clinical-visuals';
-import {
-  buildDiseaseBackgroundFacts,
-  buildDomainTrendCards,
-  buildProgressionTimeline,
-} from '../../lib/followup-analytics';
-import { buildReportInsights } from '../../lib/report-insights';
+import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
+import { buildLatestMriVisualization } from '../../lib/report-insights';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import styles from './styles';
 
-const trendMeta: Record<
-  NonNullable<ProgressionSummary['changeCards']>[number]['trend'],
-  { label: string; color: string; backgroundColor: string }
-> = {
+const trendMeta = {
   better: {
     label: '改善',
     color: CLINICAL_COLORS.success,
@@ -62,21 +54,37 @@ const trendMeta: Record<
     color: CLINICAL_COLORS.warning,
     backgroundColor: CLINICAL_TINTS.warningSoft,
   },
+} as const;
+
+const toRgba = (hex: string, opacity = 1) => {
+  const normalized = hex.replace('#', '');
+  const safeHex =
+    normalized.length === 3
+      ? normalized
+          .split('')
+          .map((part) => `${part}${part}`)
+          .join('')
+      : normalized;
+
+  const red = Number.parseInt(safeHex.slice(0, 2), 16);
+  const green = Number.parseInt(safeHex.slice(2, 4), 16);
+  const blue = Number.parseInt(safeHex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 };
 
-const chartConfig = {
+const createChartConfig = (lineColor: string) => ({
   backgroundColor: CLINICAL_COLORS.panel,
   backgroundGradientFrom: CLINICAL_COLORS.panel,
   backgroundGradientTo: CLINICAL_COLORS.panel,
   decimalPlaces: 1,
-  color: (opacity = 1) => `rgba(63, 122, 112, ${opacity})`,
+  color: (opacity = 1) => toRgba(lineColor, opacity),
   labelColor: () => CLINICAL_COLORS.textMuted,
   propsForDots: {
     r: '3',
     strokeWidth: '2',
-    stroke: CLINICAL_COLORS.accentStrong,
+    stroke: lineColor,
   },
-};
+});
 
 const renderChartPoints = (points: Array<{ timestamp: string; value: number }>) => {
   if (!points.length) {
@@ -96,16 +104,76 @@ const renderChartPoints = (points: Array<{ timestamp: string; value: number }>) 
   };
 };
 
+const formatGenderLabel = (value?: string | null) => {
+  if (!value) return '未填写';
+  if (value === 'male' || value === '男') return '男';
+  if (value === 'female' || value === '女') return '女';
+  return value;
+};
+
+const formatAgeLabel = (profile: PatientProfile | null) => {
+  if (!profile) return '未填写';
+  const birthYear = profile.baseline?.foundation?.birthYear;
+  if (typeof birthYear === 'number' && birthYear > 1900) {
+    return `${new Date().getFullYear() - birthYear} 岁左右`;
+  }
+  if (profile.dateOfBirth) {
+    const birthDate = new Date(profile.dateOfBirth);
+    if (!Number.isNaN(birthDate.getTime())) {
+      const now = new Date();
+      let age = now.getFullYear() - birthDate.getFullYear();
+      const monthDiff = now.getMonth() - birthDate.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birthDate.getDate())) {
+        age -= 1;
+      }
+      return `${age} 岁`;
+    }
+  }
+  return '未填写';
+};
+
+const formatRegionLabel = (profile: PatientProfile | null) => {
+  if (!profile) return '未填写';
+  const regionLabel = profile.baseline?.foundation?.regionLabel;
+  if (regionLabel) return regionLabel;
+  return (
+    [profile.regionProvince, profile.regionCity, profile.regionDistrict]
+      .filter(Boolean)
+      .join(' ') || '未填写'
+  );
+};
+
+const formatAmbulationLabel = (profile: PatientProfile | null) => {
+  const independentlyAmbulatory = profile?.baseline?.currentStatus?.independentlyAmbulatory;
+  if (independentlyAmbulatory === true) return '可独立行走';
+  if (independentlyAmbulatory === false) return '需要辅助';
+  return '未填写';
+};
+
+const formatAssistiveDevicesLabel = (profile: PatientProfile | null) => {
+  const devices = profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];
+  return devices.length ? devices.join('、') : '未记录';
+};
+
+const buildPassportId = (
+  profile: PatientProfile | null,
+  passport?: ClinicalPassportSummary | null,
+) =>
+  passport?.passportId ||
+  (profile?.id
+    ? `FSHD-${profile.id.replace(/-/g, '').slice(0, 10).toUpperCase()}`
+    : 'FSHD-UNASSIGNED');
+
 export default function ArchiveScreen() {
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
   const [profile, setProfile] = useState<PatientProfile | null>(null);
-  const [summary, setSummary] = useState<ProgressionSummary | null>(null);
+  const [passport, setPassport] = useState<ClinicalPassportSummary | null>(null);
   const [bodyView, setBodyView] = useState<BodyView>('front');
+  const [visualizationExpanded, setVisualizationExpanded] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const chartWidth = Math.max(260, Dimensions.get('window').width - 112);
 
   const loadData = async (refresh = false) => {
     if (refresh) {
@@ -116,16 +184,16 @@ export default function ArchiveScreen() {
 
     try {
       setErrorMessage(null);
-      const [profileData, summaryData] = await Promise.all([
+      const [profileData, passportData] = await Promise.all([
         getMyPatientProfile(),
-        getProgressionSummary(),
+        getClinicalPassportSummary(),
       ]);
       setProfile(profileData);
-      setSummary(summaryData);
+      setPassport(passportData);
     } catch (error) {
       setProfile(null);
-      setSummary(null);
-      setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载完整病程档案。');
+      setPassport(null);
+      setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载我的档案。');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -136,33 +204,103 @@ export default function ArchiveScreen() {
     loadData().catch(() => undefined);
   }, []);
 
-  const reportInsights = useMemo(
-    () => buildReportInsights(profile?.documents ?? [], profile),
+  const visualizationCards = useMemo(() => buildPatientVisualizationCards(profile), [profile]);
+  const latestMriVisualization = useMemo(
+    () => buildLatestMriVisualization(profile?.documents ?? []),
     [profile],
   );
-  const backgroundFacts = useMemo(() => buildDiseaseBackgroundFacts(profile), [profile]);
-  const bodyRegions = useMemo(
-    () => buildBodyMapFromMeasurements(profile?.measurements ?? []),
-    [profile],
-  );
-  const focusAreas = useMemo(() => summarizeBodyRegions(bodyRegions, 6), [bodyRegions]);
-  const domainTrendCards = useMemo(() => buildDomainTrendCards(profile), [profile]);
-  const timelineItems = useMemo(
-    () => buildProgressionTimeline(profile, summary, 16),
-    [profile, summary],
-  );
-
-  const lateralityOverview = [
-    ...(summary?.lateralOverview.leftDominant ?? []).map((item) => `左侧更重 · ${item}`),
-    ...(summary?.lateralOverview.rightDominant ?? []).map((item) => `右侧更重 · ${item}`),
-    ...(summary?.lateralOverview.bilateral ?? []).map((item) => `双侧受累 · ${item}`),
-  ];
-
   const displayName =
-    profile?.preferredName?.trim() || profile?.fullName?.trim() || 'FSHD 病程档案';
-  const passportId = profile?.id
-    ? `FSHD-${profile.id.replace(/-/g, '').slice(0, 10).toUpperCase()}`
-    : 'FSHD-UNASSIGNED';
+    profile?.preferredName?.trim() ||
+    profile?.fullName?.trim() ||
+    passport?.patientName ||
+    '我的档案';
+  const passportId = buildPassportId(profile, passport);
+  const reportCount = profile?.documents.length ?? 0;
+  const recognizedReportCount =
+    profile?.documents.filter((item) => ['processed', 'completed'].includes(item.status)).length ??
+    0;
+
+  const consoleSections = useMemo(
+    () => [
+      {
+        key: 'personal',
+        title: '个人基本信息',
+        items: [
+          { label: '姓名', value: displayName },
+          { label: '性别', value: formatGenderLabel(profile?.gender) },
+          { label: '年龄', value: formatAgeLabel(profile) },
+          { label: '所在地区', value: formatRegionLabel(profile) },
+        ],
+      },
+      {
+        key: 'fshd',
+        title: 'FSHD 相关信息',
+        items: [
+          { label: '临床护照 ID', value: passportId, accent: true },
+          {
+            label: '确诊时间',
+            value:
+              profile?.baseline?.foundation?.diagnosisYear !== undefined &&
+              profile?.baseline?.foundation?.diagnosisYear !== null
+                ? `${profile.baseline.foundation.diagnosisYear}`
+                : profile?.diagnosisDate?.slice(0, 10) || '未填写',
+          },
+          {
+            label: '分型/诊断方式',
+            value: profile?.baseline?.diseaseBackground?.diagnosisType || '等待报告识别',
+          },
+          {
+            label: '遗传信息',
+            value:
+              [
+                profile?.geneticMutation,
+                profile?.baseline?.diseaseBackground?.d4z4
+                  ? `D4Z4 ${profile.baseline.diseaseBackground.d4z4}`
+                  : null,
+                profile?.baseline?.diseaseBackground?.haplotype
+                  ? `单倍型 ${profile.baseline.diseaseBackground.haplotype}`
+                  : null,
+                profile?.baseline?.diseaseBackground?.methylation
+                  ? `甲基化 ${profile.baseline.diseaseBackground.methylation}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' · ') || '等待相关报告识别',
+            wide: true,
+          },
+        ],
+      },
+      {
+        key: 'background',
+        title: '疾病背景',
+        items: [
+          {
+            label: '首发部位',
+            value: profile?.baseline?.diseaseBackground?.onsetRegion || '未填写',
+          },
+          {
+            label: '家族史',
+            value: profile?.baseline?.diseaseBackground?.familyHistory || '未填写',
+          },
+          { label: '当前行走', value: formatAmbulationLabel(profile) },
+          { label: '辅具', value: formatAssistiveDevicesLabel(profile) },
+        ],
+      },
+    ],
+    [displayName, passportId, profile],
+  );
+  const archiveMriRegions =
+    Object.keys(passport?.imaging.bodyRegions ?? {}).length > 0
+      ? ((passport?.imaging.bodyRegions ?? {}) as BodyRegionMap)
+      : latestMriVisualization.regions;
+  const archiveMriHighlights =
+    passport?.imaging.highlights && passport.imaging.highlights.length > 0
+      ? passport.imaging.highlights
+      : latestMriVisualization.findings;
+  const archiveMriSubtitle = archiveMriHighlights.length
+    ? `影像提示：${archiveMriHighlights.join('、')}`
+    : passport?.imaging.summary || latestMriVisualization.summary;
+  const chartWidth = Math.max(220, windowWidth - 92);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -185,13 +323,39 @@ export default function ArchiveScreen() {
           }
         >
           <View style={styles.header}>
-            <View style={styles.headerLead}>
-              <View>
-                <Text style={styles.eyebrow}>FULL CASEBOOK</Text>
-                <Text style={styles.pageTitle}>完整病程总册</Text>
+            <View style={styles.headerTopRow}>
+              <View style={styles.headerLead}>
+                <View>
+                  <Text style={styles.eyebrow}>MY ARCHIVE</Text>
+                  <Text style={styles.pageTitle}>我的档案</Text>
+                </View>
               </View>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                activeOpacity={0.88}
+                onPress={() => router.push('/p-data_entry')}
+              >
+                <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
+                <Text style={styles.primaryButtonText}>患者自录与上传</Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.headerActions}>
+            <View style={styles.headerActionRail}>
+              <TouchableOpacity
+                style={styles.outlineButton}
+                activeOpacity={0.88}
+                onPress={() => router.push('/p-report_management')}
+              >
+                <FontAwesome6 name="file-medical" size={13} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.outlineButtonText}>报告管理</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.outlineButton}
+                activeOpacity={0.88}
+                onPress={() => router.push('/p-clinical_passport')}
+              >
+                <FontAwesome6 name="id-card" size={13} color={CLINICAL_COLORS.accentStrong} />
+                <Text style={styles.outlineButtonText}>临床护照</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.outlineButton}
                 activeOpacity={0.88}
@@ -200,31 +364,34 @@ export default function ArchiveScreen() {
                 <FontAwesome6 name="wave-square" size={13} color={CLINICAL_COLORS.accentStrong} />
                 <Text style={styles.outlineButtonText}>病程管理</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-data_entry')}
-              >
-                <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>新增记录</Text>
-              </TouchableOpacity>
             </View>
           </View>
 
           <View style={styles.section}>
             <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
-              <Text style={styles.heroEyebrow}>病例身份与长期随访</Text>
+              <Text style={styles.heroEyebrow}>PATIENT ARCHIVE</Text>
               <Text style={styles.heroTitle}>{displayName}</Text>
-              <Text style={styles.heroMeta}>
-                {passportId}
-                {summary?.currentStatus.lastFollowupAt
-                  ? ` · 最近随访 ${formatDateLabel(summary.currentStatus.lastFollowupAt)}`
-                  : ' · 还没有完成随访'}
-              </Text>
+              <Text style={styles.heroMeta}>{passportId}</Text>
               <Text style={styles.heroSummary}>
-                {summary?.currentStatus.detail ??
-                  '这里会把疾病背景、左右差异、趋势和病程事件整合成一份患者自己也能读懂的总册。'}
+                已建立患者档案、临床护照与系统检查入口。这里集中查看个人信息、FSHD
+                相关信息和患者端可视化。
               </Text>
+              <View style={styles.reportStatGrid}>
+                <View style={styles.reportStatCard}>
+                  <Text style={styles.reportStatValue}>{reportCount}</Text>
+                  <Text style={styles.reportStatLabel}>报告总数</Text>
+                </View>
+                <View style={styles.reportStatCard}>
+                  <Text style={styles.reportStatValue}>{recognizedReportCount}</Text>
+                  <Text style={styles.reportStatLabel}>已识别</Text>
+                </View>
+                <View style={styles.reportStatCard}>
+                  <Text style={styles.reportStatValue}>
+                    {formatDateLabel(passport?.latestUpdatedAt ?? profile?.updatedAt)}
+                  </Text>
+                  <Text style={styles.reportStatLabel}>最近更新</Text>
+                </View>
+              </View>
             </LinearGradient>
           </View>
 
@@ -244,27 +411,120 @@ export default function ArchiveScreen() {
           ) : null}
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>疾病背景</Text>
-            <View style={styles.backgroundGrid}>
-              {backgroundFacts.map((item) => (
-                <View key={item.label} style={styles.backgroundCard}>
-                  <Text style={styles.backgroundLabel}>{item.label}</Text>
-                  <Text style={styles.backgroundValue}>{item.value}</Text>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>档案控制台</Text>
+                <Text style={styles.sectionSubtitle}>集中查看个人基本信息和 FSHD 关键背景。</Text>
+              </View>
+            </View>
+
+            <View style={styles.consoleStack}>
+              {consoleSections.map((section) => (
+                <View key={section.key} style={styles.consoleCard}>
+                  <Text style={styles.consoleTitle}>{section.title}</Text>
+                  <View style={styles.consoleItemGrid}>
+                    {section.items.map((item) => (
+                      <View
+                        key={`${section.key}-${item.label}`}
+                        style={[styles.consoleItemCard, item.wide && styles.consoleItemCardWide]}
+                      >
+                        <Text style={styles.consoleItemLabel}>{item.label}</Text>
+                        <Text
+                          style={[
+                            styles.consoleItemValue,
+                            item.accent && styles.consoleItemValueAccent,
+                          ]}
+                        >
+                          {item.value}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
               ))}
             </View>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>长期变化摘要</Text>
-            {summary?.changeCards?.length ? (
-              <View style={styles.summaryGrid}>
-                {summary.changeCards.map((item) => {
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>患者端数据可视化</Text>
+                <Text style={styles.sectionSubtitle}>
+                  优先显示 MRI 受累图，并继续合并患者端随访趋势。
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.inlineAction}
+                activeOpacity={0.88}
+                onPress={() => setVisualizationExpanded((prev) => !prev)}
+              >
+                <FontAwesome6
+                  name={visualizationExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={12}
+                  color={CLINICAL_COLORS.accentStrong}
+                />
+                <Text style={styles.inlineActionText}>
+                  {visualizationExpanded ? '收起' : '展开'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {visualizationExpanded ? (
+              <View style={styles.visualizationChartStack}>
+                <View style={styles.card}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.consoleTitle}>受累可视化</Text>
+                    <View style={styles.toggleRow}>
+                      <TouchableOpacity
+                        style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
+                        activeOpacity={0.88}
+                        onPress={() => setBodyView('front')}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleChipText,
+                            bodyView === 'front' && styles.toggleChipTextActive,
+                          ]}
+                        >
+                          正面
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
+                        activeOpacity={0.88}
+                        onPress={() => setBodyView('back')}
+                      >
+                        <Text
+                          style={[
+                            styles.toggleChipText,
+                            bodyView === 'back' && styles.toggleChipTextActive,
+                          ]}
+                        >
+                          背面
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <HumanBodyFigure
+                    view={bodyView}
+                    regions={archiveMriRegions}
+                    mode="mri"
+                    title="MRI 受累分布"
+                    subtitle={archiveMriSubtitle}
+                  />
+                </View>
+
+                {visualizationCards.map((item) => {
+                  const chartData = renderChartPoints(item.points);
                   const meta = trendMeta[item.trend];
                   return (
-                    <View key={item.id} style={styles.summaryCard}>
-                      <View style={styles.summaryTopRow}>
-                        <Text style={styles.summaryTitle}>{item.title}</Text>
+                    <View key={item.key} style={styles.visualizationChartCard}>
+                      <View style={styles.visualizationChartHeader}>
+                        <View style={styles.visualizationChartHeaderMain}>
+                          <Text style={styles.visualizationChartTitle}>{item.label}</Text>
+                          <Text style={styles.visualizationChartValue}>{item.latestDisplay}</Text>
+                        </View>
                         <View
                           style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
                         >
@@ -273,191 +533,65 @@ export default function ArchiveScreen() {
                           </Text>
                         </View>
                       </View>
-                      <Text style={styles.summaryDate}>
-                        {item.evidenceAt
-                          ? `记录于 ${formatDateLabel(item.evidenceAt)}`
-                          : '等待更多记录'}
-                      </Text>
-                      <Text style={styles.summaryText}>{item.detail}</Text>
+                      <Text style={styles.visualizationChartSummary}>{item.summary}</Text>
+                      <Text style={styles.visualizationChartHint}>{item.helperText}</Text>
+                      {chartData ? (
+                        <View style={styles.chartWrap}>
+                          <LineChart
+                            data={chartData}
+                            width={chartWidth}
+                            height={164}
+                            chartConfig={createChartConfig(item.chartColor)}
+                            withInnerLines={false}
+                            withOuterLines={false}
+                            withVerticalLines={false}
+                            fromZero
+                            yAxisInterval={2}
+                            style={styles.chart}
+                            bezier
+                          />
+                        </View>
+                      ) : (
+                        <View style={styles.chartEmpty}>
+                          <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
+                        </View>
+                      )}
                     </View>
                   );
                 })}
               </View>
-            ) : (
-              <View style={styles.stateWrap}>
-                <Text style={styles.stateText}>
-                  还没有足够的随访记录，先补一次快速随访后这里会自动总结变化。
-                </Text>
-              </View>
-            )}
+            ) : null}
           </View>
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>左右体图</Text>
-              <View style={styles.toggleRow}>
-                <TouchableOpacity
-                  style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
-                  activeOpacity={0.88}
-                  onPress={() => setBodyView('front')}
-                >
-                  <Text
-                    style={[
-                      styles.toggleChipText,
-                      bodyView === 'front' && styles.toggleChipTextActive,
-                    ]}
-                  >
-                    正面
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
-                  activeOpacity={0.88}
-                  onPress={() => setBodyView('back')}
-                >
-                  <Text
-                    style={[
-                      styles.toggleChipText,
-                      bodyView === 'back' && styles.toggleChipTextActive,
-                    ]}
-                  >
-                    背面
-                  </Text>
-                </TouchableOpacity>
+              <View>
+                <Text style={styles.sectionTitle}>随访摘要</Text>
+                <Text style={styles.sectionSubtitle}>整合最近一次患者端记录。</Text>
               </View>
             </View>
 
-            <View style={styles.card}>
-              <HumanBodyFigure
-                view={bodyView}
-                regions={bodyRegions}
-                title="根据左右分开的功能/肌力记录生成"
-                subtitle="没有数据的区域不会自动填色。后续可继续补录左右侧差异。"
-              />
-              <View style={styles.focusWrap}>
-                {lateralityOverview.length ? (
-                  lateralityOverview.map((item) => (
-                    <View key={item} style={styles.focusTag}>
-                      <Text style={styles.focusTagText}>{item}</Text>
-                    </View>
-                  ))
-                ) : focusAreas.length ? (
-                  focusAreas.map((item) => (
-                    <View key={item} style={styles.focusTag}>
-                      <Text style={styles.focusTagText}>{item}</Text>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.emptyText}>暂无体图数据，补录后自动生成。</Text>
-                )}
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>多域趋势</Text>
-            <View style={styles.trendGrid}>
-              {domainTrendCards.map((item) => {
-                const chartData = renderChartPoints(item.points);
-                const meta = trendMeta[item.trend];
-                return (
-                  <View key={item.key} style={styles.trendCard}>
-                    <View style={styles.summaryTopRow}>
-                      <Text style={styles.trendCardTitle}>{item.label}</Text>
-                      <View
-                        style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
-                      >
-                        <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
-                          {meta.label}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={styles.trendValue}>
-                      {item.currentValue === null ? '未记录' : `${item.currentValue.toFixed(1)}/10`}
-                    </Text>
-                    <Text style={styles.trendSummary}>{item.summary}</Text>
-                    {chartData ? (
-                      <LineChart
-                        data={chartData}
-                        width={chartWidth}
-                        height={170}
-                        chartConfig={chartConfig}
-                        withInnerLines={false}
-                        withOuterLines={false}
-                        withVerticalLines={false}
-                        fromZero
-                        yAxisInterval={2}
-                        style={styles.chart}
-                        bezier
-                      />
-                    ) : (
-                      <View style={styles.chartEmpty}>
-                        <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
-                      </View>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>病程事件时间线</Text>
-            {timelineItems.length ? (
-              <View style={styles.timelineWrap}>
-                {timelineItems.map((item, index) => (
-                  <View key={`${item.id}-${item.timestamp}`} style={styles.timelineItem}>
-                    <View style={styles.timelineRail}>
-                      <View style={styles.timelineDot} />
-                      {index !== timelineItems.length - 1 ? (
-                        <View style={styles.timelineLine} />
-                      ) : null}
-                    </View>
-                    <View style={styles.timelineContent}>
-                      <View style={styles.timelineHeaderRow}>
-                        <View style={styles.timelineTag}>
-                          <Text style={styles.timelineTagText}>{item.tag}</Text>
+            <View style={styles.visualizationDigestCard}>
+              <View style={styles.visualizationDigestList}>
+                {visualizationCards.map((item) => {
+                  const meta = trendMeta[item.trend];
+                  return (
+                    <View key={`${item.key}-digest`} style={styles.visualizationDigestItem}>
+                      <View style={styles.visualizationDigestTopRow}>
+                        <Text style={styles.visualizationDigestTitle}>{item.label}</Text>
+                        <View
+                          style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
+                        >
+                          <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
+                            {meta.label}
+                          </Text>
                         </View>
-                        <Text style={styles.timelineTime}>{formatDateLabel(item.timestamp)}</Text>
                       </View>
-                      <Text style={styles.timelineTitle}>{item.title}</Text>
-                      <Text style={styles.timelineText}>{item.description}</Text>
+                      <Text style={styles.visualizationDigestValue}>{item.latestDisplay}</Text>
+                      <Text style={styles.visualizationDigestText}>{item.summary}</Text>
                     </View>
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <View style={styles.stateWrap}>
-                <Text style={styles.stateText}>还没有病程事件或报告记录。</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>历史报告与患者版摘要</Text>
-            <View style={styles.reportGrid}>
-              <View style={styles.summaryCard}>
-                <Text style={styles.summaryTitle}>基因摘要</Text>
-                <Text style={styles.summaryDate}>{reportInsights.diagnosisDate}</Text>
-                <Text style={styles.summaryText}>
-                  {reportInsights.geneEvidence || '暂无基因摘要'}
-                </Text>
-              </View>
-              <View style={styles.summaryCard}>
-                <Text style={styles.summaryTitle}>MRI 摘要</Text>
-                <Text style={styles.summaryDate}>{reportInsights.latestMriDate}</Text>
-                <Text style={styles.summaryText}>{reportInsights.mriSummary}</Text>
-              </View>
-              <View style={styles.summaryCard}>
-                <Text style={styles.summaryTitle}>监测摘要</Text>
-                <Text style={styles.summaryDate}>
-                  {reportInsights.latestRespiratoryDate || reportInsights.latestBloodDate}
-                </Text>
-                <Text style={styles.summaryText}>
-                  {reportInsights.respiratorySummary !== '暂无呼吸监测数据'
-                    ? reportInsights.respiratorySummary
-                    : reportInsights.bloodSummary}
-                </Text>
+                  );
+                })}
               </View>
             </View>
           </View>
@@ -466,7 +600,7 @@ export default function ArchiveScreen() {
         {isLoading ? (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
-            <Text style={styles.loadingText}>正在生成完整病程总册...</Text>
+            <Text style={styles.loadingText}>正在整理我的档案...</Text>
           </View>
         ) : null}
       </LinearGradient>
