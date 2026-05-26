@@ -17,7 +17,9 @@
     "test": "npm run test --workspaces --if-present",
     "test:smoke": "bash scripts/smoke-test.sh",
     "test:latest": "bash scripts/latest-test.sh",
-    "kb:warmup": "python3 scripts/kb-warmup.py"
+    "kb:warmup": "python3 scripts/kb-warmup.py",
+    "kb:ingest": "python3 scripts/kb-ingest.py",
+    "kb:ingest:dry": "python3 scripts/kb-ingest.py --dry-run --verbose"
   },
   "devDependencies": {
     "husky": "^9.1.6",
