@@ -59,7 +59,11 @@ def _norm_text(t: str) -> str:
 
 
 def _fingerprint(text: str) -> str:
-    return hashlib.md5(_norm_text(text).encode("utf-8")).hexdigest()
+    # sha256 truncated to 32 hex chars matches the format used by
+    # scripts/kb-ingest.py so chunk-level fingerprints stay consistent
+    # whether they come from the orchestrator's runtime dedup or from
+    # an ingest pipeline.
+    return hashlib.sha256(_norm_text(text).encode("utf-8")).hexdigest()[:32]
 
 
 def _is_junk(text: str) -> bool:
@@ -73,6 +77,13 @@ def _safe_int(x: Any, default: int) -> int:
         return int(x)
     except Exception:
         return default
+
+
+# Search defaults. Centralised here so callers (CLI, KB service, future
+# orchestrator) all see the same fallback if KB_* env vars are unset.
+DEFAULT_FINAL_N = int(os.getenv("KB_FINAL_N", "8"))
+DEFAULT_FETCH_K = int(os.getenv("KB_FETCH_K", "80"))
+DEFAULT_MAX_PER_SOURCE = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
 
 
 def _get_source(metadata: Optional[Dict[str, Any]], fallback: Optional[str] = None) -> str:
@@ -311,13 +322,10 @@ def main() -> None:
                 queries_payload = []
 
             top_k = _safe_int(
-                payload.get("top_k") or payload.get("final_n"),
-                int(os.getenv("KB_FINAL_N", "8")),
+                payload.get("top_k") or payload.get("final_n"), DEFAULT_FINAL_N
             )
-            fetch_k = _safe_int(payload.get("fetch_k"), int(os.getenv("KB_FETCH_K", "80")))
-            max_per_source = _safe_int(
-                payload.get("max_per_source"), int(os.getenv("KB_MAX_PER_SOURCE", "4"))
-            )
+            fetch_k = _safe_int(payload.get("fetch_k"), DEFAULT_FETCH_K)
+            max_per_source = _safe_int(payload.get("max_per_source"), DEFAULT_MAX_PER_SOURCE)
 
             where = payload.get("where")
             if where is not None and not isinstance(where, dict):
@@ -336,16 +344,12 @@ def main() -> None:
             )
         else:
             question = str(sys.argv[1]).strip()
-            top_k = int(os.getenv("KB_FINAL_N", "8"))
-            fetch_k = int(os.getenv("KB_FETCH_K", "80"))
-            max_per_source = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
-
             result = kb.search_multi(
                 question=question,
                 queries=[question],
-                final_n=top_k,
-                fetch_k=fetch_k,
-                max_per_source=max_per_source,
+                final_n=DEFAULT_FINAL_N,
+                fetch_k=DEFAULT_FETCH_K,
+                max_per_source=DEFAULT_MAX_PER_SOURCE,
                 where=None,
                 keep_debug_fields=False,
             )

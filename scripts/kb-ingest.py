@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -192,13 +193,16 @@ def chunk_fingerprint(source_key: str, chunk_index: int, content: str) -> str:
 
 def source_fingerprint(frontmatter: Dict[str, Any], body: str) -> str:
     """Fingerprint everything that goes into a file: ordered frontmatter
-    keys + the raw body. Changes to either trigger a re-ingest."""
+    keys + the raw body. Changes to either trigger a re-ingest.
+
+    The frontmatter is serialised with `json.dumps(sort_keys=True)`
+    rather than `repr()` so the fingerprint is stable across Python
+    versions (Python's repr format for dicts/lists is not part of the
+    language contract and has shifted between minor releases).
+    """
     h = hashlib.sha256()
-    for key in sorted(frontmatter.keys()):
-        h.update(key.encode("utf-8"))
-        h.update(b"=")
-        h.update(repr(frontmatter[key]).encode("utf-8"))
-        h.update(b"\n")
+    h.update(b"frontmatter:")
+    h.update(json.dumps(frontmatter, sort_keys=True, ensure_ascii=False).encode("utf-8"))
     h.update(b"---body---")
     h.update(body.encode("utf-8"))
     return h.hexdigest()[:32]
@@ -213,6 +217,7 @@ class IngestStats:
     files_new: int = 0
     files_updated: int = 0
     files_empty: int = 0
+    files_errored: int = 0
     chunks_upserted: int = 0
     actions: List[str] = field(default_factory=list)
 
@@ -252,6 +257,7 @@ def ingest(
         try:
             text = file_path.read_text(encoding="utf-8")
         except Exception as exc:
+            stats.files_errored += 1
             stats.actions.append(f"error    {source_key}: {exc}")
             continue
 
@@ -292,6 +298,12 @@ def ingest(
                     embedding=[],  # filled in batches below
                     metadata={
                         **base_metadata,
+                        # Snapshot of the chunk count for this file at
+                        # ingest time. Stays stable per file because
+                        # changed files are wiped + re-ingested as a
+                        # batch (see delete_by_source above). If we
+                        # ever switch to partial re-ingest, this field
+                        # would drift and should be revisited.
                         "chunks_in_file": chunks_per_source[source_key],
                     },
                     embed_model=embedder.model_name,
@@ -380,10 +392,15 @@ def main() -> int:
     print(f"  new            : {stats.files_new}")
     print(f"  updated        : {stats.files_updated}")
     print(f"  empty          : {stats.files_empty}")
+    print(f"  errored        : {stats.files_errored}")
     print(f"  chunks upserted: {stats.chunks_upserted}")
 
     backend.close()
-    return 0
+    # Non-zero exit so npm / CI / smoke scripts can grep for success
+    # without scraping stdout. Any per-file read error counts as a
+    # failure even if the rest of the ingest succeeded -- silent
+    # half-ingests would be worse.
+    return 1 if stats.files_errored else 0
 
 
 if __name__ == "__main__":
