@@ -3,3 +3,6 @@ sentence-transformers==5.2.0
 python-dotenv==1.2.1
 flask==3.0.3
 flask-cors==4.0.1
+# pgvector backend for the local KB store
+psycopg[binary]>=3.2.10,<3.4
+pgvector>=0.3.6,<0.5

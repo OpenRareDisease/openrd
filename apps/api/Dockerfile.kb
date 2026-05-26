@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY apps/api/knowledge.py apps/api/knowledge_service.py ./apps/api/
+COPY apps/api/kb_backends ./apps/api/kb_backends
+COPY apps/api/embed_models ./apps/api/embed_models
 
 WORKDIR /app/apps/api
 
