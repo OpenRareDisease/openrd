@@ -122,6 +122,10 @@ export default StyleSheet.create({
     fontSize: 14,
     marginBottom: 12,
   },
+  multilineInput: {
+    minHeight: 88,
+    paddingTop: 12,
+  },
   optionRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

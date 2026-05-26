@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import { applyGeneticReportAutofill } from './profile.autofill.js';
 import {
   buildClinicalPassportExport,
   buildClinicalPassportSummary,
@@ -618,6 +619,30 @@ export class PatientProfileService {
         ),
       ]);
 
+      const documents = documentsResult.rows.map((row) => ({
+        id: row.id,
+        documentType: row.document_type,
+        title: row.title,
+        fileName: row.file_name,
+        mimeType: row.mime_type,
+        fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
+        storageUri: row.storage_uri,
+        status: row.status,
+        uploadedAt: toTimestampString(row.uploaded_at),
+        checksum: row.checksum,
+        ocrPayload: row.ocr_payload ?? null,
+        submissionId: row.submission_id ?? null,
+      }));
+
+      const autoFilled = applyGeneticReportAutofill(
+        {
+          diagnosisDate: toDateString(profile.diagnosis_date),
+          geneticMutation: profile.genetic_mutation,
+          baseline: asRecord(profile.baseline_payload),
+        },
+        documents,
+      );
+
       return {
         id: profile.id,
         userId: profile.user_id,
@@ -627,8 +652,8 @@ export class PatientProfileService {
         gender: profile.gender,
         patientCode: profile.patient_code,
         diagnosisStage: profile.diagnosis_stage,
-        diagnosisDate: toDateString(profile.diagnosis_date),
-        geneticMutation: profile.genetic_mutation,
+        diagnosisDate: autoFilled.diagnosisDate,
+        geneticMutation: autoFilled.geneticMutation,
         heightCm: toNumber(profile.height_cm),
         weightKg: toNumber(profile.weight_kg),
         bloodType: profile.blood_type,
@@ -638,7 +663,7 @@ export class PatientProfileService {
         regionProvince: profile.region_province,
         regionCity: profile.region_city,
         regionDistrict: profile.region_district,
-        baseline: asRecord(profile.baseline_payload),
+        baseline: autoFilled.baseline,
         notes: profile.notes,
         measurements: measurementsResult.rows.map((row) => ({
           id: row.id,
@@ -711,20 +736,7 @@ export class PatientProfileService {
           createdAt: toTimestampString(row.created_at),
           submissionId: row.submission_id ?? null,
         })),
-        documents: documentsResult.rows.map((row) => ({
-          id: row.id,
-          documentType: row.document_type,
-          title: row.title,
-          fileName: row.file_name,
-          mimeType: row.mime_type,
-          fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
-          storageUri: row.storage_uri,
-          status: row.status,
-          uploadedAt: toTimestampString(row.uploaded_at),
-          checksum: row.checksum,
-          ocrPayload: row.ocr_payload ?? null,
-          submissionId: row.submission_id ?? null,
-        })),
+        documents,
         medications: medicationsResult.rows.map((row) => ({
           id: row.id,
           medicationName: row.medication_name,

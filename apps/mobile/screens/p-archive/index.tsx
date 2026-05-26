@@ -29,7 +29,7 @@ import {
   type BodyView,
 } from '../../lib/clinical-visuals';
 import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
-import { buildLatestMriVisualization } from '../../lib/report-insights';
+import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import styles from './styles';
 
@@ -155,6 +155,17 @@ const formatAssistiveDevicesLabel = (profile: PatientProfile | null) => {
   return devices.length ? devices.join('、') : '未记录';
 };
 
+const normalizeDisplayValue = (value?: string | null) => {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === '—') {
+    return null;
+  }
+  return trimmed;
+};
+
+const uniqueDisplayValues = (values: Array<string | null | undefined>) =>
+  Array.from(new Set(values.map((value) => normalizeDisplayValue(value)).filter(Boolean)));
+
 const buildPassportId = (
   profile: PatientProfile | null,
   passport?: ClinicalPassportSummary | null,
@@ -205,6 +216,10 @@ export default function ArchiveScreen() {
   }, []);
 
   const visualizationCards = useMemo(() => buildPatientVisualizationCards(profile), [profile]);
+  const reportInsights = useMemo(
+    () => buildReportInsights(profile?.documents ?? [], profile),
+    [profile],
+  );
   const latestMriVisualization = useMemo(
     () => buildLatestMriVisualization(profile?.documents ?? []),
     [profile],
@@ -219,6 +234,43 @@ export default function ArchiveScreen() {
   const recognizedReportCount =
     profile?.documents.filter((item) => ['processed', 'completed'].includes(item.status)).length ??
     0;
+  const diagnosisDateText =
+    profile?.baseline?.foundation?.diagnosisYear !== undefined &&
+    profile?.baseline?.foundation?.diagnosisYear !== null
+      ? `${profile.baseline.foundation.diagnosisYear}`
+      : profile?.diagnosisDate?.slice(0, 10) ||
+        normalizeDisplayValue(reportInsights.diagnosisDate) ||
+        normalizeDisplayValue(passport?.diagnosis.diagnosisDate) ||
+        '未填写';
+  const diagnosisTypeText =
+    profile?.baseline?.diseaseBackground?.diagnosisType ||
+    normalizeDisplayValue(reportInsights.geneticType) ||
+    normalizeDisplayValue(passport?.diagnosis.geneticType) ||
+    '等待报告识别';
+  const geneticInfoText =
+    uniqueDisplayValues([
+      profile?.geneticMutation,
+      normalizeDisplayValue(reportInsights.geneticType),
+      profile?.baseline?.diseaseBackground?.d4z4
+        ? `D4Z4 ${profile.baseline.diseaseBackground.d4z4}`
+        : reportInsights.d4z4Repeats !== '—'
+          ? `D4Z4 ${reportInsights.d4z4Repeats}`
+          : passport?.diagnosis.d4z4Repeats && passport.diagnosis.d4z4Repeats !== '—'
+            ? `D4Z4 ${passport.diagnosis.d4z4Repeats}`
+            : null,
+      profile?.baseline?.diseaseBackground?.haplotype
+        ? `单倍型 ${profile.baseline.diseaseBackground.haplotype}`
+        : reportInsights.haplotype !== '—'
+          ? `单倍型 ${reportInsights.haplotype}`
+          : null,
+      profile?.baseline?.diseaseBackground?.methylation
+        ? `甲基化 ${profile.baseline.diseaseBackground.methylation}`
+        : reportInsights.methylationValue !== '—'
+          ? `甲基化 ${reportInsights.methylationValue}`
+          : passport?.diagnosis.methylationValue && passport.diagnosis.methylationValue !== '—'
+            ? `甲基化 ${passport.diagnosis.methylationValue}`
+            : null,
+    ]).join(' · ') || '等待相关报告识别';
 
   const consoleSections = useMemo(
     () => [
@@ -239,33 +291,15 @@ export default function ArchiveScreen() {
           { label: '临床护照 ID', value: passportId, accent: true },
           {
             label: '确诊时间',
-            value:
-              profile?.baseline?.foundation?.diagnosisYear !== undefined &&
-              profile?.baseline?.foundation?.diagnosisYear !== null
-                ? `${profile.baseline.foundation.diagnosisYear}`
-                : profile?.diagnosisDate?.slice(0, 10) || '未填写',
+            value: diagnosisDateText,
           },
           {
             label: '分型/诊断方式',
-            value: profile?.baseline?.diseaseBackground?.diagnosisType || '等待报告识别',
+            value: diagnosisTypeText,
           },
           {
             label: '遗传信息',
-            value:
-              [
-                profile?.geneticMutation,
-                profile?.baseline?.diseaseBackground?.d4z4
-                  ? `D4Z4 ${profile.baseline.diseaseBackground.d4z4}`
-                  : null,
-                profile?.baseline?.diseaseBackground?.haplotype
-                  ? `单倍型 ${profile.baseline.diseaseBackground.haplotype}`
-                  : null,
-                profile?.baseline?.diseaseBackground?.methylation
-                  ? `甲基化 ${profile.baseline.diseaseBackground.methylation}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(' · ') || '等待相关报告识别',
+            value: geneticInfoText,
             wide: true,
           },
         ],
@@ -287,7 +321,7 @@ export default function ArchiveScreen() {
         ],
       },
     ],
-    [displayName, passportId, profile],
+    [diagnosisDateText, diagnosisTypeText, displayName, geneticInfoText, passportId, profile],
   );
   const archiveMriRegions =
     Object.keys(passport?.imaging.bodyRegions ?? {}).length > 0
