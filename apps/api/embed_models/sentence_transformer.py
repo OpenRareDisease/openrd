@@ -42,24 +42,20 @@ class SentenceTransformerEmbedder(Embedder):
             else os.getenv("KB_LOCAL_FILES_ONLY", "").strip() == "1"
         )
 
-        logger.info("Loading embedding model: %s", resolved)
+        logger.info("Loading embedding model: %s (local_files_only=%s)", resolved, local_only_env)
         try:
             self._model = SentenceTransformer(resolved, local_files_only=local_only_env)
-        except Exception as first_error:
-            if not local_only_env:
-                logger.warning(
-                    "Embedding model download failed, retrying with local_files_only=True: %s",
-                    first_error,
-                )
-                try:
-                    self._model = SentenceTransformer(resolved, local_files_only=True)
-                except Exception as second_error:
-                    raise RuntimeError(
-                        "Failed to load embedding model. If you are offline, pre-download the "
-                        "model and set KB_LOCAL_FILES_ONLY=1."
-                    ) from second_error
-            else:
-                raise
+        except Exception as load_error:
+            # The previous implementation retried with local_files_only=True
+            # whenever the online load failed, but that retry direction is
+            # wrong (the model isn't cached locally either if the download
+            # just failed) and the synthetic "please pre-download" error
+            # message hid the real cause -- network, HF rate limit, disk
+            # full, model rename, etc. Surface the original error.
+            mode = "local cache" if local_only_env else "download / cache"
+            raise RuntimeError(
+                f"Failed to load embedding model '{resolved}' from {mode}: {load_error}"
+            ) from load_error
 
         # Verify dimensionality once at load time so misconfiguration
         # surfaces early (and the dimension stays correct even for models
@@ -74,4 +70,9 @@ class SentenceTransformerEmbedder(Embedder):
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        return self._model.encode(texts).tolist()
+        # Normalize so cosine distance (<=>) is well-defined and bounded
+        # to [0, 2] regardless of the underlying model. Without this,
+        # bge-m3 returns un-normalised vectors and any distance threshold
+        # (e.g. "ignore hits with distance > 0.3") becomes model-specific
+        # and unstable across batches.
+        return self._model.encode(texts, normalize_embeddings=True).tolist()

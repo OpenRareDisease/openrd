@@ -51,3 +51,9 @@ CREATE INDEX IF NOT EXISTS ai_prompt_audit_redaction_mode_idx
   ON ai_prompt_audit (redaction_mode);
 CREATE INDEX IF NOT EXISTS ai_prompt_audit_status_idx
   ON ai_prompt_audit (status);
+-- Support tickets and incident triage routinely look up an audit row
+-- by the originating request_id. Partial index keeps the size small
+-- because most rows do carry one, but we don't want NULLs in the index.
+CREATE INDEX IF NOT EXISTS ai_prompt_audit_request_id_idx
+  ON ai_prompt_audit (request_id)
+  WHERE request_id IS NOT NULL;

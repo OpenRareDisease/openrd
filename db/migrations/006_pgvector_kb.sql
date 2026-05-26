@@ -32,11 +32,20 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 );
 
 -- Approximate nearest neighbor index for cosine similarity search.
--- ivfflat lists=100 is a reasonable default for tens of thousands of
--- chunks; tune `lists` upward if the corpus grows past ~1M chunks.
-CREATE INDEX IF NOT EXISTS kb_chunks_embedding_ivfflat
-  ON kb_chunks USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
+-- We use HNSW (pgvector >= 0.5.0) rather than ivfflat because:
+--   * HNSW does not need representative data at build time, so the
+--     index works correctly even when this migration runs against an
+--     empty table (ivfflat would compute cluster centroids from the
+--     empty/near-empty corpus and degrade recall until rebuilt).
+--   * Recall quality is comparable or better at our scale (~10^4-10^5
+--     chunks) with no manual REINDEX after the first bulk import.
+-- Defaults `m = 16, ef_construction = 64` are appropriate for a corpus
+-- under ~1M chunks. Bump `ef_construction` (slower build, better
+-- recall) or `m` (more memory, better recall) once we cross that
+-- threshold. Query-time recall can also be tuned per-session with
+-- `SET hnsw.ef_search = 100`.
+CREATE INDEX IF NOT EXISTS kb_chunks_embedding_hnsw
+  ON kb_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- GIN index supports metadata filtering (e.g. authority = 'high').
 CREATE INDEX IF NOT EXISTS kb_chunks_metadata_gin
