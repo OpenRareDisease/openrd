@@ -151,6 +151,10 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.text,
     fontSize: 16,
   },
+  multilineTextInput: {
+    minHeight: 88,
+    paddingTop: 12,
+  },
   pickerRow: {
     flexDirection: 'row',
     gap: 8,
@@ -195,6 +199,32 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.textSoft,
   },
   identityButtonTextActive: {
+    color: CLINICAL_COLORS.text,
+    fontWeight: '600',
+  },
+  choiceRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  choiceButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    backgroundColor: CLINICAL_COLORS.panel,
+  },
+  choiceButtonActive: {
+    borderColor: CLINICAL_COLORS.accent,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  choiceButtonText: {
+    fontSize: 13,
+    color: CLINICAL_COLORS.textSoft,
+  },
+  choiceButtonTextActive: {
     color: CLINICAL_COLORS.text,
     fontWeight: '600',
   },

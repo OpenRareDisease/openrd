@@ -44,6 +44,14 @@ import {
   parseDateParts,
   provinceOptions,
 } from '../../lib/demographics-options';
+import {
+  AMBULATION_OPTIONS,
+  ASSISTIVE_DEVICE_OPTIONS,
+  type AmbulationChoice,
+  type AssistiveDeviceOption,
+  fromAmbulationChoice,
+  mergeAssistiveDevices,
+} from '../../lib/profile-baseline-options';
 import ScreenBackButton from '../common/ScreenBackButton';
 
 interface LoginFormData {
@@ -61,6 +69,12 @@ interface RegisterFormData {
   fullName: string;
   dateOfBirth: string;
   diagnosisYear: string;
+  diagnosisType: string;
+  onsetRegion: string;
+  familyHistory: string;
+  independentlyAmbulatory: AmbulationChoice;
+  assistiveDevices: AssistiveDeviceOption[];
+  customAssistiveDevices: string;
   gender: 'male' | 'female' | 'non_binary' | 'prefer_not_to_say' | '';
   contactEmail: string;
   regionProvince: string;
@@ -96,6 +110,12 @@ const LoginRegisterScreen: React.FC = () => {
     fullName: '',
     dateOfBirth: '',
     diagnosisYear: '',
+    diagnosisType: '',
+    onsetRegion: '',
+    familyHistory: '',
+    independentlyAmbulatory: '',
+    assistiveDevices: [],
+    customAssistiveDevices: '',
     gender: '',
     contactEmail: '',
     regionProvince: '',
@@ -426,6 +446,18 @@ const LoginRegisterScreen: React.FC = () => {
               regionDistrict: registerForm.regionDistrict.trim(),
             }) || null,
         },
+        diseaseBackground: {
+          diagnosisType: registerForm.diagnosisType.trim() || null,
+          onsetRegion: registerForm.onsetRegion.trim() || null,
+          familyHistory: registerForm.familyHistory.trim() || null,
+        },
+        currentStatus: {
+          independentlyAmbulatory: fromAmbulationChoice(registerForm.independentlyAmbulatory),
+          assistiveDevices: mergeAssistiveDevices(
+            registerForm.assistiveDevices,
+            registerForm.customAssistiveDevices,
+          ),
+        },
       });
       showModal('success', '注册成功', '账户已创建并完成基础档案');
       router.replace('/p-home');
@@ -545,6 +577,15 @@ const LoginRegisterScreen: React.FC = () => {
       ...prev,
       regionCity: value,
       regionDistrict: '',
+    }));
+  };
+
+  const toggleRegisterAssistiveDevice = (device: AssistiveDeviceOption) => {
+    setRegisterForm((prev) => ({
+      ...prev,
+      assistiveDevices: prev.assistiveDevices.includes(device)
+        ? prev.assistiveDevices.filter((item) => item !== device)
+        : [...prev.assistiveDevices, device],
     }));
   };
 
@@ -836,8 +877,109 @@ const LoginRegisterScreen: React.FC = () => {
                       maxLength={4}
                     />
                     <Text style={styles.fieldHintText}>
-                      分型或诊断方式后续通过报告识别补全，这里不需要主观填写。
+                      如果还没有上传报告，也可以在下面先补充分型、首发部位和家族史。
                     </Text>
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>分型/诊断方式（可选）</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：FSHD1"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.diagnosisType}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, diagnosisType: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>首发部位（可选）</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="例如：肩胛带、面部、足背屈"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.onsetRegion}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, onsetRegion: text }))
+                      }
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>家族史（可选）</Text>
+                    <TextInput
+                      style={[styles.textInput, styles.multilineTextInput]}
+                      placeholder="例如：母亲疑似，家中暂无明确患者"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.familyHistory}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, familyHistory: text }))
+                      }
+                      multiline
+                      textAlignVertical="top"
+                    />
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>当前行走（可选）</Text>
+                    <View style={styles.choiceRow}>
+                      {AMBULATION_OPTIONS.map((option) => {
+                        const isActive = registerForm.independentlyAmbulatory === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[styles.choiceButton, isActive && styles.choiceButtonActive]}
+                            onPress={() =>
+                              setRegisterForm((prev) => ({
+                                ...prev,
+                                independentlyAmbulatory:
+                                  prev.independentlyAmbulatory === option.value ? '' : option.value,
+                              }))
+                            }
+                          >
+                            <Text
+                              style={[
+                                styles.choiceButtonText,
+                                isActive && styles.choiceButtonTextActive,
+                              ]}
+                            >
+                              {option.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>辅具（可选）</Text>
+                    <View style={styles.choiceRow}>
+                      {ASSISTIVE_DEVICE_OPTIONS.map((option) => {
+                        const isActive = registerForm.assistiveDevices.includes(option);
+                        return (
+                          <TouchableOpacity
+                            key={option}
+                            style={[styles.choiceButton, isActive && styles.choiceButtonActive]}
+                            onPress={() => toggleRegisterAssistiveDevice(option)}
+                          >
+                            <Text
+                              style={[
+                                styles.choiceButtonText,
+                                isActive && styles.choiceButtonTextActive,
+                              ]}
+                            >
+                              {option}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="其他辅具可直接填写，多个用顿号分隔"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={registerForm.customAssistiveDevices}
+                      onChangeText={(text) =>
+                        setRegisterForm((prev) => ({ ...prev, customAssistiveDevices: text }))
+                      }
+                    />
                   </View>
 
                   <Text style={styles.registerSectionTitle}>账号信息</Text>

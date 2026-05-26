@@ -11,9 +11,26 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
-import { ApiError, getMyPatientProfile, upsertPatientProfile } from '../../lib/api';
+import {
+  ApiError,
+  type BaselineProfilePayload,
+  getMyPatientProfile,
+  updateMyBaseline,
+  upsertPatientProfile,
+} from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { useAuth } from '../../contexts/AuthContext';
+import {
+  AMBULATION_OPTIONS,
+  ASSISTIVE_DEVICE_OPTIONS,
+  type AmbulationChoice,
+  type AssistiveDeviceOption,
+  fromAmbulationChoice,
+  mergeAssistiveDevices,
+  splitAssistiveDevices,
+  toAmbulationChoice,
+} from '../../lib/profile-baseline-options';
+import { buildRegionLabel } from '../../lib/demographics-options';
 import ScreenBackButton from '../common/ScreenBackButton';
 
 const genderOptions = [
@@ -39,9 +56,17 @@ const RegisterProfileScreen: React.FC = () => {
   const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; message: string } | null>(
     null,
   );
+  const [existingBaseline, setExistingBaseline] = useState<BaselineProfilePayload | null>(null);
   const [form, setForm] = useState({
     fullName: '',
     dateOfBirth: '',
+    diagnosisYear: '',
+    diagnosisType: '',
+    onsetRegion: '',
+    familyHistory: '',
+    independentlyAmbulatory: '' as AmbulationChoice,
+    assistiveDevices: [] as AssistiveDeviceOption[],
+    customAssistiveDevices: '',
     gender: '',
     contactPhone: user?.phoneNumber ?? '',
     contactEmail: user?.email ?? '',
@@ -65,10 +90,26 @@ const RegisterProfileScreen: React.FC = () => {
         if (!isMounted || !profile) {
           return;
         }
+        const baseline = profile.baseline ?? null;
+        const diseaseBackground = baseline?.diseaseBackground;
+        const currentStatus = baseline?.currentStatus;
+        const assistiveDevices = splitAssistiveDevices(currentStatus?.assistiveDevices);
+        setExistingBaseline(baseline);
         setForm((prev) => ({
           ...prev,
           fullName: profile.fullName ?? '',
           dateOfBirth: profile.dateOfBirth ?? '',
+          diagnosisYear:
+            baseline?.foundation?.diagnosisYear !== undefined &&
+            baseline?.foundation?.diagnosisYear !== null
+              ? String(baseline.foundation.diagnosisYear)
+              : '',
+          diagnosisType: diseaseBackground?.diagnosisType ?? '',
+          onsetRegion: diseaseBackground?.onsetRegion ?? '',
+          familyHistory: diseaseBackground?.familyHistory ?? '',
+          independentlyAmbulatory: toAmbulationChoice(currentStatus?.independentlyAmbulatory),
+          assistiveDevices: assistiveDevices.selected,
+          customAssistiveDevices: assistiveDevices.customText,
           gender: profile.gender ?? '',
           contactPhone: profile.contactPhone ?? prev.contactPhone,
           contactEmail: profile.contactEmail ?? prev.contactEmail,
@@ -91,6 +132,15 @@ const RegisterProfileScreen: React.FC = () => {
       isMounted = false;
     };
   }, []);
+
+  const toggleAssistiveDevice = (device: AssistiveDeviceOption) => {
+    setForm((prev) => ({
+      ...prev,
+      assistiveDevices: prev.assistiveDevices.includes(device)
+        ? prev.assistiveDevices.filter((item) => item !== device)
+        : [...prev.assistiveDevices, device],
+    }));
+  };
 
   const handleSubmit = async () => {
     setFeedback(null);
@@ -124,6 +174,11 @@ const RegisterProfileScreen: React.FC = () => {
       return;
     }
 
+    if (form.diagnosisYear.trim() && !/^\d{4}$/.test(form.diagnosisYear.trim())) {
+      setFeedback({ type: 'error', message: '确诊年份请填写 4 位年份' });
+      return;
+    }
+
     if (!form.regionProvince.trim() || !form.regionCity.trim() || !form.regionDistrict.trim()) {
       setFeedback({ type: 'error', message: '请完整填写省市区信息' });
       return;
@@ -143,6 +198,35 @@ const RegisterProfileScreen: React.FC = () => {
         regionProvince: form.regionProvince.trim(),
         regionCity: form.regionCity.trim(),
         regionDistrict: form.regionDistrict.trim(),
+      });
+      await updateMyBaseline({
+        ...(existingBaseline ?? {}),
+        foundation: {
+          ...(existingBaseline?.foundation ?? {}),
+          fullName: form.fullName.trim(),
+          birthYear: Number(form.dateOfBirth.slice(0, 4)),
+          diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
+          regionLabel:
+            buildRegionLabel({
+              regionProvince: form.regionProvince.trim(),
+              regionCity: form.regionCity.trim(),
+              regionDistrict: form.regionDistrict.trim(),
+            }) || null,
+        },
+        diseaseBackground: {
+          ...(existingBaseline?.diseaseBackground ?? {}),
+          diagnosisType: form.diagnosisType.trim() || null,
+          onsetRegion: form.onsetRegion.trim() || null,
+          familyHistory: form.familyHistory.trim() || null,
+        },
+        currentStatus: {
+          ...(existingBaseline?.currentStatus ?? {}),
+          independentlyAmbulatory: fromAmbulationChoice(form.independentlyAmbulatory),
+          assistiveDevices: mergeAssistiveDevices(
+            form.assistiveDevices,
+            form.customAssistiveDevices,
+          ),
+        },
       });
       setFeedback({ type: 'success', message: '档案已保存' });
       router.replace('/p-home');
@@ -228,6 +312,114 @@ const RegisterProfileScreen: React.FC = () => {
                       );
                     })}
                   </View>
+                </View>
+              </View>
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>FSHD 背景</Text>
+                <Text style={styles.sectionSubtitle}>补充不会从报告自动识别出来的关键信息</Text>
+                <View style={styles.card}>
+                  <Text style={styles.inputLabel}>确诊年份</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="例如：2022"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                    value={form.diagnosisYear}
+                    onChangeText={(text) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        diagnosisYear: text.replace(/[^\d]/g, ''),
+                      }))
+                    }
+                  />
+
+                  <Text style={styles.inputLabel}>分型/诊断方式</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="例如：FSHD1"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={form.diagnosisType}
+                    onChangeText={(text) => setForm((prev) => ({ ...prev, diagnosisType: text }))}
+                  />
+
+                  <Text style={styles.inputLabel}>首发部位</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="例如：肩胛带、面部、足背屈"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={form.onsetRegion}
+                    onChangeText={(text) => setForm((prev) => ({ ...prev, onsetRegion: text }))}
+                  />
+
+                  <Text style={styles.inputLabel}>家族史</Text>
+                  <TextInput
+                    style={[styles.input, styles.multilineInput]}
+                    placeholder="例如：母亲疑似，家中暂无明确患者"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={form.familyHistory}
+                    onChangeText={(text) => setForm((prev) => ({ ...prev, familyHistory: text }))}
+                    multiline
+                    textAlignVertical="top"
+                  />
+
+                  <Text style={styles.inputLabel}>当前行走</Text>
+                  <View style={styles.optionRow}>
+                    {AMBULATION_OPTIONS.map((option) => {
+                      const isActive = form.independentlyAmbulatory === option.value;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[styles.optionButton, isActive && styles.optionButtonActive]}
+                          onPress={() =>
+                            setForm((prev) => ({
+                              ...prev,
+                              independentlyAmbulatory:
+                                prev.independentlyAmbulatory === option.value ? '' : option.value,
+                            }))
+                          }
+                        >
+                          <Text
+                            style={[styles.optionText, isActive && styles.optionTextActive]}
+                            numberOfLines={1}
+                          >
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <Text style={styles.inputLabel}>辅具</Text>
+                  <View style={styles.optionRow}>
+                    {ASSISTIVE_DEVICE_OPTIONS.map((option) => {
+                      const isActive = form.assistiveDevices.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[styles.optionButton, isActive && styles.optionButtonActive]}
+                          onPress={() => toggleAssistiveDevice(option)}
+                        >
+                          <Text
+                            style={[styles.optionText, isActive && styles.optionTextActive]}
+                            numberOfLines={1}
+                          >
+                            {option}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="其他辅具可直接填写，多个用顿号分隔"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={form.customAssistiveDevices}
+                    onChangeText={(text) =>
+                      setForm((prev) => ({ ...prev, customAssistiveDevices: text }))
+                    }
+                  />
                 </View>
               </View>
 
