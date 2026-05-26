@@ -113,5 +113,6 @@ npm run dev:api
 
 ## 说明
 
-- 知识服务使用本地 embedding 模型（默认 `all-MiniLM-L6-v2`）生成向量后再查询 Chroma Cloud。
-- 若网络不稳定或未配置 Chroma Cloud，`/api/ai/ask` 会返回 503。
+- 知识服务使用本地 embedding 模型（默认 `BAAI/bge-m3`，1024 维）生成向量后再查询向量库。可通过 `KB_EMBED_MODEL` 切换为 `all-MiniLM-L6-v2`（384 维）等其它兼容模型，但切换后需要重新灌库。
+- 向量库后端由 `KB_BACKEND` 决定：默认 `pgvector`（本地 Postgres），保留 `chroma_cloud` 作为一键回退选项。详见 [本地化 RAG 迁移方案](./proposals/local-rag-migration.md)。
+- 若知识库服务不可用，`/api/ai/ask` 会返回 503。

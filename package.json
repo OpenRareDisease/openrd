@@ -16,7 +16,8 @@
     "format:write": "npm run format:write --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:smoke": "bash scripts/smoke-test.sh",
-    "test:latest": "bash scripts/latest-test.sh"
+    "test:latest": "bash scripts/latest-test.sh",
+    "kb:warmup": "python3 scripts/kb-warmup.py"
   },
   "devDependencies": {
     "husky": "^9.1.6",

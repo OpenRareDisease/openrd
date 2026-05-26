@@ -32,7 +32,7 @@ class SentenceTransformerEmbedder(Embedder):
         model_name: Optional[str] = None,
         local_files_only: Optional[bool] = None,
     ) -> None:
-        resolved = (model_name or os.getenv("KB_EMBED_MODEL", "all-MiniLM-L6-v2")).strip()
+        resolved = (model_name or os.getenv("KB_EMBED_MODEL", "BAAI/bge-m3")).strip()
         self.model_name = resolved
         self.dimension = _KNOWN_DIMENSIONS.get(resolved, 0)
 

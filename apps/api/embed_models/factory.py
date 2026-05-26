@@ -12,7 +12,7 @@ logger = logging.getLogger("fshd_kb.embed_models.factory")
 
 
 def create_embedder(model_name: Optional[str] = None) -> Embedder:
-    resolved = (model_name or os.getenv("KB_EMBED_MODEL", "all-MiniLM-L6-v2")).strip()
+    resolved = (model_name or os.getenv("KB_EMBED_MODEL", "BAAI/bge-m3")).strip()
     logger.info("Creating embedder: %s", resolved)
 
     # All current implementations route through SentenceTransformers,
