@@ -11,14 +11,17 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   ApiError,
   AiAskProgressStage,
+  type AiCitation,
   askAiQuestion,
   getAiAskProgress,
   initAiAskProgress,
+  isConsentRequiredError,
 } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import styles from './styles';
@@ -26,12 +29,23 @@ import styles from './styles';
 type ChatRole = 'assistant' | 'user';
 type ChatMessageStatus = 'sent' | 'loading' | 'error';
 
+/** Metadata the orchestrator returns alongside an assistant answer.
+ *  Persisted with the message so revisiting an old chat still shows
+ *  citations + "本回答用到了你的..." hint. */
+type AssistantMetadata = {
+  toolsCalled?: string[];
+  fieldsUsed?: string[];
+  usedPersonalData?: boolean;
+  citations?: AiCitation[];
+};
+
 type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: string;
   status: ChatMessageStatus;
+  metadata?: AssistantMetadata;
 };
 
 const CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
@@ -55,7 +69,7 @@ const createWelcomeMessage = (): ChatMessage => ({
   id: 'welcome',
   role: 'assistant',
   content:
-    '可以直接问我 FSHD 相关问题，也可以连续追问。最近几轮对话会保留在本地，并一并提供给问答接口，方便上下文延续。',
+    '可以直接问我 FSHD 相关问题（机制、症状、治疗、康复、心理）。我会从医学知识库检索，并在需要时（你授权后）参考你的档案/报告。每条回答下方会标明引用来源。',
   createdAt: new Date().toISOString(),
   status: 'sent',
 });
@@ -96,6 +110,51 @@ const formatMessageTime = (value: string) => {
   });
 };
 
+/** Render the per-message footer that lists patient fields used +
+ *  citation count. Returns null for user messages, non-success
+ *  assistant messages, or assistant messages with no metadata
+ *  (placeholders, legacy stored messages). */
+const renderAssistantMetadata = (message: ChatMessage) => {
+  if (message.role !== 'assistant') return null;
+  if (message.status !== 'sent') return null;
+  const meta = message.metadata;
+  if (!meta) return null;
+
+  const showFields = meta.usedPersonalData && (meta.fieldsUsed?.length ?? 0) > 0;
+  const showCitations = (meta.citations?.length ?? 0) > 0;
+  if (!showFields && !showCitations) return null;
+
+  const citationFiles = (meta.citations ?? [])
+    .map((c) => c.sourceFile)
+    .filter((f): f is string => Boolean(f));
+  const citationFilesPreview = citationFiles.slice(0, 3).join('、');
+  const citationOverflow = citationFiles.length > 3 ? '…' : '';
+
+  return (
+    <View
+      style={{
+        marginTop: 10,
+        paddingTop: 10,
+        borderTopWidth: 1,
+        borderTopColor: CLINICAL_COLORS.border,
+        gap: 4,
+      }}
+    >
+      {showFields ? (
+        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
+          本回答用到了你的：{(meta.fieldsUsed ?? []).join('、')}
+        </Text>
+      ) : null}
+      {showCitations ? (
+        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
+          📎 引用 {meta.citations?.length} 条
+          {citationFilesPreview ? `：${citationFilesPreview}${citationOverflow}` : ''}
+        </Text>
+      ) : null}
+    </View>
+  );
+};
+
 const getFriendlyErrorMessage = (error: unknown) => {
   const message =
     error instanceof ApiError
@@ -113,6 +172,7 @@ const getFriendlyErrorMessage = (error: unknown) => {
 
 const P_QNA = () => {
   const { token } = useAuth();
+  const router = useRouter();
   const scrollViewRef = useRef<ScrollView | null>(null);
   const inputRef = useRef<TextInput | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -218,17 +278,6 @@ const P_QNA = () => {
       createdAt: new Date().toISOString(),
       status: 'loading',
     };
-    const recentConversation = [
-      ...messages
-        .filter((item) => item.status !== 'error' && item.content.trim())
-        .slice(-6)
-        .map((item) => ({
-          role: item.role,
-          content: item.content,
-        })),
-      { role: 'user' as const, content: question },
-    ];
-
     setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
     setDraft('');
     setIsSending(true);
@@ -260,16 +309,14 @@ const P_QNA = () => {
     pollProgress();
 
     try {
-      const response = await askAiQuestion(
-        question,
-        {
-          language: 'zh',
-          memoryMode: 'recent_messages',
-          conversationHistory: recentConversation.slice(-8),
-        },
-        progressId,
-      );
+      const response = await askAiQuestion(question, progressId);
       const answer = response.data.answer?.trim() || '暂时没有生成有效回答。';
+      const metadata: AssistantMetadata = {
+        toolsCalled: response.data.toolsCalled,
+        fieldsUsed: response.data.fieldsUsed,
+        usedPersonalData: response.data.usedPersonalData,
+        citations: response.data.citations,
+      };
 
       setMessages((prev) =>
         prev.map((item) =>
@@ -279,6 +326,7 @@ const P_QNA = () => {
                 content: answer,
                 createdAt: response.data.timestamp || new Date().toISOString(),
                 status: 'sent',
+                metadata,
               }
             : item,
         ),
@@ -298,30 +346,66 @@ const P_QNA = () => {
           : prev,
       );
     } catch (error) {
-      const friendlyMessage = getFriendlyErrorMessage(error);
-      setMessages((prev) =>
-        prev.map((item) =>
-          item.id === assistantMessageId
+      // Special-case the consent gate: instead of showing a raw error
+      // text in the bubble, point the user at the privacy settings
+      // page where they can grant consent. Without this, a 403 looks
+      // like a generic failure and the user has no actionable path
+      // out of it.
+      if (isConsentRequiredError(error)) {
+        const consentMessage = '需要先在隐私设置中开启 AI 同意，才能使用智能问答。';
+        setMessages((prev) =>
+          prev.map((item) =>
+            item.id === assistantMessageId
+              ? { ...item, content: consentMessage, status: 'error' }
+              : item,
+          ),
+        );
+        setAskProgress((prev) =>
+          prev
             ? {
-                ...item,
-                content: friendlyMessage,
+                ...prev,
                 status: 'error',
+                stages: prev.stages.map((stage) =>
+                  stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                ),
+                error: consentMessage,
               }
-            : item,
-        ),
-      );
-      setAskProgress((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: 'error',
-              stages: prev.stages.map((stage) =>
-                stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
-              ),
-              error: friendlyMessage,
-            }
-          : prev,
-      );
+            : prev,
+        );
+        Alert.alert(
+          '需要授权 AI',
+          '在使用智能问答前，请到「隐私设置」开启 AI 同意（个人数据 + 第三方 LLM 处理）。',
+          [
+            { text: '取消', style: 'cancel' },
+            { text: '去设置', onPress: () => router.push('/p-privacy_settings') },
+          ],
+        );
+      } else {
+        const friendlyMessage = getFriendlyErrorMessage(error);
+        setMessages((prev) =>
+          prev.map((item) =>
+            item.id === assistantMessageId
+              ? {
+                  ...item,
+                  content: friendlyMessage,
+                  status: 'error',
+                }
+              : item,
+          ),
+        );
+        setAskProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'error',
+                stages: prev.stages.map((stage) =>
+                  stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                ),
+                error: friendlyMessage,
+              }
+            : prev,
+        );
+      }
     } finally {
       setIsSending(false);
       if (progressTimerRef.current) {
@@ -402,16 +486,32 @@ const P_QNA = () => {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.memoryBanner}>
-          <View style={styles.memoryIconWrap}>
-            <FontAwesome6 name="brain" size={14} color={CLINICAL_COLORS.accentStrong} />
-          </View>
-          <View style={styles.memoryContent}>
-            <Text style={styles.memoryTitle}>连续对话已开启</Text>
-            <Text style={styles.memoryText}>
-              页面会保留最近聊天内容；下一次提问时，会把最近几轮对话一起发给问答接口。
-            </Text>
-          </View>
+        <View
+          style={{
+            marginHorizontal: 20,
+            marginBottom: 12,
+            padding: 12,
+            paddingHorizontal: 14,
+            borderRadius: 14,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            backgroundColor: CLINICAL_COLORS.backgroundRaised,
+            borderWidth: 1,
+            borderColor: CLINICAL_COLORS.border,
+          }}
+        >
+          <FontAwesome6 name="circle-info" size={11} color={CLINICAL_COLORS.textMuted} />
+          <Text
+            style={{
+              flex: 1,
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 11,
+              lineHeight: 16,
+            }}
+          >
+            AI 回答仅供参考，不能替代医生诊断；用到你本人数据时下方会标明。
+          </Text>
         </View>
 
         <ScrollView
@@ -464,6 +564,7 @@ const P_QNA = () => {
                   >
                     {message.content}
                   </Text>
+                  {renderAssistantMetadata(message)}
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
                     {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
@@ -503,7 +604,9 @@ const P_QNA = () => {
               />
             </TouchableOpacity>
           </View>
-          <Text style={styles.composerHint}>适合连续追问，例如“结合我上一条再解释一下”。</Text>
+          <Text style={styles.composerHint}>
+            每条问题独立处理；如需引用你本人数据，请确认隐私设置已开启 AI 同意。
+          </Text>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
