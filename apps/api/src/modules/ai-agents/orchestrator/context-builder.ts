@@ -1,0 +1,113 @@
+/**
+ * Context builder — turn executed tool results into LLM `tool`
+ * messages, dedup citations, and report what patient fields actually
+ * made it into the final prompt.
+ *
+ * Every retrieved chunk flows through `renderChunkForPrompt`, which
+ * is the only sanctioned path that produces prompt-ready text from a
+ * `RetrievedChunk`. That guarantee is what makes the field-only
+ * privacy model from PR #23 enforceable: retrievers can stuff raw
+ * data in `metadata.fields` and the renderer is the only place it
+ * gets surfaced (after the redactor runs).
+ */
+
+import type { ExecutedToolCall } from './executor.js';
+import type { AppLogger } from '../../../config/logger.js';
+import type { Citation, RetrievedChunk } from '../retrievers/base.js';
+import type { RedactionMode } from '../security/allowlist.js';
+import { renderChunkForPrompt } from '../security/render.js';
+
+/** Sources whose contribution counts as "personal data". When any of
+ *  these appear, the orchestrator surfaces a "本回答用到了你的..."
+ *  hint to the UI and the audit row carries usedPersonalData=true. */
+const PERSONAL_SOURCES = new Set(['patient_profile', 'patient_reports']);
+
+export interface ToolMessagePayload {
+  toolCallId: string;
+  toolName: string;
+  /** Final rendered text to feed back to the LLM as `tool` content.
+   *  Never contains a raw value that wasn't on the allowlist. */
+  content: string;
+}
+
+export interface BuiltContext {
+  toolMessages: ToolMessagePayload[];
+  citations: Citation[];
+  fieldsUsed: string[];
+  usedPersonalData: boolean;
+}
+
+export interface BuildContextOptions {
+  mode: RedactionMode;
+  logger: AppLogger;
+}
+
+const renderChunks = (
+  chunks: RetrievedChunk[],
+  opts: BuildContextOptions,
+): { text: string; fieldsUsed: string[] } => {
+  if (chunks.length === 0) {
+    return { text: '（无内容）', fieldsUsed: [] };
+  }
+  const sections: string[] = [];
+  const fieldsUsedSet = new Set<string>();
+  chunks.forEach((chunk, idx) => {
+    const rendered = renderChunkForPrompt(chunk, opts);
+    if (!rendered.content) return;
+    const header = `【片段${idx + 1}】${
+      chunk.sourceFile ? `(${chunk.source} / ${chunk.sourceFile})` : `(${chunk.source})`
+    }`;
+    sections.push(`${header}\n${rendered.content}`);
+    rendered.fieldsUsed.forEach((f) => fieldsUsedSet.add(f));
+  });
+  return {
+    text: sections.length > 0 ? sections.join('\n\n') : '（无可用内容）',
+    fieldsUsed: [...fieldsUsedSet],
+  };
+};
+
+export const buildContext = (
+  executed: ExecutedToolCall[],
+  opts: BuildContextOptions,
+): BuiltContext => {
+  const toolMessages: ToolMessagePayload[] = [];
+  const citationByChunk = new Map<string, Citation>();
+  const allFieldsUsed = new Set<string>();
+  let usedPersonalData = false;
+
+  for (const call of executed) {
+    if (call.error || !call.retrieval) {
+      toolMessages.push({
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        content: `tool error: ${call.error ?? 'no result returned'}`,
+      });
+      continue;
+    }
+
+    const { text, fieldsUsed } = renderChunks(call.retrieval.chunks, opts);
+    fieldsUsed.forEach((f) => allFieldsUsed.add(f));
+    if (PERSONAL_SOURCES.has(call.retrieval.retrieverId) && call.retrieval.chunks.length > 0) {
+      usedPersonalData = true;
+    }
+
+    toolMessages.push({
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      content: `${call.display}\n\n${text}`,
+    });
+
+    for (const citation of call.retrieval.citations) {
+      if (!citationByChunk.has(citation.chunkId)) {
+        citationByChunk.set(citation.chunkId, citation);
+      }
+    }
+  }
+
+  return {
+    toolMessages,
+    citations: [...citationByChunk.values()],
+    fieldsUsed: [...allFieldsUsed],
+    usedPersonalData,
+  };
+};
