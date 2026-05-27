@@ -37,6 +37,18 @@ const formatGrantDate = (iso: string | null): string | null => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+/** Render the parenthetical date hint next to a consent toggle.
+ *  When the flag is currently on we say "同意于 …"; when it's off
+ *  but a timestamp exists (i.e. the user had granted then revoked)
+ *  we say "上次更新 …" so the label isn't misleading. Returns the
+ *  full parenthetical including the surrounding "（…）", or '' when
+ *  there's no date to show. */
+const formatConsentDateLabel = (iso: string | null, granted: boolean): string => {
+  const date = formatGrantDate(iso);
+  if (!date) return '';
+  return granted ? `（同意于 ${date}）` : `（上次更新 ${date}）`;
+};
+
 const PrivacySettingsScreen = () => {
   const router = useRouter();
 
@@ -275,9 +287,9 @@ const PrivacySettingsScreen = () => {
     if (!aiConsent) return null;
 
     const { flags, timestamps, level } = aiConsent;
-    const personalAt = formatGrantDate(timestamps.personalAt);
-    const thirdPartyAt = formatGrantDate(timestamps.thirdPartyAt);
-    const preciseAt = formatGrantDate(timestamps.preciseValuesAt);
+    const personalLabel = formatConsentDateLabel(timestamps.personalAt, flags.personal);
+    const thirdPartyLabel = formatConsentDateLabel(timestamps.thirdPartyAt, flags.thirdParty);
+    const preciseLabel = formatConsentDateLabel(timestamps.preciseValuesAt, flags.preciseValues);
     const preciseAllowed = flags.personal && flags.thirdParty;
     const levelLabel =
       level === 'precise'
@@ -306,7 +318,7 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.settingTitle}>个人数据用于 AI</Text>
             <Text style={styles.settingDescription}>
               允许 AI 在回答问题时引用你档案/报告中已脱敏的字段
-              {personalAt ? `（同意于 ${personalAt}）` : ''}
+              {personalLabel}
             </Text>
           </View>
           <ToggleSwitch
@@ -321,7 +333,7 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.settingTitle}>第三方 LLM 处理</Text>
             <Text style={styles.settingDescription}>
               问题发送到云端大模型推理（SiliconFlow / DeepSeek）
-              {thirdPartyAt ? `（同意于 ${thirdPartyAt}）` : ''}
+              {thirdPartyLabel}
             </Text>
           </View>
           <ToggleSwitch
@@ -336,7 +348,7 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.settingTitle}>精确数值授权</Text>
             <Text style={styles.settingDescription}>
               允许 AI 看到 D4Z4 重复数、甲基化百分比等原始数值
-              {preciseAt ? `（同意于 ${preciseAt}）` : ''}
+              {preciseLabel}
               {!preciseAllowed ? '\n需要先开启上面两项' : ''}
             </Text>
           </View>

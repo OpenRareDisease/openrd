@@ -464,15 +464,67 @@ export const updateMyConsent = (payload: ConsentUpdatePayload) =>
     body: JSON.stringify(payload),
   });
 
+export interface AiCitation {
+  chunkId: string;
+  source: string;
+  sourceFile?: string | null;
+  chunkIndex?: number | null;
+  snippet: string;
+}
+
+export interface AiUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface AiAskResponse {
   success: boolean;
   data: {
     question: string;
     answer: string;
+    /** Sources the orchestrator used. May be empty when the planner
+     *  answered directly without calling any retriever. */
+    citations: AiCitation[];
+    /** Tools the planner chose, in the order they were called. */
+    toolsCalled: string[];
+    /** Field names from patient-scoped retrievers that survived
+     *  redaction and made it into the final prompt. Empty when the
+     *  call did not touch personal data. */
+    fieldsUsed: string[];
+    /** Drives the "本回答用到了你的..." hint in the UI. */
+    usedPersonalData: boolean;
+    consentLevel: ConsentLevel;
+    redactionMode: 'strict' | 'precise';
+    llmUsage?: AiUsage;
+    latencyMs: number;
+    /** Audit-row id; useful for support tickets. May be null if the
+     *  audit insert failed (the orchestrator answer still ships). */
+    auditId: string | null;
+    progressId: string;
     timestamp: string;
-    progressId?: string;
   };
 }
+
+/** Body shape the /api/ai/ask route returns on 403 consent_required.
+ *  Surface via the helper below so callers don't have to know the
+ *  internal shape. */
+export interface AiAskConsentDeniedBody {
+  success: false;
+  code: 'consent_required';
+  message: string;
+  consent: ConsentDetails;
+  progressId: string;
+}
+
+export const isConsentRequiredError = (
+  error: unknown,
+): error is ApiError & { data: AiAskConsentDeniedBody } => {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status !== 403) return false;
+  const body = error.data as { code?: string } | null;
+  return body?.code === 'consent_required';
+};
 
 export interface AiAskProgressStage {
   id: string;
@@ -495,14 +547,10 @@ export interface AiAskProgressResponse {
   };
 }
 
-export const askAiQuestion = (
-  question: string,
-  userContext?: Record<string, unknown>,
-  progressId?: string,
-) =>
+export const askAiQuestion = (question: string, progressId?: string) =>
   apiRequest<AiAskResponse>('/ai/ask', {
     method: 'POST',
-    body: JSON.stringify({ question, userContext, progressId }),
+    body: JSON.stringify({ question, progressId }),
   });
 
 export const getAiAskProgress = (progressId: string) =>
