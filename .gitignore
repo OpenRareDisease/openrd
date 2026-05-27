@@ -11,6 +11,17 @@ node_modules/
 chroma_db/
 apps/knowledge-base/chroma_db/
 
+# KB source corpus — large binary content (PDFs/docx/images) lives
+# outside git. Reproduce by unzipping the upstream FSHD_知识库.zip
+# into content/medical-kb/source/ before running `npm run kb:ingest`.
+content/medical-kb/source/
+
+# Python venv created for the KB ingest tooling. Bootstrap with:
+#   brew install python@3.11 tesseract-lang
+#   python3.11 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+.venv/
+
 # Production builds
 /dist
 /build
