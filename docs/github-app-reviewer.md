@@ -22,23 +22,38 @@ Install the app on `OpenRareDisease/openrd`.
 
 ## Local credentials
 
-Generate a private key for the app and keep it outside the repository. Then set:
+Generate a private key for the app and keep it outside the repository.
+A standard place is `~/.config/openrd/review-bot.pem` with `chmod 600`.
+
+The recommended setup is to put the three configuration values in your
+local `.env` (already gitignored) so every shell session picks them up
+automatically — the npm scripts launch Node with
+`--env-file-if-exists=.env`:
+
+```dotenv
+# .env
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_PATH=/Users/you/.config/openrd/review-bot.pem
+GITHUB_REPOSITORY=OpenRareDisease/openrd
+```
+
+If you prefer plain shell exports (e.g. for CI), the same names work:
 
 ```bash
 export GITHUB_APP_ID="123456"
-export GITHUB_APP_PRIVATE_KEY_PATH="$HOME/.config/openrd-codex-reviewer.private-key.pem"
+export GITHUB_APP_PRIVATE_KEY_PATH="$HOME/.config/openrd/review-bot.pem"
 export GITHUB_REPOSITORY="OpenRareDisease/openrd"
 ```
 
-You can also provide the private key through one of these variables:
+Alternative ways to supply the private key:
 
 ```bash
 export GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 export GITHUB_APP_PRIVATE_KEY_BASE64="base64-encoded-private-key"
 ```
 
-`GITHUB_APP_INSTALLATION_ID` is optional. If omitted, the scripts resolve it from
-the repository installation.
+`GITHUB_APP_INSTALLATION_ID` is optional. If omitted, the scripts resolve
+it from the repository installation.
 
 ## Check the token
 

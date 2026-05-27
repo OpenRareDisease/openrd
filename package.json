@@ -22,8 +22,8 @@
     "kb:ingest:dry": "python3 scripts/kb-ingest.py --dry-run --verbose",
     "kb:import:chroma": "python3 scripts/kb-import-from-chroma.py",
     "kb:verify": "python3 scripts/kb-verify.py",
-    "github:app-token": "node scripts/github-app-token.mjs",
-    "github:app-pr-review": "node scripts/github-app-pr-review.mjs"
+    "github:app-token": "node --env-file-if-exists=.env scripts/github-app-token.mjs",
+    "github:app-pr-review": "node --env-file-if-exists=.env scripts/github-app-pr-review.mjs"
   },
   "devDependencies": {
     "husky": "^9.1.6",
