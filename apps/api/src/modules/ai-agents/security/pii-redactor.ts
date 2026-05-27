@@ -25,7 +25,7 @@
  */
 
 import type { RedactionMode, RedactionScope } from './allowlist.js';
-import { HARD_DELETE_KEYS, PROMPT_ALLOWLIST } from './allowlist.js';
+import { HARD_DELETE_KEYS, OCR_FIELDS_SAFE_KEYS_PRECISE, PROMPT_ALLOWLIST } from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
 
 export type { RedactionMode, RedactionScope } from './allowlist.js';
@@ -52,8 +52,21 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 
 // ---------------------------------------------------------------- layer 1
 
+/** Strip every key in HARD_DELETE_KEYS at any depth.
+ *
+ *  The previous implementation only inspected top-level keys, which
+ *  meant nested OCR payloads (e.g. `metadata.fields.fields.patientName`
+ *  from the patient_reports retriever) slipped through whenever the
+ *  enclosing key itself was on the allowlist. Recursive removal closes
+ *  that contract: "hard-delete keys never reach a prompt regardless of
+ *  mode" now actually holds for nested objects too.
+ *
+ *  Only plain objects are descended into; arrays and primitives are
+ *  left as-is — they cannot have keys to match.
+ */
 const hardDelete = (
   input: Record<string, unknown>,
+  path: string[] = [],
 ): {
   cleaned: Record<string, unknown>;
   removed: string[];
@@ -62,10 +75,16 @@ const hardDelete = (
   const removed: string[] = [];
   for (const [key, value] of Object.entries(input)) {
     if (HARD_DELETE_KEYS.has(key)) {
-      removed.push(key);
+      removed.push([...path, key].join('.'));
       continue;
     }
-    cleaned[key] = value;
+    if (isPlainObject(value)) {
+      const nested = hardDelete(value, [...path, key]);
+      cleaned[key] = nested.cleaned;
+      for (const r of nested.removed) removed.push(r);
+    } else {
+      cleaned[key] = value;
+    }
   }
   return { cleaned, removed };
 };
@@ -154,6 +173,62 @@ interface ClinicaliseResult {
   changed: string[];
 }
 
+/** Project an OCR fields blob through a mode-specific filter.
+ *
+ *  In **both** modes this is deny-by-default: only keys we know how to
+ *  scrub (d4z4 / methylation / haplotype / date), or that are on the
+ *  precise-mode safe list of structured non-clinical keys, pass
+ *  through. Free-form OCR keys — including `findings`, `impression`,
+ *  unknown vendor-specific fields, anything the OCR happened to
+ *  extract that we haven't reviewed — are dropped.
+ *
+ *  This is the fix for the PR #23 follow-up review: precise mode used
+ *  to accept the entire raw `fields` blob via the allowlist, leaking
+ *  whatever the OCR pipeline happened to put in there.
+ */
+const projectOcrFields = (
+  rawFields: Record<string, unknown>,
+  mode: RedactionMode,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawFields)) {
+    const lower = key.toLowerCase();
+    if (lower.includes('d4z4')) {
+      if (mode === 'strict') {
+        const v = clinicaliseD4Z4(value);
+        if (v !== null) out[`${key}_clinical`] = v;
+      } else {
+        if (value !== null && value !== undefined && value !== '') out[key] = value;
+      }
+    } else if (lower.includes('methylation')) {
+      if (mode === 'strict') {
+        const v = clinicaliseMethylation(value);
+        if (v !== null) out[`${key}_clinical`] = v;
+      } else {
+        if (value !== null && value !== undefined && value !== '') out[key] = value;
+      }
+    } else if (lower.includes('haplotype')) {
+      if (mode === 'strict') {
+        const v = clinicaliseHaplotype(value);
+        if (v !== null) out[`${key}_clinical`] = v;
+      } else {
+        if (value !== null && value !== undefined && value !== '') out[key] = value;
+      }
+    } else if (lower.includes('date')) {
+      // Both modes: strip to year-only. Even in precise mode we don't
+      // want the exact day-of-month leaving the server.
+      const y = yearFromDate(value);
+      if (y !== null) out[`${key}_year`] = y;
+    } else if (mode === 'precise' && OCR_FIELDS_SAFE_KEYS_PRECISE.has(key)) {
+      // Precise-mode allowlist of structured non-clinical OCR keys.
+      if (value !== null && value !== undefined && value !== '') out[key] = value;
+    }
+    // else: deny-by-default. Free-form / unknown OCR keys never make
+    // it into the prompt regardless of mode.
+  }
+  return out;
+};
+
 /**
  * Strict-mode transform: for each known-sensitive raw key, compute a
  * clinical sibling and mark the original for removal. Unknown keys
@@ -212,41 +287,8 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
       }
       drop.add('reportDate');
     }
-    // Clinicalise the OCR fields blob the patient_reports retriever
-    // surfaces. Strict mode is deny-by-default for OCR keys: only
-    // patterns we explicitly know how to scrub (`d4z4*`,
-    // `methylation*`, `haplotype*`, `*date*`) project into
-    // `fields_clinical`. Free-form OCR values — including narrative
-    // findings, raw report titles, patient demographics the OCR may
-    // have extracted, and anything we have not yet reviewed — are
-    // **dropped**, because we cannot guarantee they are PII-free.
-    // Precise mode keeps the entire raw `fields` blob via the
-    // allowlist.
-    if ('fields' in input && isPlainObject(input.fields)) {
-      const rawFields = input.fields;
-      const cleanedFields: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(rawFields)) {
-        const lower = key.toLowerCase();
-        if (lower.includes('d4z4')) {
-          const v = clinicaliseD4Z4(value);
-          if (v !== null) cleanedFields[`${key}_clinical`] = v;
-        } else if (lower.includes('methylation')) {
-          const v = clinicaliseMethylation(value);
-          if (v !== null) cleanedFields[`${key}_clinical`] = v;
-        } else if (lower.includes('haplotype')) {
-          const v = clinicaliseHaplotype(value);
-          if (v !== null) cleanedFields[`${key}_clinical`] = v;
-        } else if (lower.includes('date')) {
-          const v = yearFromDate(value);
-          if (v !== null) cleanedFields[`${key}_year`] = v;
-        }
-        // No `else` branch: unknown OCR keys are intentionally dropped
-        // in strict mode to avoid leaking free-form values.
-      }
-      added.fields_clinical = cleanedFields;
-      drop.add('fields');
-      changed.push('fields');
-    }
+    // OCR `fields` blob is handled in the top-level redact() flow now
+    // (both modes need projection, not just strict). See projectOcrFields.
   }
 
   // Birthday handling lives outside the scope branch because both
@@ -299,12 +341,15 @@ export const redactFields = (
     notAllowed: [],
   };
 
-  // Layer 1.
+  // Layer 1 — recursive hard-delete (covers nested OCR blobs).
   const layer1 = hardDelete(fields);
   stats.hardDeleted = layer1.removed;
   let working = layer1.cleaned;
 
-  // Layer 2 — only in strict mode.
+  // Layer 2 — strict-mode-only clinicalisation of profile-level fields
+  // (D4Z4 / methylation / haplotype → _clinical, diagnosisDate → year,
+  // dateOfBirth → ageGroup). Precise mode skips this layer for
+  // top-level keys.
   if (mode === 'strict') {
     const layer2 = clinicalise(working, scope);
     stats.clinicalised = layer2.changed;
@@ -312,6 +357,23 @@ export const redactFields = (
     for (const k of layer2.drop) {
       delete working[k];
     }
+  }
+
+  // Layer 2b — OCR `fields` projection. Runs in **both** modes
+  // because precise mode otherwise let the raw OCR blob through
+  // verbatim (PR #23 follow-up). Strict mode emits `fields_clinical`
+  // with clinicalised values; precise mode emits `fields` with raw
+  // values, but only for keys we explicitly trust as structured /
+  // non-PII. Free-form OCR keys are dropped in both modes.
+  if (scope === 'reports' && isPlainObject(working.fields)) {
+    const projected = projectOcrFields(working.fields, mode);
+    if (mode === 'strict') {
+      working.fields_clinical = projected;
+      delete working.fields;
+    } else {
+      working.fields = projected;
+    }
+    stats.clinicalised.push('fields');
   }
 
   // Layer 3 — always.

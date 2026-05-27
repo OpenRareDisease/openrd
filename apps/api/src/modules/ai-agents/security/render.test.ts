@@ -196,7 +196,7 @@ describe('renderChunkForPrompt — patient reports, strict mode (regression fenc
     }
   });
 
-  it('keeps raw OCR values and titles in precise mode', async () => {
+  it('keeps clinically useful raw OCR values in precise mode', async () => {
     const retriever = new PatientReportsRetriever(fakePool([REPORT_ROWS[0]]));
     const result = await retriever.search(
       { question: 'reports' },
@@ -207,7 +207,55 @@ describe('renderChunkForPrompt — patient reports, strict mode (regression fenc
     expect(rendered.content).toContain('3/22');
     expect(rendered.content).toContain('4qA');
     expect(rendered.content).toContain('12%');
-    expect(rendered.content).toContain('张三的基因检测报告');
+    // PR #23 follow-up: title is no longer in the precise allowlist
+    // because it is user-supplied free text and routinely contains
+    // the patient's name. The clinical report type still passes.
+    expect(rendered.content).not.toContain('张三的基因检测报告');
+    expect(rendered.content).toContain('genetic_report');
+  });
+
+  // Regression for the bot's PR #23 follow-up review:
+  // precise mode must scrub identifier-like keys nested inside the
+  // OCR `fields` blob, and reject free-form OCR keys whose values
+  // routinely carry PII.
+  it('precise mode strips nested identifier keys and free-form OCR fields', async () => {
+    const retriever = new PatientReportsRetriever(fakePool(REPORT_ROWS));
+    const result = await retriever.search(
+      { question: 'reports' },
+      makeCtx({ consentLevel: 'precise' }),
+    );
+
+    for (const chunk of result.chunks) {
+      const rendered = renderChunkForPrompt(chunk, { mode: 'precise' });
+
+      // Nested hard-delete key NAMES must be gone.
+      expect(rendered.content).not.toContain('patientName');
+      expect(rendered.content).not.toContain('patientId');
+
+      // And their VALUES must not survive via any other path.
+      expect(rendered.content).not.toContain('张三'); // also catches rawFreeText leak
+      expect(rendered.content).not.toContain('11010119900520XXXX');
+      expect(rendered.content).not.toContain('110101199005203XXX');
+      expect(rendered.content).not.toContain('13812345678');
+      expect(rendered.content).not.toContain('138-1234-5678');
+
+      // Free-form OCR keys with prose values must be dropped entirely
+      // — including the MRI `findings` and the catch-all rawFreeText.
+      expect(rendered.content).not.toContain('rawFreeText');
+      expect(rendered.content).not.toContain('受检者');
+      expect(rendered.content).not.toContain('STIR');
+    }
+
+    // Clinically useful raw values still come through for the
+    // genetic report so precise mode is not gutted.
+    const genetic = renderChunkForPrompt(result.chunks[0], { mode: 'precise' });
+    expect(genetic.content).toContain('3/22'); // d4z4Repeats raw
+    expect(genetic.content).toContain('4qA'); // haplotype raw
+    expect(genetic.content).toContain('12%'); // methylationValue raw
+    expect(genetic.content).toContain('FSHD1'); // diagnosisType raw label
+    // Exact issue date is also stripped to year-only.
+    expect(genetic.content).not.toContain('2023-06-01');
+    expect(genetic.content).toContain('2023');
   });
 });
 

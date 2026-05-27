@@ -61,11 +61,14 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
     ],
   },
   reports: {
-    // Note: `title` is intentionally **not** in the strict allowlist.
-    // Users frequently include their own name in the report title at
-    // upload time (e.g. "张三的基因检测报告"), and strict mode promises
-    // raw identifiers never leave the server. Precise mode keeps
-    // `title` because the user has explicitly opted in.
+    // Note: `title` is intentionally **not** in either allowlist.
+    // Users routinely include their own (or a family member's) name
+    // in the report title at upload time (e.g. "张三的基因检测报告"),
+    // so titles are user-supplied free text that we cannot statically
+    // prove are PII-free. The PR #23 follow-up review made it
+    // explicit that precise mode is opt-in for clinical raw values,
+    // not for free-form name-bearing text. The classified report
+    // type carries enough context for the LLM.
     strict: [
       'classifiedType',
       'documentType',
@@ -79,7 +82,6 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'documentType',
       'reportDate_year',
       'status',
-      'title',
       'fields',
       'findings_summary',
     ],
@@ -100,8 +102,12 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'full_name',
   'preferredName',
   'preferred_name',
+  'patientName', // OCR-extracted patient name routinely lands under this key
+  'patient_name',
   'patientCode',
   'patient_code',
+  'patientId', // OCR-extracted patient identifier
+  'patient_id',
   'phoneNumber',
   'phone_number',
   'contactPhone',
@@ -124,5 +130,54 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'birthday',
   'primaryPhysician',
   'primary_physician',
+  'doctorName', // OCR sometimes extracts the issuing physician's name
+  'doctor_name',
+  'physician',
   'notes', // free text notes may contain PII; never auto-ship
+  'rawFreeText', // OCR full-text dump — almost always carries identifiers
+  'raw_free_text',
+  'rawText',
+  'raw_text',
+  'fullText',
+  'full_text',
+]);
+
+/**
+ * Per-key handling for OCR `fields` blobs in precise mode.
+ *
+ * Strict-mode OCR handling lives in the redactor's projector
+ * (pattern-match → clinicalised sibling, deny-by-default). Precise
+ * mode shares the same deny-by-default skeleton; the keys listed here
+ * are the ones where we let the **raw** value through because the
+ * user explicitly opted in to precise data and the key by its name
+ * is structured / clinical rather than free-form.
+ *
+ * Free-form narrative keys (`findings`, `impression`) are
+ * intentionally absent: OCR-extracted prose routinely embeds the
+ * patient's name or other identifiers and we cannot statically prove
+ * a value is safe. Curated structured equivalents (e.g.
+ * `findings_summary` produced by a reviewed pipeline) can be added
+ * when that path lands.
+ */
+export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
+  'classifiedType',
+  'classified_type',
+  'reportType',
+  'report_type',
+  'documentType',
+  'document_type',
+  'diagnosisType',
+  'diagnosis_type',
+  'geneType',
+  'gene_type',
+  'geneticType',
+  'genetic_type',
+  'testMethod',
+  'test_method',
+  'methodology',
+  'referenceRange',
+  'reference_range',
+  'normalRange',
+  'normal_range',
+  'status',
 ]);
