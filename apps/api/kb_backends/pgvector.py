@@ -35,22 +35,43 @@ class PgVectorBackend(VectorBackend):
         self,
         connection_string: Optional[str] = None,
         table_name: str = "kb_chunks",
-        min_size: int = 1,
-        max_size: int = 2,
+        min_size: Optional[int] = None,
+        max_size: Optional[int] = None,
     ) -> None:
         self.connection_string = connection_string or os.getenv("DATABASE_URL", "").strip()
         if not self.connection_string:
             raise RuntimeError("Missing env DATABASE_URL for pgvector backend")
         self.table_name = table_name
+
+        # Pool sizing is configurable via env so ops can bump it without a
+        # code change when the KB service grows past its current
+        # single-process-single-thread profile. Constructor arguments win
+        # over env for test injection.
+        resolved_min = min_size if min_size is not None else _env_int("KB_PG_POOL_MIN", 1)
+        resolved_max = max_size if max_size is not None else _env_int("KB_PG_POOL_MAX", 2)
+        if resolved_min < 1 or resolved_max < resolved_min:
+            raise ValueError(
+                f"Invalid pool sizing: KB_PG_POOL_MIN={resolved_min}, "
+                f"KB_PG_POOL_MAX={resolved_max} (need 1 <= min <= max)"
+            )
+
+        # Verify the pgvector extension is available up front. The pool
+        # opens connections lazily in a background thread and swallows
+        # configure-callback exceptions, so a missing extension would
+        # otherwise surface only at first INSERT with an inscrutable
+        # error. This synchronous probe gives the operator an
+        # actionable message at startup.
+        self._verify_vector_extension()
+
         # ConnectionPool gives us reconnect on broken connections, idle
-        # timeout handling, and basic concurrency safety. Two connections
+        # timeout handling, and basic concurrency safety. Defaults (1, 2)
         # are plenty for the current KB service (single Python process,
-        # serial query handling), but the upper bound exists so a future
-        # worker pool wouldn't immediately starve.
+        # serial query handling); raise max via KB_PG_POOL_MAX if a future
+        # worker pool needs more headroom.
         self.pool = ConnectionPool(
             conninfo=self.connection_string,
-            min_size=min_size,
-            max_size=max_size,
+            min_size=resolved_min,
+            max_size=resolved_max,
             configure=self._configure_conn,
             kwargs={"autocommit": False},
             open=True,
@@ -58,9 +79,33 @@ class PgVectorBackend(VectorBackend):
         logger.info(
             "pgvector backend ready: table=%s pool=[%d,%d]",
             self.table_name,
-            min_size,
-            max_size,
+            resolved_min,
+            resolved_max,
         )
+
+    def _verify_vector_extension(self) -> None:
+        """Synchronously confirm the pgvector extension is installed.
+
+        pgvector.psycopg.register_vector silently returns if the vector
+        type isn't registered in pg_type, and ConnectionPool swallows
+        configure-callback exceptions in its background worker. Both
+        leave operators with a confusing first-query failure later.
+        This probe runs once at backend init with its own short-lived
+        connection so missing-extension surfaces immediately with a
+        clear message.
+        """
+        with psycopg.connect(self.connection_string) as probe:
+            with probe.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                if cur.fetchone() is None:
+                    raise RuntimeError(
+                        "pgvector extension is not available on this database. "
+                        "Run `CREATE EXTENSION IF NOT EXISTS vector;` (or apply "
+                        "db/migrations/006_pgvector_kb.sql via `npm run db:migrate`) "
+                        "after installing the pgvector package on the Postgres "
+                        "host (`brew install pgvector` for Homebrew Postgres, or "
+                        "use the `pgvector/pgvector:pg16` Docker image)."
+                    )
 
     @staticmethod
     def _configure_conn(conn: psycopg.Connection) -> None:
@@ -270,3 +315,14 @@ class PgVectorBackend(VectorBackend):
 
 def _json_dump(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r, falling back to %d", name, raw, default)
+        return default

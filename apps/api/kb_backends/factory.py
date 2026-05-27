@@ -17,6 +17,14 @@ def create_backend(name: Optional[str] = None) -> VectorBackend:
     The name comes from the explicit argument first, then the
     KB_BACKEND env, then a safe default of 'chroma_cloud' (preserving
     the legacy behaviour during rollout).
+
+    TODO(issue #21): flip the default from 'chroma_cloud' to 'pgvector'
+    once all known environments have run `npm run kb:import:chroma`,
+    confirmed recall via `npm run kb:verify`, and set KB_BACKEND
+    explicitly in their .env. Keeping chroma_cloud as the default for
+    now means a forgotten env value falls back to the previously
+    working cloud KB instead of silently hitting an empty pgvector
+    table.
     """
 
     resolved = (name or os.getenv("KB_BACKEND", "chroma_cloud")).strip().lower()
