@@ -59,12 +59,12 @@ describe('PatientReportsRetriever', () => {
     expect(result.metadata.reason).toBe('no_reports_found');
   });
 
-  it('renders one chunk per report with OCR fields', async () => {
+  it('renders chunks with placeholder content and raw structured fields', async () => {
     const { pool } = fakePool([
       {
         id: 'doc-1',
         document_type: 'genetic_report',
-        title: '基因检测报告',
+        title: '张三的基因检测报告',
         uploaded_at: '2026-04-01T08:00:00Z',
         status: 'processed',
         ocr_payload: {
@@ -74,6 +74,7 @@ describe('PatientReportsRetriever', () => {
             d4z4Repeats: '3/22',
             haplotype: '4qA',
             methylationValue: '12%',
+            patientName: '张三',
           },
         },
         classified_type: 'genetic_report',
@@ -98,11 +99,32 @@ describe('PatientReportsRetriever', () => {
     const result = await retriever.search({ question: 'recent reports' }, makeCtx());
 
     expect(result.chunks).toHaveLength(2);
-    expect(result.chunks[0].content).toContain('d4z4Repeats: 3/22');
-    expect(result.chunks[0].content).toContain('基因检测报告');
-    expect(result.chunks[1].content).toContain('STIR 信号显著增高');
-    expect(result.citations).toHaveLength(2);
-    expect(result.metadata.documentCount).toBe(2);
+
+    // Neither chunk content nor citation snippet may carry raw values.
+    for (const chunk of result.chunks) {
+      expect(chunk.content).toMatch(/^【患者报告占位/);
+      expect(chunk.content).not.toContain('张三');
+      expect(chunk.content).not.toContain('3/22');
+      expect(chunk.content).not.toContain('12%');
+      expect(chunk.content).not.toContain('2026-04-01');
+      expect(chunk.content).not.toContain('STIR');
+    }
+    for (const citation of result.citations) {
+      expect(citation.snippet).toBe('你的患者报告');
+    }
+
+    // metadata.fields carries the raw OCR map for the redactor.
+    const f0 = result.chunks[0].metadata.fields as Record<string, unknown>;
+    expect(f0.classifiedType).toBe('genetic_report');
+    expect(f0.title).toBe('张三的基因检测报告');
+    expect(f0.reportDate).toBe('2026-04-01T08:00:00.000Z');
+    const inner = f0.fields as Record<string, unknown>;
+    expect(inner.d4z4Repeats).toBe('3/22');
+    expect(inner.haplotype).toBe('4qA');
+    expect(inner.patientName).toBe('张三');
+
+    const f1 = result.chunks[1].metadata.fields as Record<string, unknown>;
+    expect((f1.fields as Record<string, unknown>).findings).toContain('STIR');
   });
 
   it('honours documentType and since filters in the SQL params', async () => {
@@ -128,7 +150,6 @@ describe('PatientReportsRetriever', () => {
     const retriever = new PatientReportsRetriever(pool);
     await retriever.search({ question: 'x', limit: 999 }, makeCtx());
     const [, params] = query.mock.calls[0];
-    // Last positional param is the limit; should be clamped to <= 20.
     const limit = params.at(-1) as number;
     expect(limit).toBeLessThanOrEqual(20);
   });

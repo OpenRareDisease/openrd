@@ -176,7 +176,35 @@ describe('redactFields (reports)', () => {
     expect(fc.haplotype_clinical).toBe('pathogenic_haplotype_permissive');
     expect(fc.methylationValue_clinical).toBe('hypomethylated_severe');
     expect(fc.reportIssueDate_year).toBe(2026);
-    expect(fc.classifiedType).toBe('genetic_report');
+  });
+
+  it('strict mode drops unknown OCR keys (deny-by-default)', () => {
+    const { fields } = redactFields(
+      {
+        ...reportFields,
+        fields: {
+          ...(reportFields.fields as Record<string, unknown>),
+          patientName: '张三',
+          freeFormFindings: '患者张三主诉下肢无力，姓名身份证已记录',
+          classifiedType: 'genetic_report',
+        },
+      },
+      { scope: 'reports', mode: 'strict' },
+    );
+    const fc = fields.fields_clinical as Record<string, unknown>;
+    expect(fc.patientName).toBeUndefined();
+    expect(fc.freeFormFindings).toBeUndefined();
+    expect(fc.classifiedType).toBeUndefined();
+    // Known-pattern keys still survive as clinicalised siblings.
+    expect(fc.d4z4Repeats_clinical).toBe('low_repeat_severe');
+  });
+
+  it('strict mode strips `title` even when callers add it', () => {
+    const { fields } = redactFields(
+      { ...reportFields, title: '张三的基因检测报告 2026' },
+      { scope: 'reports', mode: 'strict' },
+    );
+    expect(fields.title).toBeUndefined();
   });
 
   it('precise mode keeps raw OCR fields and raw report date', () => {

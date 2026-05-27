@@ -213,9 +213,15 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
       drop.add('reportDate');
     }
     // Clinicalise the OCR fields blob the patient_reports retriever
-    // surfaces. The strict-mode allowlist accepts `fields_clinical`
-    // (not `fields`), so we project the raw OCR map through D4Z4 /
-    // methylation / haplotype transforms when those keys are present.
+    // surfaces. Strict mode is deny-by-default for OCR keys: only
+    // patterns we explicitly know how to scrub (`d4z4*`,
+    // `methylation*`, `haplotype*`, `*date*`) project into
+    // `fields_clinical`. Free-form OCR values — including narrative
+    // findings, raw report titles, patient demographics the OCR may
+    // have extracted, and anything we have not yet reviewed — are
+    // **dropped**, because we cannot guarantee they are PII-free.
+    // Precise mode keeps the entire raw `fields` blob via the
+    // allowlist.
     if ('fields' in input && isPlainObject(input.fields)) {
       const rawFields = input.fields;
       const cleanedFields: Record<string, unknown> = {};
@@ -233,12 +239,9 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
         } else if (lower.includes('date')) {
           const v = yearFromDate(value);
           if (v !== null) cleanedFields[`${key}_year`] = v;
-        } else {
-          // Non-sensitive OCR fields (findings text, classifiedType,
-          // etc.) pass through under fields_clinical so they can still
-          // be cited in strict mode.
-          cleanedFields[key] = value;
         }
+        // No `else` branch: unknown OCR keys are intentionally dropped
+        // in strict mode to avoid leaking free-form values.
       }
       added.fields_clinical = cleanedFields;
       drop.add('fields');

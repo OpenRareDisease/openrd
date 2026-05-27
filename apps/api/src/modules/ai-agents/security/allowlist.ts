@@ -61,12 +61,16 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
     ],
   },
   reports: {
+    // Note: `title` is intentionally **not** in the strict allowlist.
+    // Users frequently include their own name in the report title at
+    // upload time (e.g. "张三的基因检测报告"), and strict mode promises
+    // raw identifiers never leave the server. Precise mode keeps
+    // `title` because the user has explicitly opted in.
     strict: [
       'classifiedType',
       'documentType',
       'reportDate_year',
       'status',
-      'title',
       'fields_clinical',
       'findings_summary',
     ],

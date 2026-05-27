@@ -16,3 +16,4 @@ export {
   type RedactionStats,
   type RedactOptions,
 } from './pii-redactor.js';
+export { renderChunkForPrompt, type RenderedChunk, type RenderOptions } from './render.js';

@@ -1,17 +1,23 @@
 /**
  * Patient profile retriever.
  *
- * Pulls the authenticated user's profile + baseline_payload via SQL
- * and returns a single chunk summarising the fields relevant to a
- * medical Q&A: demographics, FSHD background, current functional
- * status. PII redaction is **not** done here — the orchestrator
- * passes the chunk through PIIRedactor before it ever lands in a
- * prompt.
+ * Pulls the authenticated user's profile + baseline_payload via SQL and
+ * exposes the result as **structured fields** under `chunk.metadata.fields`.
  *
- * The retriever refuses to read when:
+ * Privacy contract (see PR #23 review):
+ *   - `chunk.content` and `citation.snippet` are deliberately generic
+ *     placeholders. They never contain raw patient data, raw dates,
+ *     names, or any other identifier. Anything an LLM might quote has
+ *     to travel through `security/render.ts → renderChunkForPrompt`
+ *     so the redactor + allowlist get a chance to filter it first.
+ *   - The retriever still surfaces raw values in `metadata.fields`;
+ *     it is the orchestrator's job (Phase 2B) to call the renderer
+ *     before injecting anything into a prompt.
+ *
+ * Refuses to read when:
  *   - `ctx.userId` is null (no user in scope)
- *   - `ctx.consentLevel` is 'none' (user hasn't agreed to personal
- *     data use yet)
+ *   - `ctx.consentLevel` is 'none' or missing (user hasn't agreed
+ *     to personal data use yet)
  */
 
 import { randomUUID } from 'node:crypto';
@@ -25,7 +31,7 @@ import type {
   RetrieveResult,
   RetrievedChunk,
 } from './base.js';
-import { buildSnippet, emptyResult } from './base.js';
+import { emptyResult } from './base.js';
 
 interface ProfileRow {
   id: string;
@@ -52,22 +58,6 @@ const formatDate = (value: string | Date | null | undefined): string | null => {
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString().slice(0, 10);
 };
 
-const ageGroupFromDate = (value: string | Date | null | undefined): string | null => {
-  const iso = formatDate(value);
-  if (!iso) return null;
-  const year = Number(iso.slice(0, 4));
-  if (!Number.isFinite(year)) return null;
-  const age = new Date().getUTCFullYear() - year;
-  if (age < 0 || age > 120) return null;
-  if (age < 18) return 'under_18';
-  if (age < 30) return '18_29';
-  if (age < 40) return '30_39';
-  if (age < 50) return '40_49';
-  if (age < 60) return '50_59';
-  if (age < 70) return '60_69';
-  return '70_plus';
-};
-
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -81,26 +71,34 @@ const baselineSection = (
 };
 
 /**
- * Build the text body the retriever emits as a "chunk". The format
- * is a compact key/value list that LLMs read reliably without us
- * having to teach them a custom DSL. Intentionally keeps **all**
- * fields available — Layer 1/2/3 redaction happens downstream.
+ * Project a profile row into the raw structured-field map that the
+ * PIIRedactor consumes. The keys here intentionally mirror the
+ * allowlist + hard-delete entries in `security/allowlist.ts` so the
+ * redactor can decide field-by-field what reaches the prompt.
+ *
+ * **Raw values are kept on purpose.** Hard-delete strips the obvious
+ * identifiers (fullName, DOB, district, notes), and strict-mode
+ * clinicalisation collapses D4Z4 / haplotype / methylation / dates.
+ * The renderer (security/render.ts) is what produces the user-facing
+ * text — this function only assembles the input.
  */
-const renderProfileChunk = (row: ProfileRow): string => {
-  const lines: string[] = ['【患者基础档案】'];
+const buildProfileFields = (row: ProfileRow): Record<string, unknown> => {
+  const fields: Record<string, unknown> = {};
 
-  const ageGroup = ageGroupFromDate(row.date_of_birth);
-  if (ageGroup) lines.push(`年龄段: ${ageGroup}`);
-  if (row.gender) lines.push(`性别: ${row.gender}`);
-  if (row.diagnosis_stage) lines.push(`诊断阶段: ${row.diagnosis_stage}`);
+  // Hard-delete keys are included so the redactor visibly removes
+  // them. Listing them keeps the audit trail honest ("this field
+  // was in scope but stripped at layer 1").
+  if (row.full_name) fields.fullName = row.full_name;
+  if (row.date_of_birth) fields.dateOfBirth = formatDate(row.date_of_birth);
+  if (row.region_district) fields.regionDistrict = row.region_district;
+  if (row.notes) fields.notes = row.notes;
 
-  const diagnosisDate = formatDate(row.diagnosis_date);
-  if (diagnosisDate) lines.push(`确诊日期: ${diagnosisDate}`);
-  if (row.genetic_mutation) lines.push(`基因突变描述: ${row.genetic_mutation}`);
+  // Strict-mode clinicalisation candidates.
+  if (row.diagnosis_date) fields.diagnosisDate = formatDate(row.diagnosis_date);
 
-  if (row.region_province || row.region_city) {
-    lines.push(`地区: ${[row.region_province, row.region_city].filter(Boolean).join(' / ')}`);
-  }
+  // Pass-through (subject to allowlist).
+  if (row.gender) fields.gender = row.gender;
+  if (row.diagnosis_stage) fields.diagnosisStage = row.diagnosis_stage;
 
   const baseline = row.baseline_payload;
   const foundation = baselineSection(baseline, 'foundation');
@@ -109,52 +107,52 @@ const renderProfileChunk = (row: ProfileRow): string => {
 
   if (foundation) {
     if (foundation.diagnosisYear !== undefined && foundation.diagnosisYear !== null) {
-      lines.push(`确诊年份: ${foundation.diagnosisYear}`);
-    }
-    if (typeof foundation.regionLabel === 'string' && foundation.regionLabel) {
-      lines.push(`地区标签: ${foundation.regionLabel}`);
+      fields.diagnosisYear = foundation.diagnosisYear;
     }
   }
 
   if (disease) {
     if (typeof disease.diagnosisType === 'string' && disease.diagnosisType) {
-      lines.push(`分型/诊断方式: ${disease.diagnosisType}`);
+      fields.diagnosisType = disease.diagnosisType;
     }
     if (disease.d4z4 !== undefined && disease.d4z4 !== null && disease.d4z4 !== '') {
-      lines.push(`D4Z4 重复数: ${disease.d4z4}`);
+      fields.d4z4 = disease.d4z4;
     }
     if (typeof disease.haplotype === 'string' && disease.haplotype) {
-      lines.push(`单倍型: ${disease.haplotype}`);
+      fields.haplotype = disease.haplotype;
     }
     if (
       disease.methylation !== undefined &&
       disease.methylation !== null &&
       disease.methylation !== ''
     ) {
-      lines.push(`甲基化值: ${disease.methylation}`);
+      fields.methylation = disease.methylation;
     }
     if (typeof disease.onsetRegion === 'string' && disease.onsetRegion) {
-      lines.push(`首发部位: ${disease.onsetRegion}`);
+      fields.onsetRegion = disease.onsetRegion;
     }
     if (typeof disease.familyHistory === 'string' && disease.familyHistory) {
-      lines.push(`家族史: ${disease.familyHistory}`);
+      fields.familyHistory = disease.familyHistory;
     }
   }
 
   if (current) {
     if (typeof current.independentlyAmbulatory === 'boolean') {
-      lines.push(`独立行走: ${current.independentlyAmbulatory ? '是' : '否'}`);
+      fields.independentlyAmbulatory = current.independentlyAmbulatory;
     }
     if (Array.isArray(current.assistiveDevices) && current.assistiveDevices.length > 0) {
-      lines.push(`辅具: ${current.assistiveDevices.filter(Boolean).join('、')}`);
+      fields.assistiveDevices = current.assistiveDevices.filter(Boolean);
     }
   }
 
-  if (lines.length === 1) {
-    lines.push('（暂无可用字段）');
-  }
-  return lines.join('\n');
+  return fields;
 };
+
+/** Generic placeholder content for chunks that carry patient PII in
+ *  metadata. Used in both `chunk.content` and `citation.snippet` so
+ *  no raw value leaks via the citation UI either. */
+const PLACEHOLDER_CONTENT = '【患者基础档案 — 字段经 PIIRedactor 处理后由 ContextBuilder 渲染】';
+const PLACEHOLDER_SNIPPET = '你的患者档案';
 
 export class PatientProfileRetriever implements IRetriever {
   readonly id = 'patient_profile';
@@ -185,16 +183,17 @@ export class PatientProfileRetriever implements IRetriever {
     }
 
     const row = result.rows[0];
-    const content = renderProfileChunk(row);
+    const fields = buildProfileFields(row);
     const chunkId = randomUUID();
 
     const chunk: RetrievedChunk = {
       id: chunkId,
       source: this.id,
-      content,
+      content: PLACEHOLDER_CONTENT,
       metadata: {
         profileId: row.id,
         hasBaseline: row.baseline_payload != null,
+        fields,
       },
       distance: null,
       sourceFile: 'patient_profile',
@@ -205,7 +204,7 @@ export class PatientProfileRetriever implements IRetriever {
       source: this.id,
       sourceFile: 'patient_profile',
       chunkIndex: 0,
-      snippet: buildSnippet(content),
+      snippet: PLACEHOLDER_SNIPPET,
     };
 
     return {
@@ -214,6 +213,7 @@ export class PatientProfileRetriever implements IRetriever {
       citations: [citation],
       metadata: {
         profileId: row.id,
+        fieldCount: Object.keys(fields).length,
       },
     };
   }

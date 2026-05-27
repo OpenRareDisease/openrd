@@ -2,10 +2,19 @@
  * Patient reports retriever.
  *
  * Joins `patient_documents` to the authenticated user's profile and
- * returns the most recent N reports whose `ocr_payload` carries
- * structured fields. Each report becomes one chunk; the orchestrator
- * (with the PIIRedactor) decides what subset of fields makes it into
- * the prompt.
+ * exposes the most recent reports as **structured fields** under each
+ * chunk's `metadata.fields`.
+ *
+ * Privacy contract (see PR #23 review):
+ *   - `chunk.content` and `citation.snippet` are deliberately generic
+ *     placeholders. Raw OCR values, report titles (which can contain
+ *     the patient's name), and exact upload dates never make it into
+ *     a citation or a chunk body. The orchestrator must route the
+ *     data through `security/render.ts → renderChunkForPrompt`.
+ *   - The retriever still surfaces the raw OCR `fields` blob in
+ *     `metadata.fields.fields` so the redactor can apply the
+ *     strict-mode clinicalisation + allowlist before anything reaches
+ *     the prompt.
  *
  * Optional filter keys:
  *   - `documentType`: filter to a specific report type
@@ -13,8 +22,7 @@
  *   - `since`: ISO date string; only reports uploaded on/after this
  *     date are returned.
  *
- * Like the profile retriever this refuses to read when there's no
- * user in scope or consent is `none`.
+ * Refuses to read when there's no user in scope or consent is `none`.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -28,7 +36,7 @@ import type {
   RetrieveResult,
   RetrievedChunk,
 } from './base.js';
-import { buildSnippet, emptyResult } from './base.js';
+import { emptyResult } from './base.js';
 
 interface ReportRow {
   id: string;
@@ -56,40 +64,34 @@ const formatTimestamp = (value: string | Date | null | undefined): string | null
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
 };
 
-const renderReportChunk = (row: ReportRow): string => {
-  const lines: string[] = [];
-  const reportType = row.classified_type ?? row.document_type ?? 'unknown';
-  lines.push(`【患者报告 / ${reportType}】`);
+const buildReportFields = (row: ReportRow): Record<string, unknown> => {
+  const fields: Record<string, unknown> = {};
 
+  if (row.classified_type) fields.classifiedType = row.classified_type;
+  if (row.document_type) fields.documentType = row.document_type;
+  if (row.status) fields.status = row.status;
+
+  // `title` is a user-named field on the document upload and can
+  // contain the patient's name. Strict mode drops it via the
+  // allowlist; precise mode lets it through. We expose it raw here
+  // so the redactor sees it and the orchestrator's decision is
+  // visible in the audit row.
+  if (row.title) fields.title = row.title;
+
+  // `reportDate` is the raw upload timestamp string. Strict mode
+  // collapses it to `reportDate_year`; precise mode keeps the date.
   const uploadedAt = formatTimestamp(row.uploaded_at);
-  if (uploadedAt) lines.push(`上传时间: ${uploadedAt.slice(0, 10)}`);
-  if (row.title) lines.push(`报告标题: ${row.title}`);
-  if (row.status) lines.push(`状态: ${row.status}`);
+  if (uploadedAt) fields.reportDate = uploadedAt;
 
-  const fields = isPlainObject(row.ocr_payload?.fields)
-    ? (row.ocr_payload?.fields as Record<string, unknown>)
-    : null;
-
-  if (fields) {
-    const fieldLines: string[] = [];
-    for (const [key, value] of Object.entries(fields)) {
-      if (value === null || value === undefined || value === '') continue;
-      if (typeof value === 'object') {
-        fieldLines.push(`${key}: ${JSON.stringify(value)}`);
-      } else {
-        fieldLines.push(`${key}: ${String(value)}`);
-      }
-    }
-    if (fieldLines.length > 0) {
-      lines.push('关键字段:');
-      lines.push(...fieldLines.map((l) => `  - ${l}`));
-    }
+  // The OCR payload itself: structured fields the redactor can
+  // clinicalise per key (`d4z4*`, `methylation*`, `haplotype*`,
+  // `*date*`) in strict mode, or pass through verbatim in precise
+  // mode.
+  if (isPlainObject(row.ocr_payload?.fields)) {
+    fields.fields = row.ocr_payload.fields;
   }
 
-  if (lines.length === 1) {
-    lines.push('（暂无 OCR 抽取字段）');
-  }
-  return lines.join('\n');
+  return fields;
 };
 
 const coerceSince = (raw: unknown): string | null => {
@@ -100,6 +102,16 @@ const coerceSince = (raw: unknown): string | null => {
 
 const coerceDocumentType = (raw: unknown): string | null =>
   typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+
+const PLACEHOLDER_CONTENT_PREFIX = '【患者报告占位';
+const PLACEHOLDER_SNIPPET = '你的患者报告';
+
+/** Generic content for a chunk. Includes the report-type label
+ *  (already non-PII because it's a classification) so the orchestrator
+ *  can route by kind without inspecting metadata, but never includes a
+ *  title, date, or any OCR value. */
+const placeholderContent = (reportType: string | null): string =>
+  `${PLACEHOLDER_CONTENT_PREFIX} / ${reportType ?? 'unknown'} — 字段经 PIIRedactor 处理后由 ContextBuilder 渲染】`;
 
 export class PatientReportsRetriever implements IRetriever {
   readonly id = 'patient_reports';
@@ -161,20 +173,25 @@ export class PatientReportsRetriever implements IRetriever {
     const citations: Citation[] = [];
 
     result.rows.forEach((row, idx) => {
-      const content = renderReportChunk(row);
       const chunkId = randomUUID();
       const sourceFile = `patient_reports/${row.id}`;
+      const fields = buildReportFields(row);
+      const reportType = row.classified_type ?? row.document_type ?? null;
 
       chunks.push({
         id: chunkId,
         source: this.id,
-        content,
+        content: placeholderContent(reportType),
         metadata: {
           documentId: row.id,
           documentType: row.document_type,
           classifiedType: row.classified_type,
+          // `uploadedAt` stays in metadata for ordering / audit but
+          // never reaches the prompt (the renderer reads
+          // `metadata.fields` only).
           uploadedAt: formatTimestamp(row.uploaded_at),
           status: row.status,
+          fields,
         },
         distance: null,
         sourceFile,
@@ -185,7 +202,7 @@ export class PatientReportsRetriever implements IRetriever {
         source: this.id,
         sourceFile,
         chunkIndex: idx,
-        snippet: buildSnippet(content),
+        snippet: PLACEHOLDER_SNIPPET,
       });
     });
 
