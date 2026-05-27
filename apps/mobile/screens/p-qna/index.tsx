@@ -474,7 +474,9 @@ const P_QNA = () => {
           <View>
             <Text style={styles.eyebrow}>SMART CHAT</Text>
             <Text style={styles.pageTitle}>智能问答</Text>
-            <Text style={styles.pageSubtitle}>保留最近对话，方便连续追问和补充上下文。</Text>
+            <Text style={styles.pageSubtitle}>
+              每条问题独立检索；回答下方会标明引用来源和是否用到你的资料。
+            </Text>
           </View>
           <TouchableOpacity
             style={styles.headerAction}
@@ -582,7 +584,7 @@ const P_QNA = () => {
             <TextInput
               ref={inputRef}
               style={styles.composerInput}
-              placeholder="输入你的问题，支持连续追问..."
+              placeholder="输入你想问的 FSHD 问题..."
               placeholderTextColor={CLINICAL_COLORS.textMuted}
               value={draft}
               onChangeText={setDraft}

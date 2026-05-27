@@ -438,9 +438,17 @@ export interface ConsentTimestamps {
   preciseValuesAt: string | null;
 }
 
-export interface ConsentDetails {
+/** Level + flags only. Mirrors the backend `ConsentStatus` shape
+ *  used by `/api/ai/ask` when it returns a 403 — that body does not
+ *  include the per-flag `_at` timestamps that `ConsentDetails` adds. */
+export interface ConsentStatus {
   level: ConsentLevel;
   flags: ConsentFlags;
+}
+
+/** {@link ConsentStatus} plus per-flag grant timestamps, as returned
+ *  by `GET /api/profiles/me/consent`. */
+export interface ConsentDetails extends ConsentStatus {
   timestamps: ConsentTimestamps;
 }
 
@@ -508,12 +516,14 @@ export interface AiAskResponse {
 
 /** Body shape the /api/ai/ask route returns on 403 consent_required.
  *  Surface via the helper below so callers don't have to know the
- *  internal shape. */
+ *  internal shape. The `consent` field is the timestamp-free
+ *  {@link ConsentStatus}, not the richer {@link ConsentDetails}
+ *  returned by `GET /api/profiles/me/consent`. */
 export interface AiAskConsentDeniedBody {
   success: false;
   code: 'consent_required';
   message: string;
-  consent: ConsentDetails;
+  consent: ConsentStatus;
   progressId: string;
 }
 
