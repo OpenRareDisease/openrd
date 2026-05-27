@@ -43,10 +43,24 @@ the repository installation.
 ## Check the token
 
 ```bash
-npm run github:app-token -- --json
+npm run github:app-token
 ```
 
-The token expires quickly. Do not commit it or paste it into issue comments.
+Default output is a pretty-printed JSON object containing the token,
+expiry, and granted permissions. Extract the bearer value with `jq`
+when scripting:
+
+```bash
+TOKEN=$(npm run --silent github:app-token | jq -r .token)
+```
+
+If you really need the raw token on stdout (e.g. for one-off interactive
+use), pass `--print-token`. The script writes a stderr warning in that
+mode reminding you that the value will land in shell history and tmux
+scrollback.
+
+The token expires within an hour. Do not commit it or paste it into
+issue comments.
 
 ## Submit a PR review as the app
 

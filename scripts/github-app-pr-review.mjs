@@ -3,14 +3,25 @@
  * Submit a pull request review using a GitHub App installation token.
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-import { createInstallationToken, resolveRepository } from './github-app-token.mjs';
+import {
+  DEFAULT_API_URL,
+  createInstallationToken,
+  normaliseApiUrl,
+  resolveRepository,
+  splitRepository,
+} from './github-app-token.mjs';
 
-const DEFAULT_API_URL = 'https://api.github.com';
 const USER_AGENT = 'openrd-github-app-reviewer';
 const VALID_EVENTS = new Set(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']);
+/** GitHub silently truncates review bodies past ~65KB; cap a little
+ *  higher than that so a borderline Markdown render still surfaces a
+ *  clear error rather than silently corrupting the body. Anything
+ *  larger almost certainly means the caller pointed --body-file at
+ *  the wrong file (a build log, a binary, /dev/zero, etc.). */
+const MAX_BODY_BYTES = 96 * 1024;
 
 const usage = `Usage:
   node scripts/github-app-pr-review.mjs <pr-number> --event REQUEST_CHANGES --body-file review.md
@@ -20,13 +31,37 @@ Options:
   --repo owner/repo          defaults to GITHUB_REPOSITORY or origin remote
   --installation-id id       optional; otherwise resolved from the repository
   --event EVENT              COMMENT, APPROVE, or REQUEST_CHANGES (default: COMMENT)
-  --body TEXT                review body
-  --body-file PATH           review body file; use "-" to read stdin
+  --body TEXT                review body (mutually exclusive with --body-file)
+  --body-file PATH           review body file; use "-" to read piped stdin
 `;
 
+/** Consume the next argv element as a value, refusing to swallow
+ *  another flag silently. Mirrors the helper in github-app-token.mjs. */
+const takeValue = (flag, argv, i) => {
+  const next = argv[i + 1];
+  if (next === undefined || next.startsWith('-')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return next;
+};
+
 const readStdin = async () => {
+  if (process.stdin.isTTY) {
+    throw new Error(
+      '--body-file - reads from stdin, but stdin is a TTY. Pipe content in ' +
+        "(e.g. 'cat review.md | npm run github:app-pr-review -- 23 --event COMMENT --body-file -') " +
+        'or pass --body-file PATH instead.',
+    );
+  }
   const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) {
+      throw new Error(`Piped review body exceeds ${MAX_BODY_BYTES} bytes; aborting.`);
+    }
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks).toString('utf8');
 };
 
@@ -46,18 +81,23 @@ const parseArgs = (argv) => {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (!arg.startsWith('--') && args.prNumber === null) {
+    if (!arg.startsWith('-') && args.prNumber === null) {
       args.prNumber = arg;
     } else if (arg === '--repo') {
-      args.repo = argv[++i] ?? null;
+      args.repo = takeValue('--repo', argv, i);
+      i += 1;
     } else if (arg === '--installation-id') {
-      args.installationId = argv[++i] ?? null;
+      args.installationId = takeValue('--installation-id', argv, i);
+      i += 1;
     } else if (arg === '--event') {
-      args.event = (argv[++i] ?? '').toUpperCase();
+      args.event = takeValue('--event', argv, i).toUpperCase();
+      i += 1;
     } else if (arg === '--body') {
-      args.body = argv[++i] ?? null;
+      args.body = takeValue('--body', argv, i);
+      i += 1;
     } else if (arg === '--body-file') {
-      args.bodyFile = argv[++i] ?? null;
+      args.bodyFile = takeValue('--body-file', argv, i);
+      i += 1;
     } else {
       throw new Error(`Unknown argument: ${arg}\n\n${usage}`);
     }
@@ -67,7 +107,12 @@ const parseArgs = (argv) => {
     throw new Error(`Missing or invalid PR number.\n\n${usage}`);
   }
   if (!VALID_EVENTS.has(args.event)) {
-    throw new Error(`Invalid --event "${args.event}". Expected COMMENT, APPROVE, or REQUEST_CHANGES.`);
+    throw new Error(
+      `Invalid --event "${args.event}". Expected COMMENT, APPROVE, or REQUEST_CHANGES.`,
+    );
+  }
+  if (args.body && args.bodyFile) {
+    throw new Error('--body and --body-file are mutually exclusive; pass only one.');
   }
   if (!args.body && !args.bodyFile) {
     throw new Error(`Missing review body. Pass --body or --body-file.\n\n${usage}`);
@@ -75,17 +120,30 @@ const parseArgs = (argv) => {
   return args;
 };
 
-const splitRepository = (repo) => {
-  const [owner, name] = repo.split('/');
-  if (!owner || !name || repo.split('/').length !== 2) {
-    throw new Error(`Invalid repository "${repo}". Expected owner/repo.`);
-  }
-  return { owner, repo: name };
-};
-
 const readBody = async (args) => {
   if (args.bodyFile === '-') return readStdin();
-  if (args.bodyFile) return readFile(args.bodyFile, 'utf8');
+  if (args.bodyFile) {
+    let size;
+    try {
+      const info = await stat(args.bodyFile);
+      if (!info.isFile()) {
+        throw new Error(`--body-file ${args.bodyFile} is not a regular file.`);
+      }
+      size = info.size;
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new Error(`--body-file ${args.bodyFile} does not exist.`);
+      }
+      throw error;
+    }
+    if (size > MAX_BODY_BYTES) {
+      throw new Error(
+        `--body-file ${args.bodyFile} is ${size} bytes; GitHub review bodies are limited ` +
+          `to ~65KB. Refusing to send more than ${MAX_BODY_BYTES} bytes.`,
+      );
+    }
+    return readFile(args.bodyFile, 'utf8');
+  }
   return args.body;
 };
 
@@ -95,20 +153,34 @@ const submitReview = async ({ repo, prNumber, event, body, token, apiUrl }) => {
     prNumber,
   )}/reviews`;
 
-  const response = await fetch(`${apiUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'User-Agent': USER_AGENT,
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: JSON.stringify({ event, body }),
-  });
+  let response;
+  try {
+    response = await fetch(`${apiUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': USER_AGENT,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ event, body }),
+    });
+  } catch (error) {
+    const cause = error?.cause;
+    const detail = cause?.code ?? cause?.message ?? error?.message ?? String(error);
+    throw new Error(`GitHub API POST ${path} network failure: ${detail}`);
+  }
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text.slice(0, 200) };
+    }
+  }
   if (!response.ok) {
     const message = data?.message ? `: ${data.message}` : '';
     throw new Error(`GitHub API POST ${path} failed with ${response.status}${message}`);
@@ -127,9 +199,12 @@ const main = async () => {
   const body = (await readBody(args)).trim();
   if (!body) throw new Error('Review body is empty.');
 
+  const apiUrl = normaliseApiUrl(process.env.GITHUB_API_URL ?? DEFAULT_API_URL);
+
   const tokenInfo = await createInstallationToken({
     repo,
     installationId: args.installationId,
+    apiUrl,
   });
 
   const review = await submitReview({
@@ -138,15 +213,18 @@ const main = async () => {
     event: args.event,
     body,
     token: tokenInfo.token,
-    apiUrl: process.env.GITHUB_API_URL ?? DEFAULT_API_URL,
+    apiUrl,
   });
 
   process.stdout.write(`${review.html_url ?? review.url ?? 'Review submitted'}\n`);
 };
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    const cause = error?.cause;
+    const detail = cause?.message ? ` (cause: ${cause.message})` : '';
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}${detail}\n`);
     process.exit(1);
   });
 }

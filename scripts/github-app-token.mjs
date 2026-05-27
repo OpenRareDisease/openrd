@@ -9,7 +9,7 @@
  * Optional environment:
  *   GITHUB_APP_INSTALLATION_ID
  *   GITHUB_REPOSITORY=owner/repo
- *   GITHUB_API_URL=https://api.github.com
+ *   GITHUB_API_URL=https://api.github.com   (or your GHE host's /api/v3 base)
  */
 
 import { createSign } from 'node:crypto';
@@ -17,24 +17,42 @@ import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-const DEFAULT_API_URL = 'https://api.github.com';
+export const DEFAULT_API_URL = 'https://api.github.com';
 const USER_AGENT = 'openrd-github-app-reviewer';
 
 const usage = `Usage:
-  node scripts/github-app-token.mjs [--repo owner/repo] [--installation-id id] [--json]
+  node scripts/github-app-token.mjs [--repo owner/repo] [--installation-id id] [--json | --print-token]
+
+Output modes:
+  default                pretty-printed JSON (token + expiry + permissions) on stdout
+  --json                 same JSON on stdout
+  --print-token          raw token only on stdout (writes a stderr warning about
+                         shell history; intended for one-off interactive use)
 
 Environment:
   GITHUB_APP_ID
   GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_PRIVATE_KEY, or GITHUB_APP_PRIVATE_KEY_BASE64
   GITHUB_APP_INSTALLATION_ID       optional when --repo can be resolved
   GITHUB_REPOSITORY=owner/repo     optional; otherwise origin remote is used
+  GITHUB_API_URL                   defaults to https://api.github.com; must be https
 `;
+
+/** Consume the value for a `--flag value` style option, refusing values
+ *  that look like another flag — so `--repo --json` errors out instead
+ *  of silently making `args.repo === '--json'`. */
+const takeValue = (flag, argv, i) => {
+  const next = argv[i + 1];
+  if (next === undefined || next.startsWith('-')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return next;
+};
 
 export const parseArgs = (argv) => {
   const args = {
     repo: process.env.GITHUB_REPOSITORY ?? null,
     installationId: process.env.GITHUB_APP_INSTALLATION_ID ?? null,
-    json: false,
+    output: 'json',
     help: false,
   };
 
@@ -43,11 +61,15 @@ export const parseArgs = (argv) => {
     if (arg === '--help' || arg === '-h') {
       args.help = true;
     } else if (arg === '--repo') {
-      args.repo = argv[++i] ?? null;
+      args.repo = takeValue('--repo', argv, i);
+      i += 1;
     } else if (arg === '--installation-id') {
-      args.installationId = argv[++i] ?? null;
+      args.installationId = takeValue('--installation-id', argv, i);
+      i += 1;
     } else if (arg === '--json') {
-      args.json = true;
+      args.output = 'json';
+    } else if (arg === '--print-token') {
+      args.output = 'token';
     } else {
       throw new Error(`Unknown argument: ${arg}\n\n${usage}`);
     }
@@ -58,24 +80,48 @@ export const parseArgs = (argv) => {
 
 const base64urlJson = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
 
+const PEM_BEGIN = '-----BEGIN';
+
+/** Defensive PEM string normaliser.
+ *
+ *  Real-world sources of breakage:
+ *    1. Shell-escaped keys with literal `\n` instead of newlines.
+ *    2. Windows clipboards / vaults using CRLF line endings.
+ *    3. Trailing whitespace.
+ *  Cover all of them; do not assume mutually exclusive cases. */
 const normalisePrivateKey = (raw) => {
-  const trimmed = raw.trim();
-  return trimmed.includes('\\n') ? trimmed.replace(/\\n/g, '\n') : trimmed;
+  let key = raw.trim();
+  if (key.includes('\\n')) {
+    key = key.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  }
+  // Real CRLF (e.g. from a Windows clipboard) — OpenSSL is fussy here.
+  key = key.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return key;
 };
 
 export const loadPrivateKey = async (env = process.env) => {
+  let raw;
   if (env.GITHUB_APP_PRIVATE_KEY_BASE64) {
-    return Buffer.from(env.GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+    raw = Buffer.from(env.GITHUB_APP_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+  } else if (env.GITHUB_APP_PRIVATE_KEY) {
+    raw = env.GITHUB_APP_PRIVATE_KEY;
+  } else if (env.GITHUB_APP_PRIVATE_KEY_PATH) {
+    raw = await readFile(env.GITHUB_APP_PRIVATE_KEY_PATH, 'utf8');
+  } else {
+    throw new Error(
+      'Missing GitHub App private key. Set GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_PRIVATE_KEY, or GITHUB_APP_PRIVATE_KEY_BASE64.',
+    );
   }
-  if (env.GITHUB_APP_PRIVATE_KEY) {
-    return normalisePrivateKey(env.GITHUB_APP_PRIVATE_KEY);
+
+  const key = normalisePrivateKey(raw);
+  if (!key.includes(PEM_BEGIN)) {
+    throw new Error(
+      'Private key does not contain a "-----BEGIN" PEM header. ' +
+        'Check that GITHUB_APP_PRIVATE_KEY_BASE64 is correctly base64-encoded and ' +
+        'that the value has not been truncated.',
+    );
   }
-  if (env.GITHUB_APP_PRIVATE_KEY_PATH) {
-    return readFile(env.GITHUB_APP_PRIVATE_KEY_PATH, 'utf8');
-  }
-  throw new Error(
-    'Missing GitHub App private key. Set GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_PRIVATE_KEY, or GITHUB_APP_PRIVATE_KEY_BASE64.',
-  );
+  return key;
 };
 
 export const createAppJwt = async ({ appId, privateKey }) => {
@@ -93,15 +139,18 @@ export const createAppJwt = async ({ appId, privateKey }) => {
   return `${body}.${signature}`;
 };
 
+/** Pull `owner/repo` out of a git remote URL. Accepts SSH, https, and
+ *  https-with-credentials forms; allows dots inside repo names and
+ *  non-`github.com` hosts (for GitHub Enterprise). */
 const parseRepoFromRemote = (remote) => {
   const trimmed = remote.trim();
-  const sshMatch = trimmed.match(/github\.com[:/](?<owner>[^/]+)\/(?<repo>[^/.]+)(?:\.git)?$/);
-  if (sshMatch?.groups) return `${sshMatch.groups.owner}/${sshMatch.groups.repo}`;
+  const ssh = trimmed.match(/^(?:ssh:\/\/)?git@([^:/]+)[:/](?<owner>[^/]+)\/(?<repo>.+?)(?:\.git)?\/?$/);
+  if (ssh?.groups) return `${ssh.groups.owner}/${ssh.groups.repo}`;
 
-  const httpsMatch = trimmed.match(
-    /^https:\/\/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/.]+)(?:\.git)?$/,
+  const https = trimmed.match(
+    /^https?:\/\/(?:[^@/]+@)?[^/]+\/(?<owner>[^/]+)\/(?<repo>.+?)(?:\.git)?\/?$/,
   );
-  if (httpsMatch?.groups) return `${httpsMatch.groups.owner}/${httpsMatch.groups.repo}`;
+  if (https?.groups) return `${https.groups.owner}/${https.groups.repo}`;
 
   return null;
 };
@@ -123,7 +172,7 @@ export const resolveRepository = (repoArg) => {
   throw new Error('Could not resolve repository. Pass --repo owner/repo or set GITHUB_REPOSITORY.');
 };
 
-const splitRepository = (repo) => {
+export const splitRepository = (repo) => {
   const [owner, name] = repo.split('/');
   if (!owner || !name || repo.split('/').length !== 2) {
     throw new Error(`Invalid repository "${repo}". Expected owner/repo.`);
@@ -131,21 +180,61 @@ const splitRepository = (repo) => {
   return { owner, repo: name };
 };
 
+/** Strip a single trailing slash and require an http(s) scheme. */
+export const normaliseApiUrl = (raw) => {
+  const value = (raw ?? DEFAULT_API_URL).trim();
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`Invalid GITHUB_API_URL "${value}". Expected an absolute http(s) URL.`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(
+      `Refusing to use GITHUB_API_URL "${value}": only http(s) is allowed.`,
+    );
+  }
+  if (parsed.protocol === 'http:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+    throw new Error(
+      `Refusing to use plaintext http:// for GITHUB_API_URL "${value}". ` +
+        'GitHub App tokens must travel over TLS; switch to https.',
+    );
+  }
+  return value.replace(/\/+$/, '');
+};
+
+/** Wrap fetch so DNS / TLS / connection errors surface error.cause and
+ *  HTML or text error bodies don't crash JSON parsing. */
 const apiFetch = async ({ apiUrl, path, token, method = 'GET', body }) => {
-  const response = await fetch(`${apiUrl}${path}`, {
-    method,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'User-Agent': USER_AGENT,
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const url = `${apiUrl}${path}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': USER_AGENT,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    const cause = error?.cause;
+    const detail = cause?.code ?? cause?.message ?? error?.message ?? String(error);
+    throw new Error(`GitHub API ${method} ${path} network failure: ${detail}`);
+  }
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text.slice(0, 200) };
+    }
+  }
   if (!response.ok) {
     const message = data?.message ? `: ${data.message}` : '';
     throw new Error(`GitHub API ${method} ${path} failed with ${response.status}${message}`);
@@ -158,8 +247,9 @@ export const createInstallationToken = async ({
   privateKey,
   repo,
   installationId = process.env.GITHUB_APP_INSTALLATION_ID,
-  apiUrl = process.env.GITHUB_API_URL ?? DEFAULT_API_URL,
+  apiUrl,
 } = {}) => {
+  const resolvedApiUrl = normaliseApiUrl(apiUrl ?? process.env.GITHUB_API_URL);
   const key = privateKey ?? (await loadPrivateKey());
   const jwt = await createAppJwt({ appId, privateKey: key });
 
@@ -167,15 +257,21 @@ export const createInstallationToken = async ({
   if (!resolvedInstallationId) {
     const { owner, repo: repoName } = splitRepository(resolveRepository(repo));
     const installation = await apiFetch({
-      apiUrl,
+      apiUrl: resolvedApiUrl,
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/installation`,
       token: jwt,
     });
+    if (!installation?.id) {
+      throw new Error(
+        `GitHub returned no installation id for ${owner}/${repoName}. ` +
+          'Confirm the GitHub App is installed on this repository.',
+      );
+    }
     resolvedInstallationId = String(installation.id);
   }
 
   const tokenInfo = await apiFetch({
-    apiUrl,
+    apiUrl: resolvedApiUrl,
     path: `/app/installations/${encodeURIComponent(resolvedInstallationId)}/access_tokens`,
     token: jwt,
     method: 'POST',
@@ -190,6 +286,19 @@ export const createInstallationToken = async ({
   };
 };
 
+const writeOutput = (tokenInfo, output) => {
+  if (output === 'token') {
+    process.stderr.write(
+      'WARNING: the bearer token is being printed to stdout. ' +
+        'It will land in your shell history and any wrapping log. ' +
+        "Don't paste it anywhere; let it expire instead.\n",
+    );
+    process.stdout.write(`${tokenInfo.token}\n`);
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(tokenInfo, null, 2)}\n`);
+};
+
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -202,16 +311,15 @@ const main = async () => {
     installationId: args.installationId,
   });
 
-  if (args.json) {
-    process.stdout.write(`${JSON.stringify(tokenInfo, null, 2)}\n`);
-  } else {
-    process.stdout.write(`${tokenInfo.token}\n`);
-  }
+  writeOutput(tokenInfo, args.output);
 };
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    const cause = error?.cause;
+    const detail = cause?.message ? ` (cause: ${cause.message})` : '';
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}${detail}\n`);
     process.exit(1);
   });
 }
