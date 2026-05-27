@@ -263,4 +263,42 @@ describe('Orchestrator.run', () => {
     const advertised = (llm.chat.mock.calls[0][0] as LlmChatRequest).tools ?? [];
     expect(advertised.map((t) => t.name).sort()).toEqual(['get_my_profile', 'search_medical_kb']);
   });
+
+  // Fix #2 regression: the audit hash must reflect every message sent
+  // to the LLM, including the assistant turn (with its tool-call
+  // arguments). Two runs that differ only in the assistant message
+  // must produce different hashes.
+  it('audit hash differentiates runs that differ only in the assistant tool-call payload', async () => {
+    const buildRegistry = () =>
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1)));
+
+    const runWith = async (argsJson: string) => {
+      const llm = mkLlm([
+        {
+          content: null,
+          toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: argsJson }],
+          finishReason: 'tool_calls',
+        },
+        { content: 'same final answer', toolCalls: [], finishReason: 'stop' },
+      ]);
+      const orch = new Orchestrator(
+        llm,
+        buildRegistry(),
+        silentLogger as unknown as RetrieveContext['logger'],
+      );
+      return orch.run({
+        userId: 'u1',
+        question: 'same question',
+        requestId: 'r1',
+        consentLevel: 'basic',
+      });
+    };
+
+    const a = await runWith('{"query":"D4Z4 mechanism"}');
+    const b = await runWith('{"query":"FSHD treatment"}');
+
+    expect(a.redactedPromptHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(b.redactedPromptHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.redactedPromptHash).not.toBe(b.redactedPromptHash);
+  });
 });
