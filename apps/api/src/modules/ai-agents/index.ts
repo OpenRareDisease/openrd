@@ -7,5 +7,8 @@
  * docs/proposals/local-rag-migration.md for the broader plan.
  */
 export * as audit from './audit/index.js';
+export * as llm from './llm/index.js';
+export * as orchestrator from './orchestrator/index.js';
 export * as retrievers from './retrievers/index.js';
 export * as security from './security/index.js';
+export * as tools from './tools/index.js';
