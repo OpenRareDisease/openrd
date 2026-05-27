@@ -18,8 +18,6 @@
  * past it.
  */
 
-import { createHash } from 'node:crypto';
-
 import { buildContext, type BuiltContext } from './context-builder.js';
 import { Executor, type ExecutedToolCall } from './executor.js';
 import { Planner } from './planner.js';
@@ -30,6 +28,7 @@ import {
   type OrchestratorRunResult,
 } from './types.js';
 import type { AppLogger } from '../../../config/logger.js';
+import { hashPrompt } from '../audit/hash.js';
 import type { ILLMProvider, LlmMessage, LlmUsage } from '../llm/base.js';
 import { redactionModeForConsent } from '../security/consent.js';
 import type { ToolContext } from '../tools/base.js';
@@ -67,7 +66,33 @@ const buildUserPrompt = (input: OrchestratorRunInput): string => {
   return `${input.question}\n\n[上下文提示]: ${input.userContextHint.trim()}`;
 };
 
-const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+/**
+ * Serialise an LLM message into a stable string for hashing. Covers
+ * every role and includes tool-call arguments so the recorded hash
+ * really represents what the model saw, not just the system/user/
+ * tool-body slice. Whitespace is left to the consumer (`hashPrompt`)
+ * which normalises before hashing.
+ */
+const serializeMessageForHash = (message: LlmMessage): string => {
+  switch (message.role) {
+    case 'system':
+      return `[system]\n${message.content}`;
+    case 'user':
+      return `[user]\n${message.content}`;
+    case 'assistant': {
+      const text = message.content ?? '';
+      if (!message.toolCalls || message.toolCalls.length === 0) {
+        return `[assistant]\n${text}`;
+      }
+      const tools = message.toolCalls
+        .map((c) => `${c.id}:${c.name}(${c.argumentsJson})`)
+        .join('\n');
+      return `[assistant]\n${text}\nTOOL_CALLS:\n${tools}`;
+    }
+    case 'tool':
+      return `[tool:${message.name}#${message.toolCallId}]\n${message.content}`;
+  }
+};
 
 export class Orchestrator {
   private readonly planner: Planner;
@@ -228,16 +253,13 @@ export class Orchestrator {
     const systemContent = systemMessage?.role === 'system' ? systemMessage.content : '';
     const userContent = userMessage?.role === 'user' ? userMessage.content : '';
 
-    // Hash the rendered prompt material that hit the LLM: system + user
-    // + every tool message body. Excludes the assistant tool-call
-    // record (which carries no PII) and the final answer (recorded
-    // elsewhere if needed).
-    const toolBodies = args.finalMessages
-      .filter((m) => m.role === 'tool')
-      .map((m) => (m.role === 'tool' ? m.content : ''))
-      .join('\n\n');
-    const hashSource = [systemContent, userContent, toolBodies].join('\n\n');
-    const redactedPromptHash = sha256Hex(hashSource);
+    // Hash the *exact* message set submitted to the LLM, including the
+    // assistant turn (with tool-call JSON) and every tool result body.
+    // Anything less means the audit hash can match two runs that
+    // actually sent different prompts. Whitespace normalisation is
+    // handled inside hashPrompt so cosmetic reformatting is stable.
+    const hashSource = args.finalMessages.map(serializeMessageForHash).join('\n\n');
+    const redactedPromptHash = hashPrompt(hashSource);
     const promptCharLength = hashSource.length;
 
     return {
