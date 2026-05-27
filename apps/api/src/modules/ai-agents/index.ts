@@ -7,3 +7,4 @@
  * docs/proposals/local-rag-migration.md for the broader plan.
  */
 export * as retrievers from './retrievers/index.js';
+export * as security from './security/index.js';
