@@ -124,4 +124,41 @@ describe('Executor', () => {
     const [r] = await executor.executeAll([call('slow', '1')], ctx, { timeoutMs: 50 });
     expect(r.error).toMatch(/timed out/);
   });
+
+  it('refuses a tool whose minConsent exceeds the caller consent (defence-in-depth)', async () => {
+    const executeSpy = vi.fn();
+    const preciseOnly: ITool = {
+      name: 'precise_only',
+      description: '',
+      parametersSchema: { type: 'object', properties: {} },
+      minConsent: 'precise',
+      parseArgs: () => ({}),
+      execute: async () => {
+        executeSpy();
+        return { retrieval: stub('precise_only'), display: 'should not happen' };
+      },
+    };
+    const registry = new ToolRegistry().register(preciseOnly);
+    const executor = new Executor(registry);
+
+    const [r] = await executor.executeAll([call('precise_only', '1')], ctx);
+    // ctx.consentLevel === 'basic', tool requires 'precise'
+    expect(r.error).toMatch(/requires consent precise.*have basic/);
+    expect(r.display).toBe('precise_only: consent_insufficient');
+    expect(r.retrieval).toBeUndefined();
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  it('still runs a tool when minConsent is satisfied', async () => {
+    const basicTool: ITool = {
+      ...passingTool('ok_basic'),
+      minConsent: 'basic',
+    };
+    const registry = new ToolRegistry().register(basicTool);
+    const executor = new Executor(registry);
+
+    const [r] = await executor.executeAll([call('ok_basic', '1')], ctx);
+    expect(r.error).toBeUndefined();
+    expect(r.retrieval?.chunks).toHaveLength(1);
+  });
 });

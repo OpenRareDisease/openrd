@@ -14,19 +14,8 @@
  * is a one-line `register(new FakeTool())`.
  */
 
-import type { ITool } from './base.js';
+import { meetsConsent, type ITool } from './base.js';
 import type { ConsentLevel } from '../retrievers/base.js';
-
-const CONSENT_RANK: Record<ConsentLevel, number> = {
-  none: 0,
-  basic: 1,
-  precise: 2,
-};
-
-const meetsConsent = (have: ConsentLevel, need: ConsentLevel | undefined): boolean => {
-  if (!need) return true;
-  return CONSENT_RANK[have] >= CONSENT_RANK[need];
-};
 
 export class ToolRegistry {
   private readonly tools = new Map<string, ITool>();

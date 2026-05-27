@@ -18,6 +18,22 @@
 import type { AppLogger } from '../../../config/logger.js';
 import type { ConsentLevel, RetrieveResult } from '../retrievers/base.js';
 
+/** Ordering for consent levels. Used to test whether the user's
+ *  current consent dominates a tool's required minimum. */
+export const CONSENT_RANK: Record<ConsentLevel, number> = {
+  none: 0,
+  basic: 1,
+  precise: 2,
+};
+
+/** Returns true if `have` is at least `need` (or `need` is unset).
+ *  Shared between the registry (filters what the planner sees) and
+ *  the executor (defence-in-depth before actually running a tool). */
+export const meetsConsent = (have: ConsentLevel, need: ConsentLevel | undefined): boolean => {
+  if (!need) return true;
+  return CONSENT_RANK[have] >= CONSENT_RANK[need];
+};
+
 export interface ToolContext {
   /** Authenticated user id. `null` means anonymous — patient-scoped
    *  tools must refuse. */

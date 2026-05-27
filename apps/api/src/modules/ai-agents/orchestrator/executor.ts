@@ -16,7 +16,7 @@
 import type { LlmToolCall } from '../llm/base.js';
 import type { RetrieveResult } from '../retrievers/base.js';
 import type { ITool, ToolContext } from '../tools/base.js';
-import { ToolValidationError } from '../tools/base.js';
+import { ToolValidationError, meetsConsent } from '../tools/base.js';
 import type { ToolRegistry } from '../tools/registry.js';
 
 export interface ExecutedToolCall {
@@ -59,6 +59,20 @@ const runSingle = async (
       toolName: call.name,
       display: `unknown tool: ${call.name}`,
       error: `Unknown tool: ${call.name}`,
+    };
+  }
+
+  // Defence-in-depth: the registry already filters tools by minConsent
+  // before advertising, but a model that hallucinates a registered
+  // tool name it wasn't shown should still be blocked. Without this
+  // check, adding a future precise-only tool would silently expose
+  // it to basic-consent users via that hallucination path.
+  if (!meetsConsent(ctx.consentLevel, tool.minConsent)) {
+    return {
+      toolCallId: call.id,
+      toolName: call.name,
+      display: `${call.name}: consent_insufficient`,
+      error: `Tool ${call.name} requires consent ${tool.minConsent}; have ${ctx.consentLevel}`,
     };
   }
 
