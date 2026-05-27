@@ -234,3 +234,22 @@ export const attachDocumentsSchema = z.object({
   documentIds: z.array(z.string().uuid()).min(1),
 });
 export type AttachDocumentsInput = z.infer<typeof attachDocumentsSchema>;
+
+/** Body schema for PUT /api/profiles/me/consent. All three fields are
+ *  optional — callers can flip one toggle at a time. Coercion + the
+ *  precise-requires-base rule live in the security helper so every
+ *  caller gets the same semantics. */
+export const consentUpdateSchema = z
+  .object({
+    personal: z.boolean().optional(),
+    thirdParty: z.boolean().optional(),
+    preciseValues: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.personal !== undefined ||
+      data.thirdParty !== undefined ||
+      data.preciseValues !== undefined,
+    { message: 'At least one of personal / thirdParty / preciseValues must be provided' },
+  );
+export type ConsentUpdateBody = z.infer<typeof consentUpdateSchema>;

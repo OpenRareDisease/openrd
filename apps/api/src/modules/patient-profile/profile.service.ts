@@ -22,6 +22,13 @@ import type {
 } from './profile.schema.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
+import {
+  ConsentMutationError,
+  getConsentDetails,
+  updateConsent,
+  type ConsentDetails,
+  type ConsentUpdateInput,
+} from '../ai-agents/security/index.js';
 
 interface ServiceDeps {
   pool: Pool;
@@ -2422,5 +2429,42 @@ export class PatientProfileService {
       distribution,
       userLatestScore,
     };
+  }
+
+  /**
+   * Read the AI consent state for the calling user. Returns `null`
+   * when the user hasn't completed onboarding (no profile row yet),
+   * so the controller can map that to a 404 rather than fabricating
+   * a "never consented" row.
+   */
+  async getConsentDetails(userId: string): Promise<ConsentDetails | null> {
+    return getConsentDetails(this.pool, userId);
+  }
+
+  /**
+   * Apply a partial consent update. Delegates to the security helper
+   * so the precise-requires-base rule + per-flag `_at` bookkeeping
+   * stay in one place. `ConsentMutationError` is rethrown as an
+   * `AppError` so the route layer can stay framework-flavoured.
+   */
+  async updateConsent(userId: string, input: ConsentUpdateInput): Promise<ConsentDetails> {
+    try {
+      const updated = await updateConsent(this.pool, userId, input);
+      this.logger.info(
+        {
+          userId,
+          level: updated.level,
+          flags: updated.flags,
+        },
+        'AI consent updated',
+      );
+      return updated;
+    } catch (error) {
+      if (error instanceof ConsentMutationError) {
+        const status = error.code === 'profile_not_found' ? 404 : 400;
+        throw new AppError(error.message, status);
+      }
+      throw error;
+    }
   }
 }
