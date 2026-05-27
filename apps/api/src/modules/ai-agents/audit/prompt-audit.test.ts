@@ -1,0 +1,161 @@
+import type { Pool, QueryResult } from 'pg';
+import { describe, expect, it, vi } from 'vitest';
+
+import { hashPrompt } from './hash.js';
+import { AuditLogger } from './prompt-audit.js';
+import type { AuditEntryInput } from './types.js';
+
+const baseEntry: AuditEntryInput = {
+  userId: 'user-1',
+  requestId: 'req-1',
+  llmProvider: 'siliconflow',
+  llmModel: 'deepseek-v3.1',
+  consentLevel: 'basic',
+  redactionMode: 'strict',
+  redactedPromptHash: 'abc',
+  promptCharLength: 1234,
+  usedPersonalData: true,
+  fieldsUsed: ['ageGroup', 'd4z4_clinical'],
+  toolsCalled: ['medical_kb', 'patient_profile'],
+  latencyMs: 1500,
+  status: 'success',
+};
+
+const makePool = () => {
+  const calls: Array<{ text: string; params: unknown[] }> = [];
+  const query = vi.fn().mockImplementation(async (text: string, params: unknown[]) => {
+    calls.push({ text, params });
+    if (/INSERT INTO ai_prompt_audit/i.test(text)) {
+      return {
+        rows: [{ id: 'audit-id-1' }],
+        rowCount: 1,
+      } as unknown as QueryResult;
+    }
+    return { rows: [], rowCount: 0 } as unknown as QueryResult;
+  });
+  return {
+    pool: { query } as unknown as Pool,
+    query,
+    calls,
+  };
+};
+
+describe('hashPrompt', () => {
+  it('produces a stable sha256 hex digest', () => {
+    const a = hashPrompt('hello world');
+    const b = hashPrompt('hello world');
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[a-f0-9]{64}$/);
+  });
+  it('normalises whitespace so trivial reformatting matches', () => {
+    expect(hashPrompt('a   b\n  c')).toBe(hashPrompt('a b c'));
+  });
+});
+
+describe('AuditLogger.record', () => {
+  it('inserts a row and returns the generated id', async () => {
+    const { pool, calls } = makePool();
+    const logger = new AuditLogger(pool);
+    const id = await logger.record(baseEntry);
+    expect(id).toBe('audit-id-1');
+    expect(calls).toHaveLength(1);
+    const params = calls[0].params;
+    expect(params[0]).toBe('user-1');
+    expect(params[1]).toBe('req-1');
+    expect(params[4]).toBe('basic');
+    expect(params[5]).toBe('strict');
+    expect(params[8]).toBe(true);
+    expect(JSON.parse(params[9] as string)).toEqual(['ageGroup', 'd4z4_clinical']);
+    expect(JSON.parse(params[10] as string)).toEqual(['medical_kb', 'patient_profile']);
+    expect(params[12]).toBe('success');
+  });
+
+  it('defaults optional bookkeeping fields to null', async () => {
+    const { pool, calls } = makePool();
+    const logger = new AuditLogger(pool);
+    await logger.record({
+      ...baseEntry,
+      requestId: undefined,
+      redactedPromptHash: undefined,
+      promptCharLength: undefined,
+      latencyMs: undefined,
+      errorDetail: undefined,
+    });
+    const params = calls[0].params;
+    expect(params[1]).toBeNull(); // request_id
+    expect(params[6]).toBeNull(); // redacted_prompt_hash
+    expect(params[7]).toBeNull(); // prompt_char_length
+    expect(params[11]).toBeNull(); // latency_ms
+    expect(params[13]).toBeNull(); // error_detail
+  });
+});
+
+describe('AuditLogger.listByUser', () => {
+  const sampleRow = {
+    id: 'audit-1',
+    user_id: 'user-1',
+    request_id: 'req-1',
+    llm_provider: 'siliconflow',
+    llm_model: 'deepseek-v3.1',
+    consent_level: 'basic',
+    redaction_mode: 'strict',
+    redacted_prompt_hash: 'abc',
+    prompt_char_length: 1234,
+    used_personal_data: true,
+    fields_used: ['ageGroup'],
+    tools_called: ['medical_kb'],
+    latency_ms: 1500,
+    status: 'success',
+    error_detail: null,
+    created_at: '2026-05-26T20:00:00Z',
+  };
+
+  it('returns parsed entries from the matching rows', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [sampleRow],
+      rowCount: 1,
+    } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+
+    const entries = await logger.listByUser('user-1');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].id).toBe('audit-1');
+    expect(entries[0].fieldsUsed).toEqual(['ageGroup']);
+    expect(entries[0].toolsCalled).toEqual(['medical_kb']);
+    expect(entries[0].status).toBe('success');
+    expect(entries[0].createdAt).toBe('2026-05-26T20:00:00.000Z');
+  });
+
+  it('passes status filter as a text array param', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+
+    await logger.listByUser('user-1', { status: ['error', 'consent_denied'] });
+    const params = query.mock.calls[0][1] as unknown[];
+    expect(params[0]).toBe('user-1');
+    expect(params[1]).toEqual(['error', 'consent_denied']);
+  });
+
+  it('clamps oversized limit to the safety ceiling', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+
+    await logger.listByUser('user-1', { limit: 99999 });
+    const params = query.mock.calls[0][1] as unknown[];
+    // The limit is the second-to-last param (offset is the last one).
+    const limitParam = params[params.length - 2] as number;
+    expect(limitParam).toBeLessThanOrEqual(200);
+  });
+
+  it('returns [] for an empty userId without hitting the DB', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+    const out = await logger.listByUser('');
+    expect(out).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+});
