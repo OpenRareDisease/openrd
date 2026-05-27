@@ -1,0 +1,66 @@
+/**
+ * Shapes carried in and out of ai_prompt_audit. See
+ * db/migrations/008_ai_consent_and_audit.sql for the table.
+ */
+
+import type { ConsentLevel } from '../retrievers/base.js';
+import type { RedactionMode } from '../security/allowlist.js';
+
+export type AuditStatus = 'success' | 'error' | 'consent_denied';
+
+/**
+ * Input to {@link AuditLogger.record}. All fields except optional
+ * timestamps are mandatory so the audit row carries every dimension
+ * support / compliance need to reconstruct a call.
+ */
+export interface AuditEntryInput {
+  /** Authenticated user id at call time. Nullable so anonymous /
+   *  system calls still record. */
+  userId: string | null;
+  /** Optional caller-provided correlation id (mirrors the progress
+   *  id used by the existing /api/ai/ask flow). */
+  requestId?: string | null;
+  llmProvider: string;
+  llmModel: string;
+  consentLevel: ConsentLevel;
+  redactionMode: RedactionMode;
+  /** sha256 hash of the **redacted** prompt that was actually sent
+   *  to the LLM, hex-encoded. Hashing keeps audit small + private:
+   *  we can prove a row corresponds to a known prompt without
+   *  storing the prompt body itself. */
+  redactedPromptHash?: string | null;
+  /** Length (chars) of the redacted prompt, for back-of-envelope
+   *  cost analysis. */
+  promptCharLength?: number | null;
+  /** Whether any patient-scoped retriever contributed to the prompt
+   *  (drives the "本回答用到了你的..." UI hint). */
+  usedPersonalData: boolean;
+  /** Concrete field names the orchestrator emitted to the prompt
+   *  (after redaction). Empty for non-personal calls. */
+  fieldsUsed: string[];
+  /** Tool ids the planner chose (`medical_kb`, `patient_profile`,
+   *  etc.). */
+  toolsCalled: string[];
+  /** Wall time spent inside the orchestrator, end to end. */
+  latencyMs?: number | null;
+  status: AuditStatus;
+  errorDetail?: string | null;
+}
+
+/**
+ * Shape returned by list queries — adds the server-generated id +
+ * created_at and replaces the JSONB columns with their parsed JS
+ * representations.
+ */
+export interface AuditEntry extends AuditEntryInput {
+  id: string;
+  createdAt: string;
+}
+
+export interface ListAuditOptions {
+  /** Cap rows per call. Defaults to 50, hard cap 200. */
+  limit?: number;
+  offset?: number;
+  /** Filter to one or more statuses. */
+  status?: AuditStatus | AuditStatus[];
+}
