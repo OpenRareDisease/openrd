@@ -28,9 +28,32 @@ class RawChunk:
     chunk_index: int
 
 
+# Postgres rejects NUL (0x00) inside TEXT/VARCHAR; PDFs and the
+# occasional WPS-saved docx ship binary stream markers as embedded
+# nulls that pdfminer / python-docx pass through verbatim. Strip them
+# centrally so every parser benefits without each having to remember.
+# We also drop the other C0 controls that have no legitimate place in
+# extracted text (BEL, BS, VT, FF, etc.) — they confuse downstream
+# code while contributing nothing. Tab / LF / CR are intentionally
+# kept.
+_BANNED_CONTROL_CHARS = "".join(
+    chr(c) for c in range(32) if c not in (0x09, 0x0A, 0x0D)
+)
+_CONTROL_TRANSLATION = str.maketrans("", "", _BANNED_CONTROL_CHARS)
+
+
+def sanitize_for_db(text: str) -> str:
+    """Remove the control bytes that prevent the DB layer (or anyone
+    reading a chunk back) from storing or echoing the content
+    cleanly. Idempotent on already-sanitized text."""
+    if not text:
+        return text
+    return text.translate(_CONTROL_TRANSLATION)
+
+
 def split_markdown(body: str, max_chars: int = 1200, min_chars: int = 30) -> List[RawChunk]:
     """Break a markdown body into well-sized chunks (heading-aware)."""
-    sections = _split_by_headings(body)
+    sections = _split_by_headings(sanitize_for_db(body))
     return _pack_sections(sections, max_chars=max_chars, min_chars=min_chars)
 
 
@@ -45,6 +68,7 @@ def split_paragraphs(
     OCR output that ship as one giant paragraph would produce a single
     over-large chunk that the embedder truncates silently.
     """
+    text = sanitize_for_db(text)
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     if not paragraphs:
         return []

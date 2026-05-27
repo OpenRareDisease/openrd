@@ -138,48 +138,39 @@ SSE 流式返回前端
 - 用户上传新报告 → 解析完成入库后立即可被引用
 - 不需要 embedding，不需要重建索引
 
-### 4.3 医学 KB：代码化管理 + 触发式更新
+### 4.3 医学 KB：多格式源 + 触发式更新
 
-医学知识源文件以 markdown 形式存放在 `content/medical-kb/`，进入 git 版本控制：
+医学知识源文件落在 `content/medical-kb/source/`（gitignored，体积大），通过 `scripts/kb_parsers/` 解析后灌入 pgvector。当前支持的格式：
 
-```
-content/medical-kb/
-├── README.md
-├── fshd/
-│   ├── 01-overview.md
-│   ├── 02-genetics-d4z4.md
-│   ├── 03-clinical-features.md
-│   ├── 04-diagnosis.md
-│   ├── 05-management.md
-│   ├── 06-research-progress.md
-│   └── 07-glossary.md
-└── general/
-```
+| 扩展                                                            | 解析器            | 备注                                                                                                                                |
+| --------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `.md` / `.markdown`                                             | `markdown_parser` | YAML frontmatter → 文件元数据；body 走 heading-aware 切块                                                                           |
+| `.pdf`                                                          | `pdf_parser`      | pdfminer.six 抽文本层，每页一个 section；正文 < 60 字符的页自动 OCR fallback（chi_sim+eng）                                         |
+| `.docx`                                                         | `docx_parser`     | python-docx 按 Heading 分组；表格扁平化为 tab-separated；遇 OLE2 头（伪 .docx）报清晰错误；遇 python-docx 解析失败时走 zip+XML 兜底 |
+| `.png` / `.jpg` / `.jpeg` / `.tif` / `.tiff` / `.bmp` / `.webp` | `image_parser`    | 直接 OCR（chi_sim+eng）                                                                                                             |
+| `.htm` / `.html`                                                | `html_parser`     | BeautifulSoup 去掉 script/style/nav，取可见文本                                                                                     |
 
-每份 markdown 头部含 frontmatter 元信息：
-
-```yaml
----
-source: 'official_guideline_2024'
-authority: 'high'
-last_reviewed: '2026-05-26'
-reviewed_by: 'Dr. X'
-tags: ['fshd', 'genetics']
----
-```
+每个 parser 返回 `ParseResult(sections, file_metadata)`。Section 经 `kb_parsers.chunker` 二次切块（markdown 走 heading-aware，其它走 paragraph-greedy + 句末标点窗口兜底），再注入 `folder_path / category / language / file_type / parser / pipeline_version` 元数据，最后 batch embed + upsert 到 `kb_chunks`。
 
 灌库流程：
 
-1. 编辑 / 新增 `content/medical-kb/` 下的 markdown 文件
-2. 提交 PR、review、合并
-3. 部署后运行 `npm run kb:ingest`
-4. 脚本扫描所有文件、对比 fingerprint：
-   - 新文件 → 切分 + embed + 插入
-   - 变更文件 → 删除旧 chunks + 重灌
-   - 删除文件 → 删除对应 chunks
-5. 脚本幂等，可重复执行
+1. 把素材放到 `content/medical-kb/source/`（也可以解 zip 进去，不进 git）
+2. 运行 `npm run kb:ingest`（首次会下载 bge-m3 模型 ~2.3GB）
+3. 脚本按文件指纹（`sha256(file_bytes + parser_name + pipeline_version)`）做幂等：
+   - 新文件 → 解析 + 切块 + embed + insert
+   - 变更文件或 pipeline 版本改了 → 删除旧 chunks + 重灌
+   - 删除文件 → 当前不自动清孤儿（见 follow-up issue #20）
+4. 同一份素材可重复跑，会自动跳过未变更的文件
+5. `--only .pdf,.docx` 可限定增量灌某些格式
+6. `--dry-run` 只走解析与切块统计，不动 DB
 
-医学 KB 因此与代码一起版本管理、审查、部署。
+环境依赖：
+
+- Python 3.11（sentence-transformers / pytorch 暂未支持 3.14）
+- `tesseract` + `tesseract-lang`（图像 / 扫描 PDF 的 OCR 用，brew 装）
+- `pip install -r requirements.txt`（含 `pdfminer.six` / `python-docx` / `pdf2image` / `pytesseract` / `Pillow` / `beautifulsoup4`）
+
+医学 KB 因此可代码化管理（parser + chunker 在 git）、源材料独立存档（zip 或 NAS），并随时一键重灌。
 
 ---
 

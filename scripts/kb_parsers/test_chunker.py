@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from kb_parsers.chunker import split_markdown, split_paragraphs
+from kb_parsers.chunker import sanitize_for_db, split_markdown, split_paragraphs
 
 
 # --------------------------------------------------------- split_paragraphs
@@ -117,3 +117,47 @@ def test_split_markdown_subsplits_oversized_sections() -> None:
 )
 def test_split_paragraphs_blank_input_returns_empty(text: str) -> None:
     assert split_paragraphs(text, max_chars=100, min_chars=1) == []
+
+
+# ------------------------------------------------------------ sanitize_for_db
+
+def test_sanitize_strips_nul_bytes() -> None:
+    # Real-world failure mode: pdfminer leaks NUL bytes from PDF
+    # stream markers, which crashes the Postgres insert.
+    raw = "hello\x00 world\x00\x00 again"
+    assert sanitize_for_db(raw) == "hello world again"
+
+
+def test_sanitize_keeps_tab_newline_carriage_return() -> None:
+    raw = "a\tb\nc\rd"
+    assert sanitize_for_db(raw) == "a\tb\nc\rd"
+
+
+def test_sanitize_strips_other_c0_controls() -> None:
+    raw = "ok\x07\x08\x0bbeep"
+    assert sanitize_for_db(raw) == "okbeep"
+
+
+def test_sanitize_is_a_no_op_on_clean_text() -> None:
+    raw = "纯净文本 with English 123."
+    assert sanitize_for_db(raw) == raw
+
+
+def test_split_paragraphs_strips_nul_via_sanitize() -> None:
+    chunks = split_paragraphs(
+        "ok text long enough\x00 to survive min_chars filter",
+        max_chars=200,
+        min_chars=10,
+    )
+    assert len(chunks) == 1
+    assert "\x00" not in chunks[0].content
+
+
+def test_split_markdown_strips_nul_via_sanitize() -> None:
+    chunks = split_markdown(
+        "## H\nok body long enough\x00 to survive\x00",
+        max_chars=200,
+        min_chars=10,
+    )
+    assert len(chunks) == 1
+    assert "\x00" not in chunks[0].content

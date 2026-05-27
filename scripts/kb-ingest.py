@@ -24,12 +24,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
+
+# pdfminer is noisy by default — it logs a "Could not get FontBBox"
+# warning for nearly every page of every academic PDF in the FSHD
+# corpus. The text extraction still works; the warning just buries
+# the actual ingest output. Silence below ERROR globally for the
+# whole pdfminer package.
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 # Make apps/api + scripts importable when running from the repo root.
 HERE = Path(__file__).resolve().parent
