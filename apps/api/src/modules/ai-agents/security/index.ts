@@ -1,8 +1,14 @@
 export {
+  ConsentMutationError,
+  getConsentDetails,
   getConsentLevel,
   getConsentStatus,
   redactionModeForConsent,
+  updateConsent,
+  type ConsentDetails,
   type ConsentStatus,
+  type ConsentTimestamps,
+  type ConsentUpdateInput,
 } from './consent.js';
 export {
   HARD_DELETE_KEYS,

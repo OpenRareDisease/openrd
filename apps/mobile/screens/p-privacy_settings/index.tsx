@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
@@ -9,20 +9,73 @@ import ScreenBackButton from '../common/ScreenBackButton';
 import ToggleSwitch from './components/ToggleSwitch';
 import ConfirmModal from './components/ConfirmModal';
 import SuccessToast from './components/SuccessToast';
+import {
+  ApiError,
+  type ConsentDetails,
+  type ConsentUpdatePayload,
+  getMyConsent,
+  updateMyConsent,
+} from '../../lib/api';
 
 interface ToggleInfo {
   id: string;
   newState: boolean;
 }
 
+type AiConsentField = 'personal' | 'thirdParty' | 'preciseValues';
+
+const AI_TOGGLE_IDS: Record<AiConsentField, string> = {
+  personal: 'ai-personal',
+  thirdParty: 'ai-third-party',
+  preciseValues: 'ai-precise-values',
+};
+
+const formatGrantDate = (iso: string | null): string | null => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 const PrivacySettingsScreen = () => {
   const router = useRouter();
 
-  // 开关状态管理
+  // 开关状态管理（旧的本地 mock toggles，待后端接入）
   const [isTrialPermissionEnabled, setIsTrialPermissionEnabled] = useState(true);
   const [isDonationPermissionEnabled, setIsDonationPermissionEnabled] = useState(false);
   const [isHospitalSyncEnabled, setIsHospitalSyncEnabled] = useState(true);
   const [isCommunityShareEnabled, setIsCommunityShareEnabled] = useState(true);
+
+  // AI 同意状态（来自后端）
+  const [aiConsent, setAiConsent] = useState<ConsentDetails | null>(null);
+  const [aiConsentLoading, setAiConsentLoading] = useState(true);
+  const [aiConsentError, setAiConsentError] = useState<string | null>(null);
+  const [aiConsentSaving, setAiConsentSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getMyConsent();
+        if (!cancelled) {
+          setAiConsent(data);
+          setAiConsentError(null);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setAiConsentError('请先完成基础档案后再设置 AI 同意。');
+        } else {
+          setAiConsentError(err instanceof Error ? err.message : '加载 AI 同意状态失败');
+        }
+      } finally {
+        if (!cancelled) setAiConsentLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 弹窗和提示状态
   const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
@@ -72,6 +125,27 @@ const PrivacySettingsScreen = () => {
           : '关闭后，您将无法在社区中发布内容，但仍可浏览他人分享。';
         icon = newState ? 'share-nodes' : 'lock';
         break;
+      case AI_TOGGLE_IDS.personal:
+        title = newState ? '开启个人数据用于 AI' : '关闭个人数据用于 AI';
+        message = newState
+          ? '开启后，AI 助手在回答问题时可以引用你的档案和报告中已脱敏的字段。原始姓名、身份证、电话等绝不会出现在提示词里。'
+          : '关闭后，AI 助手将无法引用你的任何个人数据；为了完全停用 AI 还需要同时关闭"第三方 LLM 处理"。';
+        icon = newState ? 'user-shield' : 'circle-xmark';
+        break;
+      case AI_TOGGLE_IDS.thirdParty:
+        title = newState ? '允许第三方 LLM 处理' : '关闭第三方 LLM 处理';
+        message = newState
+          ? '开启后，你的问题会被发送到云端大模型（SiliconFlow / DeepSeek）做推理。我们只发送脱敏后的提示词，并保留每一次调用的审计记录。'
+          : '关闭后，AI 助手将无法回答你的问题。';
+        icon = newState ? 'cloud-arrow-up' : 'cloud-slash';
+        break;
+      case AI_TOGGLE_IDS.preciseValues:
+        title = newState ? '开启精确数值授权' : '关闭精确数值授权';
+        message = newState
+          ? '开启后，AI 可以看到精确的 D4Z4 重复数、甲基化百分比、具体报告日期等原始数值。这些数据更有助于精准建议，但属于敏感信息。需要同时开启上面两项。'
+          : '关闭后，AI 只会看到临床化的描述（如"D4Z4 短"），具体数值不会进入提示词。';
+        icon = newState ? 'wand-magic-sparkles' : 'minus-circle';
+        break;
     }
 
     setModalConfig({ title, message, icon });
@@ -84,6 +158,20 @@ const PrivacySettingsScreen = () => {
     setCurrentToggleInfo(null);
   };
 
+  const applyAiConsentUpdate = async (payload: ConsentUpdatePayload) => {
+    setAiConsentSaving(true);
+    try {
+      const updated = await updateMyConsent(payload);
+      setAiConsent(updated);
+      showSuccessToast();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '同意状态更新失败，请稍后重试。';
+      Alert.alert('更新失败', message);
+    } finally {
+      setAiConsentSaving(false);
+    }
+  };
+
   const confirmToggle = () => {
     if (!currentToggleInfo) return;
 
@@ -92,19 +180,31 @@ const PrivacySettingsScreen = () => {
     switch (id) {
       case 'trial-permission':
         setIsTrialPermissionEnabled(newState);
+        showSuccessToast();
         break;
       case 'donation-permission':
         setIsDonationPermissionEnabled(newState);
+        showSuccessToast();
         break;
       case 'hospital-sync':
         setIsHospitalSyncEnabled(newState);
+        showSuccessToast();
         break;
       case 'community-share':
         setIsCommunityShareEnabled(newState);
+        showSuccessToast();
+        break;
+      case AI_TOGGLE_IDS.personal:
+        void applyAiConsentUpdate({ personal: newState });
+        break;
+      case AI_TOGGLE_IDS.thirdParty:
+        void applyAiConsentUpdate({ thirdParty: newState });
+        break;
+      case AI_TOGGLE_IDS.preciseValues:
+        void applyAiConsentUpdate({ preciseValues: newState });
         break;
     }
 
-    showSuccessToast();
     hideConfirmModal();
   };
 
@@ -135,6 +235,121 @@ const PrivacySettingsScreen = () => {
 
   const donationStatus = getDonationStatus();
 
+  const renderAiConsentSection = () => {
+    if (aiConsentLoading) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>AI 数据授权</Text>
+          <Text
+            style={{
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 13,
+            }}
+          >
+            正在加载同意状态...
+          </Text>
+        </View>
+      );
+    }
+
+    if (aiConsentError) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>AI 数据授权</Text>
+          <Text
+            style={{
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 13,
+            }}
+          >
+            {aiConsentError}
+          </Text>
+        </View>
+      );
+    }
+
+    if (!aiConsent) return null;
+
+    const { flags, timestamps, level } = aiConsent;
+    const personalAt = formatGrantDate(timestamps.personalAt);
+    const thirdPartyAt = formatGrantDate(timestamps.thirdPartyAt);
+    const preciseAt = formatGrantDate(timestamps.preciseValuesAt);
+    const preciseAllowed = flags.personal && flags.thirdParty;
+    const levelLabel =
+      level === 'precise'
+        ? '当前等级：精确（AI 可读原始数值）'
+        : level === 'basic'
+          ? '当前等级：基础（AI 可读临床化字段）'
+          : '当前等级：未授权（AI 拒绝回答）';
+
+    return (
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>AI 数据授权</Text>
+        <Text
+          style={{
+            paddingHorizontal: 24,
+            paddingTop: 4,
+            paddingBottom: 12,
+            color: CLINICAL_COLORS.textMuted,
+            fontSize: 12,
+          }}
+        >
+          {levelLabel}
+        </Text>
+
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>个人数据用于 AI</Text>
+            <Text style={styles.settingDescription}>
+              允许 AI 在回答问题时引用你档案/报告中已脱敏的字段
+              {personalAt ? `（同意于 ${personalAt}）` : ''}
+            </Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.personal}
+            disabled={aiConsentSaving}
+            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.personal, newState)}
+          />
+        </View>
+
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>第三方 LLM 处理</Text>
+            <Text style={styles.settingDescription}>
+              问题发送到云端大模型推理（SiliconFlow / DeepSeek）
+              {thirdPartyAt ? `（同意于 ${thirdPartyAt}）` : ''}
+            </Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.thirdParty}
+            disabled={aiConsentSaving}
+            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.thirdParty, newState)}
+          />
+        </View>
+
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>精确数值授权</Text>
+            <Text style={styles.settingDescription}>
+              允许 AI 看到 D4Z4 重复数、甲基化百分比等原始数值
+              {preciseAt ? `（同意于 ${preciseAt}）` : ''}
+              {!preciseAllowed ? '\n需要先开启上面两项' : ''}
+            </Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.preciseValues}
+            disabled={aiConsentSaving || !preciseAllowed}
+            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.preciseValues, newState)}
+          />
+        </View>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* 顶部导航栏 */}
@@ -145,6 +360,9 @@ const PrivacySettingsScreen = () => {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        {/* AI 数据授权 */}
+        {renderAiConsentSection()}
+
         {/* 数据授权设置 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>数据授权</Text>

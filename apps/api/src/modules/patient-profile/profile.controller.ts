@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import {
   activityLogSchema,
   baselineProfileSchema,
+  consentUpdateSchema,
   createSubmissionSchema,
   createProfileSchema,
   dailyImpactSchema,
@@ -245,6 +246,20 @@ export class PatientProfileController {
     const payload = baselineProfileSchema.parse(req.body);
     const result = await this.service.upsertBaseline(req.user.id, payload);
     res.status(200).json(result);
+  };
+
+  getMyConsent = async (req: AuthenticatedRequest, res: Response) => {
+    const details = await this.service.getConsentDetails(req.user.id);
+    if (!details) {
+      throw new AppError('Patient profile not found', 404);
+    }
+    res.status(200).json(details);
+  };
+
+  updateMyConsent = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = consentUpdateSchema.parse(req.body);
+    const updated = await this.service.updateConsent(req.user.id, payload);
+    res.status(200).json(updated);
   };
 
   addMeasurement = async (req: AuthenticatedRequest, res: Response) => {

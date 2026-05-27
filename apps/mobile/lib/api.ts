@@ -424,6 +424,46 @@ export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
 
+export type ConsentLevel = 'none' | 'basic' | 'precise';
+
+export interface ConsentFlags {
+  personal: boolean;
+  thirdParty: boolean;
+  preciseValues: boolean;
+}
+
+export interface ConsentTimestamps {
+  personalAt: string | null;
+  thirdPartyAt: string | null;
+  preciseValuesAt: string | null;
+}
+
+export interface ConsentDetails {
+  level: ConsentLevel;
+  flags: ConsentFlags;
+  timestamps: ConsentTimestamps;
+}
+
+export interface ConsentUpdatePayload {
+  personal?: boolean;
+  thirdParty?: boolean;
+  preciseValues?: boolean;
+}
+
+/** Fetch the calling user's AI consent state. Throws ApiError(404)
+ *  when the user has no patient_profiles row yet (i.e. onboarding
+ *  incomplete) — the caller should redirect to the profile setup. */
+export const getMyConsent = () => apiRequest<ConsentDetails>('/profiles/me/consent');
+
+/** Patch one or more AI consent flags. The backend enforces the
+ *  "precise requires personal+thirdParty" rule and returns 400 if the
+ *  caller breaks it. */
+export const updateMyConsent = (payload: ConsentUpdatePayload) =>
+  apiRequest<ConsentDetails>('/profiles/me/consent', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+
 export interface AiAskResponse {
   success: boolean;
   data: {
