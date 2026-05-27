@@ -39,10 +39,15 @@ Environment:
 
 /** Consume the value for a `--flag value` style option, refusing values
  *  that look like another flag — so `--repo --json` errors out instead
- *  of silently making `args.repo === '--json'`. */
+ *  of silently making `args.repo === '--json'`.
+ *
+ *  The literal `-` is allowed through as a value: callers like
+ *  `--body-file -` use it as the piped-stdin sentinel, and review
+ *  bodies legitimately start with `-` (markdown bullets). The check is
+ *  "starts with `-` AND is not just `-`". */
 const takeValue = (flag, argv, i) => {
   const next = argv[i + 1];
-  if (next === undefined || next.startsWith('-')) {
+  if (next === undefined || (next !== '-' && next.startsWith('--'))) {
     throw new Error(`${flag} requires a value`);
   }
   return next;
@@ -121,6 +126,16 @@ export const loadPrivateKey = async (env = process.env) => {
         'that the value has not been truncated.',
     );
   }
+  if (
+    key.includes('-----BEGIN ENCRYPTED PRIVATE KEY-----') ||
+    key.includes('Proc-Type: 4,ENCRYPTED')
+  ) {
+    throw new Error(
+      'Encrypted private keys are not supported by this script. ' +
+        'GitHub App keys are issued unencrypted; if you wrapped one with a passphrase, ' +
+        'decrypt before use: `openssl rsa -in key.enc -out key.pem`.',
+    );
+  }
   return key;
 };
 
@@ -141,14 +156,23 @@ export const createAppJwt = async ({ appId, privateKey }) => {
 
 /** Pull `owner/repo` out of a git remote URL. Accepts SSH, https, and
  *  https-with-credentials forms; allows dots inside repo names and
- *  non-`github.com` hosts (for GitHub Enterprise). */
+ *  non-`github.com` hosts (for GitHub Enterprise).
+ *
+ *  Repo capture is `[^/]+?` (not `.+?`) so URLs with extra path
+ *  segments — Gitea/GitLab groups (`group/sub/repo.git`), browser
+ *  paths copied with `/issues` suffix, etc. — fail the match entirely
+ *  rather than silently splitting `sub/repo` into the repo field.
+ *  SSH `git@` is optional inside the ssh:// branch so configs that
+ *  set the user via ~/.ssh/config also work. */
 const parseRepoFromRemote = (remote) => {
   const trimmed = remote.trim();
-  const ssh = trimmed.match(/^(?:ssh:\/\/)?git@([^:/]+)[:/](?<owner>[^/]+)\/(?<repo>.+?)(?:\.git)?\/?$/);
+  const ssh = trimmed.match(
+    /^(?:ssh:\/\/)?(?:[^@/]+@)?([^:/]+)[:/](?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?\/?$/,
+  );
   if (ssh?.groups) return `${ssh.groups.owner}/${ssh.groups.repo}`;
 
   const https = trimmed.match(
-    /^https?:\/\/(?:[^@/]+@)?[^/]+\/(?<owner>[^/]+)\/(?<repo>.+?)(?:\.git)?\/?$/,
+    /^https?:\/\/(?:[^@/]+@)?[^/]+\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?\/?$/,
   );
   if (https?.groups) return `${https.groups.owner}/${https.groups.repo}`;
 

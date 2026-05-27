@@ -3,7 +3,7 @@
  * Submit a pull request review using a GitHub App installation token.
  */
 
-import { readFile, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -16,12 +16,12 @@ import {
 
 const USER_AGENT = 'openrd-github-app-reviewer';
 const VALID_EVENTS = new Set(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']);
-/** GitHub silently truncates review bodies past ~65KB; cap a little
- *  higher than that so a borderline Markdown render still surfaces a
- *  clear error rather than silently corrupting the body. Anything
- *  larger almost certainly means the caller pointed --body-file at
- *  the wrong file (a build log, a binary, /dev/zero, etc.). */
-const MAX_BODY_BYTES = 96 * 1024;
+/** GitHub's PR review body field is documented at 65535 chars. Cap at
+ *  that exact value so the local error message is authoritative —
+ *  anything larger almost certainly means the caller pointed
+ *  --body-file at the wrong file (a build log, a binary, /dev/zero,
+ *  etc.) and we should refuse before sending a 422-bound request. */
+const MAX_BODY_BYTES = 65535;
 
 const usage = `Usage:
   node scripts/github-app-pr-review.mjs <pr-number> --event REQUEST_CHANGES --body-file review.md
@@ -36,10 +36,14 @@ Options:
 `;
 
 /** Consume the next argv element as a value, refusing to swallow
- *  another flag silently. Mirrors the helper in github-app-token.mjs. */
+ *  another flag silently. Mirrors the helper in github-app-token.mjs.
+ *
+ *  Accepts `-` literally (piped-stdin sentinel for --body-file) and
+ *  anything else that doesn't start with `--`. So `--body '- bullet'`
+ *  and `--body-file -` both work; `--repo --json` still errors out. */
 const takeValue = (flag, argv, i) => {
   const next = argv[i + 1];
-  if (next === undefined || next.startsWith('-')) {
+  if (next === undefined || (next !== '-' && next.startsWith('--'))) {
     throw new Error(`${flag} requires a value`);
   }
   return next;
@@ -123,22 +127,44 @@ const parseArgs = (argv) => {
 const readBody = async (args) => {
   if (args.bodyFile === '-') return readStdin();
   if (args.bodyFile) {
-    let size;
+    let info;
     try {
-      const info = await stat(args.bodyFile);
-      if (!info.isFile()) {
-        throw new Error(`--body-file ${args.bodyFile} is not a regular file.`);
-      }
-      size = info.size;
+      info = await stat(args.bodyFile);
     } catch (error) {
       if (error?.code === 'ENOENT') {
         throw new Error(`--body-file ${args.bodyFile} does not exist.`);
       }
       throw error;
     }
-    if (size > MAX_BODY_BYTES) {
+
+    // FIFOs and character devices (e.g. /dev/stdin, /dev/fd/N from
+    // bash process substitution `<(...)`) report size=0 but are
+    // legitimate stdin-like sources. Stream them through a size-capped
+    // read instead of trusting `info.size`.
+    if (info.isFIFO() || info.isCharacterDevice()) {
+      const fileHandle = await open(args.bodyFile, 'r');
+      try {
+        const buf = Buffer.alloc(MAX_BODY_BYTES + 1);
+        const { bytesRead } = await fileHandle.read(buf, 0, MAX_BODY_BYTES + 1, 0);
+        if (bytesRead > MAX_BODY_BYTES) {
+          throw new Error(
+            `--body-file ${args.bodyFile} exceeds ${MAX_BODY_BYTES} bytes; refusing to send.`,
+          );
+        }
+        return buf.slice(0, bytesRead).toString('utf8');
+      } finally {
+        await fileHandle.close();
+      }
+    }
+
+    if (!info.isFile()) {
       throw new Error(
-        `--body-file ${args.bodyFile} is ${size} bytes; GitHub review bodies are limited ` +
+        `--body-file ${args.bodyFile} is not a regular file, FIFO, or character device.`,
+      );
+    }
+    if (info.size > MAX_BODY_BYTES) {
+      throw new Error(
+        `--body-file ${args.bodyFile} is ${info.size} bytes; GitHub review bodies are limited ` +
           `to ~65KB. Refusing to send more than ${MAX_BODY_BYTES} bytes.`,
       );
     }
