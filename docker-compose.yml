@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:16
+    # Postgres 16 + pgvector extension preinstalled. Required by the local
+    # medical KB store (see db/migrations/006_pgvector_kb.sql).
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres

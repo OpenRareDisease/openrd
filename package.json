@@ -16,7 +16,12 @@
     "format:write": "npm run format:write --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:smoke": "bash scripts/smoke-test.sh",
-    "test:latest": "bash scripts/latest-test.sh"
+    "test:latest": "bash scripts/latest-test.sh",
+    "kb:warmup": "python3 scripts/kb-warmup.py",
+    "kb:ingest": "python3 scripts/kb-ingest.py",
+    "kb:ingest:dry": "python3 scripts/kb-ingest.py --dry-run --verbose",
+    "kb:import:chroma": "python3 scripts/kb-import-from-chroma.py",
+    "kb:verify": "python3 scripts/kb-verify.py"
   },
   "devDependencies": {
     "husky": "^9.1.6",

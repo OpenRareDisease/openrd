@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 from pathlib import Path
 
-from knowledge import FSHDKnowledgeBaseCloud
+from knowledge import FSHDKnowledgeBase
 
 try:
     from dotenv import load_dotenv
@@ -81,7 +81,7 @@ def _warmup_kb():
     global kb_instance
     try:
         logger.info('Starting knowledge base warmup')
-        instance = FSHDKnowledgeBaseCloud()
+        instance = FSHDKnowledgeBase()
         with kb_init_lock:
             kb_instance = instance
             kb_ready_event.set()

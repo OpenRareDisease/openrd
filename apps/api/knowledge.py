@@ -1,13 +1,24 @@
-import os
-import sys
+"""FSHD knowledge base orchestration.
+
+This module is backend-agnostic: it relies on `kb_backends` for storage
+and `embed_models` for embeddings. Pick a backend with the KB_BACKEND
+env and an embedder with KB_EMBED_MODEL. See
+docs/proposals/local-rag-migration.md.
+"""
+
+from __future__ import annotations
+
+import hashlib
 import json
 import logging
+import os
 import re
-import hashlib
-from typing import List, Dict, Any, Tuple, Optional
+import sys
+from typing import Any, Dict, List, Optional
 
-import chromadb
-from sentence_transformers import SentenceTransformer
+from kb_backends import VectorBackend, create_backend
+from kb_backends.base import QueryHit
+from embed_models import Embedder, create_embedder
 
 # -----------------------------
 # Logging: only to stderr (avoid breaking JSON stdout)
@@ -48,7 +59,11 @@ def _norm_text(t: str) -> str:
 
 
 def _fingerprint(text: str) -> str:
-    return hashlib.md5(_norm_text(text).encode("utf-8")).hexdigest()
+    # sha256 truncated to 32 hex chars matches the format used by
+    # scripts/kb-ingest.py so chunk-level fingerprints stay consistent
+    # whether they come from the orchestrator's runtime dedup or from
+    # an ingest pipeline.
+    return hashlib.sha256(_norm_text(text).encode("utf-8")).hexdigest()[:32]
 
 
 def _is_junk(text: str) -> bool:
@@ -64,82 +79,45 @@ def _safe_int(x: Any, default: int) -> int:
         return default
 
 
-class FSHDKnowledgeBaseCloud:
-    def __init__(self):
-        self.api_key = os.getenv("CHROMA_API_KEY", "").strip()
-        self.tenant = os.getenv("CHROMA_TENANT_ID", "").strip() or os.getenv("CHROMA_TENANT", "").strip()
-        self.database = os.getenv("CHROMA_DATABASE", "FSHD").strip()
-        self.collection_name = os.getenv("CHROMA_COLLECTION", "fshd_knowledge_base").strip()
+# Search defaults. Centralised here so callers (CLI, KB service, future
+# orchestrator) all see the same fallback if KB_* env vars are unset.
+DEFAULT_FINAL_N = int(os.getenv("KB_FINAL_N", "8"))
+DEFAULT_FETCH_K = int(os.getenv("KB_FETCH_K", "80"))
+DEFAULT_MAX_PER_SOURCE = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
 
-        if not self.api_key:
-            raise RuntimeError("Missing env CHROMA_API_KEY")
-        if not self.tenant:
-            raise RuntimeError("Missing env CHROMA_TENANT_ID")
-        if not self.database:
-            raise RuntimeError("Missing env CHROMA_DATABASE")
-        if not self.collection_name:
-            raise RuntimeError("Missing env CHROMA_COLLECTION")
 
-        logger.info("Connecting to Chroma Cloud...")
-        self.client = chromadb.CloudClient(
-            api_key=self.api_key,
-            tenant=self.tenant,
-            database=self.database,
+def _get_source(metadata: Optional[Dict[str, Any]], fallback: Optional[str] = None) -> str:
+    md = metadata or {}
+    source = (
+        md.get("source_file")
+        or md.get("source")
+        or md.get("file")
+        or md.get("path")
+        or md.get("folder_path")
+        or fallback
+        or "unknown"
+    )
+    return str(source)
+
+
+class FSHDKnowledgeBase:
+    """Backend-agnostic FSHD knowledge base orchestrator."""
+
+    def __init__(
+        self,
+        backend: Optional[VectorBackend] = None,
+        embedder: Optional[Embedder] = None,
+    ) -> None:
+        self.backend = backend or create_backend()
+        self.embedder = embedder or create_embedder()
+        logger.info(
+            "KB ready: backend=%s embedder=%s dim=%s",
+            self.backend.id,
+            self.embedder.model_name,
+            self.embedder.dimension,
         )
 
-        # Local embedding model (do NOT bind to collection)
-        logger.info("Loading local embedding model: all-MiniLM-L6-v2")
-        model_name = os.getenv("KB_EMBED_MODEL", "all-MiniLM-L6-v2").strip()
-        local_only_env = os.getenv("KB_LOCAL_FILES_ONLY", "").strip() == "1"
-
-        try:
-            self.model = SentenceTransformer(model_name, local_files_only=local_only_env)
-        except Exception as first_error:
-            if not local_only_env:
-                logger.warning(
-                    "Embedding model download failed, retrying with local_files_only=True: %s",
-                    first_error,
-                )
-                try:
-                    self.model = SentenceTransformer(model_name, local_files_only=True)
-                except Exception as second_error:
-                    raise RuntimeError(
-                        "Failed to load embedding model. If you are offline, pre-download the model "
-                        "and set KB_LOCAL_FILES_ONLY=1."
-                    ) from second_error
-            else:
-                raise
-
-        logger.info(f"Opening collection (NO embedding_function passed): {self.collection_name}")
-        self.collection = self.client.get_collection(name=self.collection_name)
-
-        logger.info("Cloud KB initialized OK")
-
-    def _embed_texts(self, texts: List[str]) -> List[List[float]]:
-        return self.model.encode(texts).tolist()
-
-    def _query_once(
-        self,
-        query_text: str,
-        fetch_k: int,
-        where: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[str], List[Dict[str, Any]], List[float]]:
-        q_emb = self._embed_texts([query_text])[0]
-
-        kwargs: Dict[str, Any] = {
-            "query_embeddings": [q_emb],
-            "n_results": fetch_k,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        results = self.collection.query(**kwargs)
-
-        docs0 = (results.get("documents") or [[]])[0] or []
-        metas0 = (results.get("metadatas") or [[]])[0] or []
-        dists0 = (results.get("distances") or [[]])[0] or []
-        return docs0, metas0, dists0
+    # --------------------------------------------------------------- search
 
     def search_multi(
         self,
@@ -161,100 +139,80 @@ class FSHDKnowledgeBaseCloud:
                 "metadata": {"total_results": 0, "search_query": question},
             }
 
-        # 如果没传 queries，就至少用原问题
+        # Fall back to the original question when no rewritten queries
+        # are provided.
         if not queries:
             queries = [question]
 
-        logger.info(f"Multi queries ({len(queries)}): {queries}")
-        logger.info(f"fetch_k={fetch_k}, final_n={final_n}, max_per_source={max_per_source}, where={where}")
+        logger.info(
+            "Multi queries (%d): %s | fetch_k=%d final_n=%d max_per_source=%d where=%s",
+            len(queries),
+            queries,
+            fetch_k,
+            final_n,
+            max_per_source,
+            where,
+        )
 
+        # 1) Embed all queries in a single call (faster + cache-friendly).
+        q_embs = self.embedder.embed_texts(queries)
+
+        # 2) Backend-specific recall.
+        per_query_hits: List[List[QueryHit]] = self.backend.query_multi(
+            query_embeddings=q_embs,
+            fetch_k=fetch_k,
+            where=where,
+        )
+
+        # 3) Merge, dedup, junk-filter.
         merged: List[Dict[str, Any]] = []
-        seen_fp = set()
-
-        # 1) multi-query recall (single remote request for stability)
-        q_embs = self._embed_texts(queries)
-        kwargs: Dict[str, Any] = {
-            "query_embeddings": q_embs,
-            "n_results": fetch_k,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-        results = self.collection.query(**kwargs)
-
-        docs_all = results.get("documents") or []
-        metas_all = results.get("metadatas") or []
-        dists_all = results.get("distances") or []
-
-        for qi, q in enumerate(queries):
-            docs = docs_all[qi] if qi < len(docs_all) and docs_all[qi] else []
-            metas = metas_all[qi] if qi < len(metas_all) and metas_all[qi] else []
-            dists = dists_all[qi] if qi < len(dists_all) and dists_all[qi] else []
-
-            for i, doc in enumerate(docs):
-                text_norm = _norm_text(doc or "")
+        seen_fp: set[str] = set()
+        for qi, (q, hits) in enumerate(zip(queries, per_query_hits)):
+            for hit in hits:
+                text_norm = _norm_text(hit.content)
                 if _is_junk(text_norm):
                     continue
-
-                fp = _fingerprint(text_norm)
+                fp = hit.fingerprint or _fingerprint(text_norm)
                 if fp in seen_fp:
                     continue
                 seen_fp.add(fp)
-
-                md = metas[i] if i < len(metas) and metas[i] is not None else {}
-                dist = dists[i] if i < len(dists) else None
-
                 merged.append(
                     {
                         "content": text_norm,
-                        "metadata": md,
-                        "distance": dist,
+                        "metadata": hit.metadata or {},
+                        "distance": hit.distance,
+                        "_source_file": hit.source_file,
                         "_hit_query": q,
                         "_hit_query_i": qi,
                     }
                 )
 
-        # 2) rank: distance asc
-        def dist_key(x: Dict[str, Any]) -> float:
-            d = x.get("distance")
+        # 4) Rank by distance (closer first; missing distances sink).
+        def _dist_key(item: Dict[str, Any]) -> float:
+            d = item.get("distance")
             return float(d) if d is not None else 1e9
 
-        merged.sort(key=dist_key)
+        merged.sort(key=_dist_key)
 
-        # 3) diversify: limit per source_file/path/folder_path
+        # 5) Per-source diversification.
         chosen: List[Dict[str, Any]] = []
         per_source: Dict[str, int] = {}
-
-        def get_source(md: Dict[str, Any]) -> str:
-            source = (
-                md.get("source_file")
-                or md.get("source")
-                or md.get("file")
-                or md.get("path")
-                or md.get("folder_path")
-                or "unknown"
-            )
-            return str(source)
-
         for item in merged:
-            md = item.get("metadata") or {}
-            src = get_source(md)
-
+            src = _get_source(item.get("metadata"), fallback=item.get("_source_file"))
             if per_source.get(src, 0) >= max_per_source:
                 continue
-
             chosen.append(item)
             per_source[src] = per_source.get(src, 0) + 1
-
             if len(chosen) >= final_n:
                 break
 
-        # 4) generate a small preview answer (Node 侧会再用 DeepSeek 生成更好的答案)
+        # 6) Preview answer (Node side will produce the real LLM answer).
         answer = self._generate_answer_preview(question, chosen)
 
-        # strip debug keys unless requested
-        if not keep_debug_fields:
-            for c in chosen:
+        # 7) Strip debug fields unless requested.
+        for c in chosen:
+            c.pop("_source_file", None)
+            if not keep_debug_fields:
                 c.pop("_hit_query", None)
                 c.pop("_hit_query_i", None)
 
@@ -269,6 +227,8 @@ class FSHDKnowledgeBaseCloud:
                 "final_n": final_n,
                 "max_per_source": max_per_source,
                 "where": where or None,
+                "backend": self.backend.id,
+                "embed_model": self.embedder.model_name,
             },
         }
 
@@ -298,12 +258,17 @@ class FSHDKnowledgeBaseCloud:
         return "\n".join(parts)
 
 
+# ----------------------------------------------------------------------- legacy alias
+
+#: Kept so any older import sites continue to work; new code should use
+#: FSHDKnowledgeBase directly.
+FSHDKnowledgeBaseCloud = FSHDKnowledgeBase
+
+
+# ----------------------------------------------------------------------- CLI
+
 def _parse_multi_payload(arg: str) -> Dict[str, Any]:
-    """
-    Accept:
-      - JSON string: {"question": "...", "queries": [...], "top_k": 8, "fetch_k": 80, ...}
-      - or @file.json : startswith '@' then load file
-    """
+    """Accept either an inline JSON string or `@path/to/file.json`."""
     s = (arg or "").strip()
     if not s:
         return {}
@@ -316,13 +281,16 @@ def _parse_multi_payload(arg: str) -> Dict[str, Any]:
     return json.loads(s)
 
 
-def main():
+def main() -> None:
     # Usage:
-    # 1) python knowledge.py "你的问题"
-    # 2) python knowledge.py --multi '{"question":"...","queries":["...","..."],"top_k":8}'
+    #   python knowledge.py "你的问题"
+    #   python knowledge.py --multi '{"question":"...","queries":[...],"top_k":8}'
     if len(sys.argv) < 2:
         out = {
-            "answer": "Usage: python knowledge.py \"your question\"  OR  python knowledge.py --multi '{\"question\":\"...\",\"queries\":[...]}'",
+            "answer": (
+                "Usage: python knowledge.py \"your question\"  OR  "
+                "python knowledge.py --multi '{\"question\":\"...\",\"queries\":[...]}'"
+            ),
             "chunks": [],
             "metadata": {"error": "missing args"},
         }
@@ -330,28 +298,34 @@ def main():
         sys.exit(1)
 
     try:
-        kb = FSHDKnowledgeBaseCloud()
+        kb = FSHDKnowledgeBase()
 
         if sys.argv[1] == "--multi":
             if len(sys.argv) < 3:
                 out = {
-                    "answer": "Usage: python knowledge.py --multi '{\"question\":\"...\",\"queries\":[...]}'",
+                    "answer": (
+                        "Usage: python knowledge.py --multi "
+                        "'{\"question\":\"...\",\"queries\":[...]}'"
+                    ),
                     "chunks": [],
                     "metadata": {"error": "missing multi payload"},
                 }
-                sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False) + "\n").encode("utf-8"))
+                sys.stdout.buffer.write(
+                    (json.dumps(out, ensure_ascii=False) + "\n").encode("utf-8")
+                )
                 sys.exit(1)
 
             payload = _parse_multi_payload(sys.argv[2])
-
             question = str(payload.get("question") or payload.get("q") or "").strip()
-            queries = payload.get("queries") or []
-            if not isinstance(queries, list):
-                queries = []
+            queries_payload = payload.get("queries") or []
+            if not isinstance(queries_payload, list):
+                queries_payload = []
 
-            top_k = _safe_int(payload.get("top_k") or payload.get("final_n"), int(os.getenv("KB_FINAL_N", "8")))
-            fetch_k = _safe_int(payload.get("fetch_k"), int(os.getenv("KB_FETCH_K", "80")))
-            max_per_source = _safe_int(payload.get("max_per_source"), int(os.getenv("KB_MAX_PER_SOURCE", "4")))
+            top_k = _safe_int(
+                payload.get("top_k") or payload.get("final_n"), DEFAULT_FINAL_N
+            )
+            fetch_k = _safe_int(payload.get("fetch_k"), DEFAULT_FETCH_K)
+            max_per_source = _safe_int(payload.get("max_per_source"), DEFAULT_MAX_PER_SOURCE)
 
             where = payload.get("where")
             if where is not None and not isinstance(where, dict):
@@ -361,27 +335,21 @@ def main():
 
             result = kb.search_multi(
                 question=question,
-                queries=[str(x) for x in queries if x is not None],
+                queries=[str(x) for x in queries_payload if x is not None],
                 final_n=top_k,
                 fetch_k=fetch_k,
                 max_per_source=max_per_source,
                 where=where,
                 keep_debug_fields=keep_debug,
             )
-
         else:
-            # single-question mode: no hardcoded expansion, just use question itself
             question = str(sys.argv[1]).strip()
-            top_k = int(os.getenv("KB_FINAL_N", "8"))
-            fetch_k = int(os.getenv("KB_FETCH_K", "80"))
-            max_per_source = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
-
             result = kb.search_multi(
                 question=question,
                 queries=[question],
-                final_n=top_k,
-                fetch_k=fetch_k,
-                max_per_source=max_per_source,
+                final_n=DEFAULT_FINAL_N,
+                fetch_k=DEFAULT_FETCH_K,
+                max_per_source=DEFAULT_MAX_PER_SOURCE,
                 where=None,
                 keep_debug_fields=False,
             )
