@@ -28,6 +28,45 @@ const CONSENT_HISTORY_LIMIT = 200;
 
 type Tab = 'ai' | 'consent';
 
+/**
+ * The server-side scrubber (`scrubErrorDetail` in
+ * ai-chat.routes.ts) covers pg parameter values, phone numbers, CN
+ * ID cards, and email addresses — but it's pattern-based and not
+ * intended to be an exhaustive catalogue of every future error shape
+ * that might land in `errorDetail`. Renderering the raw string would
+ * silently expand the user-visible surface as new error types reach
+ * the audit row.
+ *
+ * Apply an allowlist on the client side: if the detail matches one
+ * of a handful of known buckets, render the friendly Chinese label
+ * the user can act on. Anything else collapses to a generic message
+ * — the user can still see the timestamp + status, and the operator
+ * has full server logs.
+ */
+const humanizeAiErrorDetail = (raw: string): string => {
+  const value = (raw || '').toLowerCase();
+  if (!value.trim()) return '';
+  if (value.includes('consent') || value.includes('未同意') || value.includes('同意')) {
+    return '需要先同意 AI 使用数据';
+  }
+  if (value.includes('rate') || value.includes('too many') || value.includes('过于频繁')) {
+    return '请求过于频繁，请稍后再试';
+  }
+  if (value.includes('timeout') || value.includes('超时')) {
+    return '服务响应超时，请稍后再试';
+  }
+  if (value.includes('ai 服务暂时不可用') || value.includes('ai_error') || value.includes('llm')) {
+    return 'AI 服务暂时不可用';
+  }
+  if (value.includes('unauth') || value.includes('401')) {
+    return '会话已过期，请重新登录';
+  }
+  if (value.includes('forbidden') || value.includes('403')) {
+    return '没有访问权限';
+  }
+  return 'AI 服务异常，请重试或联系支持';
+};
+
 const STATUS_LABEL: Record<AiAuditStatus, string> = {
   success: '成功',
   error: '失败',
@@ -213,7 +252,7 @@ const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
             style={{ color: CLINICAL_COLORS.textSoft, fontSize: 11, lineHeight: 16 }}
             numberOfLines={3}
           >
-            {entry.errorDetail}
+            {humanizeAiErrorDetail(entry.errorDetail)}
           </Text>
         </View>
       ) : null}

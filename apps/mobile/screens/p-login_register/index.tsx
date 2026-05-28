@@ -271,9 +271,16 @@ const LoginRegisterScreen: React.FC = () => {
         });
       }, 1000);
 
-      const message = response.mockCode
-        ? `验证码已发送（测试码：${response.mockCode}）`
-        : '验证码已发送';
+      // Only surface `mockCode` in dev builds. The backend's mock
+      // OTP provider returns it; prod uses Tencent. A misconfigured
+      // staging env promoting an OTP_PROVIDER=mock value to prod
+      // would otherwise print the secret straight to the success
+      // toast. `__DEV__` is true in Expo dev builds and false in
+      // production bundles.
+      const message =
+        __DEV__ && response.mockCode
+          ? `验证码已发送（测试码：${response.mockCode}）`
+          : '验证码已发送';
       showModal('success', '成功', message);
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
@@ -307,7 +314,11 @@ const LoginRegisterScreen: React.FC = () => {
       });
 
       await setSession(response);
-      showModal('success', '登录成功', `欢迎回来，${response.user.phoneNumber}`);
+      // Show only the last 4 digits — the full phone number on a
+      // shoulder-surfable success toast is a "we're showing PII we
+      // don't need to" case the strict review flagged.
+      const lastFour = (response.user.phoneNumber ?? '').slice(-4) || '****';
+      showModal('success', '登录成功', `欢迎回来，尾号 ${lastFour}`);
       router.replace('/p-home');
     } catch (error) {
       const message =

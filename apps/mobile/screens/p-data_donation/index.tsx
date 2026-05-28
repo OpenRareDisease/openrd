@@ -1,30 +1,75 @@
-import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Modal } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, Modal, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import styles from './styles';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import {
+  ApiError,
+  getMySharingPreferences,
+  updateMySharingPreferences,
+  type SharingPreferences,
+} from '../../lib/api';
 import ScreenBackButton from '../common/ScreenBackButton';
 
+/**
+ * Data donation screen.
+ *
+ * Previously this screen kept the donation flag in local state only,
+ * with hard-coded "捐赠天数 / 数据条目" stats and a fake "上次捐赠时间"
+ * that never reflected reality. That meant the privacy-settings screen
+ * (which DOES write to /me/sharing-preferences) and this screen could
+ * disagree about whether the user had actually granted donation —
+ * patients legitimately thought they had granted/revoked donation when
+ * they did neither.
+ *
+ * Both screens now share `dataDonation` on `sharing-preferences` and
+ * the fake stat block is gone. If a future stats feature lands, it
+ * should come from a real backend endpoint, not a literal.
+ */
 const DataDonationScreen = () => {
-  const [isDonationEnabled, setIsDonationEnabled] = useState(false);
+  const [prefs, setPrefs] = useState<SharingPreferences | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
   const [isSuccessToastVisible, setIsSuccessToastVisible] = useState(false);
-  const [lastDonationTime, setLastDonationTime] = useState('2024年1月15日');
-  const donationDays = 15;
-  const donationItems = 42;
+
+  const isDonationEnabled = Boolean(prefs?.flags?.dataDonation);
+  const lastDonationTime = prefs?.timestamps?.dataDonationAt ?? null;
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const fresh = await getMySharingPreferences();
+      setPrefs(fresh);
+    } catch (error) {
+      const message =
+        error instanceof ApiError && error.message ? error.message : '加载共享偏好失败';
+      setLoadError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const handleDonationToggle = () => {
+    if (isSubmitting) return;
     if (!isDonationEnabled) {
       setIsConfirmModalVisible(true);
     } else {
-      toggleDonation(false);
+      void toggleDonation(false);
     }
   };
 
   const handleEnableDonationPress = () => {
+    if (isSubmitting) return;
     setIsConfirmModalVisible(true);
   };
 
@@ -34,82 +79,45 @@ const DataDonationScreen = () => {
 
   const handleModalConfirm = () => {
     setIsConfirmModalVisible(false);
-    toggleDonation(true);
+    void toggleDonation(true);
   };
 
-  const toggleDonation = (enable: boolean) => {
-    setIsDonationEnabled(enable);
-
-    if (enable) {
-      // 开启捐赠，更新时间
-      const now = new Date();
-      const currentTime = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
-      setLastDonationTime(currentTime);
+  const toggleDonation = async (enable: boolean) => {
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      const updated = await updateMySharingPreferences({ dataDonation: enable });
+      setPrefs(updated);
+      setIsSuccessToastVisible(true);
+      setTimeout(() => setIsSuccessToastVisible(false), 2000);
+    } catch (error) {
+      const message =
+        error instanceof ApiError && error.message ? error.message : '更新失败，请稍后重试';
+      setSubmitError(message);
+    } finally {
+      setIsSubmitting(false);
     }
-
-    showSuccessToast();
   };
 
-  const showSuccessToast = () => {
-    setIsSuccessToastVisible(true);
-    setTimeout(() => {
-      setIsSuccessToastVisible(false);
-    }, 2000);
-  };
-
-  const renderProgressRing = () => {
-    const radius = 40;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - circumference * 0.75; // 75% progress
-
-    return (
-      <View style={styles.progressRingContainer}>
-        <Svg width={40} height={40} style={styles.progressRing}>
-          <Defs>
-            <SvgLinearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <Stop offset="0%" stopColor={CLINICAL_COLORS.accent} />
-              <Stop offset="100%" stopColor={CLINICAL_COLORS.accentStrong} />
-            </SvgLinearGradient>
-          </Defs>
-          <Circle
-            cx="20"
-            cy="20"
-            r={radius}
-            stroke={CLINICAL_TINTS.borderStrong}
-            strokeWidth="4"
-            fill="none"
-          />
-          <Circle
-            cx="20"
-            cy="20"
-            r={radius}
-            stroke="url(#gradient)"
-            strokeWidth="4"
-            fill="none"
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            strokeLinecap="round"
-            transform="rotate(-90 20 20)"
-          />
-        </Svg>
-        <View style={styles.progressRingIcon}>
-          <FontAwesome6 name="heart" size={18} color={CLINICAL_COLORS.accent} solid />
-        </View>
-      </View>
-    );
-  };
+  const formattedLastTime = lastDonationTime
+    ? (() => {
+        const d = new Date(lastDonationTime);
+        return Number.isNaN(d.getTime())
+          ? lastDonationTime
+          : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+      })()
+    : null;
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* 顶部导航栏 */}
         <View style={styles.header}>
           <ScreenBackButton />
           <Text style={styles.pageTitle}>数据捐赠</Text>
           <View style={styles.headerSpacer} />
         </View>
 
-        {/* 捐赠说明区域 */}
+        {/* Intro */}
         <View style={styles.donationIntroSection}>
           <View style={styles.introCard}>
             <LinearGradient
@@ -127,7 +135,7 @@ const DataDonationScreen = () => {
           </View>
         </View>
 
-        {/* 捐赠流程说明 */}
+        {/* Process */}
         <View style={styles.donationProcessSection}>
           <Text style={styles.sectionTitle}>捐赠流程</Text>
           <View style={styles.processSteps}>
@@ -163,43 +171,7 @@ const DataDonationScreen = () => {
           </View>
         </View>
 
-        {/* 隐私保护说明 */}
-        <View style={styles.privacyProtectionSection}>
-          <Text style={styles.sectionTitle}>隐私保护承诺</Text>
-          <View style={styles.privacyCard}>
-            <View style={styles.privacyFeatures}>
-              <View style={styles.privacyItem}>
-                <View style={[styles.privacyIcon, styles.privacyIconGreen]}>
-                  <FontAwesome6 name="shield-halved" size={10} color={CLINICAL_COLORS.success} />
-                </View>
-                <Text style={styles.privacyText}>匿名化处理，无法识别个人身份</Text>
-              </View>
-
-              <View style={styles.privacyItem}>
-                <View style={[styles.privacyIcon, styles.privacyIconBlue]}>
-                  <FontAwesome6 name="lock" size={10} color={CLINICAL_COLORS.accent} />
-                </View>
-                <Text style={styles.privacyText}>区块链技术确保数据安全</Text>
-              </View>
-
-              <View style={styles.privacyItem}>
-                <View style={[styles.privacyIcon, styles.privacyIconPurple]}>
-                  <FontAwesome6 name="eye-slash" size={10} color={CLINICAL_COLORS.accentStrong} />
-                </View>
-                <Text style={styles.privacyText}>仅用于科研，不用于商业用途</Text>
-              </View>
-
-              <View style={styles.privacyItem}>
-                <View style={[styles.privacyIcon, styles.privacyIconYellow]}>
-                  <FontAwesome6 name="toggle-on" size={10} color={CLINICAL_COLORS.warning} />
-                </View>
-                <Text style={styles.privacyText}>随时可关闭捐赠，完全自主控制</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-
-        {/* 捐赠授权开关 */}
+        {/* Toggle — wired to /me/sharing-preferences.dataDonation */}
         <View style={styles.donationToggleSection}>
           <View style={styles.toggleCard}>
             <View style={styles.toggleContent}>
@@ -208,16 +180,40 @@ const DataDonationScreen = () => {
                 <Text style={styles.toggleDescription}>您的贡献将帮助推动FSHD研究进展</Text>
               </View>
               <TouchableOpacity
-                style={[styles.toggleSwitch, isDonationEnabled && styles.toggleSwitchActive]}
+                style={[
+                  styles.toggleSwitch,
+                  isDonationEnabled && styles.toggleSwitchActive,
+                  (isLoading || isSubmitting) && { opacity: 0.6 },
+                ]}
                 onPress={handleDonationToggle}
+                disabled={isLoading || isSubmitting}
               >
                 <View style={[styles.toggleThumb, isDonationEnabled && styles.toggleThumbActive]} />
               </TouchableOpacity>
             </View>
           </View>
+          {isLoading && (
+            <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={CLINICAL_COLORS.accent} />
+              <Text style={{ marginLeft: 8, color: CLINICAL_COLORS.textMuted }}>
+                正在加载共享偏好…
+              </Text>
+            </View>
+          )}
+          {loadError && (
+            <View style={{ marginTop: 8 }}>
+              <Text style={{ color: CLINICAL_COLORS.warning }}>{loadError}</Text>
+              <TouchableOpacity onPress={() => void load()} style={{ marginTop: 4 }}>
+                <Text style={{ color: CLINICAL_COLORS.accent }}>重试</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {submitError && (
+            <Text style={{ marginTop: 8, color: CLINICAL_COLORS.warning }}>{submitError}</Text>
+          )}
         </View>
 
-        {/* 捐赠状态显示 */}
+        {/* Status */}
         <View style={styles.donationStatusSection}>
           <Text style={styles.sectionTitle}>捐赠状态</Text>
 
@@ -231,34 +227,29 @@ const DataDonationScreen = () => {
                 开启捐赠后，您的数据将为FSHD研究做出重要贡献
               </Text>
               <TouchableOpacity
-                style={styles.enableDonationButton}
+                style={[
+                  styles.enableDonationButton,
+                  (isLoading || isSubmitting) && { opacity: 0.6 },
+                ]}
                 onPress={handleEnableDonationPress}
+                disabled={isLoading || isSubmitting}
               >
                 <Text style={styles.enableDonationButtonText}>立即开启</Text>
               </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.donatingCard}>
-              {renderProgressRing()}
               <Text style={styles.donatingTitle}>感谢您的爱心捐赠</Text>
               <Text style={styles.donatingDescription}>您的数据正在为FSHD研究提供重要支持</Text>
-              <Text style={styles.lastDonationTime}>上次捐赠时间：{lastDonationTime}</Text>
-              <View style={styles.donationStats}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{donationDays}</Text>
-                  <Text style={styles.statLabel}>捐赠天数</Text>
-                </View>
-                <View style={styles.statItem}>
-                  <Text style={styles.statValue}>{donationItems}</Text>
-                  <Text style={styles.statLabel}>数据条目</Text>
-                </View>
-              </View>
+              {formattedLastTime && (
+                <Text style={styles.lastDonationTime}>上次更新时间：{formattedLastTime}</Text>
+              )}
             </View>
           )}
         </View>
       </ScrollView>
 
-      {/* 确认弹窗 */}
+      {/* Confirm modal */}
       <Modal
         visible={isConfirmModalVisible}
         transparent={true}
@@ -275,15 +266,20 @@ const DataDonationScreen = () => {
               <TouchableOpacity style={styles.modalCancelButton} onPress={handleModalCancel}>
                 <Text style={styles.modalCancelButtonText}>取消</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalConfirmButton} onPress={handleModalConfirm}>
-                <Text style={styles.modalConfirmButtonText}>确认开启</Text>
+              <TouchableOpacity
+                style={[styles.modalConfirmButton, isSubmitting && { opacity: 0.6 }]}
+                onPress={handleModalConfirm}
+                disabled={isSubmitting}
+              >
+                <Text style={styles.modalConfirmButtonText}>
+                  {isSubmitting ? '处理中…' : '确认开启'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* 成功提示 */}
       {isSuccessToastVisible && (
         <View style={styles.successToast}>
           <FontAwesome6 name="circle-check" size={12} color={CLINICAL_COLORS.success} />
