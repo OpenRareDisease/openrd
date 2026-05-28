@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createAiChatRoutes,
   _buildAskResponseData,
+  _scrubErrorDetail,
   _writeWithBackpressure,
 } from './ai-chat.routes.js';
 import type { AppEnv } from '../config/env.js';
@@ -1039,5 +1040,37 @@ describe('writeWithBackpressure', () => {
       ),
     ).resolves.toBe(false);
     expect(destroyed.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('scrubErrorDetail (PR-Sec-2 #15)', () => {
+  it('redacts pg parameterised values', () => {
+    const out = _scrubErrorDetail(
+      `error: invalid input value for enum role: $1 = '张三', sqlState=22P02`,
+    );
+    expect(out).not.toContain('张三');
+    expect(out).toMatch(/\$N=\[REDACTED\]/);
+  });
+
+  it('redacts pg constraint DETAIL with (col)=(value)', () => {
+    const out = _scrubErrorDetail(
+      `duplicate key value violates unique constraint "users_phone_key"  DETAIL:  Key (phone)=(13800001234) already exists.`,
+    );
+    expect(out).not.toContain('13800001234');
+    expect(out).toContain('(col)=(value)');
+  });
+
+  it('redacts CN phone numbers, ID cards, and email addresses', () => {
+    const out = _scrubErrorDetail('failed for 13912345678 / 110101199005203212 / leak@example.com');
+    expect(out).not.toContain('13912345678');
+    expect(out).not.toContain('110101199005203212');
+    expect(out).not.toContain('leak@example.com');
+    expect(out).toContain('[PHONE]');
+    expect(out).toContain('[ID]');
+    expect(out).toContain('[EMAIL]');
+  });
+
+  it('passes innocuous detail through unchanged', () => {
+    expect(_scrubErrorDetail('LLM timeout after 30000ms')).toBe('LLM timeout after 30000ms');
   });
 });

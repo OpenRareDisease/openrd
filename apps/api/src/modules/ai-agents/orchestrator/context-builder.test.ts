@@ -121,13 +121,18 @@ describe('buildContext', () => {
     expect(built.citations[0].chunkId).toBe('dup');
   });
 
-  it('emits an error tool message when an executed call has an error', () => {
+  it('emits a redacted error tool message when an executed call has an error', () => {
     const executed: ExecutedToolCall[] = [
       {
         toolCallId: 'tc1',
         toolName: 'a',
         display: 'a: invalid args',
-        error: 'args bad',
+        // The raw error contains data that came back from the
+        // retriever (column names, parameters, sometimes user
+        // strings). The orchestrator must not echo it back into the
+        // LLM context — the model could surface it in the user-facing
+        // answer.
+        error: 'pg error 22P02: invalid input syntax for integer: "13800001234"',
         latencyMs: 0,
       },
     ];
@@ -138,7 +143,10 @@ describe('buildContext', () => {
     });
 
     expect(built.toolMessages).toHaveLength(1);
-    expect(built.toolMessages[0].content).toMatch(/tool error: args bad/);
+    expect(built.toolMessages[0].content).toContain('tc1');
+    // The raw error must NOT make it into the prompt.
+    expect(built.toolMessages[0].content).not.toContain('13800001234');
+    expect(built.toolMessages[0].content).not.toContain('pg error');
     expect(built.usedPersonalData).toBe(false);
   });
 

@@ -97,10 +97,22 @@ export const buildContext = (
 
   for (const call of executed) {
     if (call.error || !call.retrieval) {
+      // The raw `call.error` can contain DB column names, parameter
+      // values, even fragments of patient data (the executor wraps
+      // whatever the retriever throws). Reflecting that back into the
+      // LLM prompt risks the model echoing it into the user-visible
+      // answer. Use a generic message + the toolCallId as the
+      // correlation handle; the real detail is in the logs.
+      if (call.error) {
+        opts.logger.warn(
+          { toolCallId: call.toolCallId, tool: call.toolName, error: call.error },
+          'tool execution failed; redacted message will be sent to LLM',
+        );
+      }
       toolMessages.push({
         toolCallId: call.toolCallId,
         toolName: call.toolName,
-        content: `tool error: ${call.error ?? 'no result returned'}`,
+        content: `tool error (id=${call.toolCallId}): retrieval failed, please answer using general knowledge only`,
       });
       continue;
     }

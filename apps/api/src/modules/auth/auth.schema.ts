@@ -1,12 +1,17 @@
 import { z } from 'zod';
 
+// Public registration is for patients and their caregivers. Clinician
+// accounts are provisioned through an admin/back-office path that
+// verifies licence credentials — letting the public form self-assign
+// `clinician` would hand any registrant the elevated role's permission
+// matrix without any verification step.
 export const registerSchema = z.object({
   phoneNumber: z.string().min(5, 'Phone number is required'),
   otpCode: z.string().min(4, 'OTP code is required'),
   otpRequestId: z.string().optional(),
   password: z.string().min(8, 'Password must contain at least 8 characters'),
   email: z.string().email().optional(),
-  role: z.enum(['patient', 'caregiver', 'clinician']).default('patient'),
+  role: z.enum(['patient', 'caregiver']).default('patient'),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
