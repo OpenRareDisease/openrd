@@ -167,6 +167,15 @@ export class AuthService {
 
   async register(payload: RegisterInput, meta?: { ip?: string; userAgent?: string }) {
     const client = await this.pool.connect();
+    // `txOpen` mirrors the pattern used by OtpService.sendCode: any
+    // failure after BEGIN and before COMMIT — the existence SELECT
+    // throwing, bcrypt.hash rejecting, a non-23505 INSERT error, or
+    // COMMIT itself failing — must run ROLLBACK before client.release
+    // returns the connection. Without this the borrower of the
+    // connection inherits an open / aborted transaction, holding
+    // locks open and undercutting the very race fix this transaction
+    // exists to provide.
+    let txOpen = false;
 
     try {
       // Wrap the check + insert in a transaction so two concurrent
@@ -177,6 +186,7 @@ export class AuthService {
       // explicitly because a serializable retry is not worth setting
       // up for a single duplicate-account error.
       await client.query('BEGIN');
+      txOpen = true;
 
       const existing = await client.query(
         'SELECT id FROM app_users WHERE phone_number = $1 OR (email IS NOT NULL AND email = $2)',
@@ -185,6 +195,7 @@ export class AuthService {
 
       if (existing.rowCount) {
         await client.query('ROLLBACK');
+        txOpen = false;
         await this.logAudit('auth.register_failed', {
           phoneNumber: payload.phoneNumber,
           email: payload.email ?? null,
@@ -206,6 +217,7 @@ export class AuthService {
         );
       } catch (insertError) {
         await client.query('ROLLBACK');
+        txOpen = false;
         // 23505 = unique_violation. Two concurrent registrations
         // raced past the SELECT above; the second one's INSERT loses.
         const code =
@@ -226,6 +238,7 @@ export class AuthService {
       }
 
       await client.query('COMMIT');
+      txOpen = false;
 
       const user = this.serializeUser(inserted.rows[0]);
       const token = this.createToken(user);
@@ -239,6 +252,19 @@ export class AuthService {
       });
 
       return { user, token };
+    } catch (error) {
+      if (txOpen) {
+        // Best-effort ROLLBACK on any post-BEGIN failure that didn't
+        // already roll back. Swallow ROLLBACK errors — we're already
+        // on the failure path and the original error is what the
+        // caller cares about.
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn({ rollbackError }, 'register: ROLLBACK after error failed');
+        }
+      }
+      throw error;
     } finally {
       client.release();
     }
