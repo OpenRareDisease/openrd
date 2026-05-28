@@ -124,7 +124,13 @@ export type MeasurementInput = z.infer<typeof measurementSchema>;
 
 export const functionTestSchema = z.object({
   testType: z.enum(FUNCTION_TEST_TYPES),
-  measuredValue: z.coerce.number().optional().nullable(),
+  // `.finite()` rejects `Infinity` / `-Infinity` / `NaN` that
+  // `z.coerce.number()` would otherwise admit (string "Infinity"
+  // coerces to Infinity, then passes the bounds-less z.number()).
+  // Bounded numeric fields elsewhere are protected by `.min/.max`
+  // returning false for NaN, but this one is unbounded on purpose
+  // (caller decides the unit) so the guard belongs here.
+  measuredValue: z.coerce.number().finite().optional().nullable(),
   unit: z.string().max(32).optional().nullable(),
   side: z.enum(MEASUREMENT_SIDES).optional().nullable(),
   protocol: z.string().max(120).optional().nullable(),

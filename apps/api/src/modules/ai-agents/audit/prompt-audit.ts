@@ -87,8 +87,14 @@ const coerceToolCalls = (value: unknown): ToolCallSummary[] => {
         status,
         chunkCount: typeof obj.chunkCount === 'number' ? obj.chunkCount : 0,
         latencyMs: typeof obj.latencyMs === 'number' ? obj.latencyMs : null,
+        // Re-cap errorDetail to 500 chars on the read path too. The
+        // writer in run.ts:composeResult already truncates, but a
+        // hand-edited row (support tooling, manual fix-up) or a
+        // future writer that forgets the cap would propagate an
+        // unbounded string straight into the mobile audit-history
+        // viewer. Mirror the writer's contract on the reader.
         ...(status === 'error' && typeof obj.errorDetail === 'string'
-          ? { errorDetail: obj.errorDetail }
+          ? { errorDetail: obj.errorDetail.slice(0, 500) }
           : {}),
       };
     })

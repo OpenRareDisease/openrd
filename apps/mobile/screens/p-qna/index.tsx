@@ -109,6 +109,20 @@ const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
   }
 };
 
+//: Defence-in-depth cap on chunk snippets the server includes in
+//: citations. The KB chunk wrap + redactor make this very unlikely to
+//: be huge, but a misconfigured ingest could surface a multi-KB blob
+//: and the citation popover renders inside a ScrollView — a giant
+//: snippet freezes the bridge thread on Android. Cap is generous
+//: enough for legit clinical chunks (~800 chars) and surfaces an
+//: ellipsis so the user knows more exists upstream.
+const CITATION_SNIPPET_MAX_CHARS = 800;
+
+const capCitationSnippet = (raw: string): string => {
+  if (raw.length <= CITATION_SNIPPET_MAX_CHARS) return raw;
+  return `${raw.slice(0, CITATION_SNIPPET_MAX_CHARS)}…`;
+};
+
 const formatMessageTime = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -527,7 +541,7 @@ const CitationPopoverModal = ({
                         lineHeight: 18,
                       }}
                     >
-                      {c.snippet}
+                      {capCitationSnippet(c.snippet)}
                     </Text>
                   ) : (
                     <Text

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -418,18 +418,31 @@ const AuditHistoryScreen = () => {
   const [consentRefreshing, setConsentRefreshing] = useState(false);
   const [consentError, setConsentError] = useState<string | null>(null);
 
+  // Track a per-call sequence number so a stale 'more' result can't
+  // overwrite the state set by a later 'refresh'. Without this, a
+  // user pulling-to-refresh while a 'more' page is in flight could
+  // see duplicate `key={entry.id}` rows or — worse — gaps where the
+  // pre-refresh offset skipped entries the refresh just pulled.
+  const aiFetchSeqRef = useRef(0);
+
   const fetchAiPage = useCallback(
     async (mode: 'initial' | 'refresh' | 'more') => {
+      const seq = ++aiFetchSeqRef.current;
       if (mode === 'initial') setAiLoading(true);
       if (mode === 'refresh') setAiRefreshing(true);
       if (mode === 'more') setAiLoadingMore(true);
       try {
         const offset = mode === 'more' ? aiItems.length : 0;
         const r = await getMyAuditHistory({ limit: PAGE_SIZE, offset });
+        // Drop the result if a newer fetch started after this one.
+        // The newer fetch will set the canonical state; this one's
+        // payload would only cause duplicates or skips.
+        if (seq !== aiFetchSeqRef.current) return;
         setAiItems((prev) => (mode === 'more' ? [...prev, ...r.data.items] : r.data.items));
         setAiHasMore(r.data.hasMore);
         setAiError(null);
       } catch (err) {
+        if (seq !== aiFetchSeqRef.current) return;
         const msg =
           err instanceof ApiError
             ? (err.data as { message?: string })?.message || err.message
@@ -438,9 +451,11 @@ const AuditHistoryScreen = () => {
               : '加载失败';
         setAiError(msg);
       } finally {
-        setAiLoading(false);
-        setAiRefreshing(false);
-        setAiLoadingMore(false);
+        if (seq === aiFetchSeqRef.current) {
+          setAiLoading(false);
+          setAiRefreshing(false);
+          setAiLoadingMore(false);
+        }
       }
     },
     [aiItems.length],
