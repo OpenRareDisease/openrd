@@ -28,6 +28,7 @@ import {
   Orchestrator,
   OrchestratorConsentDenied,
   type OrchestratorEvent,
+  runStream as runOrchestratorStream,
 } from '../modules/ai-agents/orchestrator/index.js';
 import {
   MedicalKbRetriever,
@@ -503,6 +504,192 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     } catch (error) {
       context.logger.error({ userId, error: getErrorMessage(error) }, 'audit list query failed');
       return res.status(500).json({ success: false, message: '审计记录暂时不可用' });
+    }
+  });
+
+  /**
+   * POST /api/ai/ask/stream — Server-Sent Events variant of /ask.
+   *
+   * Emits one SSE frame per OrchestratorEvent. The final `done` event
+   * carries the same `OrchestratorRunResult` shape /ask returns, so
+   * mobile clients can treat the existing fields (citations,
+   * toolsCalled, fieldsUsed, etc.) as authoritative — `answer_delta`
+   * frames are additive UX improvements that let the answer
+   * materialise token-by-token.
+   *
+   * Frame format follows the standard `event: <type>\ndata: <json>\n\n`
+   * convention so a vanilla EventSource consumer can subscribe per
+   * type. The legacy `/api/ai/ask/progress/:id` endpoint is NOT
+   * driven by this route — streaming clients should listen to the
+   * SSE channel directly.
+   *
+   * Audit row is written when the orchestrator finishes (success or
+   * error). Client disconnects abort the upstream LLM stream via
+   * res.on('close') so a dropped phone doesn't keep burning tokens.
+   */
+  router.post('/ask/stream', authMiddleware, aiAskLimiter, async (req, res) => {
+    const progressId =
+      typeof req.body?.progressId === 'string' && req.body.progressId.trim()
+        ? req.body.progressId.trim()
+        : generateProgressId();
+    const userId = (req as { user?: { id?: string } }).user?.id;
+    const question = req.body?.question;
+
+    if (!question || !String(question).trim()) {
+      return res.status(400).json({ success: false, message: '问题不能为空', progressId });
+    }
+    if (!userId) {
+      return res.status(401).json({ success: false, message: '需要登录', progressId });
+    }
+    if (!orchestrator || !llmProvider) {
+      return res.status(503).json({
+        success: false,
+        message: 'AI 服务未配置（缺少 AI_API_KEY）',
+        progressId,
+      });
+    }
+
+    let consentStatus;
+    try {
+      consentStatus = await getConsentStatus(pool, userId);
+    } catch (error) {
+      const detail = getErrorMessage(error);
+      context.logger.error({ userId, error: detail }, 'consent lookup failed (stream)');
+      return res.status(500).json({ success: false, message: 'AI 服务暂时不可用', progressId });
+    }
+
+    if (consentStatus.level === 'none') {
+      try {
+        await auditLogger.record({
+          userId,
+          requestId: progressId,
+          llmProvider: llmProvider.providerName,
+          llmModel: llmProvider.model,
+          consentLevel: 'none',
+          redactionMode: 'strict',
+          usedPersonalData: false,
+          fieldsUsed: [],
+          toolsCalled: [],
+          status: 'consent_denied',
+        });
+      } catch (auditError) {
+        context.logger.warn(
+          { error: getErrorMessage(auditError), progressId },
+          'consent_denied audit insert failed (stream)',
+        );
+      }
+      return res.status(403).json({
+        success: false,
+        code: 'consent_required',
+        message: '请先在隐私设置中同意 AI 使用你的数据',
+        consent: consentStatus,
+        progressId,
+      });
+    }
+
+    // From here on we commit to SSE: set headers + flush, then any
+    // future failure becomes an `error` frame instead of a JSON body
+    // (the client has already started reading a stream).
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    // Nginx-friendly: disable proxy buffering so frames flush immediately.
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const writeFrame = (event: OrchestratorEvent) => {
+      // Standard SSE: a named event with a JSON data payload. The
+      // `event:` line lets mobile dispatch by type without re-parsing
+      // every frame's body just to check `.type`.
+      res.write(`event: ${event.type}\n`);
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    // Best-effort cancellation: if the client drops we abort the
+    // orchestrator's LLM stream by ending the response. The
+    // orchestrator's chatStream iterator will see the connection
+    // close and exit, the runStream generator then settles, and the
+    // audit row gets written below as an error.
+    const start = Date.now();
+    let clientGone = false;
+    res.on('close', () => {
+      clientGone = true;
+    });
+
+    let lastResult: Extract<OrchestratorEvent, { type: 'done' }>['result'] | null = null;
+    let streamError: string | null = null;
+
+    try {
+      for await (const event of runOrchestratorStream(
+        orchestrator,
+        {
+          userId,
+          question: String(question),
+          requestId: progressId,
+          consentLevel: consentStatus.level,
+        },
+        { streamFinalAnswer: true },
+      )) {
+        if (clientGone) break;
+        writeFrame(event);
+        if (event.type === 'done') lastResult = event.result;
+        if (event.type === 'error') streamError = event.message;
+      }
+    } catch (error) {
+      const detail = getErrorMessage(error);
+      streamError = detail;
+      // The orchestrator's own try/catch usually emits `error`
+      // before throwing, but a sync throw from runStream itself
+      // wouldn't. Surface it as a frame so the client gets a
+      // clean signal rather than a half-written stream.
+      if (!clientGone) writeFrame({ type: 'error', message: detail });
+    }
+
+    // Audit row mirrors /ask: success when we have a final result,
+    // error otherwise. The audit insert may itself throw — we log
+    // but don't fail the response (it's already been sent).
+    try {
+      if (lastResult) {
+        await auditLogger.record({
+          userId,
+          requestId: progressId,
+          llmProvider: llmProvider.providerName,
+          llmModel: llmProvider.model,
+          consentLevel: lastResult.consentLevel,
+          redactionMode: lastResult.redactionMode,
+          redactedPromptHash: lastResult.redactedPromptHash,
+          promptCharLength: lastResult.promptCharLength,
+          usedPersonalData: lastResult.usedPersonalData,
+          fieldsUsed: lastResult.fieldsUsed,
+          toolsCalled: lastResult.toolsCalled,
+          latencyMs: lastResult.latencyMs,
+          status: 'success',
+        });
+      } else {
+        await auditLogger.record({
+          userId,
+          requestId: progressId,
+          llmProvider: llmProvider.providerName,
+          llmModel: llmProvider.model,
+          consentLevel: consentStatus.level,
+          redactionMode: redactionModeForConsent(consentStatus.level),
+          usedPersonalData: false,
+          fieldsUsed: [],
+          toolsCalled: [],
+          latencyMs: Date.now() - start,
+          status: 'error',
+          errorDetail: (streamError || 'stream aborted').slice(0, 500),
+        });
+      }
+    } catch (auditError) {
+      context.logger.warn(
+        { error: getErrorMessage(auditError), progressId },
+        'streaming audit insert failed',
+      );
+    }
+
+    if (!clientGone) {
+      res.end();
     }
   });
 

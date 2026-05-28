@@ -114,6 +114,7 @@ export class Orchestrator {
   async run(
     input: OrchestratorRunInput,
     onEvent?: OrchestratorEventHandler,
+    opts: { streamFinalAnswer?: boolean } = {},
   ): Promise<OrchestratorRunResult> {
     if (input.consentLevel === 'none') {
       throw new OrchestratorConsentDenied();
@@ -203,24 +204,78 @@ export class Orchestrator {
     ];
 
     emit({ type: 'answering' });
-    const finalResponse = await this.llm.chat({
-      messages: round2Messages,
-      temperature: this.opts.finalAnswerTemperature ?? 0.7,
-      maxTokens: this.opts.finalAnswerMaxTokens ?? 2000,
-      requestId: input.requestId,
-    });
 
-    if (finalResponse.toolCalls.length > 0) {
+    // Round 2: final-answer LLM call. Either non-streaming (legacy
+    // /api/ai/ask path — wait for the whole body before emitting
+    // `done`) or streaming (new /api/ai/ask/stream path — surface
+    // `answer_delta` events as tokens arrive). Both branches converge
+    // on the same shape so the rest of the function stays unaware.
+    let finalContent: string | null;
+    let finalToolCalls: typeof plan.llmResponse.toolCalls;
+    let finalUsage: typeof plan.llmResponse.usage;
+
+    if (opts.streamFinalAnswer) {
+      const accumulated: string[] = [];
+      let lastUsage: typeof plan.llmResponse.usage;
+      const extraToolCalls = new Map<number, { id: string; name: string; argumentsJson: string }>();
+
+      for await (const event of this.llm.chatStream({
+        messages: round2Messages,
+        temperature: this.opts.finalAnswerTemperature ?? 0.7,
+        maxTokens: this.opts.finalAnswerMaxTokens ?? 2000,
+        requestId: input.requestId,
+      })) {
+        if (event.type === 'text_delta') {
+          accumulated.push(event.text);
+          emit({ type: 'answer_delta', text: event.text });
+        } else if (event.type === 'tool_call_delta') {
+          // Round 2 should not produce more tool calls — the planner
+          // already picked tools and we executed them. If the model
+          // requests more we accumulate them for the warning log
+          // below (same behaviour as the non-streaming branch) but
+          // do NOT propagate them to the caller.
+          const slot = extraToolCalls.get(event.index) ?? {
+            id: '',
+            name: '',
+            argumentsJson: '',
+          };
+          if (event.id) slot.id = event.id;
+          if (event.name) slot.name = event.name;
+          if (event.argumentsJson) slot.argumentsJson += event.argumentsJson;
+          extraToolCalls.set(event.index, slot);
+        } else if (event.type === 'finish') {
+          lastUsage = event.usage;
+        }
+      }
+
+      finalContent = accumulated.join('') || null;
+      finalToolCalls = Array.from(extraToolCalls.values())
+        .filter((c) => c.name)
+        .map((c) => ({ id: c.id, name: c.name, argumentsJson: c.argumentsJson }));
+      finalUsage = lastUsage;
+    } else {
+      const finalResponse = await this.llm.chat({
+        messages: round2Messages,
+        temperature: this.opts.finalAnswerTemperature ?? 0.7,
+        maxTokens: this.opts.finalAnswerMaxTokens ?? 2000,
+        requestId: input.requestId,
+      });
+      finalContent = finalResponse.content;
+      finalToolCalls = finalResponse.toolCalls;
+      finalUsage = finalResponse.usage;
+    }
+
+    if (finalToolCalls.length > 0) {
       this.logger.warn(
         {
           requestId: input.requestId,
-          extraTools: finalResponse.toolCalls.map((c) => c.name),
+          extraTools: finalToolCalls.map((c) => c.name),
         },
         'orchestrator: model requested more tools after round 2; ignoring',
       );
     }
 
-    const finalAnswer = finalResponse.content?.trim() || '抱歉，AI 暂时无法生成完整回答。';
+    const finalAnswer = finalContent?.trim() || '抱歉，AI 暂时无法生成完整回答。';
 
     const result = this.composeResult({
       input,
@@ -230,7 +285,10 @@ export class Orchestrator {
       context,
       finalAnswer,
       finalMessages: round2Messages,
-      llmUsage: finalResponse.usage,
+      // Streaming branch's `finalUsage` was observed at the `finish`
+      // event; the non-streaming branch's came back in the response
+      // body. Either way the variable is in scope here.
+      llmUsage: finalUsage,
     });
     emit({ type: 'done', result });
     return result;

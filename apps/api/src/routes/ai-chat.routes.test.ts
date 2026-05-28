@@ -405,6 +405,176 @@ describe('POST /api/ai/ask', () => {
   });
 });
 
+describe('POST /api/ai/ask/stream', () => {
+  /** Stub orchestrator that drives the runStream adapter through a
+   *  scripted sequence of events instead of running the real planner /
+   *  executor. The orchestrator's contract is "call onEvent for each
+   *  stage, finally emit `done` or `error`" — that's what we mimic. */
+  const buildStreamingOrchestrator = (
+    events: Array<Parameters<NonNullable<Parameters<Orchestrator['run']>[1]>>[0]>,
+  ): Orchestrator => {
+    const run = vi.fn(async (_input, onEvent) => {
+      for (const e of events) {
+        if (onEvent) onEvent(e);
+      }
+      // Return the last `done` event's result if there is one; the
+      // SSE route only reads `lastResult` from the event stream, but
+      // run()'s Promise type still requires a return value.
+      const last = events[events.length - 1];
+      if (last?.type === 'done') return last.result;
+      throw new Error('stream test ended without done event');
+    });
+    return { run } as unknown as Orchestrator;
+  };
+
+  const successDoneEvent = {
+    type: 'done' as const,
+    result: successResult({}),
+  };
+
+  it('400 when question is missing', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([]),
+      auditLogger: buildFakeAuditLogger([]),
+    });
+    const token = issueToken('u-1');
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('403 + audit row when consent is none (no SSE body)', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const app = buildApp({
+      pool: buildFakePool({ consentRow: null }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([]),
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: '你好' });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('consent_required');
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('consent_denied');
+  });
+
+  it('streams events as SSE frames and writes a success audit row', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const app = buildApp({
+      pool: buildFakePool({
+        consentRow: {
+          ai_consent_personal: true,
+          ai_consent_third_party: true,
+          ai_consent_precise_values: false,
+        },
+      }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([
+        { type: 'planning' },
+        { type: 'plan_complete', toolsPlanned: ['search_medical_kb'] },
+        { type: 'answering' },
+        { type: 'answer_delta', text: '你好' },
+        { type: 'answer_delta', text: '，' },
+        { type: 'answer_delta', text: '世界' },
+        successDoneEvent,
+      ]),
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: 'D4Z4 是什么' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/event-stream/);
+    expect(res.headers['cache-control']).toMatch(/no-cache/);
+
+    // Parse the SSE body — each frame is `event: <type>\ndata: <json>\n\n`.
+    // We just need to confirm the event types arrived in order and the
+    // answer_delta data round-trips.
+    const body = res.text;
+    const eventLines = body.split('\n').filter((l) => l.startsWith('event: '));
+    const types = eventLines.map((l) => l.replace('event: ', ''));
+    expect(types).toEqual([
+      'planning',
+      'plan_complete',
+      'answering',
+      'answer_delta',
+      'answer_delta',
+      'answer_delta',
+      'done',
+    ]);
+
+    // Extract the answer_delta data frames and check the text values.
+    const deltaTexts = body
+      .split('\n\n')
+      .filter((frame) => frame.includes('event: answer_delta'))
+      .map((frame) => {
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: ')) ?? '';
+        return (JSON.parse(dataLine.slice('data: '.length)) as { text: string }).text;
+      });
+    expect(deltaTexts).toEqual(['你好', '，', '世界']);
+
+    // Audit row reflects the final result, not the deltas.
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('success');
+    expect(records[0].userId).toBe('u-1');
+  });
+
+  it('writes an error audit row when run() throws mid-stream', async () => {
+    // The real orchestrator never emits its own `error` event — the
+    // event type only fires when the runStream adapter catches a
+    // thrown error from run(). Mirror that here: emit a few normal
+    // stage events, then throw. The route should still finish
+    // cleanly (SSE headers already flushed) and write an error
+    // audit row carrying the thrown message.
+    const records: Array<Record<string, unknown>> = [];
+    const throwingOrchestrator: Orchestrator = {
+      run: vi.fn(async (_input, onEvent) => {
+        if (onEvent) {
+          onEvent({ type: 'planning' });
+          onEvent({ type: 'plan_complete', toolsPlanned: [] });
+        }
+        throw new Error('upstream LLM blew up');
+      }),
+    } as unknown as Orchestrator;
+    const app = buildApp({
+      pool: buildFakePool({
+        consentRow: {
+          ai_consent_personal: true,
+          ai_consent_third_party: true,
+          ai_consent_precise_values: false,
+        },
+      }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: throwingOrchestrator,
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: 'q' });
+
+    expect(res.status).toBe(200); // headers already sent before the error
+    expect(res.text).toMatch(/event: error/);
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('error');
+    expect(records[0].errorDetail).toMatch(/upstream LLM blew up/);
+  });
+});
+
 describe('GET /api/ai/audit', () => {
   const fakeRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
     id: 'aud-1',

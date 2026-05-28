@@ -305,3 +305,122 @@ describe('Orchestrator.run', () => {
     expect(a.redactedPromptHash).not.toBe(b.redactedPromptHash);
   });
 });
+
+describe('Orchestrator.run with streamFinalAnswer=true', () => {
+  /** Convenience: build an LLM where round 1 returns one tool call and
+   *  round 2's `chatStream` yields the given text deltas + a finish
+   *  frame. The first arg is the round-1 (non-streaming) response. */
+  const mkStreamingLlm = (
+    round1: LlmChatResponse,
+    deltas: string[],
+  ): ILLMProvider & {
+    chat: ReturnType<typeof vi.fn>;
+    chatStream: ReturnType<typeof vi.fn>;
+  } => {
+    const chat = vi.fn().mockResolvedValue(round1);
+
+    // Async generator that re-creates a fresh iterator on every call
+    // (some callers reuse the LLM across multiple run() invocations).
+    const chatStream = vi.fn(async function* () {
+      for (const text of deltas) {
+        yield { type: 'text_delta' as const, text };
+      }
+      yield {
+        type: 'finish' as const,
+        finishReason: 'stop' as const,
+        usage: {
+          promptTokens: 10,
+          completionTokens: deltas.length,
+          totalTokens: 10 + deltas.length,
+        },
+      };
+    });
+
+    return {
+      providerName: 'mock',
+      model: 'mock-model',
+      supportsToolCalling: true,
+      chat,
+      chatStream,
+    } as unknown as ILLMProvider & {
+      chat: ReturnType<typeof vi.fn>;
+      chatStream: ReturnType<typeof vi.fn>;
+    };
+  };
+
+  it('emits answer_delta events in order and assembles the final answer', async () => {
+    // Round 1: planner picks one tool. Round 2: streamed answer.
+    const llm = mkStreamingLlm(
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"D4Z4"}' }],
+        finishReason: 'tool_calls',
+      },
+      ['D4Z4', ' 是', ' 一种'],
+    );
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      { userId: 'u1', question: 'q', requestId: 'r1', consentLevel: 'basic' },
+      (e) => events.push(e),
+      { streamFinalAnswer: true },
+    );
+
+    // Streaming-specific assertion: the deltas arrived in the right
+    // order and concatenate to the final answer the orchestrator
+    // returned.
+    const deltas = events.filter((e) => e.type === 'answer_delta') as Array<
+      Extract<OrchestratorEvent, { type: 'answer_delta' }>
+    >;
+    expect(deltas.map((d) => d.text)).toEqual(['D4Z4', ' 是', ' 一种']);
+    expect(result.answer).toBe('D4Z4 是 一种');
+
+    // The non-streaming round 1 `chat` was called exactly once
+    // (planner), and the streaming `chatStream` was called exactly
+    // once (final answer).
+    expect(llm.chat).toHaveBeenCalledTimes(1);
+    expect(llm.chatStream).toHaveBeenCalledTimes(1);
+
+    // Stage events surround the deltas: `answering` fires before the
+    // first delta, `done` after the last.
+    const types = events.map((e) => e.type);
+    const answeringIdx = types.indexOf('answering');
+    const firstDeltaIdx = types.indexOf('answer_delta');
+    const doneIdx = types.indexOf('done');
+    expect(answeringIdx).toBeLessThan(firstDeltaIdx);
+    expect(firstDeltaIdx).toBeLessThan(doneIdx);
+  });
+
+  it('falls back to the placeholder answer when the stream yields no text', async () => {
+    // Provider answered with zero text deltas — same surface as the
+    // non-streaming branch's `finalResponse.content === null` case.
+    const llm = mkStreamingLlm(
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"x"}' }],
+        finishReason: 'tool_calls',
+      },
+      [],
+    );
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      { userId: 'u1', question: 'q', requestId: 'r1', consentLevel: 'basic' },
+      (e) => events.push(e),
+      { streamFinalAnswer: true },
+    );
+
+    expect(events.filter((e) => e.type === 'answer_delta')).toHaveLength(0);
+    expect(result.answer).toMatch(/暂时无法生成完整回答/);
+  });
+});

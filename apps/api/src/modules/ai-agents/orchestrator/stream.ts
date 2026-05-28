@@ -16,6 +16,7 @@ import type { OrchestratorEvent, OrchestratorRunInput } from './types.js';
 export async function* runStream(
   orchestrator: Orchestrator,
   input: OrchestratorRunInput,
+  opts: { streamFinalAnswer?: boolean } = {},
 ): AsyncIterable<OrchestratorEvent> {
   const queue: OrchestratorEvent[] = [];
   let pendingResolve: (() => void) | null = null;
@@ -37,7 +38,7 @@ export async function* runStream(
   // `done` / `error` events, but we still attach .catch as a safety
   // net in case run() throws synchronously or rejects before
   // emitting.
-  const runPromise = orchestrator.run(input, push).catch((error) => {
+  const runPromise = orchestrator.run(input, push, opts).catch((error) => {
     push({
       type: 'error',
       message: error instanceof Error ? error.message : String(error),
