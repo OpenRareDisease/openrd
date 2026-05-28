@@ -484,6 +484,59 @@ describe('updateConsent', () => {
     expect(recordedEvents.every((e) => e.source === 'admin')).toBe(true);
     expect(recordedEvents.every((e) => e.note === 'rollout 2026-05')).toBe(true);
   });
+
+  it('locks the patient_profiles row with FOR UPDATE before computing changes', async () => {
+    // Regression test for the consent-history race: two parallel
+    // updateConsent calls for the same user must serialize against
+    // the profile row, otherwise both would compute their changes
+    // against the same stale snapshot and double-write the
+    // ai_consent_events trail. A unit mock can't simulate real
+    // Postgres row locking, so we pin the lock structurally — the
+    // in-transaction SELECT must include FOR UPDATE.
+    const { pool } = buildStatefulPool({
+      personal: false,
+      thirdParty: false,
+      preciseValues: false,
+    });
+    await updateConsent(pool, 'user-1', { personal: true });
+
+    const queryMock = pool.query as unknown as ReturnType<typeof vi.fn>;
+    const sqlCalls = queryMock.mock.calls.map(([sql]) => String(sql));
+    const lockingSelect = sqlCalls.find(
+      (sql) =>
+        /^\s*SELECT/i.test(sql) &&
+        /FROM\s+patient_profiles/i.test(sql) &&
+        /FOR\s+UPDATE/i.test(sql),
+    );
+    expect(lockingSelect).toBeDefined();
+  });
+
+  it('sequential same-user updateConsent calls see each other through the locked row', async () => {
+    // Belt-and-suspenders alongside the structural FOR UPDATE
+    // assertion above: a second updateConsent that runs after the
+    // first commits should observe the first's writes (current
+    // snapshot reflects the new row), not the original state. This
+    // is what serialization buys us in production.
+    const { pool, recordedEvents } = buildStatefulPool({
+      personal: false,
+      thirdParty: false,
+      preciseValues: false,
+    });
+    await updateConsent(pool, 'user-1', { personal: true, thirdParty: true });
+    const second = await updateConsent(pool, 'user-1', { preciseValues: true });
+
+    expect(second.flags).toEqual({ personal: true, thirdParty: true, preciseValues: true });
+    expect(second.level).toBe('precise');
+    // Three events total: personal grant + third_party grant from
+    // the first call, precise grant from the second. The second
+    // call's from_value=false for precise must come from the
+    // post-first-commit snapshot, not the pre-first one.
+    expect(recordedEvents.map((e) => [e.flagName, e.fromValue, e.toValue, e.source])).toEqual([
+      ['personal', false, true, 'user'],
+      ['third_party', false, true, 'user'],
+      ['precise_values', false, true, 'user'],
+    ]);
+  });
 });
 
 describe('getConsentHistory', () => {

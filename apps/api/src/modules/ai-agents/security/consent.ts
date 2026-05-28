@@ -267,6 +267,57 @@ export const getConsentDetails = async (
   };
 };
 
+/**
+ * In-transaction read of the consent row that also takes a row lock
+ * via `SELECT ... FOR UPDATE`. Used by {@link updateConsent} so two
+ * concurrent updates for the same user serialize against the row
+ * instead of computing their `changes[]` (and `ai_consent_events`
+ * inserts) off the same stale snapshot — which would otherwise put
+ * duplicate / wrong-source transitions into the compliance trail.
+ *
+ * Intentionally NOT exported: locking semantics only make sense
+ * inside a transaction, and the public read paths
+ * ({@link getConsentDetails} / {@link getConsentStatus}) should stay
+ * lock-free for orchestrator hot paths.
+ */
+const lockConsentRow = async (
+  client: PoolClient,
+  userId: string,
+): Promise<ConsentDetails | null> => {
+  if (!userId) return null;
+
+  const result = await client.query<ConsentRowWithTimestamps>(
+    `SELECT ai_consent_personal,
+            ai_consent_third_party,
+            ai_consent_precise_values,
+            ai_consent_personal_at,
+            ai_consent_third_party_at,
+            ai_consent_precise_values_at
+       FROM patient_profiles
+      WHERE user_id = $1
+      LIMIT 1
+      FOR UPDATE`,
+    [userId],
+  );
+
+  if (result.rowCount === 0) return null;
+
+  const row = result.rows[0];
+  const personal = Boolean(row.ai_consent_personal);
+  const thirdParty = Boolean(row.ai_consent_third_party);
+  const preciseValues = Boolean(row.ai_consent_precise_values);
+
+  return {
+    level: computeLevel(personal, thirdParty, preciseValues),
+    flags: { personal, thirdParty, preciseValues },
+    timestamps: {
+      personalAt: formatTimestamp(row.ai_consent_personal_at),
+      thirdPartyAt: formatTimestamp(row.ai_consent_third_party_at),
+      preciseValuesAt: formatTimestamp(row.ai_consent_precise_values_at),
+    },
+  };
+};
+
 interface FlagChange {
   column: string;
   atColumn: string;
@@ -297,8 +348,10 @@ interface FlagChange {
  *    column is set to NOW() **and** a row is appended to
  *    `ai_consent_events` recording the from→to transition. Unchanged
  *    flags leave both the timestamp and the history alone.
- *  - The UPDATE + N INSERTs run inside a single transaction so the
- *    compliance trail never drifts from the live consent state.
+ *  - The UPDATE + N INSERTs run inside a single transaction, and the
+ *    initial read takes `SELECT ... FOR UPDATE` on the profile row,
+ *    so concurrent same-user updates serialize and the compliance
+ *    trail can't drift from the live consent state.
  *
  * Throws {@link ConsentMutationError} with `code='profile_not_found'`
  * when the user has no `patient_profiles` row.
@@ -320,7 +373,12 @@ export const updateConsent = async (
   try {
     await client.query('BEGIN');
 
-    const current = await getConsentDetails(client, userId);
+    // Read + lock the row in one shot. The FOR UPDATE here is what
+    // makes two parallel updateConsent calls for the same user
+    // serialize — without it, both could read the same snapshot and
+    // each append a from→to event row, leaving the compliance trail
+    // out of sync with the live state.
+    const current = await lockConsentRow(client, userId);
     if (!current) {
       throw new ConsentMutationError('Patient profile not found', 'profile_not_found');
     }
