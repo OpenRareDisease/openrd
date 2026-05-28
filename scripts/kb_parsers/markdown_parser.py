@@ -7,11 +7,14 @@ is chunked heading-aware by the ingester.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from .base import Parser, ParseResult, ParsedSection
+
+logger = logging.getLogger("fshd_kb.markdown_parser")
 
 
 def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
@@ -51,18 +54,33 @@ def _simple_yaml_parse(text: str) -> Dict[str, Any]:
 
     Handles `key: value` and `key: [a, b, c]`. Quoted values are
     unwrapped. Anything fancier (nested maps, multi-line strings) is
-    silently skipped — install PyYAML for full support.
+    detected and a warning is logged so the operator knows part of
+    the frontmatter is being dropped silently — the previous behaviour
+    just discarded those keys, which made misconfigured ingests
+    look like working ones.
     """
     result: Dict[str, Any] = {}
+    pending_nested_warning: list[str] = []
+    last_key: str | None = None
+
     for raw_line in text.split("\n"):
         line = raw_line.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+
+        # Indented continuation under the previous key is the most
+        # common "fancier" syntax — flag it so the operator knows the
+        # nested structure is not being captured.
+        if line.startswith((" ", "\t")) and last_key is not None:
+            pending_nested_warning.append(last_key)
+            continue
+
         match = re.match(r"^([^:]+):\s*(.*)$", line)
         if not match:
             continue
         key = match.group(1).strip()
         value: Any = match.group(2).strip()
+        last_key = key
 
         if isinstance(value, str) and value:
             if (value[0] == value[-1] == '"') or (value[0] == value[-1] == "'"):
@@ -76,6 +94,15 @@ def _simple_yaml_parse(text: str) -> Dict[str, Any]:
                 ]
                 value = items
         result[key] = value
+
+    if pending_nested_warning:
+        unique_keys = sorted(set(pending_nested_warning))
+        logger.warning(
+            "markdown frontmatter fallback dropped nested values under keys %s "
+            "(install PyYAML for full structured-frontmatter support)",
+            unique_keys,
+        )
+
     return result
 
 

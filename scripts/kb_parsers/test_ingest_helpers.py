@@ -308,6 +308,49 @@ def test_ingest_with_empty_source_no_prune_is_noop(ingest_mod, tmp_path):
     assert stats.files_pruned == 0
 
 
+# ---------------------- streaming hash + NFC
+
+
+def test_streaming_source_fingerprint_matches_in_memory(ingest_mod, tmp_path):
+    """source_fingerprint_from_path streams chunks through sha256;
+    its output must exactly match the in-memory variant so the
+    cutover doesn't invalidate every previously-stored fingerprint
+    on existing KB rows."""
+    payload = (b"x" * (1024 * 1024 + 7)) + b"tail"
+    f = tmp_path / "big.bin"
+    f.write_bytes(payload)
+
+    streamed = ingest_mod.source_fingerprint_from_path(f, "test_parser", "v1")
+    in_mem = ingest_mod.source_fingerprint(payload, "test_parser", "v1")
+    assert streamed == in_mem
+
+
+def test_relative_source_key_is_nfc_normalised(ingest_mod, tmp_path):
+    """macOS HFS+/APFS store Unicode filenames in decomposed form (NFD)
+    by default; Linux ext4 stores whatever the caller wrote. Without
+    NFC normalisation the same logical file hashes to two different
+    source_keys depending on which platform last touched it, so
+    --prune would treat one form as orphaned."""
+    import unicodedata
+    from pathlib import Path
+
+    # "café" has a precomposed NFC form and a decomposed NFD form
+    # ("cafe" + COMBINING ACUTE).
+    nfc_name = "café"
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    assert nfd_name != nfc_name  # sanity: bytes differ
+
+    nfc_path = Path(tmp_path) / nfc_name / "report.md"
+    nfd_path = Path(tmp_path) / nfd_name / "report.md"
+
+    # Both forms should produce the same source_key after normalisation.
+    nfc_key = ingest_mod.relative_source_key(nfc_path, tmp_path)
+    nfd_key = ingest_mod.relative_source_key(nfd_path, tmp_path)
+    assert nfc_key == nfd_key
+    # And the canonical form should be NFC.
+    assert nfc_key == unicodedata.normalize("NFC", nfc_key)
+
+
 # ---------------------- scan_for_injection_markers
 
 
