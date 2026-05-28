@@ -181,6 +181,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 4.4 运行时：kb-service 读哪个库
+
+`kb-service`（`apps/api/knowledge_service.py`，docker compose 里 `kb-service`）是 API 唯一的向量检索后端。三种典型形态：
+
+| 形态                                                 | 配置                                                                                                                                           | 适用                                                                                                                           |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **A. Native ingest + Docker kb-service**（推荐 dev） | `.env`：`KB_BACKEND=pgvector`、`KB_EMBED_MODEL=BAAI/bge-m3`、`KB_SERVICE_DATABASE_URL=postgres://<user>@host.docker.internal:5432/fshd_openrd` | 你本机用 venv `npm run kb:ingest` 把 12352 chunks 灌进 native pg；docker kb-service 通过 `host.docker.internal` 反向读这份数据 |
+| **B. 全 Docker**（接近 prod）                        | 默认值：kb-service 连 compose `postgres:5432`。先 `pg_dump kb_chunks ... \| docker exec -i openrd-postgres-1 psql ...` 把数据搬进 docker pg    | 部署一致性；不依赖本机 PG                                                                                                      |
+| **C. Chroma cloud 回退**                             | `.env`：`KB_BACKEND=chroma_cloud`、`KB_EMBED_MODEL=all-MiniLM-L6-v2` + 合法 `CHROMA_API_KEY/TENANT_ID`                                         | 远期降级方案，紧急情况下绕开本地 KB                                                                                            |
+
+`docker-compose.yml` 的 `kb-service` 服务对 `KB_BACKEND` / `KB_EMBED_MODEL` / `KB_SERVICE_DATABASE_URL` 都有合理默认（pgvector + bge-m3 + 容器内 `postgres` alias），通过 `.env` 任意覆盖。`extra_hosts: host.docker.internal:host-gateway` 让 Linux 上也能用 host gateway 反向访问宿主机 PG，无需另写 compose override。
+
 医学 KB 因此可代码化管理（parser + chunker 在 git）、源材料独立存档（zip 或 NAS），并随时一键重灌。
 
 ---
