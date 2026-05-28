@@ -9,7 +9,13 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      # Bound to 127.0.0.1 so a host-side `psql` / pgcli still works
+      # but anyone scanning the public interface of a misconfigured
+      # staging VPS can't reach Postgres with the dev `postgres/
+      # postgres` credentials. To open it across an internal network
+      # set POSTGRES_HOST=0.0.0.0 in `.env` (and change the password
+      # first).
+      - '${POSTGRES_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./db/init_db.sql:/docker-entrypoint-initdb.d/01-init-openrd.sql:ro
@@ -54,7 +60,15 @@ services:
       KB_EMBED_MODEL: ${KB_EMBED_MODEL:-BAAI/bge-m3}
       DATABASE_URL: ${KB_SERVICE_DATABASE_URL:-postgres://postgres:postgres@postgres:5432/fshd_openrd}
     ports:
-      - '5010:5010'
+      # Bound to 127.0.0.1 so direct host-side `curl localhost:5010`
+      # debugging still works but a public-interface scan can't reach
+      # the KB endpoint with the placeholder bearer token in
+      # `dev-only-local-token-NOT-FOR-PROD`. The api ↔ kb path inside
+      # compose goes through the compose bridge (`http://kb-service:
+      # 5010`) and is unaffected. To open it across an internal
+      # network set KB_SERVICE_PUBLISH_HOST=0.0.0.0 in `.env` and
+      # inject a real KB_SERVICE_TOKEN first.
+      - '${KB_SERVICE_PUBLISH_HOST:-127.0.0.1}:5010:5010'
     volumes:
       - kb-model-cache:/root/.cache
     extra_hosts:
@@ -87,8 +101,16 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin12345678}
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      # Bound to 127.0.0.1 mirroring the postgres + kb-service
+      # lockdown. The default MINIO_ROOT_PASSWORD is the well-known
+      # Docker Hub demo value `minioadmin12345678`; a
+      # `docker compose --profile minio up` on a public-IP'd staging
+      # host would otherwise expose `medical-reports` bucket through
+      # that default credential pair. To open it across an internal
+      # network set MINIO_PUBLISH_HOST=0.0.0.0 in `.env` AND inject
+      # real MINIO_ACCESS_KEY / MINIO_SECRET_KEY first.
+      - '${MINIO_PUBLISH_HOST:-127.0.0.1}:9000:9000'
+      - '${MINIO_PUBLISH_HOST:-127.0.0.1}:9001:9001'
     volumes:
       - minio-data:/data
 
