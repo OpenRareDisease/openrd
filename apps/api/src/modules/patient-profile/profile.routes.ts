@@ -88,6 +88,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
 
   router.get('/me/consent', asyncHandler(controller.getMyConsent));
   router.put('/me/consent', asyncHandler(controller.updateMyConsent));
+  router.get('/me/consent/history', asyncHandler(controller.getMyConsentHistory));
 
   router.post('/me/measurements', asyncHandler(controller.addMeasurement));
   router.post('/me/function-tests', asyncHandler(controller.addFunctionTest));

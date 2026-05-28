@@ -253,3 +253,15 @@ export const consentUpdateSchema = z
     { message: 'At least one of personal / thirdParty / preciseValues must be provided' },
   );
 export type ConsentUpdateBody = z.infer<typeof consentUpdateSchema>;
+
+/** Query schema for GET /api/profiles/me/consent/history. `limit` is
+ *  bounded to the same `[1, 500]` window the security helper clamps
+ *  to, so an out-of-range request fails fast as a 400 instead of
+ *  being silently rounded. `flagName` matches the CHECK constraint on
+ *  `ai_consent_events.flag_name`. */
+export const consentHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  flagName: z.enum(['personal', 'third_party', 'precise_values']).optional(),
+});
+export type ConsentHistoryQuery = z.infer<typeof consentHistoryQuerySchema>;
