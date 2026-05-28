@@ -696,57 +696,65 @@ export class PatientProfileController {
     };
     res.on('close', onClientClose);
 
-    let summary = '';
-    let usedFallback = false;
+    // Contract: every exit path below — success, AppError(502) for
+    // empty LLM content, service write rejection, anything else
+    // throwing — detaches `onClientClose`. The previous shape only
+    // detached on the success branch, leaking the closure on the two
+    // throw paths (caught by PR #56 review). Wrapping the work in a
+    // try/finally turns the contract into a single-point invariant so
+    // any future await inserted in here can't accidentally regress
+    // the leak. abort() is idempotent (the `signal.aborted` guard in
+    // `onClientClose`), so a late `close` event that races the
+    // detach is still safe.
     try {
-      const completion = await this.aiSummary.client.chat.completions.create(
-        {
-          model: this.aiSummary.model,
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
+      let summary = '';
+      let usedFallback = false;
+      try {
+        const completion = await this.aiSummary.client.chat.completions.create(
+          {
+            model: this.aiSummary.model,
+            temperature: 0.2,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          },
+          { signal: abortController.signal },
+        );
+        summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
+      } catch {
+        // Don't mask the upstream failure with a silent fallback. The
+        // fallback's structured summary is still useful for the UI,
+        // but the response and the persisted ocr_payload both carry
+        // aiSummarySource='fallback' so monitoring + the mobile UI
+        // can distinguish LLM output from rule-based output. The
+        // original exception is not propagated upward (response
+        // would 502) and also not logged here to avoid accidentally
+        // surfacing the upstream Authorization header in
+        // unstructured logs (the route boundary scrubber doesn't
+        // touch this path).
+        summary = buildFallbackDocumentSummary(documentType, fields);
+        usedFallback = true;
+      }
+
+      if (!summary) {
+        throw new AppError('生成 AI 总结失败：空响应', 502);
+      }
+
+      const nextPayload = {
+        ...payloadObj,
+        fields: {
+          ...fields,
+          aiSummary: summary,
+          aiSummarySource: usedFallback ? 'fallback' : 'llm',
         },
-        { signal: abortController.signal },
-      );
-      summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
-    } catch {
-      // Don't mask the upstream failure with a silent fallback. The
-      // fallback's structured summary is still useful for the UI, but
-      // the response and the persisted ocr_payload both carry
-      // aiSummarySource='fallback' so monitoring + the mobile UI can
-      // distinguish LLM output from rule-based output. The original
-      // exception is not propagated upward (response would 502) and
-      // also not logged here to avoid accidentally surfacing the
-      // upstream Authorization header in unstructured logs (the route
-      // boundary scrubber doesn't touch this path).
-      summary = buildFallbackDocumentSummary(documentType, fields);
-      usedFallback = true;
+      };
+
+      await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
+      res.status(200).json({ documentId, summary, source: usedFallback ? 'fallback' : 'llm' });
+    } finally {
+      res.off('close', onClientClose);
     }
-
-    if (!summary) {
-      throw new AppError('生成 AI 总结失败：空响应', 502);
-    }
-
-    const nextPayload = {
-      ...payloadObj,
-      fields: {
-        ...fields,
-        aiSummary: summary,
-        aiSummarySource: usedFallback ? 'fallback' : 'llm',
-      },
-    };
-
-    await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
-    // Detach the close listener now the request has completed
-    // successfully — without this the closure would stay attached to
-    // the (already-finished) response and a future res.emit('close')
-    // would call abort() on an already-collected AbortController.
-    // Harmless functionally but lints as a leak and shows up in
-    // heap-snapshot triage.
-    res.off('close', onClientClose);
-    res.status(200).json({ documentId, summary, source: usedFallback ? 'fallback' : 'llm' });
   };
 
   getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {

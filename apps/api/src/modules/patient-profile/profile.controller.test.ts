@@ -593,6 +593,70 @@ describe('PatientProfileController.generateDocumentSummary — consent + redacti
     expect(captured.status).toBe(200);
     expect((captured.body as { source: string }).source).toBe('fallback');
   });
+
+  /*
+   * PR #56 review: `generateDocumentSummary` wires
+   * `res.on('close', onClientClose)` to abort the LLM call when the
+   * client drops. The contract added with that wiring is "every exit
+   * path detaches the listener" — without it, two throw paths
+   * (`if (!summary) throw AppError(502)` and a
+   * `updateDocumentOcrPayloadForUser` rejection) would leak the
+   * closure attached to the (already-finished) response. The fix
+   * wraps the work in try/finally; these two cases pin the contract.
+   */
+  it('detaches res.on("close") listener when the service write rejects (PR #56)', async () => {
+    const { controller, service } = buildSummaryDeps({ consentLevel: 'basic' });
+    // Force the post-LLM persist call to reject — this is one of
+    // the two leak paths flagged on the previous patch.
+    (service.updateDocumentOcrPayloadForUser as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('pg: deadlock detected'),
+    );
+    const { res } = captureJson();
+
+    await expect(
+      controller.generateDocumentSummary(
+        { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+        res,
+      ),
+    ).rejects.toThrow('pg: deadlock detected');
+
+    // Contract: every exit detaches the same handler instance.
+    const onCalls = (res.on as ReturnType<typeof vi.fn>).mock.calls;
+    const offCalls = (res.off as ReturnType<typeof vi.fn>).mock.calls;
+    expect(onCalls).toHaveLength(1);
+    expect(onCalls[0][0]).toBe('close');
+    expect(offCalls).toHaveLength(1);
+    expect(offCalls[0][0]).toBe('close');
+    // Reference equality on the listener — proves we detached the
+    // exact closure we attached, not a different one.
+    expect(offCalls[0][1]).toBe(onCalls[0][1]);
+  });
+
+  it('detaches res.on("close") listener when LLM returns empty content (PR #56)', async () => {
+    const { controller, completionsCreate } = buildSummaryDeps({ consentLevel: 'basic' });
+    // Empty content from the LLM stays the empty string after trim;
+    // the catch branch never fires (resolved promise, not rejection),
+    // so the fallback also never runs. `if (!summary) throw` lights
+    // up — the second leak path the review flagged.
+    completionsCreate.mockReset();
+    completionsCreate.mockResolvedValue({
+      choices: [{ message: { content: '   ' } }],
+    });
+    const { res } = captureJson();
+
+    await expect(
+      controller.generateDocumentSummary(
+        { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+        res,
+      ),
+    ).rejects.toMatchObject({ statusCode: 502 });
+
+    const onCalls = (res.on as ReturnType<typeof vi.fn>).mock.calls;
+    const offCalls = (res.off as ReturnType<typeof vi.fn>).mock.calls;
+    expect(onCalls).toHaveLength(1);
+    expect(offCalls).toHaveLength(1);
+    expect(offCalls[0][1]).toBe(onCalls[0][1]);
+  });
 });
 
 describe('PatientProfileController.deleteDocument — service receives audit meta', () => {
