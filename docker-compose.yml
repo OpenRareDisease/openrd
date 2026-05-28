@@ -31,10 +31,33 @@ services:
       KB_SERVICE_PORT: 5010
       HF_HOME: /root/.cache/huggingface
       SENTENCE_TRANSFORMERS_HOME: /root/.cache/sentence_transformers
+      # KB read backend + DB connection. Defaults assume the
+      # compose-managed pgvector postgres is the read side (matches
+      # Phase 1.4 ingest output). To point kb-service at a host-side
+      # native postgres instead -- the common dev setup where the
+      # corpus was ingested locally via `npm run kb:ingest` against
+      # native pg -- set KB_SERVICE_DATABASE_URL in .env, e.g.:
+      #   KB_SERVICE_DATABASE_URL=postgres://<user>@host.docker.internal:5432/fshd_openrd
+      # `host.docker.internal` works out-of-the-box on macOS/Windows
+      # Docker Desktop; the `extra_hosts` entry below mirrors it on
+      # Linux. To roll back to Chroma cloud, set KB_BACKEND=chroma_cloud
+      # + KB_EMBED_MODEL=all-MiniLM-L6-v2 in .env.
+      KB_BACKEND: ${KB_BACKEND:-pgvector}
+      KB_EMBED_MODEL: ${KB_EMBED_MODEL:-BAAI/bge-m3}
+      DATABASE_URL: ${KB_SERVICE_DATABASE_URL:-postgres://postgres:postgres@postgres:5432/fshd_openrd}
     ports:
       - '5010:5010'
     volumes:
       - kb-model-cache:/root/.cache
+    extra_hosts:
+      # Lets KB_SERVICE_DATABASE_URL=postgres://...@host.docker.internal:...
+      # resolve the host on Linux too (Mac/Windows Docker Desktop add
+      # this entry automatically; keeping it here is harmless on those
+      # platforms and required everywhere else).
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
         [
