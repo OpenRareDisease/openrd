@@ -15,7 +15,7 @@
  */
 
 import { Router } from 'express';
-import type { RequestHandler } from 'express';
+import type { RequestHandler, Response } from 'express';
 import type { Pool } from 'pg';
 
 import type { RouteContext } from './index.js';
@@ -28,6 +28,7 @@ import {
   Orchestrator,
   OrchestratorConsentDenied,
   type OrchestratorEvent,
+  type OrchestratorRunResult,
   runStream as runOrchestratorStream,
 } from '../modules/ai-agents/orchestrator/index.js';
 import {
@@ -154,6 +155,81 @@ const getErrorMessage = (error: unknown) => {
 };
 
 const generateProgressId = () => `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Exported for unit tests in ai-chat.routes.test.ts. Production
+// callers stay inside this module.
+export { buildAskResponseData as _buildAskResponseData };
+export { writeWithBackpressure as _writeWithBackpressure };
+
+/**
+ * Narrow the orchestrator's full `OrchestratorRunResult` down to the
+ * subset the client needs. Both `/api/ai/ask` (JSON body) and
+ * `/api/ai/ask/stream` (the `done` SSE frame) call this so the two
+ * routes can't drift on which fields they expose. Without this, the
+ * SSE channel was shipping `finalPrompt.system`, `finalPrompt.user`,
+ * `redactedPromptHash`, and `promptCharLength` — all audit-internal
+ * fields that the non-streaming route deliberately keeps server-side.
+ *
+ * Add new public-response fields here, not at the call sites, so a
+ * future addition to `OrchestratorRunResult` stays default-private.
+ */
+const buildAskResponseData = (
+  question: string,
+  result: OrchestratorRunResult,
+  auditId: string | null,
+  progressId: string,
+) => ({
+  question,
+  answer: result.answer,
+  citations: result.citations,
+  // Renamed alongside PR #44 (ToolCallTrace): `string[]` → richer
+  // `ToolCallSummary[]`. Mobile mirrors the field name.
+  toolCalls: result.toolCalls,
+  fieldsUsed: result.fieldsUsed,
+  usedPersonalData: result.usedPersonalData,
+  consentLevel: result.consentLevel,
+  redactionMode: result.redactionMode,
+  llmUsage: result.llmUsage,
+  latencyMs: result.latencyMs,
+  auditId,
+  progressId,
+  timestamp: new Date().toISOString(),
+});
+
+/**
+ * Write a payload to an HTTP response and wait for `drain` if the
+ * socket buffer is full. Node's `res.write` returns `false` when the
+ * write went into a kernel-level queue rather than flushing
+ * immediately; without awaiting drain a fast producer + slow client
+ * can grow that queue without bound. SSE frames are usually small
+ * single tokens, but a long answer that ships hundreds of frames to
+ * a phone on 2G is the exact case where this matters.
+ *
+ * Resolves to `false` when the connection is already closed (write
+ * would throw or be a no-op) so the caller can stop the producer
+ * loop cleanly. Resolves to `true` otherwise — including the
+ * happy path where `write` returned `true` synchronously.
+ */
+const writeWithBackpressure = (res: Response, payload: string): Promise<boolean> => {
+  if (res.writableEnded || res.destroyed) return Promise.resolve(false);
+  const flushed = res.write(payload);
+  if (flushed) return Promise.resolve(true);
+  // Buffer full: park on `drain`. Wire both `drain` and `close` so
+  // a mid-flight disconnect resolves immediately instead of leaking
+  // a listener.
+  return new Promise<boolean>((resolve) => {
+    const onDrain = () => {
+      res.off('close', onClose);
+      resolve(true);
+    };
+    const onClose = () => {
+      res.off('drain', onDrain);
+      resolve(false);
+    };
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+  });
+};
 
 /** Map orchestrator events onto the legacy progress stage ids so the
  *  existing /progress/:id endpoint keeps working without a frontend
@@ -352,21 +428,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
 
       return res.json({
         success: true,
-        data: {
-          question: String(question),
-          answer: result.answer,
-          citations: result.citations,
-          toolCalls: result.toolCalls,
-          fieldsUsed: result.fieldsUsed,
-          usedPersonalData: result.usedPersonalData,
-          consentLevel: result.consentLevel,
-          redactionMode: result.redactionMode,
-          llmUsage: result.llmUsage,
-          latencyMs: result.latencyMs,
-          auditId,
-          progressId,
-          timestamp: new Date().toISOString(),
-        },
+        data: buildAskResponseData(String(question), result, auditId, progressId),
       });
     } catch (error) {
       const detail = getErrorMessage(error);
@@ -597,14 +659,6 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    const writeFrame = (event: OrchestratorEvent) => {
-      // Standard SSE: a named event with a JSON data payload. The
-      // `event:` line lets mobile dispatch by type without re-parsing
-      // every frame's body just to check `.type`.
-      res.write(`event: ${event.type}\n`);
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-    };
-
     // Best-effort cancellation: if the client drops we abort the
     // orchestrator's LLM stream by ending the response. The
     // orchestrator's chatStream iterator will see the connection
@@ -615,6 +669,32 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     res.on('close', () => {
       clientGone = true;
     });
+
+    /** Serialise one OrchestratorEvent to its on-the-wire payload.
+     *
+     *  The `done` event is special-cased: instead of dumping the full
+     *  `OrchestratorRunResult` (which carries audit-internal fields
+     *  like `finalPrompt.system/user`, `redactedPromptHash`, and
+     *  `promptCharLength`), we narrow it through
+     *  `buildAskResponseData` so streaming and non-streaming clients
+     *  see the same response shape. The frame's `event:` type stays
+     *  `done` so EventSource listeners don't need to change. */
+    const serializeFrame = (event: OrchestratorEvent): string => {
+      let dataPayload: unknown = event;
+      if (event.type === 'done') {
+        dataPayload = {
+          type: 'done',
+          data: buildAskResponseData(String(question), event.result, null, progressId),
+        };
+      }
+      return `event: ${event.type}\ndata: ${JSON.stringify(dataPayload)}\n\n`;
+    };
+
+    /** Write a frame and yield to the socket if its buffer is full.
+     *  Returns false if the client disconnected mid-write so the
+     *  caller can break out of the producer loop. */
+    const writeFrame = (event: OrchestratorEvent): Promise<boolean> =>
+      writeWithBackpressure(res, serializeFrame(event));
 
     let lastResult: Extract<OrchestratorEvent, { type: 'done' }>['result'] | null = null;
     let streamError: string | null = null;
@@ -631,7 +711,11 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
         { streamFinalAnswer: true },
       )) {
         if (clientGone) break;
-        writeFrame(event);
+        const flushed = await writeFrame(event);
+        if (!flushed) {
+          clientGone = true;
+          break;
+        }
         if (event.type === 'done') lastResult = event.result;
         if (event.type === 'error') streamError = event.message;
       }
@@ -642,7 +726,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       // before throwing, but a sync throw from runStream itself
       // wouldn't. Surface it as a frame so the client gets a
       // clean signal rather than a half-written stream.
-      if (!clientGone) writeFrame({ type: 'error', message: detail });
+      if (!clientGone) await writeFrame({ type: 'error', message: detail });
     }
 
     // Audit row mirrors /ask: success when we have a final result,
@@ -661,7 +745,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           promptCharLength: lastResult.promptCharLength,
           usedPersonalData: lastResult.usedPersonalData,
           fieldsUsed: lastResult.fieldsUsed,
-          toolsCalled: lastResult.toolsCalled,
+          toolsCalled: lastResult.toolCalls,
           latencyMs: lastResult.latencyMs,
           status: 'success',
         });
