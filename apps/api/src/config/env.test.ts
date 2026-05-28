@@ -103,4 +103,50 @@ describe('loadAppEnv', () => {
       }),
     ).toThrow(/JWT_SECRET must be replaced|OTP_HASH_SECRET must be replaced/);
   });
+
+  it('accepts NODE_ENV=staging as a first-class value (PR-Sec-11)', () => {
+    // Before PR-Sec-11 the enum was {dev, test, production}; a
+    // staging deploy with `NODE_ENV=staging` would throw "Invalid
+    // enum value" at schema parse time and the operator had to
+    // either drop NODE_ENV (silent dev fallback, accepts every
+    // placeholder) or set production (conflates staging+prod in
+    // metrics). Staging now parses cleanly AND falls under
+    // `isProduction` so `validateProductionEnv` runs against it.
+    const env = loadAppEnv({
+      NODE_ENV: 'staging',
+      DATABASE_URL: 'postgres://staging:pw@db.staging:5432/openrd',
+      DATABASE_SSL_ENABLED: 'true',
+      DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+      JWT_SECRET: 'staging-jwt-secret-1234567890',
+      OTP_HASH_SECRET: 'staging-otp-secret-1234567890',
+      OTP_PROVIDER: 'tencent',
+      CORS_ORIGIN: 'https://app.staging.example.com',
+      OCR_PROVIDER: 'embedded',
+      KB_SERVICE_TOKEN: 'staging-kb-bearer-token-1234567890',
+    });
+    expect(env.NODE_ENV).toBe('staging');
+    expect(env.isProduction).toBe(true);
+    expect(env.isStaging).toBe(true);
+  });
+
+  it('rejects a staging config that ships dev placeholders (PR-Sec-11)', () => {
+    // Pin the harder half of the staging fix: staging gets the SAME
+    // placeholder rejection that production does. Without this, an
+    // operator who set NODE_ENV=staging but forgot to rotate
+    // JWT_SECRET would ship with `change-me-super-secret`.
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'staging',
+        DATABASE_URL: 'postgres://staging:pw@db.staging:5432/openrd',
+        DATABASE_SSL_ENABLED: 'true',
+        DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+        JWT_SECRET: 'change-me-super-secret',
+        OTP_HASH_SECRET: 'change-me-otp-secret',
+        OTP_PROVIDER: 'tencent',
+        CORS_ORIGIN: 'https://app.staging.example.com',
+        OCR_PROVIDER: 'embedded',
+        KB_SERVICE_TOKEN: 'staging-kb-bearer-token-1234567890',
+      }),
+    ).toThrow(/JWT_SECRET must be replaced|OTP_HASH_SECRET must be replaced/);
+  });
 });
