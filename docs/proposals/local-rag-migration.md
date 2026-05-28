@@ -167,8 +167,19 @@ SSE 流式返回前端
 环境依赖：
 
 - Python 3.11（sentence-transformers / pytorch 暂未支持 3.14）
-- `tesseract` + `tesseract-lang`（图像 / 扫描 PDF 的 OCR 用，brew 装）
+- 系统二进制（brew 装）：
+  - `tesseract` + `tesseract-lang` —— 图像 / 扫描 PDF 的 OCR；缺 `chi_sim` 中文 traineddata 会让中文 PDF 整页变空
+  - `poppler` —— 提供 `pdftoppm`，`pdf2image` 调它把扫描 PDF 转图。缺 poppler 时 PDF parser 会在 metadata 里报 `ocr_dep_error` 而不是静默丢页，但你的扫描 PDF 一样进不了 KB
 - `pip install -r requirements.txt`（含 `pdfminer.six` / `python-docx` / `pdf2image` / `pytesseract` / `Pillow` / `beautifulsoup4`）
+
+一键：
+
+```sh
+brew install python@3.11 tesseract tesseract-lang poppler
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 医学 KB 因此可代码化管理（parser + chunker 在 git）、源材料独立存档（zip 或 NAS），并随时一键重灌。
 

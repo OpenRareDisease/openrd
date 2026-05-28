@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 from .base import Parser, ParseResult, ParsedSection
 
@@ -51,28 +51,59 @@ class PdfParser(Parser):
             )
 
         ocr_pages = 0
+        ocr_failures = 0
+        last_ocr_error: Optional[str] = None
+
         for section in sections:
-            if _looks_empty(section.text):
-                ocr_text = _ocr_page(path, _page_index_from_label(section.label))
-                if ocr_text and not _looks_empty(ocr_text):
-                    section.text = ocr_text
-                    section.extra["source_method"] = "ocr"
-                    ocr_pages += 1
+            if not _looks_empty(section.text):
+                continue
+            ocr_text, ocr_err = _ocr_page(
+                path, _page_index_from_label(section.label)
+            )
+            if ocr_err is not None:
+                # OCR couldn't even run for this page (missing
+                # poppler / tesseract / chi_sim traineddata, or a
+                # rasterise crash). Track it separately from
+                # "OCR ran but found no text" so a missing dep
+                # doesn't get mis-attributed to corpus gaps.
+                ocr_failures += 1
+                last_ocr_error = ocr_err
+                continue
+            if ocr_text and not _looks_empty(ocr_text):
+                section.text = ocr_text
+                section.extra["source_method"] = "ocr"
+                ocr_pages += 1
 
         # Drop pages that are still empty after OCR. Keeps the section
         # list aligned with what actually has content; downstream
         # chunker handles per-page wrap.
         sections = [s for s in sections if s.text.strip()]
 
-        return ParseResult(
-            sections=sections,
-            metadata={
-                "parser": self.parser_name,
-                "pages_total": _page_count(path),
-                "pages_with_text": len(sections),
-                "pages_via_ocr": ocr_pages,
-            },
-        )
+        metadata: dict = {
+            "parser": self.parser_name,
+            "pages_total": _page_count(path),
+            "pages_with_text": len(sections),
+            "pages_via_ocr": ocr_pages,
+            "ocr_failures": ocr_failures,
+        }
+        if last_ocr_error is not None:
+            # Surfaced regardless of whether the file still produced
+            # SOME content: a single env error is usually the same
+            # error for every scanned page in the corpus, so the
+            # operator wants to see it once per file at minimum.
+            metadata["ocr_dep_error"] = last_ocr_error
+
+        # Elevate to a hard parse_error when the file was effectively
+        # unrecoverable: nothing in the text layer, every OCR attempt
+        # failed. The ingester counts this in `files_errored`
+        # instead of `files_empty`, which is the difference between
+        # "fix your bootstrap" and "this file is genuinely blank".
+        if not sections and ocr_failures > 0:
+            metadata["parse_error"] = (
+                f"all pages empty and OCR unavailable: {last_ocr_error}"
+            )
+
+        return ParseResult(sections=sections, metadata=metadata)
 
 
 def _parse_text_layer(path: Path) -> List[ParsedSection]:
@@ -114,28 +145,56 @@ def _parse_text_layer(path: Path) -> List[ParsedSection]:
     return sections
 
 
-def _ocr_page(path: Path, page_index: int) -> str:
-    """Rasterise one PDF page and run tesseract on it. Returns the
-    decoded text or '' on any failure (the section just keeps its
-    empty text-layer extract in that case)."""
+def _ocr_page(path: Path, page_index: int) -> Tuple[str, Optional[str]]:
+    """Rasterise one PDF page and run tesseract on it.
+
+    Returns `(text, error)` where:
+      - `text=''` and `error=None`  -> OCR ran, image had no text (a
+        legitimately blank scan / cover page).
+      - `text != ''` and `error=None` -> OCR succeeded.
+      - `error is not None` -> OCR couldn't run at all (missing
+        poppler, missing tesseract binary, missing chi_sim
+        traineddata, rasterise crash). The caller surfaces this so a
+        missing host-side dep doesn't masquerade as a content gap.
+    """
     if page_index < 0:
-        return ""
+        return "", None
+
     try:
         from pdf2image import convert_from_path  # type: ignore
+    except ImportError as exc:
+        return "", f"pdf2image not installed: {exc}"
+    try:
         import pytesseract  # type: ignore
+    except ImportError as exc:
+        return "", f"pytesseract not installed: {exc}"
 
+    try:
         images = convert_from_path(
             str(path),
             dpi=_OCR_DPI,
             first_page=page_index + 1,
             last_page=page_index + 1,
         )
-        if not images:
-            return ""
+    except Exception as exc:
+        # pdf2image surfaces `PDFInfoNotInstalledError` /
+        # `FileNotFoundError` when poppler / pdftoppm isn't on PATH;
+        # both bubble up here. The bootstrap docs now list poppler
+        # alongside tesseract.
+        return "", f"PDF rasterise failed (poppler/pdftoppm?): {exc}"
+
+    if not images:
+        return "", None
+
+    try:
         text = pytesseract.image_to_string(images[0], lang=_OCR_LANGS)
-        return text.strip()
-    except Exception:
-        return ""
+    except Exception as exc:
+        # Common case: tesseract binary missing or chi_sim
+        # traineddata not in tessdata. Both want the operator to
+        # `brew install tesseract tesseract-lang`.
+        return "", f"tesseract OCR failed (binary/chi_sim missing?): {exc}"
+
+    return text.strip(), None
 
 
 def _page_count(path: Path) -> int:

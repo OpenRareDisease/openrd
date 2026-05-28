@@ -116,29 +116,38 @@ class DocxParser(Parser):
                     )
                 )
 
-        for paragraph in doc.paragraphs:
-            style_name = (paragraph.style.name if paragraph.style else "") or ""
-            text = (paragraph.text or "").strip()
-            if not text:
-                continue
-            if style_name.startswith("Heading"):
-                flush()
-                current_heading = text
-                current_lines = []
-                continue
-            current_lines.append(text)
+        # Walk the document body in document order so a table that
+        # appears between Heading A and Heading B is attached to A,
+        # not to whatever heading is current after every paragraph
+        # has been processed. python-docx's `doc.paragraphs` /
+        # `doc.tables` collections each preserve internal order but
+        # lose ordering between the two types; `iter_inner_content`
+        # is the documented escape hatch (>= 1.0).
+        from docx.table import Table  # type: ignore
+        from docx.text.paragraph import Paragraph  # type: ignore
 
-        # Flatten tables — python-docx exposes them as a separate
-        # collection rather than inline with paragraphs.
-        for table in doc.tables:
-            rows: List[str] = []
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    rows.append("\t".join(cells))
-            if rows:
-                current_lines.append("[表格]")
-                current_lines.extend(rows)
+        for block in doc.iter_inner_content():
+            if isinstance(block, Paragraph):
+                style_name = (block.style.name if block.style else "") or ""
+                text = (block.text or "").strip()
+                if not text:
+                    continue
+                if style_name.startswith("Heading"):
+                    flush()
+                    current_heading = text
+                    current_lines = []
+                    continue
+                current_lines.append(text)
+            elif isinstance(block, Table):
+                rows: List[str] = []
+                for row in block.rows:
+                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if cells:
+                        rows.append("\t".join(cells))
+                if rows:
+                    current_lines.append("[表格]")
+                    current_lines.extend(rows)
+            # Other inner-content types (sdt, etc.) are ignored.
 
         flush()
 

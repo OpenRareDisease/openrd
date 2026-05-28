@@ -105,3 +105,62 @@ def test_docx_parser_corrupt_file_returns_parse_error(tmp_path: Path) -> None:
     result = DocxParser().parse(f)
     assert result.sections == []
     assert "parse_error" in result.metadata
+
+
+def test_docx_parser_attaches_tables_to_the_current_heading(tmp_path: Path) -> None:
+    """Regression: tables used to be iterated AFTER all paragraphs,
+    so every table in the document ended up attached to whatever
+    heading was last seen during the paragraph pass. A table that
+    appears between Heading A and Heading B should belong to A."""
+
+    def build(doc):
+        doc.add_heading("Heading A", level=1)
+        doc.add_paragraph("alpha intro")
+        table = doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "alpha_h1"
+        table.cell(0, 1).text = "alpha_h2"
+        table.cell(1, 0).text = "alpha_v1"
+        table.cell(1, 1).text = "alpha_v2"
+        doc.add_heading("Heading B", level=1)
+        doc.add_paragraph("beta paragraph")
+
+    f = _write_docx(tmp_path, build)
+    result = DocxParser().parse(f)
+
+    by_label = {s.label: s.text for s in result.sections}
+    assert "Heading A" in by_label, f"section for A missing: {list(by_label)}"
+    assert "Heading B" in by_label, f"section for B missing: {list(by_label)}"
+
+    # Table content must live under A (where it appeared), not B.
+    assert "alpha_h1\talpha_h2" in by_label["Heading A"]
+    assert "alpha_v1\talpha_v2" in by_label["Heading A"]
+    assert "alpha_h1" not in by_label["Heading B"]
+    assert "beta paragraph" in by_label["Heading B"]
+    assert "beta paragraph" not in by_label["Heading A"]
+
+
+def test_docx_parser_handles_interleaved_paragraphs_and_tables(tmp_path: Path) -> None:
+    """Multiple tables under different headings should each land in
+    their own section. Exercises the document-order traversal end
+    to end."""
+
+    def build(doc):
+        doc.add_heading("Section 1", level=1)
+        doc.add_paragraph("text 1")
+        t1 = doc.add_table(rows=1, cols=1)
+        t1.cell(0, 0).text = "t1_cell"
+        doc.add_heading("Section 2", level=1)
+        t2 = doc.add_table(rows=1, cols=1)
+        t2.cell(0, 0).text = "t2_cell"
+        doc.add_paragraph("text 2")
+
+    f = _write_docx(tmp_path, build)
+    result = DocxParser().parse(f)
+    by_label = {s.label: s.text for s in result.sections}
+
+    assert "t1_cell" in by_label["Section 1"]
+    assert "t2_cell" in by_label["Section 2"]
+    assert "t1_cell" not in by_label["Section 2"]
+    assert "t2_cell" not in by_label["Section 1"]
+    assert "text 1" in by_label["Section 1"]
+    assert "text 2" in by_label["Section 2"]
