@@ -335,6 +335,162 @@ def test_injection_scanner_passes_clean_content(ingest_mod):
     assert ingest_mod.scan_for_injection_markers("FSHD 是一种常见的遗传性肌病。") == []
 
 
+# ---------------------- duplicate fingerprints + cleanup contract
+
+
+class _StatefulBackend:
+    """In-memory stand-in for VectorBackend that records upserts +
+    cleanup calls. The fingerprint table is seeded by the test so we
+    can drive the "duplicate fingerprints from a previous crash"
+    scenario directly."""
+
+    def __init__(self, seeded_fingerprints, supports_scoped_delete=True):
+        # {source_key: set[fingerprint]}
+        self._fingerprints = {k: set(v) for k, v in seeded_fingerprints.items()}
+        self.upserts = []  # list of [BackendChunk]
+        self.scoped_deletes = []  # list of (source_key, keep_fp)
+        self._supports_scoped_delete = supports_scoped_delete
+
+    def list_source_fingerprints(self, source_files):
+        return {k: set(v) for k, v in self._fingerprints.items() if k in source_files}
+
+    def list_all_source_files(self):  # pragma: no cover - prune not exercised here
+        return list(self._fingerprints)
+
+    def upsert(self, chunks):
+        self.upserts.append(list(chunks))
+        # Reflect the new fingerprint into the stored set, mimicking what
+        # a real pgvector backend would see after the INSERT.
+        for chunk in chunks:
+            self._fingerprints.setdefault(chunk.source_file, set()).add(
+                chunk.source_fingerprint
+            )
+
+    def delete_by_source(self, source_key):  # pragma: no cover
+        # Used only when an old backend falls back; the contract change
+        # forbids this for the scoped delete path so any call is a bug.
+        raise AssertionError("delete_by_source should not be the cleanup path")
+
+    def delete_by_source_other_fingerprints(self, source_key, keep_fp):
+        if not self._supports_scoped_delete:
+            raise NotImplementedError("test_stub backend does not support scoped delete")
+        self.scoped_deletes.append((source_key, keep_fp))
+        # Drop every fingerprint for the source except keep_fp.
+        existing = self._fingerprints.get(source_key, set())
+        removed_count = sum(1 for fp in existing if fp != keep_fp)
+        self._fingerprints[source_key] = {keep_fp} if keep_fp in existing else set()
+        return removed_count
+
+
+class _NoopEmbedderReturningOnes:
+    """Embedder stub that emits a deterministic embedding per chunk.
+    The fake backend ignores the actual vector values."""
+
+    model_name = "test-embedder"
+
+    def embed_texts(self, texts):
+        return [[1.0] for _ in texts]
+
+
+def test_duplicate_fingerprints_force_reingest(ingest_mod, tmp_path):
+    """An interrupted cleanup leaves the same source_file with two
+    distinct fingerprints in the backend. The previous dict-of-string
+    contract would arbitrarily pick one; if it picked the new one the
+    file looked unchanged forever and the stale duplicates lived on.
+    The Dict[str, Set[str]] contract makes the diagnostic explicit:
+    `> 1` fingerprints → force re-ingest."""
+    src = tmp_path / "fixture.md"
+    # The chunker's min_chars=30 floor would discard anything shorter,
+    # so the body has to clear that threshold to land as a chunk.
+    src.write_text(
+        "# title\n\nFSHD knowledge base fixture body for the kb-ingest test suite.\n",
+        encoding="utf-8",
+    )
+
+    # Seed the backend with TWO fingerprints for the same source — the
+    # signature of an interrupted prior cleanup. Neither of them
+    # matches the on-disk fingerprint of the fixture we just wrote.
+    backend = _StatefulBackend(
+        seeded_fingerprints={"fixture.md": {"old-fp-aaaa", "new-fp-bbbb"}}
+    )
+
+    stats = ingest_mod.ingest(
+        content_root=tmp_path,
+        backend=backend,
+        embedder=_NoopEmbedderReturningOnes(),
+    )
+
+    # Source should be treated as updated (not "unchanged") AND the
+    # cleanup pass should have run for it.
+    assert stats.files_updated == 1
+    assert stats.files_unchanged == 0
+    assert any("interrupted cleanup" in a for a in stats.actions)
+    assert backend.upserts, "expected upsert to run on the re-ingest"
+    assert backend.scoped_deletes, "expected scoped cleanup to run after upsert"
+
+
+def test_unchanged_when_single_matching_fingerprint(ingest_mod, tmp_path):
+    """The happy path: one fingerprint in the backend matching the
+    on-disk file. The ingest must skip parsing + upsert entirely."""
+    src = tmp_path / "fixture.md"
+    # The chunker's min_chars=30 floor would discard anything shorter,
+    # so the body has to clear that threshold to land as a chunk.
+    src.write_text(
+        "# title\n\nFSHD knowledge base fixture body for the kb-ingest test suite.\n",
+        encoding="utf-8",
+    )
+
+    parser = ingest_mod.get_parser_for(src)
+    file_fp = ingest_mod.source_fingerprint(
+        src.read_bytes(), parser.parser_name, ingest_mod.PIPELINE_VERSION
+    )
+
+    backend = _StatefulBackend(seeded_fingerprints={"fixture.md": {file_fp}})
+    stats = ingest_mod.ingest(
+        content_root=tmp_path,
+        backend=backend,
+        embedder=_NoopEmbedderReturningOnes(),
+    )
+
+    assert stats.files_unchanged == 1
+    assert stats.files_updated == 0
+    assert backend.upserts == []
+
+
+def test_scoped_delete_not_implemented_warns_but_does_not_crash(ingest_mod, tmp_path):
+    """A backend without scoped fingerprint deletion (e.g. the
+    chroma_cloud fallback) must surface a single warning rather than
+    fall back to delete_by_source — that fallback would wipe the
+    just-upserted batch."""
+    src = tmp_path / "fixture.md"
+    # The chunker's min_chars=30 floor would discard anything shorter,
+    # so the body has to clear that threshold to land as a chunk.
+    src.write_text(
+        "# title\n\nFSHD knowledge base fixture body for the kb-ingest test suite.\n",
+        encoding="utf-8",
+    )
+
+    # Same-key seeded fingerprint that doesn't match → cleanup path
+    # will run, and the backend will raise NotImplementedError.
+    backend = _StatefulBackend(
+        seeded_fingerprints={"fixture.md": {"old-fp-aaaa"}},
+        supports_scoped_delete=False,
+    )
+
+    stats = ingest_mod.ingest(
+        content_root=tmp_path,
+        backend=backend,
+        embedder=_NoopEmbedderReturningOnes(),
+    )
+
+    # Ingest succeeded; the new chunks landed.
+    assert stats.files_updated == 1
+    assert backend.upserts, "expected upsert to run even when cleanup is unsupported"
+    # Exactly one operator-visible warning about the unsupported delete.
+    unsupported_warnings = [a for a in stats.actions if "scoped stale-chunk delete unsupported" in a]
+    assert len(unsupported_warnings) == 1, unsupported_warnings
+
+
 # ---------------------- prune failure surfaces in exit status
 
 class _FailingDeleteBackend:

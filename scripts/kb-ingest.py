@@ -432,10 +432,23 @@ def ingest(
             stats.actions.append(f"error    {source_key}: read failed: {exc}")
             continue
 
-        if existing_fps.get(source_key) == file_fp:
+        # Treat the file as unchanged ONLY when there's exactly one
+        # known fingerprint AND it matches the on-disk one. If the
+        # backend reports multiple fingerprints for this source, the
+        # previous run crashed between upsert and stale-cleanup —
+        # forcing re-ingestion is what triggers the cleanup retry on
+        # the next pass.
+        known_fps = existing_fps.get(source_key)
+        if known_fps == {file_fp}:
             stats.files_unchanged += 1
             stats.actions.append(f"unchanged {source_key}")
             continue
+        if known_fps and len(known_fps) > 1:
+            stats.actions.append(
+                f"warn     {source_key}: backend reports {len(known_fps)} "
+                f"distinct fingerprints (likely an interrupted cleanup); "
+                f"forcing re-ingest"
+            )
 
         try:
             parse_result = parser.parse(file_path)
@@ -541,9 +554,16 @@ def ingest(
         # source_fingerprint no longer matches. Anything that fails
         # here leaves the DB with both fingerprints present; the next
         # ingest's list_source_fingerprints call will surface multiple
-        # rows for that source_key and trigger a clean rerun (the
-        # detection logic treats "fingerprint mismatch" the same as
-        # "missing", which re-ingests + retries the cleanup).
+        # fingerprints for that source_key and force re-ingestion
+        # (which retries the cleanup).
+        #
+        # Backends that don't implement scoped fingerprint deletion
+        # (e.g. chroma_cloud) raise NotImplementedError. Surfacing
+        # that as a single per-run warning (rather than falling back
+        # to delete_by_source, which would wipe the just-upserted
+        # batch) lets the operator know stale chunks may persist on
+        # that backend without breaking the ingest.
+        unsupported_logged = False
         for source_key, keep_fp in updated_sources:
             try:
                 removed = backend.delete_by_source_other_fingerprints(
@@ -553,6 +573,13 @@ def ingest(
                     stats.actions.append(
                         f"cleanup  {source_key}: removed {removed} stale chunks"
                     )
+            except NotImplementedError as exc:
+                if not unsupported_logged:
+                    stats.actions.append(
+                        f"warn     scoped stale-chunk delete unsupported: {exc}; "
+                        f"old fingerprints will remain on this backend"
+                    )
+                    unsupported_logged = True
             except Exception as exc:
                 stats.actions.append(
                     f"cleanup  {source_key}: stale-chunk delete failed: {exc}"

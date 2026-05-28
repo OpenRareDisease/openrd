@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 @dataclass
@@ -74,9 +74,14 @@ class VectorBackend(ABC):
         """Delete chunks by content fingerprint. Returns number removed."""
 
     @abstractmethod
-    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, str]:
-        """Return the recorded source_fingerprint for each requested
-        source file. Missing files map to None."""
+    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, Set[str]]:
+        """Return the recorded source_fingerprint values for each
+        requested source file. The value is a set so callers can
+        distinguish "clean state" (`{file_fp}`) from "duplicate
+        fingerprints — likely the leftover of an interrupted cleanup"
+        (`{old_fp, new_fp}`) and react accordingly. Files not present
+        in the backend are omitted from the result rather than mapped
+        to an empty set."""
 
     @abstractmethod
     def delete_by_source(self, source_file: str) -> int:
@@ -94,19 +99,22 @@ class VectorBackend(ABC):
         from the previous fingerprint. If the process crashes after
         upsert but before this call, the next run sees BOTH fingerprints
         for the same source_file and treats it as changed (the
-        list_source_fingerprints grouping will surface multiple rows),
-        triggering re-ingestion which cleans the duplicates up.
+        list_source_fingerprints grouping will surface multiple
+        fingerprints), triggering re-ingestion which cleans the
+        duplicates up.
 
-        Default implementation: fall back to delete_by_source after a
-        no-op so naive backends remain functional, but the safety
-        guarantee only holds on backends that override this with a
-        scoped delete.
+        Fails closed by default: a naïve fallback to `delete_by_source`
+        would wipe the just-upserted batch on backends that don't
+        override this method, recreating the zero-chunk failure mode
+        this method exists to prevent. Backends must opt in to the
+        scoped-delete semantics explicitly; the ingest script catches
+        NotImplementedError and logs a clear "stale chunks will
+        persist on this backend" warning instead.
         """
-        # Backends without scoped deletion must still satisfy the
-        # contract: dropping everything is over-aggressive but
-        # idempotent — callers immediately re-upsert via the next
-        # cycle. Override on real backends for the safer semantics.
-        return self.delete_by_source(source_file)
+        raise NotImplementedError(
+            f"{self.id} backend does not implement scoped fingerprint deletion; "
+            f"falling back to delete_by_source would wipe the newly-upserted batch"
+        )
 
     def list_all_source_files(self) -> List[str]:
         """Return every distinct source_file currently in the backend.

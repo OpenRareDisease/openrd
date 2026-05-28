@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import chromadb
 
@@ -140,24 +140,39 @@ class ChromaCloudBackend(VectorBackend):
         # requested length as a best-effort signal.
         return len(fingerprints)
 
-    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, str]:
+    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, Set[str]]:
+        """Return every distinct source_fingerprint per source_file.
+        See VectorBackend.list_source_fingerprints — the set shape lets
+        the ingest script detect interrupted cleanups."""
         if not source_files:
             return {}
         # Chroma can filter on metadata with $in, but the older API used
         # a single-key dict. Fall back to per-file queries for safety.
-        result: Dict[str, str] = {}
+        # We pull up to a handful of chunks per source so the set is
+        # exhaustive across surviving fingerprints (the previous
+        # `limit=1` could miss a stale fingerprint if Chroma happened
+        # to return a chunk from the new batch first).
+        result: Dict[str, Set[str]] = {}
         for source in source_files:
             try:
                 hits = self.collection.get(
                     where={"source_file": source},
                     include=["metadatas"],
-                    limit=1,
+                    # 32 is plenty to discover every distinct fingerprint
+                    # for a single source in practice (each fingerprint
+                    # is per-source, not per-chunk).
+                    limit=32,
                 )
                 metas = hits.get("metadatas") or []
-                if metas:
-                    fp = (metas[0] or {}).get("source_fingerprint")
+                fingerprints: Set[str] = set()
+                for meta in metas:
+                    if not meta:
+                        continue
+                    fp = meta.get("source_fingerprint")
                     if fp:
-                        result[source] = str(fp)
+                        fingerprints.add(str(fp))
+                if fingerprints:
+                    result[source] = fingerprints
             except Exception:
                 # Best-effort; ingest scripts must tolerate missing data.
                 logger.exception("Failed to read source_fingerprint for %s", source)

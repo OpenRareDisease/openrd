@@ -34,6 +34,15 @@ ALTER TABLE auth_otps
   CHECK (purpose IN ('register', 'login', 'reset'))
   NOT VALID;
 
+-- otp_verification_codes is the table OtpService.sendCode actually
+-- writes to (auth_otps above is the legacy table); pin the same
+-- scene enum the application advertises so a drifting caller can't
+-- slip in an unrecognised scene like 'reset_password' or 'mfa'.
+ALTER TABLE otp_verification_codes
+  ADD CONSTRAINT otp_verification_codes_scene_check
+  CHECK (scene IN ('register', 'login', 'reset'))
+  NOT VALID;
+
 -- ---------------------------------------------------------------- patient_submissions
 ALTER TABLE patient_submissions
   ADD CONSTRAINT patient_submissions_kind_check
@@ -41,9 +50,26 @@ ALTER TABLE patient_submissions
   NOT VALID;
 
 -- ---------------------------------------------------------------- patient_documents
+-- The vocabulary mirrors `resolveDocumentStatusFromPayload` in
+-- profile.controller.ts: 'uploaded' (default / no OCR result),
+-- 'processing' (OCR in flight), 'parsed' (OCR returned
+-- analysisStatus=completed), 'needs_review' (OCR returned
+-- analysisStatus=needs_review), 'parse_failed' (OCR raised or
+-- payload.error set). 'processed' and 'failed' are kept for backward
+-- compatibility with rows written before the parse_failed /
+-- needs_review pipeline landed; new code paths should not emit them
+-- but existing rows must validate.
 ALTER TABLE patient_documents
   ADD CONSTRAINT patient_documents_status_check
-  CHECK (status IN ('uploaded', 'processing', 'processed', 'failed'))
+  CHECK (status IN (
+    'uploaded',
+    'processing',
+    'processed',
+    'parsed',
+    'needs_review',
+    'failed',
+    'parse_failed'
+  ))
   NOT VALID;
 
 -- ---------------------------------------------------------------- patient_measurements

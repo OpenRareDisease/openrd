@@ -139,3 +139,77 @@ describe('PatientProfileController.uploadDocument — preflight authorization (P
     expect(service.addUploadedDocument).toHaveBeenCalledOnce();
   });
 });
+
+/**
+ * Pin every `status` the upload path can write against the
+ * vocabulary `db/migrations/011_status_check_constraints.sql` admits.
+ * Drift here used to fail the DB INSERT after the upload had already
+ * landed in storage — the PR #49 reviewer's first finding.
+ */
+describe('PatientProfileController.uploadDocument — status mapping vs DB CHECK', () => {
+  const ALLOWED_BY_MIGRATION_011 = new Set([
+    'uploaded',
+    'processing',
+    'processed',
+    'parsed',
+    'needs_review',
+    'failed',
+    'parse_failed',
+  ]);
+
+  const cases: Array<{ name: string; ocrPayload: unknown; expected: string }> = [
+    {
+      name: 'completed OCR → parsed',
+      ocrPayload: { provider: 'paddle', fields: { analysisStatus: 'completed' } },
+      expected: 'parsed',
+    },
+    {
+      name: 'OCR returns needs_review → needs_review',
+      ocrPayload: { provider: 'paddle', fields: { analysisStatus: 'needs_review' } },
+      expected: 'needs_review',
+    },
+    {
+      name: 'OCR returns processing → processing',
+      ocrPayload: { provider: 'paddle', fields: { analysisStatus: 'processing' } },
+      expected: 'processing',
+    },
+    {
+      name: 'OCR returns failed → parse_failed',
+      ocrPayload: { provider: 'paddle', fields: { analysisStatus: 'failed' } },
+      expected: 'parse_failed',
+    },
+    {
+      name: 'OCR raised → parse_failed via payload.error',
+      ocrPayload: { provider: 'unknown', error: 'tesseract crashed' },
+      expected: 'parse_failed',
+    },
+    {
+      name: 'no OCR payload → uploaded',
+      ocrPayload: null,
+      expected: 'uploaded',
+    },
+  ];
+
+  for (const { name, ocrPayload, expected } of cases) {
+    it(`${name} (and the status is admitted by migration 011)`, async () => {
+      const { service, storage } = buildDeps();
+      const ocr = {
+        parse: vi.fn().mockResolvedValue(ocrPayload),
+      } as unknown as OcrProvider;
+      const controller = new PatientProfileController(service, storage, ocr);
+
+      const req = {
+        user: { id: 'user-1' },
+        body: { documentType: 'mri' },
+        file: makeFile(),
+      } as unknown as AuthenticatedRequest;
+
+      await controller.uploadDocument(req, fakeRes());
+
+      const addCall = (service.addUploadedDocument as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(addCall.status).toBe(expected);
+      // Hard guard against status drift versus the migration vocabulary.
+      expect(ALLOWED_BY_MIGRATION_011.has(addCall.status)).toBe(true);
+    });
+  }
+});
