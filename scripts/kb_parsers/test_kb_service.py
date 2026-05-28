@@ -176,3 +176,86 @@ def test_health_paths_constant_removed(kb_service):
     """The unused `_HEALTH_PATHS` constant was removed because it
     introduced confusing intent without a caller."""
     assert not hasattr(kb_service, '_HEALTH_PATHS')
+
+
+# --------------------------------------------------------------- _check_prod_token_safety
+
+
+def test_prod_token_safety_rejects_placeholder_under_node_env_production(kb_service):
+    """PR #55 review: the docker-compose default placeholder
+    `dev-only-local-token-NOT-FOR-PROD` is non-empty, so the
+    original "not _REQUIRED_TOKEN" check would NOT fire even if a
+    prod deploy forgot to override it. The new second guard catches
+    exactly this: NODE_ENV=production AND token == placeholder."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='production',
+    )
+    assert err is not None
+    assert 'placeholder' in err.lower()
+    assert 'production' in err.lower()
+
+
+def test_prod_token_safety_accepts_placeholder_in_dev_compose(kb_service):
+    """The same placeholder MUST be accepted when NODE_ENV is not
+    production — that's the whole point of the docker-compose dev
+    fallback, so `docker compose up` keeps working without anyone
+    touching .env."""
+    # Empty NODE_ENV (typical dev compose-up)
+    err_dev = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='',
+    )
+    assert err_dev is None
+
+    # Explicit development NODE_ENV
+    err_dev2 = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='development',
+    )
+    assert err_dev2 is None
+
+
+def test_prod_token_safety_accepts_real_secret_in_production(kb_service):
+    """A genuine random secret + NODE_ENV=production should start
+    cleanly (the happy path the bot's verification covers)."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token='3f8a9b2c1d4e5f60718293a4b5c6d7e8',  # mimicking openssl rand -hex
+        node_env='production',
+    )
+    assert err is None
+
+
+def test_prod_token_safety_original_pr_51_guard_still_fires(kb_service):
+    """The PR #51 "0.0.0.0 with empty token" check must still work —
+    don't lose it under the new second-guard refactor."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token='',
+        node_env='',  # not production yet — host alone is enough
+    )
+    assert err is not None
+    assert '0.0.0.0' in err
+
+    err_prod = kb_service._check_prod_token_safety(
+        host='127.0.0.1',  # loopback, but NODE_ENV is prod
+        token='',
+        node_env='production',
+    )
+    assert err_prod is not None
+
+
+def test_prod_token_safety_loopback_dev_without_token_is_fine(kb_service):
+    """Plain loopback dev (no 0.0.0.0, no NODE_ENV=production, no
+    token) is the documented "minimal dev" path. Must not require
+    a token."""
+    err = kb_service._check_prod_token_safety(
+        host='127.0.0.1',
+        token='',
+        node_env='',
+    )
+    assert err is None
