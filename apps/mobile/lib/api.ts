@@ -563,6 +563,53 @@ export const askAiQuestion = (question: string, progressId?: string) =>
     body: JSON.stringify({ question, progressId }),
   });
 
+export type AiAuditStatus = 'success' | 'error' | 'consent_denied';
+
+export interface AiAuditEntry {
+  id: string;
+  userId: string | null;
+  requestId: string | null;
+  llmProvider: string;
+  llmModel: string;
+  consentLevel: ConsentLevel;
+  redactionMode: 'strict' | 'precise';
+  redactedPromptHash: string | null;
+  promptCharLength: number | null;
+  usedPersonalData: boolean;
+  fieldsUsed: string[];
+  toolsCalled: string[];
+  latencyMs: number | null;
+  status: AiAuditStatus;
+  errorDetail: string | null;
+  createdAt: string;
+}
+
+export interface AiAuditListResponse {
+  success: boolean;
+  data: {
+    items: AiAuditEntry[];
+    count: number;
+    hasMore: boolean;
+  };
+}
+
+export interface GetMyAuditHistoryOptions {
+  limit?: number;
+  offset?: number;
+  status?: AiAuditStatus;
+}
+
+/** Fetch the calling user's AI audit history, newest first. The
+ *  server caps `limit` at 200; default page size is 50. */
+export const getMyAuditHistory = (opts: GetMyAuditHistoryOptions = {}) => {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  if (opts.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return apiRequest<AiAuditListResponse>(`/ai/audit${qs ? `?${qs}` : ''}`);
+};
+
 export const getAiAskProgress = (progressId: string) =>
   apiRequest<AiAskProgressResponse>(`/ai/ask/progress/${encodeURIComponent(progressId)}`);
 

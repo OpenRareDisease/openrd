@@ -113,12 +113,19 @@ const buildFakeOrchestrator = (result: OrchestratorRunResult | Error): Orchestra
   return { run } as unknown as Orchestrator;
 };
 
-const buildFakeAuditLogger = (records: Array<Record<string, unknown>>): AuditLogger => {
+const buildFakeAuditLogger = (
+  records: Array<Record<string, unknown>>,
+  listResult: Array<Record<string, unknown>> | Error = [],
+): AuditLogger => {
   const record = vi.fn(async (entry: Record<string, unknown>) => {
     records.push(entry);
     return `audit-${records.length}`;
   });
-  return { record, listByUser: vi.fn() } as unknown as AuditLogger;
+  const listByUser = vi.fn(async () => {
+    if (listResult instanceof Error) throw listResult;
+    return listResult;
+  });
+  return { record, listByUser } as unknown as AuditLogger;
 };
 
 const buildApp = (overrides: {
@@ -362,6 +369,130 @@ describe('POST /api/ai/ask', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.progressId).toBe('caller-abc');
+  });
+});
+
+describe('GET /api/ai/audit', () => {
+  const fakeRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
+    id: 'aud-1',
+    userId: 'u-1',
+    requestId: 'req-1',
+    llmProvider: 'mock-llm',
+    llmModel: 'mock-model',
+    consentLevel: 'basic',
+    redactionMode: 'strict',
+    redactedPromptHash: 'a'.repeat(64),
+    promptCharLength: 100,
+    usedPersonalData: false,
+    fieldsUsed: [],
+    toolsCalled: ['search_medical_kb'],
+    latencyMs: 1234,
+    status: 'success',
+    errorDetail: null,
+    createdAt: '2026-05-28T01:00:00.000Z',
+    ...overrides,
+  });
+
+  it('401 without auth', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], [fakeRow()]),
+    });
+    const res = await request(app).get('/api/ai/audit');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns items + hasMore + count', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) =>
+      fakeRow({ id: `aud-${i}`, requestId: `req-${i}` }),
+    );
+    const audit = buildFakeAuditLogger([], rows);
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: audit,
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .get('/api/ai/audit?limit=50')
+      .set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.count).toBe(50);
+    expect(res.body.data.hasMore).toBe(true); // exactly limit returned
+    expect(res.body.data.items).toHaveLength(50);
+    expect(res.body.data.items[0].id).toBe('aud-0');
+    // listByUser should have been invoked with the right opts
+    const opts = (audit.listByUser as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(opts).toMatchObject({ limit: 50 });
+  });
+
+  it('hasMore=false when fewer than the limit came back', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], [fakeRow({ id: 'aud-1' }), fakeRow({ id: 'aud-2' })]),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app).get('/api/ai/audit').set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.count).toBe(2);
+    expect(res.body.data.hasMore).toBe(false);
+  });
+
+  it('forwards status filter to listByUser', async () => {
+    const audit = buildFakeAuditLogger([], [fakeRow({ status: 'consent_denied' })]);
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: audit,
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .get('/api/ai/audit?status=consent_denied')
+      .set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const opts = (audit.listByUser as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(opts).toMatchObject({ status: 'consent_denied' });
+  });
+
+  it('400 on bad limit', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], []),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .get('/api/ai/audit?limit=oops')
+      .set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/limit/);
+  });
+
+  it('400 on bad status', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], []),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .get('/api/ai/audit?status=cool')
+      .set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/status/);
+  });
+
+  it('500 when the listByUser query throws', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], new Error('db down')),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app).get('/api/ai/audit').set('authorization', `Bearer ${token}`);
+    expect(res.status).toBe(500);
   });
 });
 
