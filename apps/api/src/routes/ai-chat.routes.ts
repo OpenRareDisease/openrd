@@ -444,6 +444,68 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     });
   });
 
+  router.get('/audit', authMiddleware, aiProgressLimiter, async (req, res) => {
+    const userId = (req as { user?: { id?: string } }).user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: '需要登录' });
+    }
+
+    const rawLimit = req.query.limit;
+    const rawOffset = req.query.offset;
+    const rawStatus = req.query.status;
+
+    let limit: number | undefined;
+    if (typeof rawLimit === 'string' && rawLimit.trim()) {
+      const parsed = Number(rawLimit);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return res.status(400).json({ success: false, message: 'limit 必须是正整数' });
+      }
+      limit = parsed;
+    }
+
+    let offset: number | undefined;
+    if (typeof rawOffset === 'string' && rawOffset.trim()) {
+      const parsed = Number(rawOffset);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return res.status(400).json({ success: false, message: 'offset 必须 >= 0' });
+      }
+      offset = parsed;
+    }
+
+    let status: 'success' | 'error' | 'consent_denied' | undefined;
+    if (typeof rawStatus === 'string' && rawStatus.trim()) {
+      const normalised = rawStatus.trim();
+      if (normalised !== 'success' && normalised !== 'error' && normalised !== 'consent_denied') {
+        return res.status(400).json({
+          success: false,
+          message: 'status 只支持 success / error / consent_denied 三种之一',
+        });
+      }
+      status = normalised;
+    }
+
+    try {
+      const items = await auditLogger.listByUser(userId, { limit, offset, status });
+      // AuditLogger caps `limit` server-side. When the client gets
+      // back exactly `limit` rows we *probably* have more, so signal
+      // `hasMore=true`. Strictly correct would need an extra count
+      // query; this heuristic is cheap and the UI just hides a
+      // "Load more" button when it goes false.
+      const effectiveLimit = Math.min(limit ?? 50, 200);
+      return res.json({
+        success: true,
+        data: {
+          items,
+          count: items.length,
+          hasMore: items.length >= effectiveLimit,
+        },
+      });
+    } catch (error) {
+      context.logger.error({ userId, error: getErrorMessage(error) }, 'audit list query failed');
+      return res.status(500).json({ success: false, message: '审计记录暂时不可用' });
+    }
+  });
+
   router.get('/health', authMiddleware, (_req, res) => {
     res.json({
       service: 'AI Chat',
