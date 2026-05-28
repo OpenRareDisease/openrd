@@ -3,8 +3,11 @@
  * db/migrations/008_ai_consent_and_audit.sql for the table.
  */
 
+import type { ToolCallSummary } from '../orchestrator/types.js';
 import type { ConsentLevel } from '../retrievers/base.js';
 import type { RedactionMode } from '../security/allowlist.js';
+
+export type { ToolCallSummary };
 
 export type AuditStatus = 'success' | 'error' | 'consent_denied';
 
@@ -38,9 +41,13 @@ export interface AuditEntryInput {
   /** Concrete field names the orchestrator emitted to the prompt
    *  (after redaction). Empty for non-personal calls. */
   fieldsUsed: string[];
-  /** Tool ids the planner chose (`medical_kb`, `patient_profile`,
-   *  etc.). */
-  toolsCalled: string[];
+  /** Per-tool execution summary (name + status + chunkCount + latency).
+   *  Persisted as jsonb under `ai_prompt_audit.tools_called`. Legacy
+   *  rows persisted before this field landed are plain `string[]` of
+   *  tool names; the read-side decoder folds them into
+   *  `ToolCallSummary[]` with `status='ok'` + `latencyMs=null` so
+   *  every UI surface sees the same shape. */
+  toolsCalled: ToolCallSummary[];
   /** Wall time spent inside the orchestrator, end to end. */
   latencyMs?: number | null;
   status: AuditStatus;

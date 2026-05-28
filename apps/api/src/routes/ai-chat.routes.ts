@@ -336,7 +336,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           promptCharLength: result.promptCharLength,
           usedPersonalData: result.usedPersonalData,
           fieldsUsed: result.fieldsUsed,
-          toolsCalled: result.toolsCalled,
+          toolsCalled: result.toolCalls,
           latencyMs: result.latencyMs,
           status: 'success',
         });
@@ -355,7 +355,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           question: String(question),
           answer: result.answer,
           citations: result.citations,
-          toolsCalled: result.toolsCalled,
+          toolCalls: result.toolCalls,
           fieldsUsed: result.fieldsUsed,
           usedPersonalData: result.usedPersonalData,
           consentLevel: result.consentLevel,

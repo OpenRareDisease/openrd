@@ -116,7 +116,7 @@ describe('Orchestrator.run', () => {
 
     expect(llm.chat).toHaveBeenCalledTimes(1);
     expect(result.answer).toBe('直接回答');
-    expect(result.toolsCalled).toEqual([]);
+    expect(result.toolCalls).toEqual([]);
     expect(result.usedPersonalData).toBe(false);
     expect(events.map((e) => e.type)).toEqual(['planning', 'plan_complete', 'done']);
   });
@@ -182,7 +182,10 @@ describe('Orchestrator.run', () => {
     expect(round2Arg.messages[4].role).toBe('tool');
 
     expect(result.answer).toBe('基于知识库和你的资料的最终回答');
-    expect(result.toolsCalled).toEqual(['search_medical_kb', 'get_my_profile']);
+    expect(result.toolCalls.map((c) => c.name)).toEqual(['search_medical_kb', 'get_my_profile']);
+    expect(result.toolCalls.every((c) => c.status === 'ok')).toBe(true);
+    expect(result.toolCalls.every((c) => typeof c.latencyMs === 'number')).toBe(true);
+    expect(result.toolCalls.every((c) => c.chunkCount > 0)).toBe(true);
     expect(result.usedPersonalData).toBe(true);
     expect(result.fieldsUsed).toEqual(expect.arrayContaining(['gender', 'ageGroup']));
     expect(result.citations).toHaveLength(3); // 2 kb + 1 profile

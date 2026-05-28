@@ -56,6 +56,7 @@ const ok = (
       metadata: {},
     },
     display: `${toolName}: ${chunks.length}`,
+    latencyMs: 10,
   };
 };
 
@@ -127,6 +128,7 @@ describe('buildContext', () => {
         toolName: 'a',
         display: 'a: invalid args',
         error: 'args bad',
+        latencyMs: 0,
       },
     ];
 

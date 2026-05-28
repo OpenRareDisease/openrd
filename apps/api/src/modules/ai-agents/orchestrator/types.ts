@@ -25,11 +25,49 @@ export interface OrchestratorRunInput {
   userContextHint?: string;
 }
 
+/**
+ * Per-tool execution record — what the planner asked for, how the
+ * executor fared. Powers the mobile "AI 思考过程" expandable section
+ * and the richer audit-row payload (see migration 008's `tools_called`
+ * jsonb column).
+ *
+ * Status is derived from whether the executor surfaced an error:
+ *   - `ok` — call completed (chunk count may still be 0 if the
+ *            retriever found nothing; that's not an error)
+ *   - `error` — call raised; `errorDetail` carries the short reason,
+ *               truncated upstream so the row stays bounded.
+ */
+export interface ToolCallSummary {
+  /** Registered tool name, e.g. `search_medical_kb`. */
+  name: string;
+  /** Synthetic id assigned by the LLM. Lets the UI thread back to
+   *  the `tool_start` / `tool_complete` events if it cares. */
+  toolCallId: string;
+  status: 'ok' | 'error';
+  /** Number of retrieval chunks the tool returned. 0 is fine; we
+   *  surface it so the UI can render "found no matches" honestly. */
+  chunkCount: number;
+  /** End-to-end latency for this tool call (executor only — does not
+   *  include LLM round trips). Null when timing couldn't be captured. */
+  latencyMs: number | null;
+  /** Short error string when `status === 'error'`. Truncated to keep
+   *  the audit row bounded. Never contains PII. */
+  errorDetail?: string;
+}
+
 export interface OrchestratorRunResult {
   answer: string;
   citations: Citation[];
-  /** Tool names the planner chose to call (in order). */
-  toolsCalled: string[];
+  /** Per-tool execution summary in the order the planner emitted
+   *  them. Empty when the planner answered directly without calling
+   *  any retriever.
+   *
+   *  Stored as jsonb in `ai_prompt_audit.tools_called`. Pre-existing
+   *  audit rows persisted before this field landed are plain
+   *  `string[]` of tool names; the audit decoder folds them into
+   *  `ToolCallSummary[]` with null timings + unknown status so the
+   *  UI doesn't need a separate code path. */
+  toolCalls: ToolCallSummary[];
   /** Redacted patient fields that actually reached the final prompt. */
   fieldsUsed: string[];
   /** True iff any patient-scoped retriever contributed content. */
