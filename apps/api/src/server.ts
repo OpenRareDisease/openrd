@@ -34,18 +34,38 @@ const sanitizeHeaders = (headers: Record<string, unknown> | undefined) => {
 export const createServer = ({ env, logger }: CreateServerOptions) => {
   const app = express();
 
+  // Trust the reverse proxy so `req.ip` reflects the real client
+  // rather than the proxy hop. Without this, the IP-keyed rate
+  // limiter (rate-limit.ts) degenerates to a single global bucket
+  // behind any nginx / ingress / LB — one noisy user trips the AI
+  // rate limit for everyone and OTP / login throttles become useless.
+  // The hop count (1) matches the standard "single front-proxy"
+  // topology; raise via TRUST_PROXY env when fronting multiple
+  // hops, but keep the explicit default visible in code.
+  app.set('trust proxy', 1);
+
   app.use(helmet());
 
   const allowedOrigins = env.CORS_ORIGIN.split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // `'*'` + `credentials: true` is the textbook misconfig: even when
+  // production env validation blocks the wildcard, the dev branch
+  // would otherwise reflect every Origin AND ship Access-Control-
+  // Allow-Credentials: true, which `origin: true` does turn into a
+  // credentialed open CORS. Force credentials off for the wildcard
+  // branch so the misconfig can never become exploitable even in dev.
   const corsOptions =
     env.CORS_ORIGIN === '*'
-      ? { origin: true, credentials: true }
+      ? { origin: true, credentials: false }
       : { origin: allowedOrigins, credentials: true };
 
   app.use(cors(corsOptions));
-  app.use(express.json());
+  // Explicit 256 KB body limit. Express defaults to 100 KB, but a
+  // future caller widening this somewhere else would silently move
+  // the ceiling. Pin it here for visibility — 256 KB is the
+  // realistic upper bound for /ai/ask question + queries payloads.
+  app.use(express.json({ limit: '256kb' }));
   app.use(
     pinoHttp({
       logger,

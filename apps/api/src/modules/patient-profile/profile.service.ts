@@ -919,12 +919,18 @@ export class PatientProfileService {
       throw new AppError('Patient profile not found', 404);
     }
 
+    // `patient_code` is the clinic-assigned identifier; users must
+    // not be able to set it themselves through the public update
+    // endpoint (the legacy code admitted it via
+    // updateProfileSchema.partial()). Admin / back-office paths
+    // still go through createProfile or a dedicated upsert that
+    // bypasses this list. Removing it here is the user-facing
+    // hardening.
     const columns: Array<[keyof UpdateProfileInput, string]> = [
       ['fullName', 'full_name'],
       ['preferredName', 'preferred_name'],
       ['dateOfBirth', 'date_of_birth'],
       ['gender', 'gender'],
-      ['patientCode', 'patient_code'],
       ['diagnosisStage', 'diagnosis_stage'],
       ['diagnosisDate', 'diagnosis_date'],
       ['geneticMutation', 'genetic_mutation'],
@@ -1708,7 +1714,17 @@ export class PatientProfileService {
       [submissionId, profileId, documentIds],
     );
 
-    return { updated: updateResult.rowCount ?? 0 };
+    const updated = updateResult.rowCount ?? 0;
+    // The legacy code silently returned `{ updated: 0 }` when every
+    // documentId belonged to another user — indistinguishable from
+    // "all those ids already had this submission_id". A future
+    // monitor looking for "attach failures" would see clean 200s.
+    // Surface the discrepancy as a 404 (matching
+    // assertDocumentOwnedByProfile's behaviour for cross-user ids).
+    if (updated < documentIds.length) {
+      throw new AppError('One or more documents not found', 404);
+    }
+    return { updated };
   }
 
   async listSubmissions(
