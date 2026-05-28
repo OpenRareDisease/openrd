@@ -163,26 +163,56 @@ const applyLevel = async (client, userId, level) => {
   const target = targetFlagsForLevel(level);
 
   // Only bump `_at` for flags whose value actually changes.
+  // Per migration 009, every flag transition the in-app updateConsent
+  // helper makes also writes a row into ai_consent_events. Mirror
+  // that contract here with source='admin' so a "did this user
+  // consent during week X?" compliance look-up against
+  // ai_consent_events captures CLI-driven overrides instead of
+  // having a hole next to the in-app history. Wrap UPDATE + events
+  // INSERTs in one transaction so a crash mid-loop doesn't leave
+  // the table half-mutated.
+  const transitions = [];
   const sets = [];
   const values = [];
-  for (const [flag, sqlColumn, atColumn] of [
-    ['personal', 'ai_consent_personal', 'ai_consent_personal_at'],
-    ['thirdParty', 'ai_consent_third_party', 'ai_consent_third_party_at'],
-    ['preciseValues', 'ai_consent_precise_values', 'ai_consent_precise_values_at'],
+  for (const [flag, flagName, sqlColumn, atColumn] of [
+    ['personal', 'personal', 'ai_consent_personal', 'ai_consent_personal_at'],
+    ['thirdParty', 'third_party', 'ai_consent_third_party', 'ai_consent_third_party_at'],
+    ['preciseValues', 'precise_values', 'ai_consent_precise_values', 'ai_consent_precise_values_at'],
   ]) {
     if (current.flags[flag] !== target[flag]) {
       values.push(target[flag]);
       sets.push(`${sqlColumn} = $${values.length}`);
       sets.push(`${atColumn} = NOW()`);
+      transitions.push({
+        flag_name: flagName,
+        from_value: current.flags[flag],
+        to_value: target[flag],
+      });
     }
   }
   if (sets.length === 0) return current;
   sets.push('updated_at = NOW()');
   values.push(userId);
-  await client.query(
-    `UPDATE patient_profiles SET ${sets.join(', ')} WHERE user_id = $${values.length}`,
-    values,
-  );
+
+  await client.query('BEGIN');
+  try {
+    await client.query(
+      `UPDATE patient_profiles SET ${sets.join(', ')} WHERE user_id = $${values.length}`,
+      values,
+    );
+    for (const t of transitions) {
+      await client.query(
+        `INSERT INTO ai_consent_events
+           (user_id, flag_name, from_value, to_value, source, note)
+         VALUES ($1, $2, $3, $4, 'admin', 'dev-grant-consent CLI')`,
+        [userId, t.flag_name, t.from_value, t.to_value],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  }
   return readState(client, userId);
 };
 
@@ -206,6 +236,23 @@ const printHuman = ({ user, before, after }) => {
 
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
+
+  // Refuse to run against a production-shaped env. The mobile
+  // consent UI is the audited path for production users; a CLI
+  // override here would bypass the OTP login + UI confirmation
+  // step that compliance assumes happened. If a real support need
+  // arises (e.g. user phones in to revoke), build a proper
+  // back-office workflow that captures who issued the override
+  // and why. Operators who deliberately need to run this against
+  // a staging DB can set DEV_GRANT_CONSENT_FORCE=1 to acknowledge
+  // they're not pointed at prod.
+  if (process.env.NODE_ENV === 'production' && process.env.DEV_GRANT_CONSENT_FORCE !== '1') {
+    fail(
+      'refusing to run with NODE_ENV=production. Use the in-app consent flow ' +
+        'or build a proper back-office tool. Set DEV_GRANT_CONSENT_FORCE=1 ' +
+        'only if you are 100% sure the DATABASE_URL is not pointing at prod.',
+    );
+  }
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
