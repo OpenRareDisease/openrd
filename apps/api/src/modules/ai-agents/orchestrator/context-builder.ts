@@ -42,6 +42,25 @@ export interface BuildContextOptions {
   logger: AppLogger;
 }
 
+/**
+ * Sentinel pair wrapping every retrieved chunk so the LLM can tell
+ * tool-returned text apart from system / user instructions. Anything
+ * between BEGIN_DOC and END_DOC is reference material; embedded
+ * directives like "ignore previous instructions" are part of the
+ * document, not commands to follow. Paired with the system-prompt
+ * note in run.ts (DEFAULT_SYSTEM_PROMPT) so the model is told this
+ * contract explicitly.
+ *
+ * The delimiters are deliberately verbose ASCII rather than something
+ * a passing attacker would type by accident, but we still strip any
+ * accidental occurrences inside chunk content as belt-and-braces.
+ */
+const CHUNK_BEGIN = '<<<BEGIN_DOC_CHUNK>>>';
+const CHUNK_END = '<<<END_DOC_CHUNK>>>';
+
+const stripDelimiters = (content: string): string =>
+  content.split(CHUNK_BEGIN).join('').split(CHUNK_END).join('');
+
 const renderChunks = (
   chunks: RetrievedChunk[],
   opts: BuildContextOptions,
@@ -57,7 +76,8 @@ const renderChunks = (
     const header = `【片段${idx + 1}】${
       chunk.sourceFile ? `(${chunk.source} / ${chunk.sourceFile})` : `(${chunk.source})`
     }`;
-    sections.push(`${header}\n${rendered.content}`);
+    const safeContent = stripDelimiters(rendered.content);
+    sections.push(`${header}\n${CHUNK_BEGIN}\n${safeContent}\n${CHUNK_END}`);
     rendered.fieldsUsed.forEach((f) => fieldsUsedSet.add(f));
   });
   return {

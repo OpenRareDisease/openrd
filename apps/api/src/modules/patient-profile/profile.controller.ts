@@ -8,7 +8,6 @@ import {
   createSubmissionSchema,
   createProfileSchema,
   dailyImpactSchema,
-  documentSchema,
   documentUploadSchema,
   followupEventSchema,
   functionTestSchema,
@@ -323,12 +322,6 @@ export class PatientProfileController {
     res.status(201).json(result);
   };
 
-  addDocument = async (req: AuthenticatedRequest, res: Response) => {
-    const payload = documentSchema.parse(req.body);
-    const result = await this.service.addDocument(req.user.id, payload);
-    res.status(201).json(result);
-  };
-
   uploadDocument = async (req: AuthenticatedRequest, res: Response) => {
     const payload = documentUploadSchema.parse(req.body);
     const file = (req as AuthenticatedRequest & { file?: Express.Multer.File }).file;
@@ -336,6 +329,15 @@ export class PatientProfileController {
     if (!file) {
       throw new AppError('File is required', 400);
     }
+
+    // Verify the caller can actually write to this user's submission
+    // log BEFORE we spend any storage write / OCR CPU on the buffer.
+    // The preflight covers two side-effect-leak paths the downstream
+    // checks would otherwise close only after the work was done:
+    //   - foreign submissionId → DB-level 404 in addUploadedDocument
+    //   - caller has no profile yet → ensureProfileForUser 404
+    // Both branches are cheap SELECTs.
+    await this.service.assertCallerCanWriteSubmission(req.user.id, payload.submissionId);
 
     const stored = await this.storage.save({
       userId: req.user.id,

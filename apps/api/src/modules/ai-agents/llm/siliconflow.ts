@@ -156,14 +156,21 @@ export class SiliconFlowProvider implements ILLMProvider {
   }
 
   async chat(req: LlmChatRequest): Promise<LlmChatResponse> {
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
-      messages: toOpenAiMessages(req.messages),
-      tools: toOpenAiTools(req.tools),
-      tool_choice: toOpenAiToolChoice(req.toolChoice),
-      temperature: req.temperature,
-      max_tokens: req.maxTokens,
-    });
+    const completion = await this.client.chat.completions.create(
+      {
+        model: this.model,
+        messages: toOpenAiMessages(req.messages),
+        tools: toOpenAiTools(req.tools),
+        tool_choice: toOpenAiToolChoice(req.toolChoice),
+        temperature: req.temperature,
+        max_tokens: req.maxTokens,
+      },
+      // The OpenAI SDK threads `signal` through fetch + the streaming
+      // iterator, so aborting cancels the in-flight HTTP request and
+      // any further chunks. Omitting the second arg keeps the SDK on
+      // its default options.
+      req.signal ? { signal: req.signal } : undefined,
+    );
 
     const choice = completion.choices?.[0];
     if (!choice) {
@@ -188,19 +195,28 @@ export class SiliconFlowProvider implements ILLMProvider {
   }
 
   async *chatStream(req: LlmChatRequest): AsyncIterable<LlmStreamEvent> {
-    const stream = await this.client.chat.completions.create({
-      model: this.model,
-      messages: toOpenAiMessages(req.messages),
-      tools: toOpenAiTools(req.tools),
-      tool_choice: toOpenAiToolChoice(req.toolChoice),
-      temperature: req.temperature,
-      max_tokens: req.maxTokens,
-      stream: true,
-    });
+    const stream = await this.client.chat.completions.create(
+      {
+        model: this.model,
+        messages: toOpenAiMessages(req.messages),
+        tools: toOpenAiTools(req.tools),
+        tool_choice: toOpenAiToolChoice(req.toolChoice),
+        temperature: req.temperature,
+        max_tokens: req.maxTokens,
+        stream: true,
+      },
+      req.signal ? { signal: req.signal } : undefined,
+    );
 
     let finishEmitted = false;
 
     for await (const chunk of stream) {
+      // The OpenAI SDK's `signal` plumbing eventually breaks the
+      // iterator, but on some transports the in-flight chunk lands
+      // before the abort propagates. A second check here makes the
+      // cancel deterministic — we stop iterating immediately and let
+      // the orchestrator finalise without burning more tokens.
+      if (req.signal?.aborted) break;
       const choice = chunk.choices?.[0];
       if (!choice) continue;
 

@@ -56,6 +56,11 @@ interface ProgressStage {
 
 interface ProgressState {
   id: string;
+  /** Owning user — the only caller allowed to read/init this entry.
+   *  Without this, any authenticated client could poll any progressId
+   *  (or pre-empt another user's in-flight run by guessing the
+   *  ~40-bit suffix issued by `generateProgressId`). */
+  userId: string;
   status: 'running' | 'done' | 'error';
   percent: number;
   stageId: string;
@@ -84,7 +89,18 @@ const pruneProgressStore = () => {
   }
 };
 
-const initProgress = (progressId: string): ProgressState => {
+/**
+ * Reserve (or refresh) a progress entry for `progressId` under `userId`.
+ *
+ * Returns `null` when an existing entry is owned by a different user —
+ * the caller MUST surface that as a 4xx and never overwrite. Without
+ * this guard an attacker who guessed an in-flight progressId could
+ * blank out another user's progress state mid-run (PR-Sec-1 #9).
+ */
+const initProgress = (progressId: string, userId: string): ProgressState | null => {
+  const existing = progressStore.get(progressId);
+  if (existing && existing.userId !== userId) return null;
+
   const stages: ProgressStage[] = PROGRESS_STAGE_DEFS.map((stage) => ({
     id: stage.id,
     label: stage.label,
@@ -92,6 +108,7 @@ const initProgress = (progressId: string): ProgressState => {
   }));
   const state: ProgressState = {
     id: progressId,
+    userId,
     status: 'running',
     percent: 0,
     stageId: 'received',
@@ -311,26 +328,35 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       typeof req.body?.progressId === 'string' && req.body.progressId.trim()
         ? req.body.progressId.trim()
         : generateProgressId();
-    initProgress(progressId);
-    setProgressStage(progressId, 'received');
 
     const userId = (req as { user?: { id?: string } }).user?.id;
     const question = req.body?.question;
+
+    // Auth check has to run BEFORE any progress store mutation so a
+    // request with a missing/forged user can't pre-empt another user's
+    // entry by reusing their progressId.
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: '需要登录',
+        progressId,
+      });
+    }
+
+    if (initProgress(progressId, userId) === null) {
+      return res.status(409).json({
+        success: false,
+        message: 'progressId 已被占用',
+        progressId,
+      });
+    }
+    setProgressStage(progressId, 'received');
 
     if (!question || !String(question).trim()) {
       setProgressStage(progressId, 'received', 'error', '问题不能为空');
       return res.status(400).json({
         success: false,
         message: '问题不能为空',
-        progressId,
-      });
-    }
-
-    if (!userId) {
-      setProgressStage(progressId, 'received', 'error', '需要登录');
-      return res.status(401).json({
-        success: false,
-        message: '需要登录',
         progressId,
       });
     }
@@ -471,6 +497,10 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
   });
 
   router.post('/ask/progress/init', authMiddleware, aiProgressLimiter, (req, res) => {
+    const userId = (req as { user?: { id?: string } }).user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: '需要登录' });
+    }
     const progressId =
       typeof req.body?.progressId === 'string' && req.body.progressId.trim()
         ? req.body.progressId.trim()
@@ -478,7 +508,12 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     if (!progressId) {
       return res.status(400).json({ success: false, message: 'progressId 不能为空' });
     }
-    initProgress(progressId);
+    if (initProgress(progressId, userId) === null) {
+      return res.status(409).json({
+        success: false,
+        message: 'progressId 已被占用',
+      });
+    }
     setProgressStage(progressId, 'received');
     return res.json({
       success: true,
@@ -488,9 +523,15 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
 
   router.get('/ask/progress/:progressId', authMiddleware, aiProgressLimiter, (req, res) => {
     pruneProgressStore();
+    const userId = (req as { user?: { id?: string } }).user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: '需要登录' });
+    }
     const progressId = req.params.progressId;
     const state = progressStore.get(progressId);
-    if (!state) {
+    // Treat "wrong owner" identically to "not found" so an attacker
+    // can't probe which progressIds exist server-side.
+    if (!state || state.userId !== userId) {
       return res.status(404).json({ success: false, message: '进度不存在或已过期' });
     }
     return res.json({
@@ -659,15 +700,22 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    // Best-effort cancellation: if the client drops we abort the
-    // orchestrator's LLM stream by ending the response. The
-    // orchestrator's chatStream iterator will see the connection
-    // close and exit, the runStream generator then settles, and the
-    // audit row gets written below as an error.
+    // Cancel the upstream LLM request when the client drops. The
+    // controller is forwarded to orchestrator -> SiliconFlow ->
+    // OpenAI SDK, which threads it through fetch + the streaming
+    // iterator so a dropped phone stops burning tokens immediately
+    // (and frees vendor-side concurrency budget) instead of letting
+    // the model finish on its own.
     const start = Date.now();
     let clientGone = false;
+    const abortController = new AbortController();
     res.on('close', () => {
       clientGone = true;
+      // Abort first so the LLM HTTP request is cancelled even if the
+      // for-await loop is currently blocked on `next()` — we don't
+      // want to stay in cache-miss territory waiting for the next
+      // chunk to arrive just to discover the client is gone.
+      if (!abortController.signal.aborted) abortController.abort();
       // Stop the heartbeat now even though the trailing
       // clearInterval below also covers it — without the early
       // clear we'd keep writing into a closed socket for the
@@ -742,6 +790,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           question: String(question),
           requestId: progressId,
           consentLevel: consentStatus.level,
+          signal: abortController.signal,
         },
         { streamFinalAnswer: true },
       )) {

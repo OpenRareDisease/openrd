@@ -121,6 +121,30 @@ describe('redactFields (profile, strict mode)', () => {
   });
 });
 
+describe('HARD_DELETE_KEYS is matched case-insensitively', () => {
+  it('removes PatientName / PATIENT_NAME / Date_Of_Birth / EMAIL', () => {
+    const input = {
+      PatientName: '李四',
+      PATIENT_NAME: '王五',
+      Date_Of_Birth: '1990-05-20',
+      EMAIL: 'leak@example.com',
+      diagnosisType: 'FSHD1',
+    };
+    const { fields, stats } = redactFields(input, {
+      scope: 'profile',
+      mode: 'precise',
+    });
+    expect(fields.PatientName).toBeUndefined();
+    expect(fields.PATIENT_NAME).toBeUndefined();
+    expect(fields.Date_Of_Birth).toBeUndefined();
+    expect(fields.EMAIL).toBeUndefined();
+    expect(stats.hardDeleted).toEqual(
+      expect.arrayContaining(['PatientName', 'PATIENT_NAME', 'Date_Of_Birth', 'EMAIL']),
+    );
+    expect(fields.diagnosisType).toBe('FSHD1');
+  });
+});
+
 describe('redactFields (profile, precise mode)', () => {
   it('preserves raw d4z4 / methylation / haplotype values', () => {
     const { fields } = redactFields(profileSample, {

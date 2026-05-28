@@ -95,7 +95,10 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
  *
  * The list intentionally covers both camelCase (retriever output) and
  * snake_case (raw DB column) so the redactor can short-circuit
- * whichever form the caller happens to pass in.
+ * whichever form the caller happens to pass in. The redactor matches
+ * case-insensitively (see HARD_DELETE_KEYS_LOWER) so OCR pipelines
+ * that emit `PatientName`, `PATIENT_NAME`, or `Date_Of_Birth` are
+ * caught as well.
  */
 export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'fullName',
@@ -141,6 +144,16 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'fullText',
   'full_text',
 ]);
+
+/**
+ * Case-insensitive shadow of HARD_DELETE_KEYS. The redactor matches
+ * against this so that source-system casing variants (e.g. PatientName,
+ * PATIENT_NAME, Date_Of_Birth) hit the same deny list as the canonical
+ * entries above.
+ */
+export const HARD_DELETE_KEYS_LOWER: ReadonlySet<string> = new Set(
+  Array.from(HARD_DELETE_KEYS, (key) => key.toLowerCase()),
+);
 
 /**
  * Per-key handling for OCR `fields` blobs in precise mode.

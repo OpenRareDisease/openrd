@@ -99,7 +99,12 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.post('/me/daily-impacts', asyncHandler(controller.addDailyImpact));
   router.post('/me/followup-events', asyncHandler(controller.addFollowupEvent));
   router.post('/me/activity-logs', asyncHandler(controller.addActivityLog));
-  router.post('/me/documents', asyncHandler(controller.addDocument));
+  // POST /me/documents (direct insert with caller-supplied storageUri) was
+  // removed for security: it let an attacker create document rows pointing
+  // at arbitrary `local://...` paths and then read/delete them through
+  // /me/documents/:id, escaping the uploads sandbox. All document creation
+  // now goes through /me/documents/upload, which derives storageUri from
+  // the actual upload buffer.
   router.post(
     '/me/documents/upload',
     upload.single('file'),

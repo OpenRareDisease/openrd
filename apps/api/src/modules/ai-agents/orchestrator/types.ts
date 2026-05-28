@@ -23,6 +23,16 @@ export interface OrchestratorRunInput {
    *  the FAQ page". Appended to the user prompt. Never include raw
    *  patient identifiers here. */
   userContextHint?: string;
+  /**
+   * Abort signal forwarded to the underlying LLM provider. When the
+   * SSE route detects a client disconnect it fires this signal so the
+   * upstream completion request is cancelled — otherwise we keep
+   * paying for tokens, tool calls keep running, and the per-key
+   * concurrency budget stays held open until the model finishes by
+   * itself. Wired into every LLM call (planner, tool-following round
+   * 2, streamed final answer).
+   */
+  signal?: AbortSignal;
 }
 
 /**

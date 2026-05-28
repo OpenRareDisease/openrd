@@ -12,7 +12,6 @@ import type {
   CreateSubmissionInput,
   CreateProfileInput,
   DailyImpactInput,
-  DocumentInput,
   FollowupEventInput,
   FunctionTestInput,
   MeasurementInput,
@@ -978,6 +977,7 @@ export class PatientProfileService {
 
   async addMeasurement(userId: string, payload: MeasurementInput): Promise<PatientMeasurementDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_measurements (
@@ -1002,7 +1002,7 @@ export class PatientProfileService {
                 method, entry_mode, device_used, notes, recorded_at, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.muscleGroup ?? null,
         payload.metricKey ?? null,
         payload.bodyRegion ?? null,
@@ -1040,6 +1040,7 @@ export class PatientProfileService {
     payload: FunctionTestInput,
   ): Promise<PatientFunctionTestDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_function_tests (
@@ -1062,7 +1063,7 @@ export class PatientProfileService {
                 device_used, assistance_required, notes, performed_at, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.testType,
         payload.measuredValue ?? null,
         payload.side ?? null,
@@ -1096,6 +1097,7 @@ export class PatientProfileService {
 
   async addActivityLog(userId: string, payload: ActivityLogInput): Promise<PatientActivityLogDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_activity_logs (
@@ -1117,7 +1119,7 @@ export class PatientProfileService {
       RETURNING id, submission_id, log_date, source, content, mood_score, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.logDate ?? null,
         payload.source,
         payload.content ?? null,
@@ -1138,67 +1140,6 @@ export class PatientProfileService {
     };
   }
 
-  async addDocument(userId: string, payload: DocumentInput): Promise<PatientDocumentDTO> {
-    const profileId = await this.ensureProfileForUser(userId);
-
-    const result = await this.pool.query(
-      `INSERT INTO patient_documents (
-        profile_id,
-        submission_id,
-        document_type,
-        title,
-        file_name,
-        mime_type,
-        file_size_bytes,
-        storage_uri,
-        status,
-        uploaded_at,
-        checksum,
-        ocr_payload
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        COALESCE($9, 'uploaded'),
-        COALESCE($10::timestamptz, NOW()),
-        $11,
-        $12
-      )
-      RETURNING id, submission_id, document_type, title, file_name, mime_type, file_size_bytes,
-                storage_uri, status, uploaded_at, checksum, ocr_payload`,
-      [
-        profileId,
-        payload.submissionId ?? null,
-        payload.documentType,
-        payload.title ?? null,
-        payload.fileName ?? null,
-        payload.mimeType ?? null,
-        payload.fileSizeBytes ?? null,
-        payload.storageUri,
-        payload.status ?? null,
-        payload.uploadedAt ?? null,
-        payload.checksum ?? null,
-        null,
-      ],
-    );
-
-    const row = result.rows[0];
-
-    return {
-      id: row.id,
-      documentType: row.document_type,
-      title: row.title,
-      fileName: row.file_name,
-      mimeType: row.mime_type,
-      fileSizeBytes: row.file_size_bytes === null ? null : Number(row.file_size_bytes),
-      storageUri: row.storage_uri,
-      status: row.status,
-      uploadedAt: toTimestampString(row.uploaded_at),
-      checksum: row.checksum,
-      ocrPayload: row.ocr_payload ?? null,
-      submissionId: row.submission_id ?? null,
-    };
-  }
-
   async addUploadedDocument(input: {
     userId: string;
     documentType: string;
@@ -1212,6 +1153,7 @@ export class PatientProfileService {
     submissionId?: string | null;
   }): Promise<PatientDocumentDTO> {
     const profileId = await this.ensureProfileForUser(input.userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(input.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_documents (
@@ -1234,7 +1176,7 @@ export class PatientProfileService {
                 storage_uri, status, uploaded_at, checksum, ocr_payload`,
       [
         profileId,
-        input.submissionId ?? null,
+        submissionId,
         input.documentType,
         input.title ?? null,
         input.fileName ?? null,
@@ -1343,6 +1285,7 @@ export class PatientProfileService {
 
   async addMedication(userId: string, payload: MedicationInput): Promise<PatientMedicationDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_medications (
@@ -1363,7 +1306,7 @@ export class PatientProfileService {
                 end_date, notes, status, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.medicationName,
         payload.dosage ?? null,
         payload.frequency ?? null,
@@ -1397,6 +1340,7 @@ export class PatientProfileService {
     payload: SymptomScoreInput,
   ): Promise<PatientSymptomScoreDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_symptom_scores (
@@ -1415,7 +1359,7 @@ export class PatientProfileService {
       RETURNING id, submission_id, symptom_key, score, scale_min, scale_max, notes, recorded_at, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.symptomKey,
         payload.score,
         payload.scaleMin ?? null,
@@ -1442,6 +1386,7 @@ export class PatientProfileService {
 
   async addDailyImpact(userId: string, payload: DailyImpactInput): Promise<PatientDailyImpactDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
 
     const result = await this.pool.query(
       `INSERT INTO patient_daily_impacts (
@@ -1457,7 +1402,7 @@ export class PatientProfileService {
       RETURNING id, submission_id, adl_key, difficulty_level, needs_assistance, notes, recorded_at, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.adlKey,
         payload.difficultyLevel,
         payload.needsAssistance ?? null,
@@ -1485,6 +1430,11 @@ export class PatientProfileService {
     payload: FollowupEventInput,
   ): Promise<PatientFollowupEventDTO> {
     const profileId = await this.ensureProfileForUser(userId);
+    const submissionId = await this.assertSubmissionOwnedByProfile(payload.submissionId, profileId);
+    const linkedDocumentId = await this.assertDocumentOwnedByProfile(
+      payload.linkedDocumentId,
+      profileId,
+    );
 
     const result = await this.pool.query(
       `INSERT INTO patient_followup_events (
@@ -1501,13 +1451,13 @@ export class PatientProfileService {
       RETURNING id, submission_id, event_type, severity, occurred_at, resolved_at, description, linked_document_id, created_at`,
       [
         profileId,
-        payload.submissionId ?? null,
+        submissionId,
         payload.eventType,
         payload.severity ?? null,
         payload.occurredAt,
         payload.resolvedAt ?? null,
         payload.description ?? null,
-        payload.linkedDocumentId ?? null,
+        linkedDocumentId,
       ],
     );
 
@@ -2371,6 +2321,83 @@ export class PatientProfileService {
     }
 
     return result.rows[0].id;
+  }
+
+  /**
+   * Public preflight for write paths that incur side effects *before*
+   * the row insert (uploadDocument writes to storage and runs OCR
+   * before calling `addUploadedDocument`). Always verifies the caller
+   * has a patient profile; additionally verifies submission ownership
+   * when a `submissionId` is supplied.
+   *
+   * Throws the same 404s the per-handler checks would raise so the
+   * caller can short-circuit without duplicating SQL:
+   *   - "Patient profile not found" when the user has no profile row
+   *     (e.g. a newly registered account that hasn't completed
+   *     onboarding yet); without this, a profile-less caller could
+   *     repeatedly upload 10 MB files and force OCR work before the
+   *     downstream insert finally 404s.
+   *   - "Submission not found" when a `submissionId` is supplied but
+   *     belongs to another user or doesn't exist.
+   *
+   * Both branches are cheap SELECTs, so running them upfront costs
+   * far less than the storage write + OCR pass a later 404 would
+   * have already triggered.
+   */
+  async assertCallerCanWriteSubmission(
+    userId: string,
+    submissionId: string | null | undefined,
+  ): Promise<void> {
+    const profileId = await this.ensureProfileForUser(userId);
+    if (submissionId) {
+      await this.assertSubmissionOwnedByProfile(submissionId, profileId);
+    }
+  }
+
+  /**
+   * Verify a caller-supplied `submissionId` actually belongs to the
+   * caller's profile. Returns the id if it checks out (or `null` when
+   * the caller did not supply one); throws 404 otherwise. Used by every
+   * `add*` handler that accepts `submissionId` in its payload — without
+   * this, a patient could pin their own measurement / followup / etc.
+   * onto another patient's submission timeline simply by guessing or
+   * trying a sequential UUID. The 404 mirrors how `ensureProfileForUser`
+   * handles missing rows so callers can't distinguish "wrong owner"
+   * from "no such submission".
+   */
+  private async assertSubmissionOwnedByProfile(
+    submissionId: string | null | undefined,
+    profileId: string,
+  ): Promise<string | null> {
+    if (!submissionId) return null;
+    const result = await this.pool.query(
+      'SELECT 1 FROM patient_submissions WHERE id = $1 AND profile_id = $2',
+      [submissionId, profileId],
+    );
+    if (!result.rowCount) {
+      throw new AppError('Submission not found', 404);
+    }
+    return submissionId;
+  }
+
+  /**
+   * Same idea as assertSubmissionOwnedByProfile but for a foreign key
+   * onto patient_documents — currently the `linkedDocumentId` on
+   * followup events. A 404 hides "wrong owner" from "no such document".
+   */
+  private async assertDocumentOwnedByProfile(
+    documentId: string | null | undefined,
+    profileId: string,
+  ): Promise<string | null> {
+    if (!documentId) return null;
+    const result = await this.pool.query(
+      'SELECT 1 FROM patient_documents WHERE id = $1 AND profile_id = $2',
+      [documentId, profileId],
+    );
+    if (!result.rowCount) {
+      throw new AppError('Document not found', 404);
+    }
+    return documentId;
   }
 
   async getMuscleInsight(
