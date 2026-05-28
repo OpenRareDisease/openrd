@@ -20,7 +20,6 @@ import {
   ApiError,
   AiAskProgressStage,
   type AiCitation,
-  type AiToolCallSummary,
   askAiQuestion,
   getAiAskProgress,
   initAiAskProgress,
@@ -28,7 +27,11 @@ import {
 } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
-import { normalizeStoredMetadata, type AssistantMetadata } from './metadata';
+import {
+  normalizeStoredMetadata,
+  synthesizeLegacyToolCalls,
+  type AssistantMetadata,
+} from './metadata';
 import { pickCurrentMode } from './mode';
 import styles from './styles';
 
@@ -174,18 +177,12 @@ const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
   // Tool-call trace. We prefer the rich `toolCalls` shape; fall
   // back to `legacyToolNames` for chats stored before
   // ToolCallTrace landed (those have no per-call status / timing,
-  // so we synthesise minimal rows just for the names).
+  // so we synthesise minimal rows just for the names). The
+  // synthesis helper handles duplicate names — see its docstring
+  // for why that matters.
   const toolCalls = meta.toolCalls?.length
     ? meta.toolCalls
-    : (meta.legacyToolNames ?? []).map(
-        (name): AiToolCallSummary => ({
-          name,
-          toolCallId: `legacy-${name}`,
-          status: 'ok',
-          chunkCount: 0,
-          latencyMs: null,
-        }),
-      );
+    : synthesizeLegacyToolCalls(meta.legacyToolNames);
   const showTrace = toolCalls.length > 0;
 
   if (!showFields && !showCitations && !showTrace) return null;

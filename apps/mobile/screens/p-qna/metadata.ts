@@ -40,6 +40,39 @@ export interface AssistantMetadata {
   consentLevel?: ConsentLevel;
 }
 
+/**
+ * Synthesise minimal `AiToolCallSummary` rows from a legacy
+ * `legacyToolNames: string[]` payload so the trace UI can render
+ * pre-ToolCallTrace stored chats. The synthesis fills `status='ok'`,
+ * `chunkCount=0`, `latencyMs=null` since the legacy persisted shape
+ * never carried those — the renderer therefore can only show the
+ * tool names for these old rows, not real chunk / latency / status
+ * data.
+ *
+ * The `toolCallId` is keyed by `${idx}-${name}` (not just `${name}`)
+ * so duplicate tool names — easily produced by the multi-query-
+ * rewrite path, where the planner emits one `search_medical_kb`
+ * call per rewritten query — get distinct ids. React's list
+ * `key={call.toolCallId}` needs uniqueness or it falls back to
+ * undefined reconciliation behaviour and logs a "two children with
+ * the same key" warning. Mirrors `coerceToolCalls` in the
+ * backend's prompt-audit.ts, which already uses `legacy-${idx}`
+ * for the same reason.
+ *
+ * Exported so tests can pin both the field defaults and the
+ * uniqueness invariant without rendering the whole screen.
+ */
+export const synthesizeLegacyToolCalls = (
+  legacyToolNames: readonly string[] | undefined,
+): AiToolCallSummary[] =>
+  (legacyToolNames ?? []).map((name, idx) => ({
+    name,
+    toolCallId: `legacy-${idx}-${name}`,
+    status: 'ok' as const,
+    chunkCount: 0,
+    latencyMs: null,
+  }));
+
 export const normalizeStoredMetadata = (meta: unknown): AssistantMetadata | undefined => {
   if (!meta || typeof meta !== 'object') return undefined;
   const obj = meta as Record<string, unknown>;
