@@ -30,6 +30,7 @@ import {
 } from './types.js';
 import type { AppLogger } from '../../../config/logger.js';
 import { hashPrompt } from '../audit/hash.js';
+import { scrubErrorDetail } from '../audit/scrub.js';
 import type { ILLMProvider, LlmMessage, LlmUsage } from '../llm/base.js';
 import { redactionModeForConsent } from '../security/consent.js';
 import type { ToolContext } from '../tools/base.js';
@@ -359,7 +360,16 @@ export class Orchestrator {
       status: call.error ? 'error' : 'ok',
       chunkCount: call.retrieval?.chunks.length ?? 0,
       latencyMs: call.latencyMs,
-      ...(call.error ? { errorDetail: call.error.slice(0, 500) } : {}),
+      // The per-tool `call.error` comes from `executor.runSingle` and
+      // ultimately from whatever the retriever threw — for the patient
+      // retrievers that's a `pg.DatabaseError` whose `.message` is
+      // exactly the `DETAIL: Key (col)=(value)` / `$N = '张三'` shape
+      // the audit scrubber exists to defuse. Routing through
+      // `scrubErrorDetail` before the 500-char cap covers both the
+      // audit row (tools_called JSONB) and the response body
+      // (`/api/ai/ask` JSON + SSE done frame) consumers of this
+      // ToolCallSummary.
+      ...(call.error ? { errorDetail: scrubErrorDetail(call.error).slice(0, 500) } : {}),
     }));
 
     return {

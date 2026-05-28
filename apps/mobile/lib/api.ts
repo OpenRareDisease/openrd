@@ -18,7 +18,11 @@ export const QNA_CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
 
 export const PATIENT_SCOPED_CACHE_KEYS: string[] = [QNA_CHAT_STORAGE_KEY];
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+// Single source of truth for the API base URL. ai-streaming.ts and
+// any other caller imports this rather than re-reading the env at
+// the call site, so the dev default + env override path stays
+// consistent across modules.
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 export class ApiError extends Error {
   status?: number;
@@ -36,6 +40,23 @@ let onUnauthorizedHandler: (() => Promise<void> | void) | null = null;
 
 export const registerOnUnauthorized = (handler: (() => Promise<void> | void) | null) => {
   onUnauthorizedHandler = handler;
+};
+
+/**
+ * Fire the registered 401 handler. Used by code paths that hit 401
+ * outside of `apiRequest` (notably the SSE stream — its error event
+ * doesn't go through the JSON request path, so it has to dispatch
+ * the same global logout hook directly). No-op when no handler is
+ * registered, so unit tests that don't mount AuthProvider stay
+ * happy.
+ */
+export const dispatchUnauthorized = async () => {
+  if (!onUnauthorizedHandler) return;
+  try {
+    await onUnauthorizedHandler();
+  } catch {
+    // Best-effort.
+  }
 };
 
 const buildHeaders = async (

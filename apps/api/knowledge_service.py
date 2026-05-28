@@ -246,12 +246,21 @@ class KnowledgeServiceHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != '/multi':
-            self._send_json(404, {'error': 'not_found'})
+        # Default-deny on POST: every POST path goes through the
+        # auth check unless explicitly listed as public. The legacy
+        # `if path in _AUTH_REQUIRED_PATHS` form was structurally
+        # tautological because `parsed.path != '/multi'` already
+        # short-circuits above and `/multi` is the only entry in
+        # the set — flipping to default-deny means a future
+        # writable endpoint can't ship without explicitly opting
+        # OUT of auth (no public POST exists today).
+        _PUBLIC_POST_PATHS = frozenset()  # nothing public on POST
+        if not _authorise(self) and parsed.path not in _PUBLIC_POST_PATHS:
+            self._send_json(401, {'error': 'unauthorized'})
             return
 
-        if parsed.path in _AUTH_REQUIRED_PATHS and not _authorise(self):
-            self._send_json(401, {'error': 'unauthorized'})
+        if parsed.path != '/multi':
+            self._send_json(404, {'error': 'not_found'})
             return
 
         try:

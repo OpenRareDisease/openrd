@@ -16,15 +16,15 @@
 import EventSource from 'react-native-sse';
 
 import {
+  API_BASE_URL,
   ApiError,
   type AiAskResponse,
   type StreamAiQuestionCallbacks,
   type StreamAiQuestionHandle,
+  dispatchUnauthorized,
   getAuthToken,
 } from './api';
 import { AI_STREAM_EVENT_TYPES, parseAiStreamFrame } from './ai-streaming-parser';
-
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 /** Max idle time (no frames AND no keepalives) before we declare
  *  the stream truncated. The backend emits an `event: keepalive`
@@ -226,7 +226,17 @@ export const streamAiQuestion = (
     es.addEventListener('error', (event) => {
       if (closed) return;
       cleanup();
-      callbacks.onError(sseErrorToApiError(event));
+      const err = sseErrorToApiError(event);
+      // SSE 401 doesn't go through `apiRequest` so it bypasses the
+      // global auto-logout that PR-Sec-6 wired into `apiRequest`.
+      // Dispatch the same handler here so a stale token surfaces a
+      // single source of truth: AuthContext clears local session and
+      // bounces the user to login, instead of leaving them on a
+      // half-rendered QnA screen.
+      if (err instanceof ApiError && err.status === 401) {
+        void dispatchUnauthorized();
+      }
+      callbacks.onError(err);
     });
 
     es.addEventListener('close', () => {

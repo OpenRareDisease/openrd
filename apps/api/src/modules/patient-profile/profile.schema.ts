@@ -46,7 +46,15 @@ export const baseProfileSchema = z.object({
   notes: z.string().optional().nullable(),
 });
 
-export const createProfileSchema = baseProfileSchema;
+// `patientCode` is the clinic-assigned identifier — users must NOT
+// self-claim it on either the create or update path. The service
+// layer's UPDATE statement already drops it (profile.service.ts
+// `updateProfile`); the create path used to admit it from the public
+// body via this schema. PR-Sec-8 closes that asymmetry by stripping
+// the field on the create path too. A future admin/back-office
+// onboarding flow that legitimately needs to set patientCode should
+// use its own dedicated schema.
+export const createProfileSchema = baseProfileSchema.omit({ patientCode: true });
 export type CreateProfileInput = z.infer<typeof createProfileSchema>;
 
 export const updateProfileSchema = baseProfileSchema.partial();

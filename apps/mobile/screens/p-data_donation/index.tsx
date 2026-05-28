@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, Modal, ActivityIndicator } fr
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 import styles from './styles';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import {
@@ -29,9 +30,11 @@ import ScreenBackButton from '../common/ScreenBackButton';
  * should come from a real backend endpoint, not a literal.
  */
 const DataDonationScreen = () => {
+  const router = useRouter();
   const [prefs, setPrefs] = useState<SharingPreferences | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
@@ -43,10 +46,19 @@ const DataDonationScreen = () => {
   const load = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
+    setNeedsOnboarding(false);
     try {
       const fresh = await getMySharingPreferences();
       setPrefs(fresh);
     } catch (error) {
+      // 404 = caller has no `patient_profiles` row yet (a newly
+      // registered account that hasn't completed onboarding). The
+      // generic "重试" button would never succeed — route them to
+      // the onboarding screen instead.
+      if (error instanceof ApiError && error.status === 404) {
+        setNeedsOnboarding(true);
+        return;
+      }
       const message =
         error instanceof ApiError && error.message ? error.message : '加载共享偏好失败';
       setLoadError(message);
@@ -107,6 +119,61 @@ const DataDonationScreen = () => {
           : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
       })()
     : null;
+
+  // No-profile guard: a freshly registered account that hasn't
+  // finished onboarding (`patient_profiles` row missing) gets a 404
+  // from /me/sharing-preferences. The generic "重试" button on the
+  // bottom of the screen would never make that 404 go away. Render a
+  // dedicated screen that explains the gap and routes them to the
+  // onboarding flow.
+  if (needsOnboarding) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <ScreenBackButton />
+          <Text style={styles.pageTitle}>数据捐赠</Text>
+          <View style={styles.headerSpacer} />
+        </View>
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: 32,
+            gap: 16,
+          }}
+        >
+          <FontAwesome6 name="user-plus" size={32} color={CLINICAL_COLORS.textMuted} />
+          <Text
+            style={{
+              color: CLINICAL_COLORS.text,
+              fontSize: 16,
+              fontWeight: '600',
+              textAlign: 'center',
+            }}
+          >
+            还需要完善个人档案
+          </Text>
+          <Text
+            style={{
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 13,
+              textAlign: 'center',
+              lineHeight: 20,
+            }}
+          >
+            数据捐赠需要先建立个人健康档案。完成档案后即可在此处管理捐赠授权。
+          </Text>
+          <TouchableOpacity
+            style={styles.enableDonationButton}
+            onPress={() => router.replace('/p-register_profile')}
+          >
+            <Text style={styles.enableDonationButtonText}>前往完善档案</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>

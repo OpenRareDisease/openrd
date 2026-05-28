@@ -14,6 +14,7 @@
 
 import type { Pool } from 'pg';
 
+import { scrubErrorDetail } from './scrub.js';
 import type {
   AuditEntry,
   AuditEntryInput,
@@ -87,14 +88,16 @@ const coerceToolCalls = (value: unknown): ToolCallSummary[] => {
         status,
         chunkCount: typeof obj.chunkCount === 'number' ? obj.chunkCount : 0,
         latencyMs: typeof obj.latencyMs === 'number' ? obj.latencyMs : null,
-        // Re-cap errorDetail to 500 chars on the read path too. The
-        // writer in run.ts:composeResult already truncates, but a
-        // hand-edited row (support tooling, manual fix-up) or a
-        // future writer that forgets the cap would propagate an
-        // unbounded string straight into the mobile audit-history
-        // viewer. Mirror the writer's contract on the reader.
+        // Re-cap errorDetail to 500 chars AND run it through the
+        // scrubber on the read path. Writers in
+        // `orchestrator/run.ts:composeResult` and `/ai/ask` route
+        // already cap + scrub, but defence-in-depth: a hand-edited
+        // row (support tooling, manual fix-up) or any future writer
+        // that forgets either step would otherwise propagate raw pg
+        // params / phone / ID strings straight into the mobile
+        // audit-history viewer.
         ...(status === 'error' && typeof obj.errorDetail === 'string'
-          ? { errorDetail: obj.errorDetail.slice(0, 500) }
+          ? { errorDetail: scrubErrorDetail(obj.errorDetail).slice(0, 500) }
           : {}),
       };
     })
@@ -122,7 +125,12 @@ const rowToEntry = (row: AuditRow): AuditEntry => ({
   toolsCalled: coerceToolCalls(row.tools_called),
   latencyMs: row.latency_ms,
   status: row.status as AuditStatus,
-  errorDetail: row.error_detail,
+  // Defence-in-depth — writer at the route boundary already scrubs.
+  // A hand-edited row or a future writer that forgets the scrub
+  // would otherwise propagate raw pg errors to the mobile viewer.
+  errorDetail: row.error_detail
+    ? scrubErrorDetail(row.error_detail).slice(0, 500)
+    : row.error_detail,
   createdAt: formatTimestamp(row.created_at),
 });
 

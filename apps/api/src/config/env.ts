@@ -127,6 +127,27 @@ export type AppEnv = z.infer<typeof envSchema>;
 
 let cachedEnv: AppEnv | undefined;
 
+//: Known dev / placeholder secret values that MUST NOT appear in a
+//: production env. Two families:
+//:   - `change-me-*`         — the values that ship in `.env.example`
+//:   - `dev-only-*-NOT-FOR-PROD` — the docker-compose fallback values
+//: Mirrors the KB service's `_DEV_PLACEHOLDER_TOKEN` guard. A future
+//: docker-compose default that adds a new placeholder must add itself
+//: to this set or the fail-fast won't catch it. The strings are
+//: deliberately verbatim — substring matching would risk false
+//: positives against legitimate high-entropy secrets that happen to
+//: contain "change-me".
+const KNOWN_DEV_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  // .env.example defaults
+  'change-me-super-secret',
+  'change-me-otp-secret',
+  // docker-compose fallbacks introduced by PR-Sec-5 / #55 follow-up
+  'dev-only-local-token-NOT-FOR-PROD',
+]);
+
+const isDevPlaceholder = (value: string | undefined | null): boolean =>
+  typeof value === 'string' && KNOWN_DEV_PLACEHOLDERS.has(value.trim());
+
 const validateProductionEnv = (env: AppEnv) => {
   const errors: string[] = [];
 
@@ -134,11 +155,15 @@ const validateProductionEnv = (env: AppEnv) => {
     return errors;
   }
 
-  if (env.JWT_SECRET === 'change-me-super-secret') {
-    errors.push('JWT_SECRET must be replaced in production');
+  if (env.JWT_SECRET === 'change-me-super-secret' || isDevPlaceholder(env.JWT_SECRET)) {
+    errors.push(
+      'JWT_SECRET must be replaced in production (no `change-me-*` / `dev-only-*` value)',
+    );
   }
-  if (env.OTP_HASH_SECRET === 'change-me-otp-secret') {
-    errors.push('OTP_HASH_SECRET must be replaced in production');
+  if (env.OTP_HASH_SECRET === 'change-me-otp-secret' || isDevPlaceholder(env.OTP_HASH_SECRET)) {
+    errors.push(
+      'OTP_HASH_SECRET must be replaced in production (no `change-me-*` / `dev-only-*` value)',
+    );
   }
   if (env.DATABASE_URL === 'postgres://postgres:postgres@localhost:5432/fshd_openrd') {
     errors.push('DATABASE_URL must be replaced in production');
@@ -152,10 +177,11 @@ const validateProductionEnv = (env: AppEnv) => {
   if (env.OCR_PROVIDER === 'mock') {
     errors.push('OCR_PROVIDER=mock is not allowed in production');
   }
-  if (!env.KB_SERVICE_TOKEN) {
+  if (!env.KB_SERVICE_TOKEN || isDevPlaceholder(env.KB_SERVICE_TOKEN)) {
     errors.push(
       'KB_SERVICE_TOKEN is required in production so the KB service ' +
-        'cannot be reached anonymously',
+        'cannot be reached anonymously, and must not be the docker-compose ' +
+        'dev placeholder',
     );
   }
 

@@ -100,6 +100,14 @@ services:
     env_file:
       - .env
     environment:
+      # `apps/api/Dockerfile` pins ENV NODE_ENV=production for prod
+      # image builds. Default to `development` here so a plain
+      # `docker compose up` against a fresh clone does NOT trigger
+      # `validateProductionEnv` — which would otherwise reject the
+      # default `change-me-*` JWT / OTP secrets and the mock OTP
+      # provider, even though the user just wants a local stack. Prod
+      # / staging deploys explicitly override via secret injection.
+      NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
       OCR_PROVIDER: ${OCR_PROVIDER:-embedded}
       OCR_PYTHON_BIN: python3
