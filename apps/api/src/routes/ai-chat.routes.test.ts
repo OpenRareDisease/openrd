@@ -470,6 +470,26 @@ describe('GET /api/ai/audit', () => {
     expect(res.body.message).toMatch(/limit/);
   });
 
+  it('400 on fractional limit / offset (message says 整数)', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      auditLogger: buildFakeAuditLogger([], []),
+    });
+    const token = issueToken('u-1');
+
+    const limitRes = await request(app)
+      .get('/api/ai/audit?limit=1.5')
+      .set('authorization', `Bearer ${token}`);
+    expect(limitRes.status).toBe(400);
+    expect(limitRes.body.message).toMatch(/limit/);
+
+    const offsetRes = await request(app)
+      .get('/api/ai/audit?offset=0.5')
+      .set('authorization', `Bearer ${token}`);
+    expect(offsetRes.status).toBe(400);
+    expect(offsetRes.body.message).toMatch(/offset/);
+  });
+
   it('400 on bad status', async () => {
     const app = buildApp({
       pool: buildFakePool(),
