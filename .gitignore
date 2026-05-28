@@ -11,6 +11,20 @@ node_modules/
 chroma_db/
 apps/knowledge-base/chroma_db/
 
+# KB source corpus — large binary content (PDFs/docx/images) lives
+# outside git. Reproduce by unzipping the upstream FSHD_知识库.zip
+# into content/medical-kb/source/ before running `npm run kb:ingest`.
+content/medical-kb/source/
+
+# Python venv created for the KB ingest tooling. Bootstrap with:
+#   brew install python@3.11 tesseract tesseract-lang poppler
+#   python3.11 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+# Note: poppler ships pdftoppm, which pdf2image shells out to for
+# the scanned-PDF OCR fallback. Missing it surfaces as
+# `ocr_dep_error` on every scanned page.
+.venv/
+
 # Production builds
 /dist
 /build
