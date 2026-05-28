@@ -253,3 +253,27 @@ export const consentUpdateSchema = z
     { message: 'At least one of personal / thirdParty / preciseValues must be provided' },
   );
 export type ConsentUpdateBody = z.infer<typeof consentUpdateSchema>;
+
+/** Body schema for PUT /api/profiles/me/sharing-preferences. All four
+ *  flags are optional — the screen sends one toggle at a time. We
+ *  refuse empty bodies so a misconfigured client sees a clean 400
+ *  rather than a silent no-op UPDATE. */
+export const sharingPreferencesUpdateSchema = z
+  .object({
+    clinicalTrial: z.boolean().optional(),
+    dataDonation: z.boolean().optional(),
+    hospitalSync: z.boolean().optional(),
+    communityShare: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.clinicalTrial !== undefined ||
+      data.dataDonation !== undefined ||
+      data.hospitalSync !== undefined ||
+      data.communityShare !== undefined,
+    {
+      message:
+        'At least one of clinicalTrial / dataDonation / hospitalSync / communityShare must be provided',
+    },
+  );
+export type SharingPreferencesUpdateBody = z.infer<typeof sharingPreferencesUpdateSchema>;

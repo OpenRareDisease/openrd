@@ -13,6 +13,7 @@ import {
   functionTestSchema,
   measurementSchema,
   medicationSchema,
+  sharingPreferencesUpdateSchema,
   symptomScoreSchema,
   attachDocumentsSchema,
   muscleInsightQuerySchema,
@@ -259,6 +260,30 @@ export class PatientProfileController {
   updateMyConsent = async (req: AuthenticatedRequest, res: Response) => {
     const payload = consentUpdateSchema.parse(req.body);
     const updated = await this.service.updateConsent(req.user.id, payload);
+    res.status(200).json(updated);
+  };
+
+  /**
+   * Read the four data-sharing toggles (clinical trial, data
+   * donation, hospital sync, community share). Returns 404 when the
+   * user has no profile row yet so the mobile screen can prompt
+   * them to finish onboarding instead of silently showing default
+   * "off" values that we'd never actually persist.
+   */
+  getMySharingPreferences = async (req: AuthenticatedRequest, res: Response) => {
+    const prefs = await this.service.getSharingPreferences(req.user.id);
+    if (!prefs) {
+      throw new AppError('Patient profile not found', 404);
+    }
+    res.status(200).json(prefs);
+  };
+
+  /** Partial update of the four data-sharing toggles. Body fields
+   *  are all optional but at least one must be present (Zod
+   *  schema enforces this). */
+  updateMySharingPreferences = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = sharingPreferencesUpdateSchema.parse(req.body);
+    const updated = await this.service.updateSharingPreferences(req.user.id, payload);
     res.status(200).json(updated);
   };
 
