@@ -2324,21 +2324,34 @@ export class PatientProfileService {
   }
 
   /**
-   * Public ownership probe for callers that need to reject a foreign
-   * `submissionId` *before* doing expensive work (e.g. writing the
-   * uploaded file to storage, running OCR). Returns silently on
-   * ownership; throws the same 404 the `add*` handlers would so the
-   * caller can short-circuit without duplicating SQL.
+   * Public preflight for write paths that incur side effects *before*
+   * the row insert (uploadDocument writes to storage and runs OCR
+   * before calling `addUploadedDocument`). Always verifies the caller
+   * has a patient profile; additionally verifies submission ownership
+   * when a `submissionId` is supplied.
    *
-   * No-op when `submissionId` is null/undefined.
+   * Throws the same 404s the per-handler checks would raise so the
+   * caller can short-circuit without duplicating SQL:
+   *   - "Patient profile not found" when the user has no profile row
+   *     (e.g. a newly registered account that hasn't completed
+   *     onboarding yet); without this, a profile-less caller could
+   *     repeatedly upload 10 MB files and force OCR work before the
+   *     downstream insert finally 404s.
+   *   - "Submission not found" when a `submissionId` is supplied but
+   *     belongs to another user or doesn't exist.
+   *
+   * Both branches are cheap SELECTs, so running them upfront costs
+   * far less than the storage write + OCR pass a later 404 would
+   * have already triggered.
    */
-  async assertSubmissionOwnership(
+  async assertCallerCanWriteSubmission(
     userId: string,
     submissionId: string | null | undefined,
   ): Promise<void> {
-    if (!submissionId) return;
     const profileId = await this.ensureProfileForUser(userId);
-    await this.assertSubmissionOwnedByProfile(submissionId, profileId);
+    if (submissionId) {
+      await this.assertSubmissionOwnedByProfile(submissionId, profileId);
+    }
   }
 
   /**

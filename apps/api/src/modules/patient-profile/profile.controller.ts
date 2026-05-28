@@ -330,14 +330,14 @@ export class PatientProfileController {
       throw new AppError('File is required', 400);
     }
 
-    // Verify the caller-supplied `submissionId` belongs to this user
-    // BEFORE we spend any storage write / OCR CPU on the buffer.
-    // `addUploadedDocument` re-checks at the DB row level, but doing
-    // the probe upfront avoids the scenario where a caller repeatedly
-    // uploads a large file under a foreign submission, gets the
-    // intended 404, and still leaves bytes in the storage backend and
-    // CPU spent in the OCR pipeline.
-    await this.service.assertSubmissionOwnership(req.user.id, payload.submissionId);
+    // Verify the caller can actually write to this user's submission
+    // log BEFORE we spend any storage write / OCR CPU on the buffer.
+    // The preflight covers two side-effect-leak paths the downstream
+    // checks would otherwise close only after the work was done:
+    //   - foreign submissionId → DB-level 404 in addUploadedDocument
+    //   - caller has no profile yet → ensureProfileForUser 404
+    // Both branches are cheap SELECTs.
+    await this.service.assertCallerCanWriteSubmission(req.user.id, payload.submissionId);
 
     const stored = await this.storage.save({
       userId: req.user.id,
