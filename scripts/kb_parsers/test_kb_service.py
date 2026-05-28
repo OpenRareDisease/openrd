@@ -176,3 +176,155 @@ def test_health_paths_constant_removed(kb_service):
     """The unused `_HEALTH_PATHS` constant was removed because it
     introduced confusing intent without a caller."""
     assert not hasattr(kb_service, '_HEALTH_PATHS')
+
+
+# --------------------------------------------------------------- _check_prod_token_safety
+
+
+def test_prod_token_safety_rejects_placeholder_under_node_env_production(kb_service):
+    """PR #55 review: the docker-compose default placeholder
+    `dev-only-local-token-NOT-FOR-PROD` is non-empty, so the
+    original "not _REQUIRED_TOKEN" check would NOT fire even if a
+    prod deploy forgot to override it. The new second guard catches
+    exactly this: NODE_ENV=production AND token == placeholder."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='production',
+    )
+    assert err is not None
+    assert 'placeholder' in err.lower()
+    assert 'production' in err.lower()
+
+
+def test_prod_token_safety_accepts_placeholder_in_dev_compose(kb_service):
+    """The same placeholder MUST be accepted when NODE_ENV is not
+    production — that's the whole point of the docker-compose dev
+    fallback, so `docker compose up` keeps working without anyone
+    touching .env."""
+    # Empty NODE_ENV (typical dev compose-up)
+    err_dev = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='',
+    )
+    assert err_dev is None
+
+    # Explicit development NODE_ENV
+    err_dev2 = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token=kb_service._DEV_PLACEHOLDER_TOKEN,
+        node_env='development',
+    )
+    assert err_dev2 is None
+
+
+def test_prod_token_safety_accepts_real_secret_in_production(kb_service):
+    """A genuine random secret + NODE_ENV=production should start
+    cleanly (the happy path the bot's verification covers)."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token='3f8a9b2c1d4e5f60718293a4b5c6d7e8',  # mimicking openssl rand -hex
+        node_env='production',
+    )
+    assert err is None
+
+
+def test_prod_token_safety_original_pr_51_guard_still_fires(kb_service):
+    """The PR #51 "0.0.0.0 with empty token" check must still work —
+    don't lose it under the new second-guard refactor."""
+    err = kb_service._check_prod_token_safety(
+        host='0.0.0.0',
+        token='',
+        node_env='',  # not production yet — host alone is enough
+    )
+    assert err is not None
+    assert '0.0.0.0' in err
+
+    err_prod = kb_service._check_prod_token_safety(
+        host='127.0.0.1',  # loopback, but NODE_ENV is prod
+        token='',
+        node_env='production',
+    )
+    assert err_prod is not None
+
+
+def test_prod_token_safety_loopback_dev_without_token_is_fine(kb_service):
+    """Plain loopback dev (no 0.0.0.0, no NODE_ENV=production, no
+    token) is the documented "minimal dev" path. Must not require
+    a token."""
+    err = kb_service._check_prod_token_safety(
+        host='127.0.0.1',
+        token='',
+        node_env='',
+    )
+    assert err is None
+
+
+# --------------------------------------------------------------- cross-file drift
+
+def test_dev_placeholder_matches_docker_compose_yaml(kb_service):
+    """Pin docker-compose ↔ Python constant consistency.
+
+    The Python `_DEV_PLACEHOLDER_TOKEN` literal and the
+    `${KB_SERVICE_TOKEN:-...}` fallback in `docker-compose.yml`
+    must stay byte-identical, and both compose services must use
+    the same fallback. Without this assertion two silent failures
+    can ship:
+
+      A) Someone edits docker-compose.yml's default to a new
+         string and forgets knowledge_service.py. A prod deploy
+         that omits the env override now boots with the new
+         compose default — `_check_prod_token_safety` no longer
+         recognises it as the placeholder, the placeholder guard
+         doesn't fire, and the service comes up authenticating
+         against a string that's effectively a public secret.
+
+      B) Someone edits the Python constant and forgets the YAML.
+         Same end result the other direction.
+
+      C) Someone edits only one of the two compose services'
+         fallbacks — the api → kb fetch then 401s because the two
+         containers disagree on what the default token is.
+
+    The previous round of this PR claimed the test imports caught
+    this drift; they didn't (they compared the Python constant to
+    itself). This one actually reads the YAML.
+    """
+    import re
+
+    yml_path = _REPO_ROOT / 'docker-compose.yml'
+    yml_text = yml_path.read_text(encoding='utf-8')
+
+    # Strip comment lines first — the compose file documents the
+    # contract in a comment block that contains the literal
+    # `${KB_SERVICE_TOKEN:-...}` form (with ellipsis), which would
+    # otherwise show up as a fake third match.
+    non_comment = '\n'.join(
+        line for line in yml_text.splitlines() if not line.lstrip().startswith('#')
+    )
+
+    # We expect exactly two `${KB_SERVICE_TOKEN:-<default>}` forms
+    # — one on the kb-service container, one on the api container.
+    # Both must carry the same default; that default must equal
+    # the Python placeholder constant.
+    matches = re.findall(r'\$\{KB_SERVICE_TOKEN:-([^}]+)\}', non_comment)
+    assert len(matches) == 2, (
+        f'expected 2 ${{KB_SERVICE_TOKEN:-...}} fallbacks in docker-compose.yml, '
+        f'got {len(matches)} — has the compose file been restructured? '
+        f'(if a future PR drops the `:-default` form, this assertion intentionally trips '
+        f'so the placeholder guard contract gets reviewed)'
+    )
+    assert matches[0] == matches[1], (
+        f'kb-service and api containers disagree on the KB_SERVICE_TOKEN default: '
+        f'{matches[0]!r} vs {matches[1]!r} — the api → kb_service request would 401 '
+        f'on a fresh `docker compose up` with no env override'
+    )
+    assert matches[0] == kb_service._DEV_PLACEHOLDER_TOKEN, (
+        f'docker-compose.yml KB_SERVICE_TOKEN default ({matches[0]!r}) does not '
+        f'match knowledge_service._DEV_PLACEHOLDER_TOKEN '
+        f'({kb_service._DEV_PLACEHOLDER_TOKEN!r}). A prod deploy that forgets '
+        f'to override KB_SERVICE_TOKEN would bypass the placeholder guard '
+        f'because the runtime token would no longer equal the constant the '
+        f'guard compares against.'
+    )

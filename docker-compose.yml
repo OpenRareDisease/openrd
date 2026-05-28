@@ -29,6 +29,14 @@ services:
     environment:
       KB_SERVICE_HOST: 0.0.0.0
       KB_SERVICE_PORT: 5010
+      # Shared bearer token between this container and the Node API
+      # container. Both services MUST see the same value. Default is a
+      # well-named placeholder so `docker compose up` works on a fresh
+      # clone without any .env setup; production / staging MUST inject
+      # a real value via env. The knowledge_service.py __main__
+      # fail-fast check otherwise refuses to start because
+      # KB_SERVICE_HOST=0.0.0.0 is treated as "prod-shaped".
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-dev-only-local-token-NOT-FOR-PROD}
       HF_HOME: /root/.cache/huggingface
       SENTENCE_TRANSFORMERS_HOME: /root/.cache/sentence_transformers
       # KB read backend + DB connection. Defaults assume the
@@ -104,6 +112,12 @@ services:
       KB_SERVICE_HOST: kb-service
       KB_SERVICE_PORT: 5010
       KB_SERVICE_URL: http://kb-service:5010
+      # MUST be the same value the kb-service container sees. Use the
+      # same `${KB_SERVICE_TOKEN:-...}` form so a missing .env entry
+      # resolves to the identical placeholder on both sides — without
+      # this line, only kb-service would see the placeholder and the
+      # api → kb fetch would 401 with "unauthorized".
+      KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-dev-only-local-token-NOT-FOR-PROD}
     ports:
       - '4000:4000'
     depends_on:

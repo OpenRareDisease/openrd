@@ -352,21 +352,69 @@ def _filter_where(where: dict) -> dict:
     return safe
 
 
+#: The dev-only fallback string `docker-compose.yml` interpolates
+#: when neither the shell env nor the .env file provides a real
+#: `KB_SERVICE_TOKEN`. Pinned here so the prod safety check can refuse
+#: to start when this exact placeholder shows up under NODE_ENV=
+#: production — without that check, a prod deploy that forgot to
+#: inject a real secret would silently run with the public placeholder
+#: (visible in the public repo) and `not _REQUIRED_TOKEN` would not
+#: fire because the string is non-empty.
+_DEV_PLACEHOLDER_TOKEN = 'dev-only-local-token-NOT-FOR-PROD'
+
+
+def _check_prod_token_safety(host: str, token: str, node_env: str) -> str | None:
+    """Return an error message if the (host, token, NODE_ENV) combo is
+    unsafe to start with; return None otherwise.
+
+    Two distinct guards:
+
+      1. "prod-shaped without any token at all" — covers bare-metal
+         deploys where someone bound to 0.0.0.0 or flipped
+         NODE_ENV=production but forgot to set KB_SERVICE_TOKEN.
+         (This is the original PR #51 check.)
+
+      2. "production using the docker-compose dev placeholder" —
+         covers the case where `docker compose up` runs against a
+         prod-shape config without overriding the placeholder. The
+         compose fallback fills KB_SERVICE_TOKEN with the public
+         repo string, so the #1 check (which fires on empty) would
+         NOT trigger. This second guard catches that path explicitly.
+
+    Factored out of `__main__` so the test suite can exercise every
+    branch without subprocessing the whole server.
+    """
+    normalised_env = (node_env or '').lower()
+    is_prod_like = host == '0.0.0.0' or normalised_env == 'production'
+    is_production = normalised_env == 'production'
+
+    if is_prod_like and not token:
+        return (
+            'KB_SERVICE_TOKEN is required when binding to 0.0.0.0 or when '
+            'NODE_ENV=production. Refusing to start an unauthenticated KB '
+            'service on a non-loopback interface.'
+        )
+    if is_production and token == _DEV_PLACEHOLDER_TOKEN:
+        return (
+            f'KB_SERVICE_TOKEN is set to the docker-compose dev placeholder '
+            f'({_DEV_PLACEHOLDER_TOKEN!r}) in a production environment. '
+            f'Inject a real secret (e.g. via `openssl rand -hex 32`) through '
+            f'the deployment env before starting the KB service.'
+        )
+    return None
+
+
 if __name__ == '__main__':
     host = os.getenv('KB_SERVICE_HOST', '127.0.0.1')
     port = _safe_int(os.getenv('KB_SERVICE_PORT', '5010'), 5010)
 
-    # Refuse to start in production-shaped configs without a
-    # `KB_SERVICE_TOKEN`. The combination of "0.0.0.0 bind" + "no
-    # auth" was the original P0 — explicit fail-fast prevents a
-    # later misconfig from re-creating it.
-    is_prod_like = host == '0.0.0.0' or (os.getenv('NODE_ENV') or '').lower() == 'production'
-    if is_prod_like and not _REQUIRED_TOKEN:
-        raise SystemExit(
-            'KB_SERVICE_TOKEN is required when binding to 0.0.0.0 or when '
-            'NODE_ENV=production. Refusing to start an unauthenticated KB '
-            'service on a non-loopback interface.',
-        )
+    _safety_error = _check_prod_token_safety(
+        host=host,
+        token=_REQUIRED_TOKEN,
+        node_env=os.getenv('NODE_ENV') or '',
+    )
+    if _safety_error is not None:
+        raise SystemExit(_safety_error)
 
     _ensure_kb_warmup_started()
     server = HTTPServer((host, port), KnowledgeServiceHandler)
