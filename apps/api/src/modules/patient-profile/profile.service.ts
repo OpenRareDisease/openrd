@@ -2324,6 +2324,24 @@ export class PatientProfileService {
   }
 
   /**
+   * Public ownership probe for callers that need to reject a foreign
+   * `submissionId` *before* doing expensive work (e.g. writing the
+   * uploaded file to storage, running OCR). Returns silently on
+   * ownership; throws the same 404 the `add*` handlers would so the
+   * caller can short-circuit without duplicating SQL.
+   *
+   * No-op when `submissionId` is null/undefined.
+   */
+  async assertSubmissionOwnership(
+    userId: string,
+    submissionId: string | null | undefined,
+  ): Promise<void> {
+    if (!submissionId) return;
+    const profileId = await this.ensureProfileForUser(userId);
+    await this.assertSubmissionOwnedByProfile(submissionId, profileId);
+  }
+
+  /**
    * Verify a caller-supplied `submissionId` actually belongs to the
    * caller's profile. Returns the id if it checks out (or `null` when
    * the caller did not supply one); throws 404 otherwise. Used by every

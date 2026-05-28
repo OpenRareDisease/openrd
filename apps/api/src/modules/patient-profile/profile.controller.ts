@@ -330,6 +330,15 @@ export class PatientProfileController {
       throw new AppError('File is required', 400);
     }
 
+    // Verify the caller-supplied `submissionId` belongs to this user
+    // BEFORE we spend any storage write / OCR CPU on the buffer.
+    // `addUploadedDocument` re-checks at the DB row level, but doing
+    // the probe upfront avoids the scenario where a caller repeatedly
+    // uploads a large file under a foreign submission, gets the
+    // intended 404, and still leaves bytes in the storage backend and
+    // CPU spent in the OCR pipeline.
+    await this.service.assertSubmissionOwnership(req.user.id, payload.submissionId);
+
     const stored = await this.storage.save({
       userId: req.user.id,
       fileName: file.originalname ?? 'upload',
