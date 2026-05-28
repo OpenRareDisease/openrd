@@ -17,6 +17,14 @@ from .base import Parser, ParseResult, ParsedSection
 logger = logging.getLogger("fshd_kb.markdown_parser")
 
 
+#: Hard cap on YAML frontmatter size. `yaml.safe_load` is RCE-safe
+#: but not DoS-safe — a YAML payload with deeply-nested anchors
+#: (`&a [*a, *a]` style) can pin a worker for seconds and allocate
+#: hundreds of MB. Real frontmatter is at most a few KB; 64 KB is
+#: generous and a clear "this isn't normal" threshold.
+_MAX_FRONTMATTER_BYTES = 64 * 1024
+
+
 def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
     """Return (frontmatter_dict, body_text).
 
@@ -37,6 +45,16 @@ def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
 
     yaml_block = rest[: end_match.start()]
     body = rest[end_match.end() :].lstrip("\n")
+
+    if len(yaml_block.encode("utf-8")) > _MAX_FRONTMATTER_BYTES:
+        # Bail out fast on absurdly large frontmatter. The body still
+        # gets parsed normally — we just refuse to feed gigabytes into
+        # the YAML loader.
+        logger.warning(
+            "markdown frontmatter exceeds %d bytes; ignoring frontmatter",
+            _MAX_FRONTMATTER_BYTES,
+        )
+        return {}, body
 
     try:
         import yaml  # type: ignore

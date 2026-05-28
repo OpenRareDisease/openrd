@@ -135,6 +135,42 @@ const extractUsage = (
   };
 };
 
+/**
+ * Re-throw a sanitised Error so the original OpenAI SDK error
+ * shape — which can carry the request `headers` (Authorization
+ * bearer included) and the request `body` — never reaches downstream
+ * audit logs, response bodies, or pino's serializer.
+ *
+ * The sanitised Error holds **no** reference to the original — not
+ * even via `.cause`. The OpenAI APIError shape's `.headers` /
+ * `.request` fields and pino's `cause`-chain traversal would each
+ * be sufficient to leak the bearer token if we kept a link. The
+ * original Error is still visible in stderr at the catch site via
+ * `console.error(error)`-style local logging; it just never reaches
+ * the orchestrator audit pipeline through this Error.
+ *
+ * Only `message` (≤500 chars), `name`, `status`, and `code` survive
+ * — every other property is dropped.
+ */
+const sanitiseSiliconFlowError = (error: unknown): Error => {
+  const sourceMessage = error instanceof Error ? error.message : String(error);
+  const safeMessage = (sourceMessage || 'siliconflow request failed').slice(0, 500);
+  const sanitised = new Error(safeMessage);
+  sanitised.name = 'SiliconFlowProviderError';
+  // Preserve common metadata if present on the original APIError shape
+  // (without preserving the raw object → no headers leak).
+  if (typeof error === 'object' && error !== null) {
+    const src = error as { status?: unknown; code?: unknown };
+    if (typeof src.status === 'number') {
+      (sanitised as { status?: number }).status = src.status;
+    }
+    if (typeof src.code === 'string') {
+      (sanitised as { code?: string }).code = src.code;
+    }
+  }
+  return sanitised;
+};
+
 export class SiliconFlowProvider implements ILLMProvider {
   readonly providerName = 'siliconflow';
   readonly model: string;
@@ -156,21 +192,30 @@ export class SiliconFlowProvider implements ILLMProvider {
   }
 
   async chat(req: LlmChatRequest): Promise<LlmChatResponse> {
-    const completion = await this.client.chat.completions.create(
-      {
-        model: this.model,
-        messages: toOpenAiMessages(req.messages),
-        tools: toOpenAiTools(req.tools),
-        tool_choice: toOpenAiToolChoice(req.toolChoice),
-        temperature: req.temperature,
-        max_tokens: req.maxTokens,
-      },
-      // The OpenAI SDK threads `signal` through fetch + the streaming
-      // iterator, so aborting cancels the in-flight HTTP request and
-      // any further chunks. Omitting the second arg keeps the SDK on
-      // its default options.
-      req.signal ? { signal: req.signal } : undefined,
-    );
+    let completion;
+    try {
+      completion = await this.client.chat.completions.create(
+        {
+          model: this.model,
+          messages: toOpenAiMessages(req.messages),
+          tools: toOpenAiTools(req.tools),
+          tool_choice: toOpenAiToolChoice(req.toolChoice),
+          temperature: req.temperature,
+          max_tokens: req.maxTokens,
+        },
+        // The OpenAI SDK threads `signal` through fetch + the streaming
+        // iterator, so aborting cancels the in-flight HTTP request and
+        // any further chunks. Omitting the second arg keeps the SDK on
+        // its default options.
+        req.signal ? { signal: req.signal } : undefined,
+      );
+    } catch (error) {
+      // OpenAI APIError shapes can carry the request `headers` field
+      // verbatim (including our `Authorization: Bearer ...`) and the
+      // request body. Re-throw a sanitised Error so downstream
+      // audit / log paths can't accidentally leak the bearer token.
+      throw sanitiseSiliconFlowError(error);
+    }
 
     const choice = completion.choices?.[0];
     if (!choice) {
@@ -195,18 +240,23 @@ export class SiliconFlowProvider implements ILLMProvider {
   }
 
   async *chatStream(req: LlmChatRequest): AsyncIterable<LlmStreamEvent> {
-    const stream = await this.client.chat.completions.create(
-      {
-        model: this.model,
-        messages: toOpenAiMessages(req.messages),
-        tools: toOpenAiTools(req.tools),
-        tool_choice: toOpenAiToolChoice(req.toolChoice),
-        temperature: req.temperature,
-        max_tokens: req.maxTokens,
-        stream: true,
-      },
-      req.signal ? { signal: req.signal } : undefined,
-    );
+    let stream;
+    try {
+      stream = await this.client.chat.completions.create(
+        {
+          model: this.model,
+          messages: toOpenAiMessages(req.messages),
+          tools: toOpenAiTools(req.tools),
+          tool_choice: toOpenAiToolChoice(req.toolChoice),
+          temperature: req.temperature,
+          max_tokens: req.maxTokens,
+          stream: true,
+        },
+        req.signal ? { signal: req.signal } : undefined,
+      );
+    } catch (error) {
+      throw sanitiseSiliconFlowError(error);
+    }
 
     let finishEmitted = false;
 

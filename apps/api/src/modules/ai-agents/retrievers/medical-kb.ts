@@ -36,6 +36,11 @@ interface KbServiceResponse {
 export interface MedicalKbRetrieverOptions {
   /** Base URL for the Python KB service, e.g. `http://kb-service:5010`. */
   kbServiceUrl: string;
+  /** Bearer token the KB service expects on every /multi request.
+   *  Required when the service is bound to anything other than
+   *  loopback. Omit for dev environments where the service runs
+   *  without auth. */
+  serviceToken?: string;
   /** Overall network timeout per request. Defaults to 30s. */
   timeoutMs?: number;
   /** Defaults forwarded to the knowledge service. Match Phase 1
@@ -108,12 +113,28 @@ export class MedicalKbRetriever implements IRetriever {
     const controller = new AbortController();
     const timeoutMs = this.opts.timeoutMs ?? 30_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Merge the caller's cancellation signal in too — a route-level
+    // res.on('close') should immediately abort the KB fetch, not wait
+    // for the 30s timer.
+    const onCallerAbort = () => controller.abort();
+    if (ctx.signal) {
+      if (ctx.signal.aborted) {
+        controller.abort();
+      } else {
+        ctx.signal.addEventListener('abort', onCallerAbort, { once: true });
+      }
+    }
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.opts.serviceToken) {
+      headers.Authorization = `Bearer ${this.opts.serviceToken}`;
+    }
 
     let response: Response;
     try {
       response = await fetch(`${this.opts.kbServiceUrl}/multi`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -124,6 +145,9 @@ export class MedicalKbRetriever implements IRetriever {
       });
     } finally {
       clearTimeout(timer);
+      if (ctx.signal) {
+        ctx.signal.removeEventListener('abort', onCallerAbort);
+      }
     }
 
     const text = await response.text();

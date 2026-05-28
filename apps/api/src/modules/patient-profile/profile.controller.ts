@@ -26,6 +26,7 @@ import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
+import { redactFields, redactionModeForConsent } from '../ai-agents/security/index.js';
 
 type AiSummaryDeps = {
   client: OpenAI;
@@ -222,6 +223,47 @@ const resolveDocumentTypeFromPayload = (fallbackType: string, payload: unknown):
 // Exported for unit tests in profile.controller.test.ts. Production
 // callers stay inside this module.
 export { canonicalizeDocumentType as _canonicalizeDocumentType };
+
+/**
+ * MIME types that are safe to render inline. Anything else either
+ * downloads as octet-stream or — combined with `Content-Disposition:
+ * attachment` + `X-Content-Type-Options: nosniff` — refuses to execute
+ * in the API origin. Stays intentionally small: PDF and common image
+ * formats are the only inputs the patient profile pipeline actually
+ * processes; HTML / SVG / XML are deliberately absent because they can
+ * carry script.
+ */
+const SAFE_INLINE_MIME_ALLOWLIST: ReadonlySet<string> = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+]);
+
+/**
+ * Build an RFC 5987-safe Content-Disposition header. CRLF + quote
+ * characters in user-supplied filenames would otherwise let a patient
+ * inject extra header parameters; the legacy code interpolated the
+ * raw `file_name` (preserved verbatim through multer) straight into a
+ * `filename="..."` form. We always use `attachment` so the browser
+ * never renders the resource in-origin, and we use the `filename*`
+ * (UTF-8) form for any character outside `[A-Za-z0-9._-]`.
+ */
+const buildContentDisposition = (rawName: string): string => {
+  const fallback = 'document';
+  const trimmed = (rawName ?? '').replace(/[\r\n]/g, '').trim() || fallback;
+  const asciiSafe = trimmed.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || fallback;
+  const utf8Safe = encodeURIComponent(trimmed).slice(0, 400);
+  return `attachment; filename="${asciiSafe}"; filename*=UTF-8''${utf8Safe}`;
+};
+
+// Exported for unit tests.
+export {
+  SAFE_INLINE_MIME_ALLOWLIST as _SAFE_INLINE_MIME_ALLOWLIST,
+  buildContentDisposition as _buildContentDisposition,
+};
 
 const resolveDocumentStatusFromPayload = (payload: unknown) => {
   const payloadObj = isRecord(payload) ? payload : null;
@@ -503,13 +545,23 @@ export class PatientProfileController {
     const document = await this.service.getDocumentForUser(req.user.id, documentId);
     const loaded = await this.storage.load(document.storage_uri);
 
-    res.setHeader(
-      'Content-Type',
-      document.mime_type ?? loaded.mimeType ?? 'application/octet-stream',
-    );
+    // Pin the Content-Type to an allowlist so a caller who uploaded
+    // `evil.html` with `Content-Type: text/html` can't get the browser
+    // to render it in the API origin. Anything off the allowlist falls
+    // back to octet-stream + attachment, so the worst case is a
+    // useless download rather than a stored XSS.
+    const rawType = (document.mime_type ?? loaded.mimeType ?? '').toLowerCase().trim();
+    const safeContentType = SAFE_INLINE_MIME_ALLOWLIST.has(rawType)
+      ? rawType
+      : 'application/octet-stream';
+    res.setHeader('Content-Type', safeContentType);
+    // `attachment` (not `inline`) keeps the browser from rendering the
+    // resource even when the MIME slips past the allowlist via a
+    // future config change. nosniff blocks Chrome's content sniffing.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${document.file_name ?? loaded.fileName}"`,
+      buildContentDisposition(document.file_name ?? loaded.fileName ?? 'document'),
     );
 
     loaded.stream.pipe(res);
@@ -517,7 +569,11 @@ export class PatientProfileController {
 
   deleteDocument = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
-    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId);
+    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId, {
+      ip: req.ip,
+      userAgent:
+        typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+    });
 
     let storageCleanupStatus: 'removed' | 'missing' | 'failed' = 'removed';
     try {
@@ -554,6 +610,18 @@ export class PatientProfileController {
       throw new AppError('AI 总结服务未配置（缺少 AI_API_KEY/OPENAI_API_KEY）', 500);
     }
 
+    // Gate the call on AI consent. The orchestrator at /api/ai/ask
+    // already does this; the summary endpoint used to bypass the
+    // whole ai-agents/security/* stack (no consent check, no field
+    // redaction, no extractedText cap). This brings it in line.
+    const consentStatus = await this.service.getConsentStatus(req.user.id);
+    if (consentStatus.level === 'none') {
+      throw new AppError('请先在隐私设置中同意 AI 使用你的数据', 403, {
+        code: 'consent_required',
+        consent: consentStatus,
+      });
+    }
+
     const document = await this.service.getDocumentForUser(req.user.id, documentId);
     const currentPayload = document.ocr_payload;
 
@@ -581,26 +649,33 @@ export class PatientProfileController {
     }
 
     const documentType = resolveDocumentTypeFromPayload(document.document_type, currentPayload);
-    const extractedText =
-      typeof payloadObj.extractedText === 'string'
-        ? payloadObj.extractedText
-        : typeof payloadObj.extracted_text === 'string'
-          ? payloadObj.extracted_text
-          : '';
-    const aiExtraction = payloadObj.aiExtraction ?? payloadObj.ai_extraction ?? null;
 
+    // Project the OCR `fields` blob through the same PII redactor the
+    // orchestrator uses. The redactor hard-deletes the long tail of
+    // identifying keys (patientName, idCard, doctorName, mrn, etc.)
+    // and projects clinical fields into a per-mode allowlist. Anything
+    // off the allowlist is dropped — this is the only sanctioned path
+    // for OCR fields to reach an LLM in this codebase.
+    const redactionMode = redactionModeForConsent(consentStatus.level);
+    const redacted = redactFields({ fields }, { scope: 'reports', mode: redactionMode });
+    // The `extractedText` / `rawFreeText` / `fullText` family is in
+    // HARD_DELETE_KEYS — we deliberately do NOT send the OCR full-text
+    // dump. It always carries the patient's name and the issuing
+    // physician's name; the structured fields the redactor passes
+    // through carry enough for the model to summarise. The legacy
+    // 2000-char slice was not a fix; it was a half-measure.
     const promptPayload = {
       documentId,
       documentType,
-      reportName: typeof fields.reportName === 'string' ? fields.reportName : undefined,
-      reportTime: typeof fields.reportTime === 'string' ? fields.reportTime : undefined,
-      highlights: fields,
-      aiExtraction,
-      extractedText: extractedText ? extractedText.slice(0, 2000) : '',
+      // Keep reportName + reportTime only if they survived redaction
+      // (they should — neither is in HARD_DELETE_KEYS). Pull from the
+      // redacted shape so unknown future keys can't sneak back in via
+      // a typo here.
+      report: redacted.fields,
     };
 
     const system = [
-      '你是医疗报告解读助手。请根据给定的结构化解析结果(aiExtraction/highlights)输出一个简洁的中文总结。',
+      '你是医疗报告解读助手。请根据给定的结构化解析结果(report)输出一个简洁的中文总结。',
       '要求：',
       '1) 仅输出纯文本，不要 Markdown。',
       '2) 结构：一句总览 + 3~6 条要点（每条不超过 30 字）。',
@@ -611,6 +686,7 @@ export class PatientProfileController {
     const user = `结构化信息(JSON)：\n${JSON.stringify(promptPayload, null, 2)}`;
 
     let summary = '';
+    let usedFallback = false;
     try {
       const completion = await this.aiSummary.client.chat.completions.create({
         model: this.aiSummary.model,
@@ -622,7 +698,17 @@ export class PatientProfileController {
       });
       summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
     } catch {
+      // Don't mask the upstream failure with a silent fallback. The
+      // fallback's structured summary is still useful for the UI, but
+      // the response and the persisted ocr_payload both carry
+      // aiSummarySource='fallback' so monitoring + the mobile UI can
+      // distinguish LLM output from rule-based output. The original
+      // exception is not propagated upward (response would 502) and
+      // also not logged here to avoid accidentally surfacing the
+      // upstream Authorization header in unstructured logs (the route
+      // boundary scrubber doesn't touch this path).
       summary = buildFallbackDocumentSummary(documentType, fields);
+      usedFallback = true;
     }
 
     if (!summary) {
@@ -634,11 +720,12 @@ export class PatientProfileController {
       fields: {
         ...fields,
         aiSummary: summary,
+        aiSummarySource: usedFallback ? 'fallback' : 'llm',
       },
     };
 
     await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
-    res.status(200).json({ documentId, summary });
+    res.status(200).json({ documentId, summary, source: usedFallback ? 'fallback' : 'llm' });
   };
 
   getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {

@@ -2,7 +2,12 @@ import type { Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 
 import { DOCUMENT_TYPES } from './profile.constants.js';
-import { PatientProfileController, _canonicalizeDocumentType } from './profile.controller.js';
+import {
+  PatientProfileController,
+  _canonicalizeDocumentType,
+  _buildContentDisposition,
+  _SAFE_INLINE_MIME_ALLOWLIST,
+} from './profile.controller.js';
 import type { PatientProfileService } from './profile.service.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
@@ -301,5 +306,324 @@ describe('PatientProfileController.uploadDocument — document_type canonicalisa
       expect(result).toBe(expected);
       expect(ALLOWED_BY_MIGRATION_012.has(result)).toBe(true);
     }
+  });
+});
+
+/**
+ * PR #50 review round 2: getDocumentFile used to echo the user-supplied
+ * mime_type back as Content-Type and used Content-Disposition: inline
+ * with the raw filename. Both gave a stored-XSS / header-injection
+ * surface. This test pins the MIME allowlist + RFC 5987-safe filename
+ * + nosniff + attachment.
+ */
+describe('PatientProfileController.getDocumentFile — Content-Type + Content-Disposition safety', () => {
+  const buildFileServer = (storedMime: string | null, fileName: string | null) => {
+    const service = {
+      getDocumentForUser: vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'mri',
+        storage_uri: 'local://uploads/x/scan.pdf',
+        file_name: fileName,
+        mime_type: storedMime,
+        ocr_payload: null,
+      }),
+    } as unknown as PatientProfileService;
+    const storage = {
+      load: vi.fn().mockResolvedValue({
+        stream: { pipe: vi.fn() },
+        fileName: 'fallback.bin',
+        mimeType: null,
+      }),
+      save: vi.fn(),
+      remove: vi.fn(),
+      canHandle: vi.fn(),
+    } as unknown as StorageProvider;
+    const ocr = { parse: vi.fn() } as unknown as OcrProvider;
+    return { service, storage, ocr };
+  };
+
+  const captureHeaders = () => {
+    const headers: Record<string, string> = {};
+    const res = {
+      setHeader: vi.fn((name: string, value: string) => {
+        headers[name.toLowerCase()] = String(value);
+      }),
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    } as unknown as Response;
+    return { res, headers };
+  };
+
+  it('rejects a text/html stored MIME — falls back to octet-stream', async () => {
+    const { service, storage, ocr } = buildFileServer('text/html', 'innocent.pdf');
+    const controller = new PatientProfileController(service, storage, ocr);
+    const { res, headers } = captureHeaders();
+
+    await controller.getDocumentFile(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    expect(headers['content-type']).toBe('application/octet-stream');
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    // attachment, not inline
+    expect(headers['content-disposition']?.startsWith('attachment;')).toBe(true);
+  });
+
+  it('passes application/pdf through (on the allowlist)', async () => {
+    const { service, storage, ocr } = buildFileServer('application/pdf', 'scan.pdf');
+    const controller = new PatientProfileController(service, storage, ocr);
+    const { res, headers } = captureHeaders();
+
+    await controller.getDocumentFile(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    expect(headers['content-type']).toBe('application/pdf');
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['content-disposition']).toContain('attachment');
+    expect(headers['content-disposition']).toContain('filename="scan.pdf"');
+  });
+
+  it('uses RFC 5987 encoding for non-ASCII filenames', () => {
+    const disposition = _buildContentDisposition('张三的报告.pdf');
+    // ASCII fallback present
+    expect(disposition).toMatch(/filename="[A-Za-z0-9._-]+"/);
+    // UTF-8 form for the real bytes
+    expect(disposition).toContain("filename*=UTF-8''");
+    // No raw CJK bytes in the ASCII filename
+    expect(disposition).not.toMatch(/filename="[^"]*张三/);
+  });
+
+  it('strips CR / LF / quote so a header-injection filename cannot break out', () => {
+    const evil = 'evil"\r\nSet-Cookie: pwned=1\r\n";.pdf';
+    const disposition = _buildContentDisposition(evil);
+    expect(disposition).not.toContain('\r');
+    expect(disposition).not.toContain('\n');
+    // Quote inside the ASCII filename slot must have been replaced
+    expect(disposition).not.toMatch(/filename="evil"/);
+  });
+
+  it('falls back to a safe placeholder when filename collapses to empty', () => {
+    expect(_buildContentDisposition('   \r\n  ')).toContain('filename="document"');
+  });
+
+  it('MIME allowlist contains only safe inline types', () => {
+    // Sanity guard against someone widening the allowlist to text/html
+    // or image/svg+xml without realising the inline render risk.
+    expect(_SAFE_INLINE_MIME_ALLOWLIST.has('text/html')).toBe(false);
+    expect(_SAFE_INLINE_MIME_ALLOWLIST.has('image/svg+xml')).toBe(false);
+    expect(_SAFE_INLINE_MIME_ALLOWLIST.has('application/xhtml+xml')).toBe(false);
+    expect(_SAFE_INLINE_MIME_ALLOWLIST.has('application/pdf')).toBe(true);
+    expect(_SAFE_INLINE_MIME_ALLOWLIST.has('image/png')).toBe(true);
+  });
+});
+
+/**
+ * PR-Sec-5 #2: generateDocumentSummary used to ship the raw OCR
+ * fields blob (patientName, idCard, phoneNumber, doctorName, mrn,
+ * dateOfBirth, raw extractedText…) straight to the LLM with no
+ * consent gate and no redactor. The whole ai-agents/security/* stack
+ * existed to prevent exactly this, so the endpoint was a glaring
+ * carve-out. These tests pin every guard.
+ */
+describe('PatientProfileController.generateDocumentSummary — consent + redaction guards', () => {
+  const buildSummaryDeps = (
+    overrides: Partial<{
+      consentLevel: 'none' | 'basic' | 'precise';
+      ocrPayload: unknown;
+      llmShouldFail: boolean;
+    }> = {},
+  ) => {
+    const consentLevel = overrides.consentLevel ?? 'precise';
+    const ocrPayload = overrides.ocrPayload ?? {
+      provider: 'paddle',
+      fields: {
+        // The full long-tail of identifying fields the redactor is
+        // supposed to strip. If a single one of these leaks into the
+        // prompt, this test will catch it.
+        patientName: '张三',
+        idCard: '110101199005203212',
+        phoneNumber: '13800001234',
+        doctorName: 'Dr. Li',
+        dateOfBirth: '1990-05-20',
+        mrn: 'MRN-0001',
+        notes: '私人备注：曾在 XX 医院就诊',
+        // Clinical fields the orchestrator's allowlist accepts:
+        classifiedType: 'genetic_report',
+        d4z4Repeats: '3/22',
+        haplotype: '4qA',
+        analysisStatus: 'completed',
+      },
+      // The OCR raw-text dump that the legacy code sliced to 2000
+      // chars and shipped to the LLM. Must not appear in the prompt.
+      extractedText: '患者 张三 ，男，身份证 110101199005203212，主诉 …',
+    };
+
+    const completionsCreate = vi
+      .fn()
+      .mockImplementation(({ messages }: { messages: Array<{ content: string }> }) => {
+        if (overrides.llmShouldFail) throw new Error('LLM upstream timeout');
+        return Promise.resolve({
+          choices: [
+            {
+              message: {
+                content: `LLM saw:\n${messages.map((m) => m.content).join('\n---\n')}`,
+              },
+            },
+          ],
+        });
+      });
+
+    const service = {
+      getConsentStatus: vi.fn().mockResolvedValue({ level: consentLevel }),
+      getDocumentForUser: vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'genetic_report',
+        storage_uri: 'local://uploads/x/scan.pdf',
+        file_name: 'scan.pdf',
+        mime_type: 'application/pdf',
+        ocr_payload: ocrPayload,
+      }),
+      updateDocumentOcrPayloadForUser: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PatientProfileService;
+    const storage = {
+      save: vi.fn(),
+      load: vi.fn(),
+      remove: vi.fn(),
+      canHandle: vi.fn(),
+    } as unknown as StorageProvider;
+    const ocr = { parse: vi.fn() } as unknown as OcrProvider;
+    const aiSummary = {
+      client: { chat: { completions: { create: completionsCreate } } },
+      model: 'test-model',
+    } as unknown as ConstructorParameters<typeof PatientProfileController>[3];
+
+    const controller = new PatientProfileController(service, storage, ocr, aiSummary);
+    return { controller, service, completionsCreate };
+  };
+
+  const captureJson = () => {
+    const captured: { status: number; body: unknown } = { status: 200, body: null };
+    const res = {
+      status: vi.fn((code: number) => {
+        captured.status = code;
+        return res;
+      }),
+      json: vi.fn((body: unknown) => {
+        captured.body = body;
+        return res;
+      }),
+    } as unknown as Response;
+    return { res, captured };
+  };
+
+  it('rejects with 403 + consent_required when consent level is none', async () => {
+    const { controller } = buildSummaryDeps({ consentLevel: 'none' });
+    const { res } = captureJson();
+
+    await expect(
+      controller.generateDocumentSummary(
+        { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+        res,
+      ),
+    ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('redacts hard-delete keys from the prompt before sending to the LLM', async () => {
+    const { controller, completionsCreate } = buildSummaryDeps({ consentLevel: 'basic' });
+    const { res } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    // Inspect what was actually handed to the LLM.
+    const call = completionsCreate.mock.calls[0][0];
+    const prompt = (call.messages as Array<{ content: string }>).map((m) => m.content).join('\n');
+
+    for (const leaked of [
+      '张三',
+      '110101199005203212',
+      '13800001234',
+      'Dr. Li',
+      '1990-05-20',
+      'MRN-0001',
+      '私人备注',
+    ]) {
+      expect(prompt).not.toContain(leaked);
+    }
+  });
+
+  it('does NOT send the OCR extractedText raw dump to the LLM', async () => {
+    const { controller, completionsCreate } = buildSummaryDeps({ consentLevel: 'basic' });
+    const { res } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    const call = completionsCreate.mock.calls[0][0];
+    const prompt = (call.messages as Array<{ content: string }>).map((m) => m.content).join('\n');
+
+    expect(prompt).not.toContain('患者 张三');
+    expect(prompt).not.toContain('身份证');
+    expect(prompt).not.toContain('extractedText');
+    expect(prompt).not.toContain('rawFreeText');
+  });
+
+  it('marks the response with source=fallback when the LLM throws', async () => {
+    const { controller } = buildSummaryDeps({ consentLevel: 'basic', llmShouldFail: true });
+    const { res, captured } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    expect(captured.status).toBe(200);
+    expect((captured.body as { source: string }).source).toBe('fallback');
+  });
+});
+
+describe('PatientProfileController.deleteDocument — service receives audit meta', () => {
+  it('forwards req.ip + user-agent so the service can write the audit row', async () => {
+    const deleteDocumentForUser = vi.fn().mockResolvedValue({
+      id: 'doc-1',
+      documentType: 'mri',
+      title: null,
+      storageUri: 'local://uploads/x/scan.pdf',
+    });
+    const service = { deleteDocumentForUser } as unknown as PatientProfileService;
+    const storage = {
+      remove: vi.fn().mockResolvedValue(undefined),
+      load: vi.fn(),
+      save: vi.fn(),
+      canHandle: vi.fn(),
+    } as unknown as StorageProvider;
+    const ocr = { parse: vi.fn() } as unknown as OcrProvider;
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+    } as unknown as Response;
+    await controller.deleteDocument(
+      {
+        user: { id: 'u-1' },
+        params: { id: 'doc-1' },
+        ip: '127.0.0.1',
+        headers: { 'user-agent': 'TestAgent/1.0' },
+      } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    expect(deleteDocumentForUser).toHaveBeenCalledWith('u-1', 'doc-1', {
+      ip: '127.0.0.1',
+      userAgent: 'TestAgent/1.0',
+    });
   });
 });

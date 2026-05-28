@@ -41,15 +41,50 @@ export interface ExecuteOptions {
   timeoutMs?: number;
 }
 
-const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  signal?: AbortSignal,
+): Promise<T> => {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
   });
+  // Race against the caller's abort signal too so a client disconnect
+  // cancels in-flight tool work immediately rather than waiting for
+  // the per-tool timeout to fire. Retrievers that honour ctx.signal
+  // will return early on their own; this branch covers retrievers
+  // that don't (yet) wire it up.
+  //
+  // Listener cleanup matters: under the SSE-streaming flow one
+  // AbortController lives across the whole orchestrator run and many
+  // `withTimeout` calls. Without the explicit `removeEventListener`,
+  // each finished call would leave its `onAbort` attached; a later
+  // signal.abort() would then fire one rejection per orphan listener
+  // against a Promise nobody is awaiting. Node 22+ escalates
+  // unhandled rejections to a process exit.
+  // Hold the cleanup callback outside the Promise constructor scope
+  // so the `finally` block can reach it. Explicit type — TS can't
+  // narrow the closure assignment inside `new Promise()` and would
+  // otherwise infer `never` for the field.
+  const cleanup: { fn: (() => void) | null } = { fn: null };
+  const aborted: Promise<never> = signal
+    ? new Promise((_, reject) => {
+        if (signal.aborted) {
+          reject(new Error(`${label} aborted before start`));
+          return;
+        }
+        const onAbort = () => reject(new Error(`${label} aborted by caller`));
+        signal.addEventListener('abort', onAbort, { once: true });
+        cleanup.fn = () => signal.removeEventListener('abort', onAbort);
+      })
+    : new Promise<never>(() => {});
   try {
-    return await Promise.race([promise, timeout]);
+    return await Promise.race([promise, timeout, aborted]);
   } finally {
     if (timer) clearTimeout(timer);
+    cleanup.fn?.();
   }
 };
 
@@ -110,7 +145,12 @@ const runSingle = async (
   }
 
   try {
-    const result = await withTimeout(tool.execute(parsedArgs, ctx), timeoutMs, call.name);
+    const result = await withTimeout(
+      tool.execute(parsedArgs, ctx),
+      timeoutMs,
+      call.name,
+      ctx.signal,
+    );
     return {
       toolCallId: call.id,
       toolName: call.name,

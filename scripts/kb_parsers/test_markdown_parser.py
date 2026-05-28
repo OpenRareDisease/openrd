@@ -55,6 +55,19 @@ def test_markdown_parser_empty_body_returns_no_sections(tmp_path: Path) -> None:
     assert result.sections == []
 
 
+def test_parse_frontmatter_caps_oversized_yaml() -> None:
+    """A YAML payload exceeding ~64 KB triggers a DoS-shaped path
+    (deep anchor expansion, etc.) under safe_load. We refuse it
+    before the loader runs and surface a warning instead, then fall
+    back to treating the body as having no frontmatter."""
+    # 100 KB of frontmatter is well over the 64 KB cap.
+    big_yaml = "key" + ("x" * 100_000)
+    src = f"---\n{big_yaml}\n---\nbody content"
+    meta, body = parse_frontmatter(src)
+    assert meta == {}
+    assert "body content" in body
+
+
 def test_simple_yaml_parse_warns_on_nested_keys(caplog) -> None:
     """The PyYAML-free fallback can only handle flat key:value lines.
     Earlier versions silently dropped nested children — now a warning

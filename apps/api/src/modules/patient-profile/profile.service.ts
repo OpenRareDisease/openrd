@@ -32,10 +32,12 @@ import {
   ConsentMutationError,
   getConsentDetails,
   getConsentHistory,
+  getConsentStatus,
   updateConsent,
   type ConsentDetails,
   type ConsentEvent,
   type ConsentHistoryOptions,
+  type ConsentStatus,
   type ConsentUpdateInput,
 } from '../ai-agents/security/index.js';
 
@@ -917,12 +919,18 @@ export class PatientProfileService {
       throw new AppError('Patient profile not found', 404);
     }
 
+    // `patient_code` is the clinic-assigned identifier; users must
+    // not be able to set it themselves through the public update
+    // endpoint (the legacy code admitted it via
+    // updateProfileSchema.partial()). Admin / back-office paths
+    // still go through createProfile or a dedicated upsert that
+    // bypasses this list. Removing it here is the user-facing
+    // hardening.
     const columns: Array<[keyof UpdateProfileInput, string]> = [
       ['fullName', 'full_name'],
       ['preferredName', 'preferred_name'],
       ['dateOfBirth', 'date_of_birth'],
       ['gender', 'gender'],
-      ['patientCode', 'patient_code'],
       ['diagnosisStage', 'diagnosis_stage'],
       ['diagnosisDate', 'diagnosis_date'],
       ['geneticMutation', 'genetic_mutation'],
@@ -1232,28 +1240,76 @@ export class PatientProfileService {
   async deleteDocumentForUser(
     userId: string,
     documentId: string,
+    meta?: { ip?: string; userAgent?: string },
   ): Promise<DeletedPatientDocumentResult> {
-    const result = await this.pool.query(
-      `DELETE FROM patient_documents d
-       USING patient_profiles p
-       WHERE d.profile_id = p.id
-         AND p.user_id = $1
-         AND d.id = $2
-       RETURNING d.id, d.document_type, d.title, d.storage_uri`,
-      [userId, documentId],
-    );
+    // The DELETE and the audit-row insert must land or roll back
+    // together. Without this, a successful DELETE followed by a
+    // failed audit insert would leave the row gone with no trail of
+    // who removed it — and the consent / followup tables can still
+    // hold `linked_document_id` pointers to the vanished UUID.
+    const client = await this.pool.connect();
+    let txOpen = false;
+    try {
+      await client.query('BEGIN');
+      txOpen = true;
 
-    if (!result.rowCount) {
-      throw new AppError('Document not found', 404);
+      const result = await client.query(
+        `DELETE FROM patient_documents d
+         USING patient_profiles p
+         WHERE d.profile_id = p.id
+           AND p.user_id = $1
+           AND d.id = $2
+         RETURNING d.id, d.document_type, d.title, d.storage_uri, d.file_name`,
+        [userId, documentId],
+      );
+
+      if (!result.rowCount) {
+        await client.query('ROLLBACK');
+        txOpen = false;
+        throw new AppError('Document not found', 404);
+      }
+
+      const row = result.rows[0];
+
+      await client.query(
+        `INSERT INTO audit_logs (event_type, event_payload)
+         VALUES ($1, $2)`,
+        [
+          'patient_document.deleted',
+          {
+            userId,
+            documentId: row.id,
+            documentType: row.document_type,
+            title: row.title ?? null,
+            fileName: row.file_name ?? null,
+            storageUri: row.storage_uri,
+            ip: meta?.ip ?? null,
+            userAgent: meta?.userAgent ?? null,
+          },
+        ],
+      );
+
+      await client.query('COMMIT');
+      txOpen = false;
+
+      return {
+        id: row.id,
+        documentType: row.document_type,
+        title: row.title ?? null,
+        storageUri: row.storage_uri,
+      };
+    } catch (error) {
+      if (txOpen) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn({ rollbackError }, 'deleteDocumentForUser: ROLLBACK after error failed');
+        }
+      }
+      throw error;
+    } finally {
+      client.release();
     }
-
-    const row = result.rows[0];
-    return {
-      id: row.id,
-      documentType: row.document_type,
-      title: row.title ?? null,
-      storageUri: row.storage_uri,
-    };
   }
 
   async updateDocumentOcrPayloadForUser(
@@ -1658,7 +1714,17 @@ export class PatientProfileService {
       [submissionId, profileId, documentIds],
     );
 
-    return { updated: updateResult.rowCount ?? 0 };
+    const updated = updateResult.rowCount ?? 0;
+    // The legacy code silently returned `{ updated: 0 }` when every
+    // documentId belonged to another user — indistinguishable from
+    // "all those ids already had this submission_id". A future
+    // monitor looking for "attach failures" would see clean 200s.
+    // Surface the discrepancy as a 404 (matching
+    // assertDocumentOwnedByProfile's behaviour for cross-user ids).
+    if (updated < documentIds.length) {
+      throw new AppError('One or more documents not found', 404);
+    }
+    return { updated };
   }
 
   async listSubmissions(
@@ -2474,6 +2540,10 @@ export class PatientProfileService {
    * so the controller can map that to a 404 rather than fabricating
    * a "never consented" row.
    */
+  async getConsentStatus(userId: string): Promise<ConsentStatus> {
+    return getConsentStatus(this.pool, userId);
+  }
+
   async getConsentDetails(userId: string): Promise<ConsentDetails | null> {
     return getConsentDetails(this.pool, userId);
   }

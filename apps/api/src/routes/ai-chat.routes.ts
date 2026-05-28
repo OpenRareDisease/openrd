@@ -302,7 +302,10 @@ const handleOrchestratorEvent = (progressId: string, event: OrchestratorEvent) =
 };
 
 const buildOrchestrator = (llm: ILLMProvider, context: RouteContext, pool: Pool): Orchestrator => {
-  const medicalKb = new MedicalKbRetriever({ kbServiceUrl: context.env.kbServiceUrl });
+  const medicalKb = new MedicalKbRetriever({
+    kbServiceUrl: context.env.kbServiceUrl,
+    serviceToken: context.env.KB_SERVICE_TOKEN,
+  });
   const profile = new PatientProfileRetriever(pool);
   const reports = new PatientReportsRetriever(pool);
   const registry = new ToolRegistry()
@@ -516,12 +519,18 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
         );
       }
 
-      setProgressStage(progressId, 'done', 'error', detail);
+      // Apply the same PII scrubber the audit row uses BEFORE
+      // putting `detail` on the response body or in the progress
+      // stage. Without this, a pg error carrying `$1 = '张三'` or
+      // `DETAIL: Key (phone)=(...)` would reach the client even
+      // though the audit row was clean.
+      const safeDetail = scrubErrorDetail(detail).slice(0, 500);
+      setProgressStage(progressId, 'done', 'error', safeDetail);
       return res.status(status).json({
         success: false,
         code: isConsentError ? 'consent_required' : 'ai_error',
         message: isConsentError ? '请先同意 AI 使用你的数据' : 'AI 服务暂时不可用',
-        detail,
+        detail: safeDetail,
         progressId,
       });
     }
@@ -683,6 +692,20 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       });
     }
 
+    // Reserve the progress entry under this user. The legacy /ask
+    // route already did this; the streaming route skipped it, which
+    // meant a malicious client could supply a progressId already
+    // owned by another user. The route doesn't read the store after
+    // this, but the audit row written at end-of-stream carries
+    // `request_id = progressId` and that needs to map 1:1 to a user.
+    if (initProgress(progressId, userId) === null) {
+      return res.status(409).json({
+        success: false,
+        message: 'progressId 已被占用',
+        progressId,
+      });
+    }
+
     let consentStatus;
     try {
       consentStatus = await getConsentStatus(pool, userId);
@@ -836,12 +859,15 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       }
     } catch (error) {
       const detail = getErrorMessage(error);
-      streamError = detail;
+      // Same scrubber as the JSON response path. The SSE error frame
+      // is rendered straight in the mobile audit-history viewer.
+      const safeDetail = scrubErrorDetail(detail).slice(0, 500);
+      streamError = safeDetail;
       // The orchestrator's own try/catch usually emits `error`
       // before throwing, but a sync throw from runStream itself
       // wouldn't. Surface it as a frame so the client gets a
       // clean signal rather than a half-written stream.
-      if (!clientGone) await writeFrame({ type: 'error', message: detail });
+      if (!clientGone) await writeFrame({ type: 'error', message: safeDetail });
     }
 
     // Audit row mirrors /ask: success when we have a final result,

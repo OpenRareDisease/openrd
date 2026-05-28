@@ -104,6 +104,7 @@ export class GetMyReportsTool implements ITool {
         consentLevel: ctx.consentLevel,
         requestId: ctx.requestId,
         logger: ctx.logger,
+        signal: ctx.signal,
       },
     );
 

@@ -101,6 +101,10 @@ const envSchema = z
     ),
     KB_SERVICE_HOST: z.string().default('127.0.0.1'),
     KB_SERVICE_PORT: z.coerce.number().int().positive().default(5010),
+    // Bearer token shared with the Python KB service. Forwarded as
+    // `Authorization: Bearer ...` on every /multi request. Empty in
+    // loopback dev; required in production (validated below).
+    KB_SERVICE_TOKEN: optionalNonEmptyString(),
     CHROMA_API_KEY: z.string().min(1).optional(),
     CHROMA_TENANT_ID: z.string().min(1).optional(),
     CHROMA_DATABASE: z.string().default('FSHD'),
@@ -147,6 +151,12 @@ const validateProductionEnv = (env: AppEnv) => {
   }
   if (env.OCR_PROVIDER === 'mock') {
     errors.push('OCR_PROVIDER=mock is not allowed in production');
+  }
+  if (!env.KB_SERVICE_TOKEN) {
+    errors.push(
+      'KB_SERVICE_TOKEN is required in production so the KB service ' +
+        'cannot be reached anonymously',
+    );
   }
 
   return errors;

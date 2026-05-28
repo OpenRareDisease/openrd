@@ -66,6 +66,11 @@ export interface RetrieveContext {
   consentLevel?: ConsentLevel;
   requestId?: string;
   logger: AppLogger;
+  /** Caller-driven cancellation. When set and fired, the retriever
+   *  SHOULD stop in-flight work (cancel fetch, cancel pg query) so a
+   *  dropped SSE client doesn't keep tying up a pool connection or
+   *  an HTTP socket until the per-tool wall-clock timeout expires. */
+  signal?: AbortSignal;
 }
 
 export type ConsentLevel = 'none' | 'basic' | 'precise';

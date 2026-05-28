@@ -13,11 +13,24 @@ FSHD corpus (medical guidelines, journal papers, etc.).
 
 from __future__ import annotations
 
+import warnings
 from io import StringIO
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .base import Parser, ParseResult, ParsedSection
+
+# Same Pillow decompression-bomb guard as image_parser. pdf2image
+# converts PDF pages into Pillow Image objects; without this a
+# corpus-dropped scanned PDF with absurdly large page dimensions
+# could OOM the worker.
+try:
+    from PIL import Image  # type: ignore
+
+    Image.MAX_IMAGE_PIXELS = 50_000_000
+    warnings.simplefilter("error", Image.DecompressionBombWarning)
+except ImportError:
+    pass
 
 #: Below this many non-whitespace characters per page we assume the
 #: page is a scanned image and try OCR. 60 picks up headers/footers

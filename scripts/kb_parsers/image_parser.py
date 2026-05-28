@@ -8,11 +8,38 @@ with noise.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from .base import Parser, ParseResult, ParsedSection
 
 _OCR_LANGS = "chi_sim+eng"
+
+#: Pillow's default MAX_IMAGE_PIXELS (~89 megapixels) only emits a
+#: warning on overrun, not an exception, so a "decompression bomb"
+#: (a 1×1 GB PNG/TIFF expanding into RAM) would wedge the worker
+#: without ever raising. Cap to a value generous for medical scans
+#: but cheap to allocate, and promote the warning to an error so it
+#: surfaces as a clean parse_error rather than OOM.
+_MAX_IMAGE_PIXELS = 50_000_000
+
+
+def _configure_pillow_bomb_guard():
+    try:
+        from PIL import Image  # type: ignore
+
+        Image.MAX_IMAGE_PIXELS = _MAX_IMAGE_PIXELS
+        # Image.DecompressionBombError already raises; the warning
+        # variant fires at MAX/2. Promote both to errors so either
+        # threshold surfaces as a catchable exception in the parser.
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+    except ImportError:
+        # Pillow may not be installed; the per-call import below
+        # surfaces the missing dep as parse_error.
+        pass
+
+
+_configure_pillow_bomb_guard()
 
 
 class ImageParser(Parser):
