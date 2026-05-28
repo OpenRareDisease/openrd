@@ -668,7 +668,42 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     let clientGone = false;
     res.on('close', () => {
       clientGone = true;
+      // Stop the heartbeat now even though the trailing
+      // clearInterval below also covers it — without the early
+      // clear we'd keep writing into a closed socket for the
+      // remainder of the in-flight orchestrator run (the for-await
+      // loop ignores `clientGone` only between events; while it's
+      // blocked on `next()` we'd otherwise emit several stale
+      // keepalives that all throw and get swallowed).
+      clearInterval(keepaliveTimer);
     });
+
+    // Keepalive heartbeat. The mobile SSE client has a ~15s idle
+    // watchdog that flips a stalled stream into 'error'. Without
+    // these frames, healthy long waits (planner LLM up to 30s, tool
+    // execution up to 30s per call) would trip that watchdog and
+    // kill perfectly fine runs. We emit a named `keepalive` event
+    // every 5s — 3× the mobile heartbeat margin — purely as
+    // transport heartbeat; the client's keepalive listener just
+    // resets its watchdog and does not surface the event upward.
+    //
+    // The setInterval runs on Node's own event loop tick so it
+    // keeps firing even while the for-await below is blocked
+    // waiting on orchestrator events (which is exactly when we
+    // need it most).
+    const KEEPALIVE_MS = 5_000;
+    const keepaliveTimer = setInterval(() => {
+      if (clientGone) return;
+      // Direct res.write — we don't go through writeWithBackpressure
+      // because a buffered keepalive is fine to drop (subsequent
+      // ticks will retry) and we don't want to add a queue here.
+      try {
+        res.write('event: keepalive\ndata: {}\n\n');
+      } catch {
+        // Connection already torn down; let res.on('close') handle
+        // the rest of the cleanup.
+      }
+    }, KEEPALIVE_MS);
 
     /** Serialise one OrchestratorEvent to its on-the-wire payload.
      *
@@ -771,6 +806,12 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
         'streaming audit insert failed',
       );
     }
+
+    // Stop the heartbeat regardless of how we got here (clean done,
+    // mid-stream error, client disconnect). A leaked interval would
+    // keep firing res.write into a closed socket and eventually
+    // crash the process with EPIPE / write-after-end.
+    clearInterval(keepaliveTimer);
 
     if (!clientGone) {
       res.end();

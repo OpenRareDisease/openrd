@@ -671,6 +671,55 @@ export const askAiQuestion = (question: string, progressId?: string) =>
     body: JSON.stringify({ question, progressId }),
   });
 
+/** One frame of the orchestrator's SSE stream. Mirrors the backend
+ *  `OrchestratorEvent` union in `apps/api/src/modules/ai-agents/
+ *  orchestrator/types.ts`. The `done` event's `data` payload is the
+ *  narrowed `AiAskResponse['data']` shape (NOT the full
+ *  OrchestratorRunResult — server strips audit-internal fields). */
+export type AiStreamEvent =
+  | { type: 'planning' }
+  | { type: 'plan_complete'; toolsPlanned: string[] }
+  | { type: 'tool_start'; tool: string; toolCallId: string }
+  | {
+      type: 'tool_complete';
+      tool: string;
+      toolCallId: string;
+      chunkCount: number;
+      error?: string;
+    }
+  | {
+      type: 'context_built';
+      citationCount: number;
+      fieldsUsed: string[];
+      usedPersonalData: boolean;
+    }
+  | { type: 'answering' }
+  | { type: 'answer_delta'; text: string }
+  | { type: 'done'; data: AiAskResponse['data'] }
+  | { type: 'error'; message: string };
+
+export interface StreamAiQuestionCallbacks {
+  /** Fired once for every SSE frame. Use this to drive progress UI
+   *  + accumulate `answer_delta` text into the message bubble. */
+  onEvent: (event: AiStreamEvent) => void;
+  /** Fired when the stream closes cleanly (after the `done` frame or
+   *  after an `error` frame). The `data` payload is null when the
+   *  stream ended without a `done` event (e.g. transport-level
+   *  failure mid-stream). */
+  onComplete: (data: AiAskResponse['data'] | null) => void;
+  /** Fired when the transport itself fails (network error, 4xx/5xx
+   *  before stream headers, etc). Mutually exclusive with onComplete
+   *  on the happy path. */
+  onError: (error: Error) => void;
+}
+
+export interface StreamAiQuestionHandle {
+  /** Close the SSE connection immediately. Safe to call multiple
+   *  times. Aborting after the stream has naturally completed is a
+   *  no-op. */
+  close: () => void;
+}
+
 export type AiAuditStatus = 'success' | 'error' | 'consent_denied';
 
 export interface AiAuditEntry {

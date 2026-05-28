@@ -20,11 +20,11 @@ import {
   ApiError,
   AiAskProgressStage,
   type AiCitation,
-  askAiQuestion,
-  getAiAskProgress,
-  initAiAskProgress,
+  type AiStreamEvent,
+  type StreamAiQuestionHandle,
   isConsentRequiredError,
 } from '../../lib/api';
+import { streamAiQuestion } from '../../lib/ai-streaming';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
 import {
@@ -552,6 +552,11 @@ const P_QNA = () => {
   const scrollViewRef = useRef<ScrollView | null>(null);
   const inputRef = useRef<TextInput | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Active SSE stream handle. We keep it in a ref so the cleanup
+  // effect can close it on unmount + a new question can abort any
+  // still-running prior one (rare race, but possible if the user
+  // mashes send fast).
+  const streamHandleRef = useRef<StreamAiQuestionHandle | null>(null);
 
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -600,6 +605,13 @@ const P_QNA = () => {
         clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
       }
+      // Hard-cancel any in-flight SSE on unmount so the orchestrator
+      // sees the disconnect and stops billing tokens. The audit row
+      // still lands as 'error' (handled server-side).
+      if (streamHandleRef.current) {
+        streamHandleRef.current.close();
+        streamHandleRef.current = null;
+      }
     };
   }, []);
 
@@ -632,6 +644,16 @@ const P_QNA = () => {
             clearInterval(progressTimerRef.current);
             progressTimerRef.current = null;
           }
+          // Abort any in-flight SSE so the orchestrator sees the
+          // disconnect and stops billing tokens. Without this, the
+          // server-side stream keeps running, `onComplete` fires
+          // later against a now-empty conversation, and the user's
+          // `isSending` stays true so they can't ask a new question.
+          if (streamHandleRef.current) {
+            streamHandleRef.current.close();
+            streamHandleRef.current = null;
+          }
+          setIsSending(false);
           setAskProgress(null);
           setDraft('');
           setMessages([createWelcomeMessage()]);
@@ -681,130 +703,221 @@ const P_QNA = () => {
       ),
     });
 
-    const pollProgress = async () => {
-      try {
-        const response = await getAiAskProgress(progressId);
-        setAskProgress(response.data);
-      } catch {
-        // Ignore polling failures and let the main request decide the result.
+    // Map an OrchestratorEvent.type to the legacy progress stage id
+    // the bottom card still consumes. Returning null means "don't
+    // advance the stage on this event" — the orchestrator emits a
+    // bunch of fine-grained events (plan_complete, tool_complete,
+    // context_built, answer_delta) that don't move the visible
+    // progress bar.
+    const stageForEvent = (eventType: AiStreamEvent['type']): string | null => {
+      switch (eventType) {
+        case 'planning':
+          return 'query_gen';
+        case 'tool_start':
+          return 'kb_search';
+        case 'answering':
+          return 'final_answer';
+        case 'done':
+          return 'done';
+        default:
+          return null;
       }
     };
 
-    if (progressTimerRef.current) {
-      clearInterval(progressTimerRef.current);
+    // Cancel any in-flight prior stream before opening a new one.
+    if (streamHandleRef.current) {
+      streamHandleRef.current.close();
+      streamHandleRef.current = null;
     }
 
-    await initAiAskProgress(progressId);
-    progressTimerRef.current = setInterval(pollProgress, 1200);
-    pollProgress();
+    // Track whether any answer_delta has landed yet. Until the first
+    // one, the bubble shows the "正在整理回答..." placeholder; once
+    // tokens start flowing we replace the placeholder with the
+    // accumulating answer text. Without this guard, an instant
+    // answer (planner answered directly, no streaming) would briefly
+    // show empty content before the done frame populated it.
+    let receivedAnyDelta = false;
+    let accumulatedAnswer = '';
 
-    try {
-      const response = await askAiQuestion(question, progressId);
-      const answer = response.data.answer?.trim() || '暂时没有生成有效回答。';
-      const metadata: AssistantMetadata = {
-        toolCalls: response.data.toolCalls,
-        fieldsUsed: response.data.fieldsUsed,
-        usedPersonalData: response.data.usedPersonalData,
-        citations: response.data.citations,
-        redactionMode: response.data.redactionMode,
-        consentLevel: response.data.consentLevel,
-      };
-
-      setMessages((prev) =>
-        prev.map((item) =>
-          item.id === assistantMessageId
-            ? {
-                ...item,
-                content: answer,
-                createdAt: response.data.timestamp || new Date().toISOString(),
-                status: 'sent',
-                metadata,
-              }
-            : item,
-        ),
-      );
-      setAskProgress((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: 'done',
-              percent: 100,
-              stageId: 'done',
-              stages: prev.stages.map((stage) => ({
+    const handleStreamEvent = (event: AiStreamEvent) => {
+      const targetStage = stageForEvent(event.type);
+      if (targetStage) {
+        setAskProgress((prev) => {
+          if (!prev) return prev;
+          const stageIdx = prev.stages.findIndex((s) => s.id === targetStage);
+          if (stageIdx === -1) return prev;
+          // Mark every prior stage done; the target stage active
+          // (or done, for the terminal stage); leave later stages
+          // pending.
+          const stages = prev.stages.map((stage, idx): AiAskProgressStage => {
+            if (idx < stageIdx) return { ...stage, status: 'done' };
+            if (idx === stageIdx) {
+              return {
                 ...stage,
-                status: 'done',
-              })),
+                status: targetStage === 'done' ? 'done' : 'active',
+                startedAt: stage.startedAt ?? new Date().toISOString(),
+                ...(targetStage === 'done' ? { endedAt: new Date().toISOString() } : {}),
+              };
             }
-          : prev,
-      );
-    } catch (error) {
-      // Special-case the consent gate: instead of showing a raw error
-      // text in the bubble, point the user at the privacy settings
-      // page where they can grant consent. Without this, a 403 looks
-      // like a generic failure and the user has no actionable path
-      // out of it.
-      if (isConsentRequiredError(error)) {
-        const consentMessage = '需要先在隐私设置中开启 AI 同意，才能使用智能问答。';
+            return stage;
+          });
+          const STAGE_PERCENTS: Record<string, number> = {
+            received: 5,
+            query_gen: 25,
+            kb_search: 60,
+            final_answer: 90,
+            done: 100,
+          };
+          return {
+            ...prev,
+            stages,
+            stageId: targetStage,
+            percent: Math.max(prev.percent, STAGE_PERCENTS[targetStage] ?? prev.percent),
+            status: targetStage === 'done' ? 'done' : 'running',
+          };
+        });
+      }
+
+      if (event.type === 'answer_delta') {
+        accumulatedAnswer += event.text;
         setMessages((prev) =>
-          prev.map((item) =>
-            item.id === assistantMessageId
-              ? { ...item, content: consentMessage, status: 'error' }
-              : item,
-          ),
+          prev.map((item) => {
+            if (item.id !== assistantMessageId) return item;
+            // First delta: drop the placeholder text, keep status
+            // 'loading' so the bubble still shows the "thinking"
+            // affordance until done.
+            if (!receivedAnyDelta) {
+              receivedAnyDelta = true;
+              return { ...item, content: event.text };
+            }
+            return { ...item, content: accumulatedAnswer };
+          }),
         );
-        setAskProgress((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: 'error',
-                stages: prev.stages.map((stage) =>
-                  stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
-                ),
-                error: consentMessage,
-              }
-            : prev,
-        );
-        Alert.alert(
-          '需要授权 AI',
-          '在使用智能问答前，请到「隐私设置」开启 AI 同意（个人数据 + 第三方 LLM 处理）。',
-          [
-            { text: '取消', style: 'cancel' },
-            { text: '去设置', onPress: () => router.push('/p-privacy_settings') },
-          ],
-        );
-      } else {
-        const friendlyMessage = getFriendlyErrorMessage(error);
+      }
+    };
+
+    streamHandleRef.current = streamAiQuestion(question, progressId, {
+      onEvent: handleStreamEvent,
+      onComplete: (data) => {
+        streamHandleRef.current = null;
+        setIsSending(false);
+        if (!data) {
+          // Stream ended without a `done` frame (server-side error
+          // or transport blip mid-stream). Mark the bubble errored
+          // unless we already started accumulating an answer — in
+          // that case keep what we have and just flag the status.
+          setMessages((prev) =>
+            prev.map((item) =>
+              item.id === assistantMessageId
+                ? {
+                    ...item,
+                    status: 'error',
+                    content: receivedAnyDelta ? accumulatedAnswer : 'AI 回答中断，请稍后重试。',
+                  }
+                : item,
+            ),
+          );
+          setAskProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'error',
+                  error: 'stream aborted',
+                  stages: prev.stages.map((s) =>
+                    s.id === prev.stageId ? { ...s, status: 'error' } : s,
+                  ),
+                }
+              : prev,
+          );
+          return;
+        }
+
+        // Happy path: `done` frame arrived, `data` is the
+        // narrowed AiAskResponse['data']. Lock in the final
+        // content + metadata.
+        const finalAnswer = data.answer?.trim() || accumulatedAnswer || '暂时没有生成有效回答。';
+        const metadata: AssistantMetadata = {
+          toolCalls: data.toolCalls,
+          fieldsUsed: data.fieldsUsed,
+          usedPersonalData: data.usedPersonalData,
+          citations: data.citations,
+          redactionMode: data.redactionMode,
+          consentLevel: data.consentLevel,
+        };
         setMessages((prev) =>
           prev.map((item) =>
             item.id === assistantMessageId
               ? {
                   ...item,
-                  content: friendlyMessage,
-                  status: 'error',
+                  content: finalAnswer,
+                  createdAt: data.timestamp || new Date().toISOString(),
+                  status: 'sent',
+                  metadata,
                 }
               : item,
           ),
         );
-        setAskProgress((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: 'error',
-                stages: prev.stages.map((stage) =>
-                  stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
-                ),
-                error: friendlyMessage,
-              }
-            : prev,
-        );
-      }
-    } finally {
-      setIsSending(false);
-      if (progressTimerRef.current) {
-        clearInterval(progressTimerRef.current);
-        progressTimerRef.current = null;
-      }
-    }
+      },
+      onError: (error) => {
+        streamHandleRef.current = null;
+        setIsSending(false);
+        // Consent gate comes back as an ApiError on the initial
+        // POST (before SSE headers commit), so it surfaces here,
+        // not via an `error` SSE frame. Reuse the existing
+        // consent-required branch verbatim.
+        if (isConsentRequiredError(error)) {
+          const consentMessage = '需要先在隐私设置中开启 AI 同意，才能使用智能问答。';
+          setMessages((prev) =>
+            prev.map((item) =>
+              item.id === assistantMessageId
+                ? { ...item, content: consentMessage, status: 'error' }
+                : item,
+            ),
+          );
+          setAskProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'error',
+                  stages: prev.stages.map((stage) =>
+                    stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                  ),
+                  error: consentMessage,
+                }
+              : prev,
+          );
+          Alert.alert(
+            '需要授权 AI',
+            '在使用智能问答前，请到「隐私设置」开启 AI 同意（个人数据 + 第三方 LLM 处理）。',
+            [
+              { text: '取消', style: 'cancel' },
+              { text: '去设置', onPress: () => router.push('/p-privacy_settings') },
+            ],
+          );
+        } else {
+          const friendlyMessage = getFriendlyErrorMessage(error);
+          setMessages((prev) =>
+            prev.map((item) =>
+              item.id === assistantMessageId
+                ? { ...item, content: friendlyMessage, status: 'error' }
+                : item,
+            ),
+          );
+          setAskProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: 'error',
+                  stages: prev.stages.map((stage) =>
+                    stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                  ),
+                  error: friendlyMessage,
+                }
+              : prev,
+          );
+        }
+      },
+    });
   };
 
   const renderProgressCard = () => {
