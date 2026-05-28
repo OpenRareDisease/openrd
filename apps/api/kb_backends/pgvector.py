@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -266,9 +266,38 @@ class PgVectorBackend(VectorBackend):
                 conn.rollback()
                 raise
 
+    def delete_by_source_other_fingerprints(
+        self, source_file: str, keep_fingerprint: str
+    ) -> int:
+        """Scoped variant used by the crash-safe ingest path: drop only
+        chunks whose source_fingerprint does NOT match the just-inserted
+        batch, leaving the new chunks intact even if the same caller
+        runs this concurrently."""
+        if not source_file or not keep_fingerprint:
+            return 0
+        with self.pool.connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {self.table_name} "
+                        f"WHERE source_file = %s AND source_fingerprint <> %s",
+                        (source_file, keep_fingerprint),
+                    )
+                    deleted = cur.rowcount or 0
+                conn.commit()
+                return deleted
+            except Exception:
+                conn.rollback()
+                raise
+
     # --------------------------------------------------------------- introspection
 
-    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, str]:
+    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, Set[str]]:
+        """Return every distinct source_fingerprint per source_file.
+        The dict-of-set shape matters: a source with two fingerprints
+        is the diagnostic for an interrupted cleanup, and the ingest
+        script forces re-ingestion in that case rather than letting
+        the dict-arbitrary-pick silently mark the file as unchanged."""
         if not source_files:
             return {}
         with self.pool.connection() as conn:
@@ -281,7 +310,12 @@ class PgVectorBackend(VectorBackend):
                     (source_files,),
                 )
                 rows = cur.fetchall()
-        return {row[0]: row[1] for row in rows if row[0]}
+        result: Dict[str, Set[str]] = {}
+        for source_file, fingerprint in rows:
+            if not source_file or not fingerprint:
+                continue
+            result.setdefault(source_file, set()).add(fingerprint)
+        return result
 
     def list_all_source_files(self) -> List[str]:
         """Distinct source_file values currently in the table.

@@ -96,16 +96,20 @@ export class AuthService {
 
   private async registerLoginFailure(identifier: string) {
     const normalized = this.normalizeIdentifier(identifier);
-    const current = await this.getLoginGuard(normalized);
-    const nextFailureCount =
-      current?.locked_until && new Date(current.locked_until).getTime() <= Date.now()
-        ? 1
-        : (current?.failure_count ?? 0) + 1;
-    const shouldLock = nextFailureCount >= this.env.LOGIN_MAX_FAILURES;
-    const lockedUntil = shouldLock
-      ? new Date(Date.now() + this.env.LOGIN_LOCK_MINUTES * 60 * 1000)
-      : null;
+    const lockWindowMs = this.env.LOGIN_LOCK_MINUTES * 60 * 1000;
+    const maxFailures = this.env.LOGIN_MAX_FAILURES;
 
+    // Atomic increment + lock decision in a single SQL statement.
+    //
+    // The previous implementation read the row, computed the next
+    // counter in Node, then UPSERTed it back. Two simultaneous
+    // brute-force attempts could both read the same baseline (say,
+    // failure_count=4 with MAX=5), both compute next=5 → lock, and
+    // both write 5 — effectively counting two attempts as one. That
+    // pushed the lockout one attempt later than configured and let
+    // an attacker stretch the budget. Doing the math in SQL on the
+    // current row (post-window-reset) makes the decision a true
+    // read-modify-write under the row lock the UPSERT takes.
     await this.pool.query(
       `INSERT INTO auth_login_guards (
          identifier,
@@ -114,19 +118,39 @@ export class AuthService {
          last_failed_at,
          locked_until
        )
-       VALUES ($1, $2, NOW(), NOW(), $3)
+       VALUES (
+         $1,
+         1,
+         NOW(),
+         NOW(),
+         CASE WHEN 1 >= $2 THEN NOW() + ($3 || ' milliseconds')::interval ELSE NULL END
+       )
        ON CONFLICT (identifier)
        DO UPDATE SET
-         failure_count = EXCLUDED.failure_count,
+         failure_count = CASE
+           WHEN auth_login_guards.locked_until IS NOT NULL
+             AND auth_login_guards.locked_until <= NOW()
+           THEN 1
+           ELSE auth_login_guards.failure_count + 1
+         END,
          last_failed_at = NOW(),
-         locked_until = EXCLUDED.locked_until,
          first_failed_at = CASE
            WHEN auth_login_guards.locked_until IS NOT NULL
              AND auth_login_guards.locked_until <= NOW()
            THEN NOW()
            ELSE auth_login_guards.first_failed_at
+         END,
+         locked_until = CASE
+           WHEN (CASE
+                   WHEN auth_login_guards.locked_until IS NOT NULL
+                     AND auth_login_guards.locked_until <= NOW()
+                   THEN 1
+                   ELSE auth_login_guards.failure_count + 1
+                 END) >= $2
+           THEN NOW() + ($3 || ' milliseconds')::interval
+           ELSE NULL
          END`,
-      [normalized, nextFailureCount, lockedUntil],
+      [normalized, maxFailures, lockWindowMs],
     );
   }
 

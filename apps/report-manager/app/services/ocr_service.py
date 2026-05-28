@@ -155,36 +155,40 @@ def extract_text_from_pdf(pdf_path):
         try:
             # 将PDF转换为图像
             images = convert_from_path(pdf_path, dpi=300)
-            
+
             # 使用PaddleOCR优先，其次使用Tesseract提取图像中的文本
+            # 用 TemporaryDirectory() 把所有页的临时图像放在隔离目录里：
+            # 旧的实现固定文件名 (temp_image_{i}.png) 在系统 tmp 根目录下，
+            # 两个并发 OCR 请求拿到同一个 i 时会互相覆盖，PIL 句柄也可能
+            # 复用错文件。隔离目录 + with 语句让多个 worker 安全并行，并
+            # 在异常路径也保证目录被清掉。
             ocr_text = ""
-            for i, image in enumerate(images):
-                paddle_text = _paddle_image_to_string(image)
-                if paddle_text:
-                    ocr_text += paddle_text + "\n"
-                    continue
-                if not paddle_text:
+            with tempfile.TemporaryDirectory(prefix="ocr_pdf_") as tmpdir:
+                for i, image in enumerate(images):
+                    paddle_text = _paddle_image_to_string(image)
+                    if paddle_text:
+                        ocr_text += paddle_text + "\n"
+                        continue
                     global _tesseract_logged
                     if not _tesseract_logged:
                         _log_ocr_message("OCR engine: Tesseract (fallback)")
                         _tesseract_logged = True
-                    # 保存图像到临时文件
-                    temp_image_path = os.path.join(tempfile.gettempdir(), f"temp_image_{i}.png")
-                    try:
-                        image.save(temp_image_path, 'PNG')
-                        # 使用Tesseract提取文本
+                    temp_image_path = os.path.join(tmpdir, f"page_{i}.png")
+                    image.save(temp_image_path, 'PNG')
+                    # 旧实现用 Image.open(path) 但没 close —— 在长批
+                    # 文档 / 低 ulimit 平台 (Windows / 容器) 上会累积
+                    # 文件描述符直到 OS 拒绝新的 open。用 with 让 PIL
+                    # 句柄随作用域释放。
+                    with Image.open(temp_image_path) as page_image:
                         ocr_text += pytesseract.image_to_string(
-                            Image.open(temp_image_path),
+                            page_image,
                             lang="chi_sim+eng",
                         )
-                    finally:
-                        if os.path.exists(temp_image_path):
-                            os.remove(temp_image_path)
-            
+
             text = ocr_text
         except Exception as e:
             _log_ocr_message(f"OCR extraction error: {e}")
-    
+
     return text
 
 def extract_text_from_file(file_path, content_type):
@@ -193,15 +197,21 @@ def extract_text_from_file(file_path, content_type):
     """
     if content_type in SUPPORTED_IMAGE_TYPES:
         try:
-            image = Image.open(file_path)
-            paddle_text = _paddle_image_to_string(image)
-            if paddle_text:
-                return paddle_text
-            global _tesseract_logged
-            if not _tesseract_logged:
-                _log_ocr_message("OCR engine: Tesseract (fallback)")
-                _tesseract_logged = True
-            return pytesseract.image_to_string(image, lang="chi_sim+eng")
+            # PIL.Image.open lazy-loads but holds the underlying file
+            # descriptor open until the Image is garbage-collected. On
+            # platforms with a low ulimit (Windows defaults, Docker
+            # without explicit limits) a busy OCR worker can leak its
+            # way to "too many open files". Use a context manager so the
+            # fd is released as soon as we're done.
+            with Image.open(file_path) as image:
+                paddle_text = _paddle_image_to_string(image)
+                if paddle_text:
+                    return paddle_text
+                global _tesseract_logged
+                if not _tesseract_logged:
+                    _log_ocr_message("OCR engine: Tesseract (fallback)")
+                    _tesseract_logged = True
+                return pytesseract.image_to_string(image, lang="chi_sim+eng")
         except Exception as e:
             _log_ocr_message(f"Image OCR error: {e}")
             return ""

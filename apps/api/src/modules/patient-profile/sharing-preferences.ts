@@ -172,46 +172,96 @@ export const updateSharingPreferences = async (
     throw new SharingPreferenceMutationError('userId is required', 'profile_not_found');
   }
 
-  const current = await getSharingPreferences(pool, userId);
-  if (!current) {
-    throw new SharingPreferenceMutationError('Patient profile not found', 'profile_not_found');
-  }
+  // Hold the row lock for the whole read → diff → write cycle so two
+  // concurrent toggles can't both decide "nothing to change" against
+  // the same snapshot, or both flip the same column and leave only
+  // one timestamp updated. The transaction also guarantees the
+  // RETURNING read on UPDATE sees our own writes, eliminating the
+  // separate refresh round-trip.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const changes: Array<{ column: string; atColumn: string; newValue: boolean }> = [];
-  for (const key of Object.keys(COLUMN_MAP) as Array<keyof SharingPreferenceFlags>) {
-    const nextValue = input[key];
-    if (nextValue === undefined) continue;
-    if (nextValue === current.flags[key]) continue;
-    const map = COLUMN_MAP[key];
-    changes.push({ column: map.column, atColumn: map.atColumn, newValue: nextValue });
-  }
+    const lockResult = await client.query<SharingRow>(
+      `SELECT clinical_trial_consent,
+              clinical_trial_consent_at,
+              data_donation_consent,
+              data_donation_consent_at,
+              hospital_sync_consent,
+              hospital_sync_consent_at,
+              community_share_consent,
+              community_share_consent_at
+         FROM patient_profiles
+        WHERE user_id = $1
+        FOR UPDATE`,
+      [userId],
+    );
 
-  if (changes.length === 0) {
-    return current;
-  }
+    if (lockResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      throw new SharingPreferenceMutationError('Patient profile not found', 'profile_not_found');
+    }
 
-  const setClauses: string[] = [];
-  const values: unknown[] = [];
-  for (const change of changes) {
-    values.push(change.newValue);
-    setClauses.push(`${change.column} = $${values.length}`);
-    setClauses.push(`${change.atColumn} = NOW()`);
-  }
-  setClauses.push('updated_at = NOW()');
+    const current = rowToPreferences(lockResult.rows[0]);
 
-  values.push(userId);
-  await pool.query(
-    `UPDATE patient_profiles
-        SET ${setClauses.join(', ')}
-      WHERE user_id = $${values.length}`,
-    values,
-  );
+    const changes: Array<{ column: string; atColumn: string; newValue: boolean }> = [];
+    for (const key of Object.keys(COLUMN_MAP) as Array<keyof SharingPreferenceFlags>) {
+      const nextValue = input[key];
+      if (nextValue === undefined) continue;
+      if (nextValue === current.flags[key]) continue;
+      const map = COLUMN_MAP[key];
+      changes.push({ column: map.column, atColumn: map.atColumn, newValue: nextValue });
+    }
 
-  const refreshed = await getSharingPreferences(pool, userId);
-  if (!refreshed) {
-    // Race with profile deletion; surface the same shape as the
-    // initial lookup did.
-    throw new SharingPreferenceMutationError('Patient profile not found', 'profile_not_found');
+    if (changes.length === 0) {
+      await client.query('COMMIT');
+      return current;
+    }
+
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    for (const change of changes) {
+      values.push(change.newValue);
+      setClauses.push(`${change.column} = $${values.length}`);
+      setClauses.push(`${change.atColumn} = NOW()`);
+    }
+    setClauses.push('updated_at = NOW()');
+
+    values.push(userId);
+    const updateResult = await client.query<SharingRow>(
+      `UPDATE patient_profiles
+          SET ${setClauses.join(', ')}
+        WHERE user_id = $${values.length}
+        RETURNING clinical_trial_consent,
+                  clinical_trial_consent_at,
+                  data_donation_consent,
+                  data_donation_consent_at,
+                  hospital_sync_consent,
+                  hospital_sync_consent_at,
+                  community_share_consent,
+                  community_share_consent_at`,
+      values,
+    );
+
+    await client.query('COMMIT');
+
+    if (updateResult.rowCount === 0) {
+      throw new SharingPreferenceMutationError('Patient profile not found', 'profile_not_found');
+    }
+    return rowToPreferences(updateResult.rows[0]);
+  } catch (error) {
+    // Best-effort rollback in case BEGIN succeeded but a later step
+    // threw before COMMIT/ROLLBACK ran (e.g. a network blip on the
+    // UPDATE query). Swallow rollback failures — we're already on the
+    // failure path and the original error is what the caller cares
+    // about.
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore
+    }
+    throw error;
+  } finally {
+    client.release();
   }
-  return refreshed;
 };
