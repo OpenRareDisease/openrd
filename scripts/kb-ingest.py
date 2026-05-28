@@ -228,6 +228,9 @@ class IngestStats:
     files_empty: int = 0
     files_errored: int = 0
     chunks_upserted: int = 0
+    #: Number of (source_file, chunks) deletions issued by --prune.
+    files_pruned: int = 0
+    chunks_pruned: int = 0
     actions: List[str] = field(default_factory=list)
 
 
@@ -250,6 +253,78 @@ def _gather_files(
     return matched, skipped
 
 
+def _prune_orphans(
+    *,
+    content_root: Path,
+    backend: VectorBackend,
+    matched_source_keys: set[str],
+    dry_run: bool,
+    stats: IngestStats,
+    only_filter_active: bool,
+) -> None:
+    """Drop chunks whose source_file no longer exists on disk.
+
+    Called after the main ingest loop when `--prune` is set. Compares
+    the set of `source_file` values currently in the backend against
+    the files we just walked on disk; anything present in the DB but
+    missing on disk is an orphan and gets deleted (one
+    `delete_by_source` call per file so the action log stays
+    informative).
+
+    Skipped silently when the operator scoped the ingest with
+    `--only` -- a partial-format walk would mark every chunk of
+    other formats as "missing on disk" and wipe them. The action
+    log emits a single warning so the operator knows pruning was
+    suppressed.
+    """
+    if only_filter_active:
+        stats.actions.append(
+            "prune    skipped (--only filter active; would mis-classify "
+            "out-of-scope formats as orphans)"
+        )
+        return
+
+    try:
+        db_source_files = set(backend.list_all_source_files())
+    except NotImplementedError as exc:
+        stats.actions.append(f"prune    skipped: {exc}")
+        return
+
+    # Compute on-disk source keys for ALL supported extensions, not
+    # just the ones we re-ingested this round (which can be a
+    # superset of `matched_source_keys` when files were unchanged).
+    all_exts: set[str] = set()
+    for parser in ALL_PARSERS:
+        all_exts.update(parser.extensions)
+    on_disk_keys = {
+        relative_source_key(path, content_root)
+        for path in content_root.rglob("*")
+        if path.is_file()
+        and not path.name.startswith(".")
+        and path.suffix.lower() in all_exts
+    }
+
+    orphans = sorted(db_source_files - on_disk_keys)
+    if not orphans:
+        stats.actions.append("prune    no orphans found")
+        return
+
+    for source_key in orphans:
+        if dry_run:
+            stats.actions.append(f"prune    would delete {source_key}")
+            stats.files_pruned += 1
+            continue
+        try:
+            deleted = backend.delete_by_source(source_key)
+            stats.actions.append(
+                f"prune    deleted {source_key} ({deleted} chunks)"
+            )
+            stats.files_pruned += 1
+            stats.chunks_pruned += deleted
+        except Exception as exc:
+            stats.actions.append(f"prune    error {source_key}: {exc}")
+
+
 def ingest(
     *,
     content_root: Path,
@@ -258,6 +333,7 @@ def ingest(
     batch_size: int = DEFAULT_BATCH_SIZE,
     dry_run: bool = False,
     only: Sequence[str] | None = None,
+    prune: bool = False,
 ) -> IngestStats:
     stats = IngestStats()
 
@@ -359,22 +435,31 @@ def ingest(
             )
 
     stats.chunks_upserted = len(pending)
-    if not pending or dry_run:
-        return stats
-
-    for start in range(0, len(pending), batch_size):
-        batch = pending[start : start + batch_size]
-        texts = [chunk.content for chunk in batch]
-        embeddings = embedder.embed_texts(texts)
-        if len(embeddings) != len(batch):
-            raise RuntimeError(
-                f"Embedder returned {len(embeddings)} vectors for {len(batch)} chunks"
+    if pending and not dry_run:
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start : start + batch_size]
+            texts = [chunk.content for chunk in batch]
+            embeddings = embedder.embed_texts(texts)
+            if len(embeddings) != len(batch):
+                raise RuntimeError(
+                    f"Embedder returned {len(embeddings)} vectors for "
+                    f"{len(batch)} chunks"
+                )
+            for chunk, emb in zip(batch, embeddings):
+                chunk.embedding = emb
+            backend.upsert(batch)
+            stats.actions.append(
+                f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks"
             )
-        for chunk, emb in zip(batch, embeddings):
-            chunk.embedding = emb
-        backend.upsert(batch)
-        stats.actions.append(
-            f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks"
+
+    if prune:
+        _prune_orphans(
+            content_root=content_root,
+            backend=backend,
+            matched_source_keys=set(source_keys),
+            dry_run=dry_run,
+            stats=stats,
+            only_filter_active=bool(only),
         )
 
     return stats
@@ -412,6 +497,17 @@ def main() -> int:
             "(e.g. --only .pdf,.docx). Defaults to all supported."
         ),
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "After the main ingest, delete chunks in the backend whose "
+            "source_file no longer exists under --source. Skipped when "
+            "--only is set (a partial walk would falsely mark "
+            "out-of-scope formats as orphans). Combine with --dry-run to "
+            "preview what would be deleted."
+        ),
+    )
     args = parser.parse_args()
 
     only_list = [s for s in (args.only or "").split(",") if s.strip()] or None
@@ -444,6 +540,7 @@ def main() -> int:
         batch_size=args.batch_size,
         dry_run=args.dry_run,
         only=only_list,
+        prune=args.prune,
     )
 
     if args.verbose:
@@ -461,6 +558,9 @@ def main() -> int:
     print(f"  empty              : {stats.files_empty}")
     print(f"  errored            : {stats.files_errored}")
     print(f"  chunks upserted    : {stats.chunks_upserted}")
+    if args.prune:
+        print(f"  pruned files       : {stats.files_pruned}")
+        print(f"  pruned chunks      : {stats.chunks_pruned}")
 
     backend.close()
     return 1 if stats.files_errored else 0

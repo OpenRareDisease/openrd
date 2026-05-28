@@ -126,3 +126,139 @@ def test_default_content_root_points_at_source(ingest_mod) -> None:
     and gitignored in `.gitignore` -- not the parent."""
     assert ingest_mod.DEFAULT_CONTENT_ROOT.name == "source"
     assert ingest_mod.DEFAULT_CONTENT_ROOT.parent.name == "medical-kb"
+
+
+# ----------------------------------------------- _prune_orphans
+
+class _FakeBackend:
+    """Minimal in-memory stand-in for VectorBackend used only by the
+    prune tests. Records every delete_by_source call so the assertion
+    surface stays small."""
+
+    def __init__(self, source_files):
+        self.source_files = list(source_files)
+        self.deleted = []  # list of (source_key, count_returned)
+
+    def list_all_source_files(self):
+        return list(self.source_files)
+
+    def delete_by_source(self, source_key):
+        # Pretend each file had a deterministic chunk count for the
+        # test assertions; reality differs but the helper only sums it.
+        count = 5
+        self.deleted.append((source_key, count))
+        return count
+
+
+def test_prune_deletes_orphans(ingest_mod, tmp_path):
+    # On disk: one .md and one .pdf survive; in the backend we
+    # claim three more source_files exist that have no on-disk
+    # counterpart, so they should be pruned.
+    (tmp_path / "alive.md").write_text("# alive", encoding="utf-8")
+    (tmp_path / "alive.pdf").write_bytes(b"%PDF-1.4 dummy")
+
+    backend = _FakeBackend(
+        source_files=[
+            "alive.md",
+            "alive.pdf",
+            "orphan-1.pdf",
+            "orphan-2.docx",
+            "subdir/orphan-3.md",
+        ]
+    )
+    stats = ingest_mod.IngestStats()
+    ingest_mod._prune_orphans(
+        content_root=tmp_path,
+        backend=backend,
+        matched_source_keys={"alive.md", "alive.pdf"},
+        dry_run=False,
+        stats=stats,
+        only_filter_active=False,
+    )
+    deleted_keys = sorted(k for k, _ in backend.deleted)
+    assert deleted_keys == [
+        "orphan-1.pdf",
+        "orphan-2.docx",
+        "subdir/orphan-3.md",
+    ]
+    assert stats.files_pruned == 3
+    assert stats.chunks_pruned == 15  # 3 × 5 per fake
+
+
+def test_prune_dry_run_does_not_delete(ingest_mod, tmp_path):
+    (tmp_path / "alive.md").write_text("alive", encoding="utf-8")
+    backend = _FakeBackend(source_files=["alive.md", "orphan.pdf"])
+    stats = ingest_mod.IngestStats()
+    ingest_mod._prune_orphans(
+        content_root=tmp_path,
+        backend=backend,
+        matched_source_keys={"alive.md"},
+        dry_run=True,
+        stats=stats,
+        only_filter_active=False,
+    )
+    assert backend.deleted == []
+    assert stats.files_pruned == 1  # counted but not executed
+    assert stats.chunks_pruned == 0
+    assert any("would delete orphan.pdf" in a for a in stats.actions)
+
+
+def test_prune_skipped_when_only_filter_active(ingest_mod, tmp_path):
+    """--only narrows the on-disk walk to a single extension; pruning
+    against that walk would mis-classify out-of-scope formats as
+    orphans, so the helper must skip and log a clear warning."""
+    backend = _FakeBackend(source_files=["a.md", "b.pdf"])
+    stats = ingest_mod.IngestStats()
+    ingest_mod._prune_orphans(
+        content_root=tmp_path,
+        backend=backend,
+        matched_source_keys=set(),
+        dry_run=False,
+        stats=stats,
+        only_filter_active=True,
+    )
+    assert backend.deleted == []
+    assert stats.files_pruned == 0
+    assert any("skipped (--only filter active" in a for a in stats.actions)
+
+
+def test_prune_skipped_when_backend_lacks_support(ingest_mod, tmp_path):
+    """When the backend (e.g. Chroma cloud) raises NotImplementedError
+    on `list_all_source_files`, prune logs the reason and bails out
+    instead of crashing the whole ingest."""
+
+    class Unsupported:
+        def list_all_source_files(self):
+            raise NotImplementedError("chroma_cloud has no enumeration")
+
+        def delete_by_source(self, _key):  # pragma: no cover
+            raise AssertionError("should not be called")
+
+    stats = ingest_mod.IngestStats()
+    ingest_mod._prune_orphans(
+        content_root=tmp_path,
+        backend=Unsupported(),
+        matched_source_keys=set(),
+        dry_run=False,
+        stats=stats,
+        only_filter_active=False,
+    )
+    assert stats.files_pruned == 0
+    assert any("chroma_cloud has no enumeration" in a for a in stats.actions)
+
+
+def test_prune_no_orphans_logs_clear_message(ingest_mod, tmp_path):
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    backend = _FakeBackend(source_files=["a.md"])
+    stats = ingest_mod.IngestStats()
+    ingest_mod._prune_orphans(
+        content_root=tmp_path,
+        backend=backend,
+        matched_source_keys={"a.md"},
+        dry_run=False,
+        stats=stats,
+        only_filter_active=False,
+    )
+    assert backend.deleted == []
+    assert stats.files_pruned == 0
+    assert any("no orphans" in a for a in stats.actions)

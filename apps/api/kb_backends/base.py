@@ -82,6 +82,19 @@ class VectorBackend(ABC):
     def delete_by_source(self, source_file: str) -> int:
         """Remove every chunk associated with the given source file."""
 
+    def list_all_source_files(self) -> List[str]:
+        """Return every distinct source_file currently in the backend.
+
+        Used by `kb-ingest --prune` to find chunks whose source file
+        was deleted on disk. Default raises NotImplementedError so
+        callers can branch cleanly on backends that don't support
+        pruning (Chroma cloud currently doesn't expose a cheap
+        enumeration).
+        """
+        raise NotImplementedError(
+            f"{self.id} backend does not support listing all source files"
+        )
+
     def health(self) -> Dict[str, Any]:
         """Best-effort liveness signal. Implementations may override."""
         return {"backend": self.id, "status": "ok"}

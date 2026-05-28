@@ -123,36 +123,65 @@ class PgVectorBackend(VectorBackend):
             return []
 
         where_sql, where_params = self._build_where(where)
+        fetch_k_int = max(1, int(fetch_k))
+
+        # Single round-trip via a VALUES + LATERAL JOIN. The previous
+        # implementation issued N separate SELECTs in a Python loop;
+        # at the typical 3-6 rewritten queries per ask, that's 3-6 *
+        # (network rtt + planner pass), which dominates the per-call
+        # latency once the HNSW index hit is fast. With LATERAL the
+        # planner picks the same index plan once and runs it per
+        # `queries.idx` row, returning everything in one fetch.
+        values_clause = ", ".join(
+            f"({i}, %s::vector)" for i in range(len(query_embeddings))
+        )
         sql = (
-            f"SELECT content, metadata, source_file, fingerprint, "
-            f"  (embedding <=> %s::vector) AS distance "
-            f"FROM {self.table_name} "
-            f"WHERE embedding IS NOT NULL "
-            f"{where_sql} "
-            f"ORDER BY embedding <=> %s::vector "
-            f"LIMIT %s"
+            f"WITH queries(idx, q_emb) AS (VALUES {values_clause}) "
+            f"SELECT q.idx AS query_idx, c.content, c.metadata, "
+            f"  c.source_file, c.fingerprint, c.distance "
+            f"FROM queries q "
+            f"CROSS JOIN LATERAL ("
+            f"  SELECT content, metadata, source_file, fingerprint, "
+            f"    (embedding <=> q.q_emb) AS distance "
+            f"  FROM {self.table_name} "
+            f"  WHERE embedding IS NOT NULL "
+            f"  {where_sql} "
+            f"  ORDER BY embedding <=> q.q_emb "
+            f"  LIMIT %s"
+            f") c "
+            f"ORDER BY q.idx"
         )
 
-        out: List[List[QueryHit]] = []
+        # Params order: every embedding (for the VALUES clause), then
+        # every where-clause param (applied once -- the lateral
+        # subquery's WHERE is fixed across `q` rows), then fetch_k.
+        params: List[Any] = [*query_embeddings, *where_params, fetch_k_int]
+
+        # Pre-seed an empty bucket per input query so the output stays
+        # parallel to query_embeddings even when one of them has zero
+        # hits. The LATERAL JOIN omits q rows that returned zero rows
+        # otherwise.
+        out: List[List[QueryHit]] = [[] for _ in query_embeddings]
+
         with self.pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                for q_emb in query_embeddings:
-                    params: List[Any] = [q_emb, *where_params, q_emb, fetch_k]
-                    cur.execute(sql, params)
-                    rows = cur.fetchall()
-                    hits = [
-                        QueryHit(
-                            content=row["content"],
-                            metadata=row.get("metadata") or {},
-                            distance=(
-                                float(row["distance"]) if row["distance"] is not None else None
-                            ),
-                            fingerprint=row.get("fingerprint"),
-                            source_file=row.get("source_file"),
+                cur.execute(sql, params)
+                for row in cur.fetchall():
+                    idx = row["query_idx"]
+                    if 0 <= idx < len(out):
+                        out[idx].append(
+                            QueryHit(
+                                content=row["content"],
+                                metadata=row.get("metadata") or {},
+                                distance=(
+                                    float(row["distance"])
+                                    if row["distance"] is not None
+                                    else None
+                                ),
+                                fingerprint=row.get("fingerprint"),
+                                source_file=row.get("source_file"),
+                            )
                         )
-                        for row in rows
-                    ]
-                    out.append(hits)
         return out
 
     # ----------------------------------------------------------------- upsert
@@ -253,6 +282,20 @@ class PgVectorBackend(VectorBackend):
                 )
                 rows = cur.fetchall()
         return {row[0]: row[1] for row in rows if row[0]}
+
+    def list_all_source_files(self) -> List[str]:
+        """Distinct source_file values currently in the table.
+        Driven by `kb-ingest --prune` to find chunks whose source
+        file was deleted on disk."""
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT DISTINCT source_file FROM {self.table_name} "
+                    f"WHERE source_file IS NOT NULL "
+                    f"ORDER BY source_file"
+                )
+                rows = cur.fetchall()
+        return [row[0] for row in rows if row[0]]
 
     def health(self) -> Dict[str, Any]:
         try:
