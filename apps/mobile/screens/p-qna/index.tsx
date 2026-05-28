@@ -3,7 +3,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   Text,
   TextInput,
@@ -25,6 +27,7 @@ import {
   isConsentRequiredError,
 } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { normalizeCitationIndexes, parseCitationSegments } from './citations';
 import { pickCurrentMode } from './mode';
 import styles from './styles';
 
@@ -284,6 +287,191 @@ const getFriendlyErrorMessage = (error: unknown) => {
     : message;
 };
 
+/** Render the message body, with inline citation tokens turned into
+ *  pressable spans for assistant messages that have citations. Falls
+ *  back to a plain `<Text>` for user messages, error/loading bubbles,
+ *  and assistant messages with no citation list — segmenting those
+ *  would be pure overhead with no tap target to offer. */
+const renderMessageContent = (
+  message: ChatMessage,
+  isUser: boolean,
+  onCitationPress: (indexes: number[], citations: AiCitation[]) => void,
+) => {
+  const citations = !isUser && message.status === 'sent' ? (message.metadata?.citations ?? []) : [];
+
+  const baseStyle = [
+    styles.messageText,
+    isUser ? styles.messageTextUser : styles.messageTextAssistant,
+  ];
+
+  if (citations.length === 0) {
+    return <Text style={baseStyle}>{message.content}</Text>;
+  }
+
+  const segments = parseCitationSegments(message.content, citations.length);
+
+  return (
+    <Text style={baseStyle}>
+      {segments.map((seg, idx) => {
+        if (seg.type === 'text') {
+          // eslint-disable-next-line react/no-array-index-key
+          return <Text key={`t-${idx}`}>{seg.value}</Text>;
+        }
+        return (
+          <Text
+            // eslint-disable-next-line react/no-array-index-key
+            key={`c-${idx}`}
+            onPress={() => onCitationPress(seg.indexes, citations)}
+            accessibilityRole="link"
+            accessibilityLabel={`查看引用 ${seg.indexes.join('、')}`}
+            style={{
+              color: CLINICAL_COLORS.accentStrong,
+              fontWeight: '700',
+              // Underline via textDecorationLine is the cross-platform
+              // way to render a link affordance inline. Background
+              // tint would force a different lineHeight on Android.
+              textDecorationLine: 'underline',
+            }}
+          >
+            {seg.raw}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+};
+
+/** Modal-bottom-sheet that shows the citation card(s) the user tapped
+ *  on inside an answer. Tapping the dimmed backdrop or the close
+ *  button dismisses; the modal is fully controlled by the parent. */
+const CitationPopoverModal = ({
+  popover,
+  onClose,
+}: {
+  popover: { indexes: number[]; citations: AiCitation[] } | null;
+  onClose: () => void;
+}) => {
+  // Deduped+sorted index list, capped to the valid citation count
+  // just in case a stale popover hangs on through a re-render.
+  const visibleIndexes = useMemo(() => {
+    if (!popover) return [];
+    return normalizeCitationIndexes(popover.indexes).filter(
+      (i) => i >= 1 && i <= popover.citations.length,
+    );
+  }, [popover]);
+
+  if (!popover) return null;
+
+  return (
+    <Modal
+      visible
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      accessibilityViewIsModal
+    >
+      <Pressable
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="关闭引用详情"
+        style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.45)',
+          justifyContent: 'flex-end',
+        }}
+      >
+        {/* The inner card stops bubble-up so taps INSIDE the sheet
+         *  don't close it. Pressable + onPress=undefined would still
+         *  capture but not respond, which is what we want. */}
+        <Pressable
+          onPress={() => {}}
+          style={{
+            backgroundColor: CLINICAL_COLORS.backgroundRaised,
+            borderTopLeftRadius: 18,
+            borderTopRightRadius: 18,
+            paddingHorizontal: 18,
+            paddingTop: 14,
+            paddingBottom: 24,
+            gap: 12,
+            maxHeight: '70%',
+          }}
+        >
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Text style={{ color: CLINICAL_COLORS.text, fontSize: 14, fontWeight: '700' }}>
+              引用详情 · {visibleIndexes.length} 条
+            </Text>
+            <TouchableOpacity
+              onPress={onClose}
+              accessibilityRole="button"
+              accessibilityLabel="关闭"
+              hitSlop={10}
+            >
+              <FontAwesome6 name="xmark" size={16} color={CLINICAL_COLORS.textMuted} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+            {visibleIndexes.map((i) => {
+              const c = popover.citations[i - 1];
+              return (
+                <View
+                  key={c.chunkId}
+                  style={{
+                    paddingLeft: 10,
+                    borderLeftWidth: 3,
+                    borderLeftColor: CLINICAL_COLORS.accent,
+                    gap: 4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: CLINICAL_COLORS.text,
+                      fontSize: 12,
+                      fontWeight: '700',
+                      lineHeight: 17,
+                    }}
+                  >
+                    [{i}] {c.sourceFile ?? c.source}
+                    {c.chunkIndex !== null && c.chunkIndex !== undefined
+                      ? ` · 段 ${c.chunkIndex}`
+                      : ''}
+                  </Text>
+                  {c.snippet ? (
+                    <Text
+                      style={{
+                        color: CLINICAL_COLORS.textSoft,
+                        fontSize: 12,
+                        lineHeight: 18,
+                      }}
+                    >
+                      {c.snippet}
+                    </Text>
+                  ) : (
+                    <Text
+                      style={{
+                        color: CLINICAL_COLORS.textMuted,
+                        fontSize: 12,
+                        fontStyle: 'italic',
+                      }}
+                    >
+                      （无可显示的片段）
+                    </Text>
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+};
+
 const P_QNA = () => {
   const { token } = useAuth();
   const router = useRouter();
@@ -308,6 +496,15 @@ const P_QNA = () => {
   // bounded conversation, capped at MAX_STORED_MESSAGES) and avoids
   // an extra state field that could drift from `messages`.
   const currentMode = useMemo(() => pickCurrentMode(messages), [messages]);
+
+  // Active citation popover. `null` = closed. Holds both the cite
+  // indexes the user tapped AND a snapshot of the source message's
+  // citation list, so the modal keeps showing the right data even
+  // after the user navigates or new messages arrive.
+  const [citationPopover, setCitationPopover] = useState<{
+    indexes: number[];
+    citations: AiCitation[];
+  } | null>(null);
 
   useEffect(() => {
     const hydrate = async () => {
@@ -680,14 +877,9 @@ const P_QNA = () => {
                   {!isUser ? (
                     <Text style={styles.messageAuthor}>{isError ? '系统提示' : 'OpenRD 助手'}</Text>
                   ) : null}
-                  <Text
-                    style={[
-                      styles.messageText,
-                      isUser ? styles.messageTextUser : styles.messageTextAssistant,
-                    ]}
-                  >
-                    {message.content}
-                  </Text>
+                  {renderMessageContent(message, isUser, (indexes, citations) =>
+                    setCitationPopover({ indexes, citations }),
+                  )}
                   <AssistantMetadata message={message} />
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
@@ -733,6 +925,8 @@ const P_QNA = () => {
           </Text>
         </View>
       </KeyboardAvoidingView>
+
+      <CitationPopoverModal popover={citationPopover} onClose={() => setCitationPopover(null)} />
     </SafeAreaView>
   );
 };
