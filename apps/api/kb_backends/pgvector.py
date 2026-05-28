@@ -266,6 +266,30 @@ class PgVectorBackend(VectorBackend):
                 conn.rollback()
                 raise
 
+    def delete_by_source_other_fingerprints(
+        self, source_file: str, keep_fingerprint: str
+    ) -> int:
+        """Scoped variant used by the crash-safe ingest path: drop only
+        chunks whose source_fingerprint does NOT match the just-inserted
+        batch, leaving the new chunks intact even if the same caller
+        runs this concurrently."""
+        if not source_file or not keep_fingerprint:
+            return 0
+        with self.pool.connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {self.table_name} "
+                        f"WHERE source_file = %s AND source_fingerprint <> %s",
+                        (source_file, keep_fingerprint),
+                    )
+                    deleted = cur.rowcount or 0
+                conn.commit()
+                return deleted
+            except Exception:
+                conn.rollback()
+                raise
+
     # --------------------------------------------------------------- introspection
 
     def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, str]:

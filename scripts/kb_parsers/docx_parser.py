@@ -60,7 +60,14 @@ class DocxParser(Parser):
         # Detect legacy .doc files masquerading as .docx before
         # python-docx prints a less actionable error.
         try:
-            head = path.open("rb").read(4)
+            # `with` so the file descriptor is closed when the read
+            # finishes — the previous `path.open("rb").read(4)` left
+            # the fd open until CPython's GC happened to collect it.
+            # Harmless on CPython under normal load, but on PyPy or
+            # with low fd ulimits a corpus-wide ingest could exhaust
+            # the limit and start raising OSError partway through.
+            with path.open("rb") as fh:
+                head = fh.read(4)
         except Exception as exc:
             return ParseResult(
                 sections=[],

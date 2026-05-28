@@ -69,8 +69,9 @@ describe('getSharingPreferences', () => {
 
 describe('updateSharingPreferences', () => {
   /** Stateful fake pool that simulates one user's profile row across
-   *  SELECT → UPDATE → SELECT round trips. Mirrors the pattern in
-   *  consent.test.ts so the two helpers stay testable the same way. */
+   *  BEGIN → SELECT FOR UPDATE → UPDATE … RETURNING → COMMIT. Mirrors
+   *  the pattern in consent.test.ts so the two helpers stay testable
+   *  the same way. */
   const buildStatefulPool = (
     initial: {
       clinicalTrial: boolean;
@@ -92,6 +93,9 @@ describe('updateSharingPreferences', () => {
 
     const query = vi.fn(async (sql: string, values?: unknown[]) => {
       const trimmed = sql.trim();
+      if (/^BEGIN|^COMMIT|^ROLLBACK/i.test(trimmed)) {
+        return { rows: [], rowCount: 0 } as unknown as QueryResult;
+      }
       if (/^SELECT/i.test(trimmed)) {
         return row
           ? ({ rows: [row], rowCount: 1 } as unknown as QueryResult)
@@ -115,16 +119,20 @@ describe('updateSharingPreferences', () => {
           (row as Record<string, unknown>)[col] = v;
           (row as Record<string, unknown>)[atCol] = '2026-05-27T12:00:00Z';
         });
-        return { rows: [], rowCount: 1 } as unknown as QueryResult;
+        // The new implementation uses UPDATE ... RETURNING so we
+        // return the post-update row directly rather than relying on
+        // a follow-up SELECT.
+        return { rows: [row], rowCount: 1 } as unknown as QueryResult;
       }
       return { rows: [], rowCount: 0 } as unknown as QueryResult;
     });
 
-    return {
-      pool: { query } as unknown as Pool,
-      updateCalls,
-      getRow: () => row,
-    };
+    const client = { query, release: vi.fn() };
+    const pool = {
+      query,
+      connect: vi.fn().mockResolvedValue(client),
+    } as unknown as Pool;
+    return { pool, updateCalls, getRow: () => row };
   };
 
   it('throws profile_not_found when the user has no row', async () => {

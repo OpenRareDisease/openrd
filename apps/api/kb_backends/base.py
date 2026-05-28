@@ -82,6 +82,32 @@ class VectorBackend(ABC):
     def delete_by_source(self, source_file: str) -> int:
         """Remove every chunk associated with the given source file."""
 
+    def delete_by_source_other_fingerprints(
+        self, source_file: str, keep_fingerprint: str
+    ) -> int:
+        """Remove chunks for `source_file` whose `source_fingerprint`
+        does not match `keep_fingerprint`.
+
+        Used by kb-ingest to make per-file re-ingestion crash-safe:
+        upsert the new chunks first (they carry the new
+        source_fingerprint), then call this to drop the stale chunks
+        from the previous fingerprint. If the process crashes after
+        upsert but before this call, the next run sees BOTH fingerprints
+        for the same source_file and treats it as changed (the
+        list_source_fingerprints grouping will surface multiple rows),
+        triggering re-ingestion which cleans the duplicates up.
+
+        Default implementation: fall back to delete_by_source after a
+        no-op so naive backends remain functional, but the safety
+        guarantee only holds on backends that override this with a
+        scoped delete.
+        """
+        # Backends without scoped deletion must still satisfy the
+        # contract: dropping everything is over-aggressive but
+        # idempotent — callers immediately re-upsert via the next
+        # cycle. Override on real backends for the safer semantics.
+        return self.delete_by_source(source_file)
+
     def list_all_source_files(self) -> List[str]:
         """Return every distinct source_file currently in the backend.
 

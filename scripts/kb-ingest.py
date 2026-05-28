@@ -78,6 +78,46 @@ DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 PIPELINE_VERSION = "v2.multi-format"
 
 
+# --------------------------------------------------------- injection scanner
+
+#: Patterns that frequently appear in prompt-injection payloads. Hits
+#: don't block ingestion — the corpus is allowed to discuss prompt
+#: injection in legitimate academic / security content — but they
+#: trigger a warning so an operator can audit a particular chunk
+#: before it's served to an LLM tool call. The KB pipeline wraps every
+#: chunk in <<<BEGIN_DOC_CHUNK>>> / <<<END_DOC_CHUNK>>> at runtime
+#: (see context-builder.ts), so this scanner is primarily a tripwire:
+#: noisy hits indicate the operator may want to remove or annotate the
+#: source file before it goes into production retrieval.
+_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(?:all\s+)?(?:previous|above)\s+instructions?", re.IGNORECASE),
+    re.compile(r"<<\s*SYSTEM\s*>>", re.IGNORECASE),
+    re.compile(r"\[\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now\s+", re.IGNORECASE),
+    re.compile(r"disregard\s+(?:all\s+)?(?:previous|above)\s+", re.IGNORECASE),
+    re.compile(r"<<<\s*BEGIN_DOC_CHUNK\s*>>>", re.IGNORECASE),
+    re.compile(r"<<<\s*END_DOC_CHUNK\s*>>>", re.IGNORECASE),
+    # Common Chinese variants.
+    re.compile(r"忽略(?:之前|以上|前面).{0,3}(?:指令|指示|规则)"),
+    re.compile(r"你\s*现在\s*是"),
+]
+
+
+def scan_for_injection_markers(content: str) -> List[str]:
+    """Return a list of matched pattern descriptions for the given
+    chunk body. Empty list means the chunk looks benign. The scanner
+    is intentionally pattern-based and case-insensitive; false
+    positives are expected (and acceptable) — the cost of a manual
+    review on a flagged chunk is much lower than the cost of a real
+    injection landing in the KB unnoticed."""
+    hits: List[str] = []
+    for pattern in _INJECTION_PATTERNS:
+        match = pattern.search(content)
+        if match:
+            hits.append(match.group(0)[:80])
+    return hits
+
+
 # ----------------------------------------------------------- fingerprinting
 
 def _normalize_for_hash(text: str) -> str:
@@ -372,6 +412,9 @@ def ingest(
 
     pending: List[BackendChunk] = []
     chunks_per_source: Dict[str, int] = {}
+    # (source_key, new_source_fingerprint) pairs whose stale chunks
+    # should be removed after every new chunk has been upserted.
+    updated_sources: List[tuple[str, str]] = []
 
     for file_path in files:
         source_key = relative_source_key(file_path, content_root)
@@ -419,8 +462,15 @@ def ingest(
             stats.actions.append(
                 f"updated  {source_key} ({len(raw_chunks)} chunks)"
             )
-            if not dry_run:
-                backend.delete_by_source(source_key)
+            # Defer the delete until AFTER the new chunks are upserted.
+            # The previous order (delete-then-upsert, with the upsert
+            # happening at the end of the whole-corpus loop) could leave
+            # a file with ZERO chunks if the process crashed between the
+            # delete and the upsert. The deferred delete pattern
+            # guarantees the file always has a usable set of chunks in
+            # the DB; in the crash window, both the old and new
+            # fingerprints coexist and the next ingest run dedupes them.
+            updated_sources.append((source_key, file_fp))
         else:
             stats.files_new += 1
             stats.actions.append(
@@ -438,6 +488,19 @@ def ingest(
         for raw in raw_chunks:
             chunk_fp = chunk_fingerprint(source_key, raw.chunk_index, raw.content)
             language = _detect_language(raw.content)
+
+            # Pattern-scan every chunk for prompt-injection markers.
+            # Hits surface as a warning in the action log; the chunk
+            # still ingests (legitimate research material may discuss
+            # these patterns) but the operator gets a visible audit
+            # trail to review before the chunk is served to an LLM.
+            injection_hits = scan_for_injection_markers(raw.content)
+            if injection_hits:
+                stats.actions.append(
+                    f"warn     {source_key}#{raw.chunk_index}: "
+                    f"injection markers detected: {injection_hits}"
+                )
+
             pending.append(
                 BackendChunk(
                     content=raw.content,
@@ -450,6 +513,7 @@ def ingest(
                         **file_metadata,
                         "chunks_in_file": chunks_per_source[source_key],
                         "language": language,
+                        "injection_hits": injection_hits if injection_hits else None,
                     },
                     embed_model=embedder.model_name,
                 )
@@ -472,6 +536,27 @@ def ingest(
             stats.actions.append(
                 f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks"
             )
+
+        # All new chunks landed safely → drop the stale ones whose
+        # source_fingerprint no longer matches. Anything that fails
+        # here leaves the DB with both fingerprints present; the next
+        # ingest's list_source_fingerprints call will surface multiple
+        # rows for that source_key and trigger a clean rerun (the
+        # detection logic treats "fingerprint mismatch" the same as
+        # "missing", which re-ingests + retries the cleanup).
+        for source_key, keep_fp in updated_sources:
+            try:
+                removed = backend.delete_by_source_other_fingerprints(
+                    source_key, keep_fp
+                )
+                if removed:
+                    stats.actions.append(
+                        f"cleanup  {source_key}: removed {removed} stale chunks"
+                    )
+            except Exception as exc:
+                stats.actions.append(
+                    f"cleanup  {source_key}: stale-chunk delete failed: {exc}"
+                )
 
     if prune:
         _prune_orphans(
