@@ -42,6 +42,13 @@ export interface ToolContext {
   /** Correlation id (mirrors the orchestrator's request id). */
   requestId?: string;
   logger: AppLogger;
+  /** Caller-driven cancellation. Forwarded from the route's
+   *  `res.on('close')` through orchestrator → executor → tool. When
+   *  this fires, retrievers SHOULD stop in-flight work (cancel fetch,
+   *  cancel pg query). Without this, a dropped phone keeps holding
+   *  pool connections and HTTP sockets until the per-tool 30s timer
+   *  fires. */
+  signal?: AbortSignal;
 }
 
 export interface ToolExecutionResult {

@@ -167,6 +167,10 @@ export class Orchestrator {
       consentLevel: input.consentLevel,
       requestId: input.requestId,
       logger: this.logger,
+      // Forward the same AbortSignal the LLM calls observe. Retrievers
+      // (medical-kb fetch, pg queries) honour ctx.signal so a client
+      // disconnect cancels tool work immediately.
+      signal: input.signal,
     };
 
     plan.llmResponse.toolCalls.forEach((c) => {
@@ -282,6 +286,22 @@ export class Orchestrator {
         },
         'orchestrator: model requested more tools after round 2; ignoring',
       );
+    }
+
+    // If round 2 returned no usable content AND the model wanted
+    // another tool round, the legacy code silently fell back to the
+    // generic "抱歉, AI 暂时无法生成完整回答" string while the audit
+    // row stayed `status: 'success'`. That's the wrong signal for
+    // monitoring + the streaming UI: the user saw partial
+    // answer_delta frames (the model's "let me call X" prose) and
+    // then a bland fallback. Surface this as a truncation by
+    // emitting an `error` event the route layer will translate to an
+    // audit row with `status='error'`.
+    const hasContent = Boolean(finalContent?.trim());
+    if (!hasContent && finalToolCalls.length > 0) {
+      const truncationMessage = 'orchestrator round 2 returned extra tool_calls without content';
+      this.logger.warn({ requestId: input.requestId }, truncationMessage);
+      emit({ type: 'error', message: truncationMessage });
     }
 
     const finalAnswer = finalContent?.trim() || '抱歉，AI 暂时无法生成完整回答。';

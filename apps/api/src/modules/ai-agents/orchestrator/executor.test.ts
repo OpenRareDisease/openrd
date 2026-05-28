@@ -161,4 +161,34 @@ describe('Executor', () => {
     expect(r.error).toBeUndefined();
     expect(r.retrieval?.chunks).toHaveLength(1);
   });
+
+  it('aborts in-flight tool work when ctx.signal fires (PR-Sec-5 #5)', async () => {
+    // The legacy withTimeout only raced against the per-tool wall-
+    // clock timer. A dropped SSE client should cancel sooner; this
+    // test pins that the executor settles with an error as soon as
+    // the signal fires, not after the 30s timer.
+    const slowTool: ITool = {
+      name: 'slow',
+      description: '',
+      parametersSchema: { type: 'object', properties: {} },
+      parseArgs: () => ({}),
+      execute: async () => {
+        // Never resolves on its own — only the abort race can end this.
+        await new Promise(() => {});
+        return { retrieval: stub('slow'), display: 'slow' };
+      },
+    };
+    const registry = new ToolRegistry().register(slowTool);
+    const executor = new Executor(registry);
+    const controller = new AbortController();
+    const abortingCtx: ToolContext = { ...ctx, signal: controller.signal };
+
+    setTimeout(() => controller.abort(), 20);
+    const [r] = await executor.executeAll([call('slow', '1')], abortingCtx, {
+      timeoutMs: 5_000,
+    });
+    expect(r.error).toMatch(/aborted/);
+    // Latency should reflect the abort, not the 5s timeout.
+    expect(r.latencyMs ?? 0).toBeLessThan(500);
+  });
 });

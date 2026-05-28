@@ -113,6 +113,17 @@ export class MedicalKbRetriever implements IRetriever {
     const controller = new AbortController();
     const timeoutMs = this.opts.timeoutMs ?? 30_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Merge the caller's cancellation signal in too — a route-level
+    // res.on('close') should immediately abort the KB fetch, not wait
+    // for the 30s timer.
+    const onCallerAbort = () => controller.abort();
+    if (ctx.signal) {
+      if (ctx.signal.aborted) {
+        controller.abort();
+      } else {
+        ctx.signal.addEventListener('abort', onCallerAbort, { once: true });
+      }
+    }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.opts.serviceToken) {
@@ -134,6 +145,9 @@ export class MedicalKbRetriever implements IRetriever {
       });
     } finally {
       clearTimeout(timer);
+      if (ctx.signal) {
+        ctx.signal.removeEventListener('abort', onCallerAbort);
+      }
     }
 
     const text = await response.text();

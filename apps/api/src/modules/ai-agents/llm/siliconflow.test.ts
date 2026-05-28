@@ -366,3 +366,49 @@ describe('SiliconFlowProvider.chatStream', () => {
     });
   });
 });
+
+describe('SiliconFlowProvider error sanitiser (PR-Sec-5 #5)', () => {
+  it('chat() throws a SiliconFlowProviderError that drops headers / body', async () => {
+    // Simulate an OpenAI APIError shape that carries the request
+    // headers (with Authorization) and a request body. We must not
+    // see either field after the wrap.
+    class FakeApiError extends Error {
+      status = 401;
+      code = 'invalid_api_key';
+      headers = { Authorization: 'Bearer SECRET-DO-NOT-LEAK' };
+      request = { body: { messages: [{ content: '私人 PII 数据' }] } };
+      constructor() {
+        super('Incorrect API key (siliconflow says so)');
+        this.name = 'APIError';
+      }
+    }
+
+    const create = vi.fn().mockRejectedValue(new FakeApiError());
+    const provider = new SiliconFlowProvider(
+      baseOpts({
+        chat: { completions: { create } } as unknown as OpenAIChatClient['chat'],
+      }),
+    );
+
+    try {
+      await provider.chat({ messages: [{ role: 'user', content: 'q' }] });
+      throw new Error('expected throw');
+    } catch (error) {
+      const e = error as Error & {
+        headers?: unknown;
+        request?: unknown;
+        status?: number;
+        code?: string;
+      };
+      expect(e.name).toBe('SiliconFlowProviderError');
+      expect(e.message).toContain('Incorrect API key');
+      expect(e.status).toBe(401);
+      expect(e.code).toBe('invalid_api_key');
+      // Critical: the carrier fields are not preserved on the wrapped error.
+      expect(e.headers).toBeUndefined();
+      expect(e.request).toBeUndefined();
+      // And nothing in the message includes the bearer token.
+      expect(JSON.stringify(e)).not.toContain('SECRET-DO-NOT-LEAK');
+    }
+  });
+});
