@@ -26,13 +26,16 @@ import { AI_STREAM_EVENT_TYPES, parseAiStreamFrame } from './ai-streaming-parser
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
-/** Max idle time between SSE frames before we give up. The backend's
- *  worst-case streaming run is ~20s (planner + multi-tool + answer
- *  streaming); anything longer than this is almost certainly a dead
- *  proxy or a backend crash. Lower bound is set by the longest gap
- *  between events in a healthy run — `tool_complete` to
- *  `context_built` can be several seconds while we render KB chunks,
- *  but never more than ~10s in practice. 15s leaves headroom. */
+/** Max idle time (no frames AND no keepalives) before we declare
+ *  the stream truncated. The backend emits an `event: keepalive`
+ *  frame every 5s, including during long awaits in the orchestrator
+ *  (planner LLM up to 30s, tool execution up to 30s/call). So in a
+ *  healthy run mobile sees activity at least every 5s, and 15s is
+ *  3× that — enough margin to absorb GC pauses / OS scheduling
+ *  jitter without trip­ping on legitimate slow stages, but short
+ *  enough that a truly dead stream surfaces as 'error' before the
+ *  user gives up. If you ever raise the backend KEEPALIVE_MS in
+ *  ai-chat.routes.ts, raise this proportionally. */
 const IDLE_TIMEOUT_MS = 15_000;
 
 // Re-export the parser for the screen tests / future consumers
@@ -176,6 +179,20 @@ export const streamAiQuestion = (
     // Start the idle watchdog as soon as the connection is set up;
     // the first frame (planning) usually arrives within a second.
     armIdleTimer();
+
+    // Keepalive heartbeat from the backend. The server emits an
+    // `event: keepalive\ndata: {}` frame every 5s — including
+    // during long awaits inside the orchestrator (planner LLM up
+    // to 30s, tool execution up to 30s/call) when no real event
+    // would otherwise fire. We register a dedicated listener that
+    // ONLY resets the watchdog and does NOT surface the event
+    // upward (keepalive is purely a transport signal, not part of
+    // the OrchestratorEvent union). Without this our 15s watchdog
+    // would false-positive on healthy slow stages.
+    es.addEventListener('keepalive' as unknown as 'message', () => {
+      if (closed) return;
+      armIdleTimer();
+    });
 
     // react-native-sse's `addEventListener('message', ...)` only
     // fires for frames WITHOUT a named `event:` line. Our backend
