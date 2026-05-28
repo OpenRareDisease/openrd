@@ -644,6 +644,16 @@ const P_QNA = () => {
             clearInterval(progressTimerRef.current);
             progressTimerRef.current = null;
           }
+          // Abort any in-flight SSE so the orchestrator sees the
+          // disconnect and stops billing tokens. Without this, the
+          // server-side stream keeps running, `onComplete` fires
+          // later against a now-empty conversation, and the user's
+          // `isSending` stays true so they can't ask a new question.
+          if (streamHandleRef.current) {
+            streamHandleRef.current.close();
+            streamHandleRef.current = null;
+          }
+          setIsSending(false);
           setAskProgress(null);
           setDraft('');
           setMessages([createWelcomeMessage()]);
