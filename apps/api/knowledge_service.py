@@ -147,8 +147,10 @@ _MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MiB
 #: without one; dev keeps the bare-bones behaviour when the env is
 #: explicitly empty.
 _REQUIRED_TOKEN = (os.getenv('KB_SERVICE_TOKEN') or '').strip()
+#: Paths that require a valid bearer token. Health endpoints stay
+#: unauth'd so kube-style probes work without leaking the token into
+#: manifests.
 _AUTH_REQUIRED_PATHS = ('/multi',)
-_HEALTH_PATHS = ('/health', '/health/live', '/health/ready')
 
 
 def _read_json(handler):
@@ -309,6 +311,17 @@ class KnowledgeServiceHandler(BaseHTTPRequestHandler):
             logger.exception('knowledge service failed (request_id=%s)', request_id)
             self._send_json(500, {'error': 'kb_internal_error', 'request_id': request_id})
 
+    def log_message(self, format, *args):
+        """Route BaseHTTPRequestHandler's per-request access log through
+        the structured `fshd_kb_service` logger. Without this override,
+        the default impl writes per-request lines straight to stderr,
+        bypassing the PHI-hygiene work in knowledge.py (which only
+        applies to application logs). The line still includes path /
+        status from `format % args`; PHI-bearing query strings would
+        be a concern but `/multi` only takes bodies, not query params,
+        so the path itself is fixed."""
+        logger.info('%s - %s', self.address_string(), format % args)
+
 
 #: Known-safe metadata keys callers may filter on. Everything else is
 #: dropped before reaching either backend's `where`. Keep in sync with
@@ -337,9 +350,6 @@ def _filter_where(where: dict) -> dict:
         if isinstance(value, (str, int, float, bool)):
             safe[key] = value
     return safe
-
-    def log_message(self, format, *args):
-        logger.info('%s - %s', self.address_string(), format % args)
 
 
 if __name__ == '__main__':

@@ -126,3 +126,53 @@ def test_hash_phi_does_not_echo_input(kb_service):
     assert "张三" not in out
     assert "110101199005203212" not in out
     assert "13800001234" not in out
+
+
+# --------------------------------------------------------------- log_message wiring
+
+
+def test_log_message_is_on_handler_class_not_nested_in_filter_where(kb_service):
+    """Round-2 review caught `log_message` indented inside
+    `_filter_where` so the override never installed — the default
+    BaseHTTPRequestHandler.log_message kept writing per-request lines
+    to stderr, bypassing the structured `fshd_kb_service` logger."""
+    handler_cls = kb_service.KnowledgeServiceHandler
+    assert hasattr(handler_cls, 'log_message')
+    assert 'log_message' in handler_cls.__dict__, (
+        'log_message must be defined on KnowledgeServiceHandler, '
+        'not inherited from BaseHTTPRequestHandler'
+    )
+
+    # _filter_where must NOT carry log_message as a stray attribute
+    # (the bug we just fixed).
+    assert not hasattr(kb_service._filter_where, 'log_message'), (
+        'log_message should not be a nested function inside _filter_where'
+    )
+
+    # Behavioural smoke: calling the override routes through `logger`.
+    calls = []
+
+    class _FakeLogger:
+        def info(self, fmt, *args):
+            calls.append(fmt % args)
+
+    original_logger = kb_service.logger
+    kb_service.logger = _FakeLogger()
+    try:
+        class _FakeHandler:
+            def address_string(self):
+                return '127.0.0.1'
+
+        handler_cls.log_message(_FakeHandler(), '"%s %s" %d', 'GET', '/health', 200)
+    finally:
+        kb_service.logger = original_logger
+
+    assert any('127.0.0.1' in line and '/health' in line for line in calls), (
+        f'expected access log to land via logger; got {calls!r}'
+    )
+
+
+def test_health_paths_constant_removed(kb_service):
+    """The unused `_HEALTH_PATHS` constant was removed because it
+    introduced confusing intent without a caller."""
+    assert not hasattr(kb_service, '_HEALTH_PATHS')

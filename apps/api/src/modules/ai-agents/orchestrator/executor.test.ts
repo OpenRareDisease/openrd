@@ -191,4 +191,39 @@ describe('Executor', () => {
     // Latency should reflect the abort, not the 5s timeout.
     expect(r.latencyMs ?? 0).toBeLessThan(500);
   });
+
+  it('removes the abort listener when the promise wins the race (PR #51 review)', async () => {
+    // Under the SSE streaming flow one AbortController lives across
+    // many withTimeout calls. If the abort listener is left attached
+    // after the wrapped promise resolves, a later signal.abort()
+    // fires reject(new Error(...)) against a Promise nobody is
+    // awaiting → unhandled rejection → Node 22+ exits the process.
+    //
+    // Test shape: run a fast-resolving tool many times under the
+    // same controller, then fire abort, capture any unhandled
+    // rejections — there should be none.
+    const registry = new ToolRegistry().register(passingTool('fast', 0));
+    const executor = new Executor(registry);
+    const controller = new AbortController();
+    const sharedCtx: ToolContext = { ...ctx, signal: controller.signal };
+
+    const unhandled: unknown[] = [];
+    const onRejection = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onRejection);
+
+    try {
+      // Burn a handful of tool calls under the shared signal.
+      for (let i = 0; i < 5; i++) {
+        await executor.executeAll([call('fast', String(i))], sharedCtx);
+      }
+      // Now fire the signal. With the listener leak this would emit
+      // 5 unhandled rejections; with the cleanup it emits zero.
+      controller.abort();
+      // Let microtasks settle so any pending unhandled rejection lands.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
 });

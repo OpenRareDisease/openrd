@@ -141,10 +141,16 @@ const extractUsage = (
  * bearer included) and the request `body` — never reaches downstream
  * audit logs, response bodies, or pino's serializer.
  *
- * The new Error preserves only the message, status, and code fields
- * the orchestrator's audit pipeline already truncates. The original
- * error stays accessible via `.cause` for pino's local stderr but
- * never escapes the process via `.stack` of the original instance.
+ * The sanitised Error holds **no** reference to the original — not
+ * even via `.cause`. The OpenAI APIError shape's `.headers` /
+ * `.request` fields and pino's `cause`-chain traversal would each
+ * be sufficient to leak the bearer token if we kept a link. The
+ * original Error is still visible in stderr at the catch site via
+ * `console.error(error)`-style local logging; it just never reaches
+ * the orchestrator audit pipeline through this Error.
+ *
+ * Only `message` (≤500 chars), `name`, `status`, and `code` survive
+ * — every other property is dropped.
  */
 const sanitiseSiliconFlowError = (error: unknown): Error => {
   const sourceMessage = error instanceof Error ? error.message : String(error);
