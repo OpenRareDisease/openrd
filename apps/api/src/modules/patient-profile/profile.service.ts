@@ -20,6 +20,13 @@ import type {
   SymptomScoreInput,
   UpdateProfileInput,
 } from './profile.schema.js';
+import {
+  SharingPreferenceMutationError,
+  getSharingPreferences,
+  updateSharingPreferences,
+  type SharingPreferences,
+  type SharingPreferenceUpdateInput,
+} from './sharing-preferences.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 import {
@@ -2484,5 +2491,45 @@ export class PatientProfileService {
     options: ConsentHistoryOptions = {},
   ): Promise<ConsentEvent[]> {
     return getConsentHistory(this.pool, userId, options);
+  }
+
+  /**
+   * Read the four data-sharing preferences. Returns `null` when the
+   * user hasn't completed onboarding (no profile row), so the
+   * controller can map that to 404 the same way it does for AI
+   * consent.
+   */
+  async getSharingPreferences(userId: string): Promise<SharingPreferences | null> {
+    return getSharingPreferences(this.pool, userId);
+  }
+
+  /**
+   * Apply a partial sharing-preference update. Delegates to the
+   * helper so the unspecified-keeps-current-value rule + per-flag
+   * `_at` bookkeeping stay in one place. `SharingPreferenceMutationError`
+   * is rethrown as an `AppError` so the route layer stays
+   * framework-flavoured.
+   */
+  async updateSharingPreferences(
+    userId: string,
+    input: SharingPreferenceUpdateInput,
+  ): Promise<SharingPreferences> {
+    try {
+      const updated = await updateSharingPreferences(this.pool, userId, input);
+      this.logger.info(
+        {
+          userId,
+          flags: updated.flags,
+        },
+        'Sharing preferences updated',
+      );
+      return updated;
+    } catch (error) {
+      if (error instanceof SharingPreferenceMutationError) {
+        const status = error.code === 'profile_not_found' ? 404 : 400;
+        throw new AppError(error.message, status);
+      }
+      throw error;
+    }
   }
 }

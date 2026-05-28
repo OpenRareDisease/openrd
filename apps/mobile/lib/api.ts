@@ -472,6 +472,51 @@ export const updateMyConsent = (payload: ConsentUpdatePayload) =>
     body: JSON.stringify(payload),
   });
 
+/** The four data-sharing toggles that live next to AI consent on the
+ *  privacy settings screen. Backed by columns added in DB
+ *  migration 010. */
+export interface SharingPreferenceFlags {
+  clinicalTrial: boolean;
+  dataDonation: boolean;
+  hospitalSync: boolean;
+  communityShare: boolean;
+}
+
+export interface SharingPreferenceTimestamps {
+  clinicalTrialAt: string | null;
+  dataDonationAt: string | null;
+  hospitalSyncAt: string | null;
+  communityShareAt: string | null;
+}
+
+export interface SharingPreferences {
+  flags: SharingPreferenceFlags;
+  timestamps: SharingPreferenceTimestamps;
+}
+
+export interface SharingPreferencesUpdatePayload {
+  clinicalTrial?: boolean;
+  dataDonation?: boolean;
+  hospitalSync?: boolean;
+  communityShare?: boolean;
+}
+
+/** Fetch the user's four data-sharing preferences. 404 means the
+ *  user hasn't completed onboarding (no patient_profiles row) and
+ *  the caller should route them to setup, the same way it does for
+ *  {@link getMyConsent}. */
+export const getMySharingPreferences = () =>
+  apiRequest<SharingPreferences>('/profiles/me/sharing-preferences');
+
+/** Patch one or more data-sharing toggles. At least one flag must
+ *  be present in the payload; the backend rejects empty bodies with
+ *  a 400. */
+export const updateMySharingPreferences = (payload: SharingPreferencesUpdatePayload) =>
+  apiRequest<SharingPreferences>('/profiles/me/sharing-preferences', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+
 export interface AiCitation {
   chunkId: string;
   source: string;

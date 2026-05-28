@@ -13,8 +13,12 @@ import {
   ApiError,
   type ConsentDetails,
   type ConsentUpdatePayload,
+  type SharingPreferences,
+  type SharingPreferencesUpdatePayload,
   getMyConsent,
+  getMySharingPreferences,
   updateMyConsent,
+  updateMySharingPreferences,
 } from '../../lib/api';
 
 interface ToggleInfo {
@@ -52,17 +56,17 @@ const formatConsentDateLabel = (iso: string | null, granted: boolean): string =>
 const PrivacySettingsScreen = () => {
   const router = useRouter();
 
-  // 开关状态管理（旧的本地 mock toggles，待后端接入）
-  const [isTrialPermissionEnabled, setIsTrialPermissionEnabled] = useState(true);
-  const [isDonationPermissionEnabled, setIsDonationPermissionEnabled] = useState(false);
-  const [isHospitalSyncEnabled, setIsHospitalSyncEnabled] = useState(true);
-  const [isCommunityShareEnabled, setIsCommunityShareEnabled] = useState(true);
-
   // AI 同意状态（来自后端）
   const [aiConsent, setAiConsent] = useState<ConsentDetails | null>(null);
   const [aiConsentLoading, setAiConsentLoading] = useState(true);
   const [aiConsentError, setAiConsentError] = useState<string | null>(null);
   const [aiConsentSaving, setAiConsentSaving] = useState(false);
+
+  // 四个数据共享开关（同样来自后端，backed by migration 010）
+  const [sharingPrefs, setSharingPrefs] = useState<SharingPreferences | null>(null);
+  const [sharingLoading, setSharingLoading] = useState(true);
+  const [sharingError, setSharingError] = useState<string | null>(null);
+  const [sharingSaving, setSharingSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +86,34 @@ const PrivacySettingsScreen = () => {
         }
       } finally {
         if (!cancelled) setAiConsentLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Sharing preferences load — uses the same 404→prompt-for-onboarding
+  // pattern as AI consent so the screen behaves consistently for
+  // users without a profile row yet.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getMySharingPreferences();
+        if (!cancelled) {
+          setSharingPrefs(data);
+          setSharingError(null);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setSharingError('请先完成基础档案后再设置数据共享。');
+        } else {
+          setSharingError(err instanceof Error ? err.message : '加载数据共享设置失败');
+        }
+      } finally {
+        if (!cancelled) setSharingLoading(false);
       }
     })();
     return () => {
@@ -184,6 +216,20 @@ const PrivacySettingsScreen = () => {
     }
   };
 
+  const applySharingUpdate = async (payload: SharingPreferencesUpdatePayload) => {
+    setSharingSaving(true);
+    try {
+      const updated = await updateMySharingPreferences(payload);
+      setSharingPrefs(updated);
+      showSuccessToast();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '设置更新失败，请稍后重试。';
+      Alert.alert('更新失败', message);
+    } finally {
+      setSharingSaving(false);
+    }
+  };
+
   const confirmToggle = () => {
     if (!currentToggleInfo) return;
 
@@ -191,20 +237,16 @@ const PrivacySettingsScreen = () => {
 
     switch (id) {
       case 'trial-permission':
-        setIsTrialPermissionEnabled(newState);
-        showSuccessToast();
+        void applySharingUpdate({ clinicalTrial: newState });
         break;
       case 'donation-permission':
-        setIsDonationPermissionEnabled(newState);
-        showSuccessToast();
+        void applySharingUpdate({ dataDonation: newState });
         break;
       case 'hospital-sync':
-        setIsHospitalSyncEnabled(newState);
-        showSuccessToast();
+        void applySharingUpdate({ hospitalSync: newState });
         break;
       case 'community-share':
-        setIsCommunityShareEnabled(newState);
-        showSuccessToast();
+        void applySharingUpdate({ communityShare: newState });
         break;
       case AI_TOGGLE_IDS.personal:
         void applyAiConsentUpdate({ personal: newState });
@@ -227,8 +269,12 @@ const PrivacySettingsScreen = () => {
     }, 3000);
   };
 
+  // Donation status card — the "lastDonation" + "donatedCount" lines
+  // are still placeholders (no donation pipeline yet); only the
+  // grant/revoke status comes from the real backend flag.
   const getDonationStatus = () => {
-    if (!isDonationPermissionEnabled) {
+    const donationGranted = sharingPrefs?.flags.dataDonation ?? false;
+    if (!donationGranted) {
       return {
         status: '未授权',
         statusColor: CLINICAL_COLORS.textMuted,
@@ -379,6 +425,110 @@ const PrivacySettingsScreen = () => {
     );
   };
 
+  /** Render the four data-sharing toggles. Pulled out as its own
+   *  function to mirror `renderAiConsentSection` — loading and
+   *  error states share the same shape. */
+  const renderSharingSection = () => {
+    if (sharingLoading) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>数据授权</Text>
+          <Text
+            style={{
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 13,
+            }}
+          >
+            正在加载共享设置...
+          </Text>
+        </View>
+      );
+    }
+
+    if (sharingError) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>数据授权</Text>
+          <Text
+            style={{
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              color: CLINICAL_COLORS.textMuted,
+              fontSize: 13,
+            }}
+          >
+            {sharingError}
+          </Text>
+        </View>
+      );
+    }
+
+    if (!sharingPrefs) return null;
+    const { flags } = sharingPrefs;
+
+    return (
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>数据授权</Text>
+
+        {/* 临床试验数据授权 */}
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>临床试验数据授权</Text>
+            <Text style={styles.settingDescription}>
+              允许临床试验机构访问您的档案数据以评估入组资格
+            </Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.clinicalTrial}
+            disabled={sharingSaving}
+            onToggle={(newState) => showConfirmModal('trial-permission', newState)}
+          />
+        </View>
+
+        {/* 匿名化数据捐赠 */}
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>匿名化数据捐赠</Text>
+            <Text style={styles.settingDescription}>将您的匿名化数据捐赠给FSHD科研项目</Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.dataDonation}
+            disabled={sharingSaving}
+            onToggle={(newState) => showConfirmModal('donation-permission', newState)}
+          />
+        </View>
+
+        {/* 医院数据同步 */}
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>医院数据同步</Text>
+            <Text style={styles.settingDescription}>允许医院HIS系统同步您的随访数据到个人档案</Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.hospitalSync}
+            disabled={sharingSaving}
+            onToggle={(newState) => showConfirmModal('hospital-sync', newState)}
+          />
+        </View>
+
+        {/* 社区内容分享 */}
+        <View style={styles.settingItem}>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>社区内容分享</Text>
+            <Text style={styles.settingDescription}>允许在社区中分享您的康复经验和训练视频</Text>
+          </View>
+          <ToggleSwitch
+            isEnabled={flags.communityShare}
+            disabled={sharingSaving}
+            onToggle={(newState) => showConfirmModal('community-share', newState)}
+          />
+        </View>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       {/* 顶部导航栏 */}
@@ -393,61 +543,7 @@ const PrivacySettingsScreen = () => {
         {renderAiConsentSection()}
 
         {/* 数据授权设置 */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>数据授权</Text>
-
-          {/* 临床试验数据授权 */}
-          <View style={styles.settingItem}>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>临床试验数据授权</Text>
-              <Text style={styles.settingDescription}>
-                允许临床试验机构访问您的档案数据以评估入组资格
-              </Text>
-            </View>
-            <ToggleSwitch
-              isEnabled={isTrialPermissionEnabled}
-              onToggle={(newState) => showConfirmModal('trial-permission', newState)}
-            />
-          </View>
-
-          {/* 匿名化数据捐赠 */}
-          <View style={styles.settingItem}>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>匿名化数据捐赠</Text>
-              <Text style={styles.settingDescription}>将您的匿名化数据捐赠给FSHD科研项目</Text>
-            </View>
-            <ToggleSwitch
-              isEnabled={isDonationPermissionEnabled}
-              onToggle={(newState) => showConfirmModal('donation-permission', newState)}
-            />
-          </View>
-
-          {/* 医院数据同步 */}
-          <View style={styles.settingItem}>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>医院数据同步</Text>
-              <Text style={styles.settingDescription}>
-                允许医院HIS系统同步您的随访数据到个人档案
-              </Text>
-            </View>
-            <ToggleSwitch
-              isEnabled={isHospitalSyncEnabled}
-              onToggle={(newState) => showConfirmModal('hospital-sync', newState)}
-            />
-          </View>
-
-          {/* 社区内容分享 */}
-          <View style={styles.settingItem}>
-            <View style={styles.settingContent}>
-              <Text style={styles.settingTitle}>社区内容分享</Text>
-              <Text style={styles.settingDescription}>允许在社区中分享您的康复经验和训练视频</Text>
-            </View>
-            <ToggleSwitch
-              isEnabled={isCommunityShareEnabled}
-              onToggle={(newState) => showConfirmModal('community-share', newState)}
-            />
-          </View>
-        </View>
+        {renderSharingSection()}
 
         {/* 数据捐赠详情 */}
         <View style={styles.section}>

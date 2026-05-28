@@ -265,3 +265,27 @@ export const consentHistoryQuerySchema = z.object({
   flagName: z.enum(['personal', 'third_party', 'precise_values']).optional(),
 });
 export type ConsentHistoryQuery = z.infer<typeof consentHistoryQuerySchema>;
+
+/** Body schema for PUT /api/profiles/me/sharing-preferences. All four
+ *  flags are optional — the screen sends one toggle at a time. We
+ *  refuse empty bodies so a misconfigured client sees a clean 400
+ *  rather than a silent no-op UPDATE. */
+export const sharingPreferencesUpdateSchema = z
+  .object({
+    clinicalTrial: z.boolean().optional(),
+    dataDonation: z.boolean().optional(),
+    hospitalSync: z.boolean().optional(),
+    communityShare: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      data.clinicalTrial !== undefined ||
+      data.dataDonation !== undefined ||
+      data.hospitalSync !== undefined ||
+      data.communityShare !== undefined,
+    {
+      message:
+        'At least one of clinicalTrial / dataDonation / hospitalSync / communityShare must be provided',
+    },
+  );
+export type SharingPreferencesUpdateBody = z.infer<typeof sharingPreferencesUpdateSchema>;

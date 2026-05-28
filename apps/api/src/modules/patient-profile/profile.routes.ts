@@ -90,6 +90,9 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.put('/me/consent', asyncHandler(controller.updateMyConsent));
   router.get('/me/consent/history', asyncHandler(controller.getMyConsentHistory));
 
+  router.get('/me/sharing-preferences', asyncHandler(controller.getMySharingPreferences));
+  router.put('/me/sharing-preferences', asyncHandler(controller.updateMySharingPreferences));
+
   router.post('/me/measurements', asyncHandler(controller.addMeasurement));
   router.post('/me/function-tests', asyncHandler(controller.addFunctionTest));
   router.post('/me/symptom-scores', asyncHandler(controller.addSymptomScore));
