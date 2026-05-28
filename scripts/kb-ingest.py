@@ -231,6 +231,10 @@ class IngestStats:
     #: Number of (source_file, chunks) deletions issued by --prune.
     files_pruned: int = 0
     chunks_pruned: int = 0
+    #: Per-source `delete_by_source` failures during --prune. Rolled
+    #: into the process exit status so a silent prune failure can't
+    #: leave the script returning 0 with stale chunks still in the DB.
+    prune_errors: int = 0
     actions: List[str] = field(default_factory=list)
 
 
@@ -257,7 +261,6 @@ def _prune_orphans(
     *,
     content_root: Path,
     backend: VectorBackend,
-    matched_source_keys: set[str],
     dry_run: bool,
     stats: IngestStats,
     only_filter_active: bool,
@@ -290,9 +293,10 @@ def _prune_orphans(
         stats.actions.append(f"prune    skipped: {exc}")
         return
 
-    # Compute on-disk source keys for ALL supported extensions, not
-    # just the ones we re-ingested this round (which can be a
-    # superset of `matched_source_keys` when files were unchanged).
+    # Compute on-disk source keys for ALL supported extensions. We
+    # intentionally re-walk the tree here (rather than reusing the
+    # ingest loop's matched files) so prune still works in the
+    # "all-files-deleted" case where the ingest loop never ran.
     all_exts: set[str] = set()
     for parser in ALL_PARSERS:
         all_exts.update(parser.extensions)
@@ -322,6 +326,11 @@ def _prune_orphans(
             stats.files_pruned += 1
             stats.chunks_pruned += deleted
         except Exception as exc:
+            # Track in a counted field, not just the action log:
+            # main() folds prune_errors into the exit status so a
+            # silent delete failure can't return 0 while stale chunks
+            # stay in the DB.
+            stats.prune_errors += 1
             stats.actions.append(f"prune    error {source_key}: {exc}")
 
 
@@ -344,6 +353,18 @@ def ingest(
     files, stats.files_skipped_unsupported = _gather_files(content_root, allowed)
     stats.files_seen = len(files)
     if not files:
+        # No supported files on disk this round. The ingest loop is a
+        # no-op, but --prune must still run so the "every file was
+        # deleted" case (issue #20 reproducer) still removes the now-
+        # orphaned chunks from the DB.
+        if prune:
+            _prune_orphans(
+                content_root=content_root,
+                backend=backend,
+                dry_run=dry_run,
+                stats=stats,
+                only_filter_active=bool(only),
+            )
         return stats
 
     source_keys = [relative_source_key(f, content_root) for f in files]
@@ -456,7 +477,6 @@ def ingest(
         _prune_orphans(
             content_root=content_root,
             backend=backend,
-            matched_source_keys=set(source_keys),
             dry_run=dry_run,
             stats=stats,
             only_filter_active=bool(only),
@@ -561,9 +581,13 @@ def main() -> int:
     if args.prune:
         print(f"  pruned files       : {stats.files_pruned}")
         print(f"  pruned chunks      : {stats.chunks_pruned}")
+        print(f"  prune errors       : {stats.prune_errors}")
 
     backend.close()
-    return 1 if stats.files_errored else 0
+    # Prune delete failures must contribute to a non-zero exit so an
+    # operator (or CI) running --prune can't get a "green" run while
+    # stale chunks remain in the DB.
+    return 1 if (stats.files_errored or stats.prune_errors) else 0
 
 
 if __name__ == "__main__":
