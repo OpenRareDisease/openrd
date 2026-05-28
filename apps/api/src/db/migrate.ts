@@ -157,10 +157,40 @@ const applyBootstrapIfNeeded = async (client: Client, databaseName: string) => {
   }
 };
 
+/**
+ * Convention: `db/migrations/NNN_*.sql` files are forward migrations
+ * applied in lexicographic order. Sibling `NNN_*_down.sql` files are
+ * rollback scripts kept next to their forward counterpart for
+ * discoverability — they are operator tools (run by hand via
+ * `psql -f` during a hot rollback), NOT part of the forward chain.
+ *
+ * This filter is the entire mechanism that keeps `_down` scripts out
+ * of the forward chain. Before it existed, every `*_down.sql` slotted
+ * into the lexicographic order right after its `*.sql` sibling and
+ * ran in the same `applyPendingMigrations` loop — so 011 forward
+ * would create the CHECK constraints + trigger, and 011_down would
+ * immediately drop them again on the same boot, leaving the table
+ * with zero CHECK / trigger coverage. 012 had the same shape. The
+ * net effect was silent: migrations appeared "applied" in the ledger
+ * but the schema carried none of the v2.4.0 data-hygiene work the
+ * audit had signed off on.
+ *
+ * If you add a new rollback script, keep the `_down.sql` suffix and
+ * this filter will continue to skip it. If you genuinely need a
+ * forward migration to run after a NNN forward, name it NNN+1.
+ */
+/**
+ * Pure predicate so the filter rule is unit-testable without standing
+ * up a temp directory. Underscore-prefixed export is the test-only
+ * shape used elsewhere in the codebase (e.g. `_scrubErrorDetail`).
+ */
+export const _isForwardMigrationFile = (filename: string): boolean =>
+  filename.endsWith('.sql') && !filename.endsWith('_down.sql');
+
 const listMigrationFiles = async () => {
   const migrationsDir = getMigrationsDir();
   const entries = await fs.readdir(migrationsDir);
-  return entries.filter((entry) => entry.endsWith('.sql')).sort();
+  return entries.filter(_isForwardMigrationFile).sort();
 };
 
 const applyPendingMigrations = async (client: Client) => {
