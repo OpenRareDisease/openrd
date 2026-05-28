@@ -32,10 +32,12 @@ import {
   ConsentMutationError,
   getConsentDetails,
   getConsentHistory,
+  getConsentStatus,
   updateConsent,
   type ConsentDetails,
   type ConsentEvent,
   type ConsentHistoryOptions,
+  type ConsentStatus,
   type ConsentUpdateInput,
 } from '../ai-agents/security/index.js';
 
@@ -2522,6 +2524,10 @@ export class PatientProfileService {
    * so the controller can map that to a 404 rather than fabricating
    * a "never consented" row.
    */
+  async getConsentStatus(userId: string): Promise<ConsentStatus> {
+    return getConsentStatus(this.pool, userId);
+  }
+
   async getConsentDetails(userId: string): Promise<ConsentDetails | null> {
     return getConsentDetails(this.pool, userId);
   }

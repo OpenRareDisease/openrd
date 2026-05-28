@@ -26,6 +26,7 @@ import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
+import { redactFields, redactionModeForConsent } from '../ai-agents/security/index.js';
 
 type AiSummaryDeps = {
   client: OpenAI;
@@ -609,6 +610,18 @@ export class PatientProfileController {
       throw new AppError('AI 总结服务未配置（缺少 AI_API_KEY/OPENAI_API_KEY）', 500);
     }
 
+    // Gate the call on AI consent. The orchestrator at /api/ai/ask
+    // already does this; the summary endpoint used to bypass the
+    // whole ai-agents/security/* stack (no consent check, no field
+    // redaction, no extractedText cap). This brings it in line.
+    const consentStatus = await this.service.getConsentStatus(req.user.id);
+    if (consentStatus.level === 'none') {
+      throw new AppError('请先在隐私设置中同意 AI 使用你的数据', 403, {
+        code: 'consent_required',
+        consent: consentStatus,
+      });
+    }
+
     const document = await this.service.getDocumentForUser(req.user.id, documentId);
     const currentPayload = document.ocr_payload;
 
@@ -636,26 +649,33 @@ export class PatientProfileController {
     }
 
     const documentType = resolveDocumentTypeFromPayload(document.document_type, currentPayload);
-    const extractedText =
-      typeof payloadObj.extractedText === 'string'
-        ? payloadObj.extractedText
-        : typeof payloadObj.extracted_text === 'string'
-          ? payloadObj.extracted_text
-          : '';
-    const aiExtraction = payloadObj.aiExtraction ?? payloadObj.ai_extraction ?? null;
 
+    // Project the OCR `fields` blob through the same PII redactor the
+    // orchestrator uses. The redactor hard-deletes the long tail of
+    // identifying keys (patientName, idCard, doctorName, mrn, etc.)
+    // and projects clinical fields into a per-mode allowlist. Anything
+    // off the allowlist is dropped — this is the only sanctioned path
+    // for OCR fields to reach an LLM in this codebase.
+    const redactionMode = redactionModeForConsent(consentStatus.level);
+    const redacted = redactFields({ fields }, { scope: 'reports', mode: redactionMode });
+    // The `extractedText` / `rawFreeText` / `fullText` family is in
+    // HARD_DELETE_KEYS — we deliberately do NOT send the OCR full-text
+    // dump. It always carries the patient's name and the issuing
+    // physician's name; the structured fields the redactor passes
+    // through carry enough for the model to summarise. The legacy
+    // 2000-char slice was not a fix; it was a half-measure.
     const promptPayload = {
       documentId,
       documentType,
-      reportName: typeof fields.reportName === 'string' ? fields.reportName : undefined,
-      reportTime: typeof fields.reportTime === 'string' ? fields.reportTime : undefined,
-      highlights: fields,
-      aiExtraction,
-      extractedText: extractedText ? extractedText.slice(0, 2000) : '',
+      // Keep reportName + reportTime only if they survived redaction
+      // (they should — neither is in HARD_DELETE_KEYS). Pull from the
+      // redacted shape so unknown future keys can't sneak back in via
+      // a typo here.
+      report: redacted.fields,
     };
 
     const system = [
-      '你是医疗报告解读助手。请根据给定的结构化解析结果(aiExtraction/highlights)输出一个简洁的中文总结。',
+      '你是医疗报告解读助手。请根据给定的结构化解析结果(report)输出一个简洁的中文总结。',
       '要求：',
       '1) 仅输出纯文本，不要 Markdown。',
       '2) 结构：一句总览 + 3~6 条要点（每条不超过 30 字）。',
@@ -666,6 +686,7 @@ export class PatientProfileController {
     const user = `结构化信息(JSON)：\n${JSON.stringify(promptPayload, null, 2)}`;
 
     let summary = '';
+    let usedFallback = false;
     try {
       const completion = await this.aiSummary.client.chat.completions.create({
         model: this.aiSummary.model,
@@ -677,7 +698,17 @@ export class PatientProfileController {
       });
       summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
     } catch {
+      // Don't mask the upstream failure with a silent fallback. The
+      // fallback's structured summary is still useful for the UI, but
+      // the response and the persisted ocr_payload both carry
+      // aiSummarySource='fallback' so monitoring + the mobile UI can
+      // distinguish LLM output from rule-based output. The original
+      // exception is not propagated upward (response would 502) and
+      // also not logged here to avoid accidentally surfacing the
+      // upstream Authorization header in unstructured logs (the route
+      // boundary scrubber doesn't touch this path).
       summary = buildFallbackDocumentSummary(documentType, fields);
+      usedFallback = true;
     }
 
     if (!summary) {
@@ -689,11 +720,12 @@ export class PatientProfileController {
       fields: {
         ...fields,
         aiSummary: summary,
+        aiSummarySource: usedFallback ? 'fallback' : 'llm',
       },
     };
 
     await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
-    res.status(200).json({ documentId, summary });
+    res.status(200).json({ documentId, summary, source: usedFallback ? 'fallback' : 'llm' });
   };
 
   getRiskSummary = async (req: AuthenticatedRequest, res: Response) => {

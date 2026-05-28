@@ -420,6 +420,175 @@ describe('PatientProfileController.getDocumentFile — Content-Type + Content-Di
   });
 });
 
+/**
+ * PR-Sec-5 #2: generateDocumentSummary used to ship the raw OCR
+ * fields blob (patientName, idCard, phoneNumber, doctorName, mrn,
+ * dateOfBirth, raw extractedText…) straight to the LLM with no
+ * consent gate and no redactor. The whole ai-agents/security/* stack
+ * existed to prevent exactly this, so the endpoint was a glaring
+ * carve-out. These tests pin every guard.
+ */
+describe('PatientProfileController.generateDocumentSummary — consent + redaction guards', () => {
+  const buildSummaryDeps = (
+    overrides: Partial<{
+      consentLevel: 'none' | 'basic' | 'precise';
+      ocrPayload: unknown;
+      llmShouldFail: boolean;
+    }> = {},
+  ) => {
+    const consentLevel = overrides.consentLevel ?? 'precise';
+    const ocrPayload = overrides.ocrPayload ?? {
+      provider: 'paddle',
+      fields: {
+        // The full long-tail of identifying fields the redactor is
+        // supposed to strip. If a single one of these leaks into the
+        // prompt, this test will catch it.
+        patientName: '张三',
+        idCard: '110101199005203212',
+        phoneNumber: '13800001234',
+        doctorName: 'Dr. Li',
+        dateOfBirth: '1990-05-20',
+        mrn: 'MRN-0001',
+        notes: '私人备注：曾在 XX 医院就诊',
+        // Clinical fields the orchestrator's allowlist accepts:
+        classifiedType: 'genetic_report',
+        d4z4Repeats: '3/22',
+        haplotype: '4qA',
+        analysisStatus: 'completed',
+      },
+      // The OCR raw-text dump that the legacy code sliced to 2000
+      // chars and shipped to the LLM. Must not appear in the prompt.
+      extractedText: '患者 张三 ，男，身份证 110101199005203212，主诉 …',
+    };
+
+    const completionsCreate = vi
+      .fn()
+      .mockImplementation(({ messages }: { messages: Array<{ content: string }> }) => {
+        if (overrides.llmShouldFail) throw new Error('LLM upstream timeout');
+        return Promise.resolve({
+          choices: [
+            {
+              message: {
+                content: `LLM saw:\n${messages.map((m) => m.content).join('\n---\n')}`,
+              },
+            },
+          ],
+        });
+      });
+
+    const service = {
+      getConsentStatus: vi.fn().mockResolvedValue({ level: consentLevel }),
+      getDocumentForUser: vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'genetic_report',
+        storage_uri: 'local://uploads/x/scan.pdf',
+        file_name: 'scan.pdf',
+        mime_type: 'application/pdf',
+        ocr_payload: ocrPayload,
+      }),
+      updateDocumentOcrPayloadForUser: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PatientProfileService;
+    const storage = {
+      save: vi.fn(),
+      load: vi.fn(),
+      remove: vi.fn(),
+      canHandle: vi.fn(),
+    } as unknown as StorageProvider;
+    const ocr = { parse: vi.fn() } as unknown as OcrProvider;
+    const aiSummary = {
+      client: { chat: { completions: { create: completionsCreate } } },
+      model: 'test-model',
+    } as unknown as ConstructorParameters<typeof PatientProfileController>[3];
+
+    const controller = new PatientProfileController(service, storage, ocr, aiSummary);
+    return { controller, service, completionsCreate };
+  };
+
+  const captureJson = () => {
+    const captured: { status: number; body: unknown } = { status: 200, body: null };
+    const res = {
+      status: vi.fn((code: number) => {
+        captured.status = code;
+        return res;
+      }),
+      json: vi.fn((body: unknown) => {
+        captured.body = body;
+        return res;
+      }),
+    } as unknown as Response;
+    return { res, captured };
+  };
+
+  it('rejects with 403 + consent_required when consent level is none', async () => {
+    const { controller } = buildSummaryDeps({ consentLevel: 'none' });
+    const { res } = captureJson();
+
+    await expect(
+      controller.generateDocumentSummary(
+        { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+        res,
+      ),
+    ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('redacts hard-delete keys from the prompt before sending to the LLM', async () => {
+    const { controller, completionsCreate } = buildSummaryDeps({ consentLevel: 'basic' });
+    const { res } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    // Inspect what was actually handed to the LLM.
+    const call = completionsCreate.mock.calls[0][0];
+    const prompt = (call.messages as Array<{ content: string }>).map((m) => m.content).join('\n');
+
+    for (const leaked of [
+      '张三',
+      '110101199005203212',
+      '13800001234',
+      'Dr. Li',
+      '1990-05-20',
+      'MRN-0001',
+      '私人备注',
+    ]) {
+      expect(prompt).not.toContain(leaked);
+    }
+  });
+
+  it('does NOT send the OCR extractedText raw dump to the LLM', async () => {
+    const { controller, completionsCreate } = buildSummaryDeps({ consentLevel: 'basic' });
+    const { res } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    const call = completionsCreate.mock.calls[0][0];
+    const prompt = (call.messages as Array<{ content: string }>).map((m) => m.content).join('\n');
+
+    expect(prompt).not.toContain('患者 张三');
+    expect(prompt).not.toContain('身份证');
+    expect(prompt).not.toContain('extractedText');
+    expect(prompt).not.toContain('rawFreeText');
+  });
+
+  it('marks the response with source=fallback when the LLM throws', async () => {
+    const { controller } = buildSummaryDeps({ consentLevel: 'basic', llmShouldFail: true });
+    const { res, captured } = captureJson();
+
+    await controller.generateDocumentSummary(
+      { user: { id: 'u-1' }, params: { id: 'doc-1' } } as unknown as AuthenticatedRequest,
+      res,
+    );
+
+    expect(captured.status).toBe(200);
+    expect((captured.body as { source: string }).source).toBe('fallback');
+  });
+});
+
 describe('PatientProfileController.deleteDocument — service receives audit meta', () => {
   it('forwards req.ip + user-agent so the service can write the audit row', async () => {
     const deleteDocumentForUser = vi.fn().mockResolvedValue({
