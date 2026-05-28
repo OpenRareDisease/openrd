@@ -472,6 +472,50 @@ export const updateMyConsent = (payload: ConsentUpdatePayload) =>
     body: JSON.stringify(payload),
   });
 
+/** snake_case to match the DB CHECK constraint. The mobile UI maps
+ *  this to a Chinese label in the consent-history card. */
+export type ConsentEventFlag = 'personal' | 'third_party' | 'precise_values';
+
+/** `user` = explicit toggle from the app; `admin` = future ops tool;
+ *  `system` = auto-coerced (precise→false when the base pair drops). */
+export type ConsentEventSource = 'user' | 'admin' | 'system';
+
+export interface ConsentEvent {
+  id: string;
+  userId: string;
+  flagName: ConsentEventFlag;
+  fromValue: boolean;
+  toValue: boolean;
+  source: ConsentEventSource;
+  note: string | null;
+  changedAt: string;
+}
+
+export interface ConsentHistoryResponse {
+  events: ConsentEvent[];
+}
+
+export interface GetMyConsentHistoryOptions {
+  /** 1–500, server clamps. Default 100 on the server side. */
+  limit?: number;
+  offset?: number;
+  flagName?: ConsentEventFlag;
+}
+
+/** Fetch the user's AI-consent grant/revoke history, newest first.
+ *  Backed by `GET /api/profiles/me/consent/history`. Returns
+ *  `{ events: [] }` (not 404) when the user has never toggled
+ *  anything, so callers can render an empty state without a special
+ *  branch — the 404 case is reserved for "no profile row at all". */
+export const getMyConsentHistory = (opts: GetMyConsentHistoryOptions = {}) => {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  if (opts.flagName) params.set('flagName', opts.flagName);
+  const qs = params.toString();
+  return apiRequest<ConsentHistoryResponse>(`/profiles/me/consent/history${qs ? `?${qs}` : ''}`);
+};
+
 /** The four data-sharing toggles that live next to AI consent on the
  *  privacy settings screen. Backed by columns added in DB
  *  migration 010. */
