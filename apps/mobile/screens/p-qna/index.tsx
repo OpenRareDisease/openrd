@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
@@ -18,12 +18,14 @@ import {
   ApiError,
   AiAskProgressStage,
   type AiCitation,
+  type ConsentLevel,
   askAiQuestion,
   getAiAskProgress,
   initAiAskProgress,
   isConsentRequiredError,
 } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { pickCurrentMode } from './mode';
 import styles from './styles';
 
 type ChatRole = 'assistant' | 'user';
@@ -37,6 +39,16 @@ type AssistantMetadata = {
   fieldsUsed?: string[];
   usedPersonalData?: boolean;
   citations?: AiCitation[];
+  /** Per-message snapshot of the redaction mode the orchestrator
+   *  picked for this call. Drives the at-a-glance mode chip in the
+   *  page header (see `pickCurrentMode`). Persisted so revisiting an
+   *  old chat keeps showing the mode the answer was generated under
+   *  — even if the user has since toggled their consent. */
+  redactionMode?: 'strict' | 'precise';
+  /** Companion to `redactionMode`. Captured for future use by the
+   *  audit / debug overlays; the mode chip itself only reads
+   *  `redactionMode`. */
+  consentLevel?: ConsentLevel;
 };
 
 type ChatMessage = {
@@ -108,6 +120,45 @@ const formatMessageTime = (value: string) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+/** At-a-glance "this conversation is currently in X mode" chip.
+ *  Renders nothing until the first successful answer comes back —
+ *  before that, the user hasn't committed to a mode (the orchestrator
+ *  picks it per-call based on consent), so claiming "严格" or "精确"
+ *  pre-emptively would be a lie. */
+const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
+  if (!mode) return null;
+  const isPrecise = mode === 'precise';
+  const label = isPrecise ? '精确模式' : '严格模式';
+  // Precise mode is the sensitive one ("AI can see raw values") so it
+  // earns the accent colour. Strict mode is the safe default and uses
+  // a muted shield treatment to read as "normal".
+  const color = isPrecise ? CLINICAL_COLORS.accentStrong : CLINICAL_COLORS.textMuted;
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: color,
+        backgroundColor: CLINICAL_COLORS.panel,
+      }}
+      accessibilityRole="text"
+      accessibilityLabel={`当前隐私模式：${label}`}
+    >
+      <FontAwesome6
+        name={isPrecise ? 'wand-magic-sparkles' : 'shield-halved'}
+        size={10}
+        color={color}
+      />
+      <Text style={{ color, fontSize: 11, fontWeight: '700' }}>{label}</Text>
+    </View>
+  );
 };
 
 /** Per-message footer that lists patient fields used + an expandable
@@ -253,6 +304,11 @@ const P_QNA = () => {
     error?: string;
   } | null>(null);
 
+  // Recomputed on every messages update; cheap (one pass over the
+  // bounded conversation, capped at MAX_STORED_MESSAGES) and avoids
+  // an extra state field that could drift from `messages`.
+  const currentMode = useMemo(() => pickCurrentMode(messages), [messages]);
+
   useEffect(() => {
     const hydrate = async () => {
       try {
@@ -379,6 +435,8 @@ const P_QNA = () => {
         fieldsUsed: response.data.fieldsUsed,
         usedPersonalData: response.data.usedPersonalData,
         citations: response.data.citations,
+        redactionMode: response.data.redactionMode,
+        consentLevel: response.data.consentLevel,
       };
 
       setMessages((prev) =>
@@ -577,6 +635,7 @@ const P_QNA = () => {
           >
             AI 回答仅供参考，不能替代医生诊断；用到你本人数据时下方会标明。
           </Text>
+          <ModeBadge mode={currentMode} />
         </View>
 
         <ScrollView
