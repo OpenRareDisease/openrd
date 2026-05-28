@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import OpenAI from 'openai';
+import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
   baselineProfileSchema,
@@ -126,7 +127,70 @@ const buildFallbackDocumentSummary = (documentType: string, fields: Record<strin
   }
 };
 
-const resolveDocumentTypeFromPayload = (fallbackType: string, payload: unknown) => {
+/**
+ * Map every OCR-emitted sub-type onto one of the four canonical
+ * `document_type` values the migration 012 CHECK constraint admits
+ * (`mri | genetic_report | blood_panel | other`). Without this,
+ * `resolveDocumentTypeFromPayload` would return the raw OCR
+ * classification (`muscle_mri`, `biochemistry`, `pulmonary_function`,
+ * etc.) and the INSERT would fail the CHECK — the upload pipeline
+ * would 500 with the file already in storage and no DB row to find
+ * it again.
+ *
+ * The granular sub-type stays accessible to the UI via
+ * `ocr_payload.fields.classifiedType` (see
+ * `documentTypeLabels` in profile.service.ts and `documentLabels` in
+ * profile.passport.ts which already key off the OCR field).
+ */
+const DOCUMENT_TYPE_CANONICAL_MAP: Record<string, DocumentType> = {
+  // Canonical values pass through.
+  mri: 'mri',
+  genetic_report: 'genetic_report',
+  blood_panel: 'blood_panel',
+  other: 'other',
+  // Imaging → mri (only muscle MRI today; add more as the
+  // imaging pipeline grows).
+  muscle_mri: 'mri',
+  // Blood-derived panels → blood_panel.
+  biochemistry: 'blood_panel',
+  muscle_enzyme: 'blood_panel',
+  blood_routine: 'blood_panel',
+  thyroid_function: 'blood_panel',
+  coagulation: 'blood_panel',
+  urinalysis: 'blood_panel',
+  infection_screening: 'blood_panel',
+  stool_test: 'blood_panel',
+  // Everything else collapses to `other`. The OCR sub-type label
+  // (e.g. "心电图", "病历摘要") is rendered from
+  // `ocr_payload.fields.classifiedType` so we don't lose the detail
+  // at the UI layer.
+  medical_summary: 'other',
+  physical_exam: 'other',
+  pulmonary_function: 'other',
+  diaphragm_ultrasound: 'other',
+  ecg: 'other',
+  echocardiography: 'other',
+  abdominal_ultrasound: 'other',
+};
+
+const isCanonicalDocumentType = (value: string): value is DocumentType =>
+  (DOCUMENT_TYPES as readonly string[]).includes(value);
+
+/**
+ * Map an arbitrary OCR sub-type string onto the canonical
+ * DocumentType enum. Falls back to 'other' so an unknown sub-type
+ * (a new OCR classifier output not yet listed in the map) still
+ * satisfies the DB CHECK rather than crashing the upload.
+ */
+const canonicalizeDocumentType = (raw: string): DocumentType => {
+  const trimmed = raw.trim();
+  const mapped = DOCUMENT_TYPE_CANONICAL_MAP[trimmed];
+  if (mapped) return mapped;
+  if (isCanonicalDocumentType(trimmed)) return trimmed;
+  return 'other';
+};
+
+const resolveDocumentTypeFromPayload = (fallbackType: string, payload: unknown): DocumentType => {
   const payloadObj = isRecord(payload) ? payload : null;
   const fields =
     payloadObj && isRecord(payloadObj.fields)
@@ -145,11 +209,19 @@ const resolveDocumentTypeFromPayload = (fallbackType: string, payload: unknown) 
     if (typeof candidate !== 'string') continue;
     const normalized = candidate.trim();
     if (!normalized || normalized === 'other' || normalized === 'unknown') continue;
-    return normalized;
+    return canonicalizeDocumentType(normalized);
   }
 
-  return fallbackType;
+  // The fallback comes from documentUploadSchema, which restricts to
+  // DOCUMENT_TYPES via z.enum — so it's already canonical. Run it
+  // through canonicalize() anyway so a future widening of the schema
+  // can't bypass the contract by accident.
+  return canonicalizeDocumentType(fallbackType);
 };
+
+// Exported for unit tests in profile.controller.test.ts. Production
+// callers stay inside this module.
+export { canonicalizeDocumentType as _canonicalizeDocumentType };
 
 const resolveDocumentStatusFromPayload = (payload: unknown) => {
   const payloadObj = isRecord(payload) ? payload : null;
