@@ -223,6 +223,47 @@ const resolveDocumentTypeFromPayload = (fallbackType: string, payload: unknown):
 // callers stay inside this module.
 export { canonicalizeDocumentType as _canonicalizeDocumentType };
 
+/**
+ * MIME types that are safe to render inline. Anything else either
+ * downloads as octet-stream or — combined with `Content-Disposition:
+ * attachment` + `X-Content-Type-Options: nosniff` — refuses to execute
+ * in the API origin. Stays intentionally small: PDF and common image
+ * formats are the only inputs the patient profile pipeline actually
+ * processes; HTML / SVG / XML are deliberately absent because they can
+ * carry script.
+ */
+const SAFE_INLINE_MIME_ALLOWLIST: ReadonlySet<string> = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+]);
+
+/**
+ * Build an RFC 5987-safe Content-Disposition header. CRLF + quote
+ * characters in user-supplied filenames would otherwise let a patient
+ * inject extra header parameters; the legacy code interpolated the
+ * raw `file_name` (preserved verbatim through multer) straight into a
+ * `filename="..."` form. We always use `attachment` so the browser
+ * never renders the resource in-origin, and we use the `filename*`
+ * (UTF-8) form for any character outside `[A-Za-z0-9._-]`.
+ */
+const buildContentDisposition = (rawName: string): string => {
+  const fallback = 'document';
+  const trimmed = (rawName ?? '').replace(/[\r\n]/g, '').trim() || fallback;
+  const asciiSafe = trimmed.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || fallback;
+  const utf8Safe = encodeURIComponent(trimmed).slice(0, 400);
+  return `attachment; filename="${asciiSafe}"; filename*=UTF-8''${utf8Safe}`;
+};
+
+// Exported for unit tests.
+export {
+  SAFE_INLINE_MIME_ALLOWLIST as _SAFE_INLINE_MIME_ALLOWLIST,
+  buildContentDisposition as _buildContentDisposition,
+};
+
 const resolveDocumentStatusFromPayload = (payload: unknown) => {
   const payloadObj = isRecord(payload) ? payload : null;
   if (!payloadObj) {
@@ -503,13 +544,23 @@ export class PatientProfileController {
     const document = await this.service.getDocumentForUser(req.user.id, documentId);
     const loaded = await this.storage.load(document.storage_uri);
 
-    res.setHeader(
-      'Content-Type',
-      document.mime_type ?? loaded.mimeType ?? 'application/octet-stream',
-    );
+    // Pin the Content-Type to an allowlist so a caller who uploaded
+    // `evil.html` with `Content-Type: text/html` can't get the browser
+    // to render it in the API origin. Anything off the allowlist falls
+    // back to octet-stream + attachment, so the worst case is a
+    // useless download rather than a stored XSS.
+    const rawType = (document.mime_type ?? loaded.mimeType ?? '').toLowerCase().trim();
+    const safeContentType = SAFE_INLINE_MIME_ALLOWLIST.has(rawType)
+      ? rawType
+      : 'application/octet-stream';
+    res.setHeader('Content-Type', safeContentType);
+    // `attachment` (not `inline`) keeps the browser from rendering the
+    // resource even when the MIME slips past the allowlist via a
+    // future config change. nosniff blocks Chrome's content sniffing.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${document.file_name ?? loaded.fileName}"`,
+      buildContentDisposition(document.file_name ?? loaded.fileName ?? 'document'),
     );
 
     loaded.stream.pipe(res);
@@ -517,7 +568,11 @@ export class PatientProfileController {
 
   deleteDocument = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
-    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId);
+    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId, {
+      ip: req.ip,
+      userAgent:
+        typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+    });
 
     let storageCleanupStatus: 'removed' | 'missing' | 'failed' = 'removed';
     try {
