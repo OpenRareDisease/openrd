@@ -171,12 +171,43 @@ const getErrorMessage = (error: unknown) => {
   return String(error);
 };
 
+/**
+ * Strip caller-supplied data out of an error string before persisting
+ * it. PG errors are the worst offender: a constraint or type violation
+ * surfaces as `... DETAIL:  Key (phone)=(13800001234)` or
+ * `error: invalid input value for enum ... $1 = '张三'`. We don't
+ * want any of that landing in an audit row that downstream tooling
+ * (and humans without the underlying data permissions) read.
+ *
+ * The rules are deliberately blunt: redact anything that looks like a
+ * literal value or a PII-shaped token. Better to over-redact a stack
+ * trace than to leak a phone number.
+ */
+const scrubErrorDetail = (input: string): string =>
+  input
+    // pg parameterised "$N = '...'" / "$N='...'"
+    .replace(/\$\d+\s*=\s*'[^']*'/g, '$N=[REDACTED]')
+    // pg "DETAIL:  Key (col)=(value)" / "(col)=(value)"
+    .replace(/\(\s*[^()]+\s*\)\s*=\s*\([^()]+\)/g, '(col)=(value)')
+    // Chinese ID card first (18 digits, optional final X). Run before
+    // phone so we don't redact the 11-digit window that lives inside
+    // a longer ID-shaped run as a "phone".
+    .replace(/\b\d{17}[\dXx]\b/g, '[ID]')
+    // Older 15-digit CN ID (no longer issued but still legal).
+    .replace(/\b\d{15}\b/g, '[ID]')
+    // CN mobile (11 digits, starts with 1[3-9]) — `\b` keeps us from
+    // catching a substring inside another digit run.
+    .replace(/(?<!\d)(?:\+?86)?1[3-9]\d{9}(?!\d)/g, '[PHONE]')
+    // email addresses
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[EMAIL]');
+
 const generateProgressId = () => `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 // Exported for unit tests in ai-chat.routes.test.ts. Production
 // callers stay inside this module.
 export { buildAskResponseData as _buildAskResponseData };
 export { writeWithBackpressure as _writeWithBackpressure };
+export { scrubErrorDetail as _scrubErrorDetail };
 
 /**
  * Narrow the orchestrator's full `OrchestratorRunResult` down to the
@@ -476,7 +507,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           toolsCalled: [],
           latencyMs: Date.now() - start,
           status: isConsentError ? 'consent_denied' : 'error',
-          errorDetail: detail.slice(0, 500),
+          errorDetail: scrubErrorDetail(detail).slice(0, 500),
         });
       } catch (auditError) {
         context.logger.warn(
@@ -846,7 +877,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           toolsCalled: [],
           latencyMs: Date.now() - start,
           status: 'error',
-          errorDetail: (streamError || 'stream aborted').slice(0, 500),
+          errorDetail: scrubErrorDetail(streamError || 'stream aborted').slice(0, 500),
         });
       }
     } catch (auditError) {

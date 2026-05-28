@@ -167,14 +167,35 @@ export class AuthService {
 
   async register(payload: RegisterInput, meta?: { ip?: string; userAgent?: string }) {
     const client = await this.pool.connect();
+    // `txOpen` mirrors the pattern used by OtpService.sendCode: any
+    // failure after BEGIN and before COMMIT — the existence SELECT
+    // throwing, bcrypt.hash rejecting, a non-23505 INSERT error, or
+    // COMMIT itself failing — must run ROLLBACK before client.release
+    // returns the connection. Without this the borrower of the
+    // connection inherits an open / aborted transaction, holding
+    // locks open and undercutting the very race fix this transaction
+    // exists to provide.
+    let txOpen = false;
 
     try {
+      // Wrap the check + insert in a transaction so two concurrent
+      // registrations with the same phone or email can't both clear
+      // the existence probe and then race to INSERT — that previously
+      // surfaced as a 500 (unique-violation) instead of the friendly
+      // 409 the API contract documents. We still catch unique_violation
+      // explicitly because a serializable retry is not worth setting
+      // up for a single duplicate-account error.
+      await client.query('BEGIN');
+      txOpen = true;
+
       const existing = await client.query(
         'SELECT id FROM app_users WHERE phone_number = $1 OR (email IS NOT NULL AND email = $2)',
         [payload.phoneNumber, payload.email ?? null],
       );
 
       if (existing.rowCount) {
+        await client.query('ROLLBACK');
+        txOpen = false;
         await this.logAudit('auth.register_failed', {
           phoneNumber: payload.phoneNumber,
           email: payload.email ?? null,
@@ -186,12 +207,38 @@ export class AuthService {
       }
 
       const passwordHash = await bcrypt.hash(payload.password, this.env.BCRYPT_SALT_ROUNDS);
-      const inserted = await client.query<UserRow>(
-        `INSERT INTO app_users (phone_number, email, password_hash, role)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, phone_number, email, role, created_at`,
-        [payload.phoneNumber, payload.email ?? null, passwordHash, payload.role],
-      );
+      let inserted;
+      try {
+        inserted = await client.query<UserRow>(
+          `INSERT INTO app_users (phone_number, email, password_hash, role)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, phone_number, email, role, created_at`,
+          [payload.phoneNumber, payload.email ?? null, passwordHash, payload.role],
+        );
+      } catch (insertError) {
+        await client.query('ROLLBACK');
+        txOpen = false;
+        // 23505 = unique_violation. Two concurrent registrations
+        // raced past the SELECT above; the second one's INSERT loses.
+        const code =
+          typeof insertError === 'object' && insertError !== null
+            ? (insertError as { code?: string }).code
+            : undefined;
+        if (code === '23505') {
+          await this.logAudit('auth.register_failed', {
+            phoneNumber: payload.phoneNumber,
+            email: payload.email ?? null,
+            reason: 'exists_concurrent',
+            ip: meta?.ip ?? null,
+            userAgent: meta?.userAgent ?? null,
+          });
+          throw new AppError('User already exists with the provided credentials', 409);
+        }
+        throw insertError;
+      }
+
+      await client.query('COMMIT');
+      txOpen = false;
 
       const user = this.serializeUser(inserted.rows[0]);
       const token = this.createToken(user);
@@ -205,6 +252,19 @@ export class AuthService {
       });
 
       return { user, token };
+    } catch (error) {
+      if (txOpen) {
+        // Best-effort ROLLBACK on any post-BEGIN failure that didn't
+        // already roll back. Swallow ROLLBACK errors — we're already
+        // on the failure path and the original error is what the
+        // caller cares about.
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn({ rollbackError }, 'register: ROLLBACK after error failed');
+        }
+      }
+      throw error;
     } finally {
       client.release();
     }

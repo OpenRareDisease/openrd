@@ -62,8 +62,12 @@ describe('hashPrompt', () => {
     expect(a).toBe(b);
     expect(a).toMatch(/^[a-f0-9]{64}$/);
   });
-  it('normalises whitespace so trivial reformatting matches', () => {
-    expect(hashPrompt('a   b\n  c')).toBe(hashPrompt('a b c'));
+  it('trims leading/trailing whitespace but does not collapse internal whitespace', () => {
+    // Whitespace collapse was removed because it let an attacker pad a
+    // benign prompt to match a known target hash. Internal whitespace
+    // must now contribute to the digest.
+    expect(hashPrompt('  hello world  ')).toBe(hashPrompt('hello world'));
+    expect(hashPrompt('a   b\n  c')).not.toBe(hashPrompt('a b c'));
   });
 });
 

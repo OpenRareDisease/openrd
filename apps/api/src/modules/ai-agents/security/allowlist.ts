@@ -143,6 +143,41 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'raw_text',
   'fullText',
   'full_text',
+  // Medical identifiers — beyond patientId / patientCode, OCR pipelines
+  // and import schemas surface a long tail of equally identifying ids.
+  // Listed explicitly so a future allowlist addition can never let one
+  // through by accident.
+  'mrn',
+  'medicalRecordNumber',
+  'medical_record_number',
+  'hospitalNumber',
+  'hospital_number',
+  'caseNumber',
+  'case_number',
+  // Government / insurance identifiers
+  'passport',
+  'passportNumber',
+  'passport_number',
+  'insurance',
+  'insuranceNumber',
+  'insurance_number',
+  'policyNumber',
+  'policy_number',
+  'socialSecurity',
+  'social_security',
+  'ssn',
+  // Contact / relationships
+  'emergencyContact',
+  'emergency_contact',
+  'emergencyPhone',
+  'emergency_phone',
+  'guardian',
+  'guardianName',
+  'guardian_name',
+  'guardianPhone',
+  'guardian_phone',
+  'nextOfKin',
+  'next_of_kin',
 ]);
 
 /**

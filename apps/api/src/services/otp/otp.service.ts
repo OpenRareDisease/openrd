@@ -88,6 +88,7 @@ export class OtpService {
     const scene: OtpScene = input.scene ?? 'register';
 
     const client = await this.pool.connect();
+    let txOpen = false;
 
     try {
       const resendCheck = await client.query<{ sent_at: Date }>(
@@ -129,6 +130,14 @@ export class OtpService {
           : crypto.randomBytes(16).toString('hex');
       const expiresAt = new Date(Date.now() + this.env.OTP_TTL_MINUTES * 60 * 1000);
 
+      // Transaction: hold the INSERT until we know the SMS provider
+      // accepted the message. Without this, a Tencent / mock failure
+      // leaves a "ghost code" in the DB that still counts against the
+      // per-day cap and the resend interval — locking the user out of
+      // ever getting a real code through.
+      await client.query('BEGIN');
+      txOpen = true;
+
       await client.query(
         `INSERT INTO otp_verification_codes (
           phone_number, scene, code_hash, request_id, expires_at
@@ -152,6 +161,9 @@ export class OtpService {
         userAgent: input.userAgent ?? null,
       });
 
+      await client.query('COMMIT');
+      txOpen = false;
+
       if (!this.env.isProduction && result.provider === 'mock') {
         this.logger.info(
           { phoneNumber: maskPhone(phoneNumber), requestId, code },
@@ -161,6 +173,19 @@ export class OtpService {
 
       return result;
     } catch (error) {
+      if (txOpen) {
+        // Rollback so the unsent code doesn't sit in the DB
+        // contributing to rate limits. Swallow ROLLBACK errors —
+        // we're already on the failure path.
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn(
+            { rollbackError, phoneNumber: maskPhone(phoneNumber), scene },
+            'OTP send rollback failed',
+          );
+        }
+      }
       this.logger.error({ error, phoneNumber: maskPhone(phoneNumber), scene }, 'OTP send failed');
       throw error;
     } finally {

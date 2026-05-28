@@ -362,18 +362,37 @@ export class PatientProfileController {
     }
 
     const resolvedDocumentType = resolveDocumentTypeFromPayload(payload.documentType, ocrPayload);
-    const result = await this.service.addUploadedDocument({
-      userId: req.user.id,
-      documentType: resolvedDocumentType,
-      status: resolveDocumentStatusFromPayload(ocrPayload),
-      title: payload.title ?? null,
-      submissionId: payload.submissionId ?? null,
-      storageUri: stored.storageUri,
-      fileName: file.originalname ?? stored.fileName,
-      mimeType: file.mimetype ?? null,
-      fileSizeBytes: file.size ?? stored.fileSizeBytes,
-      ocrPayload,
-    });
+    let result;
+    try {
+      result = await this.service.addUploadedDocument({
+        userId: req.user.id,
+        documentType: resolvedDocumentType,
+        status: resolveDocumentStatusFromPayload(ocrPayload),
+        title: payload.title ?? null,
+        submissionId: payload.submissionId ?? null,
+        storageUri: stored.storageUri,
+        fileName: file.originalname ?? stored.fileName,
+        mimeType: file.mimetype ?? null,
+        fileSizeBytes: file.size ?? stored.fileSizeBytes,
+        ocrPayload,
+      });
+    } catch (insertError) {
+      // The file is already in storage; if the DB row never lands the
+      // object becomes an orphan that no UI / cleanup job can find by
+      // documentId. Remove it best-effort — swallow remove failures
+      // because the original insert error is the one the caller cares
+      // about.
+      try {
+        await this.storage.remove(stored.storageUri);
+      } catch (cleanupError) {
+        // Surface as a warning so an operator can sweep manually. We
+        // don't have a logger handle on the controller — defer to the
+        // existing AppError flow by attaching the metadata.
+        (insertError as { storageOrphan?: string }).storageOrphan = stored.storageUri;
+        void cleanupError;
+      }
+      throw insertError;
+    }
 
     res.status(201).json(result);
   };

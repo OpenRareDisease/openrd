@@ -76,8 +76,9 @@ const buildUserPrompt = (input: OrchestratorRunInput): string => {
  * Serialise an LLM message into a stable string for hashing. Covers
  * every role and includes tool-call arguments so the recorded hash
  * really represents what the model saw, not just the system/user/
- * tool-body slice. Whitespace is left to the consumer (`hashPrompt`)
- * which normalises before hashing.
+ * tool-body slice. `hashPrompt` trims surrounding whitespace but
+ * preserves internal whitespace exactly so the digest identifies the
+ * byte stream.
  */
 const serializeMessageForHash = (message: LlmMessage): string => {
   switch (message.role) {
@@ -320,8 +321,9 @@ export class Orchestrator {
     // Hash the *exact* message set submitted to the LLM, including the
     // assistant turn (with tool-call JSON) and every tool result body.
     // Anything less means the audit hash can match two runs that
-    // actually sent different prompts. Whitespace normalisation is
-    // handled inside hashPrompt so cosmetic reformatting is stable.
+    // actually sent different prompts. `hashPrompt` only trims outer
+    // whitespace; internal whitespace is preserved so the digest
+    // really identifies the byte stream we sent upstream.
     const hashSource = args.finalMessages.map(serializeMessageForHash).join('\n\n');
     const redactedPromptHash = hashPrompt(hashSource);
     const promptCharLength = hashSource.length;
