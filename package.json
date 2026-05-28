@@ -23,7 +23,8 @@
     "kb:import:chroma": "python3 scripts/kb-import-from-chroma.py",
     "kb:verify": "python3 scripts/kb-verify.py",
     "github:app-token": "node --env-file-if-exists=.env scripts/github-app-token.mjs",
-    "github:app-pr-review": "node --env-file-if-exists=.env scripts/github-app-pr-review.mjs"
+    "github:app-pr-review": "node --env-file-if-exists=.env scripts/github-app-pr-review.mjs",
+    "dev:grant-consent": "node --env-file-if-exists=.env scripts/dev-grant-consent.mjs"
   },
   "engines": {
     "node": ">=20.12"
