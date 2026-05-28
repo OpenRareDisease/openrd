@@ -167,6 +167,15 @@ class DocxParser(Parser):
         )
 
 
+#: Cap on the decompressed size of `word/document.xml` we'll read
+#: from a .docx in the fallback path. Python's stdlib zipfile does
+#: NOT protect against decompression bombs by default — a 1 KB
+#: compressed entry can expand to gigabytes. Real Word documents
+#: rarely exceed a few MB; capping at 32 MB keeps the legit corpus
+#: working while refusing a zip bomb.
+_MAX_DOCX_XML_BYTES = 32 * 1024 * 1024
+
+
 def _parse_via_xml(path: Path) -> ParseResult | None:
     """Last-resort text extraction: open the .docx as a zip, read
     `word/document.xml`, strip XML tags. Returns None when even the
@@ -178,9 +187,16 @@ def _parse_via_xml(path: Path) -> ParseResult | None:
     try:
         with zipfile.ZipFile(path) as zf:
             try:
-                raw = zf.read("word/document.xml")
+                # Inspect the uncompressed size BEFORE reading. A
+                # zip bomb declares a small compressed size but
+                # expands to gigabytes on read; the size cap kills
+                # that path before any allocation happens.
+                info = zf.getinfo("word/document.xml")
             except KeyError:
                 return None
+            if info.file_size > _MAX_DOCX_XML_BYTES:
+                return None
+            raw = zf.read("word/document.xml")
     except Exception:
         return None
 
