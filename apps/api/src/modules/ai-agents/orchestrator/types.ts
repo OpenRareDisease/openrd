@@ -95,6 +95,14 @@ export interface OrchestratorRunResult {
  * Stage events emitted by `runStream`. The route maps these onto SSE
  * frames or onto the existing progressStore. Always terminates with
  * `done` (success) or `error` (failure); no further events follow.
+ *
+ * `answer_delta` is emitted only by the streaming code path
+ * ({@link Orchestrator.runStreaming}); the legacy non-streaming
+ * `run()` never produces it. Consumers should treat it as additive:
+ * concatenate `text` segments in arrival order; the final answer
+ * comes through the `done` event's `result.answer` regardless of
+ * whether `answer_delta` fired (so the audit row + UI both have a
+ * canonical body to refer to).
  */
 export type OrchestratorEvent =
   | { type: 'planning' }
@@ -114,6 +122,7 @@ export type OrchestratorEvent =
       usedPersonalData: boolean;
     }
   | { type: 'answering' }
+  | { type: 'answer_delta'; text: string }
   | { type: 'done'; result: OrchestratorRunResult }
   | { type: 'error'; message: string };
 

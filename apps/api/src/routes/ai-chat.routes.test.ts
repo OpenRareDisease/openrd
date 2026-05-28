@@ -4,7 +4,11 @@ import type { Pool } from 'pg';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAiChatRoutes } from './ai-chat.routes.js';
+import {
+  createAiChatRoutes,
+  _buildAskResponseData,
+  _writeWithBackpressure,
+} from './ai-chat.routes.js';
 import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { AuditLogger } from '../modules/ai-agents/audit/index.js';
@@ -405,6 +409,203 @@ describe('POST /api/ai/ask', () => {
   });
 });
 
+describe('POST /api/ai/ask/stream', () => {
+  /** Stub orchestrator that drives the runStream adapter through a
+   *  scripted sequence of events instead of running the real planner /
+   *  executor. The orchestrator's contract is "call onEvent for each
+   *  stage, finally emit `done` or `error`" — that's what we mimic. */
+  const buildStreamingOrchestrator = (
+    events: Array<Parameters<NonNullable<Parameters<Orchestrator['run']>[1]>>[0]>,
+  ): Orchestrator => {
+    const run = vi.fn(async (_input, onEvent) => {
+      for (const e of events) {
+        if (onEvent) onEvent(e);
+      }
+      // Return the last `done` event's result if there is one; the
+      // SSE route only reads `lastResult` from the event stream, but
+      // run()'s Promise type still requires a return value.
+      const last = events[events.length - 1];
+      if (last?.type === 'done') return last.result;
+      throw new Error('stream test ended without done event');
+    });
+    return { run } as unknown as Orchestrator;
+  };
+
+  const successDoneEvent = {
+    type: 'done' as const,
+    result: successResult({}),
+  };
+
+  it('400 when question is missing', async () => {
+    const app = buildApp({
+      pool: buildFakePool(),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([]),
+      auditLogger: buildFakeAuditLogger([]),
+    });
+    const token = issueToken('u-1');
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('403 + audit row when consent is none (no SSE body)', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const app = buildApp({
+      pool: buildFakePool({ consentRow: null }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([]),
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: '你好' });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('consent_required');
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('consent_denied');
+  });
+
+  it('streams events as SSE frames and writes a success audit row', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const app = buildApp({
+      pool: buildFakePool({
+        consentRow: {
+          ai_consent_personal: true,
+          ai_consent_third_party: true,
+          ai_consent_precise_values: false,
+        },
+      }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildStreamingOrchestrator([
+        { type: 'planning' },
+        { type: 'plan_complete', toolsPlanned: ['search_medical_kb'] },
+        { type: 'answering' },
+        { type: 'answer_delta', text: '你好' },
+        { type: 'answer_delta', text: '，' },
+        { type: 'answer_delta', text: '世界' },
+        successDoneEvent,
+      ]),
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: 'D4Z4 是什么' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/event-stream/);
+    expect(res.headers['cache-control']).toMatch(/no-cache/);
+
+    // Parse the SSE body — each frame is `event: <type>\ndata: <json>\n\n`.
+    // We just need to confirm the event types arrived in order and the
+    // answer_delta data round-trips.
+    const body = res.text;
+    const eventLines = body.split('\n').filter((l) => l.startsWith('event: '));
+    const types = eventLines.map((l) => l.replace('event: ', ''));
+    expect(types).toEqual([
+      'planning',
+      'plan_complete',
+      'answering',
+      'answer_delta',
+      'answer_delta',
+      'answer_delta',
+      'done',
+    ]);
+
+    // Extract the answer_delta data frames and check the text values.
+    const deltaTexts = body
+      .split('\n\n')
+      .filter((frame) => frame.includes('event: answer_delta'))
+      .map((frame) => {
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: ')) ?? '';
+        return (JSON.parse(dataLine.slice('data: '.length)) as { text: string }).text;
+      });
+    expect(deltaTexts).toEqual(['你好', '，', '世界']);
+
+    // The `done` frame's payload should be the narrowed
+    // `buildAskResponseData` shape, NOT the full
+    // `OrchestratorRunResult`. Audit-internal fields
+    // (`finalPrompt`, `redactedPromptHash`, `promptCharLength`) must
+    // never leave the server.
+    const doneFrame = body.split('\n\n').find((frame) => frame.includes('event: done'));
+    expect(doneFrame).toBeDefined();
+    const doneDataLine = doneFrame!.split('\n').find((l) => l.startsWith('data: ')) ?? '';
+    const doneData = JSON.parse(doneDataLine.slice('data: '.length)) as {
+      type: string;
+      data: Record<string, unknown>;
+    };
+    expect(doneData.type).toBe('done');
+    // Public fields are present
+    expect(doneData.data).toMatchObject({
+      question: 'D4Z4 是什么',
+      answer: '这里是 AI 回答',
+      consentLevel: 'basic',
+      redactionMode: 'strict',
+    });
+    expect(doneData.data.progressId).toMatch(/^ai-/);
+    expect(doneData.data.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // Audit-internal fields are NOT leaked
+    expect(doneData.data).not.toHaveProperty('finalPrompt');
+    expect(doneData.data).not.toHaveProperty('redactedPromptHash');
+    expect(doneData.data).not.toHaveProperty('promptCharLength');
+
+    // Audit row reflects the final result, not the deltas.
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('success');
+    expect(records[0].userId).toBe('u-1');
+  });
+
+  it('writes an error audit row when run() throws mid-stream', async () => {
+    // The real orchestrator never emits its own `error` event — the
+    // event type only fires when the runStream adapter catches a
+    // thrown error from run(). Mirror that here: emit a few normal
+    // stage events, then throw. The route should still finish
+    // cleanly (SSE headers already flushed) and write an error
+    // audit row carrying the thrown message.
+    const records: Array<Record<string, unknown>> = [];
+    const throwingOrchestrator: Orchestrator = {
+      run: vi.fn(async (_input, onEvent) => {
+        if (onEvent) {
+          onEvent({ type: 'planning' });
+          onEvent({ type: 'plan_complete', toolsPlanned: [] });
+        }
+        throw new Error('upstream LLM blew up');
+      }),
+    } as unknown as Orchestrator;
+    const app = buildApp({
+      pool: buildFakePool({
+        consentRow: {
+          ai_consent_personal: true,
+          ai_consent_third_party: true,
+          ai_consent_precise_values: false,
+        },
+      }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: throwingOrchestrator,
+      auditLogger: buildFakeAuditLogger(records),
+    });
+    const token = issueToken('u-1');
+
+    const res = await request(app)
+      .post('/api/ai/ask/stream')
+      .set('authorization', `Bearer ${token}`)
+      .send({ question: 'q' });
+
+    expect(res.status).toBe(200); // headers already sent before the error
+    expect(res.text).toMatch(/event: error/);
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('error');
+    expect(records[0].errorDetail).toMatch(/upstream LLM blew up/);
+  });
+});
+
 describe('GET /api/ai/audit', () => {
   const fakeRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
     id: 'aud-1',
@@ -586,5 +787,173 @@ describe('GET /api/ai/health', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('disabled');
     expect(res.body.llmConfigured).toBe(false);
+  });
+});
+
+describe('buildAskResponseData (response narrowing)', () => {
+  /** Pin the public response shape so a future addition to
+   *  `OrchestratorRunResult` doesn't accidentally widen what either
+   *  route ships back to the client. The narrowing is the whole
+   *  point of the helper — its job is to deny by default. */
+  it('emits only the documented public fields', () => {
+    const result = {
+      answer: 'A',
+      citations: [
+        {
+          chunkId: 'c1',
+          source: 's',
+          sourceFile: 'f',
+          chunkIndex: 0,
+          snippet: 'sn',
+        },
+      ],
+      toolCalls: [
+        {
+          name: 't',
+          toolCallId: 'tc1',
+          status: 'ok' as const,
+          chunkCount: 1,
+          latencyMs: 5,
+        },
+      ],
+      fieldsUsed: ['g'],
+      usedPersonalData: true,
+      consentLevel: 'basic' as const,
+      redactionMode: 'strict' as const,
+      llmUsage: { totalTokens: 10 },
+      latencyMs: 50,
+      // Audit-internal — MUST be stripped.
+      finalPrompt: { system: 'SECRET system prompt', user: 'SECRET user prompt' },
+      redactedPromptHash: 'a'.repeat(64),
+      promptCharLength: 999,
+    } as unknown as Parameters<typeof _buildAskResponseData>[1];
+
+    const out = _buildAskResponseData('the question', result, 'audit-9', 'prog-9');
+
+    expect(Object.keys(out).sort()).toEqual(
+      [
+        'answer',
+        'auditId',
+        'citations',
+        'consentLevel',
+        'fieldsUsed',
+        'latencyMs',
+        'llmUsage',
+        'progressId',
+        'question',
+        'redactionMode',
+        'timestamp',
+        'toolCalls',
+        'usedPersonalData',
+      ].sort(),
+    );
+    // Defensive double-check: the audit-internal field names are
+    // absent regardless of whether someone adds them above.
+    expect(out).not.toHaveProperty('finalPrompt');
+    expect(out).not.toHaveProperty('redactedPromptHash');
+    expect(out).not.toHaveProperty('promptCharLength');
+    expect(JSON.stringify(out)).not.toContain('SECRET');
+  });
+});
+
+describe('writeWithBackpressure', () => {
+  // We don't need a real socket — `Response` is duck-typed by the
+  // helper to `.write()` + `.once('drain' | 'close')` + flags.
+  type FakeRes = {
+    writableEnded: boolean;
+    destroyed: boolean;
+    write: ReturnType<typeof vi.fn>;
+    once: ReturnType<typeof vi.fn>;
+    off: ReturnType<typeof vi.fn>;
+    _listeners: Map<string, Array<() => void>>;
+    _fire: (event: 'drain' | 'close') => void;
+  };
+
+  const makeFakeRes = (writeReturn: boolean): FakeRes => {
+    const listeners = new Map<string, Array<() => void>>();
+    const res: FakeRes = {
+      writableEnded: false,
+      destroyed: false,
+      _listeners: listeners,
+      _fire: (event) => {
+        // Snapshot listeners before firing so the off() in handlers
+        // can't mutate what we're iterating.
+        const handlers = [...(listeners.get(event) ?? [])];
+        for (const h of handlers) h();
+      },
+      write: vi.fn(() => writeReturn),
+      once: vi.fn((event: string, handler: () => void) => {
+        const list = listeners.get(event) ?? [];
+        list.push(handler);
+        listeners.set(event, list);
+        return res;
+      }),
+      off: vi.fn((event: string, handler: () => void) => {
+        const list = listeners.get(event) ?? [];
+        const idx = list.indexOf(handler);
+        if (idx >= 0) list.splice(idx, 1);
+        return res;
+      }),
+    };
+    return res;
+  };
+
+  it('resolves true synchronously when write returned true', async () => {
+    const res = makeFakeRes(true);
+    const ok = await _writeWithBackpressure(
+      res as unknown as Parameters<typeof _writeWithBackpressure>[0],
+      'payload',
+    );
+    expect(ok).toBe(true);
+    expect(res.write).toHaveBeenCalledWith('payload');
+    // No drain / close listener should have been attached on the
+    // happy path.
+    expect(res.once).not.toHaveBeenCalled();
+  });
+
+  it('waits for drain when write returned false', async () => {
+    const res = makeFakeRes(false);
+    const p = _writeWithBackpressure(
+      res as unknown as Parameters<typeof _writeWithBackpressure>[0],
+      'big payload',
+    );
+    expect(res.once).toHaveBeenCalledWith('drain', expect.any(Function));
+    expect(res.once).toHaveBeenCalledWith('close', expect.any(Function));
+    // Simulate the socket flushing.
+    res._fire('drain');
+    await expect(p).resolves.toBe(true);
+    // The close listener should have been cleared so we don't leak.
+    expect(res.off).toHaveBeenCalledWith('close', expect.any(Function));
+  });
+
+  it('resolves false when the client disconnects mid-wait', async () => {
+    const res = makeFakeRes(false);
+    const p = _writeWithBackpressure(
+      res as unknown as Parameters<typeof _writeWithBackpressure>[0],
+      'big payload',
+    );
+    res._fire('close');
+    await expect(p).resolves.toBe(false);
+    // And the drain listener should have been cleared.
+    expect(res.off).toHaveBeenCalledWith('drain', expect.any(Function));
+  });
+
+  it('short-circuits to false when the response is already ended / destroyed', async () => {
+    const ended = makeFakeRes(true);
+    ended.writableEnded = true;
+    await expect(
+      _writeWithBackpressure(ended as unknown as Parameters<typeof _writeWithBackpressure>[0], 'x'),
+    ).resolves.toBe(false);
+    expect(ended.write).not.toHaveBeenCalled();
+
+    const destroyed = makeFakeRes(true);
+    destroyed.destroyed = true;
+    await expect(
+      _writeWithBackpressure(
+        destroyed as unknown as Parameters<typeof _writeWithBackpressure>[0],
+        'x',
+      ),
+    ).resolves.toBe(false);
+    expect(destroyed.write).not.toHaveBeenCalled();
   });
 });
