@@ -2,12 +2,41 @@ import { getSessionValue, removeSessionValue, setSessionValue } from './session-
 
 export const AUTH_TOKEN_STORAGE_KEY = 'openrd.authToken';
 export const AUTH_USER_STORAGE_KEY = 'openrd.authUser';
+
+/**
+ * AsyncStorage keys whose value is scoped to the currently signed-in
+ * user. They must be cleared on logout and on a server-side 401 so a
+ * second user signing in on a shared device never sees the previous
+ * user's medical history (chat answers with RAG snippets, cached
+ * profile, etc.). AsyncStorage is NOT encrypted by default — the
+ * auth token lives in SecureStore (see session-storage.ts), but
+ * these caches were in plain AsyncStorage and never cleared.
+ *
+ * Any new patient-scoped cache should be added to this list.
+ */
+export const QNA_CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
+
+export const PATIENT_SCOPED_CACHE_KEYS: string[] = [QNA_CHAT_STORAGE_KEY];
+
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
 
 export class ApiError extends Error {
   status?: number;
   data?: unknown;
 }
+
+/**
+ * Callback the AuthProvider registers so apiRequest can fire a single
+ * source-of-truth logout when the server returns 401. Without this,
+ * a screen on a stale token kept rendering its last-known state (e.g.
+ * privacy settings cached toggles) instead of bouncing to login.
+ * Registered exactly once at AuthProvider mount.
+ */
+let onUnauthorizedHandler: (() => Promise<void> | void) | null = null;
+
+export const registerOnUnauthorized = (handler: (() => Promise<void> | void) | null) => {
+  onUnauthorizedHandler = handler;
+};
 
 const buildHeaders = async (
   headers?: HeadersInit,
@@ -63,6 +92,21 @@ export const apiRequest = async <T = unknown>(
     const error = new ApiError((payload as { error?: string })?.error ?? '请求失败');
     error.status = response.status;
     error.data = payload;
+
+    // Centralised 401 handling. A stale token landing on any
+    // authenticated endpoint must clear the local session so a
+    // (previous) user doesn't keep seeing their last-known UI state.
+    // The registered handler runs synchronously enough to clear the
+    // token + caches before the throw propagates to the caller; the
+    // caller's catch block then renders the unauth UI from a clean
+    // state.
+    if (response.status === 401 && onUnauthorizedHandler) {
+      try {
+        await onUnauthorizedHandler();
+      } catch {
+        // Best-effort — never mask the original 401 from the caller.
+      }
+    }
     throw error;
   }
 
