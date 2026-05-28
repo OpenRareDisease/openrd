@@ -25,6 +25,14 @@ _KNOWN_DIMENSIONS = {
     "bge-m3": 1024,
 }
 
+#: Models the embedder is allowed to load. `KB_EMBED_MODEL` is
+#: validated against this set so a misconfigured deploy (or a leaked
+#: env / poisoned Helm chart) can't swap in an attacker-controlled HF
+#: repo. SentenceTransformers can auto-execute modeling code from
+#: certain HF models depending on version; this is a hard fence around
+#: that surface.
+_ALLOWED_MODELS = frozenset(_KNOWN_DIMENSIONS.keys())
+
 
 class SentenceTransformerEmbedder(Embedder):
     def __init__(
@@ -33,6 +41,13 @@ class SentenceTransformerEmbedder(Embedder):
         local_files_only: Optional[bool] = None,
     ) -> None:
         resolved = (model_name or os.getenv("KB_EMBED_MODEL", "BAAI/bge-m3")).strip()
+        if resolved not in _ALLOWED_MODELS:
+            raise RuntimeError(
+                f"Embedding model '{resolved}' is not on the allowlist "
+                f"{sorted(_ALLOWED_MODELS)}. Refusing to load arbitrary "
+                f"models from KB_EMBED_MODEL — extend _ALLOWED_MODELS "
+                f"and _KNOWN_DIMENSIONS in this file to add a new one."
+            )
         self.model_name = resolved
         self.dimension = _KNOWN_DIMENSIONS.get(resolved, 0)
 
@@ -44,7 +59,22 @@ class SentenceTransformerEmbedder(Embedder):
 
         logger.info("Loading embedding model: %s (local_files_only=%s)", resolved, local_only_env)
         try:
-            self._model = SentenceTransformer(resolved, local_files_only=local_only_env)
+            # `trust_remote_code` defaults to False on recent
+            # transformers / sentence-transformers releases but pin it
+            # explicitly so a future SDK change can't silently flip
+            # to True for one of the allowed models. Older SDK
+            # versions reject the kwarg → fall back to the kwarg-less
+            # form, which still defaults to False there.
+            try:
+                self._model = SentenceTransformer(
+                    resolved,
+                    local_files_only=local_only_env,
+                    trust_remote_code=False,
+                )
+            except TypeError:
+                self._model = SentenceTransformer(
+                    resolved, local_files_only=local_only_env,
+                )
         except Exception as load_error:
             # The previous implementation retried with local_files_only=True
             # whenever the online load failed, but that retry direction is

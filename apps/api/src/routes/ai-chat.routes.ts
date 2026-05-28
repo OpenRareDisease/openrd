@@ -302,7 +302,10 @@ const handleOrchestratorEvent = (progressId: string, event: OrchestratorEvent) =
 };
 
 const buildOrchestrator = (llm: ILLMProvider, context: RouteContext, pool: Pool): Orchestrator => {
-  const medicalKb = new MedicalKbRetriever({ kbServiceUrl: context.env.kbServiceUrl });
+  const medicalKb = new MedicalKbRetriever({
+    kbServiceUrl: context.env.kbServiceUrl,
+    serviceToken: context.env.KB_SERVICE_TOKEN,
+  });
   const profile = new PatientProfileRetriever(pool);
   const reports = new PatientReportsRetriever(pool);
   const registry = new ToolRegistry()

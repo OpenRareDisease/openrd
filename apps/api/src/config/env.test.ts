@@ -30,6 +30,7 @@ describe('loadAppEnv', () => {
       OTP_PROVIDER: 'tencent',
       CORS_ORIGIN: 'https://app.example.com',
       OCR_PROVIDER: 'embedded',
+      KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
     });
 
     expect(env.isProduction).toBe(true);
@@ -44,5 +45,21 @@ describe('loadAppEnv', () => {
         STORAGE_PROVIDER: 'minio',
       }),
     ).toThrow(/MINIO_ENDPOINT must be configured/);
+  });
+
+  it('rejects a production config that omits KB_SERVICE_TOKEN', () => {
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+        DATABASE_SSL_ENABLED: 'true',
+        DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+        JWT_SECRET: 'prod-jwt-secret-1234567890',
+        OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+        OTP_PROVIDER: 'tencent',
+        CORS_ORIGIN: 'https://app.example.com',
+        OCR_PROVIDER: 'embedded',
+      }),
+    ).toThrow(/KB_SERVICE_TOKEN is required in production/);
   });
 });

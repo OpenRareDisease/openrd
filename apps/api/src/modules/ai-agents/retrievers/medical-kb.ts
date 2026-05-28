@@ -36,6 +36,11 @@ interface KbServiceResponse {
 export interface MedicalKbRetrieverOptions {
   /** Base URL for the Python KB service, e.g. `http://kb-service:5010`. */
   kbServiceUrl: string;
+  /** Bearer token the KB service expects on every /multi request.
+   *  Required when the service is bound to anything other than
+   *  loopback. Omit for dev environments where the service runs
+   *  without auth. */
+  serviceToken?: string;
   /** Overall network timeout per request. Defaults to 30s. */
   timeoutMs?: number;
   /** Defaults forwarded to the knowledge service. Match Phase 1
@@ -109,11 +114,16 @@ export class MedicalKbRetriever implements IRetriever {
     const timeoutMs = this.opts.timeoutMs ?? 30_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.opts.serviceToken) {
+      headers.Authorization = `Bearer ${this.opts.serviceToken}`;
+    }
+
     let response: Response;
     try {
       response = await fetch(`${this.opts.kbServiceUrl}/multi`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });

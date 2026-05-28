@@ -144,13 +144,30 @@ class FSHDKnowledgeBase:
         if not queries:
             queries = [question]
 
+        # PHI hygiene: queries routinely contain free-form patient
+        # context ("我 38 岁女性 ...家族史 ..."). Logging the full strings
+        # at INFO promotes PHI into whatever centralised log sink the
+        # container stack ships stderr to. Log a stable hash + length
+        # instead so an operator can correlate without storing PHI.
+        # Full queries are still accessible at DEBUG when explicitly
+        # enabled.
+        import hashlib as _hashlib
+        query_fingerprints = [
+            _hashlib.sha256((q or '').encode('utf-8')).hexdigest()[:8] for q in queries
+        ]
         logger.info(
-            "Multi queries (%d): %s | fetch_k=%d final_n=%d max_per_source=%d where=%s",
+            "Multi queries (%d, fingerprints=%s, total_chars=%d) | fetch_k=%d final_n=%d max_per_source=%d where_keys=%s",
             len(queries),
-            queries,
+            query_fingerprints,
+            sum(len(q or '') for q in queries),
             fetch_k,
             final_n,
             max_per_source,
+            sorted((where or {}).keys()) if where else [],
+        )
+        logger.debug(
+            "Multi queries (full): %s | where=%s",
+            queries,
             where,
         )
 
@@ -357,12 +374,20 @@ def main() -> None:
         sys.stdout.buffer.write((json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
         sys.exit(0)
 
-    except Exception as e:
-        logger.exception("knowledge.py failed")
+    except Exception:
+        # psycopg / openai / pgvector exception strings can carry DB
+        # connection strings (with the password), bearer tokens, and
+        # internal file paths. Log the full traceback server-side;
+        # the JSON answer / metadata returned to the caller only
+        # carries a short correlation id so an operator can grep
+        # the logs without leaking the credentials onto the wire.
+        import uuid as _uuid
+        request_id = _uuid.uuid4().hex[:12]
+        logger.exception("knowledge.py failed (request_id=%s)", request_id)
         err = {
-            "answer": f"知识库服务暂时不可用：{str(e)}",
+            "answer": "知识库服务暂时不可用，请稍后再试。",
             "chunks": [],
-            "metadata": {"error": str(e)},
+            "metadata": {"error": "kb_internal_error", "request_id": request_id},
         }
         sys.stdout.buffer.write((json.dumps(err, ensure_ascii=False) + "\n").encode("utf-8"))
         sys.exit(1)

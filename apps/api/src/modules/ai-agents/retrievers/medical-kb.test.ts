@@ -117,4 +117,29 @@ describe('MedicalKbRetriever', () => {
     const payload = JSON.parse((init as RequestInit).body as string);
     expect(payload.queries).toEqual(['fallback question']);
   });
+
+  it('forwards Authorization: Bearer when serviceToken is set (PR-Sec-5 #3)', async () => {
+    const fetchMock = mockFetchOk({ chunks: [] });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({
+      kbServiceUrl: 'http://kb',
+      serviceToken: 'super-secret-token',
+    });
+
+    await retriever.search({ question: 'with auth' }, ctx);
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer super-secret-token');
+  });
+
+  it('omits Authorization header when no serviceToken is configured', async () => {
+    const fetchMock = mockFetchOk({ chunks: [] });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    await retriever.search({ question: 'no auth' }, ctx);
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+  });
 });
