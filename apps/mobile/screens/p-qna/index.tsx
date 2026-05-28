@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -21,6 +22,7 @@ import {
   AiAskProgressStage,
   type AiCitation,
   type AiStreamEvent,
+  QNA_CHAT_STORAGE_KEY,
   type StreamAiQuestionHandle,
   isConsentRequiredError,
 } from '../../lib/api';
@@ -47,7 +49,9 @@ type ChatMessage = {
   metadata?: AssistantMetadata;
 };
 
-const CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
+// Backed by `QNA_CHAT_STORAGE_KEY` in lib/api so the AuthContext's
+// logout sweep + the 401 handler can purge it without import cycles.
+const CHAT_STORAGE_KEY = QNA_CHAT_STORAGE_KEY;
 const MAX_STORED_MESSAGES = 24;
 
 const defaultProgressStages: AiAskProgressStage[] = [
@@ -624,6 +628,25 @@ const P_QNA = () => {
       // Persistence should never block chatting.
     });
   }, [isHydrated, messages]);
+
+  // AppState-tied stream cancellation. The unmount cleanup above
+  // only fires when the screen leaves the navigation stack; when the
+  // user backgrounds the app or locks the device the screen stays
+  // mounted, the SSE socket stays open, the backend keepalive keeps
+  // resetting the watchdog, and the orchestrator keeps burning
+  // SiliconFlow tokens for a user who isn't watching. Closing the
+  // handle on AppState != 'active' triggers the server-side
+  // res.on('close') hook (already wired in PR-Sec-1) and the
+  // orchestrator's AbortController stops the upstream LLM request.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' && streamHandleRef.current) {
+        streamHandleRef.current.close();
+        streamHandleRef.current = null;
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {

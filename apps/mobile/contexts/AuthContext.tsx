@@ -1,10 +1,13 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import type { ReactNode } from 'react';
 import {
   AUTH_TOKEN_STORAGE_KEY,
   AUTH_USER_STORAGE_KEY,
+  PATIENT_SCOPED_CACHE_KEYS,
   type AuthResponse,
+  registerOnUnauthorized,
   setAuthToken,
 } from '../lib/api';
 import { CLINICAL_COLORS } from '../lib/clinical-visuals';
@@ -64,10 +67,38 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const logout = async () => {
-    await Promise.all([setAuthToken(null), removeSessionValue(AUTH_USER_STORAGE_KEY)]);
+    // Auth token (SecureStore) + auth user (SecureStore) + every
+    // patient-scoped cache in plain AsyncStorage. The QnA chat cache
+    // carries the user's RAG snippets and answer history; leaving it
+    // around for the next signed-in user is a real privacy harm path
+    // on shared devices.
+    await Promise.all([
+      setAuthToken(null),
+      removeSessionValue(AUTH_USER_STORAGE_KEY),
+      // multiRemove ignores missing keys so this is safe even when a
+      // cache hasn't been written this session.
+      AsyncStorage.multiRemove(PATIENT_SCOPED_CACHE_KEYS).catch(() => undefined),
+    ]);
     setToken(null);
     setUser(null);
   };
+
+  // Wire api.ts's 401 handler to this logout. Registered after the
+  // function is defined so the closure captures the latest setState
+  // bindings; cleared on unmount so a teardown doesn't fire stale
+  // logouts. Without this hook, a server-side session expiry would
+  // leave the app in a stale "logged in" UI until the next manual
+  // logout.
+  useEffect(() => {
+    registerOnUnauthorized(() => logout());
+    return () => {
+      registerOnUnauthorized(null);
+    };
+    // Logout body uses only setters that are stable across renders,
+    // so we deliberately leave the dep array empty — the handler
+    // identity stays stable across the app's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
