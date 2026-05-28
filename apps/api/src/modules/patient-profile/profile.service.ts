@@ -25,8 +25,11 @@ import { AppError } from '../../utils/app-error.js';
 import {
   ConsentMutationError,
   getConsentDetails,
+  getConsentHistory,
   updateConsent,
   type ConsentDetails,
+  type ConsentEvent,
+  type ConsentHistoryOptions,
   type ConsentUpdateInput,
 } from '../ai-agents/security/index.js';
 
@@ -2443,9 +2446,10 @@ export class PatientProfileService {
 
   /**
    * Apply a partial consent update. Delegates to the security helper
-   * so the precise-requires-base rule + per-flag `_at` bookkeeping
-   * stay in one place. `ConsentMutationError` is rethrown as an
-   * `AppError` so the route layer can stay framework-flavoured.
+   * so the precise-requires-base rule, per-flag `_at` bookkeeping,
+   * and the `ai_consent_events` audit trail all live in one place.
+   * `ConsentMutationError` is rethrown as an `AppError` so the route
+   * layer can stay framework-flavoured.
    */
   async updateConsent(userId: string, input: ConsentUpdateInput): Promise<ConsentDetails> {
     try {
@@ -2466,5 +2470,19 @@ export class PatientProfileService {
       }
       throw error;
     }
+  }
+
+  /**
+   * List the grant/revoke history rows for the given user, newest
+   * first. Powers the "consent timeline" view inside the audit
+   * screen. Returns `[]` for a brand-new user (no events yet); the
+   * controller surfaces that as an empty list rather than a 404 so
+   * the UI can render its empty state without a special case.
+   */
+  async getConsentHistory(
+    userId: string,
+    options: ConsentHistoryOptions = {},
+  ): Promise<ConsentEvent[]> {
+    return getConsentHistory(this.pool, userId, options);
   }
 }

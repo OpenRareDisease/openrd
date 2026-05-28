@@ -262,6 +262,42 @@ export class PatientProfileController {
     res.status(200).json(updated);
   };
 
+  /**
+   * Read the consent grant/revoke timeline for the calling user.
+   * Returns `{ events: [] }` (not 404) for users with no events yet
+   * so the mobile audit history can render an empty state without an
+   * extra "exists?" branch.
+   *
+   * Query params:
+   *  - `limit`    1–500, default 100
+   *  - `offset`   >= 0,  default 0
+   *  - `flagName` 'personal' | 'third_party' | 'precise_values'
+   */
+  getMyConsentHistory = async (req: AuthenticatedRequest, res: Response) => {
+    const flagParam = typeof req.query.flagName === 'string' ? req.query.flagName : undefined;
+    const allowedFlags = new Set(['personal', 'third_party', 'precise_values']);
+    if (flagParam !== undefined && !allowedFlags.has(flagParam)) {
+      throw new AppError('Invalid flagName', 400);
+    }
+
+    const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    const offsetRaw = typeof req.query.offset === 'string' ? Number(req.query.offset) : undefined;
+
+    if (limitRaw !== undefined && (!Number.isFinite(limitRaw) || limitRaw <= 0)) {
+      throw new AppError('Invalid limit', 400);
+    }
+    if (offsetRaw !== undefined && (!Number.isFinite(offsetRaw) || offsetRaw < 0)) {
+      throw new AppError('Invalid offset', 400);
+    }
+
+    const events = await this.service.getConsentHistory(req.user.id, {
+      limit: limitRaw,
+      offset: offsetRaw,
+      flagName: flagParam as 'personal' | 'third_party' | 'precise_values' | undefined,
+    });
+    res.status(200).json({ events });
+  };
+
   addMeasurement = async (req: AuthenticatedRequest, res: Response) => {
     const payload = measurementSchema.parse(req.body);
     const result = await this.service.addMeasurement(req.user.id, payload);

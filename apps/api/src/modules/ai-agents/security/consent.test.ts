@@ -1,13 +1,16 @@
-import type { Pool, QueryResult } from 'pg';
+import type { Pool, PoolClient, QueryResult } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   ConsentMutationError,
   getConsentDetails,
+  getConsentHistory,
   getConsentLevel,
   getConsentStatus,
   redactionModeForConsent,
   updateConsent,
+  type ConsentEventFlag,
+  type ConsentEventSource,
 } from './consent.js';
 
 const fakePool = (rows: unknown[]) =>
@@ -154,9 +157,25 @@ describe('getConsentDetails', () => {
   });
 });
 
+interface RecordedEvent {
+  userId: string;
+  flagName: ConsentEventFlag;
+  fromValue: boolean;
+  toValue: boolean;
+  source: ConsentEventSource;
+  note: string | null;
+}
+
 describe('updateConsent', () => {
-  /** Stateful fake pool: simulates one user's profile row across
-   *  SELECT/UPDATE/SELECT round trips. */
+  /** Stateful fake pool: simulates one user's profile row + its
+   *  associated ai_consent_events log across BEGIN / SELECT / UPDATE /
+   *  INSERT / COMMIT round trips through a checked-out client.
+   *
+   *  The transactional path of `updateConsent` uses pool.connect(), so
+   *  we mock both .connect() → client and the client's own .query().
+   *  The fake doesn't simulate true isolation — there's no need: the
+   *  unit tests only check that the right statements ran with the
+   *  right values, not Postgres semantics. */
   const buildStatefulPool = (
     initial: {
       personal: boolean;
@@ -179,14 +198,49 @@ describe('updateConsent', () => {
       : null;
 
     const updateCalls: Array<{ sql: string; values: unknown[] }> = [];
+    const recordedEvents: RecordedEvent[] = [];
+    const txnLog: string[] = [];
+
+    let eventIdCounter = 0;
 
     const query = vi.fn(async (sql: string, values?: unknown[]) => {
-      if (/^SELECT/i.test(sql.trim())) {
+      const trimmed = sql.trim();
+      if (/^BEGIN/i.test(trimmed)) {
+        txnLog.push('BEGIN');
+        return { rows: [], rowCount: 0 } as unknown as QueryResult;
+      }
+      if (/^COMMIT/i.test(trimmed)) {
+        txnLog.push('COMMIT');
+        return { rows: [], rowCount: 0 } as unknown as QueryResult;
+      }
+      if (/^ROLLBACK/i.test(trimmed)) {
+        txnLog.push('ROLLBACK');
+        return { rows: [], rowCount: 0 } as unknown as QueryResult;
+      }
+      if (/^SELECT/i.test(trimmed)) {
+        if (/FROM ai_consent_events/i.test(trimmed)) {
+          // Mirror the real ORDER BY changed_at DESC — recordedEvents
+          // is append-only newest-last, so reverse for the read.
+          const slice = [...recordedEvents].reverse().map((evt, idx) => ({
+            id: `evt-${idx}`,
+            user_id: evt.userId,
+            flag_name: evt.flagName,
+            from_value: evt.fromValue,
+            to_value: evt.toValue,
+            source: evt.source,
+            note: evt.note,
+            changed_at: new Date(2026, 4, 27, 12, idx, 0).toISOString(),
+          }));
+          return {
+            rows: slice,
+            rowCount: slice.length,
+          } as unknown as QueryResult;
+        }
         return row
           ? ({ rows: [row], rowCount: 1 } as unknown as QueryResult)
           : ({ rows: [], rowCount: 0 } as unknown as QueryResult);
       }
-      if (/^UPDATE/i.test(sql.trim()) && row) {
+      if (/^UPDATE/i.test(trimmed) && row) {
         updateCalls.push({ sql, values: values ?? [] });
         // Mutate the in-memory row based on the SET clause.
         const updates = sql.match(/ai_consent_(personal|third_party|precise_values) = \$(\d+)/g);
@@ -209,25 +263,51 @@ describe('updateConsent', () => {
         });
         return { rows: [], rowCount: 1 } as unknown as QueryResult;
       }
+      if (/^INSERT INTO ai_consent_events/i.test(trimmed)) {
+        const vals = values ?? [];
+        recordedEvents.push({
+          userId: String(vals[0]),
+          flagName: vals[1] as ConsentEventFlag,
+          fromValue: Boolean(vals[2]),
+          toValue: Boolean(vals[3]),
+          source: vals[4] as ConsentEventSource,
+          note: (vals[5] ?? null) as string | null,
+        });
+        eventIdCounter += 1;
+        return { rows: [], rowCount: 1 } as unknown as QueryResult;
+      }
       return { rows: [], rowCount: 0 } as unknown as QueryResult;
     });
 
+    const release = vi.fn();
+    const client = { query, release } as unknown as PoolClient;
+    const connect = vi.fn(async () => client);
+
     return {
-      pool: { query } as unknown as Pool,
+      pool: { query, connect } as unknown as Pool,
       updateCalls,
+      recordedEvents,
+      txnLog,
       getRow: () => row,
+      release,
+      eventIdCounter: () => eventIdCounter,
     };
   };
 
   it('throws profile_not_found when the user has no row', async () => {
-    const { pool } = buildStatefulPool(null);
+    const { pool, txnLog, release } = buildStatefulPool(null);
     await expect(updateConsent(pool, 'user-1', { personal: true })).rejects.toBeInstanceOf(
       ConsentMutationError,
     );
+    // Even the failure path must close the transaction and release
+    // the client; otherwise we leak pool connections.
+    expect(txnLog).toContain('BEGIN');
+    expect(txnLog).toContain('ROLLBACK');
+    expect(release).toHaveBeenCalled();
   });
 
   it('returns the current details when nothing actually changes', async () => {
-    const { pool, updateCalls } = buildStatefulPool({
+    const { pool, updateCalls, recordedEvents, txnLog } = buildStatefulPool({
       personal: true,
       thirdParty: true,
       preciseValues: false,
@@ -235,10 +315,14 @@ describe('updateConsent', () => {
     const result = await updateConsent(pool, 'user-1', { personal: true });
     expect(result.level).toBe('basic');
     expect(updateCalls).toHaveLength(0);
+    // Idempotent call: no event row, but the empty transaction still
+    // commits cleanly so we don't leave one open.
+    expect(recordedEvents).toHaveLength(0);
+    expect(txnLog).toEqual(['BEGIN', 'COMMIT']);
   });
 
   it('grants basic consent and sets the matching _at columns', async () => {
-    const { pool, updateCalls, getRow } = buildStatefulPool({
+    const { pool, updateCalls, getRow, recordedEvents, txnLog } = buildStatefulPool({
       personal: false,
       thirdParty: false,
       preciseValues: false,
@@ -252,10 +336,30 @@ describe('updateConsent', () => {
     expect(sql).not.toMatch(/ai_consent_precise_values_at = NOW\(\)/);
     expect(getRow()?.ai_consent_personal).toBe(true);
     expect(getRow()?.ai_consent_third_party).toBe(true);
+    // Two event rows — one per changed flag — both source='user'.
+    expect(recordedEvents).toEqual([
+      {
+        userId: 'user-1',
+        flagName: 'personal',
+        fromValue: false,
+        toValue: true,
+        source: 'user',
+        note: null,
+      },
+      {
+        userId: 'user-1',
+        flagName: 'third_party',
+        fromValue: false,
+        toValue: true,
+        source: 'user',
+        note: null,
+      },
+    ]);
+    expect(txnLog).toEqual(['BEGIN', 'COMMIT']);
   });
 
   it('promotes to precise when all three are granted', async () => {
-    const { pool } = buildStatefulPool({
+    const { pool, recordedEvents } = buildStatefulPool({
       personal: true,
       thirdParty: true,
       preciseValues: false,
@@ -263,10 +367,20 @@ describe('updateConsent', () => {
     const result = await updateConsent(pool, 'user-1', { preciseValues: true });
     expect(result.level).toBe('precise');
     expect(result.timestamps.preciseValuesAt).toBeTruthy();
+    expect(recordedEvents).toEqual([
+      {
+        userId: 'user-1',
+        flagName: 'precise_values',
+        fromValue: false,
+        toValue: true,
+        source: 'user',
+        note: null,
+      },
+    ]);
   });
 
   it('refuses to set preciseValues=true when the base pair is not satisfied', async () => {
-    const { pool, updateCalls } = buildStatefulPool({
+    const { pool, updateCalls, recordedEvents, txnLog, release } = buildStatefulPool({
       personal: true,
       thirdParty: false,
       preciseValues: false,
@@ -275,10 +389,15 @@ describe('updateConsent', () => {
       code: 'invalid_precise',
     });
     expect(updateCalls).toHaveLength(0);
+    // Validation failures must roll back, not commit, so a partial
+    // write never escapes the transaction.
+    expect(recordedEvents).toHaveLength(0);
+    expect(txnLog).toEqual(['BEGIN', 'ROLLBACK']);
+    expect(release).toHaveBeenCalled();
   });
 
-  it('coerces preciseValues to false when personal is revoked', async () => {
-    const { pool, updateCalls, getRow } = buildStatefulPool({
+  it('coerces preciseValues to false when personal is revoked and tags it source=system', async () => {
+    const { pool, updateCalls, getRow, recordedEvents } = buildStatefulPool({
       personal: true,
       thirdParty: true,
       preciseValues: true,
@@ -290,10 +409,30 @@ describe('updateConsent', () => {
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0].sql).toMatch(/ai_consent_precise_values_at = NOW\(\)/);
     expect(getRow()?.ai_consent_precise_values).toBe(false);
+    // The personal row is the user's revoke (source='user'); the
+    // precise row is the automatic coercion (source='system').
+    expect(recordedEvents).toEqual([
+      {
+        userId: 'user-1',
+        flagName: 'personal',
+        fromValue: true,
+        toValue: false,
+        source: 'user',
+        note: null,
+      },
+      {
+        userId: 'user-1',
+        flagName: 'precise_values',
+        fromValue: true,
+        toValue: false,
+        source: 'system',
+        note: null,
+      },
+    ]);
   });
 
-  it('coerces preciseValues to false when third_party is revoked', async () => {
-    const { pool } = buildStatefulPool({
+  it('coerces preciseValues to false when third_party is revoked and tags it source=system', async () => {
+    const { pool, recordedEvents } = buildStatefulPool({
       personal: true,
       thirdParty: true,
       preciseValues: true,
@@ -301,5 +440,124 @@ describe('updateConsent', () => {
     const result = await updateConsent(pool, 'user-1', { thirdParty: false });
     expect(result.flags.preciseValues).toBe(false);
     expect(result.level).toBe('none');
+    expect(recordedEvents.map((e) => [e.flagName, e.source])).toEqual([
+      ['third_party', 'user'],
+      ['precise_values', 'system'],
+    ]);
+  });
+
+  it('records an explicit precise=false revoke as source=user (not coerced)', async () => {
+    const { pool, recordedEvents } = buildStatefulPool({
+      personal: true,
+      thirdParty: true,
+      preciseValues: true,
+    });
+    const result = await updateConsent(pool, 'user-1', { preciseValues: false });
+    expect(result.flags.preciseValues).toBe(false);
+    expect(result.level).toBe('basic');
+    // Caller asked for precise=false directly — that's a user-driven
+    // revoke, even though the base pair is still true.
+    expect(recordedEvents).toEqual([
+      {
+        userId: 'user-1',
+        flagName: 'precise_values',
+        fromValue: true,
+        toValue: false,
+        source: 'user',
+        note: null,
+      },
+    ]);
+  });
+
+  it('passes through the optional source + note to every event row', async () => {
+    const { pool, recordedEvents } = buildStatefulPool({
+      personal: false,
+      thirdParty: false,
+      preciseValues: false,
+    });
+    await updateConsent(
+      pool,
+      'user-1',
+      { personal: true, thirdParty: true },
+      { source: 'admin', note: 'rollout 2026-05' },
+    );
+    expect(recordedEvents.every((e) => e.source === 'admin')).toBe(true);
+    expect(recordedEvents.every((e) => e.note === 'rollout 2026-05')).toBe(true);
+  });
+});
+
+describe('getConsentHistory', () => {
+  const eventRow = (overrides: Partial<Record<string, unknown>> = {}) => ({
+    id: 'evt-1',
+    user_id: 'user-1',
+    flag_name: 'personal',
+    from_value: false,
+    to_value: true,
+    source: 'user',
+    note: null,
+    changed_at: '2026-05-27T12:00:00Z',
+    ...overrides,
+  });
+
+  it('returns [] for empty userId without querying', async () => {
+    const pool = fakePool([]);
+    const out = await getConsentHistory(pool, '');
+    expect(out).toEqual([]);
+    expect((pool.query as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('maps event rows into the camelCase shape', async () => {
+    const pool = fakePool([
+      eventRow({ id: 'evt-1', flag_name: 'personal' }),
+      eventRow({
+        id: 'evt-2',
+        flag_name: 'precise_values',
+        from_value: true,
+        to_value: false,
+        source: 'system',
+        note: 'auto-coerced',
+        changed_at: '2026-05-27T11:00:00Z',
+      }),
+    ]);
+    const out = await getConsentHistory(pool, 'user-1');
+    expect(out).toEqual([
+      {
+        id: 'evt-1',
+        userId: 'user-1',
+        flagName: 'personal',
+        fromValue: false,
+        toValue: true,
+        source: 'user',
+        note: null,
+        changedAt: '2026-05-27T12:00:00.000Z',
+      },
+      {
+        id: 'evt-2',
+        userId: 'user-1',
+        flagName: 'precise_values',
+        fromValue: true,
+        toValue: false,
+        source: 'system',
+        note: 'auto-coerced',
+        changedAt: '2026-05-27T11:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('clamps limit into [1, 500] and offset to >= 0', async () => {
+    const pool = fakePool([]);
+    await getConsentHistory(pool, 'user-1', { limit: 99999, offset: -5 });
+    const mock = pool.query as unknown as ReturnType<typeof vi.fn>;
+    const [, values] = mock.mock.calls[0];
+    expect(values).toEqual(['user-1', 500, 0]);
+  });
+
+  it('adds a flag_name filter when requested', async () => {
+    const pool = fakePool([]);
+    await getConsentHistory(pool, 'user-1', { flagName: 'precise_values', limit: 10 });
+    const mock = pool.query as unknown as ReturnType<typeof vi.fn>;
+    const [sql, values] = mock.mock.calls[0];
+    expect(String(sql)).toMatch(/flag_name = \$2/);
+    expect(values).toEqual(['user-1', 'precise_values', 10, 0]);
   });
 });
