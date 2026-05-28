@@ -26,6 +26,7 @@ from .html_parser import HtmlParser
 from .image_parser import ImageParser
 from .markdown_parser import MarkdownParser
 from .pdf_parser import PdfParser
+from .pptx_parser import PptxParser
 
 ALL_PARSERS: List[Parser] = [
     MarkdownParser(),
@@ -33,6 +34,7 @@ ALL_PARSERS: List[Parser] = [
     DocxParser(),
     ImageParser(),
     HtmlParser(),
+    PptxParser(),
 ]
 
 
@@ -57,5 +59,6 @@ __all__ = [
     "ParsedSection",
     "Parser",
     "PdfParser",
+    "PptxParser",
     "get_parser_for",
 ]

@@ -47,7 +47,6 @@ def test_get_parser_for_routes_by_extension(filename: str, expected: type) -> No
 @pytest.mark.parametrize(
     "filename",
     [
-        "deck.pptx",       # pptx parser not in scope yet
         "data.csv",
         "image.svg",
         "archive.zip",

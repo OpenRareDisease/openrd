@@ -17,6 +17,7 @@ pgvector>=0.3.6,<0.5
 # language pack on the host (brew install tesseract tesseract-lang).
 pdfminer.six>=20240706
 python-docx>=1.1.2
+python-pptx>=1.0          # .pptx slides (PR #32)
 pdf2image>=1.17.0
 pytesseract>=0.3.10
 Pillow>=10.4
