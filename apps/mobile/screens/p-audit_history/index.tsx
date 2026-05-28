@@ -428,11 +428,23 @@ const AuditHistoryScreen = () => {
   }, []);
 
   // Lazy-load consent history the first time the user opens that tab.
+  //
+  // The `!consentError` guard is load-bearing: without it, a failed
+  // fetch sets consentError + flips consentLoading back to false, the
+  // effect re-runs, the original guard still passes (consentLoaded is
+  // only true on success), and we retry-storm the server until either
+  // the user navigates away or the network comes back. The 404 path
+  // (no profile row) is the worst case — it never recovers, so the
+  // loop is unbounded. The retry button onPress already calls
+  // fetchConsent directly, and fetchConsent itself clears
+  // consentError on the success path; so adding the guard keeps
+  // manual retry as a one-shot user action and the effect as a
+  // one-shot first-mount fetch per tab open.
   useEffect(() => {
-    if (activeTab === 'consent' && !consentLoaded && !consentLoading) {
+    if (activeTab === 'consent' && !consentLoaded && !consentLoading && !consentError) {
       void fetchConsent('initial');
     }
-  }, [activeTab, consentLoaded, consentLoading, fetchConsent]);
+  }, [activeTab, consentLoaded, consentLoading, consentError, fetchConsent]);
 
   const renderAiBody = () => {
     if (aiLoading) {
