@@ -176,7 +176,15 @@ const successResult = (overrides: Partial<OrchestratorRunResult> = {}): Orchestr
       snippet: 'snippet',
     },
   ],
-  toolsCalled: ['search_medical_kb'],
+  toolCalls: [
+    {
+      name: 'search_medical_kb',
+      toolCallId: 'call-1',
+      status: 'ok' as const,
+      chunkCount: 2,
+      latencyMs: 80,
+    },
+  ],
   fieldsUsed: [],
   usedPersonalData: false,
   redactionMode: 'strict',
@@ -269,7 +277,22 @@ describe('POST /api/ai/ask', () => {
     const auditRecords: Array<Record<string, unknown>> = [];
     const orchestrator = buildFakeOrchestrator(
       successResult({
-        toolsCalled: ['search_medical_kb', 'get_my_profile'],
+        toolCalls: [
+          {
+            name: 'search_medical_kb',
+            toolCallId: 'call-1',
+            status: 'ok',
+            chunkCount: 3,
+            latencyMs: 110,
+          },
+          {
+            name: 'get_my_profile',
+            toolCallId: 'call-2',
+            status: 'ok',
+            chunkCount: 1,
+            latencyMs: 18,
+          },
+        ],
         fieldsUsed: ['gender', 'ageGroup'],
         usedPersonalData: true,
         consentLevel: 'basic',
@@ -297,7 +320,12 @@ describe('POST /api/ai/ask', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.answer).toBe('这里是 AI 回答');
-    expect(res.body.data.toolsCalled).toEqual(['search_medical_kb', 'get_my_profile']);
+    expect(res.body.data.toolCalls).toHaveLength(2);
+    expect(res.body.data.toolCalls.map((c: { name: string }) => c.name)).toEqual([
+      'search_medical_kb',
+      'get_my_profile',
+    ]);
+    expect(res.body.data.toolCalls.every((c: { status: string }) => c.status === 'ok')).toBe(true);
     expect(res.body.data.usedPersonalData).toBe(true);
     expect(res.body.data.consentLevel).toBe('basic');
     expect(res.body.data.auditId).toBe('audit-1');
@@ -305,7 +333,12 @@ describe('POST /api/ai/ask', () => {
 
     expect(auditRecords).toHaveLength(1);
     expect(auditRecords[0].status).toBe('success');
-    expect(auditRecords[0].toolsCalled).toEqual(['search_medical_kb', 'get_my_profile']);
+    // audit row now stores the richer ToolCallSummary[]; check the
+    // names array slice so we don't pin every latency value.
+    expect((auditRecords[0].toolsCalled as { name: string }[]).map((c) => c.name)).toEqual([
+      'search_medical_kb',
+      'get_my_profile',
+    ]);
     expect(auditRecords[0].llmProvider).toBe('mock-llm');
     expect(auditRecords[0].llmModel).toBe('mock-model');
 
@@ -385,7 +418,15 @@ describe('GET /api/ai/audit', () => {
     promptCharLength: 100,
     usedPersonalData: false,
     fieldsUsed: [],
-    toolsCalled: ['search_medical_kb'],
+    toolsCalled: [
+      {
+        name: 'search_medical_kb',
+        toolCallId: 'call-1',
+        status: 'ok' as const,
+        chunkCount: 2,
+        latencyMs: 80,
+      },
+    ],
     latencyMs: 1234,
     status: 'success',
     errorDetail: null,

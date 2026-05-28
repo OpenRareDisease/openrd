@@ -165,9 +165,25 @@ const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
         <View style={{ gap: 4 }}>
           <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11 }}>调用工具</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            {entry.toolsCalled.map((tool) => (
-              <Chip key={tool} label={tool} />
-            ))}
+            {entry.toolsCalled.map((tool) => {
+              const isError = tool.status === 'error';
+              // Show "name · chunks · ms" inline; failures get the
+              // warning colour so they jump out in a long list.
+              const detail = [
+                tool.chunkCount > 0 ? `${tool.chunkCount} 段` : null,
+                tool.latencyMs != null ? `${tool.latencyMs}ms` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              const label = detail ? `${tool.name} · ${detail}` : tool.name;
+              return (
+                <Chip
+                  key={tool.toolCallId}
+                  label={label}
+                  color={isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.text}
+                />
+              );
+            })}
           </View>
         </View>
       ) : null}

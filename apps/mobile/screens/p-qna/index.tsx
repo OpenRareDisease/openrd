@@ -20,7 +20,7 @@ import {
   ApiError,
   AiAskProgressStage,
   type AiCitation,
-  type ConsentLevel,
+  type AiToolCallSummary,
   askAiQuestion,
   getAiAskProgress,
   initAiAskProgress,
@@ -28,31 +28,12 @@ import {
 } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
+import { normalizeStoredMetadata, type AssistantMetadata } from './metadata';
 import { pickCurrentMode } from './mode';
 import styles from './styles';
 
 type ChatRole = 'assistant' | 'user';
 type ChatMessageStatus = 'sent' | 'loading' | 'error';
-
-/** Metadata the orchestrator returns alongside an assistant answer.
- *  Persisted with the message so revisiting an old chat still shows
- *  citations + "本回答用到了你的..." hint. */
-type AssistantMetadata = {
-  toolsCalled?: string[];
-  fieldsUsed?: string[];
-  usedPersonalData?: boolean;
-  citations?: AiCitation[];
-  /** Per-message snapshot of the redaction mode the orchestrator
-   *  picked for this call. Drives the at-a-glance mode chip in the
-   *  page header (see `pickCurrentMode`). Persisted so revisiting an
-   *  old chat keeps showing the mode the answer was generated under
-   *  — even if the user has since toggled their consent. */
-  redactionMode?: 'strict' | 'precise';
-  /** Companion to `redactionMode`. Captured for future use by the
-   *  audit / debug overlays; the mode chip itself only reads
-   *  `redactionMode`. */
-  consentLevel?: ConsentLevel;
-};
 
 type ChatMessage = {
   id: string;
@@ -96,19 +77,24 @@ const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return null;
 
-    const messages = parsed.filter((item): item is ChatMessage => {
-      if (!item || typeof item !== 'object') return false;
-      const candidate = item as Partial<ChatMessage>;
-      return (
-        typeof candidate.id === 'string' &&
-        (candidate.role === 'assistant' || candidate.role === 'user') &&
-        typeof candidate.content === 'string' &&
-        typeof candidate.createdAt === 'string' &&
-        (candidate.status === 'sent' ||
-          candidate.status === 'loading' ||
-          candidate.status === 'error')
-      );
-    });
+    const messages = parsed
+      .filter((item): item is ChatMessage => {
+        if (!item || typeof item !== 'object') return false;
+        const candidate = item as Partial<ChatMessage>;
+        return (
+          typeof candidate.id === 'string' &&
+          (candidate.role === 'assistant' || candidate.role === 'user') &&
+          typeof candidate.content === 'string' &&
+          typeof candidate.createdAt === 'string' &&
+          (candidate.status === 'sent' ||
+            candidate.status === 'loading' ||
+            candidate.status === 'error')
+        );
+      })
+      .map((item) => ({
+        ...item,
+        metadata: normalizeStoredMetadata(item.metadata),
+      }));
 
     return messages.length ? messages : null;
   } catch {
@@ -174,6 +160,7 @@ const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
  *  stored messages). */
 const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
   const [expanded, setExpanded] = useState(false);
+  const [traceExpanded, setTraceExpanded] = useState(false);
 
   if (message.role !== 'assistant') return null;
   if (message.status !== 'sent') return null;
@@ -183,7 +170,25 @@ const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
   const showFields = meta.usedPersonalData && (meta.fieldsUsed?.length ?? 0) > 0;
   const citations = meta.citations ?? [];
   const showCitations = citations.length > 0;
-  if (!showFields && !showCitations) return null;
+
+  // Tool-call trace. We prefer the rich `toolCalls` shape; fall
+  // back to `legacyToolNames` for chats stored before
+  // ToolCallTrace landed (those have no per-call status / timing,
+  // so we synthesise minimal rows just for the names).
+  const toolCalls = meta.toolCalls?.length
+    ? meta.toolCalls
+    : (meta.legacyToolNames ?? []).map(
+        (name): AiToolCallSummary => ({
+          name,
+          toolCallId: `legacy-${name}`,
+          status: 'ok',
+          chunkCount: 0,
+          latencyMs: null,
+        }),
+      );
+  const showTrace = toolCalls.length > 0;
+
+  if (!showFields && !showCitations && !showTrace) return null;
 
   const citationFiles = citations.map((c) => c.sourceFile).filter((f): f is string => Boolean(f));
   const citationFilesPreview = citationFiles.slice(0, 3).join('、');
@@ -203,6 +208,78 @@ const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
         <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
           本回答用到了你的：{(meta.fieldsUsed ?? []).join('、')}
         </Text>
+      ) : null}
+      {showTrace ? (
+        <>
+          <TouchableOpacity
+            onPress={() => setTraceExpanded((prev) => !prev)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={
+              traceExpanded ? '收起 AI 思考过程' : `展开 AI 思考过程（${toolCalls.length} 步）`
+            }
+          >
+            <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
+              🔧 AI 思考过程 ({toolCalls.length} 步)
+              {'  '}
+              {traceExpanded ? '▲ 收起' : '▼ 展开'}
+            </Text>
+          </TouchableOpacity>
+          {traceExpanded ? (
+            <View style={{ marginTop: 4, gap: 6 }}>
+              {toolCalls.map((call) => {
+                const isError = call.status === 'error';
+                const statusColor = isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.success;
+                return (
+                  <View
+                    key={call.toolCallId}
+                    style={{
+                      paddingLeft: 8,
+                      borderLeftWidth: 2,
+                      borderLeftColor: statusColor,
+                      gap: 2,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text
+                        style={{
+                          color: CLINICAL_COLORS.text,
+                          fontSize: 11,
+                          lineHeight: 16,
+                          fontWeight: '600',
+                        }}
+                      >
+                        {call.name}
+                      </Text>
+                      <Text style={{ color: statusColor, fontSize: 10, fontWeight: '700' }}>
+                        {isError ? '失败' : '成功'}
+                      </Text>
+                    </View>
+                    <Text
+                      style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10, lineHeight: 14 }}
+                    >
+                      返回 {call.chunkCount} 段
+                      {call.latencyMs != null ? ` · ${call.latencyMs}ms` : ''}
+                    </Text>
+                    {isError && call.errorDetail ? (
+                      <Text
+                        style={{
+                          color: CLINICAL_COLORS.warning,
+                          fontSize: 10,
+                          lineHeight: 14,
+                          fontStyle: 'italic',
+                        }}
+                        numberOfLines={2}
+                      >
+                        {call.errorDetail}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
+        </>
       ) : null}
       {showCitations ? (
         <>
@@ -628,7 +705,7 @@ const P_QNA = () => {
       const response = await askAiQuestion(question, progressId);
       const answer = response.data.answer?.trim() || '暂时没有生成有效回答。';
       const metadata: AssistantMetadata = {
-        toolsCalled: response.data.toolsCalled,
+        toolCalls: response.data.toolCalls,
         fieldsUsed: response.data.fieldsUsed,
         usedPersonalData: response.data.usedPersonalData,
         citations: response.data.citations,

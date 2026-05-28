@@ -28,6 +28,12 @@ export interface ExecutedToolCall {
   display: string;
   /** Set when validation or execution failed. */
   error?: string;
+  /** Wall-clock duration from the moment runSingle dispatches the
+   *  tool to the moment it resolves or rejects. Captured even on
+   *  validation failures (which return almost immediately) so the
+   *  audit trail covers every code path uniformly. Null only for the
+   *  "unknown tool" early-exit since there's nothing to time. */
+  latencyMs: number | null;
 }
 
 export interface ExecuteOptions {
@@ -53,14 +59,21 @@ const runSingle = async (
   ctx: ToolContext,
   timeoutMs: number,
 ): Promise<ExecutedToolCall> => {
+  // Capture start *after* the early "unknown tool" exit so we don't
+  // mis-attribute the dispatch overhead of a name that never matched
+  // anything in the registry. The unknown-tool path returns
+  // latencyMs: null deliberately — there's nothing to time.
   if (!tool) {
     return {
       toolCallId: call.id,
       toolName: call.name,
       display: `unknown tool: ${call.name}`,
       error: `Unknown tool: ${call.name}`,
+      latencyMs: null,
     };
   }
+
+  const start = Date.now();
 
   // Defence-in-depth: the registry already filters tools by minConsent
   // before advertising, but a model that hallucinates a registered
@@ -73,6 +86,7 @@ const runSingle = async (
       toolName: call.name,
       display: `${call.name}: consent_insufficient`,
       error: `Tool ${call.name} requires consent ${tool.minConsent}; have ${ctx.consentLevel}`,
+      latencyMs: Date.now() - start,
     };
   }
 
@@ -91,6 +105,7 @@ const runSingle = async (
       toolName: call.name,
       display: `${call.name}: invalid args`,
       error: message,
+      latencyMs: Date.now() - start,
     };
   }
 
@@ -101,6 +116,7 @@ const runSingle = async (
       toolName: call.name,
       retrieval: result.retrieval,
       display: result.display,
+      latencyMs: Date.now() - start,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -113,6 +129,7 @@ const runSingle = async (
       toolName: call.name,
       display: `${call.name}: error`,
       error: message,
+      latencyMs: Date.now() - start,
     };
   }
 };

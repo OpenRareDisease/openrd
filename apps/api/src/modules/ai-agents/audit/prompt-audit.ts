@@ -14,7 +14,13 @@
 
 import type { Pool } from 'pg';
 
-import type { AuditEntry, AuditEntryInput, AuditStatus, ListAuditOptions } from './types.js';
+import type {
+  AuditEntry,
+  AuditEntryInput,
+  AuditStatus,
+  ListAuditOptions,
+  ToolCallSummary,
+} from './types.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -43,6 +49,52 @@ const coerceStringArray = (value: unknown): string[] => {
   return value.filter((v): v is string => typeof v === 'string');
 };
 
+/** Normalise the `tools_called` jsonb column into the current
+ *  `ToolCallSummary[]` shape. Two legacy formats may show up:
+ *
+ *   - Rows persisted before ToolCallTrace landed are plain `string[]`
+ *     of tool names. We promote each to a minimal summary with
+ *     `status='ok'`, `chunkCount=0`, `latencyMs=null` so the UI
+ *     doesn't have to special-case them.
+ *   - Rows from this PR onward are already `ToolCallSummary[]`; we
+ *     trust the shape but defensively coerce each field so a
+ *     hand-edited row can't crash the renderer.
+ *
+ *  Non-array / unrecognised payloads return `[]` rather than
+ *  throwing, matching the pre-existing tolerance of
+ *  `coerceStringArray` for malformed `fields_used`. */
+const coerceToolCalls = (value: unknown): ToolCallSummary[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry, idx): ToolCallSummary | null => {
+      if (typeof entry === 'string') {
+        return {
+          name: entry,
+          toolCallId: `legacy-${idx}`,
+          status: 'ok',
+          chunkCount: 0,
+          latencyMs: null,
+        };
+      }
+      if (!entry || typeof entry !== 'object') return null;
+      const obj = entry as Record<string, unknown>;
+      const name = typeof obj.name === 'string' ? obj.name : null;
+      if (!name) return null;
+      const status = obj.status === 'error' ? 'error' : 'ok';
+      return {
+        name,
+        toolCallId: typeof obj.toolCallId === 'string' ? obj.toolCallId : `legacy-${idx}`,
+        status,
+        chunkCount: typeof obj.chunkCount === 'number' ? obj.chunkCount : 0,
+        latencyMs: typeof obj.latencyMs === 'number' ? obj.latencyMs : null,
+        ...(status === 'error' && typeof obj.errorDetail === 'string'
+          ? { errorDetail: obj.errorDetail }
+          : {}),
+      };
+    })
+    .filter((v): v is ToolCallSummary => v !== null);
+};
+
 const formatTimestamp = (value: Date | string): string => {
   if (value instanceof Date) return value.toISOString();
   const parsed = new Date(value);
@@ -61,7 +113,7 @@ const rowToEntry = (row: AuditRow): AuditEntry => ({
   promptCharLength: row.prompt_char_length,
   usedPersonalData: row.used_personal_data,
   fieldsUsed: coerceStringArray(row.fields_used),
-  toolsCalled: coerceStringArray(row.tools_called),
+  toolsCalled: coerceToolCalls(row.tools_called),
   latencyMs: row.latency_ms,
   status: row.status as AuditStatus,
   errorDetail: row.error_detail,

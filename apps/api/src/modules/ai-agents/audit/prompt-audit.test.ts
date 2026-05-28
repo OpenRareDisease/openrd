@@ -16,7 +16,22 @@ const baseEntry: AuditEntryInput = {
   promptCharLength: 1234,
   usedPersonalData: true,
   fieldsUsed: ['ageGroup', 'd4z4_clinical'],
-  toolsCalled: ['medical_kb', 'patient_profile'],
+  toolsCalled: [
+    {
+      name: 'medical_kb',
+      toolCallId: 'call-1',
+      status: 'ok',
+      chunkCount: 3,
+      latencyMs: 120,
+    },
+    {
+      name: 'patient_profile',
+      toolCallId: 'call-2',
+      status: 'ok',
+      chunkCount: 1,
+      latencyMs: 45,
+    },
+  ],
   latencyMs: 1500,
   status: 'success',
 };
@@ -66,7 +81,22 @@ describe('AuditLogger.record', () => {
     expect(params[5]).toBe('strict');
     expect(params[8]).toBe(true);
     expect(JSON.parse(params[9] as string)).toEqual(['ageGroup', 'd4z4_clinical']);
-    expect(JSON.parse(params[10] as string)).toEqual(['medical_kb', 'patient_profile']);
+    expect(JSON.parse(params[10] as string)).toEqual([
+      {
+        name: 'medical_kb',
+        toolCallId: 'call-1',
+        status: 'ok',
+        chunkCount: 3,
+        latencyMs: 120,
+      },
+      {
+        name: 'patient_profile',
+        toolCallId: 'call-2',
+        status: 'ok',
+        chunkCount: 1,
+        latencyMs: 45,
+      },
+    ]);
     expect(params[12]).toBe('success');
   });
 
@@ -122,9 +152,104 @@ describe('AuditLogger.listByUser', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].id).toBe('audit-1');
     expect(entries[0].fieldsUsed).toEqual(['ageGroup']);
-    expect(entries[0].toolsCalled).toEqual(['medical_kb']);
+    // sampleRow uses the legacy string[] shape; the decoder folds
+    // it into the current ToolCallSummary[] with promoted defaults.
+    expect(entries[0].toolsCalled).toEqual([
+      {
+        name: 'medical_kb',
+        toolCallId: 'legacy-0',
+        status: 'ok',
+        chunkCount: 0,
+        latencyMs: null,
+      },
+    ]);
     expect(entries[0].status).toBe('success');
     expect(entries[0].createdAt).toBe('2026-05-26T20:00:00.000Z');
+  });
+
+  it('passes new ToolCallSummary[] shape through unchanged on read', async () => {
+    // Rows persisted from this PR onward already carry the rich
+    // shape; the decoder should preserve every field rather than
+    // re-promoting it as if it were legacy.
+    const richRow = {
+      ...sampleRow,
+      tools_called: [
+        {
+          name: 'search_medical_kb',
+          toolCallId: 'call-real-1',
+          status: 'ok',
+          chunkCount: 5,
+          latencyMs: 234,
+        },
+        {
+          name: 'get_my_reports',
+          toolCallId: 'call-real-2',
+          status: 'error',
+          chunkCount: 0,
+          latencyMs: 12,
+          errorDetail: 'no rows',
+        },
+      ],
+    };
+    const query = vi.fn().mockResolvedValue({
+      rows: [richRow],
+      rowCount: 1,
+    } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+
+    const entries = await logger.listByUser('user-1');
+    expect(entries[0].toolsCalled).toEqual([
+      {
+        name: 'search_medical_kb',
+        toolCallId: 'call-real-1',
+        status: 'ok',
+        chunkCount: 5,
+        latencyMs: 234,
+      },
+      {
+        name: 'get_my_reports',
+        toolCallId: 'call-real-2',
+        status: 'error',
+        chunkCount: 0,
+        latencyMs: 12,
+        errorDetail: 'no rows',
+      },
+    ]);
+  });
+
+  it('drops malformed entries in tools_called without crashing', async () => {
+    // Defensive: if a row was hand-edited or a future bug stuffed
+    // junk into the jsonb column, the decoder should skip the bad
+    // entries instead of throwing — the audit list is too important
+    // to fail loudly over a corrupted historical row.
+    const dirtyRow = {
+      ...sampleRow,
+      tools_called: [
+        { name: 'good', toolCallId: 'c1', status: 'ok', chunkCount: 1, latencyMs: 10 },
+        null,
+        42,
+        { toolCallId: 'no-name', status: 'ok' }, // missing name
+        'legacy_string', // legacy shape mixed in
+      ],
+    };
+    const query = vi.fn().mockResolvedValue({
+      rows: [dirtyRow],
+      rowCount: 1,
+    } as unknown as QueryResult);
+    const pool = { query } as unknown as Pool;
+    const logger = new AuditLogger(pool);
+
+    const entries = await logger.listByUser('user-1');
+    const calls = entries[0].toolsCalled;
+    expect(calls.map((c) => c.name)).toEqual(['good', 'legacy_string']);
+    // The legacy string was promoted with the index-based toolCallId
+    // we documented in the decoder.
+    expect(calls[1]).toMatchObject({
+      name: 'legacy_string',
+      toolCallId: 'legacy-4',
+      latencyMs: null,
+    });
   });
 
   it('passes status filter as a text array param', async () => {

@@ -575,6 +575,24 @@ export interface AiUsage {
   totalTokens?: number;
 }
 
+/** Per-tool execution record from the orchestrator. Mirrors
+ *  `apps/api/src/modules/ai-agents/orchestrator/types.ts`. Drives
+ *  the "AI 思考过程" expansion in the QnA screen and the per-call
+ *  chips in the audit history viewer.
+ *
+ *  Legacy audit rows persisted before ToolCallTrace landed are
+ *  promoted server-side into this shape with `status='ok'`,
+ *  `chunkCount=0`, `latencyMs=null` — the mobile UI doesn't need to
+ *  branch on it. */
+export interface AiToolCallSummary {
+  name: string;
+  toolCallId: string;
+  status: 'ok' | 'error';
+  chunkCount: number;
+  latencyMs: number | null;
+  errorDetail?: string;
+}
+
 export interface AiAskResponse {
   success: boolean;
   data: {
@@ -583,8 +601,9 @@ export interface AiAskResponse {
     /** Sources the orchestrator used. May be empty when the planner
      *  answered directly without calling any retriever. */
     citations: AiCitation[];
-    /** Tools the planner chose, in the order they were called. */
-    toolsCalled: string[];
+    /** Per-tool execution summary in the order the planner emitted
+     *  them. Empty when the planner answered directly. */
+    toolCalls: AiToolCallSummary[];
     /** Field names from patient-scoped retrievers that survived
      *  redaction and made it into the final prompt. Empty when the
      *  call did not touch personal data. */
@@ -666,7 +685,11 @@ export interface AiAuditEntry {
   promptCharLength: number | null;
   usedPersonalData: boolean;
   fieldsUsed: string[];
-  toolsCalled: string[];
+  /** Per-tool execution summary. Legacy audit rows (persisted before
+   *  ToolCallTrace landed) are promoted server-side into this shape
+   *  with `status='ok'`, `chunkCount=0`, `latencyMs=null` so callers
+   *  don't need to special-case them. */
+  toolsCalled: AiToolCallSummary[];
   latencyMs: number | null;
   status: AiAuditStatus;
   errorDetail: string | null;

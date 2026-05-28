@@ -26,6 +26,7 @@ import {
   type OrchestratorEvent,
   type OrchestratorRunInput,
   type OrchestratorRunResult,
+  type ToolCallSummary,
 } from './types.js';
 import type { AppLogger } from '../../../config/logger.js';
 import { hashPrompt } from '../audit/hash.js';
@@ -143,7 +144,6 @@ export class Orchestrator {
         input,
         start,
         redactionMode,
-        toolsCalled: [],
         executed: [],
         context: { toolMessages: [], citations: [], fieldsUsed: [], usedPersonalData: false },
         finalAnswer: directAnswer,
@@ -226,7 +226,6 @@ export class Orchestrator {
       input,
       start,
       redactionMode,
-      toolsCalled: executed.map((c) => c.toolName),
       executed,
       context,
       finalAnswer,
@@ -241,7 +240,6 @@ export class Orchestrator {
     input: OrchestratorRunInput;
     start: number;
     redactionMode: ReturnType<typeof redactionModeForConsent>;
-    toolsCalled: string[];
     executed: ExecutedToolCall[];
     context: BuiltContext;
     finalAnswer: string;
@@ -262,10 +260,24 @@ export class Orchestrator {
     const redactedPromptHash = hashPrompt(hashSource);
     const promptCharLength = hashSource.length;
 
+    // Per-tool summary derived from the executor records. Each entry
+    // carries name + toolCallId + status + chunkCount + latency so
+    // the mobile UI can render a "AI 思考过程" expansion and the
+    // audit row holds the same information without a second source
+    // of truth.
+    const toolCalls = args.executed.map<ToolCallSummary>((call) => ({
+      name: call.toolName,
+      toolCallId: call.toolCallId,
+      status: call.error ? 'error' : 'ok',
+      chunkCount: call.retrieval?.chunks.length ?? 0,
+      latencyMs: call.latencyMs,
+      ...(call.error ? { errorDetail: call.error.slice(0, 500) } : {}),
+    }));
+
     return {
       answer: args.finalAnswer,
       citations: args.context.citations,
-      toolsCalled: args.toolsCalled,
+      toolCalls,
       fieldsUsed: args.context.fieldsUsed,
       usedPersonalData: args.context.usedPersonalData,
       redactionMode: args.redactionMode,
