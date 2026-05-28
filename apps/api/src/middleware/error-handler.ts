@@ -7,6 +7,29 @@ interface ErrorHandlerOptions {
   logger: AppLogger;
 }
 
+//: AppError keys that are deliberately safe for client consumption.
+//: Anything else stays in the server-side log only. Examples of
+//: things callers SHOULDN'T see: `rateLimitKey: 'ai:ask'` (internal
+//: routing label), future `sql: ...` (raw SQL) or `cause: ...`
+//: (upstream stack). The audit's strict-review rule treats every
+//: unfiltered field as "info that silently expands as features land".
+const CLIENT_SAFE_DETAIL_KEYS = new Set<string>([
+  'retryAfterSeconds',
+  'lockedUntil',
+  'waitSeconds',
+  'code',
+  'consent',
+]);
+
+const pickClientSafeDetails = (details: unknown): Record<string, unknown> | undefined => {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (CLIENT_SAFE_DETAIL_KEYS.has(key)) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+};
+
 export const errorHandler = ({ logger }: ErrorHandlerOptions): ErrorRequestHandler => {
   return (error, _req, res, _next: NextFunction) => {
     void _next;
@@ -15,9 +38,10 @@ export const errorHandler = ({ logger }: ErrorHandlerOptions): ErrorRequestHandl
       if (!error.isOperational) {
         logger.error({ error }, 'Operational error occurred');
       }
+      const safeDetails = pickClientSafeDetails(error.details);
       res.status(error.statusCode).json({
         error: error.message,
-        details: error.details,
+        ...(safeDetails ? { details: safeDetails } : {}),
       });
       return;
     }

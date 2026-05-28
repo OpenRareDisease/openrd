@@ -144,6 +144,8 @@ describe('buildContext', () => {
 
     expect(built.toolMessages).toHaveLength(1);
     expect(built.toolMessages[0].content).toContain('tc1');
+    // Stable structured marker the eval pipeline can grep on.
+    expect(built.toolMessages[0].content).toContain('error_code:retrieval_failed');
     // The raw error must NOT make it into the prompt.
     expect(built.toolMessages[0].content).not.toContain('13800001234');
     expect(built.toolMessages[0].content).not.toContain('pg error');

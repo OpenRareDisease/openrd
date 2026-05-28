@@ -112,7 +112,14 @@ export const buildContext = (
       toolMessages.push({
         toolCallId: call.toolCallId,
         toolName: call.toolName,
-        content: `tool error (id=${call.toolCallId}): retrieval failed, please answer using general knowledge only`,
+        // Chinese template to match the system prompt + UI tone.
+        // Models routinely paste tool-message text into the answer
+        // when uncertain; an English string here would break the tone
+        // contract the rest of the orchestrator enforces. The stable
+        // structured marker `[error_code:retrieval_failed]` makes the
+        // case grep-able from a future RAG eval without depending on
+        // the human-readable text.
+        content: `工具调用失败 (id=${call.toolCallId}, [error_code:retrieval_failed])：本次检索未返回有效信息，请基于常识与上下文继续作答，不要编造数据。`,
       });
       continue;
     }

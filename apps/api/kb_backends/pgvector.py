@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Set
 
 import psycopg
@@ -41,6 +42,17 @@ class PgVectorBackend(VectorBackend):
         self.connection_string = connection_string or os.getenv("DATABASE_URL", "").strip()
         if not self.connection_string:
             raise RuntimeError("Missing env DATABASE_URL for pgvector backend")
+        # `table_name` is f-string-interpolated into every SQL statement
+        # below (psycopg parameter binding doesn't apply to identifiers).
+        # Today the only caller passes the hardcoded default, but a
+        # future config / env / multi-tenant prefix that lets the value
+        # come from outside would be instant SQL injection. Validate
+        # against a strict identifier shape at construction.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", table_name):
+            raise ValueError(
+                f"Invalid pgvector table_name '{table_name}'. "
+                "Must match [A-Za-z_][A-Za-z0-9_]{0,62}.",
+            )
         self.table_name = table_name
 
         # Pool sizing is configurable via env so ops can bump it without a
