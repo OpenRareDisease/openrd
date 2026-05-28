@@ -8,7 +8,6 @@ import {
   createSubmissionSchema,
   createProfileSchema,
   dailyImpactSchema,
-  documentSchema,
   documentUploadSchema,
   followupEventSchema,
   functionTestSchema,
@@ -320,12 +319,6 @@ export class PatientProfileController {
   addActivityLog = async (req: AuthenticatedRequest, res: Response) => {
     const payload = activityLogSchema.parse(req.body);
     const result = await this.service.addActivityLog(req.user.id, payload);
-    res.status(201).json(result);
-  };
-
-  addDocument = async (req: AuthenticatedRequest, res: Response) => {
-    const payload = documentSchema.parse(req.body);
-    const result = await this.service.addDocument(req.user.id, payload);
     res.status(201).json(result);
   };
 

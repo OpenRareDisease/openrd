@@ -20,6 +20,8 @@ export interface PlanInput {
   userPrompt: string;
   tools: ITool[];
   requestId: string;
+  /** Forwarded to the LLM so a client disconnect cancels round 1. */
+  signal?: AbortSignal;
 }
 
 export interface PlanResult {
@@ -59,6 +61,7 @@ export class Planner {
       temperature: 0.2,
       maxTokens: 800,
       requestId: input.requestId,
+      signal: input.signal,
     });
 
     this.logger.debug(

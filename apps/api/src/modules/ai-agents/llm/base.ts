@@ -91,6 +91,15 @@ export interface LlmChatRequest {
   maxTokens?: number;
   /** Caller-provided correlation id, surfaced in logs. */
   requestId?: string;
+  /**
+   * Cancel the underlying provider request when this signal fires.
+   * Providers MUST stop streaming and release vendor-side resources
+   * (so we stop being billed for tokens the client will never see).
+   * The orchestrator forwards a controller bound to the route's
+   * `res.on('close')` so a dropped phone or an aborted EventSource
+   * terminates the upstream LLM stream.
+   */
+  signal?: AbortSignal;
 }
 
 export interface LlmUsage {

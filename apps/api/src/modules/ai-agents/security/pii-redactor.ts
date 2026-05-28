@@ -25,7 +25,11 @@
  */
 
 import type { RedactionMode, RedactionScope } from './allowlist.js';
-import { HARD_DELETE_KEYS, OCR_FIELDS_SAFE_KEYS_PRECISE, PROMPT_ALLOWLIST } from './allowlist.js';
+import {
+  HARD_DELETE_KEYS_LOWER,
+  OCR_FIELDS_SAFE_KEYS_PRECISE,
+  PROMPT_ALLOWLIST,
+} from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
 
 export type { RedactionMode, RedactionScope } from './allowlist.js';
@@ -74,7 +78,7 @@ const hardDelete = (
   const cleaned: Record<string, unknown> = {};
   const removed: string[] = [];
   for (const [key, value] of Object.entries(input)) {
-    if (HARD_DELETE_KEYS.has(key)) {
+    if (HARD_DELETE_KEYS_LOWER.has(key.toLowerCase())) {
       removed.push([...path, key].join('.'));
       continue;
     }

@@ -26,6 +26,28 @@ const parseStorageUri = (storageUri: string) => {
   return storageUri.slice(LOCAL_PREFIX.length);
 };
 
+/**
+ * Resolve a client-supplied relative path against the uploads root and
+ * guarantee the result stays inside that root. A storageUri like
+ * `local://../package.json` would otherwise escape the sandbox and let
+ * any authenticated user read arbitrary files under cwd. Throws 400 on
+ * any traversal attempt (absolute path, `..` segment, NUL byte, or a
+ * resolved path outside root).
+ */
+const resolveSafePath = (root: string, relativePath: string): string => {
+  if (!relativePath || relativePath.includes('\0')) {
+    throw new AppError('Invalid storage uri', 400);
+  }
+  // path.join + path.resolve normalise away `..` traversal, but a
+  // resolved path outside root must still be rejected.
+  const absolutePath = path.resolve(root, relativePath);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (absolutePath !== root && !absolutePath.startsWith(rootWithSep)) {
+    throw new AppError('Invalid storage uri', 400);
+  }
+  return absolutePath;
+};
+
 export class LocalStorageProvider implements StorageProvider {
   canHandle(storageUri: string) {
     return isLocalStorageUri(storageUri);
@@ -62,7 +84,7 @@ export class LocalStorageProvider implements StorageProvider {
   async load(storageUri: string): Promise<StoredFileStream> {
     const root = await ensureUploadsRoot();
     const relativePath = parseStorageUri(storageUri);
-    const absolutePath = path.join(root, relativePath);
+    const absolutePath = resolveSafePath(root, relativePath);
 
     try {
       await fs.access(absolutePath);
@@ -80,7 +102,7 @@ export class LocalStorageProvider implements StorageProvider {
   async remove(storageUri: string): Promise<void> {
     const root = await ensureUploadsRoot();
     const relativePath = parseStorageUri(storageUri);
-    const absolutePath = path.join(root, relativePath);
+    const absolutePath = resolveSafePath(root, relativePath);
 
     try {
       await fs.unlink(absolutePath);

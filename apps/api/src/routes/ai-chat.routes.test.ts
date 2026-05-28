@@ -409,6 +409,90 @@ describe('POST /api/ai/ask', () => {
   });
 });
 
+describe('AI progress isolation (PR-Sec-1 #8 / #9)', () => {
+  const consentRow = {
+    ai_consent_personal: true,
+    ai_consent_third_party: true,
+    ai_consent_precise_values: true,
+  };
+
+  it("refuses to read another user's progress entry (treated as 404)", async () => {
+    const app = buildApp({
+      pool: buildFakePool({ consentRow }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildFakeOrchestrator(successResult()),
+      auditLogger: buildFakeAuditLogger([]),
+    });
+
+    // User A starts a run; that lands a progress entry keyed under A.
+    const tokenA = issueToken('user-a');
+    const run = await request(app)
+      .post('/api/ai/ask')
+      .set('authorization', `Bearer ${tokenA}`)
+      .send({ question: 'q', progressId: 'shared-id' });
+    expect(run.status).toBe(200);
+
+    // User B can authenticate, but reading the same id must look like
+    // it does not exist — no error.message leak, no progress payload.
+    const tokenB = issueToken('user-b');
+    const peek = await request(app)
+      .get('/api/ai/ask/progress/shared-id')
+      .set('authorization', `Bearer ${tokenB}`);
+    expect(peek.status).toBe(404);
+  });
+
+  it("refuses to overwrite another user's in-flight progress on init", async () => {
+    const app = buildApp({
+      pool: buildFakePool({ consentRow }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildFakeOrchestrator(successResult()),
+      auditLogger: buildFakeAuditLogger([]),
+    });
+
+    const tokenA = issueToken('user-a');
+    const initA = await request(app)
+      .post('/api/ai/ask/progress/init')
+      .set('authorization', `Bearer ${tokenA}`)
+      .send({ progressId: 'pinned-id' });
+    expect(initA.status).toBe(200);
+
+    const tokenB = issueToken('user-b');
+    const initB = await request(app)
+      .post('/api/ai/ask/progress/init')
+      .set('authorization', `Bearer ${tokenB}`)
+      .send({ progressId: 'pinned-id' });
+    expect(initB.status).toBe(409);
+  });
+
+  it('lets the original user re-init / re-read their own entry', async () => {
+    const app = buildApp({
+      pool: buildFakePool({ consentRow }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: buildFakeOrchestrator(successResult()),
+      auditLogger: buildFakeAuditLogger([]),
+    });
+
+    const tokenA = issueToken('user-a');
+    const initA = await request(app)
+      .post('/api/ai/ask/progress/init')
+      .set('authorization', `Bearer ${tokenA}`)
+      .send({ progressId: 'own-id' });
+    expect(initA.status).toBe(200);
+
+    const reInit = await request(app)
+      .post('/api/ai/ask/progress/init')
+      .set('authorization', `Bearer ${tokenA}`)
+      .send({ progressId: 'own-id' });
+    expect(reInit.status).toBe(200);
+
+    const peek = await request(app)
+      .get('/api/ai/ask/progress/own-id')
+      .set('authorization', `Bearer ${tokenA}`);
+    expect(peek.status).toBe(200);
+    expect(peek.body.data.progressId).toBe('own-id');
+  });
+});
+
 describe('POST /api/ai/ask/stream', () => {
   /** Stub orchestrator that drives the runStream adapter through a
    *  scripted sequence of events instead of running the real planner /
