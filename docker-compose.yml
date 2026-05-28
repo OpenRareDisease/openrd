@@ -101,8 +101,16 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin12345678}
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      # Bound to 127.0.0.1 mirroring the postgres + kb-service
+      # lockdown. The default MINIO_ROOT_PASSWORD is the well-known
+      # Docker Hub demo value `minioadmin12345678`; a
+      # `docker compose --profile minio up` on a public-IP'd staging
+      # host would otherwise expose `medical-reports` bucket through
+      # that default credential pair. To open it across an internal
+      # network set MINIO_PUBLISH_HOST=0.0.0.0 in `.env` AND inject
+      # real MINIO_ACCESS_KEY / MINIO_SECRET_KEY first.
+      - '${MINIO_PUBLISH_HOST:-127.0.0.1}:9000:9000'
+      - '${MINIO_PUBLISH_HOST:-127.0.0.1}:9001:9001'
     volumes:
       - minio-data:/data
 
