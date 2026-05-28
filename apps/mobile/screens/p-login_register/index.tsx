@@ -141,7 +141,11 @@ const LoginRegisterScreen: React.FC = () => {
   const logoTranslateY = useSharedValue(0);
 
   // refs
-  const countdownInterval = useRef<number | null>(null);
+  // `setInterval` in React Native returns NodeJS's `Timeout`, not the
+  // browser DOM's `number`. Using `ReturnType<typeof setInterval>`
+  // keeps tsc happy in both environments without committing to either
+  // (which would break the other platform's lib types).
+  const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 启动logo浮动动画
   React.useEffect(() => {
