@@ -110,23 +110,28 @@ const formatMessageTime = (value: string) => {
   });
 };
 
-/** Render the per-message footer that lists patient fields used +
- *  citation count. Returns null for user messages, non-success
- *  assistant messages, or assistant messages with no metadata
- *  (placeholders, legacy stored messages). */
-const renderAssistantMetadata = (message: ChatMessage) => {
+/** Per-message footer that lists patient fields used + an expandable
+ *  citation list. Lives as its own component (not a pure helper) so
+ *  each assistant bubble owns its own collapsed/expanded state without
+ *  the parent having to bookkeep a Set of message ids.
+ *
+ *  Returns null for user messages, non-success assistant messages,
+ *  or assistant messages with no metadata (placeholders, legacy
+ *  stored messages). */
+const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
+  const [expanded, setExpanded] = useState(false);
+
   if (message.role !== 'assistant') return null;
   if (message.status !== 'sent') return null;
   const meta = message.metadata;
   if (!meta) return null;
 
   const showFields = meta.usedPersonalData && (meta.fieldsUsed?.length ?? 0) > 0;
-  const showCitations = (meta.citations?.length ?? 0) > 0;
+  const citations = meta.citations ?? [];
+  const showCitations = citations.length > 0;
   if (!showFields && !showCitations) return null;
 
-  const citationFiles = (meta.citations ?? [])
-    .map((c) => c.sourceFile)
-    .filter((f): f is string => Boolean(f));
+  const citationFiles = citations.map((c) => c.sourceFile).filter((f): f is string => Boolean(f));
   const citationFilesPreview = citationFiles.slice(0, 3).join('、');
   const citationOverflow = citationFiles.length > 3 ? '…' : '';
 
@@ -146,10 +151,68 @@ const renderAssistantMetadata = (message: ChatMessage) => {
         </Text>
       ) : null}
       {showCitations ? (
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
-          📎 引用 {meta.citations?.length} 条
-          {citationFilesPreview ? `：${citationFilesPreview}${citationOverflow}` : ''}
-        </Text>
+        <>
+          <TouchableOpacity
+            onPress={() => setExpanded((prev) => !prev)}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={expanded ? '收起引用列表' : `展开 ${citations.length} 条引用详情`}
+          >
+            <Text
+              style={{
+                color: CLINICAL_COLORS.textMuted,
+                fontSize: 11,
+                lineHeight: 16,
+              }}
+            >
+              📎 引用 {citations.length} 条
+              {citationFilesPreview ? `：${citationFilesPreview}${citationOverflow}` : ''}
+              {'  '}
+              {expanded ? '▲ 收起' : '▼ 展开'}
+            </Text>
+          </TouchableOpacity>
+          {expanded ? (
+            <View style={{ marginTop: 4, gap: 8 }}>
+              {citations.map((c, idx) => (
+                <View
+                  key={c.chunkId}
+                  style={{
+                    paddingLeft: 8,
+                    borderLeftWidth: 2,
+                    borderLeftColor: CLINICAL_COLORS.border,
+                    gap: 2,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: CLINICAL_COLORS.text,
+                      fontSize: 11,
+                      lineHeight: 16,
+                      fontWeight: '600',
+                    }}
+                  >
+                    {idx + 1}. {c.sourceFile ?? c.source}
+                    {c.chunkIndex !== null && c.chunkIndex !== undefined
+                      ? ` · 段 ${c.chunkIndex}`
+                      : ''}
+                  </Text>
+                  {c.snippet ? (
+                    <Text
+                      style={{
+                        color: CLINICAL_COLORS.textMuted,
+                        fontSize: 11,
+                        lineHeight: 16,
+                      }}
+                      numberOfLines={4}
+                    >
+                      {c.snippet}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </>
       ) : null}
     </View>
   );
@@ -566,7 +629,7 @@ const P_QNA = () => {
                   >
                     {message.content}
                   </Text>
-                  {renderAssistantMetadata(message)}
+                  <AssistantMetadata message={message} />
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
                     {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
