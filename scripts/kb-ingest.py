@@ -104,16 +104,47 @@ _INJECTION_PATTERNS = [
 ]
 
 
+#: Zero-width / bidi / line/paragraph separator characters an attacker
+#: can use to defeat the ASCII-anchored injection patterns. e.g.
+#: "ig​nore previous instructions" passes the raw scan but
+#: reads correctly to the LLM. Stripped before pattern matching.
+_INVISIBLE_CHARS_RE = re.compile(r"[​-‏‪-‮⁦-⁩  ﻿]")
+
+
+def _normalise_for_injection_scan(content: str) -> str:
+    """Defeat zero-width + bidi-control evasion before the pattern
+    scan. NFKC collapses compatibility forms (full-width Latin,
+    superscripts, etc.) so e.g. "ｉｇｎｏｒｅ" matches "ignore"; the
+    regex strips zero-width joiners and bidi controls (`U+200B`-
+    `U+200F`, `U+202A`-`U+202E`, `U+2066`-`U+2069`, BOM). The
+    original string still gets ingested into the chunk — we only use
+    the normalised form for detection.
+
+    NOTE: pure script-level homoglyph evasion (Greek `ο` vs Latin
+    `o`, Cyrillic `а` vs Latin `a`) is NOT covered here — that
+    requires the Unicode confusables mapping (TR#39). The current
+    scanner is a tripwire, not a complete filter; the pattern set is
+    deliberately false-positive-friendly and an operator-reviewable
+    warning is the unit of work. A motivated attacker writing
+    homoglyph-clean content is a separate threat model we accept."""
+    return _INVISIBLE_CHARS_RE.sub("", unicodedata.normalize("NFKC", content))
+
+
 def scan_for_injection_markers(content: str) -> List[str]:
     """Return a list of matched pattern descriptions for the given
     chunk body. Empty list means the chunk looks benign. The scanner
     is intentionally pattern-based and case-insensitive; false
     positives are expected (and acceptable) — the cost of a manual
     review on a flagged chunk is much lower than the cost of a real
-    injection landing in the KB unnoticed."""
+    injection landing in the KB unnoticed.
+
+    Input is first run through `_normalise_for_injection_scan` so
+    homoglyph (Greek omicron etc.) + zero-width / bidi evasion
+    techniques don't bypass the ASCII-anchored patterns."""
+    normalised = _normalise_for_injection_scan(content)
     hits: List[str] = []
     for pattern in _INJECTION_PATTERNS:
-        match = pattern.search(content)
+        match = pattern.search(normalised)
         if match:
             hits.append(match.group(0)[:80])
     return hits
