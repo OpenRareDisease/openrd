@@ -506,6 +506,10 @@ describe('PatientProfileController.generateDocumentSummary — consent + redacti
 
   const captureJson = () => {
     const captured: { status: number; body: unknown } = { status: 200, body: null };
+    // `generateDocumentSummary` now wires `res.on('close', ...)` for
+    // AbortController-driven LLM cancellation (PR-Sec-8). Stub both
+    // `on` and `off` so the controller can attach + detach without
+    // tripping a TypeError on the mock.
     const res = {
       status: vi.fn((code: number) => {
         captured.status = code;
@@ -515,6 +519,8 @@ describe('PatientProfileController.generateDocumentSummary — consent + redacti
         captured.body = body;
         return res;
       }),
+      on: vi.fn().mockReturnThis(),
+      off: vi.fn().mockReturnThis(),
     } as unknown as Response;
     return { res, captured };
   };

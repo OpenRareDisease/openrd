@@ -685,17 +685,31 @@ export class PatientProfileController {
 
     const user = `结构化信息(JSON)：\n${JSON.stringify(promptPayload, null, 2)}`;
 
+    // Cancel the upstream LLM request if the client drops, mirroring
+    // the /api/ai/ask flow's res.on('close') wiring. Without this, a
+    // dropped phone keeps the OpenAI SDK call running until its
+    // built-in timeout (30s+) fires, holding a worker + vendor
+    // concurrency budget for a user who isn't watching.
+    const abortController = new AbortController();
+    const onClientClose = () => {
+      if (!abortController.signal.aborted) abortController.abort();
+    };
+    res.on('close', onClientClose);
+
     let summary = '';
     let usedFallback = false;
     try {
-      const completion = await this.aiSummary.client.chat.completions.create({
-        model: this.aiSummary.model,
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      });
+      const completion = await this.aiSummary.client.chat.completions.create(
+        {
+          model: this.aiSummary.model,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+        },
+        { signal: abortController.signal },
+      );
       summary = completion.choices?.[0]?.message?.content?.trim() ?? '';
     } catch {
       // Don't mask the upstream failure with a silent fallback. The
@@ -725,6 +739,13 @@ export class PatientProfileController {
     };
 
     await this.service.updateDocumentOcrPayloadForUser(req.user.id, documentId, nextPayload);
+    // Detach the close listener now the request has completed
+    // successfully — without this the closure would stay attached to
+    // the (already-finished) response and a future res.emit('close')
+    // would call abort() on an already-collected AbortController.
+    // Harmless functionally but lints as a leak and shows up in
+    // heap-snapshot triage.
+    res.off('close', onClientClose);
     res.status(200).json({ documentId, summary, source: usedFallback ? 'fallback' : 'llm' });
   };
 

@@ -817,13 +817,18 @@ export class PatientProfileService {
     }
 
     await this.pool.query(
+      // `patient_code` is intentionally absent from this INSERT — it
+      // is a clinic-assigned identifier and the public createProfile
+      // route schema strips it (`createProfileSchema` omits the field
+      // via `baseProfileSchema.omit`). New rows land with
+      // patient_code=NULL; a future back-office onboarding flow that
+      // sets the column lives in a separate code path.
       `INSERT INTO patient_profiles (
         user_id,
         full_name,
         preferred_name,
         date_of_birth,
         gender,
-        patient_code,
         diagnosis_stage,
         diagnosis_date,
         genetic_mutation,
@@ -838,7 +843,7 @@ export class PatientProfileService {
         region_district,
         notes
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
       )`,
       [
         userId,
@@ -846,7 +851,6 @@ export class PatientProfileService {
         payload.preferredName ?? null,
         payload.dateOfBirth ?? null,
         payload.gender ?? null,
-        payload.patientCode ?? null,
         payload.diagnosisStage ?? null,
         payload.diagnosisDate ?? null,
         payload.geneticMutation ?? null,
@@ -1312,24 +1316,25 @@ export class PatientProfileService {
     }
   }
 
-  async updateDocumentOcrPayloadForUser(
-    userId: string,
-    documentId: string,
-    ocrPayload: unknown,
-    nextDocumentType?: string | null,
-    nextStatus?: string | null,
-  ) {
+  async updateDocumentOcrPayloadForUser(userId: string, documentId: string, ocrPayload: unknown) {
+    // `nextDocumentType` / `nextStatus` parameters were removed in
+    // PR-Sec-8: only one production caller exists
+    // (controller.generateDocumentSummary), it never passed them, and
+    // any future caller routing an OCR sub-type through
+    // `nextDocumentType` would have bypassed `canonicalizeDocumentType`
+    // and triggered the migration 012 CHECK after the OCR work was
+    // already done. If a future workflow legitimately needs to update
+    // the document_type from a parse result, add a dedicated method
+    // that calls `canonicalizeDocumentType` explicitly.
     const result = await this.pool.query(
       `UPDATE patient_documents d
-       SET ocr_payload = $3,
-           document_type = COALESCE(NULLIF($4, ''), d.document_type),
-           status = COALESCE(NULLIF($5, ''), d.status)
+       SET ocr_payload = $3
        FROM patient_profiles p
        WHERE d.profile_id = p.id
          AND p.user_id = $1
          AND d.id = $2
        RETURNING d.id, d.ocr_payload`,
-      [userId, documentId, ocrPayload, nextDocumentType ?? null, nextStatus ?? null],
+      [userId, documentId, ocrPayload],
     );
 
     if (!result.rowCount) {

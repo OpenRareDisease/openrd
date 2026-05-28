@@ -179,7 +179,7 @@ const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
  *  Returns null for user messages, non-success assistant messages,
  *  or assistant messages with no metadata (placeholders, legacy
  *  stored messages). */
-const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
+const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
   const [expanded, setExpanded] = useState(false);
   const [traceExpanded, setTraceExpanded] = useState(false);
 
@@ -351,7 +351,7 @@ const AssistantMetadata = ({ message }: { message: ChatMessage }) => {
                       }}
                       numberOfLines={4}
                     >
-                      {c.snippet}
+                      {capCitationSnippet(c.snippet)}
                     </Text>
                   ) : null}
                 </View>
@@ -657,6 +657,13 @@ const P_QNA = () => {
       if (state !== 'active' && streamHandleRef.current) {
         streamHandleRef.current.close();
         streamHandleRef.current = null;
+        // Flip the composer state back to "idle" too. Without this
+        // the user returns to a `isSending=true` UI with the send
+        // button greyed out until they manually clear the chat,
+        // because the stream's onComplete fires after `close()` but
+        // the screen has already stopped listening to it.
+        setIsSending(false);
+        setAskProgress(null);
       }
     });
     return () => sub.remove();
@@ -1104,7 +1111,7 @@ const P_QNA = () => {
                   {renderMessageContent(message, isUser, (indexes, citations) =>
                     setCitationPopover({ indexes, citations }),
                   )}
-                  <AssistantMetadata message={message} />
+                  <AssistantMetadataBlock message={message} />
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
                     {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
