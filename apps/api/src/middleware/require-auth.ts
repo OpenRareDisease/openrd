@@ -32,7 +32,15 @@ export const requireAuth = (env: AppEnv, logger: AppLogger): RequestHandler => {
     const token = header.slice(7).trim();
 
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+      // Pin the verifier to HS256 (the only algorithm auth.service
+      // signs with). jsonwebtoken v9 already disallows `alg=none` and
+      // mixed-key attacks, but explicitly listing the accepted
+      // algorithm is defense-in-depth: it rejects any future bug,
+      // misconfiguration, or compromised dependency that would let an
+      // attacker swap the signing algorithm.
+      const decoded = jwt.verify(token, env.JWT_SECRET, {
+        algorithms: ['HS256'],
+      }) as JwtPayload;
 
       if (!decoded?.sub) {
         throw new AppError('Invalid token payload', 401);

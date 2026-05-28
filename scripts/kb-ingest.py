@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -134,13 +135,46 @@ def chunk_fingerprint(source_key: str, chunk_index: int, content: str) -> str:
     return h.hexdigest()[:32]
 
 
+#: Chunk size for streaming file reads when computing source
+#: fingerprints. Sized to keep memory bounded on huge clinical PDFs
+#: (>100 MB) while still amortising the per-read overhead. The 1 MiB
+#: value is a comfortable middle ground; tweak if a real corpus shows
+#: hot spots.
+_HASH_STREAM_CHUNK = 1024 * 1024
+
+
+def source_fingerprint_from_path(
+    file_path: Path, parser_name: str, pipeline_version: str
+) -> str:
+    """Streaming source fingerprint.
+
+    The previous helper required the whole file body in memory just to
+    feed `hashlib.sha256`. A multi-hundred-MB PDF (not unusual for
+    clinical archives shipped as scans) would push the worker's RSS
+    past container limits during a corpus-wide ingest. Stream-read the
+    file in fixed-size chunks instead so memory stays bounded.
+    """
+    h = hashlib.sha256()
+    h.update(b"file:")
+    with file_path.open("rb") as fh:
+        while True:
+            buf = fh.read(_HASH_STREAM_CHUNK)
+            if not buf:
+                break
+            h.update(buf)
+    h.update(b"\x1fparser:")
+    h.update(parser_name.encode("ascii"))
+    h.update(b"\x1fpipeline:")
+    h.update(pipeline_version.encode("ascii"))
+    return h.hexdigest()[:32]
+
+
 def source_fingerprint(
     file_bytes: bytes, parser_name: str, pipeline_version: str
 ) -> str:
-    """Fingerprint = hash(file content + parser version + pipeline
-    version). Changes to the file OR to how we parse it trigger a
-    re-ingest, so a refactor to the chunker is enough to invalidate
-    every chunk."""
+    """In-memory variant kept for callers that already have the bytes
+    (tests, small in-process buffers). Production ingest uses the
+    streaming variant above."""
     h = hashlib.sha256()
     h.update(b"file:")
     h.update(file_bytes)
@@ -171,8 +205,17 @@ def _detect_language(text: str) -> str:
 
 
 def relative_source_key(file_path: Path, content_root: Path) -> str:
-    """Stable identifier used both in DB rows and user-facing logs."""
-    return str(file_path.relative_to(content_root))
+    """Stable identifier used both in DB rows and user-facing logs.
+
+    Normalised to Unicode NFC so a macOS-sourced filename (HFS+ stores
+    decomposed NFD by default for CJK / accented characters) and a
+    Linux-sourced filename (NFC) hash to the same key. Without this,
+    `--prune` would treat the NFC name in the DB and the NFD name on
+    disk as different paths and either delete the live chunks or
+    miss real orphans depending on which side the test runs from.
+    """
+    raw = str(file_path.relative_to(content_root))
+    return unicodedata.normalize("NFC", raw)
 
 
 def resolve_effective_root(content_root: Path) -> Path:
@@ -425,8 +468,13 @@ def ingest(
             continue
 
         try:
-            file_bytes = file_path.read_bytes()
-            file_fp = source_fingerprint(file_bytes, parser.parser_name, PIPELINE_VERSION)
+            # Streaming hash so the file body never lives in memory
+            # all at once. The parser still re-opens the file in
+            # parser.parse(); the duplicate I/O is the cost of the
+            # memory cap.
+            file_fp = source_fingerprint_from_path(
+                file_path, parser.parser_name, PIPELINE_VERSION
+            )
         except Exception as exc:
             stats.files_errored += 1
             stats.actions.append(f"error    {source_key}: read failed: {exc}")
