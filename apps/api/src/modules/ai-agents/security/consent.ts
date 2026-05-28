@@ -18,11 +18,32 @@
  * because it carries no state — every call is a fresh DB read against
  * a single user, so callers can use it from middleware, tools, or
  * audit code without juggling lifetimes.
+ *
+ * Every mutation through {@link updateConsent} also appends one row
+ * per changed flag to `ai_consent_events` (db/migrations/009), so the
+ * full grant/revoke timeline survives even when a flag is toggled
+ * back and forth. {@link getConsentHistory} reads that timeline.
  */
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 import type { ConsentLevel } from '../retrievers/base.js';
+
+/**
+ * Anything we can `.query()` against — a pooled connection or a
+ * checked-out client. Used so the read helpers can be reused inside
+ * the transactional path of {@link updateConsent} without opening a
+ * second connection.
+ */
+type Queryable = Pool | PoolClient;
+
+/** Mirrors the CHECK constraint on `ai_consent_events.flag_name`.
+ *  Stored as snake_case to keep the SQL and the type identical. */
+export type ConsentEventFlag = 'personal' | 'third_party' | 'precise_values';
+
+/** Who or what triggered a consent transition. Mirrors the CHECK
+ *  constraint on `ai_consent_events.source`. */
+export type ConsentEventSource = 'user' | 'admin' | 'system';
 
 interface ConsentRow {
   ai_consent_personal: boolean | null;
@@ -34,6 +55,17 @@ interface ConsentRowWithTimestamps extends ConsentRow {
   ai_consent_personal_at: Date | string | null;
   ai_consent_third_party_at: Date | string | null;
   ai_consent_precise_values_at: Date | string | null;
+}
+
+interface ConsentEventRow {
+  id: string;
+  user_id: string;
+  flag_name: string;
+  from_value: boolean;
+  to_value: boolean;
+  source: string;
+  note: string | null;
+  changed_at: Date | string;
 }
 
 export interface ConsentStatus {
@@ -62,6 +94,48 @@ export interface ConsentUpdateInput {
   personal?: boolean;
   thirdParty?: boolean;
   preciseValues?: boolean;
+}
+
+/**
+ * Optional metadata for the event rows that {@link updateConsent}
+ * writes. Mobile-initiated calls leave these at their defaults
+ * (`source='user'`, `note=null`); future admin tooling will pass
+ * `source='admin'` and an operator note.
+ */
+export interface ConsentUpdateOptions {
+  /** Audit source for the resulting event row(s). Defaults to
+   *  `'user'`. Coerced `precise→false` transitions (when the base
+   *  pair drops without the caller asking) are always recorded as
+   *  `'system'` regardless of this value. */
+  source?: ConsentEventSource;
+  /** Optional free-text note attached to every event row this update
+   *  produces. Must NEVER contain PII — the column is intended to
+   *  be safe to surface in the future audit viewer. */
+  note?: string | null;
+}
+
+/** One row from `ai_consent_events`, normalised to camelCase for the
+ *  TypeScript layer. */
+export interface ConsentEvent {
+  id: string;
+  userId: string;
+  flagName: ConsentEventFlag;
+  fromValue: boolean;
+  toValue: boolean;
+  source: ConsentEventSource;
+  note: string | null;
+  changedAt: string;
+}
+
+export interface ConsentHistoryOptions {
+  /** Number of newest events to return. Defaults to 100, clamped
+   *  to `[1, 500]`. */
+  limit?: number;
+  /** Standard pagination offset. Defaults to 0. */
+  offset?: number;
+  /** When set, restrict to one flag's transitions. Useful for the
+   *  per-flag timeline view. */
+  flagName?: ConsentEventFlag;
 }
 
 /**
@@ -112,7 +186,7 @@ const formatTimestamp = (value: Date | string | null): string | null => {
  * orchestrator to use patient data at all; `precise_values` only
  * elevates the redaction mode.
  */
-export const getConsentStatus = async (pool: Pool, userId: string): Promise<ConsentStatus> => {
+export const getConsentStatus = async (pool: Queryable, userId: string): Promise<ConsentStatus> => {
   if (!userId) return NO_CONSENT;
 
   const result = await pool.query<ConsentRow>(
@@ -147,7 +221,7 @@ export const getConsentStatus = async (pool: Pool, userId: string): Promise<Cons
  * Convenience: just the level, for callers that don't need the
  * raw flag breakdown.
  */
-export const getConsentLevel = async (pool: Pool, userId: string): Promise<ConsentLevel> =>
+export const getConsentLevel = async (pool: Queryable, userId: string): Promise<ConsentLevel> =>
   (await getConsentStatus(pool, userId)).level;
 
 /**
@@ -157,7 +231,7 @@ export const getConsentLevel = async (pool: Pool, userId: string): Promise<Conse
  * never-consented user exists.
  */
 export const getConsentDetails = async (
-  pool: Pool,
+  pool: Queryable,
   userId: string,
 ): Promise<ConsentDetails | null> => {
   if (!userId) return null;
@@ -194,6 +268,66 @@ export const getConsentDetails = async (
 };
 
 /**
+ * In-transaction read of the consent row that also takes a row lock
+ * via `SELECT ... FOR UPDATE`. Used by {@link updateConsent} so two
+ * concurrent updates for the same user serialize against the row
+ * instead of computing their `changes[]` (and `ai_consent_events`
+ * inserts) off the same stale snapshot — which would otherwise put
+ * duplicate / wrong-source transitions into the compliance trail.
+ *
+ * Intentionally NOT exported: locking semantics only make sense
+ * inside a transaction, and the public read paths
+ * ({@link getConsentDetails} / {@link getConsentStatus}) should stay
+ * lock-free for orchestrator hot paths.
+ */
+const lockConsentRow = async (
+  client: PoolClient,
+  userId: string,
+): Promise<ConsentDetails | null> => {
+  if (!userId) return null;
+
+  const result = await client.query<ConsentRowWithTimestamps>(
+    `SELECT ai_consent_personal,
+            ai_consent_third_party,
+            ai_consent_precise_values,
+            ai_consent_personal_at,
+            ai_consent_third_party_at,
+            ai_consent_precise_values_at
+       FROM patient_profiles
+      WHERE user_id = $1
+      LIMIT 1
+      FOR UPDATE`,
+    [userId],
+  );
+
+  if (result.rowCount === 0) return null;
+
+  const row = result.rows[0];
+  const personal = Boolean(row.ai_consent_personal);
+  const thirdParty = Boolean(row.ai_consent_third_party);
+  const preciseValues = Boolean(row.ai_consent_precise_values);
+
+  return {
+    level: computeLevel(personal, thirdParty, preciseValues),
+    flags: { personal, thirdParty, preciseValues },
+    timestamps: {
+      personalAt: formatTimestamp(row.ai_consent_personal_at),
+      thirdPartyAt: formatTimestamp(row.ai_consent_third_party_at),
+      preciseValuesAt: formatTimestamp(row.ai_consent_precise_values_at),
+    },
+  };
+};
+
+interface FlagChange {
+  column: string;
+  atColumn: string;
+  newValue: boolean;
+  flagName: ConsentEventFlag;
+  fromValue: boolean;
+  source: ConsentEventSource;
+}
+
+/**
  * Apply a partial consent update.
  *
  * Rules enforced here (rather than in the route) so every caller —
@@ -203,15 +337,21 @@ export const getConsentDetails = async (
  *  - When the resulting `personal` or `thirdParty` would be false,
  *    `preciseValues` is **coerced** to false as well. Precise mode is
  *    only meaningful on top of the basic two; leaving it true would
- *    create an inconsistent row.
+ *    create an inconsistent row. The coerced transition is recorded
+ *    with `source='system'` so the timeline distinguishes it from a
+ *    user-initiated revoke.
  *  - If the caller explicitly tries to set `preciseValues=true` while
  *    `personal` or `thirdParty` is (or becomes) false, we throw
  *    `ConsentMutationError('invalid_precise')` so the UI sees a clean
  *    400 rather than silently dropping the request.
  *  - For each flag whose value actually changed, the matching `_at`
- *    column is set to NOW(); unchanged flags leave their timestamp
- *    alone. This gives compliance a clean grant/revoke history with
- *    no extra audit table.
+ *    column is set to NOW() **and** a row is appended to
+ *    `ai_consent_events` recording the from→to transition. Unchanged
+ *    flags leave both the timestamp and the history alone.
+ *  - The UPDATE + N INSERTs run inside a single transaction, and the
+ *    initial read takes `SELECT ... FOR UPDATE` on the profile row,
+ *    so concurrent same-user updates serialize and the compliance
+ *    trail can't drift from the live consent state.
  *
  * Throws {@link ConsentMutationError} with `code='profile_not_found'`
  * when the user has no `patient_profiles` row.
@@ -220,73 +360,143 @@ export const updateConsent = async (
   pool: Pool,
   userId: string,
   input: ConsentUpdateInput,
+  options: ConsentUpdateOptions = {},
 ): Promise<ConsentDetails> => {
   if (!userId) {
     throw new ConsentMutationError('userId is required', 'profile_not_found');
   }
 
-  const current = await getConsentDetails(pool, userId);
-  if (!current) {
-    throw new ConsentMutationError('Patient profile not found', 'profile_not_found');
-  }
+  const callerSource: ConsentEventSource = options.source ?? 'user';
+  const note: string | null = options.note ?? null;
 
-  const nextPersonal = input.personal ?? current.flags.personal;
-  const nextThirdParty = input.thirdParty ?? current.flags.thirdParty;
-  const explicitPrecise = input.preciseValues;
-  let nextPrecise = explicitPrecise ?? current.flags.preciseValues;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  // Coerce precise to false when the base pair drops, regardless of
-  // the caller's intent — but reject the request if the caller
-  // explicitly asked for precise=true alongside a falsey base.
-  if (!nextPersonal || !nextThirdParty) {
-    if (explicitPrecise === true) {
-      throw new ConsentMutationError(
-        'precise_values requires both personal and third_party consent',
-        'invalid_precise',
+    // Read + lock the row in one shot. The FOR UPDATE here is what
+    // makes two parallel updateConsent calls for the same user
+    // serialize — without it, both could read the same snapshot and
+    // each append a from→to event row, leaving the compliance trail
+    // out of sync with the live state.
+    const current = await lockConsentRow(client, userId);
+    if (!current) {
+      throw new ConsentMutationError('Patient profile not found', 'profile_not_found');
+    }
+
+    const nextPersonal = input.personal ?? current.flags.personal;
+    const nextThirdParty = input.thirdParty ?? current.flags.thirdParty;
+    const explicitPrecise = input.preciseValues;
+    let nextPrecise = explicitPrecise ?? current.flags.preciseValues;
+
+    // Coerce precise to false when the base pair drops, regardless of
+    // the caller's intent — but reject the request if the caller
+    // explicitly asked for precise=true alongside a falsey base.
+    if (!nextPersonal || !nextThirdParty) {
+      if (explicitPrecise === true) {
+        throw new ConsentMutationError(
+          'precise_values requires both personal and third_party consent',
+          'invalid_precise',
+        );
+      }
+      nextPrecise = false;
+    }
+
+    // A precise→false transition is "coerced" (and recorded as
+    // source=system) only when the caller didn't ask for it AND it
+    // happened because the base pair dropped. A direct
+    // `preciseValues: false` from the caller still counts as a user
+    // revoke.
+    const isCoercedPrecise =
+      explicitPrecise === undefined &&
+      nextPrecise !== current.flags.preciseValues &&
+      (!nextPersonal || !nextThirdParty);
+
+    const changes: FlagChange[] = [];
+    if (nextPersonal !== current.flags.personal) {
+      changes.push({
+        column: 'ai_consent_personal',
+        atColumn: 'ai_consent_personal_at',
+        newValue: nextPersonal,
+        flagName: 'personal',
+        fromValue: current.flags.personal,
+        source: callerSource,
+      });
+    }
+    if (nextThirdParty !== current.flags.thirdParty) {
+      changes.push({
+        column: 'ai_consent_third_party',
+        atColumn: 'ai_consent_third_party_at',
+        newValue: nextThirdParty,
+        flagName: 'third_party',
+        fromValue: current.flags.thirdParty,
+        source: callerSource,
+      });
+    }
+    if (nextPrecise !== current.flags.preciseValues) {
+      changes.push({
+        column: 'ai_consent_precise_values',
+        atColumn: 'ai_consent_precise_values_at',
+        newValue: nextPrecise,
+        flagName: 'precise_values',
+        fromValue: current.flags.preciseValues,
+        source: isCoercedPrecise ? 'system' : callerSource,
+      });
+    }
+
+    if (changes.length === 0) {
+      // No flag transitioned — idempotent call. Commit the empty
+      // transaction (so we don't leak an open one) and return the
+      // current state. No event row is appended.
+      await client.query('COMMIT');
+      return current;
+    }
+
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    for (const change of changes) {
+      values.push(change.newValue);
+      setClauses.push(`${change.column} = $${values.length}`);
+      setClauses.push(`${change.atColumn} = NOW()`);
+    }
+    setClauses.push('updated_at = NOW()');
+
+    values.push(userId);
+    await client.query(
+      `UPDATE patient_profiles
+          SET ${setClauses.join(', ')}
+        WHERE user_id = $${values.length}`,
+      values,
+    );
+
+    // One event row per transition. We pass the from/to booleans
+    // explicitly so the row reflects the actual before/after even if
+    // the patient_profiles columns later drift or are renamed.
+    for (const change of changes) {
+      await client.query(
+        `INSERT INTO ai_consent_events
+            (user_id, flag_name, from_value, to_value, source, note)
+          VALUES ($1, $2, $3, $4, $5, $6)`,
+        [userId, change.flagName, change.fromValue, change.newValue, change.source, note],
       );
     }
-    nextPrecise = false;
-  }
 
-  const changes: Array<[string, unknown, string | null]> = [];
-  if (nextPersonal !== current.flags.personal) {
-    changes.push(['ai_consent_personal', nextPersonal, 'ai_consent_personal_at']);
-  }
-  if (nextThirdParty !== current.flags.thirdParty) {
-    changes.push(['ai_consent_third_party', nextThirdParty, 'ai_consent_third_party_at']);
-  }
-  if (nextPrecise !== current.flags.preciseValues) {
-    changes.push(['ai_consent_precise_values', nextPrecise, 'ai_consent_precise_values_at']);
-  }
+    const refreshed = await getConsentDetails(client, userId);
+    if (!refreshed) {
+      // Race with profile deletion. Surface the same shape as the
+      // initial lookup did.
+      throw new ConsentMutationError('Patient profile not found', 'profile_not_found');
+    }
 
-  if (changes.length === 0) {
-    return current;
+    await client.query('COMMIT');
+    return refreshed;
+  } catch (error) {
+    // Best-effort rollback; swallow rollback errors so the original
+    // exception is what bubbles up.
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-
-  const setClauses: string[] = [];
-  const values: unknown[] = [];
-  for (const [column, value, atColumn] of changes) {
-    values.push(value);
-    setClauses.push(`${column} = $${values.length}`);
-    if (atColumn) setClauses.push(`${atColumn} = NOW()`);
-  }
-  setClauses.push('updated_at = NOW()');
-
-  values.push(userId);
-  await pool.query(
-    `UPDATE patient_profiles
-        SET ${setClauses.join(', ')}
-      WHERE user_id = $${values.length}`,
-    values,
-  );
-
-  const refreshed = await getConsentDetails(pool, userId);
-  if (!refreshed) {
-    // Race with profile deletion. Surface the same shape as the
-    // initial lookup did.
-    throw new ConsentMutationError('Patient profile not found', 'profile_not_found');
-  }
-  return refreshed;
 };
 
 /**
@@ -297,3 +507,60 @@ export const updateConsent = async (
  */
 export const redactionModeForConsent = (level: ConsentLevel): 'strict' | 'precise' =>
   level === 'precise' ? 'precise' : 'strict';
+
+/**
+ * Read the grant/revoke history for one user, newest first.
+ *
+ * Backed by `ai_consent_events` (db/migrations/009). Each row records
+ * a single flag transition (`from_value`→`to_value`) with its source
+ * (`user` / `admin` / `system`) so support + compliance can
+ * reconstruct the exact timeline even when a flag was toggled back
+ * and forth — something the per-flag `_at` timestamps on
+ * `patient_profiles` cannot do alone (they only retain the most
+ * recent transition per flag).
+ *
+ * Returns an empty list when the user has no events yet, so callers
+ * can render an empty state without an extra "exists?" branch. An
+ * empty `userId` short-circuits to `[]` for the same reason
+ * {@link getConsentStatus} short-circuits to `none`.
+ */
+export const getConsentHistory = async (
+  pool: Queryable,
+  userId: string,
+  options: ConsentHistoryOptions = {},
+): Promise<ConsentEvent[]> => {
+  if (!userId) return [];
+
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const offset = Math.max(options.offset ?? 0, 0);
+
+  const filters = ['user_id = $1'];
+  const values: unknown[] = [userId];
+  if (options.flagName) {
+    filters.push(`flag_name = $${values.length + 1}`);
+    values.push(options.flagName);
+  }
+  values.push(limit);
+  values.push(offset);
+
+  const result = await pool.query<ConsentEventRow>(
+    `SELECT id, user_id, flag_name, from_value, to_value, source, note, changed_at
+       FROM ai_consent_events
+      WHERE ${filters.join(' AND ')}
+      ORDER BY changed_at DESC, id DESC
+      LIMIT $${values.length - 1}
+      OFFSET $${values.length}`,
+    values,
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    userId: row.user_id,
+    flagName: row.flag_name as ConsentEventFlag,
+    fromValue: Boolean(row.from_value),
+    toValue: Boolean(row.to_value),
+    source: row.source as ConsentEventSource,
+    note: row.note,
+    changedAt: formatTimestamp(row.changed_at) ?? '',
+  }));
+};

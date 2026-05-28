@@ -147,6 +147,7 @@ SSE 流式返回前端
 | `.md` / `.markdown`                                             | `markdown_parser` | YAML frontmatter → 文件元数据；body 走 heading-aware 切块                                                                           |
 | `.pdf`                                                          | `pdf_parser`      | pdfminer.six 抽文本层，每页一个 section；正文 < 60 字符的页自动 OCR fallback（chi_sim+eng）                                         |
 | `.docx`                                                         | `docx_parser`     | python-docx 按 Heading 分组；表格扁平化为 tab-separated；遇 OLE2 头（伪 .docx）报清晰错误；遇 python-docx 解析失败时走 zip+XML 兜底 |
+| `.pptx`                                                         | `pptx_parser`     | python-pptx 按幻灯片切 section（`slide N`）；表格扁平化为 tab-separated；演讲者备注追加在所在 slide 末尾                            |
 | `.png` / `.jpg` / `.jpeg` / `.tif` / `.tiff` / `.bmp` / `.webp` | `image_parser`    | 直接 OCR（chi_sim+eng）                                                                                                             |
 | `.htm` / `.html`                                                | `html_parser`     | BeautifulSoup 去掉 script/style/nav，取可见文本                                                                                     |
 

@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import {
   activityLogSchema,
   baselineProfileSchema,
+  consentHistoryQuerySchema,
   consentUpdateSchema,
   createSubmissionSchema,
   createProfileSchema,
@@ -261,6 +262,23 @@ export class PatientProfileController {
     const payload = consentUpdateSchema.parse(req.body);
     const updated = await this.service.updateConsent(req.user.id, payload);
     res.status(200).json(updated);
+  };
+
+  /**
+   * Read the consent grant/revoke timeline for the calling user.
+   * Returns `{ events: [] }` (not 404) for users with no events yet
+   * so the mobile audit history can render an empty state without an
+   * extra "exists?" branch.
+   *
+   * Query params:
+   *  - `limit`    1–500, default 100
+   *  - `offset`   >= 0,  default 0
+   *  - `flagName` 'personal' | 'third_party' | 'precise_values'
+   */
+  getMyConsentHistory = async (req: AuthenticatedRequest, res: Response) => {
+    const query = consentHistoryQuerySchema.parse(req.query);
+    const events = await this.service.getConsentHistory(req.user.id, query);
+    res.status(200).json({ events });
   };
 
   /**

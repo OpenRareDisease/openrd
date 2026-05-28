@@ -254,6 +254,18 @@ export const consentUpdateSchema = z
   );
 export type ConsentUpdateBody = z.infer<typeof consentUpdateSchema>;
 
+/** Query schema for GET /api/profiles/me/consent/history. `limit` is
+ *  bounded to the same `[1, 500]` window the security helper clamps
+ *  to, so an out-of-range request fails fast as a 400 instead of
+ *  being silently rounded. `flagName` matches the CHECK constraint on
+ *  `ai_consent_events.flag_name`. */
+export const consentHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  flagName: z.enum(['personal', 'third_party', 'precise_values']).optional(),
+});
+export type ConsentHistoryQuery = z.infer<typeof consentHistoryQuerySchema>;
+
 /** Body schema for PUT /api/profiles/me/sharing-preferences. All four
  *  flags are optional — the screen sends one toggle at a time. We
  *  refuse empty bodies so a misconfigured client sees a clean 400

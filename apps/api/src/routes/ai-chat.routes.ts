@@ -457,7 +457,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     let limit: number | undefined;
     if (typeof rawLimit === 'string' && rawLimit.trim()) {
       const parsed = Number(rawLimit);
-      if (!Number.isFinite(parsed) || parsed < 1) {
+      if (!Number.isInteger(parsed) || parsed < 1) {
         return res.status(400).json({ success: false, message: 'limit 必须是正整数' });
       }
       limit = parsed;
@@ -466,8 +466,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     let offset: number | undefined;
     if (typeof rawOffset === 'string' && rawOffset.trim()) {
       const parsed = Number(rawOffset);
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        return res.status(400).json({ success: false, message: 'offset 必须 >= 0' });
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return res.status(400).json({ success: false, message: 'offset 必须是非负整数' });
       }
       offset = parsed;
     }
