@@ -154,15 +154,15 @@ SSE 流式返回前端
 
 灌库流程：
 
-1. 把素材放到 `content/medical-kb/source/`（也可以解 zip 进去，不进 git）
-2. 运行 `npm run kb:ingest`（首次会下载 bge-m3 模型 ~2.3GB）
+1. 把素材放到 `content/medical-kb/source/`（也可以直接解 zip 进去，不进 git）。脚本默认 `--source content/medical-kb/source`，且会自动剥掉单层 wrapper —— 比如解 `FSHD_知识库.zip` 后多出来的 `source/FSHD_知识库/` 这层会自动跳进去，`category` 仍然是 `01.疾病定义和科普` 而不是 `FSHD_知识库`。
+2. 运行 `npm run kb:ingest`（首次会下载 bge-m3 模型 ~2.3GB）。默认写入 pgvector；如果想灌 Chroma 设 `KB_BACKEND=chroma_cloud` 即可。
 3. 脚本按文件指纹（`sha256(file_bytes + parser_name + pipeline_version)`）做幂等：
    - 新文件 → 解析 + 切块 + embed + insert
    - 变更文件或 pipeline 版本改了 → 删除旧 chunks + 重灌
    - 删除文件 → 当前不自动清孤儿（见 follow-up issue #20）
 4. 同一份素材可重复跑，会自动跳过未变更的文件
 5. `--only .pdf,.docx` 可限定增量灌某些格式
-6. `--dry-run` 只走解析与切块统计，不动 DB
+6. `--dry-run` 只走解析与切块统计，不动 DB（但仍需要 `DATABASE_URL` 能连通，因为要读现有 fingerprint）
 
 环境依赖：
 

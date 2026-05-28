@@ -56,7 +56,19 @@ from kb_parsers import (  # noqa: E402
 )
 from kb_parsers.chunker import RawChunk, split_markdown, split_paragraphs  # noqa: E402
 
-DEFAULT_CONTENT_ROOT = ROOT / "content" / "medical-kb"
+#: Where unzipped corpus material lands by default. Matches the path
+#: documented in docs/proposals/local-rag-migration.md §4.3 and the
+#: .gitignore entry. Override with --source.
+DEFAULT_CONTENT_ROOT = ROOT / "content" / "medical-kb" / "source"
+
+#: Default backend for the ingest pipeline. The shared backend
+#: factory still defaults to chroma_cloud for read-side compatibility
+#: during the Chroma->pgvector rollout (see issue #21), but the
+#: ingester writes to local pgvector unless KB_BACKEND explicitly says
+#: otherwise -- a fresh clone running `npm run kb:ingest` should not
+#: accidentally write to / fail on Chroma.
+DEFAULT_BACKEND = "pgvector"
+
 DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 
 #: Bumped when the chunker, parsers, or fingerprint logic changes in
@@ -121,6 +133,33 @@ def _detect_language(text: str) -> str:
 def relative_source_key(file_path: Path, content_root: Path) -> str:
     """Stable identifier used both in DB rows and user-facing logs."""
     return str(file_path.relative_to(content_root))
+
+
+def resolve_effective_root(content_root: Path) -> Path:
+    """Strip a single wrapper directory when the corpus root contains
+    exactly one subdirectory and nothing else.
+
+    Unzipping `FSHD_知识库.zip` into `content/medical-kb/source/`
+    leaves the real category folders one level deeper, under
+    `content/medical-kb/source/FSHD_知识库/`. Without this, the first
+    relative path segment is the wrapper name and `category` ends up
+    as "FSHD_知识库" for every chunk -- killing the category-based
+    metadata the Chroma corpus relied on.
+
+    We only descend one level and only when the wrapper is
+    unambiguous (1 subdir, 0 files, no `.`-hidden entries). Anything
+    fancier and the operator should pass --source explicitly.
+    """
+    if not content_root.is_dir():
+        return content_root
+    visible = [
+        child
+        for child in content_root.iterdir()
+        if not child.name.startswith(".") and child.name != "__MACOSX"
+    ]
+    if len(visible) == 1 and visible[0].is_dir():
+        return visible[0]
+    return content_root
 
 
 def _derive_metadata_from_path(source_key: str) -> Dict[str, Any]:
@@ -376,10 +415,16 @@ def main() -> int:
     args = parser.parse_args()
 
     only_list = [s for s in (args.only or "").split(",") if s.strip()] or None
+    backend_name = os.getenv("KB_BACKEND") or DEFAULT_BACKEND
+
+    raw_source = Path(args.source)
+    effective_source = resolve_effective_root(raw_source)
 
     print("KB ingest")
-    print(f"  source       : {args.source}")
-    print(f"  backend      : {os.getenv('KB_BACKEND', 'pgvector')}")
+    print(f"  source       : {raw_source}")
+    if effective_source != raw_source:
+        print(f"  effective    : {effective_source}  (stripped single-dir wrapper)")
+    print(f"  backend      : {backend_name}")
     print(f"  embed model  : {os.getenv('KB_EMBED_MODEL', 'BAAI/bge-m3')}")
     print(f"  pipeline ver : {PIPELINE_VERSION}")
     print(f"  batch size   : {args.batch_size}")
@@ -389,11 +434,11 @@ def main() -> int:
         print("  DRY RUN (no backend writes)")
     print()
 
-    backend = create_backend()
+    backend = create_backend(backend_name)
     embedder = create_embedder()
 
     stats = ingest(
-        content_root=Path(args.source),
+        content_root=effective_source,
         backend=backend,
         embedder=embedder,
         batch_size=args.batch_size,
