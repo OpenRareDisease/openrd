@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { resolvePgSsl } from './pool.js';
 import { loadAppEnv } from '../config/env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,10 +68,14 @@ const readSqlFile = async (filePath: string) => {
   return normalizeSqlText(raw.toString('utf8'));
 };
 
-const ensureDatabaseExists = async (connectionString: string) => {
+const ensureDatabaseExists = async (
+  connectionString: string,
+  ssl: ReturnType<typeof resolvePgSsl>,
+) => {
   const targetDatabase = getDatabaseName(connectionString);
   const adminClient = new Client({
     connectionString: withDatabaseName(connectionString, 'postgres'),
+    ssl,
   });
 
   await adminClient.connect();
@@ -230,14 +235,11 @@ const main = async () => {
   const databaseName = getDatabaseName(env.DATABASE_URL);
   const mode = process.argv.includes('--status') ? 'status' : 'apply';
 
-  await ensureDatabaseExists(env.DATABASE_URL);
+  await ensureDatabaseExists(env.DATABASE_URL, resolvePgSsl(env));
 
   const client = new Client({
     connectionString: env.DATABASE_URL,
-    ssl:
-      env.DATABASE_SSL_ENABLED || env.isProductionLike
-        ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED }
-        : undefined,
+    ssl: resolvePgSsl(env),
   });
 
   await client.connect();

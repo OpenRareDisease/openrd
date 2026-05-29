@@ -48,6 +48,12 @@ const envSchema = z
       .default('postgres://postgres:postgres@localhost:5432/fshd_openrd'),
     DATABASE_SSL_ENABLED: booleanish().default(false),
     DATABASE_SSL_REJECT_UNAUTHORIZED: booleanish().default(true),
+    // Explicit acknowledgement that a prod DB connection WITHOUT SSL is
+    // intentional (compose-internal / private-network Postgres that
+    // speaks no SSL). Without this ack, prod + !DATABASE_SSL_ENABLED
+    // fail-fasts — so a remote/managed DB can't silently fall back to a
+    // plaintext PHI connection just because someone forgot the SSL flag.
+    DATABASE_ALLOW_INSECURE: booleanish().default(false),
     JWT_SECRET: z
       .string()
       .min(16, 'JWT_SECRET must be at least 16 characters long')
@@ -209,6 +215,20 @@ const validateProductionEnv = (env: AppEnv) => {
   }
   if (env.DATABASE_URL === 'postgres://postgres:postgres@localhost:5432/fshd_openrd') {
     errors.push('DATABASE_URL must be replaced in production');
+  }
+  if (!env.DATABASE_SSL_ENABLED && !env.DATABASE_ALLOW_INSECURE) {
+    // DB transport encryption is the one prod-security invariant that
+    // could otherwise silently degrade to plaintext (PHI over the
+    // wire) with zero signal. Force an explicit choice: SSL on, or a
+    // deliberate ack that this is a compose-internal / private-network
+    // DB that needs none. Mirrors the DEV_GRANT_CONSENT_FORCE /
+    // MINIO_PUBLISH_HOST explicit-ack pattern used elsewhere.
+    errors.push(
+      'Production DB has SSL disabled. Set DATABASE_SSL_ENABLED=true for a ' +
+        'remote/managed DB, OR DATABASE_ALLOW_INSECURE=true to acknowledge a ' +
+        'compose-internal / private-network Postgres that needs no transport ' +
+        'encryption.',
+    );
   }
   if (env.OTP_PROVIDER === 'mock') {
     errors.push('OTP_PROVIDER=mock is not allowed in production');
