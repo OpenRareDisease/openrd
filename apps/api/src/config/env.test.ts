@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadAppEnv, resetAppEnvCache } from './env.js';
+import { loadAppEnv, parseOtpAllowlist, resetAppEnvCache } from './env.js';
 
 describe('loadAppEnv', () => {
   afterEach(() => {
@@ -204,5 +204,23 @@ describe('loadAppEnv', () => {
       OTP_TEST_FIXED_CODE: '123456',
     });
     expect(env.OTP_PROVIDER).toBe('internal_test');
+  });
+});
+
+describe('parseOtpAllowlist', () => {
+  // Shared by validateProductionEnv (boot gate) and OtpService (auth
+  // gate). Pin the shape so a future format change can't silently
+  // diverge the two callers.
+  it('trims, drops empties, and tolerates a trailing comma', () => {
+    expect(parseOtpAllowlist('+8613800000000, +8613900000001 ,')).toEqual([
+      '+8613800000000',
+      '+8613900000001',
+    ]);
+  });
+
+  it('returns an empty array for blank / whitespace-only input', () => {
+    expect(parseOtpAllowlist('')).toEqual([]);
+    expect(parseOtpAllowlist('   ')).toEqual([]);
+    expect(parseOtpAllowlist(' , , ')).toEqual([]);
   });
 });

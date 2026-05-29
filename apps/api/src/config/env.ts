@@ -16,6 +16,20 @@ const booleanish = () =>
 const optionalNonEmptyString = () =>
   z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional());
 
+/**
+ * Parse the comma-separated OTP_TEST_PHONE_ALLOWLIST into a clean list
+ * (trimmed, empties dropped). Exported + shared so the fail-fast
+ * validator (validateProductionEnv) and the runtime auth gate
+ * (OtpService) reason about the EXACT same parse. A divergence here
+ * would be a security event — the validator certifying "non-empty,
+ * safe to boot" while the gate builds a different Set — not cosmetic.
+ */
+export const parseOtpAllowlist = (raw: string): string[] =>
+  raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 const envSchema = z
   .object({
     // `staging` is treated as production-shaped (see `isProductionLike`
@@ -205,9 +219,7 @@ const validateProductionEnv = (env: AppEnv) => {
     // set, so a misconfig can't degrade into "anyone logs in" (an
     // empty allowlist would otherwise be meaningless) or ship an
     // absent / wrong-length fixed code.
-    const allowlist = env.OTP_TEST_PHONE_ALLOWLIST.split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const allowlist = parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST);
     if (allowlist.length === 0) {
       errors.push('OTP_PROVIDER=internal_test requires a non-empty OTP_TEST_PHONE_ALLOWLIST');
     }

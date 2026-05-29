@@ -4,7 +4,7 @@ import { InternalTestOtpProvider } from './internal-test-otp-provider.js';
 import { MockOtpProvider } from './mock-otp-provider.js';
 import type { OtpProvider, OtpSendResult } from './otp-provider.js';
 import { TencentOtpProvider } from './tencent-otp-provider.js';
-import type { AppEnv } from '../../config/env.js';
+import { parseOtpAllowlist, type AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 
@@ -49,11 +49,7 @@ export class OtpService {
     this.env = env;
     this.logger = logger;
     this.pool = pool;
-    this.testPhoneAllowlist = new Set(
-      env.OTP_TEST_PHONE_ALLOWLIST.split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-    );
+    this.testPhoneAllowlist = new Set(parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST));
 
     if (provider) {
       this.provider = provider;
