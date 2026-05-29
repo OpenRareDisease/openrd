@@ -38,6 +38,43 @@ describe('loadAppEnv', () => {
     expect(env.OTP_PROVIDER).toBe('tencent');
   });
 
+  it('rejects prod with SSL disabled and no insecure ack', () => {
+    // DB transport encryption can't silently degrade to plaintext —
+    // a remote DB that forgot DATABASE_SSL_ENABLED must fail-fast,
+    // not send PHI in cleartext.
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+        DATABASE_SSL_ENABLED: 'false',
+        JWT_SECRET: 'prod-jwt-secret-1234567890',
+        OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+        OTP_PROVIDER: 'tencent',
+        CORS_ORIGIN: 'https://app.example.com',
+        OCR_PROVIDER: 'embedded',
+        KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+      }),
+    ).toThrow(/SSL disabled|DATABASE_ALLOW_INSECURE/);
+  });
+
+  it('accepts prod with SSL disabled when DATABASE_ALLOW_INSECURE acks it', () => {
+    // compose-internal / private-network Postgres: no SSL, but an
+    // explicit operator ack (the deploy this PR targets).
+    const env = loadAppEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://postgres:postgres@postgres:5432/fshd_openrd',
+      DATABASE_SSL_ENABLED: 'false',
+      DATABASE_ALLOW_INSECURE: 'true',
+      JWT_SECRET: 'prod-jwt-secret-1234567890',
+      OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+      OTP_PROVIDER: 'tencent',
+      CORS_ORIGIN: 'https://app.example.com',
+      OCR_PROVIDER: 'embedded',
+      KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+    });
+    expect(env.DATABASE_ALLOW_INSECURE).toBe(true);
+  });
+
   it('requires MinIO settings when STORAGE_PROVIDER=minio', () => {
     expect(() =>
       loadAppEnv({
