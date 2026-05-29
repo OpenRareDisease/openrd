@@ -43,7 +43,15 @@ export class AuthController {
       ip: req.ip,
       userAgent: req.headers['user-agent'],
     });
-    res.status(200).json(result);
+    // Only surface the non-sensitive envelope. The OTP itself
+    // (OtpSendResult.mockCode, set by the dev mock provider) must
+    // never reach the wire — returning `result` wholesale would leak
+    // it. Dev reads the code from the server log instead.
+    res.status(200).json({
+      requestId: result.requestId,
+      sentTo: result.sentTo,
+      provider: result.provider,
+    });
   };
 
   verifyOtp = async (req: Request, res: Response) => {

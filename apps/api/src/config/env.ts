@@ -16,6 +16,20 @@ const booleanish = () =>
 const optionalNonEmptyString = () =>
   z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional());
 
+/**
+ * Parse the comma-separated OTP_TEST_PHONE_ALLOWLIST into a clean list
+ * (trimmed, empties dropped). Exported + shared so the fail-fast
+ * validator (validateProductionEnv) and the runtime auth gate
+ * (OtpService) reason about the EXACT same parse. A divergence here
+ * would be a security event — the validator certifying "non-empty,
+ * safe to boot" while the gate builds a different Set — not cosmetic.
+ */
+export const parseOtpAllowlist = (raw: string): string[] =>
+  raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 const envSchema = z
   .object({
     // `staging` is treated as production-shaped (see `isProductionLike`
@@ -43,12 +57,19 @@ const envSchema = z
     CORS_ORIGIN: z.string().default('*'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-    OTP_PROVIDER: z.enum(['mock', 'tencent']).default('mock'),
+    OTP_PROVIDER: z.enum(['mock', 'tencent', 'internal_test']).default('mock'),
     OTP_CODE_LENGTH: z.coerce.number().int().min(4).max(8).default(6),
     OTP_TTL_MINUTES: z.coerce.number().int().min(1).max(30).default(10),
     OTP_RESEND_INTERVAL_SECONDS: z.coerce.number().int().min(10).default(60),
     OTP_MAX_SEND_PER_DAY: z.coerce.number().int().min(1).default(10),
     OTP_MAX_VERIFY_ATTEMPTS: z.coerce.number().int().min(1).default(5),
+    // INTERNAL-TEST OTP bridge (OTP_PROVIDER=internal_test): temporary
+    // until Tencent SMS is wired. Comma-separated allowlist of test
+    // phone numbers allowed to log in, plus the fixed code they enter.
+    // Both validated in validateProductionEnv when the provider is
+    // active (allowlist non-empty, fixed code matches OTP_CODE_LENGTH).
+    OTP_TEST_PHONE_ALLOWLIST: z.string().default(''),
+    OTP_TEST_FIXED_CODE: z.string().default(''),
     OTP_HASH_SECRET: z.string().min(8).default('change-me-otp-secret'),
     AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(10).default(60),
     AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).default(20),
@@ -191,6 +212,23 @@ const validateProductionEnv = (env: AppEnv) => {
   }
   if (env.OTP_PROVIDER === 'mock') {
     errors.push('OTP_PROVIDER=mock is not allowed in production');
+  }
+  if (env.OTP_PROVIDER === 'internal_test') {
+    // internal_test is an allowed prod-shaped provider (temporary
+    // bridge until Tencent SMS lands), but ONLY with both guard rails
+    // set, so a misconfig can't degrade into "anyone logs in" (an
+    // empty allowlist would otherwise be meaningless) or ship an
+    // absent / wrong-length fixed code.
+    const allowlist = parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST);
+    if (allowlist.length === 0) {
+      errors.push('OTP_PROVIDER=internal_test requires a non-empty OTP_TEST_PHONE_ALLOWLIST');
+    }
+    if (!new RegExp(`^\\d{${env.OTP_CODE_LENGTH}}$`).test(env.OTP_TEST_FIXED_CODE)) {
+      errors.push(
+        `OTP_TEST_FIXED_CODE must be exactly ${env.OTP_CODE_LENGTH} digits ` +
+          'when OTP_PROVIDER=internal_test',
+      );
+    }
   }
   if (env.CORS_ORIGIN.trim() === '*' || !env.CORS_ORIGIN.trim()) {
     errors.push('CORS_ORIGIN must be explicitly configured in production');

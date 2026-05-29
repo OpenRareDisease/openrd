@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { InternalTestOtpProvider } from './internal-test-otp-provider.js';
 import { MockOtpProvider } from './mock-otp-provider.js';
 import type { OtpProvider, OtpSendResult } from './otp-provider.js';
 import { TencentOtpProvider } from './tencent-otp-provider.js';
-import type { AppEnv } from '../../config/env.js';
+import { parseOtpAllowlist, type AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 
@@ -42,11 +43,13 @@ export class OtpService {
   private readonly logger: AppLogger;
   private readonly pool: Pool;
   private readonly provider: OtpProvider;
+  private readonly testPhoneAllowlist: ReadonlySet<string>;
 
   constructor({ env, logger, pool, provider }: OtpServiceDeps) {
     this.env = env;
     this.logger = logger;
     this.pool = pool;
+    this.testPhoneAllowlist = new Set(parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST));
 
     if (provider) {
       this.provider = provider;
@@ -56,12 +59,27 @@ export class OtpService {
         { provider: env.OTP_PROVIDER },
         'OTP provider not configured, Tencent provider will throw until wired',
       );
+    } else if (env.OTP_PROVIDER === 'internal_test') {
+      this.provider = new InternalTestOtpProvider(this.testPhoneAllowlist);
+      this.logger.warn(
+        { provider: env.OTP_PROVIDER, allowlistSize: this.testPhoneAllowlist.size },
+        'INTERNAL-TEST OTP provider active — only allowlisted test phones can ' +
+          'log in with a fixed code. Switch to tencent before real launch.',
+      );
     } else {
       this.provider = new MockOtpProvider();
     }
   }
 
-  private generateCode(): string {
+  private generateCode(phoneNumber: string): string {
+    // INTERNAL-TEST bridge: allowlisted test phones get the fixed,
+    // pre-shared code (validated to match OTP_CODE_LENGTH in
+    // validateProductionEnv) so testers can log in without real SMS.
+    // Every other number — and every number under mock / tencent —
+    // gets a fresh random code as usual.
+    if (this.env.OTP_PROVIDER === 'internal_test' && this.testPhoneAllowlist.has(phoneNumber)) {
+      return this.env.OTP_TEST_FIXED_CODE;
+    }
     const length = this.env.OTP_CODE_LENGTH;
     const min = 10 ** (length - 1);
     const max = 10 ** length - 1;
@@ -122,7 +140,7 @@ export class OtpService {
         throw new AppError('OTP send limit reached', 429);
       }
 
-      const code = this.generateCode();
+      const code = this.generateCode(phoneNumber);
       const codeHash = this.hashCode(phoneNumber, code);
       const requestId =
         typeof crypto.randomUUID === 'function'
