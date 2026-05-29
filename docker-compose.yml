@@ -90,7 +90,18 @@ services:
         ]
       interval: 15s
       timeout: 5s
-      retries: 10
+      # Budget: 15s × 30 = 7.5 min. Warm-cache boot (kb-model-cache
+      # volume populated) takes ~30s for bge-m3 + initial embed. Cold
+      # boot — first deploy or after `docker volume rm` — pulls the
+      # ~2GB model weights from HuggingFace and can comfortably take
+      # 3-5 min on a slow registry. The previous 150s budget would
+      # mark the container unhealthy mid-pull, the api `depends_on:
+      # kb-service: service_healthy` gate would never satisfy, and
+      # the whole deploy would fail. Prefer pre-warming the
+      # `kb-model-cache` volume out-of-band when feasible (see
+      # runbook §3.1) so this budget never actually has to absorb a
+      # full HF pull on the critical path.
+      retries: 30
 
   minio:
     image: minio/minio:latest

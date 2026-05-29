@@ -73,7 +73,7 @@ const fakeEnv: AppEnv = {
   CHROMA_API_PORT: 5000,
   CHROMA_API_HOST: 'localhost',
   HEALTHCHECK_TIMEOUT_MS: 2500,
-  isProduction: false,
+  isProductionLike: false,
   isTest: true,
   chromaApiUrl: 'http://localhost:5000',
   chromaApiBaseUrl: 'http://localhost:5000/api',

@@ -10,7 +10,7 @@ Current release line on `release/v2.4.0`.
 
 - Landed the AI patient QnA platform end-to-end: local pgvector knowledge base, orchestrator with consent gating and PII redaction, mobile SSE streaming with clickable citations, and user-facing AI call + consent history.
 - Rewrote the patient profile service and canonicalised OCR `document_type` at the controller layer, backed by migrations 011/012 (NOT VALID CHECKs + cross-profile reference trigger).
-- Closed 90+ security audit findings across PR-Sec-1 through PR-Sec-9 (path traversal, cross-user FK, PII scrub, LLM abort, KB service bearer auth, parser DoS, production env fail-fast, dependency CVEs).
+- Closed a multi-round security audit across 12 PRs (PR-Sec-1 through PR-Sec-10 + 2 follow-ups) covering path traversal, cross-user FK, PII scrub, LLM abort, KB service bearer auth, parser DoS, production env fail-fast, dependency CVEs, and the migration runner `_down.sql` filter that PR #58 caught silently rolling back v2.4.0 schema work.
 - Hardened the mobile client: logout cache clear, 401 auto-logout, AppState stream cancel, data-sharing toggles wired to backend, inline citation cap, newly-registered onboarding redirect.
 - Added the v2.4.0 deploy runbook and smoke-test coverage for the new feature surfaces.
 

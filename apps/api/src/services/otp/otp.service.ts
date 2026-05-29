@@ -164,7 +164,7 @@ export class OtpService {
       await client.query('COMMIT');
       txOpen = false;
 
-      if (!this.env.isProduction && result.provider === 'mock') {
+      if (!this.env.isProductionLike && result.provider === 'mock') {
         this.logger.info(
           { phoneNumber: maskPhone(phoneNumber), requestId, code },
           'Mock OTP code generated',
