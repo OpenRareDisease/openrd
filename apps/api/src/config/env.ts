@@ -123,14 +123,19 @@ const envSchema = z
   })
   .transform((value) => ({
     ...value,
-    // `isProduction` is the gate for `validateProductionEnv`. Staging
-    // must satisfy the same secret-rotation + CORS / OTP / OCR
-    // hardening that prod does — otherwise a staging deploy could
-    // ship with `change-me-super-secret`, `OCR_PROVIDER=mock`, or
-    // `CORS_ORIGIN=*` and the fail-fast wouldn't fire. `isStaging`
-    // stays separate for any metrics / logging surface that wants to
-    // distinguish the two environments.
-    isProduction: value.NODE_ENV === 'production' || value.NODE_ENV === 'staging',
+    // `isProductionLike` is the gate for `validateProductionEnv`.
+    // Staging must satisfy the same secret-rotation + CORS / OTP /
+    // OCR hardening that prod does — otherwise a staging deploy
+    // could ship with `change-me-super-secret`, `OCR_PROVIDER=mock`,
+    // or `CORS_ORIGIN=*` and the fail-fast wouldn't fire. The name
+    // deliberately says "Like" instead of `isProduction` because the
+    // value covers BOTH `NODE_ENV=production` and `NODE_ENV=staging`
+    // — a `isProduction` field that returned true for staging would
+    // mislead anyone reading consumer code without diving back to
+    // this transform. `isStaging` stays separate for any metrics /
+    // logging surface that wants to distinguish the two
+    // environments (Sentry environment, log-aggregator tag, etc.).
+    isProductionLike: value.NODE_ENV === 'production' || value.NODE_ENV === 'staging',
     isStaging: value.NODE_ENV === 'staging',
     isTest: value.NODE_ENV === 'test',
     chromaApiUrl: `http://${value.CHROMA_API_HOST}:${value.CHROMA_API_PORT}`,
@@ -167,7 +172,7 @@ const isDevPlaceholder = (value: string | undefined | null): boolean =>
 const validateProductionEnv = (env: AppEnv) => {
   const errors: string[] = [];
 
-  if (!env.isProduction) {
+  if (!env.isProductionLike) {
     return errors;
   }
 
@@ -224,7 +229,7 @@ const validateStorageEnv = (env: AppEnv) => {
     errors.push('MINIO_BUCKET_NAME must be configured when STORAGE_PROVIDER=minio');
   }
 
-  if (env.isProduction) {
+  if (env.isProductionLike) {
     if (env.MINIO_ACCESS_KEY === 'minioadmin') {
       errors.push('MINIO_ACCESS_KEY must be replaced in production');
     }

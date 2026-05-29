@@ -10,7 +10,7 @@ export const initPool = (env: AppEnv, logger: AppLogger) => {
       connectionString: env.DATABASE_URL,
       max: env.isTest ? 1 : undefined,
       ssl:
-        env.DATABASE_SSL_ENABLED || env.isProduction
+        env.DATABASE_SSL_ENABLED || env.isProductionLike
           ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED }
           : undefined,
     });

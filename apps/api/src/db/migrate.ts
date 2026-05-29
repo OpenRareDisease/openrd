@@ -235,7 +235,7 @@ const main = async () => {
   const client = new Client({
     connectionString: env.DATABASE_URL,
     ssl:
-      env.DATABASE_SSL_ENABLED || env.isProduction
+      env.DATABASE_SSL_ENABLED || env.isProductionLike
         ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED }
         : undefined,
   });

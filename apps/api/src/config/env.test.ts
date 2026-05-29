@@ -33,7 +33,7 @@ describe('loadAppEnv', () => {
       KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
     });
 
-    expect(env.isProduction).toBe(true);
+    expect(env.isProductionLike).toBe(true);
     expect(env.CORS_ORIGIN).toBe('https://app.example.com');
     expect(env.OTP_PROVIDER).toBe('tencent');
   });
@@ -111,7 +111,7 @@ describe('loadAppEnv', () => {
     // either drop NODE_ENV (silent dev fallback, accepts every
     // placeholder) or set production (conflates staging+prod in
     // metrics). Staging now parses cleanly AND falls under
-    // `isProduction` so `validateProductionEnv` runs against it.
+    // `isProductionLike` so `validateProductionEnv` runs against it.
     const env = loadAppEnv({
       NODE_ENV: 'staging',
       DATABASE_URL: 'postgres://staging:pw@db.staging:5432/openrd',
@@ -125,7 +125,7 @@ describe('loadAppEnv', () => {
       KB_SERVICE_TOKEN: 'staging-kb-bearer-token-1234567890',
     });
     expect(env.NODE_ENV).toBe('staging');
-    expect(env.isProduction).toBe(true);
+    expect(env.isProductionLike).toBe(true);
     expect(env.isStaging).toBe(true);
   });
 

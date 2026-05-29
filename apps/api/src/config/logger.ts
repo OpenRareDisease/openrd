@@ -23,7 +23,7 @@ export const createLogger = (env: AppEnv) =>
       ],
       censor: '[Redacted]',
     },
-    transport: env.isProduction
+    transport: env.isProductionLike
       ? undefined
       : {
           target: 'pino-pretty',
