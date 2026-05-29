@@ -160,7 +160,12 @@ services:
       # api → kb fetch would 401 with "unauthorized".
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-dev-only-local-token-NOT-FOR-PROD}
     ports:
-      - '4000:4000'
+      # Bound to 127.0.0.1: public traffic enters through the caddy
+      # service (443), which reaches this container over the compose
+      # network (api:4000). The host mapping is only for local
+      # debugging (curl localhost:4000) — prod must not expose the
+      # plaintext API directly.
+      - '127.0.0.1:4000:4000'
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,10 +196,45 @@ services:
       api:
         condition: service_healthy
     ports:
-      - '8080:80'
+      # Bound to 127.0.0.1: the public entrypoint is the caddy service
+      # on 80/443. caddy reaches this container over the compose
+      # network (web:80), so this host mapping is only for local
+      # debugging (curl localhost:8080).
+      - '127.0.0.1:8080:80'
+
+  # Reverse proxy + automatic HTTPS. Terminates TLS for the prod domain
+  # using a Let's Encrypt cert Caddy obtains + auto-renews (HTTP-01 over
+  # :80), then routes /api/* → api:4000 and /* → web:80 (see Caddyfile).
+  # This is the ONLY service that publishes 0.0.0.0 ports in prod;
+  # everything else is bound to 127.0.0.1 or the compose network.
+  #
+  # Gated behind the `prod` profile so a plain `docker compose up` for
+  # local dev does NOT start Caddy (which would try — and fail — to get
+  # a cert for the prod domain, and would grab :80/:443). Prod brings it
+  # up with `docker compose --profile prod up -d --build`.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ['prod']
+    restart: unless-stopped
+    environment:
+      # Caddyfile reads {$DOMAIN}; override in prod `.env` if the domain
+      # ever changes. Defaults to ai.fshdyouth.com.
+      DOMAIN: ${DOMAIN:-ai.fshdyouth.com}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
 
 volumes:
   pg-data:
   api-uploads:
   kb-model-cache:
   minio-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,42 @@
+# Caddy — reverse proxy + automatic HTTPS for the openrd prod stack.
+#
+# Caddy obtains and auto-renews a Let's Encrypt cert for the domain
+# below via the HTTP-01 challenge. Prereqs (both already in place for
+# ai.fshdyouth.com → the prod server):
+#   - the domain's A record points at this host
+#   - port 80 is reachable from the public internet (for the challenge)
+#
+# Routing:
+#   /api/*  → api:4000   Node API. `flush_interval -1` disables response
+#                        buffering so the SSE endpoint
+#                        (/api/ai/ask/stream) streams tokens to the
+#                        mobile client in real time instead of being
+#                        held until the response closes.
+#   /*      → web:80     The Expo web build (static).
+#
+# Upstreams are reached over the compose network by service name, so
+# they don't publish public host ports (they're bound to 127.0.0.1 in
+# docker-compose.yml). Caddy is the only service on 0.0.0.0:80/443.
+#
+# The site address is parameterised: set DOMAIN in prod `.env`
+# (docker-compose passes it through). Defaults to ai.fshdyouth.com.
+{
+	# ACME account email — Let's Encrypt sends cert-expiry + account
+	# notices here. Not validated by LE, but use an inbox you monitor.
+	email admin@fshdyouth.com
+}
+
+{$DOMAIN:ai.fshdyouth.com} {
+	handle /api/* {
+		reverse_proxy api:4000 {
+			# Stream SSE (/api/ai/ask/stream) without buffering.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:80
+	}
+
+	encode gzip
+}
