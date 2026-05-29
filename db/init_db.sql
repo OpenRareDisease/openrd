@@ -17,6 +17,18 @@ WHERE NOT EXISTS (
 -- Enable useful extensions.
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS citext;
+-- pgvector — backs the local KB store (kb_chunks.embedding). The
+-- pgvector/pgvector:pg16 image ships the extension binaries; this
+-- statement makes it usable inside fshd_openrd. It MUST be created
+-- here at DB init, not only in migration 006, to break a startup
+-- deadlock: kb-service's warmup verifies the vector extension and
+-- stays unhealthy without it, but migration 006 (the other creator)
+-- runs from the api container, which `depends_on: kb-service:
+-- service_healthy`. kb waits on the extension, the extension waits on
+-- api, api waits on kb. Creating it at init severs the cycle.
+-- Migration 006's own `CREATE EXTENSION IF NOT EXISTS vector` stays as
+-- the idempotent backstop for native-pg / non-compose setups.
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Users and authentication.
 CREATE TABLE IF NOT EXISTS app_users (
