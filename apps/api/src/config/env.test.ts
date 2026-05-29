@@ -149,4 +149,60 @@ describe('loadAppEnv', () => {
       }),
     ).toThrow(/JWT_SECRET must be replaced|OTP_HASH_SECRET must be replaced/);
   });
+
+  it('rejects internal_test OTP with an empty allowlist', () => {
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+        DATABASE_SSL_ENABLED: 'true',
+        DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+        JWT_SECRET: 'prod-jwt-secret-1234567890',
+        OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+        OTP_PROVIDER: 'internal_test',
+        CORS_ORIGIN: 'https://app.example.com',
+        OCR_PROVIDER: 'embedded',
+        KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+        OTP_TEST_FIXED_CODE: '123456',
+        // OTP_TEST_PHONE_ALLOWLIST omitted → empty → must reject
+      }),
+    ).toThrow(/OTP_TEST_PHONE_ALLOWLIST/);
+  });
+
+  it('rejects internal_test OTP with a wrong-length fixed code', () => {
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+        DATABASE_SSL_ENABLED: 'true',
+        DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+        JWT_SECRET: 'prod-jwt-secret-1234567890',
+        OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+        OTP_PROVIDER: 'internal_test',
+        CORS_ORIGIN: 'https://app.example.com',
+        OCR_PROVIDER: 'embedded',
+        KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+        OTP_TEST_PHONE_ALLOWLIST: '+8613800000000',
+        OTP_TEST_FIXED_CODE: '12', // not 6 digits → must reject
+      }),
+    ).toThrow(/OTP_TEST_FIXED_CODE/);
+  });
+
+  it('accepts internal_test OTP with a non-empty allowlist + valid code', () => {
+    const env = loadAppEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+      DATABASE_SSL_ENABLED: 'true',
+      DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
+      JWT_SECRET: 'prod-jwt-secret-1234567890',
+      OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+      OTP_PROVIDER: 'internal_test',
+      CORS_ORIGIN: 'https://app.example.com',
+      OCR_PROVIDER: 'embedded',
+      KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+      OTP_TEST_PHONE_ALLOWLIST: '+8613800000000, +8613900000001',
+      OTP_TEST_FIXED_CODE: '123456',
+    });
+    expect(env.OTP_PROVIDER).toBe('internal_test');
+  });
 });
