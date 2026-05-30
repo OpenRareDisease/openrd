@@ -1,5 +1,6 @@
 import type { OtpProvider, OtpSendResult } from './otp-provider.js';
 import { AppError } from '../../utils/app-error.js';
+import { normalizePhone } from '../../utils/phone.js';
 
 /**
  * Temporary OTP provider for INTERNAL TESTING ONLY, until the real
@@ -32,7 +33,11 @@ export class InternalTestOtpProvider implements OtpProvider {
     ttlMinutes: number;
     requestId: string;
   }): Promise<OtpSendResult> {
-    if (!this.allowlist.has(input.phoneNumber)) {
+    // Compare in canonical form: the allowlist handed in by OtpService
+    // is already normalized, and the inbound number may arrive bare or
+    // +86 — normalizePhone collapses both to the same key so config and
+    // client format can't silently disagree.
+    if (!this.allowlist.has(normalizePhone(input.phoneNumber))) {
       // Reject non-allowlisted numbers outright so this provider can
       // never be used as a blanket login bypass for real users.
       throw new AppError('该手机号不在内部测试白名单内，暂未开放短信登录', 403);
