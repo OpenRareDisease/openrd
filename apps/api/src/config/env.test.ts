@@ -38,6 +38,29 @@ describe('loadAppEnv', () => {
     expect(env.OTP_PROVIDER).toBe('tencent');
   });
 
+  it('accepts prod with empty optional API keys (AI / OPENAI / CHROMA)', () => {
+    // Regression: these used `.min(1).optional()`, which REJECTS an
+    // empty string (`AI_API_KEY=`) instead of treating it as unset —
+    // crashing prod boot when .env carried the .env.example blanks.
+    const env = loadAppEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
+      DATABASE_SSL_ENABLED: 'true',
+      JWT_SECRET: 'prod-jwt-secret-1234567890',
+      OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+      OTP_PROVIDER: 'tencent',
+      CORS_ORIGIN: 'https://app.example.com',
+      OCR_PROVIDER: 'embedded',
+      KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+      OPENAI_API_KEY: '',
+      AI_API_KEY: '',
+      CHROMA_API_KEY: '',
+      CHROMA_TENANT_ID: '',
+    });
+    expect(env.AI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
   it('rejects prod with SSL disabled and no insecure ack', () => {
     // DB transport encryption can't silently degrade to plaintext —
     // a remote DB that forgot DATABASE_SSL_ENABLED must fail-fast,

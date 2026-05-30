@@ -88,8 +88,14 @@ const envSchema = z
     LOGIN_MAX_FAILURES: z.coerce.number().int().min(1).max(20).default(5),
     LOGIN_LOCK_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
 
-    OPENAI_API_KEY: z.string().min(1).optional(),
-    AI_API_KEY: z.string().min(1).optional(),
+    // optionalNonEmptyString (NOT .min(1).optional()) so an EMPTY value
+    // in .env — e.g. `AI_API_KEY=` copied straight from .env.example
+    // before the operator has a key — coerces to undefined instead of
+    // failing zod's .min(1) with "String must contain at least 1
+    // character". These two crashed prod boot on first deploy; every
+    // other optional secret already uses this helper.
+    OPENAI_API_KEY: optionalNonEmptyString(),
+    AI_API_KEY: optionalNonEmptyString(),
     AI_API_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),
     AI_API_MODEL: z.string().default('deepseek-ai/DeepSeek-V3'),
     AI_API_TIMEOUT: z.coerce.number().int().positive().default(30000),
@@ -140,8 +146,11 @@ const envSchema = z
     // `Authorization: Bearer ...` on every /multi request. Empty in
     // loopback dev; required in production (validated below).
     KB_SERVICE_TOKEN: optionalNonEmptyString(),
-    CHROMA_API_KEY: z.string().min(1).optional(),
-    CHROMA_TENANT_ID: z.string().min(1).optional(),
+    // Same empty-string-safe treatment as the AI keys above — these
+    // ship as placeholders in .env.example, but an operator who blanks
+    // them out (no Chroma) shouldn't crash boot.
+    CHROMA_API_KEY: optionalNonEmptyString(),
+    CHROMA_TENANT_ID: optionalNonEmptyString(),
     CHROMA_DATABASE: z.string().default('FSHD'),
     CHROMA_COLLECTION: z.string().default('fshd_knowledge_base'),
     CHROMA_API_PORT: z.coerce.number().int().positive().default(5000),
