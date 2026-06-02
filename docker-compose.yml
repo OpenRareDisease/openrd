@@ -45,6 +45,16 @@ services:
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-dev-only-local-token-NOT-FOR-PROD}
       HF_HOME: /root/.cache/huggingface
       SENTENCE_TRANSFORMERS_HOME: /root/.cache/sentence_transformers
+      # HuggingFace endpoint for downloading the embedding model on
+      # first boot. Defaults to the real huggingface.co — NOT empty:
+      # huggingface_hub treats an empty string as a host-less endpoint
+      # and breaks the fetch, whereas a real/unset value resolves
+      # correctly. In mainland China huggingface.co is blocked, so set
+      # HF_ENDPOINT=https://hf-mirror.com in .env (kb-service otherwise
+      # fails warmup with "Network is unreachable" and never turns
+      # healthy). env_file passes .env through; this line documents the
+      # knob AND supplies the safe non-empty default.
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       # KB read backend + DB connection. Defaults assume the
       # compose-managed pgvector postgres is the read side (matches
       # Phase 1.4 ingest output). To point kb-service at a host-side
