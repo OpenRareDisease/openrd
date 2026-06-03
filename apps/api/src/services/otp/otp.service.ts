@@ -7,6 +7,7 @@ import { TencentOtpProvider } from './tencent-otp-provider.js';
 import { parseOtpAllowlist, type AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
+import { normalizePhone } from '../../utils/phone.js';
 
 interface OtpServiceDeps {
   env: AppEnv;
@@ -49,7 +50,14 @@ export class OtpService {
     this.env = env;
     this.logger = logger;
     this.pool = pool;
-    this.testPhoneAllowlist = new Set(parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST));
+    // Normalize every allowlist entry to the canonical +86 form so an
+    // operator can list a bare `13922220001` and still match the
+    // `+8613922220001` the mobile client actually sends (see
+    // normalizePhone). Without this, the strict Set.has() comparisons
+    // below — and in InternalTestOtpProvider — never match a real login.
+    this.testPhoneAllowlist = new Set(
+      parseOtpAllowlist(env.OTP_TEST_PHONE_ALLOWLIST).map(normalizePhone),
+    );
 
     if (provider) {
       this.provider = provider;
@@ -77,7 +85,10 @@ export class OtpService {
     // validateProductionEnv) so testers can log in without real SMS.
     // Every other number — and every number under mock / tencent —
     // gets a fresh random code as usual.
-    if (this.env.OTP_PROVIDER === 'internal_test' && this.testPhoneAllowlist.has(phoneNumber)) {
+    if (
+      this.env.OTP_PROVIDER === 'internal_test' &&
+      this.testPhoneAllowlist.has(normalizePhone(phoneNumber))
+    ) {
       return this.env.OTP_TEST_FIXED_CODE;
     }
     const length = this.env.OTP_CODE_LENGTH;

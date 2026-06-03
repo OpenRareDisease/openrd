@@ -21,6 +21,22 @@ describe('InternalTestOtpProvider', () => {
     expect(result.mockCode).toBeUndefined();
   });
 
+  it('accepts a bare (no +86) inbound number against a +86 allowlist', async () => {
+    // The mobile client sends +86, but a direct API caller might send
+    // the bare number. normalizePhone collapses both forms, so the
+    // allowlist matches either — the exact mismatch that rejected real
+    // logins when OTP_TEST_PHONE_ALLOWLIST was configured with bare
+    // digits.
+    const result = await provider.sendCode({
+      phoneNumber: '13800000000',
+      code: '123456',
+      ttlMinutes: 10,
+      requestId: 'req-bare',
+    });
+    expect(result.provider).toBe('internal_test');
+    expect(result.requestId).toBe('req-bare');
+  });
+
   it('rejects a non-allowlisted number with 403 (no blanket bypass)', async () => {
     await expect(
       provider.sendCode({
