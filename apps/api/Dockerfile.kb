@@ -7,7 +7,16 @@ ENV KB_SERVICE_PORT=5010
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
-RUN pip install --no-cache-dir -r requirements.txt
+# Heavy ML deps (sentence-transformers, transformers, scipy, numpy...).
+# Default to the Tsinghua PyPI mirror because this platform deploys on
+# mainland-China servers: pulling these from pypi.org over the GFW
+# crawls at ~17 KB/s and stalls the kb-service image build for *hours*
+# (hit live on a prod deploy — torch above has its own CDN and was
+# fine; this requirements layer was the one that hung). Override for a
+# non-China build:
+#   docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple ...
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt
 
 COPY apps/api/knowledge.py apps/api/knowledge_service.py ./apps/api/
 COPY apps/api/kb_backends ./apps/api/kb_backends

@@ -29,6 +29,13 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile.kb
+      args:
+        # PyPI mirror for the kb image's heavy ML deps (torch above uses
+        # its own CDN). Defaults to the Tsinghua mirror for China
+        # deploys — pypi.org over the GFW crawls at ~17 KB/s and stalls
+        # this build for hours. Set PIP_INDEX_URL in .env to override
+        # for a non-China build.
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     restart: unless-stopped
     env_file:
       - .env
