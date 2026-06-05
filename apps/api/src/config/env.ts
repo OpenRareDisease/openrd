@@ -272,9 +272,13 @@ const validateProductionEnv = (env: AppEnv) => {
     }
   }
   if (env.OTP_PROVIDER === 'tencent') {
-    // Real SMS provider: every credential must be present, otherwise
-    // SendSms fails at runtime — AFTER a code has already been generated
-    // and stored against the per-day cap. Fail fast at boot instead.
+    // Real SMS provider: every credential must be present. Without this
+    // fail-fast a credential-misconfigured prod boots fine, but then
+    // EVERY login runs INSERT → SendSms-fail → ROLLBACK: OtpService holds
+    // the code INSERT in a transaction until the provider accepts (see
+    // otp.service.ts), so the failed send is rolled back — the user
+    // simply never receives a code, silently, per request, forever.
+    // Failing fast at boot surfaces the misconfig loudly instead.
     const missing = (
       [
         ['TENCENT_SECRET_ID', env.TENCENT_SECRET_ID],
