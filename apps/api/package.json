@@ -30,6 +30,7 @@
     "pino": "^9.5.0",
     "pino-http": "^10.3.1",
     "pino-pretty": "^11.3.0",
+    "tencentcloud-sdk-nodejs-sms": "^4.1.240",
     "zod": "^3.24.1"
   },
   "devDependencies": {

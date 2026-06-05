@@ -76,6 +76,18 @@ const envSchema = z
     // active (allowlist non-empty, fixed code matches OTP_CODE_LENGTH).
     OTP_TEST_PHONE_ALLOWLIST: z.string().default(''),
     OTP_TEST_FIXED_CODE: z.string().default(''),
+    // TENCENT SMS (OTP_PROVIDER=tencent) — real SMS delivery via the
+    // Tencent Cloud SendSms API. The five string creds are required when
+    // the provider is active (validated in validateProductionEnv);
+    // region has a sane default. The approved template MUST have exactly
+    // two variables — {1} = code, {2} = TTL minutes — see
+    // TencentOtpProvider, which passes [code, String(ttlMinutes)].
+    TENCENT_SECRET_ID: optionalNonEmptyString(),
+    TENCENT_SECRET_KEY: optionalNonEmptyString(),
+    TENCENT_SMS_SDK_APP_ID: optionalNonEmptyString(),
+    TENCENT_SMS_SIGN_NAME: optionalNonEmptyString(),
+    TENCENT_SMS_TEMPLATE_ID: optionalNonEmptyString(),
+    TENCENT_SMS_REGION: z.string().default('ap-guangzhou'),
     OTP_HASH_SECRET: z.string().min(8).default('change-me-otp-secret'),
     AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(10).default(60),
     AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).default(20),
@@ -257,6 +269,25 @@ const validateProductionEnv = (env: AppEnv) => {
         `OTP_TEST_FIXED_CODE must be exactly ${env.OTP_CODE_LENGTH} digits ` +
           'when OTP_PROVIDER=internal_test',
       );
+    }
+  }
+  if (env.OTP_PROVIDER === 'tencent') {
+    // Real SMS provider: every credential must be present, otherwise
+    // SendSms fails at runtime — AFTER a code has already been generated
+    // and stored against the per-day cap. Fail fast at boot instead.
+    const missing = (
+      [
+        ['TENCENT_SECRET_ID', env.TENCENT_SECRET_ID],
+        ['TENCENT_SECRET_KEY', env.TENCENT_SECRET_KEY],
+        ['TENCENT_SMS_SDK_APP_ID', env.TENCENT_SMS_SDK_APP_ID],
+        ['TENCENT_SMS_SIGN_NAME', env.TENCENT_SMS_SIGN_NAME],
+        ['TENCENT_SMS_TEMPLATE_ID', env.TENCENT_SMS_TEMPLATE_ID],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+    if (missing.length > 0) {
+      errors.push(`OTP_PROVIDER=tencent requires: ${missing.join(', ')}`);
     }
   }
   if (env.CORS_ORIGIN.trim() === '*' || !env.CORS_ORIGIN.trim()) {
