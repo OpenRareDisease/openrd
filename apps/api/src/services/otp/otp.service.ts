@@ -62,11 +62,21 @@ export class OtpService {
     if (provider) {
       this.provider = provider;
     } else if (env.OTP_PROVIDER === 'tencent') {
-      this.provider = new TencentOtpProvider();
-      this.logger.warn(
-        { provider: env.OTP_PROVIDER },
-        'OTP provider not configured, Tencent provider will throw until wired',
+      // Credentials are guaranteed present by validateProductionEnv when
+      // the env is prod-shaped; the `?? ''` only satisfies the type for a
+      // (misused) dev run, where SendSms would then fail at call time.
+      this.provider = new TencentOtpProvider(
+        {
+          secretId: env.TENCENT_SECRET_ID ?? '',
+          secretKey: env.TENCENT_SECRET_KEY ?? '',
+          sdkAppId: env.TENCENT_SMS_SDK_APP_ID ?? '',
+          signName: env.TENCENT_SMS_SIGN_NAME ?? '',
+          templateId: env.TENCENT_SMS_TEMPLATE_ID ?? '',
+          region: env.TENCENT_SMS_REGION,
+        },
+        this.logger,
       );
+      this.logger.info({ provider: env.OTP_PROVIDER }, 'Tencent SMS OTP provider active');
     } else if (env.OTP_PROVIDER === 'internal_test') {
       this.provider = new InternalTestOtpProvider(this.testPhoneAllowlist);
       this.logger.warn(
