@@ -302,6 +302,11 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.textMuted,
     fontSize: 12,
   },
+  previousValueText: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+  },
   input: {
     marginTop: 10,
     minHeight: 48,
