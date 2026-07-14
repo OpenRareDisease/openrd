@@ -677,7 +677,7 @@ const LoginRegisterScreen: React.FC = () => {
                           setLoginForm((prev) => ({ ...prev, password: text }))
                         }
                         secureTextEntry={!isLoginPasswordVisible}
-                        maxLength={20}
+                        maxLength={PASSWORD_MAX_LENGTH}
                       />
                       <TouchableOpacity
                         style={styles.passwordToggleButton}
