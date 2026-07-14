@@ -289,6 +289,9 @@ export default function ReportManagementScreen() {
       setErrorMessage(null);
       const profileData = await getMyPatientProfile();
       setProfile(profileData);
+      // Fresh data on screen — a stale delete-failure banner above a
+      // healthy list would just confuse.
+      setListNotice(null);
     } catch (error) {
       setProfile(null);
       setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载报告管理页。');

@@ -785,12 +785,15 @@ const DataEntryScreen = () => {
           </Text>
           <TextInput
             value={followupForm.stairClimbSeconds}
-            onChangeText={(value) =>
+            onChangeText={(value) => {
               setFollowupForm((prev) => ({
                 ...prev,
                 stairClimbSeconds: sanitizeDecimalText(value),
-              }))
-            }
+              }));
+              // Same contract as the register form (#71): an armed
+              // error clears as soon as the user edits the field.
+              setFollowupFieldErrors((prev) => ({ ...prev, stairClimb: undefined }));
+            }}
             placeholder="例如 18.5"
             placeholderTextColor={CLINICAL_COLORS.textMuted}
             keyboardType="decimal-pad"
@@ -812,9 +815,10 @@ const DataEntryScreen = () => {
             ))}
           </View>
         </View>
-        {renderSleepScorePicker(followupForm.sleepScore, (value) =>
-          setFollowupForm((prev) => ({ ...prev, sleepScore: value })),
-        )}
+        {renderSleepScorePicker(followupForm.sleepScore, (value) => {
+          setFollowupForm((prev) => ({ ...prev, sleepScore: value }));
+          setFollowupFieldErrors((prev) => ({ ...prev, sleep: undefined }));
+        })}
         {followupFieldErrors.sleep ? (
           <Text style={styles.fieldErrorText}>{followupFieldErrors.sleep}</Text>
         ) : null}
@@ -828,12 +832,13 @@ const DataEntryScreen = () => {
           </Text>
           <TextInput
             value={followupForm.fallCount}
-            onChangeText={(value) =>
+            onChangeText={(value) => {
               setFollowupForm((prev) => ({
                 ...prev,
                 fallCount: sanitizeIntegerText(value),
-              }))
-            }
+              }));
+              setFollowupFieldErrors((prev) => ({ ...prev, fall: undefined }));
+            }}
             placeholder="0"
             placeholderTextColor={CLINICAL_COLORS.textMuted}
             keyboardType="number-pad"
