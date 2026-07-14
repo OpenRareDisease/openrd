@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -52,6 +53,17 @@ import {
   fromAmbulationChoice,
   mergeAssistiveDevices,
 } from '../../lib/profile-baseline-options';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  type LoginErrors,
+  type LoginField,
+  type RegisterErrors,
+  type RegisterField,
+  firstRegisterError,
+  validateLoginForm,
+  validateRegisterForm,
+} from '../../lib/validation';
 import ScreenBackButton from '../common/ScreenBackButton';
 
 interface LoginFormData {
@@ -137,6 +149,14 @@ const LoginRegisterScreen: React.FC = () => {
     type: 'error',
   });
 
+  // Inline form errors. `liveXxxErrors` recomputes against the current
+  // values on every render (cheap pure functions); `xxxErrors` marks the
+  // fields "armed" by a submit attempt. A message renders only while a
+  // field is both armed AND still failing, so fixing the input clears
+  // its error without per-field onChange bookkeeping.
+  const [loginErrors, setLoginErrors] = useState<LoginErrors>({});
+  const [registerErrors, setRegisterErrors] = useState<RegisterErrors>({});
+
   // 动画值
   const logoTranslateY = useSharedValue(0);
 
@@ -146,6 +166,50 @@ const LoginRegisterScreen: React.FC = () => {
   // keeps tsc happy in both environments without committing to either
   // (which would break the other platform's lib types).
   const countdownInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const scrollViewRef = useRef<ScrollView>(null);
+  // Y offsets for scroll-to-first-error. Each onLayout `y` is relative
+  // to the immediate parent, so a field's absolute scroll position is
+  // mainContent.y + formContainer.y + field.y.
+  const sectionYRef = useRef({ main: 0, form: 0 });
+  const registerFieldYRef = useRef<Partial<Record<RegisterField, number>>>({});
+
+  const liveLoginErrors = useMemo(() => validateLoginForm(loginForm), [loginForm]);
+  const liveRegisterErrors = useMemo(
+    () =>
+      validateRegisterForm({
+        ...registerForm,
+        dateOfBirth: composeDate(birthDateDraft.year, birthDateDraft.month, birthDateDraft.day),
+      }),
+    [registerForm, birthDateDraft],
+  );
+
+  const visibleLoginError = (field: LoginField) =>
+    loginErrors[field] ? liveLoginErrors[field] : undefined;
+  const visibleRegisterError = (field: RegisterField) =>
+    registerErrors[field] ? liveRegisterErrors[field] : undefined;
+
+  const renderLoginError = (field: LoginField) => {
+    const message = visibleLoginError(field);
+    return message ? <Text style={styles.fieldErrorText}>{message}</Text> : null;
+  };
+  const renderRegisterError = (field: RegisterField) => {
+    const message = visibleRegisterError(field);
+    return message ? <Text style={styles.fieldErrorText}>{message}</Text> : null;
+  };
+
+  const captureRegisterFieldY = (field: RegisterField) => (event: LayoutChangeEvent) => {
+    registerFieldYRef.current[field] = event.nativeEvent.layout.y;
+  };
+
+  const scrollToRegisterField = (field: RegisterField | null) => {
+    if (!field) {
+      return;
+    }
+    const fieldY = registerFieldYRef.current[field] ?? 0;
+    const y = sectionYRef.current.main + sectionYRef.current.form + fieldY;
+    scrollViewRef.current?.scrollTo({ y: Math.max(y - 12, 0), animated: true });
+  };
 
   // 启动logo浮动动画
   React.useEffect(() => {
@@ -166,16 +230,6 @@ const LoginRegisterScreen: React.FC = () => {
     };
   });
 
-  // 表单验证函数
-  const validatePhone = (phone: string): boolean => {
-    const phoneRegex = /^1[3-9]\d{9}$/;
-    return phoneRegex.test(phone);
-  };
-
-  const validatePassword = (password: string): boolean => {
-    return password.length >= 8 && password.length <= 20;
-  };
-
   const formatPhoneNumber = (phone: string) => {
     if (!phone) {
       return '';
@@ -185,13 +239,6 @@ const LoginRegisterScreen: React.FC = () => {
       return trimmed;
     }
     return `+86${trimmed}`;
-  };
-
-  const isValidDate = (value: string): boolean => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      return false;
-    }
-    return !Number.isNaN(Date.parse(value));
   };
 
   // 显示弹窗
@@ -237,13 +284,12 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 获取验证码
   const handleGetVerificationCode = async () => {
-    if (!registerForm.phone) {
-      showModal('error', '错误', '请先输入手机号');
-      return;
-    }
-
-    if (!validatePhone(registerForm.phone)) {
-      showModal('error', '错误', '请输入正确的手机号');
+    // Only arm the phone field — the user may not have touched the
+    // rest of the form yet, so a full-form error sweep here would
+    // paint every empty field red. The button sits next to the phone
+    // input, so no scroll is needed.
+    if (liveRegisterErrors.phone) {
+      setRegisterErrors((prev) => ({ ...prev, phone: liveRegisterErrors.phone }));
       return;
     }
 
@@ -290,20 +336,11 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 登录提交
   const handleLoginSubmit = async () => {
-    if (!loginForm.phone) {
-      showModal('error', '错误', '请输入手机号');
+    if (Object.keys(liveLoginErrors).length > 0) {
+      setLoginErrors(liveLoginErrors);
       return;
     }
-
-    if (!validatePhone(loginForm.phone)) {
-      showModal('error', '错误', '请输入正确的手机号');
-      return;
-    }
-
-    if (!loginForm.password) {
-      showModal('error', '错误', '请输入密码');
-      return;
-    }
+    setLoginErrors({});
 
     setIsLoading(true);
 
@@ -337,88 +374,14 @@ const LoginRegisterScreen: React.FC = () => {
       birthDateDraft.day,
     );
 
-    if (!registerForm.identity) {
-      showModal('error', '错误', '请选择身份');
+    // Surface EVERY failing field inline at once (no more one
+    // blocking modal per issue), and bring the first one into view.
+    if (Object.keys(liveRegisterErrors).length > 0) {
+      setRegisterErrors(liveRegisterErrors);
+      scrollToRegisterField(firstRegisterError(liveRegisterErrors));
       return;
     }
-
-    if (!registerForm.fullName.trim()) {
-      showModal('error', '错误', '请输入姓名');
-      return;
-    }
-
-    if (!selectedDateOfBirth) {
-      showModal('error', '错误', '请选择出生日期');
-      return;
-    }
-
-    if (!isValidDate(selectedDateOfBirth)) {
-      showModal('error', '错误', '请选择完整有效的出生日期');
-      return;
-    }
-
-    if (!registerForm.gender) {
-      showModal('error', '错误', '请选择性别');
-      return;
-    }
-
-    if (!registerForm.phone) {
-      showModal('error', '错误', '请输入手机号');
-      return;
-    }
-
-    if (!validatePhone(registerForm.phone)) {
-      showModal('error', '错误', '请输入正确的手机号');
-      return;
-    }
-
-    if (!registerForm.code) {
-      showModal('error', '错误', '请输入验证码');
-      return;
-    }
-
-    if (!registerForm.password) {
-      showModal('error', '错误', '请设置密码');
-      return;
-    }
-
-    if (!validatePassword(registerForm.password)) {
-      showModal('error', '错误', '密码长度应为8-20位');
-      return;
-    }
-
-    if (registerForm.password !== registerForm.confirmPassword) {
-      showModal('error', '错误', '两次输入的密码不一致');
-      return;
-    }
-
-    if (!registerForm.regionProvince.trim()) {
-      showModal('error', '错误', '请选择所在省份');
-      return;
-    }
-
-    if (!registerForm.regionCity.trim()) {
-      showModal('error', '错误', '请选择所在城市');
-      return;
-    }
-
-    if (!registerForm.regionDistrict.trim()) {
-      showModal('error', '错误', '请选择所在区县');
-      return;
-    }
-
-    if (
-      registerForm.contactEmail.trim() &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.contactEmail.trim())
-    ) {
-      showModal('error', '错误', '请输入正确的邮箱格式');
-      return;
-    }
-
-    if (registerForm.diagnosisYear.trim() && !/^\d{4}$/.test(registerForm.diagnosisYear.trim())) {
-      showModal('error', '错误', '确诊年份请填写 4 位年份');
-      return;
-    }
+    setRegisterErrors({});
 
     setIsLoading(true);
 
@@ -618,6 +581,7 @@ const LoginRegisterScreen: React.FC = () => {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
           <ScrollView
+            ref={scrollViewRef}
             style={styles.scrollView}
             contentContainerStyle={styles.scrollViewContent}
             keyboardShouldPersistTaps="handled"
@@ -640,7 +604,12 @@ const LoginRegisterScreen: React.FC = () => {
             </View>
 
             {/* 登录注册表单 */}
-            <View style={styles.mainContent}>
+            <View
+              style={styles.mainContent}
+              onLayout={(event) => {
+                sectionYRef.current.main = event.nativeEvent.layout.y;
+              }}
+            >
               {/* 切换标签 */}
               <View style={styles.tabSwitcher}>
                 <TouchableOpacity
@@ -693,6 +662,7 @@ const LoginRegisterScreen: React.FC = () => {
                       keyboardType="phone-pad"
                       maxLength={11}
                     />
+                    {renderLoginError('phone')}
                   </View>
 
                   <View style={styles.inputContainer}>
@@ -720,6 +690,7 @@ const LoginRegisterScreen: React.FC = () => {
                         />
                       </TouchableOpacity>
                     </View>
+                    {renderLoginError('password')}
                   </View>
 
                   <TouchableOpacity
@@ -743,8 +714,13 @@ const LoginRegisterScreen: React.FC = () => {
 
               {/* 注册表单 */}
               {activeTab === 'register' && (
-                <View style={styles.formContainer}>
-                  <View style={styles.inputContainer}>
+                <View
+                  style={styles.formContainer}
+                  onLayout={(event) => {
+                    sectionYRef.current.form = event.nativeEvent.layout.y;
+                  }}
+                >
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('identity')}>
                     <Text style={styles.inputLabel}>身份选择</Text>
                     <View style={styles.identityRow}>
                       {[
@@ -776,10 +752,11 @@ const LoginRegisterScreen: React.FC = () => {
                         );
                       })}
                     </View>
+                    {renderRegisterError('identity')}
                   </View>
 
                   <Text style={styles.registerSectionTitle}>基本信息</Text>
-                  <View style={styles.inputContainer}>
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('fullName')}>
                     <Text style={styles.inputLabel}>姓名</Text>
                     <TextInput
                       style={styles.textInput}
@@ -790,8 +767,12 @@ const LoginRegisterScreen: React.FC = () => {
                         setRegisterForm((prev) => ({ ...prev, fullName: text }))
                       }
                     />
+                    {renderRegisterError('fullName')}
                   </View>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('dateOfBirth')}
+                  >
                     <Text style={styles.inputLabel}>出生日期</Text>
                     <View style={styles.pickerRow}>
                       <View style={[styles.pickerWrapper, styles.pickerColumn]}>
@@ -843,8 +824,9 @@ const LoginRegisterScreen: React.FC = () => {
                         </Picker>
                       </View>
                     </View>
+                    {renderRegisterError('dateOfBirth')}
                   </View>
-                  <View style={styles.inputContainer}>
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('gender')}>
                     <Text style={styles.inputLabel}>性别</Text>
                     <View style={styles.identityRow}>
                       {genderOptions.map((option) => {
@@ -875,7 +857,10 @@ const LoginRegisterScreen: React.FC = () => {
                   </View>
 
                   <Text style={styles.registerSectionTitle}>基础建档</Text>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('diagnosisYear')}
+                  >
                     <Text style={styles.inputLabel}>确诊年份（可选）</Text>
                     <TextInput
                       style={styles.textInput}
@@ -891,6 +876,7 @@ const LoginRegisterScreen: React.FC = () => {
                       keyboardType="number-pad"
                       maxLength={4}
                     />
+                    {renderRegisterError('diagnosisYear')}
                     <Text style={styles.fieldHintText}>
                       如果还没有上传报告，也可以在下面先补充分型、首发部位和家族史。
                     </Text>
@@ -998,7 +984,7 @@ const LoginRegisterScreen: React.FC = () => {
                   </View>
 
                   <Text style={styles.registerSectionTitle}>账号信息</Text>
-                  <View style={styles.inputContainer}>
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('phone')}>
                     <Text style={styles.inputLabel}>手机号</Text>
                     <TextInput
                       style={styles.textInput}
@@ -1009,9 +995,10 @@ const LoginRegisterScreen: React.FC = () => {
                       keyboardType="phone-pad"
                       maxLength={11}
                     />
+                    {renderRegisterError('phone')}
                   </View>
 
-                  <View style={styles.inputContainer}>
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('code')}>
                     <Text style={styles.inputLabel}>验证码</Text>
                     <View style={styles.verificationCodeWrapper}>
                       <TextInput
@@ -1038,21 +1025,22 @@ const LoginRegisterScreen: React.FC = () => {
                         </Text>
                       </TouchableOpacity>
                     </View>
+                    {renderRegisterError('code')}
                   </View>
 
-                  <View style={styles.inputContainer}>
+                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('password')}>
                     <Text style={styles.inputLabel}>设置密码</Text>
                     <View style={styles.passwordInputWrapper}>
                       <TextInput
                         style={styles.passwordInput}
-                        placeholder="请设置6-20位密码"
+                        placeholder={`请设置${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位密码`}
                         placeholderTextColor={CLINICAL_COLORS.textMuted}
                         value={registerForm.password}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, password: text }))
                         }
                         secureTextEntry={!isRegisterPasswordVisible}
-                        maxLength={20}
+                        maxLength={PASSWORD_MAX_LENGTH}
                       />
                       <TouchableOpacity
                         style={styles.passwordToggleButton}
@@ -1065,9 +1053,13 @@ const LoginRegisterScreen: React.FC = () => {
                         />
                       </TouchableOpacity>
                     </View>
+                    {renderRegisterError('password')}
                   </View>
 
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('confirmPassword')}
+                  >
                     <Text style={styles.inputLabel}>确认密码</Text>
                     <View style={styles.passwordInputWrapper}>
                       <TextInput
@@ -1079,7 +1071,7 @@ const LoginRegisterScreen: React.FC = () => {
                           setRegisterForm((prev) => ({ ...prev, confirmPassword: text }))
                         }
                         secureTextEntry={!isConfirmPasswordVisible}
-                        maxLength={20}
+                        maxLength={PASSWORD_MAX_LENGTH}
                       />
                       <TouchableOpacity
                         style={styles.passwordToggleButton}
@@ -1092,10 +1084,14 @@ const LoginRegisterScreen: React.FC = () => {
                         />
                       </TouchableOpacity>
                     </View>
+                    {renderRegisterError('confirmPassword')}
                   </View>
 
                   <Text style={styles.registerSectionTitle}>联系方式</Text>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('contactEmail')}
+                  >
                     <Text style={styles.inputLabel}>邮箱（可选）</Text>
                     <TextInput
                       style={styles.textInput}
@@ -1107,10 +1103,14 @@ const LoginRegisterScreen: React.FC = () => {
                         setRegisterForm((prev) => ({ ...prev, contactEmail: text }))
                       }
                     />
+                    {renderRegisterError('contactEmail')}
                   </View>
 
                   <Text style={styles.registerSectionTitle}>所在地区</Text>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('regionProvince')}
+                  >
                     <Text style={styles.inputLabel}>省份</Text>
                     <View style={styles.pickerWrapper}>
                       <Picker
@@ -1128,8 +1128,12 @@ const LoginRegisterScreen: React.FC = () => {
                         ))}
                       </Picker>
                     </View>
+                    {renderRegisterError('regionProvince')}
                   </View>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('regionCity')}
+                  >
                     <Text style={styles.inputLabel}>城市</Text>
                     <View style={styles.pickerWrapper}>
                       <Picker
@@ -1148,8 +1152,12 @@ const LoginRegisterScreen: React.FC = () => {
                         ))}
                       </Picker>
                     </View>
+                    {renderRegisterError('regionCity')}
                   </View>
-                  <View style={styles.inputContainer}>
+                  <View
+                    style={styles.inputContainer}
+                    onLayout={captureRegisterFieldY('regionDistrict')}
+                  >
                     <Text style={styles.inputLabel}>区县</Text>
                     <View style={styles.pickerWrapper}>
                       <Picker
@@ -1170,6 +1178,7 @@ const LoginRegisterScreen: React.FC = () => {
                         ))}
                       </Picker>
                     </View>
+                    {renderRegisterError('regionDistrict')}
                   </View>
 
                   <TouchableOpacity
