@@ -335,15 +335,12 @@ const PrivacySettingsScreen = () => {
       };
     }
 
-    const grantedAtRaw = sharingPrefs?.timestamps.dataDonationAt;
-    const grantedAtDate = grantedAtRaw ? new Date(grantedAtRaw) : null;
     return {
       status: '已授权',
       statusColor: CLINICAL_COLORS.success,
-      grantedAt:
-        grantedAtDate && !Number.isNaN(grantedAtDate.getTime())
-          ? grantedAtDate.toLocaleDateString()
-          : '—',
+      // Same YYYY-MM-DD formatter the AI-consent rows use, so the
+      // screen doesn't mix date formats.
+      grantedAt: formatGrantDate(sharingPrefs?.timestamps.dataDonationAt ?? null) ?? '—',
       shareableRecords: shareableCount === null ? '—' : `${shareableCount} 条`,
     };
   };
