@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
-import { PatientProfileController } from './profile.controller.js';
+import { OCR_STUCK_AFTER_MINUTES, PatientProfileController } from './profile.controller.js';
 import { PatientProfileService } from './profile.service.js';
 import { getPool } from '../../db/pool.js';
 import { requireAuth } from '../../middleware/require-auth.js';
@@ -69,7 +69,25 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     storage,
     ocr,
     aiClient ? { client: aiClient, model: context.env.AI_API_MODEL } : undefined,
+    context.logger,
   );
+
+  // Async-OCR recovery sweep: rows stuck in 'processing' belong to
+  // jobs that died with a previous process (no persistent queue by
+  // design). Run once at router construction — i.e. server startup.
+  void service
+    .sweepStuckProcessingDocuments(OCR_STUCK_AFTER_MINUTES)
+    .then((swept) => {
+      if (swept > 0) {
+        context.logger.warn(
+          { swept },
+          'Marked stuck processing documents as parse_failed (recoverable via reparse)',
+        );
+      }
+    })
+    .catch((error) => {
+      context.logger.error({ error }, 'Stuck-processing sweep failed');
+    });
   const authMiddleware = requireAuth(context.env, context.logger);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -113,6 +131,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.delete('/me/documents/:id', asyncHandler(controller.deleteDocument));
   router.get('/me/documents/:id', asyncHandler(controller.getDocumentFile));
   router.get('/me/documents/:id/ocr', asyncHandler(controller.getDocumentOcr));
+  router.post('/me/documents/:id/reparse', asyncHandler(controller.reparseDocument));
   router.post('/me/documents/:id/summary', asyncHandler(controller.generateDocumentSummary));
   router.post('/me/submissions', asyncHandler(controller.createSubmission));
   router.get('/me/submissions', asyncHandler(controller.listSubmissions));

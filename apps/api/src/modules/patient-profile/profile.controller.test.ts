@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { DOCUMENT_TYPES } from './profile.constants.js';
@@ -45,6 +46,9 @@ const buildDeps = (
       serviceOverrides.assertCallerCanWriteSubmission ?? vi.fn().mockResolvedValue(undefined),
     addUploadedDocument:
       serviceOverrides.addUploadedDocument ?? vi.fn().mockResolvedValue({ id: 'doc-1' }),
+    // The async pipeline lands the parse result via this dedicated
+    // write-path once the background job settles.
+    updateDocumentOcrResult: vi.fn().mockResolvedValue({ id: 'doc-1', status: 'parsed' }),
   } as unknown as PatientProfileService;
   const storage = {
     save: vi.fn().mockResolvedValue({
@@ -212,10 +216,22 @@ describe('PatientProfileController.uploadDocument — status mapping vs DB CHECK
 
       await controller.uploadDocument(req, fakeRes());
 
+      // Async pipeline: the INSERT is always 'processing'; the final
+      // status lands via updateDocumentOcrResult once the background
+      // job settles (tracked in inFlightOcrJobs for exactly this).
       const addCall = (service.addUploadedDocument as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(addCall.status).toBe(expected);
+      expect(addCall.status).toBe('processing');
+      expect(addCall.ocrPayload).toBeNull();
+
+      await controller.inFlightOcrJobs.get('doc-1');
+
+      const updateCall = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock
+        .calls[0];
+      expect(updateCall[2].status).toBe(expected);
       // Hard guard against status drift versus the migration vocabulary.
-      expect(ALLOWED_BY_MIGRATION_011.has(addCall.status)).toBe(true);
+      expect(ALLOWED_BY_MIGRATION_011.has(updateCall[2].status)).toBe(true);
+      // The job removes itself from the in-flight map on settle.
+      expect(controller.inFlightOcrJobs.has('doc-1')).toBe(false);
     });
   }
 });
@@ -290,10 +306,13 @@ describe('PatientProfileController.uploadDocument — document_type canonicalisa
       } as unknown as AuthenticatedRequest;
 
       await controller.uploadDocument(req, fakeRes());
+      // The canonical type is resolved AFTER the background parse.
+      await controller.inFlightOcrJobs.get('doc-1');
 
-      const addCall = (service.addUploadedDocument as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(addCall.documentType).toBe(expected);
-      expect(ALLOWED_BY_MIGRATION_012.has(addCall.documentType)).toBe(true);
+      const updateCall = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock
+        .calls[0];
+      expect(updateCall[2].documentType).toBe(expected);
+      expect(ALLOWED_BY_MIGRATION_012.has(updateCall[2].documentType)).toBe(true);
     });
   }
 
@@ -695,5 +714,125 @@ describe('PatientProfileController.deleteDocument — service receives audit met
       ip: '127.0.0.1',
       userAgent: 'TestAgent/1.0',
     });
+  });
+});
+
+/**
+ * POST /me/documents/:id/reparse — the recovery path for failed or
+ * lost parses. State-gated so it can't double-parse or reparse a
+ * perfectly good document.
+ */
+describe('PatientProfileController.reparseDocument', () => {
+  const buildReparseDeps = (documentStatus: string, uploadedAt = new Date()) => {
+    const service = {
+      getDocumentForUser: vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'other',
+        status: documentStatus,
+        title: '肌肉MRI',
+        storage_uri: 'local://uploads/x/scan.pdf',
+        file_name: 'scan.pdf',
+        mime_type: 'application/pdf',
+        ocr_payload: null,
+        uploaded_at: uploadedAt,
+      }),
+      updateDocumentOcrResult: vi.fn().mockResolvedValue({ id: 'doc-1', status: 'processing' }),
+    } as unknown as PatientProfileService;
+    const storage = {
+      save: vi.fn(),
+      load: vi.fn().mockResolvedValue({
+        stream: Readable.from([Buffer.from('%PDF-fake')]),
+        fileName: 'scan.pdf',
+        mimeType: 'application/pdf',
+      }),
+      remove: vi.fn(),
+      canHandle: vi.fn(),
+    } as unknown as StorageProvider;
+    const ocr = {
+      parse: vi
+        .fn()
+        .mockResolvedValue({ provider: 'paddle', fields: { analysisStatus: 'completed' } }),
+    } as unknown as OcrProvider;
+    return { service, storage, ocr };
+  };
+
+  const reparseReq = () =>
+    ({
+      user: { id: 'user-1' },
+      params: { id: 'doc-1' },
+    }) as unknown as AuthenticatedRequest;
+
+  it('parse_failed → 202, row flipped to processing, background job lands the result', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parse_failed');
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(202);
+    // First update: back to processing with the payload cleared.
+    const firstUpdate = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(firstUpdate[2]).toEqual({ status: 'processing', ocrPayload: null });
+
+    await controller.inFlightOcrJobs.get('doc-1');
+
+    // Second update: the fresh parse result (buffer came from
+    // storage.load's stream).
+    expect(ocr.parse).toHaveBeenCalledWith(
+      expect.objectContaining({ buffer: Buffer.from('%PDF-fake') }),
+    );
+    const secondUpdate = (service.updateDocumentOcrResult as ReturnType<typeof vi.fn>).mock
+      .calls[1];
+    expect(secondUpdate[2].status).toBe('parsed');
+  });
+
+  it('legacy uploaded rows are eligible too', async () => {
+    const { service, storage, ocr } = buildReparseDeps('uploaded');
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+  });
+
+  it('fresh processing → 409 (its job may still be running elsewhere)', async () => {
+    const { service, storage, ocr } = buildReparseDeps('processing', new Date());
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await expect(controller.reparseDocument(reparseReq(), fakeRes())).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(storage.load).not.toHaveBeenCalled();
+  });
+
+  it('stuck processing (older than the threshold) IS eligible', async () => {
+    const stale = new Date(Date.now() - 11 * 60 * 1000);
+    const { service, storage, ocr } = buildReparseDeps('processing', stale);
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+    expect(res.status).toHaveBeenCalledWith(202);
+  });
+
+  it('parsed → 409 (nothing to recover, source file unchanged)', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parsed');
+    const controller = new PatientProfileController(service, storage, ocr);
+
+    await expect(controller.reparseDocument(reparseReq(), fakeRes())).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it('an in-flight job for the same document → 409, no duplicate parse', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parse_failed');
+    const controller = new PatientProfileController(service, storage, ocr);
+    controller.inFlightOcrJobs.set('doc-1', Promise.resolve());
+
+    await expect(controller.reparseDocument(reparseReq(), fakeRes())).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(storage.load).not.toHaveBeenCalled();
+    controller.inFlightOcrJobs.delete('doc-1');
   });
 });

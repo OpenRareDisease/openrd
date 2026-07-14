@@ -1220,7 +1220,8 @@ export class PatientProfileService {
 
   async getDocumentForUser(userId: string, documentId: string) {
     const result = await this.pool.query(
-      `SELECT d.id, d.document_type, d.storage_uri, d.file_name, d.mime_type, d.ocr_payload
+      `SELECT d.id, d.document_type, d.status, d.title, d.storage_uri,
+              d.file_name, d.mime_type, d.ocr_payload, d.uploaded_at
        FROM patient_documents d
        JOIN patient_profiles p ON p.id = d.profile_id
        WHERE p.user_id = $1 AND d.id = $2`,
@@ -1234,11 +1235,72 @@ export class PatientProfileService {
     return result.rows[0] as {
       id: string;
       document_type: string;
+      status: string | null;
+      title: string | null;
       storage_uri: string;
       file_name: string | null;
       mime_type: string | null;
       ocr_payload: unknown | null;
+      uploaded_at: Date | string;
     };
+  }
+
+  /**
+   * Land a finished (or failed) OCR run on its document row. Unlike
+   * `updateDocumentOcrPayloadForUser`, this is the dedicated
+   * write-path for the async parse pipeline, so it also moves
+   * `status` and — when the parse classified the document — the
+   * canonical `document_type` (callers pass a value that already went
+   * through `canonicalizeDocumentType` via
+   * `resolveDocumentTypeFromPayload`).
+   */
+  async updateDocumentOcrResult(
+    userId: string,
+    documentId: string,
+    input: { status: string; ocrPayload: unknown | null; documentType?: string | null },
+  ) {
+    const result = await this.pool.query(
+      `UPDATE patient_documents d
+       SET status = $3,
+           ocr_payload = $4,
+           document_type = COALESCE($5, d.document_type)
+       FROM patient_profiles p
+       WHERE d.profile_id = p.id
+         AND p.user_id = $1
+         AND d.id = $2
+       RETURNING d.id, d.status`,
+      [userId, documentId, input.status, input.ocrPayload, input.documentType ?? null],
+    );
+
+    if (!result.rowCount) {
+      throw new AppError('Document not found', 404);
+    }
+
+    return result.rows[0] as { id: string; status: string };
+  }
+
+  /**
+   * Startup sweep for the async OCR pipeline: rows stuck in
+   * 'processing' longer than `olderThanMinutes` belong to a job that
+   * died with the previous process (there is no persistent queue by
+   * design — see the controller's runOcrJob). Flip them to
+   * parse_failed so the mobile detail screen offers「重新识别」instead
+   * of spinning forever.
+   */
+  async sweepStuckProcessingDocuments(olderThanMinutes: number): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE patient_documents
+       SET status = 'parse_failed',
+           ocr_payload = jsonb_build_object(
+             'provider', 'unknown',
+             'error', 'OCR job lost to a server restart'
+           )
+       WHERE status = 'processing'
+         AND uploaded_at < NOW() - ($1 || ' minutes')::interval`,
+      [olderThanMinutes],
+    );
+
+    return result.rowCount ?? 0;
   }
 
   async deleteDocumentForUser(
