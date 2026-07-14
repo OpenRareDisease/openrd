@@ -27,7 +27,22 @@ export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost
 export class ApiError extends Error {
   status?: number;
   data?: unknown;
+  /** Set for transport-level failures (no HTTP response): 'network'
+   *  for fetch TypeErrors (offline, DNS, connection reset), 'timeout'
+   *  when the request exceeded its deadline. */
+  code?: 'network' | 'timeout';
 }
+
+export const NETWORK_ERROR_MESSAGE = '网络连接不稳定，请检查网络后重试';
+export const TIMEOUT_ERROR_MESSAGE = '请求超时，请检查网络后重试';
+
+// Deadlines: most JSON endpoints answer in well under a second, so
+// 15s only trips on a genuinely stuck connection. Uploads and
+// LLM-backed endpoints legitimately take longer.
+const DEFAULT_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 60_000;
+const SLOW_ENDPOINT_TIMEOUT_MS = 60_000;
+const NETWORK_RETRY_DELAY_MS = 300;
 
 /**
  * Callback the AuthProvider registers so apiRequest can fire a single
@@ -94,17 +109,69 @@ export const getAuthToken = async () => {
   return getSessionValue(AUTH_TOKEN_STORAGE_KEY);
 };
 
+/** One fetch attempt with a hard deadline. Transport failures are
+ *  wrapped into ApiError with a `code` + a human-readable message so
+ *  every screen's `error instanceof ApiError ? error.message : …`
+ *  fallback automatically shows something actionable instead of a raw
+ *  TypeError("Network request failed"). */
+const performFetch = async (
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') {
+      const timeoutError = new ApiError(TIMEOUT_ERROR_MESSAGE);
+      timeoutError.code = 'timeout';
+      throw timeoutError;
+    }
+    const networkError = new ApiError(NETWORK_ERROR_MESSAGE);
+    networkError.code = 'network';
+    throw networkError;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export const apiRequest = async <T = unknown>(
   path: string,
   options: RequestInit = {},
   config?: {
     isFormData?: boolean;
+    /** Per-call deadline override for legitimately slow endpoints
+     *  (LLM-backed generation). */
+    timeoutMs?: number;
   },
 ): Promise<T> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const url = `${API_BASE_URL}${path}`;
+  const method = (options.method ?? 'GET').toUpperCase();
+  const timeoutMs =
+    config?.timeoutMs ?? (config?.isFormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const init: RequestInit = {
     ...options,
     headers: await buildHeaders(options.headers, config),
-  });
+  };
+
+  let response: Response;
+  try {
+    response = await performFetch(url, init, timeoutMs);
+  } catch (error) {
+    // GETs are idempotent — one silent retry absorbs the transient
+    // blips (radio wake-up, network hand-off) that dominate mobile
+    // failures. Mutations are NEVER retried: a timed-out POST may
+    // have committed server-side, and retrying would duplicate it.
+    const isTransport =
+      error instanceof ApiError && (error.code === 'network' || error.code === 'timeout');
+    if (method !== 'GET' || !isTransport) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
+    response = await performFetch(url, init, timeoutMs);
+  }
 
   const isJson = response.headers.get('content-type')?.includes('application/json');
   const payload = isJson ? await response.json() : null;
@@ -731,10 +798,16 @@ export interface AiAskProgressResponse {
 }
 
 export const askAiQuestion = (question: string, progressId?: string) =>
-  apiRequest<AiAskResponse>('/ai/ask', {
-    method: 'POST',
-    body: JSON.stringify({ question, progressId }),
-  });
+  apiRequest<AiAskResponse>(
+    '/ai/ask',
+    {
+      method: 'POST',
+      body: JSON.stringify({ question, progressId }),
+    },
+    // LLM-backed: planner + retrieval + final answer legitimately
+    // exceed the default deadline.
+    { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
+  );
 
 /** One frame of the orchestrator's SSE stream. Mirrors the backend
  *  `OrchestratorEvent` union in `apps/api/src/modules/ai-agents/
@@ -1034,6 +1107,9 @@ export const generatePatientDocumentSummary = (documentId: string) =>
   apiRequest<{ documentId: string; summary: string }>(
     `/profiles/me/documents/${encodeURIComponent(documentId)}/summary`,
     { method: 'POST' },
+    // LLM-backed summary generation routinely runs past the default
+    // deadline; give it the slow-endpoint budget.
+    { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
   );
 
 export interface AuthResponse {
