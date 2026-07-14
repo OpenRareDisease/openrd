@@ -60,6 +60,34 @@ describe('apiRequest transport hardening', () => {
     });
   });
 
+  it('actually fires the deadline: a hung request aborts after the timeout elapses', async () => {
+    jest.useFakeTimers();
+    try {
+      // A fetch that never resolves on its own — it only rejects when
+      // the AbortSignal we were handed fires. If apiRequest forgot to
+      // arm the timer, this test would hang (and fail on timeout).
+      fetchMock.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            (init.signal as AbortSignal).addEventListener('abort', () => {
+              reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+            });
+          }),
+      );
+
+      const pending = apiRequest('/hung', { method: 'POST' });
+      // Attach the rejection expectation BEFORE advancing time so the
+      // rejection is never unhandled. The async advance interleaves
+      // microtasks, letting apiRequest's awaits (header build) run to
+      // the point where the deadline timer is actually armed.
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'timeout' });
+      await jest.advanceTimersByTimeAsync(15_001);
+      await assertion;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('passes an AbortSignal to fetch so the deadline is enforceable', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await apiRequest('/healthz');

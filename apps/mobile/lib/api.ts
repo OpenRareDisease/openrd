@@ -41,7 +41,7 @@ export const TIMEOUT_ERROR_MESSAGE = '请求超时，请检查网络后重试';
 // LLM-backed endpoints legitimately take longer.
 const DEFAULT_TIMEOUT_MS = 15_000;
 const UPLOAD_TIMEOUT_MS = 60_000;
-export const SLOW_ENDPOINT_TIMEOUT_MS = 60_000;
+const SLOW_ENDPOINT_TIMEOUT_MS = 60_000;
 const NETWORK_RETRY_DELAY_MS = 300;
 
 /**
