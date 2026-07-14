@@ -20,6 +20,7 @@ import {
   type PatientProfile,
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import InlineNotice from '../common/feedback/InlineNotice';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from '../p-archive/styles';
 
@@ -270,6 +271,9 @@ export default function ReportManagementScreen() {
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [activeReportCategory, setActiveReportCategory] = useState<'全部' | ReportCategory>('全部');
   const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
+  // Recoverable failures (e.g. delete) render inline instead of a
+  // blocking Alert — three-way feedback split, see InlineNotice.
+  const [listNotice, setListNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -285,6 +289,9 @@ export default function ReportManagementScreen() {
       setErrorMessage(null);
       const profileData = await getMyPatientProfile();
       setProfile(profileData);
+      // Fresh data on screen — a stale delete-failure banner above a
+      // healthy list would just confuse.
+      setListNotice(null);
     } catch (error) {
       setProfile(null);
       setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载报告管理页。');
@@ -352,11 +359,12 @@ export default function ReportManagementScreen() {
   const runDeleteReport = async (documentId: string) => {
     try {
       setDeletingReportId(documentId);
+      setListNotice(null);
       await deletePatientDocument(documentId);
       await loadData(true);
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';
-      Alert.alert('删除失败', message);
+      setListNotice(`删除失败：${message}`);
     } finally {
       setDeletingReportId(null);
     }
@@ -403,6 +411,7 @@ export default function ReportManagementScreen() {
                 <Text style={styles.pageTitle}>报告管理</Text>
               </View>
             </View>
+            {listNotice ? <InlineNotice message={listNotice} /> : null}
             <View style={styles.headerActions}>
               <TouchableOpacity
                 style={styles.outlineButton}
