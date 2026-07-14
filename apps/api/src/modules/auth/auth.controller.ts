@@ -51,6 +51,10 @@ export class AuthController {
       requestId: result.requestId,
       sentTo: result.sentTo,
       provider: result.provider,
+      // Drive the client's resend countdown from the server's actual
+      // OTP_RESEND_INTERVAL_SECONDS instead of a hard-coded 60 — the
+      // two drift whenever the env is tuned.
+      retryAfterSeconds: this.otpService.resendIntervalSeconds,
     });
   };
 

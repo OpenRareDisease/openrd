@@ -1071,6 +1071,9 @@ export interface OtpSendResponse {
   requestId: string;
   sentTo: string;
   mockCode?: string;
+  /** Server-driven resend interval (OTP_RESEND_INTERVAL_SECONDS);
+   *  optional for backward compatibility with older API builds. */
+  retryAfterSeconds?: number;
 }
 
 export const sendOtp = (payload: { phoneNumber: string; scene?: 'register' | 'login' | 'reset' }) =>

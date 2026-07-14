@@ -89,6 +89,12 @@ export class OtpService {
     }
   }
 
+  /** Exposed so the auth controller can tell clients how long to wait
+   *  before offering a resend (drives the mobile countdown). */
+  get resendIntervalSeconds(): number {
+    return this.env.OTP_RESEND_INTERVAL_SECONDS;
+  }
+
   private generateCode(phoneNumber: string): string {
     // INTERNAL-TEST bridge: allowlisted test phones get the fixed,
     // pre-shared code (validated to match OTP_CODE_LENGTH in
