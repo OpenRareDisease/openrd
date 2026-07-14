@@ -179,6 +179,43 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  consentCard: {
+    marginTop: 10,
+    gap: 10,
+  },
+  consentCardText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  consentGrantButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 46,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+  },
+  consentGrantButtonDisabled: {
+    opacity: 0.6,
+  },
+  consentGrantButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  consentDetailLink: {
+    alignSelf: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  consentDetailLinkText: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    textDecorationLine: 'underline',
+  },
   retryButton: {
     marginTop: 10,
     flexDirection: 'row',
