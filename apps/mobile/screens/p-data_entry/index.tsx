@@ -88,6 +88,11 @@ const DEFAULT_UPLOAD_DRAFT: UploadDraft = {
   file: null,
 };
 
+// Mirrors the API's multer cap (`profile.routes.ts` limits.fileSize =
+// 10MB). Keep the two in sync — a larger value here just moves the
+// failure to the end of the upload.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
 const DATA_ENTRY_DRAFT_KEYS = {
   entryMode: 'openrd.dataEntry.entryMode',
   followup: 'openrd.dataEntry.followup',
@@ -475,6 +480,10 @@ const DataEntryScreen = () => {
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
       copyToCacheDirectory: true,
+      // Only formats the OCR pipeline can actually parse. Letting an
+      // arbitrary file through meant the user waited out a full
+      // upload+parse round trip just to learn it would fail.
+      type: ['application/pdf', 'image/*'],
     });
 
     if (result.canceled || !result.assets?.length) {
@@ -484,6 +493,17 @@ const DataEntryScreen = () => {
     const asset = result.assets[0] as DocumentPicker.DocumentPickerAsset & {
       file?: File;
     };
+
+    // Pre-flight size check: the API's multer cap rejects oversized
+    // bodies anyway, but failing before the upload saves the user
+    // from watching a doomed progress spinner on a slow uplink.
+    if (typeof asset.size === 'number' && asset.size > MAX_UPLOAD_BYTES) {
+      Alert.alert(
+        '文件过大',
+        `报告文件不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB，请压缩后重试。`,
+      );
+      return;
+    }
 
     setUploadDraft((prev) => ({
       ...prev,
@@ -505,7 +525,7 @@ const DataEntryScreen = () => {
       throw new Error('请先选择要上传的报告文件');
     }
 
-    await uploadPatientDocument({
+    return uploadPatientDocument({
       documentType: 'other',
       title: uploadDraft.title.trim() || undefined,
       submissionId,
@@ -608,11 +628,19 @@ const DataEntryScreen = () => {
 
       await Promise.all(requests);
 
+      // Clear the submitted draft BEFORE reloading, so loadContext
+      // re-derives the form from the (now fresher) profile instead of
+      // resurrecting the just-submitted values from session storage.
+      await setSessionValue(DATA_ENTRY_DRAFT_KEYS.followup, null);
       resetUploadDraft();
       setProfile(ensuredProfile);
       await loadContext();
-      Alert.alert('已保存', '快速随访已完成。');
-      router.replace('/p-home');
+      // Stay on this screen: users backfilling several records used to
+      // get bounced to the home screen after every single save.
+      Alert.alert('已保存', '快速随访已完成，可以继续记录。', [
+        { text: '查看我的档案', onPress: () => router.push('/p-archive') },
+        { text: '继续记录', style: 'cancel' },
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : '随访保存失败';
       Alert.alert('保存失败', message);
@@ -642,10 +670,13 @@ const DataEntryScreen = () => {
         }),
       ]);
 
+      await setSessionValue(DATA_ENTRY_DRAFT_KEYS.event, null);
       resetUploadDraft();
       await loadContext();
-      Alert.alert('已保存', '事件记录已添加。');
-      router.replace('/p-home');
+      Alert.alert('已保存', '事件记录已添加，可以继续记录。', [
+        { text: '查看我的档案', onPress: () => router.push('/p-archive') },
+        { text: '继续记录', style: 'cancel' },
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : '事件保存失败';
       Alert.alert('保存失败', message);
@@ -665,12 +696,17 @@ const DataEntryScreen = () => {
         changedSinceLast: false,
       });
 
-      await uploadDocument(submission.id);
+      const document = await uploadDocument(submission.id);
 
       resetUploadDraft();
       await loadContext();
-      Alert.alert('已上传', '报告已上传，系统会自动识别报告类型和关键指标。');
-      router.replace('/p-home');
+      // Land the user on the detail screen of the report they just
+      // uploaded — that's where the OCR result appears — instead of
+      // bouncing home and making them dig it out via 报告管理.
+      router.push({
+        pathname: '/p-report_detail',
+        params: { documentId: document.id },
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : '报告上传失败';
       Alert.alert('上传失败', message);
@@ -706,6 +742,12 @@ const DataEntryScreen = () => {
     </View>
   );
 
+  // Reference values so the user sees "this time vs last time" while
+  // typing — the inputs are pre-filled from the profile, but once the
+  // user edits them the previous number would otherwise be gone.
+  const previousStairClimb = profile ? getLatestFunctionTestValue(profile, 'stair_climb') : null;
+  const previousSleepScore = profile ? getLatestSymptomValue(profile, 'sleep_quality') : null;
+
   const renderFollowupForm = () => (
     <View style={styles.formStack}>
       <View style={styles.sectionCard}>
@@ -735,6 +777,11 @@ const DataEntryScreen = () => {
             keyboardType="decimal-pad"
             style={styles.input}
           />
+          {typeof previousStairClimb === 'number' ? (
+            <Text style={styles.previousValueText}>
+              上次记录：{previousStairClimb.toFixed(1)} 秒
+            </Text>
+          ) : null}
           <View style={styles.scoreHintWrap}>
             {['≤10 秒 较轻松', '11-20 秒 一般', '21-30 秒 偏慢', '>30 秒 需关注'].map((item) => (
               <View key={item} style={styles.scoreHintChip}>
@@ -746,6 +793,9 @@ const DataEntryScreen = () => {
         {renderSleepScorePicker(followupForm.sleepScore, (value) =>
           setFollowupForm((prev) => ({ ...prev, sleepScore: value })),
         )}
+        {typeof previousSleepScore === 'number' ? (
+          <Text style={styles.previousValueText}>上次记录：{previousSleepScore}/10</Text>
+        ) : null}
         <View style={styles.fieldBlock}>
           <Text style={styles.fieldLabel}>最近跌倒次数</Text>
           <Text style={styles.sectionSubtitle}>
