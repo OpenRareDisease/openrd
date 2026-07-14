@@ -324,12 +324,25 @@ const OCR_JOB_CONCURRENCY = 2;
  *  process) — both the startup sweep and the reparse endpoint's
  *  "stuck" branch use it. */
 export const OCR_STUCK_AFTER_MINUTES = 10;
+/** Admission cap for the background queue. The 2-slot limiter bounds
+ *  CPU, but every queued job parks its full (≤10MB) upload buffer in
+ *  memory — without this cap an authenticated flooder could stack
+ *  buffers far faster than OCR drains them, since uploads now return
+ *  in milliseconds. 10 queued jobs ≈ 100MB worst case. */
+export const OCR_MAX_IN_FLIGHT_JOBS = 10;
 
 export class PatientProfileController {
   /** In-flight background parses keyed by documentId. Serves three
    *  jobs: reparse-while-running returns 409 instead of double
    *  parsing; tests can await completion; graceful shutdown could
-   *  drain. Entries remove themselves on settle. */
+   *  drain. Entries remove themselves on settle.
+   *
+   *  SINGLE-INSTANCE ASSUMPTION: this map, the concurrency limiter,
+   *  and the stuck-processing heuristics are all process-local. The
+   *  production topology is one api container (docker-compose), so
+   *  that holds. A second replica would double-parse and mis-judge
+   *  "stuck" — scaling out requires moving this coordination into
+   *  the database (e.g. a claimed_at column) first. */
   readonly inFlightOcrJobs = new Map<string, Promise<void>>();
   private readonly ocrLimiter = createLimiter(OCR_JOB_CONCURRENCY);
 
@@ -488,6 +501,12 @@ export class PatientProfileController {
     //   - caller has no profile yet → ensureProfileForUser 404
     // Both branches are cheap SELECTs.
     await this.service.assertCallerCanWriteSubmission(req.user.id, payload.submissionId);
+
+    // Bound admission BEFORE the storage write: each queued job holds
+    // its full upload buffer in memory until the limiter drains it.
+    if (this.inFlightOcrJobs.size >= OCR_MAX_IN_FLIGHT_JOBS) {
+      throw new AppError('识别队列已满，请稍后再试', 429);
+    }
 
     const stored = await this.storage.save({
       userId: req.user.id,

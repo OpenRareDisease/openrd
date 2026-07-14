@@ -836,3 +836,28 @@ describe('PatientProfileController.reparseDocument', () => {
     controller.inFlightOcrJobs.delete('doc-1');
   });
 });
+
+describe('PatientProfileController.uploadDocument — queue admission cap', () => {
+  it('rejects with 429 BEFORE storage.save when the job queue is full', async () => {
+    const { service, storage, ocr } = buildDeps();
+    const controller = new PatientProfileController(service, storage, ocr);
+    // Saturate the queue: each entry parks a ≤10MB buffer, which is
+    // exactly the memory the cap exists to bound.
+    for (let i = 0; i < 10; i += 1) {
+      controller.inFlightOcrJobs.set(`queued-${i}`, Promise.resolve());
+    }
+
+    const req = {
+      user: { id: 'user-1' },
+      body: { documentType: 'mri' },
+      file: makeFile(),
+    } as unknown as AuthenticatedRequest;
+
+    await expect(controller.uploadDocument(req, fakeRes())).rejects.toMatchObject({
+      statusCode: 429,
+    });
+    expect(storage.save).not.toHaveBeenCalled();
+    expect(service.addUploadedDocument).not.toHaveBeenCalled();
+    controller.inFlightOcrJobs.clear();
+  });
+});
