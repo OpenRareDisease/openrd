@@ -24,6 +24,7 @@ import {
   QNA_CHAT_STORAGE_KEY,
   type StreamAiQuestionHandle,
   isConsentRequiredError,
+  updateMyConsent,
 } from '../../lib/api';
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
@@ -49,6 +50,9 @@ type ChatMessage = {
   /** On an errored assistant bubble: the exact question that failed,
    *  so the「重试」button can resend it without the user retyping. */
   failedQuestion?: string;
+  /** Marks a consent-gate failure: the bubble renders the inline
+   *  authorization card (grant-and-resend) instead of a plain retry. */
+  consentRequired?: boolean;
 };
 
 // Backed by `QNA_CHAT_STORAGE_KEY` in lib/api so the AuthContext's
@@ -107,6 +111,7 @@ const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
         // with a non-string value would otherwise pass the type
         // system and reach sendQuestion as e.g. a number.
         failedQuestion: typeof item.failedQuestion === 'string' ? item.failedQuestion : undefined,
+        consentRequired: item.consentRequired === true ? true : undefined,
       }));
 
     return messages.length ? messages : null;
@@ -584,6 +589,7 @@ const P_QNA = () => {
 
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isGrantingConsent, setIsGrantingConsent] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([createWelcomeMessage()]);
   const [askProgress, setAskProgress] = useState<{
@@ -714,6 +720,27 @@ const P_QNA = () => {
     // bubble's「重试」button. The user never has to retype.
     setDraft('');
     void sendQuestion(question);
+  };
+
+  /** One-tap consent grant + resend, from the inline card on a
+   *  consent-gated bubble. Grants BOTH flags QnA requires (backend:
+   *  personal && thirdParty, else 403) in a single call, then reuses
+   *  the retry path so the pinned question resends automatically. */
+  const handleGrantConsentAndRetry = async (message: ChatMessage) => {
+    if (isSending || isGrantingConsent || !message.failedQuestion) return;
+    setIsGrantingConsent(true);
+    try {
+      await updateMyConsent({ personal: true, thirdParty: true });
+      handleRetry(message);
+    } catch (error) {
+      const detail =
+        error instanceof ApiError && error.status === 404
+          ? '请先在「我的 → 编辑档案」完成基础档案，再开启 AI 授权。'
+          : getFriendlyErrorMessage(error);
+      Alert.alert('授权失败', detail);
+    } finally {
+      setIsGrantingConsent(false);
+    }
   };
 
   /** One-tap recovery on an errored bubble: drop the error bubble
@@ -932,16 +959,23 @@ const P_QNA = () => {
         // not via an `error` SSE frame. Reuse the existing
         // consent-required branch verbatim.
         if (isConsentRequiredError(error)) {
-          const consentMessage = '需要先在隐私设置中开启 AI 同意，才能使用智能问答。';
-          // Hand the question back to the composer: the user typed it
-          // in good faith, got gated, and shouldn't have to retype it
-          // after granting consent. Only restore when they haven't
-          // started composing something new meanwhile.
-          setDraft((prev) => (prev.trim() ? prev : question));
+          const consentMessage = '需要你的授权，AI 才能回答这个问题。';
+          // No Alert, no detour to the settings screen: the errored
+          // bubble itself renders a consent card with a one-tap
+          // "允许并继续" that grants both required flags and resends
+          // the pinned question. The old flow (Alert → privacy screen
+          // → two switches × two dialogs → come back → retype) lost
+          // the question and most users.
           setMessages((prev) =>
             prev.map((item) =>
               item.id === assistantMessageId
-                ? { ...item, content: consentMessage, status: 'error', failedQuestion: question }
+                ? {
+                    ...item,
+                    content: consentMessage,
+                    status: 'error',
+                    failedQuestion: question,
+                    consentRequired: true,
+                  }
                 : item,
             ),
           );
@@ -956,14 +990,6 @@ const P_QNA = () => {
                   error: consentMessage,
                 }
               : prev,
-          );
-          Alert.alert(
-            '需要授权 AI',
-            '在使用智能问答前，请到「隐私设置」开启 AI 同意（个人数据 + 第三方 LLM 处理）。',
-            [
-              { text: '取消', style: 'cancel' },
-              { text: '去设置', onPress: () => router.push('/p-privacy_settings') },
-            ],
           );
         } else {
           const friendlyMessage = getFriendlyErrorMessage(error);
@@ -1139,7 +1165,35 @@ const P_QNA = () => {
                     setCitationPopover({ indexes, citations }),
                   )}
                   <AssistantMetadataBlock message={message} />
-                  {isError && message.failedQuestion ? (
+                  {isError && message.failedQuestion && message.consentRequired ? (
+                    <View style={styles.consentCard}>
+                      <Text style={styles.consentCardText}>
+                        允许后，AI
+                        会引用你档案与报告中已脱敏的内容回答，问题将发送到云端大模型处理。你可以随时在「隐私设置」撤回授权。
+                      </Text>
+                      <TouchableOpacity
+                        style={[
+                          styles.consentGrantButton,
+                          (isSending || isGrantingConsent) && styles.consentGrantButtonDisabled,
+                        ]}
+                        activeOpacity={0.85}
+                        disabled={isSending || isGrantingConsent}
+                        onPress={() => void handleGrantConsentAndRetry(message)}
+                      >
+                        <FontAwesome6 name="check" size={13} color="#FFFFFF" />
+                        <Text style={styles.consentGrantButtonText}>
+                          {isGrantingConsent ? '正在授权...' : '允许并继续'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.consentDetailLink}
+                        activeOpacity={0.7}
+                        onPress={() => router.push('/p-privacy_settings')}
+                      >
+                        <Text style={styles.consentDetailLinkText}>查看详细设置</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : isError && message.failedQuestion ? (
                     <TouchableOpacity
                       style={styles.retryButton}
                       activeOpacity={0.85}
