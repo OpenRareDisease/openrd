@@ -34,18 +34,12 @@ import {
   type DateParts,
   buildRegionLabel,
   composeDate,
+  genderOptions,
   parseDateParts,
 } from '../../lib/demographics-options';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenBackButton from '../common/ScreenBackButton';
-
-const genderOptions = [
-  { value: 'male', label: '男' },
-  { value: 'female', label: '女' },
-  { value: 'non_binary', label: '非二元' },
-  { value: 'prefer_not_to_say', label: '不透露' },
-];
 
 const isValidDate = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -101,6 +95,18 @@ const RegisterProfileScreen: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     const loadProfile = async () => {
+      // Read the unsaved-edit draft FIRST, independent of the profile
+      // fetch: the users who most need it (no profile row yet → the
+      // fetch 404s) would otherwise skip the restore, and the persist
+      // effect would then overwrite their draft with the empty form.
+      let draft: Partial<typeof form> | null = null;
+      try {
+        const rawDraft = await getSessionValue(PROFILE_FORM_DRAFT_KEY);
+        draft = rawDraft ? (JSON.parse(rawDraft) as Partial<typeof form>) : null;
+      } catch {
+        draft = null;
+      }
+
       try {
         const profile = await getMyPatientProfile();
         if (!isMounted || !profile) {
@@ -134,17 +140,6 @@ const RegisterProfileScreen: React.FC = () => {
         // Draft-on-top-of-server: a half-finished edit (user left the
         // screen mid-way) wins over the stored profile, same layering
         // p-data_entry uses. Cleared on successful save.
-        let draft: Partial<typeof serverForm> | null = null;
-        try {
-          const rawDraft = await getSessionValue(PROFILE_FORM_DRAFT_KEY);
-          draft = rawDraft ? (JSON.parse(rawDraft) as Partial<typeof serverForm>) : null;
-        } catch {
-          draft = null;
-        }
-        if (!isMounted) {
-          return;
-        }
-
         setForm((prev) => ({
           ...prev,
           ...serverForm,
@@ -159,7 +154,18 @@ const RegisterProfileScreen: React.FC = () => {
         );
       } catch (error) {
         const message = error instanceof ApiError ? error.message : '加载档案失败';
-        setFeedback({ type: 'error', message });
+        if (isMounted) {
+          setFeedback({ type: 'error', message });
+          // No server profile (404 / transient error) — the draft is
+          // still the user's latest work; restore it over the blank
+          // form so the persist effect can't wipe it.
+          if (draft) {
+            setForm((prev) => ({ ...prev, ...draft }));
+            if (typeof draft.dateOfBirth === 'string' && draft.dateOfBirth) {
+              setBirthDateDraft(parseDateParts(draft.dateOfBirth));
+            }
+          }
+        }
       } finally {
         if (isMounted) {
           setIsLoading(false);
