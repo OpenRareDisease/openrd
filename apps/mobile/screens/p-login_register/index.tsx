@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Picker } from '@react-native-picker/picker';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
@@ -34,17 +33,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import {
   type DateParts,
-  birthMonthOptions,
-  birthYearOptions,
+  buildRegionLabel,
   composeDate,
   genderOptions,
-  getBirthDayOptions,
-  getCityOptions,
-  getDistrictOptions,
-  buildRegionLabel,
   parseDateParts,
-  provinceOptions,
 } from '../../lib/demographics-options';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import {
   AMBULATION_OPTIONS,
   ASSISTIVE_DEVICE_OPTIONS,
@@ -64,7 +58,12 @@ import {
   validateLoginForm,
   validateRegisterForm,
 } from '../../lib/validation';
+import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenBackButton from '../common/ScreenBackButton';
+
+// Interrupted-registration draft. Secrets (passwords) and OTP state
+// are stripped before persisting — see the persist effect.
+const REGISTER_FORM_DRAFT_KEY = 'openrd.register.draft';
 
 interface LoginFormData {
   phone: string;
@@ -135,6 +134,50 @@ const LoginRegisterScreen: React.FC = () => {
     regionDistrict: '',
   });
   const [birthDateDraft, setBirthDateDraft] = useState<DateParts>(() => parseDateParts(''));
+  const [isRegisterDraftHydrated, setIsRegisterDraftHydrated] = useState(false);
+
+  // Restore an interrupted registration (user switched away to read
+  // the SMS, app got killed, …). Secrets and OTP state are NEVER
+  // persisted — see the persist effect below.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await getSessionValue(REGISTER_FORM_DRAFT_KEY);
+        if (raw) {
+          const draft = JSON.parse(raw) as Partial<RegisterFormData>;
+          delete draft.password;
+          delete draft.confirmPassword;
+          delete draft.code;
+          delete draft.otpRequestId;
+          setRegisterForm((prev) => ({ ...prev, ...draft }));
+          if (typeof draft.dateOfBirth === 'string' && draft.dateOfBirth) {
+            setBirthDateDraft(parseDateParts(draft.dateOfBirth));
+          }
+        }
+      } catch {
+        // A broken draft must never block registration.
+      } finally {
+        setIsRegisterDraftHydrated(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!isRegisterDraftHydrated) {
+      return;
+    }
+    // Strip everything secret-shaped before persisting: passwords
+    // must not land in storage, and a stale OTP code/requestId would
+    // just fail verification later anyway.
+    const { password, confirmPassword, code, otpRequestId, ...safeDraft } = registerForm;
+    void password;
+    void confirmPassword;
+    void code;
+    void otpRequestId;
+    setSessionValue(REGISTER_FORM_DRAFT_KEY, JSON.stringify(safeDraft)).catch(() => {
+      // Draft persistence must never block typing.
+    });
+  }, [registerForm, isRegisterDraftHydrated]);
 
   // UI状态
   const [isLoginPasswordVisible, setIsLoginPasswordVisible] = useState(false);
@@ -467,6 +510,8 @@ const LoginRegisterScreen: React.FC = () => {
           ),
         },
       });
+      // Registration is complete — the draft has served its purpose.
+      await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
       showModal('success', '注册成功', '账户已创建并完成基础档案');
       router.replace('/p-home');
     } catch (error) {
@@ -544,47 +589,11 @@ const LoginRegisterScreen: React.FC = () => {
     };
   }, []);
 
-  const cityOptions = getCityOptions(registerForm.regionProvince);
-  const districtOptions = getDistrictOptions(registerForm.regionProvince, registerForm.regionCity);
-  const birthDayOptions = getBirthDayOptions(birthDateDraft.year, birthDateDraft.month);
-
-  const updateBirthDatePart = (part: 'year' | 'month' | 'day', value: string) => {
-    const nextParts = {
-      ...birthDateDraft,
-      [part]: value,
-    };
-
-    if (part !== 'day' && nextParts.year && nextParts.month && nextParts.day) {
-      const validDays = getBirthDayOptions(nextParts.year, nextParts.month).map(
-        (option) => option.value,
-      );
-      if (!validDays.includes(nextParts.day)) {
-        nextParts.day = '';
-      }
-    }
-
-    const nextDateOfBirth = composeDate(nextParts.year, nextParts.month, nextParts.day);
-    setBirthDateDraft(nextParts);
+  const handleBirthDateChange = (next: DateParts) => {
+    setBirthDateDraft(next);
     setRegisterForm((prev) => ({
       ...prev,
-      dateOfBirth: nextDateOfBirth,
-    }));
-  };
-
-  const updateRegionProvince = (value: string) => {
-    setRegisterForm((prev) => ({
-      ...prev,
-      regionProvince: value,
-      regionCity: '',
-      regionDistrict: '',
-    }));
-  };
-
-  const updateRegionCity = (value: string) => {
-    setRegisterForm((prev) => ({
-      ...prev,
-      regionCity: value,
-      regionDistrict: '',
+      dateOfBirth: composeDate(next.year, next.month, next.day),
     }));
   };
 
@@ -804,56 +813,7 @@ const LoginRegisterScreen: React.FC = () => {
                     onLayout={captureRegisterFieldY('dateOfBirth')}
                   >
                     <Text style={styles.inputLabel}>出生日期</Text>
-                    <View style={styles.pickerRow}>
-                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
-                        <Picker
-                          selectedValue={birthDateDraft.year}
-                          onValueChange={(value) => updateBirthDatePart('year', String(value))}
-                          style={styles.picker}
-                        >
-                          <Picker.Item label="年份" value="" />
-                          {birthYearOptions.map((option) => (
-                            <Picker.Item
-                              key={option.value}
-                              label={option.label}
-                              value={option.value}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
-                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
-                        <Picker
-                          selectedValue={birthDateDraft.month}
-                          onValueChange={(value) => updateBirthDatePart('month', String(value))}
-                          style={styles.picker}
-                        >
-                          <Picker.Item label="月份" value="" />
-                          {birthMonthOptions.map((option) => (
-                            <Picker.Item
-                              key={option.value}
-                              label={option.label}
-                              value={option.value}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
-                      <View style={[styles.pickerWrapper, styles.pickerColumn]}>
-                        <Picker
-                          selectedValue={birthDateDraft.day}
-                          onValueChange={(value) => updateBirthDatePart('day', String(value))}
-                          style={styles.picker}
-                        >
-                          <Picker.Item label="日期" value="" />
-                          {birthDayOptions.map((option) => (
-                            <Picker.Item
-                              key={option.value}
-                              label={option.label}
-                              value={option.value}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
-                    </View>
+                    <BirthDatePickers value={birthDateDraft} onChange={handleBirthDateChange} />
                     {renderRegisterError('dateOfBirth')}
                   </View>
                   <View style={styles.inputContainer} onLayout={captureRegisterFieldY('gender')}>
@@ -1139,75 +1099,34 @@ const LoginRegisterScreen: React.FC = () => {
                   <Text style={styles.registerSectionTitle}>所在地区</Text>
                   <View
                     style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('regionProvince')}
+                    onLayout={(event) => {
+                      // The three region fields now share one shell —
+                      // point all their scroll anchors at it so
+                      // scroll-to-first-error still lands here.
+                      const { y } = event.nativeEvent.layout;
+                      registerFieldYRef.current.regionProvince = y;
+                      registerFieldYRef.current.regionCity = y;
+                      registerFieldYRef.current.regionDistrict = y;
+                    }}
                   >
-                    <Text style={styles.inputLabel}>省份</Text>
-                    <View style={styles.pickerWrapper}>
-                      <Picker
-                        selectedValue={registerForm.regionProvince}
-                        onValueChange={(value) => updateRegionProvince(String(value))}
-                        style={styles.picker}
-                      >
-                        <Picker.Item label="请选择省份" value="" />
-                        {provinceOptions.map((option) => (
-                          <Picker.Item
-                            key={option.value}
-                            label={option.label}
-                            value={option.value}
-                          />
-                        ))}
-                      </Picker>
-                    </View>
+                    <Text style={styles.inputLabel}>省 / 市 / 区县</Text>
+                    <RegionPickers
+                      value={{
+                        province: registerForm.regionProvince,
+                        city: registerForm.regionCity,
+                        district: registerForm.regionDistrict,
+                      }}
+                      onChange={(next) =>
+                        setRegisterForm((prev) => ({
+                          ...prev,
+                          regionProvince: next.province,
+                          regionCity: next.city,
+                          regionDistrict: next.district,
+                        }))
+                      }
+                    />
                     {renderRegisterError('regionProvince')}
-                  </View>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('regionCity')}
-                  >
-                    <Text style={styles.inputLabel}>城市</Text>
-                    <View style={styles.pickerWrapper}>
-                      <Picker
-                        selectedValue={registerForm.regionCity}
-                        onValueChange={(value) => updateRegionCity(String(value))}
-                        enabled={cityOptions.length > 0}
-                        style={styles.picker}
-                      >
-                        <Picker.Item label="请选择城市" value="" />
-                        {cityOptions.map((option) => (
-                          <Picker.Item
-                            key={option.value}
-                            label={option.label}
-                            value={option.value}
-                          />
-                        ))}
-                      </Picker>
-                    </View>
                     {renderRegisterError('regionCity')}
-                  </View>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('regionDistrict')}
-                  >
-                    <Text style={styles.inputLabel}>区县</Text>
-                    <View style={styles.pickerWrapper}>
-                      <Picker
-                        selectedValue={registerForm.regionDistrict}
-                        onValueChange={(value) =>
-                          setRegisterForm((prev) => ({ ...prev, regionDistrict: String(value) }))
-                        }
-                        enabled={districtOptions.length > 0}
-                        style={styles.picker}
-                      >
-                        <Picker.Item label="请选择区县" value="" />
-                        {districtOptions.map((option) => (
-                          <Picker.Item
-                            key={option.value}
-                            label={option.label}
-                            value={option.value}
-                          />
-                        ))}
-                      </Picker>
-                    </View>
                     {renderRegisterError('regionDistrict')}
                   </View>
 

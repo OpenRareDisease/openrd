@@ -30,15 +30,16 @@ import {
   splitAssistiveDevices,
   toAmbulationChoice,
 } from '../../lib/profile-baseline-options';
-import { buildRegionLabel } from '../../lib/demographics-options';
+import {
+  type DateParts,
+  buildRegionLabel,
+  composeDate,
+  genderOptions,
+  parseDateParts,
+} from '../../lib/demographics-options';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
+import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenBackButton from '../common/ScreenBackButton';
-
-const genderOptions = [
-  { value: 'male', label: '男' },
-  { value: 'female', label: '女' },
-  { value: 'non_binary', label: '非二元' },
-  { value: 'prefer_not_to_say', label: '不透露' },
-];
 
 const isValidDate = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -47,6 +48,10 @@ const isValidDate = (value: string) => {
   const parsed = Date.parse(value);
   return !Number.isNaN(parsed);
 };
+
+// Unsaved-edit draft, restored on top of the server profile so a
+// half-finished edit survives leaving the screen. Cleared on save.
+const PROFILE_FORM_DRAFT_KEY = 'openrd.registerProfile.draft';
 
 const RegisterProfileScreen: React.FC = () => {
   const router = useRouter();
@@ -57,6 +62,7 @@ const RegisterProfileScreen: React.FC = () => {
     null,
   );
   const [existingBaseline, setExistingBaseline] = useState<BaselineProfilePayload | null>(null);
+  const [isDraftHydrated, setIsDraftHydrated] = useState(false);
   const [form, setForm] = useState({
     fullName: '',
     dateOfBirth: '',
@@ -74,6 +80,10 @@ const RegisterProfileScreen: React.FC = () => {
     regionCity: '',
     regionDistrict: '',
   });
+  // Wheel-picker state for date of birth; kept in sync with
+  // form.dateOfBirth (the canonical YYYY-MM-DD used by validation
+  // and the submit payload).
+  const [birthDateDraft, setBirthDateDraft] = useState<DateParts>(() => parseDateParts(''));
 
   const contactHint = useMemo(() => {
     if (form.contactPhone || form.contactEmail) {
@@ -85,6 +95,18 @@ const RegisterProfileScreen: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     const loadProfile = async () => {
+      // Read the unsaved-edit draft FIRST, independent of the profile
+      // fetch: the users who most need it (no profile row yet → the
+      // fetch 404s) would otherwise skip the restore, and the persist
+      // effect would then overwrite their draft with the empty form.
+      let draft: Partial<typeof form> | null = null;
+      try {
+        const rawDraft = await getSessionValue(PROFILE_FORM_DRAFT_KEY);
+        draft = rawDraft ? (JSON.parse(rawDraft) as Partial<typeof form>) : null;
+      } catch {
+        draft = null;
+      }
+
       try {
         const profile = await getMyPatientProfile();
         if (!isMounted || !profile) {
@@ -95,8 +117,7 @@ const RegisterProfileScreen: React.FC = () => {
         const currentStatus = baseline?.currentStatus;
         const assistiveDevices = splitAssistiveDevices(currentStatus?.assistiveDevices);
         setExistingBaseline(baseline);
-        setForm((prev) => ({
-          ...prev,
+        const serverForm = {
           fullName: profile.fullName ?? '',
           dateOfBirth: profile.dateOfBirth ?? '',
           diagnosisYear:
@@ -111,18 +132,44 @@ const RegisterProfileScreen: React.FC = () => {
           assistiveDevices: assistiveDevices.selected,
           customAssistiveDevices: assistiveDevices.customText,
           gender: profile.gender ?? '',
-          contactPhone: profile.contactPhone ?? prev.contactPhone,
-          contactEmail: profile.contactEmail ?? prev.contactEmail,
           regionProvince: profile.regionProvince ?? '',
           regionCity: profile.regionCity ?? '',
           regionDistrict: profile.regionDistrict ?? '',
+        };
+
+        // Draft-on-top-of-server: a half-finished edit (user left the
+        // screen mid-way) wins over the stored profile, same layering
+        // p-data_entry uses. Cleared on successful save.
+        setForm((prev) => ({
+          ...prev,
+          ...serverForm,
+          contactPhone: profile.contactPhone ?? prev.contactPhone,
+          contactEmail: profile.contactEmail ?? prev.contactEmail,
+          ...(draft ?? {}),
         }));
+        setBirthDateDraft(
+          parseDateParts(
+            typeof draft?.dateOfBirth === 'string' ? draft.dateOfBirth : serverForm.dateOfBirth,
+          ),
+        );
       } catch (error) {
         const message = error instanceof ApiError ? error.message : '加载档案失败';
-        setFeedback({ type: 'error', message });
+        if (isMounted) {
+          setFeedback({ type: 'error', message });
+          // No server profile (404 / transient error) — the draft is
+          // still the user's latest work; restore it over the blank
+          // form so the persist effect can't wipe it.
+          if (draft) {
+            setForm((prev) => ({ ...prev, ...draft }));
+            if (typeof draft.dateOfBirth === 'string' && draft.dateOfBirth) {
+              setBirthDateDraft(parseDateParts(draft.dateOfBirth));
+            }
+          }
+        }
       } finally {
         if (isMounted) {
           setIsLoading(false);
+          setIsDraftHydrated(true);
         }
       }
     };
@@ -132,6 +179,18 @@ const RegisterProfileScreen: React.FC = () => {
       isMounted = false;
     };
   }, []);
+
+  // Persist unsaved edits so leaving the screen (or an app kill)
+  // doesn't discard a 15-field form. Hydration guard prevents the
+  // initial empty state from overwriting an existing draft.
+  useEffect(() => {
+    if (!isDraftHydrated) {
+      return;
+    }
+    setSessionValue(PROFILE_FORM_DRAFT_KEY, JSON.stringify(form)).catch(() => {
+      // Draft persistence must never block editing.
+    });
+  }, [form, isDraftHydrated]);
 
   const toggleAssistiveDevice = (device: AssistiveDeviceOption) => {
     setForm((prev) => ({
@@ -228,6 +287,9 @@ const RegisterProfileScreen: React.FC = () => {
           ),
         },
       });
+      // The saved state is now canonical on the server — drop the
+      // unsaved-edit draft so it doesn't shadow future loads.
+      await setSessionValue(PROFILE_FORM_DRAFT_KEY, null);
       setFeedback({ type: 'success', message: '档案已保存' });
       router.replace('/p-home');
     } catch (error) {
@@ -284,12 +346,15 @@ const RegisterProfileScreen: React.FC = () => {
                   />
 
                   <Text style={styles.inputLabel}>出生日期</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="YYYY-MM-DD"
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
-                    value={form.dateOfBirth}
-                    onChangeText={(text) => setForm((prev) => ({ ...prev, dateOfBirth: text }))}
+                  <BirthDatePickers
+                    value={birthDateDraft}
+                    onChange={(next) => {
+                      setBirthDateDraft(next);
+                      setForm((prev) => ({
+                        ...prev,
+                        dateOfBirth: composeDate(next.year, next.month, next.day),
+                      }));
+                    }}
                   />
 
                   <Text style={styles.inputLabel}>性别</Text>
@@ -453,31 +518,21 @@ const RegisterProfileScreen: React.FC = () => {
                 <Text style={styles.sectionTitle}>所在地区</Text>
                 <Text style={styles.sectionSubtitle}>用于统计区域发病率与线下活动筹备</Text>
                 <View style={styles.card}>
-                  <Text style={styles.inputLabel}>省份</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="例如：浙江省"
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
-                    value={form.regionProvince}
-                    onChangeText={(text) => setForm((prev) => ({ ...prev, regionProvince: text }))}
-                  />
-
-                  <Text style={styles.inputLabel}>城市</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="例如：杭州市"
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
-                    value={form.regionCity}
-                    onChangeText={(text) => setForm((prev) => ({ ...prev, regionCity: text }))}
-                  />
-
-                  <Text style={styles.inputLabel}>区县</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="例如：西湖区"
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
-                    value={form.regionDistrict}
-                    onChangeText={(text) => setForm((prev) => ({ ...prev, regionDistrict: text }))}
+                  <Text style={styles.inputLabel}>省 / 市 / 区县</Text>
+                  <RegionPickers
+                    value={{
+                      province: form.regionProvince,
+                      city: form.regionCity,
+                      district: form.regionDistrict,
+                    }}
+                    onChange={(next) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        regionProvince: next.province,
+                        regionCity: next.city,
+                        regionDistrict: next.district,
+                      }))
+                    }
                   />
                 </View>
               </View>
