@@ -103,6 +103,10 @@ const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
       .map((item) => ({
         ...item,
         metadata: normalizeStoredMetadata(item.metadata),
+        // Guard the retry payload: a corrupted/legacy stored entry
+        // with a non-string value would otherwise pass the type
+        // system and reach sendQuestion as e.g. a number.
+        failedQuestion: typeof item.failedQuestion === 'string' ? item.failedQuestion : undefined,
       }));
 
     return messages.length ? messages : null;
@@ -718,6 +722,12 @@ const P_QNA = () => {
   const handleRetry = (message: ChatMessage) => {
     if (isSending || !message.failedQuestion) return;
     const question = message.failedQuestion;
+    // The consent-403 path also restores the question into the
+    // composer. When the user recovers via THIS button instead,
+    // clear that copy — otherwise one accidental send fires a
+    // duplicate. Leave the composer alone if they typed something
+    // new meanwhile.
+    setDraft((prev) => (prev.trim() === question.trim() ? '' : prev));
     setMessages((prev) => prev.filter((item) => item.id !== message.id));
     void sendQuestion(question, { reuseUserBubble: true });
   };
