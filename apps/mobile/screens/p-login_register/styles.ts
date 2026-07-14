@@ -121,6 +121,12 @@ export default StyleSheet.create({
   inputContainer: {
     marginBottom: 16,
   },
+  fieldErrorText: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+    color: CLINICAL_COLORS.danger,
+  },
   registerSectionTitle: {
     fontSize: 14,
     fontWeight: '600',
