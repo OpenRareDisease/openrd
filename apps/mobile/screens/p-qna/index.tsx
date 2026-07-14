@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
-  AppState,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -47,12 +46,15 @@ type ChatMessage = {
   createdAt: string;
   status: ChatMessageStatus;
   metadata?: AssistantMetadata;
+  /** On an errored assistant bubble: the exact question that failed,
+   *  so the「重试」button can resend it without the user retyping. */
+  failedQuestion?: string;
 };
 
 // Backed by `QNA_CHAT_STORAGE_KEY` in lib/api so the AuthContext's
 // logout sweep + the 401 handler can purge it without import cycles.
 const CHAT_STORAGE_KEY = QNA_CHAT_STORAGE_KEY;
-const MAX_STORED_MESSAGES = 24;
+const MAX_STORED_MESSAGES = 100;
 
 const defaultProgressStages: AiAskProgressStage[] = [
   { id: 'received', label: '接收问题', status: 'pending' },
@@ -101,6 +103,10 @@ const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
       .map((item) => ({
         ...item,
         metadata: normalizeStoredMetadata(item.metadata),
+        // Guard the retry payload: a corrupted/legacy stored entry
+        // with a non-string value would otherwise pass the type
+        // system and reach sendQuestion as e.g. a number.
+        failedQuestion: typeof item.failedQuestion === 'string' ? item.failedQuestion : undefined,
       }));
 
     return messages.length ? messages : null;
@@ -643,31 +649,15 @@ const P_QNA = () => {
     });
   }, [isHydrated, messages]);
 
-  // AppState-tied stream cancellation. The unmount cleanup above
-  // only fires when the screen leaves the navigation stack; when the
-  // user backgrounds the app or locks the device the screen stays
-  // mounted, the SSE socket stays open, the backend keepalive keeps
-  // resetting the watchdog, and the orchestrator keeps burning
-  // SiliconFlow tokens for a user who isn't watching. Closing the
-  // handle on AppState != 'active' triggers the server-side
-  // res.on('close') hook (already wired in PR-Sec-1) and the
-  // orchestrator's AbortController stops the upstream LLM request.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state !== 'active' && streamHandleRef.current) {
-        streamHandleRef.current.close();
-        streamHandleRef.current = null;
-        // Flip the composer state back to "idle" too. Without this
-        // the user returns to a `isSending=true` UI with the send
-        // button greyed out until they manually clear the chat,
-        // because the stream's onComplete fires after `close()` but
-        // the screen has already stopped listening to it.
-        setIsSending(false);
-        setAskProgress(null);
-      }
-    });
-    return () => sub.remove();
-  }, []);
+  // NOTE: an earlier iteration force-closed the SSE stream whenever
+  // AppState left 'active' (to stop LLM token spend for a user who
+  // isn't watching). In practice that meant glancing at another app
+  // mid-answer destroyed the whole response. The cost ceiling of NOT
+  // closing is one already-in-flight answer (~seconds of streaming),
+  // and if the OS does kill the socket in the background, the 15s
+  // idle watchdog in lib/ai-streaming surfaces an errored bubble
+  // whose「重试」button recovers with one tap — so the answer's
+  // survival wins.
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -709,7 +699,7 @@ const P_QNA = () => {
     ]);
   };
 
-  const handleSendPress = async () => {
+  const handleSendPress = () => {
     const question = draft.trim();
     if (!question || isSending) return;
 
@@ -718,14 +708,35 @@ const P_QNA = () => {
       return;
     }
 
+    // Clearing the draft here is fine because every failure path
+    // below hands the question back: consent/network errors restore
+    // it into the composer, and stream aborts pin it to the errored
+    // bubble's「重试」button. The user never has to retype.
+    setDraft('');
+    void sendQuestion(question);
+  };
+
+  /** One-tap recovery on an errored bubble: drop the error bubble
+   *  (its user question stays in the transcript) and resend the
+   *  pinned question without making the user retype it. */
+  const handleRetry = (message: ChatMessage) => {
+    if (isSending || !message.failedQuestion) return;
+    const question = message.failedQuestion;
+    // The consent-403 path also restores the question into the
+    // composer. When the user recovers via THIS button instead,
+    // clear that copy — otherwise one accidental send fires a
+    // duplicate. Leave the composer alone if they typed something
+    // new meanwhile.
+    setDraft((prev) => (prev.trim() === question.trim() ? '' : prev));
+    setMessages((prev) => prev.filter((item) => item.id !== message.id));
+    void sendQuestion(question, { reuseUserBubble: true });
+  };
+
+  /** Open a stream for `question`. `reuseUserBubble` is set by the
+   *  retry path, where the original user message is already in the
+   *  transcript and only the assistant placeholder must be added. */
+  const sendQuestion = async (question: string, opts?: { reuseUserBubble?: boolean }) => {
     const progressId = createProgressId();
-    const userMessage: ChatMessage = {
-      id: createMessageId('user'),
-      role: 'user',
-      content: question,
-      createdAt: new Date().toISOString(),
-      status: 'sent',
-    };
     const assistantMessageId = createMessageId('assistant');
     const assistantPlaceholder: ChatMessage = {
       id: assistantMessageId,
@@ -734,8 +745,18 @@ const P_QNA = () => {
       createdAt: new Date().toISOString(),
       status: 'loading',
     };
-    setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
-    setDraft('');
+    if (opts?.reuseUserBubble) {
+      setMessages((prev) => [...prev, assistantPlaceholder]);
+    } else {
+      const userMessage: ChatMessage = {
+        id: createMessageId('user'),
+        role: 'user',
+        content: question,
+        createdAt: new Date().toISOString(),
+        status: 'sent',
+      };
+      setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
+    }
     setIsSending(true);
     setAskProgress({
       progressId,
@@ -857,6 +878,7 @@ const P_QNA = () => {
                     ...item,
                     status: 'error',
                     content: receivedAnyDelta ? accumulatedAnswer : 'AI 回答中断，请稍后重试。',
+                    failedQuestion: question,
                   }
                 : item,
             ),
@@ -911,10 +933,15 @@ const P_QNA = () => {
         // consent-required branch verbatim.
         if (isConsentRequiredError(error)) {
           const consentMessage = '需要先在隐私设置中开启 AI 同意，才能使用智能问答。';
+          // Hand the question back to the composer: the user typed it
+          // in good faith, got gated, and shouldn't have to retype it
+          // after granting consent. Only restore when they haven't
+          // started composing something new meanwhile.
+          setDraft((prev) => (prev.trim() ? prev : question));
           setMessages((prev) =>
             prev.map((item) =>
               item.id === assistantMessageId
-                ? { ...item, content: consentMessage, status: 'error' }
+                ? { ...item, content: consentMessage, status: 'error', failedQuestion: question }
                 : item,
             ),
           );
@@ -943,7 +970,7 @@ const P_QNA = () => {
           setMessages((prev) =>
             prev.map((item) =>
               item.id === assistantMessageId
-                ? { ...item, content: friendlyMessage, status: 'error' }
+                ? { ...item, content: friendlyMessage, status: 'error', failedQuestion: question }
                 : item,
             ),
           );
@@ -1112,6 +1139,21 @@ const P_QNA = () => {
                     setCitationPopover({ indexes, citations }),
                   )}
                   <AssistantMetadataBlock message={message} />
+                  {isError && message.failedQuestion ? (
+                    <TouchableOpacity
+                      style={styles.retryButton}
+                      activeOpacity={0.85}
+                      disabled={isSending}
+                      onPress={() => handleRetry(message)}
+                    >
+                      <FontAwesome6
+                        name="rotate-right"
+                        size={12}
+                        color={CLINICAL_COLORS.accentStrong}
+                      />
+                      <Text style={styles.retryButtonText}>重试这个问题</Text>
+                    </TouchableOpacity>
+                  ) : null}
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
                     {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
