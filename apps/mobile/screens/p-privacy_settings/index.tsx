@@ -17,6 +17,7 @@ import {
   type SharingPreferencesUpdatePayload,
   getMyConsent,
   getMySharingPreferences,
+  getSubmissionTimeline,
   updateMyConsent,
   updateMySharingPreferences,
 } from '../../lib/api';
@@ -135,6 +136,27 @@ const PrivacySettingsScreen = () => {
     router.push('/p-data_donation');
   };
 
+  /** Resulting consent level if `toggleId` were flipped to
+   *  `newState` — mirrors the backend rule (personal + thirdParty
+   *  both on = basic; + preciseValues = precise; anything else =
+   *  none/403), so the confirm dialog can state the outcome instead
+   *  of making the user derive it. */
+  const projectAiLevel = (toggleId: string, newState: boolean): string | null => {
+    if (!aiConsent) return null;
+    const next = { ...aiConsent.flags };
+    if (toggleId === AI_TOGGLE_IDS.personal) next.personal = newState;
+    else if (toggleId === AI_TOGGLE_IDS.thirdParty) next.thirdParty = newState;
+    else if (toggleId === AI_TOGGLE_IDS.preciseValues) next.preciseValues = newState;
+    else return null;
+
+    if (!next.personal || !next.thirdParty) {
+      return '操作后等级：未授权 —— 智能问答将无法使用。';
+    }
+    return next.preciseValues
+      ? '操作后等级：精确 —— AI 可读取 D4Z4 等原始数值。'
+      : '操作后等级：基础 —— AI 仅可引用脱敏后的档案字段。';
+  };
+
   const showConfirmModal = (toggleId: string, newState: boolean) => {
     let title = '';
     let message = '';
@@ -190,6 +212,11 @@ const PrivacySettingsScreen = () => {
           : '关闭后，AI 只会看到临床化的描述（如"D4Z4 短"），具体数值不会进入提示词。';
         icon = newState ? 'wand-magic-sparkles' : 'minus-circle';
         break;
+    }
+
+    const projectedLevel = projectAiLevel(toggleId, newState);
+    if (projectedLevel) {
+      message = `${message}\n\n${projectedLevel}`;
     }
 
     setModalConfig({ title, message, icon });
@@ -269,25 +296,52 @@ const PrivacySettingsScreen = () => {
     }, 3000);
   };
 
-  // Donation status card — the "lastDonation" + "donatedCount" lines
-  // are still placeholders (no donation pipeline yet); only the
-  // grant/revoke status comes from the real backend flag.
+  // Real record count for the donation card. There is no donation
+  // pipeline yet, so the honest number to show is "how many of my
+  // records are in scope for sharing" — the submission total. An
+  // earlier version hard-coded "12 条" here, which showed users a
+  // donation history that never happened.
+  const [shareableCount, setShareableCount] = useState<number | null>(null);
+  const donationGranted = sharingPrefs?.flags.dataDonation ?? false;
+
+  useEffect(() => {
+    if (!donationGranted) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        // page/pageSize 1: we only need the `total` counter.
+        const timeline = await getSubmissionTimeline(1, 1);
+        if (!cancelled) setShareableCount(timeline.total);
+      } catch {
+        // Leave as null → the card renders "—" instead of a made-up
+        // number. The count is informational, never block the screen.
+        if (!cancelled) setShareableCount(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [donationGranted]);
+
   const getDonationStatus = () => {
-    const donationGranted = sharingPrefs?.flags.dataDonation ?? false;
     if (!donationGranted) {
       return {
         status: '未授权',
         statusColor: CLINICAL_COLORS.textMuted,
-        lastDonation: '--',
-        donatedCount: '0 条',
+        grantedAt: '--',
+        shareableRecords: '--',
       };
     }
 
     return {
       status: '已授权',
       statusColor: CLINICAL_COLORS.success,
-      lastDonation: new Date().toLocaleDateString(),
-      donatedCount: '12 条',
+      // Same YYYY-MM-DD formatter the AI-consent rows use, so the
+      // screen doesn't mix date formats.
+      grantedAt: formatGrantDate(sharingPrefs?.timestamps.dataDonationAt ?? null) ?? '—',
+      shareableRecords: shareableCount === null ? '—' : `${shareableCount} 条`,
     };
   };
 
@@ -343,6 +397,11 @@ const PrivacySettingsScreen = () => {
         : level === 'basic'
           ? '当前等级：基础（AI 可读临床化字段）'
           : '当前等级：未授权（AI 拒绝回答）';
+    // The two-switch requirement was previously undocumented — users
+    // enabled one switch, still got the consent wall in QnA, and had
+    // no way to know why.
+    const comboHint =
+      '「个人数据」和「第三方 LLM」两项都开启后，智能问答才可用；精确数值是可选的第三档。';
 
     return (
       <View style={styles.section}>
@@ -351,12 +410,23 @@ const PrivacySettingsScreen = () => {
           style={{
             paddingHorizontal: 24,
             paddingTop: 4,
-            paddingBottom: 12,
             color: CLINICAL_COLORS.textMuted,
             fontSize: 12,
           }}
         >
           {levelLabel}
+        </Text>
+        <Text
+          style={{
+            paddingHorizontal: 24,
+            paddingTop: 6,
+            paddingBottom: 12,
+            color: CLINICAL_COLORS.textMuted,
+            fontSize: 12,
+            lineHeight: 18,
+          }}
+        >
+          {comboHint}
         </Text>
 
         <View style={styles.settingItem}>
@@ -568,12 +638,12 @@ const PrivacySettingsScreen = () => {
                 </Text>
               </View>
               <View style={styles.statusRow}>
-                <Text style={styles.statusLabel}>上次捐赠</Text>
-                <Text style={styles.statusValue}>{donationStatus.lastDonation}</Text>
+                <Text style={styles.statusLabel}>授权时间</Text>
+                <Text style={styles.statusValue}>{donationStatus.grantedAt}</Text>
               </View>
               <View style={styles.statusRow}>
-                <Text style={styles.statusLabel}>已捐赠数据</Text>
-                <Text style={styles.statusValue}>{donationStatus.donatedCount}</Text>
+                <Text style={styles.statusLabel}>可共享记录</Text>
+                <Text style={styles.statusValue}>{donationStatus.shareableRecords}</Text>
               </View>
             </View>
           </View>
