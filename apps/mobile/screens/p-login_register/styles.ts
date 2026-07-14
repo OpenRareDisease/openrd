@@ -318,45 +318,6 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.accent,
   },
 
-  // Divider styles
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: CLINICAL_COLORS.border,
-  },
-  dividerText: {
-    paddingHorizontal: 16,
-    fontSize: 14,
-    color: CLINICAL_COLORS.textMuted,
-  },
-
-  // Third party login styles
-  thirdPartyLogin: {
-    gap: 12,
-    marginBottom: 32,
-  },
-  thirdPartyButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    gap: 12,
-  },
-  thirdPartyButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-  },
-
   // Agreement styles
   agreement: {
     alignItems: 'center',

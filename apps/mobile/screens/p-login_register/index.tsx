@@ -391,44 +391,9 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    try {
-      const response = await sendOtp({
-        phoneNumber: formatPhoneNumber(registerForm.phone),
-        scene: 'register',
-      });
-      setRegisterForm((prev) => ({
-        ...prev,
-        otpRequestId: response.requestId,
-      }));
-
-      // Prefer the server's actual resend interval; 60 is only the
-      // fallback for older API builds that don't send it yet.
-      startCountdown(response.retryAfterSeconds ?? 60);
-
-      // Only surface `mockCode` in dev builds. The backend's mock
-      // OTP provider returns it; prod uses Tencent. A misconfigured
-      // staging env promoting an OTP_PROVIDER=mock value to prod
-      // would otherwise print the secret straight to the success
-      // toast. `__DEV__` is true in Expo dev builds and false in
-      // production bundles.
-      const message =
-        __DEV__ && response.mockCode
-          ? `验证码已发送（测试码：${response.mockCode}）`
-          : '验证码已发送';
-      showModal('success', '成功', message);
-    } catch (error) {
-      // Rate-limited: sync the countdown to the server's clock so the
-      // button disables itself for exactly the remaining wait, and
-      // tell the user the actual number instead of a generic failure.
-      const waitSeconds = extractWaitSeconds(error);
-      if (waitSeconds !== null) {
-        startCountdown(waitSeconds);
-        showModal('error', '发送过于频繁', `请在 ${waitSeconds} 秒后再试。`);
-        return;
-      }
-      const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
-      showModal('error', '错误', message);
-    }
+    await requestOtpCode('register', registerForm.phone, (requestId) =>
+      setRegisterForm((prev) => ({ ...prev, otpRequestId: requestId })),
+    );
   };
 
   // 登录提交
@@ -546,10 +511,10 @@ const LoginRegisterScreen: React.FC = () => {
     }
   };
 
-  /** Shared send-code path for the login/reset flows: same countdown
-   *  and 429 handling as the register flow, parameterized by scene. */
+  /** Shared send-code path for ALL three OTP flows (register/login/reset):
+   *  one countdown + 429 implementation, parameterized by scene. */
   const requestOtpCode = async (
-    scene: 'login' | 'reset',
+    scene: 'register' | 'login' | 'reset',
     phone: string,
     onRequestId: (requestId: string) => void,
   ): Promise<boolean> => {
