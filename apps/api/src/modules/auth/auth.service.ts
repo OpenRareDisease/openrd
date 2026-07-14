@@ -294,6 +294,88 @@ export class AuthService {
     }
   }
 
+  /**
+   * Issue a session for a phone number whose OTP the CONTROLLER has
+   * already verified (scene 'login'). The consumed one-time code is
+   * the credential, so no password/guard checks apply here — but we
+   * still clear any password-login lockout: proving phone ownership
+   * via OTP is strictly stronger evidence than the failed password
+   * attempts that created the lock.
+   */
+  async loginWithOtp(phoneNumber: string, meta?: { ip?: string; userAgent?: string }) {
+    const result = await this.pool.query<UserRow>(
+      `SELECT id, phone_number, email, role, created_at
+       FROM app_users
+       WHERE phone_number = $1`,
+      [phoneNumber],
+    );
+
+    if (!result.rowCount) {
+      await this.logAudit('auth.login_failed', {
+        identifier: phoneNumber,
+        reason: 'otp_login_no_account',
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
+      throw new AppError('该手机号尚未注册，请先注册', 404);
+    }
+
+    const user = this.serializeUser(result.rows[0]);
+    await this.clearLoginGuards([user.phoneNumber, user.email]);
+    const token = this.createToken(user);
+    this.logger.info({ userId: user.id }, 'User logged in via OTP');
+    await this.logAudit('auth.login_success', {
+      userId: user.id,
+      phoneNumber: user.phoneNumber,
+      method: 'otp',
+      ip: meta?.ip ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
+
+    return { user, token };
+  }
+
+  /**
+   * Replace the password for a phone number whose OTP the CONTROLLER
+   * has already verified (scene 'reset'). Also clears the login
+   * guard: the user just proved phone ownership, and keeping them
+   * locked out of their brand-new password helps nobody.
+   */
+  async resetPassword(
+    phoneNumber: string,
+    newPassword: string,
+    meta?: { ip?: string; userAgent?: string },
+  ) {
+    const passwordHash = await bcrypt.hash(newPassword, this.env.BCRYPT_SALT_ROUNDS);
+    const result = await this.pool.query<UserRow>(
+      `UPDATE app_users
+       SET password_hash = $1
+       WHERE phone_number = $2
+       RETURNING id, phone_number, email, role, created_at`,
+      [passwordHash, phoneNumber],
+    );
+
+    if (!result.rowCount) {
+      await this.logAudit('auth.password_reset_failed', {
+        identifier: phoneNumber,
+        reason: 'no_account',
+        ip: meta?.ip ?? null,
+        userAgent: meta?.userAgent ?? null,
+      });
+      throw new AppError('该手机号尚未注册，请先注册', 404);
+    }
+
+    const user = this.serializeUser(result.rows[0]);
+    await this.clearLoginGuards([user.phoneNumber, user.email]);
+    this.logger.info({ userId: user.id }, 'Password reset via OTP');
+    await this.logAudit('auth.password_reset_success', {
+      userId: user.id,
+      phoneNumber: user.phoneNumber,
+      ip: meta?.ip ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
+  }
+
   async login(payload: LoginInput, meta?: { ip?: string; userAgent?: string }) {
     const identifier = payload.phoneNumber ?? payload.email;
     const normalizedIdentifier = this.normalizeIdentifier(identifier ?? '');

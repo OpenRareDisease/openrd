@@ -24,7 +24,9 @@ import styles from './styles';
 import {
   ApiError,
   login,
+  loginWithOtp,
   register,
+  resetPassword,
   sendOtp,
   updateMyBaseline,
   upsertPatientProfile,
@@ -55,6 +57,8 @@ import {
   type RegisterErrors,
   type RegisterField,
   firstRegisterError,
+  isValidChinaMobile,
+  isValidPassword,
   validateLoginForm,
   validateRegisterForm,
 } from '../../lib/validation';
@@ -111,6 +115,26 @@ const LoginRegisterScreen: React.FC = () => {
     phone: '',
     password: '',
   });
+  // Password vs OTP login, plus the self-service reset flow. OTP
+  // login only needs two fields — the lowest-effort path for users
+  // with limited fine motor control (and the only path when the
+  // password is forgotten).
+  const [loginMethod, setLoginMethod] = useState<'password' | 'otp'>('password');
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [otpLoginForm, setOtpLoginForm] = useState({
+    phone: '',
+    code: '',
+    requestId: undefined as string | undefined,
+  });
+  const [otpLoginErrors, setOtpLoginErrors] = useState<Record<string, string>>({});
+  const [resetForm, setResetForm] = useState({
+    phone: '',
+    code: '',
+    requestId: undefined as string | undefined,
+    newPassword: '',
+    confirmPassword: '',
+  });
+  const [resetErrors, setResetErrors] = useState<Record<string, string>>({});
   const [registerForm, setRegisterForm] = useState<RegisterFormData>({
     phone: '',
     code: '',
@@ -367,44 +391,9 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
 
-    try {
-      const response = await sendOtp({
-        phoneNumber: formatPhoneNumber(registerForm.phone),
-        scene: 'register',
-      });
-      setRegisterForm((prev) => ({
-        ...prev,
-        otpRequestId: response.requestId,
-      }));
-
-      // Prefer the server's actual resend interval; 60 is only the
-      // fallback for older API builds that don't send it yet.
-      startCountdown(response.retryAfterSeconds ?? 60);
-
-      // Only surface `mockCode` in dev builds. The backend's mock
-      // OTP provider returns it; prod uses Tencent. A misconfigured
-      // staging env promoting an OTP_PROVIDER=mock value to prod
-      // would otherwise print the secret straight to the success
-      // toast. `__DEV__` is true in Expo dev builds and false in
-      // production bundles.
-      const message =
-        __DEV__ && response.mockCode
-          ? `验证码已发送（测试码：${response.mockCode}）`
-          : '验证码已发送';
-      showModal('success', '成功', message);
-    } catch (error) {
-      // Rate-limited: sync the countdown to the server's clock so the
-      // button disables itself for exactly the remaining wait, and
-      // tell the user the actual number instead of a generic failure.
-      const waitSeconds = extractWaitSeconds(error);
-      if (waitSeconds !== null) {
-        startCountdown(waitSeconds);
-        showModal('error', '发送过于频繁', `请在 ${waitSeconds} 秒后再试。`);
-        return;
-      }
-      const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
-      showModal('error', '错误', message);
-    }
+    await requestOtpCode('register', registerForm.phone, (requestId) =>
+      setRegisterForm((prev) => ({ ...prev, otpRequestId: requestId })),
+    );
   };
 
   // 登录提交
@@ -522,15 +511,117 @@ const LoginRegisterScreen: React.FC = () => {
     }
   };
 
-  // 忘记密码
-  const handleForgotPassword = () => {
-    showModal('error', '提示', '忘记密码功能暂未开放，请联系客服');
+  /** Shared send-code path for ALL three OTP flows (register/login/reset):
+   *  one countdown + 429 implementation, parameterized by scene. */
+  const requestOtpCode = async (
+    scene: 'register' | 'login' | 'reset',
+    phone: string,
+    onRequestId: (requestId: string) => void,
+  ): Promise<boolean> => {
+    try {
+      const response = await sendOtp({
+        phoneNumber: formatPhoneNumber(phone),
+        scene,
+      });
+      onRequestId(response.requestId);
+      startCountdown(response.retryAfterSeconds ?? 60);
+      const message =
+        __DEV__ && response.mockCode
+          ? `验证码已发送（测试码：${response.mockCode}）`
+          : '验证码已发送';
+      showModal('success', '成功', message);
+      return true;
+    } catch (error) {
+      const waitSeconds = extractWaitSeconds(error);
+      if (waitSeconds !== null) {
+        startCountdown(waitSeconds);
+        showModal('error', '发送过于频繁', `请在 ${waitSeconds} 秒后再试。`);
+        return false;
+      }
+      const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
+      showModal('error', '错误', message);
+      return false;
+    }
   };
 
-  // 第三方登录
-  const handleThirdPartyLogin = (type: 'wechat' | 'alipay') => {
-    const platform = type === 'wechat' ? '微信' : '支付宝';
-    showModal('error', '提示', `${platform}登录功能暂未开放`);
+  const handleOtpLoginSubmit = async () => {
+    const errors: Record<string, string> = {};
+    if (!isValidChinaMobile(otpLoginForm.phone)) {
+      errors.phone = otpLoginForm.phone ? '请输入正确的手机号' : '请输入手机号';
+    }
+    if (!otpLoginForm.code.trim()) {
+      errors.code = '请输入验证码';
+    }
+    setOtpLoginErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await loginWithOtp({
+        phoneNumber: formatPhoneNumber(otpLoginForm.phone),
+        code: otpLoginForm.code.trim(),
+        requestId: otpLoginForm.requestId,
+      });
+      await setSession(response);
+      const lastFour = (response.user.phoneNumber ?? '').slice(-4) || '****';
+      showModal('success', '登录成功', `欢迎回来，尾号 ${lastFour}`);
+      router.replace('/p-home');
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '登录失败，请重试';
+      showModal('error', '错误', message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasswordResetSubmit = async () => {
+    const errors: Record<string, string> = {};
+    if (!isValidChinaMobile(resetForm.phone)) {
+      errors.phone = resetForm.phone ? '请输入正确的手机号' : '请输入手机号';
+    }
+    if (!resetForm.code.trim()) {
+      errors.code = '请输入验证码';
+    }
+    if (!isValidPassword(resetForm.newPassword)) {
+      errors.newPassword = `密码长度应为${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位`;
+    }
+    if (resetForm.newPassword !== resetForm.confirmPassword) {
+      errors.confirmPassword = '两次输入的密码不一致';
+    }
+    setResetErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await resetPassword({
+        phoneNumber: formatPhoneNumber(resetForm.phone),
+        code: resetForm.code.trim(),
+        requestId: resetForm.requestId,
+        newPassword: resetForm.newPassword,
+      });
+      // Back to password login with the phone pre-filled — the user
+      // resets in order to log in, so put them one field away.
+      setIsResetMode(false);
+      setLoginMethod('password');
+      setLoginForm({ phone: resetForm.phone, password: '' });
+      setResetForm({
+        phone: '',
+        code: '',
+        requestId: undefined,
+        newPassword: '',
+        confirmPassword: '',
+      });
+      showModal('success', '重置成功', '密码已更新，请用新密码登录。');
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '重置失败，请重试';
+      showModal('error', '错误', message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // 显示协议
@@ -688,53 +779,292 @@ const LoginRegisterScreen: React.FC = () => {
               </View>
 
               {/* 登录表单 */}
-              {activeTab === 'login' && (
+              {activeTab === 'login' && !isResetMode && (
                 <View style={styles.formContainer}>
+                  <View style={styles.identityRow}>
+                    {(
+                      [
+                        { value: 'password', label: '密码登录' },
+                        { value: 'otp', label: '验证码登录' },
+                      ] as const
+                    ).map((option) => {
+                      const isActive = loginMethod === option.value;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          style={[styles.identityButton, isActive && styles.identityButtonActive]}
+                          onPress={() => setLoginMethod(option.value)}
+                        >
+                          <Text
+                            style={[
+                              styles.identityButtonText,
+                              isActive && styles.identityButtonTextActive,
+                            ]}
+                          >
+                            {option.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {loginMethod === 'password' ? (
+                    <>
+                      <View style={styles.inputContainer}>
+                        <Text style={styles.inputLabel}>手机号</Text>
+                        <TextInput
+                          style={styles.textInput}
+                          placeholder="请输入手机号"
+                          placeholderTextColor={CLINICAL_COLORS.textMuted}
+                          value={loginForm.phone}
+                          onChangeText={(text) =>
+                            setLoginForm((prev) => ({ ...prev, phone: text }))
+                          }
+                          keyboardType="phone-pad"
+                          maxLength={11}
+                        />
+                        {renderLoginError('phone')}
+                      </View>
+
+                      <View style={styles.inputContainer}>
+                        <Text style={styles.inputLabel}>密码</Text>
+                        <View style={styles.passwordInputWrapper}>
+                          <TextInput
+                            style={styles.passwordInput}
+                            placeholder="请输入密码"
+                            placeholderTextColor={CLINICAL_COLORS.textMuted}
+                            value={loginForm.password}
+                            onChangeText={(text) =>
+                              setLoginForm((prev) => ({ ...prev, password: text }))
+                            }
+                            secureTextEntry={!isLoginPasswordVisible}
+                            maxLength={PASSWORD_MAX_LENGTH}
+                          />
+                          <TouchableOpacity
+                            style={styles.passwordToggleButton}
+                            onPress={() => togglePasswordVisibility('login')}
+                          >
+                            <FontAwesome6
+                              name={isLoginPasswordVisible ? 'eye-slash' : 'eye'}
+                              size={16}
+                              color={CLINICAL_COLORS.textMuted}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                        {renderLoginError('password')}
+                      </View>
+
+                      <TouchableOpacity
+                        style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                        onPress={handleLoginSubmit}
+                        disabled={isLoading}
+                      >
+                        <LinearGradient
+                          colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.primaryButtonGradient}
+                        >
+                          <Text style={styles.primaryButtonText}>
+                            {isLoading ? '登录中...' : '登录'}
+                          </Text>
+                        </LinearGradient>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <>
+                      <View style={styles.inputContainer}>
+                        <Text style={styles.inputLabel}>手机号</Text>
+                        <TextInput
+                          style={styles.textInput}
+                          placeholder="请输入手机号"
+                          placeholderTextColor={CLINICAL_COLORS.textMuted}
+                          value={otpLoginForm.phone}
+                          onChangeText={(text) => {
+                            setOtpLoginForm((prev) => ({ ...prev, phone: text }));
+                            setOtpLoginErrors((prev) => ({ ...prev, phone: '' }));
+                          }}
+                          keyboardType="phone-pad"
+                          maxLength={11}
+                        />
+                        {otpLoginErrors.phone ? (
+                          <Text style={styles.fieldErrorText}>{otpLoginErrors.phone}</Text>
+                        ) : null}
+                      </View>
+
+                      <View style={styles.inputContainer}>
+                        <Text style={styles.inputLabel}>验证码</Text>
+                        <View style={styles.verificationCodeWrapper}>
+                          <TextInput
+                            style={styles.verificationCodeInput}
+                            placeholder="请输入验证码"
+                            placeholderTextColor={CLINICAL_COLORS.textMuted}
+                            value={otpLoginForm.code}
+                            onChangeText={(text) => {
+                              setOtpLoginForm((prev) => ({ ...prev, code: text }));
+                              setOtpLoginErrors((prev) => ({ ...prev, code: '' }));
+                            }}
+                            keyboardType="number-pad"
+                            maxLength={6}
+                          />
+                          <TouchableOpacity
+                            style={[
+                              styles.getCodeButton,
+                              countdown > 0 && styles.getCodeButtonDisabled,
+                            ]}
+                            onPress={() => {
+                              if (!isValidChinaMobile(otpLoginForm.phone)) {
+                                setOtpLoginErrors((prev) => ({
+                                  ...prev,
+                                  phone: otpLoginForm.phone ? '请输入正确的手机号' : '请输入手机号',
+                                }));
+                                return;
+                              }
+                              void requestOtpCode('login', otpLoginForm.phone, (requestId) =>
+                                setOtpLoginForm((prev) => ({ ...prev, requestId })),
+                              );
+                            }}
+                            disabled={countdown > 0}
+                          >
+                            <Text style={styles.getCodeButtonText}>
+                              {countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                        {otpLoginErrors.code ? (
+                          <Text style={styles.fieldErrorText}>{otpLoginErrors.code}</Text>
+                        ) : null}
+                      </View>
+
+                      <TouchableOpacity
+                        style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                        onPress={handleOtpLoginSubmit}
+                        disabled={isLoading}
+                      >
+                        <LinearGradient
+                          colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.primaryButtonGradient}
+                        >
+                          <Text style={styles.primaryButtonText}>
+                            {isLoading ? '登录中...' : '验证码登录'}
+                          </Text>
+                        </LinearGradient>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
+              )}
+
+              {/* 重置密码 */}
+              {activeTab === 'login' && isResetMode && (
+                <View style={styles.formContainer}>
+                  <Text style={styles.registerSectionTitle}>重置密码</Text>
                   <View style={styles.inputContainer}>
                     <Text style={styles.inputLabel}>手机号</Text>
                     <TextInput
                       style={styles.textInput}
-                      placeholder="请输入手机号"
+                      placeholder="请输入注册时的手机号"
                       placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={loginForm.phone}
-                      onChangeText={(text) => setLoginForm((prev) => ({ ...prev, phone: text }))}
+                      value={resetForm.phone}
+                      onChangeText={(text) => {
+                        setResetForm((prev) => ({ ...prev, phone: text }));
+                        setResetErrors((prev) => ({ ...prev, phone: '' }));
+                      }}
                       keyboardType="phone-pad"
                       maxLength={11}
                     />
-                    {renderLoginError('phone')}
+                    {resetErrors.phone ? (
+                      <Text style={styles.fieldErrorText}>{resetErrors.phone}</Text>
+                    ) : null}
                   </View>
 
                   <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>密码</Text>
-                    <View style={styles.passwordInputWrapper}>
+                    <Text style={styles.inputLabel}>验证码</Text>
+                    <View style={styles.verificationCodeWrapper}>
                       <TextInput
-                        style={styles.passwordInput}
-                        placeholder="请输入密码"
+                        style={styles.verificationCodeInput}
+                        placeholder="请输入验证码"
                         placeholderTextColor={CLINICAL_COLORS.textMuted}
-                        value={loginForm.password}
-                        onChangeText={(text) =>
-                          setLoginForm((prev) => ({ ...prev, password: text }))
-                        }
-                        secureTextEntry={!isLoginPasswordVisible}
-                        maxLength={PASSWORD_MAX_LENGTH}
+                        value={resetForm.code}
+                        onChangeText={(text) => {
+                          setResetForm((prev) => ({ ...prev, code: text }));
+                          setResetErrors((prev) => ({ ...prev, code: '' }));
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={6}
                       />
                       <TouchableOpacity
-                        style={styles.passwordToggleButton}
-                        onPress={() => togglePasswordVisibility('login')}
+                        style={[
+                          styles.getCodeButton,
+                          countdown > 0 && styles.getCodeButtonDisabled,
+                        ]}
+                        onPress={() => {
+                          if (!isValidChinaMobile(resetForm.phone)) {
+                            setResetErrors((prev) => ({
+                              ...prev,
+                              phone: resetForm.phone ? '请输入正确的手机号' : '请输入手机号',
+                            }));
+                            return;
+                          }
+                          void requestOtpCode('reset', resetForm.phone, (requestId) =>
+                            setResetForm((prev) => ({ ...prev, requestId })),
+                          );
+                        }}
+                        disabled={countdown > 0}
                       >
-                        <FontAwesome6
-                          name={isLoginPasswordVisible ? 'eye-slash' : 'eye'}
-                          size={16}
-                          color={CLINICAL_COLORS.textMuted}
-                        />
+                        <Text style={styles.getCodeButtonText}>
+                          {countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
+                        </Text>
                       </TouchableOpacity>
                     </View>
-                    {renderLoginError('password')}
+                    {resetErrors.code ? (
+                      <Text style={styles.fieldErrorText}>{resetErrors.code}</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>新密码</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder={`请设置${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位新密码`}
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={resetForm.newPassword}
+                      onChangeText={(text) => {
+                        setResetForm((prev) => ({ ...prev, newPassword: text }));
+                        setResetErrors((prev) => ({ ...prev, newPassword: '' }));
+                      }}
+                      secureTextEntry
+                      maxLength={PASSWORD_MAX_LENGTH}
+                    />
+                    {resetErrors.newPassword ? (
+                      <Text style={styles.fieldErrorText}>{resetErrors.newPassword}</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.inputContainer}>
+                    <Text style={styles.inputLabel}>确认新密码</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="请再次输入新密码"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={resetForm.confirmPassword}
+                      onChangeText={(text) => {
+                        setResetForm((prev) => ({ ...prev, confirmPassword: text }));
+                        setResetErrors((prev) => ({ ...prev, confirmPassword: '' }));
+                      }}
+                      secureTextEntry
+                      maxLength={PASSWORD_MAX_LENGTH}
+                    />
+                    {resetErrors.confirmPassword ? (
+                      <Text style={styles.fieldErrorText}>{resetErrors.confirmPassword}</Text>
+                    ) : null}
                   </View>
 
                   <TouchableOpacity
                     style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
-                    onPress={handleLoginSubmit}
+                    onPress={handlePasswordResetSubmit}
                     disabled={isLoading}
                   >
                     <LinearGradient
@@ -744,10 +1074,16 @@ const LoginRegisterScreen: React.FC = () => {
                       style={styles.primaryButtonGradient}
                     >
                       <Text style={styles.primaryButtonText}>
-                        {isLoading ? '登录中...' : '登录'}
+                        {isLoading ? '提交中...' : '重置密码'}
                       </Text>
                     </LinearGradient>
                   </TouchableOpacity>
+
+                  <View style={styles.forgotPasswordContainer}>
+                    <TouchableOpacity onPress={() => setIsResetMode(false)}>
+                      <Text style={styles.forgotPasswordText}>返回登录</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
 
@@ -1149,40 +1485,14 @@ const LoginRegisterScreen: React.FC = () => {
                 </View>
               )}
 
-              {/* 忘记密码 */}
-              {activeTab === 'login' && (
+              {/* 忘记密码 → 自助重置流 */}
+              {activeTab === 'login' && !isResetMode && (
                 <View style={styles.forgotPasswordContainer}>
-                  <TouchableOpacity onPress={handleForgotPassword}>
+                  <TouchableOpacity onPress={() => setIsResetMode(true)}>
                     <Text style={styles.forgotPasswordText}>忘记密码？</Text>
                   </TouchableOpacity>
                 </View>
               )}
-
-              {/* 分割线 */}
-              <View style={styles.divider}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>或</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              {/* 第三方登录 */}
-              <View style={styles.thirdPartyLogin}>
-                <TouchableOpacity
-                  style={styles.thirdPartyButton}
-                  onPress={() => handleThirdPartyLogin('wechat')}
-                >
-                  <FontAwesome6 name="weixin" size={18} color="#07C160" />
-                  <Text style={styles.thirdPartyButtonText}>微信登录</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.thirdPartyButton}
-                  onPress={() => handleThirdPartyLogin('alipay')}
-                >
-                  <FontAwesome6 name="alipay" size={18} color="#1677FF" />
-                  <Text style={styles.thirdPartyButtonText}>支付宝登录</Text>
-                </TouchableOpacity>
-              </View>
 
               {/* 用户协议 */}
               <View style={styles.agreement}>

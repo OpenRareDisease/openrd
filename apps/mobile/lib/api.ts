@@ -1129,6 +1129,25 @@ export const login = (payload: { phoneNumber?: string; email?: string; password:
     body: JSON.stringify(payload),
   });
 
+/** Passwordless login: a fresh OTP (scene 'login') is the credential. */
+export const loginWithOtp = (payload: { phoneNumber: string; code: string; requestId?: string }) =>
+  apiRequest<AuthResponse>('/auth/login/otp', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+/** Self-service password reset authorized by an OTP (scene 'reset'). */
+export const resetPassword = (payload: {
+  phoneNumber: string;
+  code: string;
+  requestId?: string;
+  newPassword: string;
+}) =>
+  apiRequest<{ ok: boolean }>('/auth/password/reset', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
 export const register = (payload: {
   phoneNumber: string;
   otpCode: string;
