@@ -44,3 +44,23 @@ export const verifyOtpSchema = z.object({
 });
 
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;
+
+/** Passwordless login: a fresh OTP (scene 'login') IS the credential. */
+export const otpLoginSchema = z.object({
+  phoneNumber: z.string().min(5, 'Phone number is required'),
+  code: z.string().min(4, 'OTP code is required'),
+  requestId: z.string().optional(),
+});
+
+export type OtpLoginInput = z.infer<typeof otpLoginSchema>;
+
+/** Self-service password reset, authorized by an OTP (scene 'reset').
+ *  min(8) mirrors registerSchema's password policy. */
+export const passwordResetSchema = z.object({
+  phoneNumber: z.string().min(5, 'Phone number is required'),
+  code: z.string().min(4, 'OTP code is required'),
+  requestId: z.string().optional(),
+  newPassword: z.string().min(8, 'Password must contain at least 8 characters'),
+});
+
+export type PasswordResetInput = z.infer<typeof passwordResetSchema>;

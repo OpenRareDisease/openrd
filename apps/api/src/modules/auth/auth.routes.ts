@@ -37,6 +37,8 @@ export const createAuthRouter = (context: RouteContext) => {
   router.post('/otp/verify', authLimiter, asyncHandler(controller.verifyOtp));
   router.post('/register', authLimiter, asyncHandler(controller.register));
   router.post('/login', authLimiter, asyncHandler(controller.login));
+  router.post('/login/otp', authLimiter, asyncHandler(controller.loginWithOtp));
+  router.post('/password/reset', authLimiter, asyncHandler(controller.resetPassword));
 
   return router;
 };
