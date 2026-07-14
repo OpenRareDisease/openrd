@@ -3,7 +3,6 @@ import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } fr
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { FontAwesome6 } from '@expo/vector-icons';
 import {
   ApiError,
   deletePatientDocument,
@@ -20,6 +19,7 @@ import {
 } from '../../lib/clinical-visuals';
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
 import styles from './styles';
+import InlineNotice from '../common/feedback/InlineNotice';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
 import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
@@ -84,6 +84,10 @@ export default function ReportDetailScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  // Recoverable failures render inline (three-way feedback split);
+  // the summary one keeps a retry since regeneration is idempotent.
+  const [summaryNotice, setSummaryNotice] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [summary, setSummary] = useState<string>('');
   const [bodyView, setBodyView] = useState<BodyView>('front');
@@ -284,6 +288,7 @@ export default function ReportDetailScreen() {
     if (!documentId) return;
     try {
       setSummaryLoading(true);
+      setSummaryNotice(null);
       const res = await generatePatientDocumentSummary(documentId);
       setSummary(res.summary);
       setPayload((prev) => {
@@ -293,7 +298,7 @@ export default function ReportDetailScreen() {
       });
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '生成 AI 总结失败';
-      Alert.alert('失败', message);
+      setSummaryNotice(message);
     } finally {
       setSummaryLoading(false);
     }
@@ -315,7 +320,7 @@ export default function ReportDetailScreen() {
       ]);
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';
-      Alert.alert('删除失败', message);
+      setDeleteNotice(`删除失败：${message}`);
     } finally {
       setDeleteLoading(false);
     }
@@ -477,6 +482,16 @@ export default function ReportDetailScreen() {
               <Text style={styles.smallText}>
                 当前报告暂无 AI 总结，可在解析完成后按需生成并缓存。
               </Text>
+              {summaryNotice ? (
+                <View style={{ marginTop: 12 }}>
+                  <InlineNotice
+                    message={summaryNotice}
+                    onRetry={() => void onGenerateSummary()}
+                    retryLabel="重新生成"
+                    retryDisabled={summaryLoading}
+                  />
+                </View>
+              ) : null}
               <View style={{ marginTop: 12 }}>
                 <TouchableOpacity
                   style={[styles.button, summaryLoading && { opacity: 0.7 }]}
@@ -516,6 +531,11 @@ export default function ReportDetailScreen() {
           <Text style={styles.smallText}>
             如果这份报告传错了、识别错了，或只是重复上传，可以直接删除。删除后护照和病程摘要会按剩余数据重新计算。
           </Text>
+          {deleteNotice ? (
+            <View style={{ marginTop: 12 }}>
+              <InlineNotice message={deleteNotice} />
+            </View>
+          ) : null}
           <TouchableOpacity
             style={[styles.button, styles.dangerButton, deleteLoading && styles.buttonDisabled]}
             disabled={deleteLoading}

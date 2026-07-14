@@ -26,6 +26,7 @@ import {
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
+import InlineNotice from '../common/feedback/InlineNotice';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
@@ -354,6 +355,15 @@ const DataEntryScreen = () => {
   const [followupForm, setFollowupForm] = useState<FollowupFormState>(DEFAULT_FOLLOWUP_FORM);
   const [eventForm, setEventForm] = useState<EventFormState>(DEFAULT_EVENT_FORM);
   const [uploadDraft, setUploadDraft] = useState<UploadDraft>(DEFAULT_UPLOAD_DRAFT);
+  // Recoverable failures render as an InlineNotice above the submit
+  // button (three-way feedback split: no more blocking error popups);
+  // per-field validation renders under its input.
+  const [formNotice, setFormNotice] = useState<string | null>(null);
+  const [followupFieldErrors, setFollowupFieldErrors] = useState<{
+    stairClimb?: string;
+    sleep?: string;
+    fall?: string;
+  }>({});
 
   const loadContext = async () => {
     setIsLoading(true);
@@ -498,13 +508,13 @@ const DataEntryScreen = () => {
     // bodies anyway, but failing before the upload saves the user
     // from watching a doomed progress spinner on a slow uplink.
     if (typeof asset.size === 'number' && asset.size > MAX_UPLOAD_BYTES) {
-      Alert.alert(
-        '文件过大',
+      setFormNotice(
         `报告文件不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB，请压缩后重试。`,
       );
       return;
     }
 
+    setFormNotice(null);
     setUploadDraft((prev) => ({
       ...prev,
       name: asset.name,
@@ -538,28 +548,32 @@ const DataEntryScreen = () => {
   };
 
   const handleFollowupSubmit = async () => {
+    // Collect EVERY failing field at once and render inline — the old
+    // flow popped one blocking Alert per problem per submit.
+    const stairClimbSeconds = Number(followupForm.stairClimbSeconds);
+    const sleepScore = Number(followupForm.sleepScore);
+    const fallCount = Number(followupForm.fallCount || '0');
+
+    const fieldErrors: typeof followupFieldErrors = {};
+    if (Number.isNaN(stairClimbSeconds) || stairClimbSeconds <= 0) {
+      fieldErrors.stairClimb = '请按“连续上 10 级台阶”的标准填写本次用时。';
+    }
+    if (Number.isNaN(sleepScore) || sleepScore < 0 || sleepScore > 10) {
+      fieldErrors.sleep = '睡眠质量请按 0 到 10 分选择。';
+    }
+    if (Number.isNaN(fallCount) || fallCount < 0) {
+      fieldErrors.fall = '跌倒次数请填写 0 或更大的整数。';
+    }
+    setFollowupFieldErrors(fieldErrors);
+    if (Object.keys(fieldErrors).length > 0) {
+      return;
+    }
+
+    setFormNotice(null);
     setIsSubmitting(true);
 
     try {
       const ensuredProfile = await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
-      const stairClimbSeconds = Number(followupForm.stairClimbSeconds);
-      const sleepScore = Number(followupForm.sleepScore);
-      const fallCount = Number(followupForm.fallCount || '0');
-
-      if (Number.isNaN(stairClimbSeconds) || stairClimbSeconds <= 0) {
-        Alert.alert('请补充上楼计时', '请按“连续上 10 级台阶”的标准填写本次用时。');
-        return;
-      }
-
-      if (Number.isNaN(sleepScore) || sleepScore < 0 || sleepScore > 10) {
-        Alert.alert('请补充睡眠评分', '睡眠质量请按 0 到 10 分选择。');
-        return;
-      }
-
-      if (Number.isNaN(fallCount) || fallCount < 0) {
-        Alert.alert('请检查跌倒次数', '跌倒次数请填写 0 或更大的整数。');
-        return;
-      }
 
       const previousStairClimbSeconds = getLatestFunctionTestValue(
         profile ?? ensuredProfile,
@@ -643,7 +657,7 @@ const DataEntryScreen = () => {
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : '随访保存失败';
-      Alert.alert('保存失败', message);
+      setFormNotice(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -684,7 +698,7 @@ const DataEntryScreen = () => {
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : '事件保存失败';
-      Alert.alert('保存失败', message);
+      setFormNotice(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -714,7 +728,7 @@ const DataEntryScreen = () => {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '报告上传失败';
-      Alert.alert('上传失败', message);
+      setFormNotice(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -782,6 +796,9 @@ const DataEntryScreen = () => {
             keyboardType="decimal-pad"
             style={styles.input}
           />
+          {followupFieldErrors.stairClimb ? (
+            <Text style={styles.fieldErrorText}>{followupFieldErrors.stairClimb}</Text>
+          ) : null}
           {typeof previousStairClimb === 'number' ? (
             <Text style={styles.previousValueText}>
               上次记录：{previousStairClimb.toFixed(1)} 秒
@@ -798,6 +815,9 @@ const DataEntryScreen = () => {
         {renderSleepScorePicker(followupForm.sleepScore, (value) =>
           setFollowupForm((prev) => ({ ...prev, sleepScore: value })),
         )}
+        {followupFieldErrors.sleep ? (
+          <Text style={styles.fieldErrorText}>{followupFieldErrors.sleep}</Text>
+        ) : null}
         {typeof previousSleepScore === 'number' ? (
           <Text style={styles.previousValueText}>上次记录：{previousSleepScore}/10</Text>
         ) : null}
@@ -819,9 +839,13 @@ const DataEntryScreen = () => {
             keyboardType="number-pad"
             style={styles.input}
           />
+          {followupFieldErrors.fall ? (
+            <Text style={styles.fieldErrorText}>{followupFieldErrors.fall}</Text>
+          ) : null}
         </View>
       </View>
 
+      {formNotice ? <InlineNotice message={formNotice} /> : null}
       <TouchableOpacity
         style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
         activeOpacity={0.88}
@@ -858,6 +882,7 @@ const DataEntryScreen = () => {
         </View>
       </View>
 
+      {formNotice ? <InlineNotice message={formNotice} /> : null}
       <TouchableOpacity
         style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
         activeOpacity={0.88}
@@ -927,6 +952,7 @@ const DataEntryScreen = () => {
         </View>
       </View>
 
+      {formNotice ? <InlineNotice message={formNotice} /> : null}
       <TouchableOpacity
         style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
         activeOpacity={0.88}
@@ -1003,7 +1029,13 @@ const DataEntryScreen = () => {
                     key={item.key}
                     style={[styles.modeCard, active && styles.modeCardActive]}
                     activeOpacity={0.9}
-                    onPress={() => setEntryMode(item.key)}
+                    onPress={() => {
+                      setEntryMode(item.key);
+                      // Notices/validation belong to the mode they
+                      // came from — don't leak into the next form.
+                      setFormNotice(null);
+                      setFollowupFieldErrors({});
+                    }}
                   >
                     <View style={styles.modeCardTopRow}>
                       <View style={styles.modeOrderWrap}>

@@ -307,6 +307,12 @@ export default StyleSheet.create({
     color: CLINICAL_COLORS.textMuted,
     fontSize: 12,
   },
+  fieldErrorText: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.danger,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   input: {
     marginTop: 10,
     minHeight: 48,
