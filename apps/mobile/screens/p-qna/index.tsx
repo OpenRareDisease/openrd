@@ -28,32 +28,11 @@ import {
 } from '../../lib/api';
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { type ChatMessage, parseStoredMessages } from './chat-storage';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
-import {
-  normalizeStoredMetadata,
-  synthesizeLegacyToolCalls,
-  type AssistantMetadata,
-} from './metadata';
+import { synthesizeLegacyToolCalls, type AssistantMetadata } from './metadata';
 import { pickCurrentMode } from './mode';
 import styles from './styles';
-
-type ChatRole = 'assistant' | 'user';
-type ChatMessageStatus = 'sent' | 'loading' | 'error';
-
-type ChatMessage = {
-  id: string;
-  role: ChatRole;
-  content: string;
-  createdAt: string;
-  status: ChatMessageStatus;
-  metadata?: AssistantMetadata;
-  /** On an errored assistant bubble: the exact question that failed,
-   *  so the「重试」button can resend it without the user retyping. */
-  failedQuestion?: string;
-  /** Marks a consent-gate failure: the bubble renders the inline
-   *  authorization card (grant-and-resend) instead of a plain retry. */
-  consentRequired?: boolean;
-};
 
 // Backed by `QNA_CHAT_STORAGE_KEY` in lib/api so the AuthContext's
 // logout sweep + the 401 handler can purge it without import cycles.
@@ -82,43 +61,6 @@ const createWelcomeMessage = (): ChatMessage => ({
   createdAt: new Date().toISOString(),
   status: 'sent',
 });
-
-const parseStoredMessages = (raw: string | null): ChatMessage[] | null => {
-  if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-
-    const messages = parsed
-      .filter((item): item is ChatMessage => {
-        if (!item || typeof item !== 'object') return false;
-        const candidate = item as Partial<ChatMessage>;
-        return (
-          typeof candidate.id === 'string' &&
-          (candidate.role === 'assistant' || candidate.role === 'user') &&
-          typeof candidate.content === 'string' &&
-          typeof candidate.createdAt === 'string' &&
-          (candidate.status === 'sent' ||
-            candidate.status === 'loading' ||
-            candidate.status === 'error')
-        );
-      })
-      .map((item) => ({
-        ...item,
-        metadata: normalizeStoredMetadata(item.metadata),
-        // Guard the retry payload: a corrupted/legacy stored entry
-        // with a non-string value would otherwise pass the type
-        // system and reach sendQuestion as e.g. a number.
-        failedQuestion: typeof item.failedQuestion === 'string' ? item.failedQuestion : undefined,
-        consentRequired: item.consentRequired === true ? true : undefined,
-      }));
-
-    return messages.length ? messages : null;
-  } catch {
-    return null;
-  }
-};
 
 //: Defence-in-depth cap on chunk snippets the server includes in
 //: citations. The KB chunk wrap + redactor make this very unlikely to
