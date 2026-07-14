@@ -673,6 +673,11 @@ const DataEntryScreen = () => {
       await setSessionValue(DATA_ENTRY_DRAFT_KEYS.event, null);
       resetUploadDraft();
       await loadContext();
+      // loadContext re-derives the event form from the profile, which
+      // back-fills the event JUST submitted (type/severity/description
+      // included) — a duplicate-submission trap now that we stay on
+      // this screen. Start the next entry from a clean slate instead.
+      setEventForm({ ...DEFAULT_EVENT_FORM, occurredAt: todayIsoDate() });
       Alert.alert('已保存', '事件记录已添加，可以继续记录。', [
         { text: '查看我的档案', onPress: () => router.push('/p-archive') },
         { text: '继续记录', style: 'cancel' },
@@ -736,7 +741,7 @@ const DataEntryScreen = () => {
       <TouchableOpacity style={styles.uploadButton} activeOpacity={0.88} onPress={pickDocument}>
         <FontAwesome6 name="file-arrow-up" size={14} color={CLINICAL_COLORS.accentStrong} />
         <Text style={styles.uploadButtonText}>
-          {uploadDraft.name ? `已选择：${uploadDraft.name}` : '选择 PDF、图片或其他文件'}
+          {uploadDraft.name ? `已选择：${uploadDraft.name}` : '选择 PDF 或图片（10MB 以内）'}
         </Text>
       </TouchableOpacity>
     </View>
@@ -840,7 +845,7 @@ const DataEntryScreen = () => {
         <View style={styles.tipList}>
           <View style={styles.tipItem}>
             <FontAwesome6 name="check" size={12} color={CLINICAL_COLORS.accentStrong} />
-            <Text style={styles.tipText}>支持 PDF、拍照图片和常见文档文件</Text>
+            <Text style={styles.tipText}>支持 PDF 和拍照图片（单份 10MB 以内）</Text>
           </View>
           <View style={styles.tipItem}>
             <FontAwesome6 name="check" size={12} color={CLINICAL_COLORS.accentStrong} />
