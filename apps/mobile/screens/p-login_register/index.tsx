@@ -114,12 +114,21 @@ const LoginRegisterScreen: React.FC = () => {
       try {
         const raw = await getSessionValue(REGISTER_FORM_DRAFT_KEY);
         if (raw) {
-          const draft = JSON.parse(raw) as Partial<RegisterFormData>;
-          delete draft.password;
-          delete draft.confirmPassword;
-          delete draft.code;
-          delete draft.otpRequestId;
-          setRegisterForm((prev) => ({ ...prev, ...draft }));
+          const draft = JSON.parse(raw) as Partial<RegisterFormData> & Record<string, unknown>;
+          // Pick known fields explicitly: a pre-slim draft carries
+          // removed profile fields (fullName, region…), and spreading
+          // it would smuggle them into state — and back into storage
+          // — forever. Secrets/OTP state are excluded by construction.
+          setRegisterForm((prev) => ({
+            ...prev,
+            phone: typeof draft.phone === 'string' ? draft.phone : prev.phone,
+            identity:
+              draft.identity === 'doctor' ||
+              draft.identity === 'patient_family' ||
+              draft.identity === 'other'
+                ? draft.identity
+                : prev.identity,
+          }));
         }
       } catch {
         // A broken draft must never block registration.
@@ -378,8 +387,14 @@ const LoginRegisterScreen: React.FC = () => {
     setIsLoading(true);
 
     try {
+      // The public register endpoint only accepts patient/caregiver —
+      // clinician accounts are provisioned through a back-office path
+      // with licence verification (auth.schema.ts). Mapping doctor →
+      // 'clinician' made every doctor-identity registration fail zod
+      // with an opaque 400; doctors sign up as caregiver-tier accounts
+      // until clinician provisioning exists.
       const roleMap = {
-        doctor: 'clinician',
+        doctor: 'caregiver',
         patient_family: 'patient',
         other: 'caregiver',
       } as const;
