@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -215,12 +215,19 @@ const formatCalendarDate = (value?: string | null) => {
 
 const getDocumentStatusLabel = (status?: string | null) => {
   switch (status) {
+    // 'parsed' / 'needs_review' / 'parse_failed' are the async
+    // pipeline's vocabulary (migration 011); the older values stay
+    // for rows written before it landed.
     case 'processed':
     case 'completed':
+    case 'parsed':
       return '已识别';
+    case 'needs_review':
+      return '待复核';
     case 'processing':
       return '识别中';
     case 'failed':
+    case 'parse_failed':
       return '识别失败';
     default:
       return '已上传';
@@ -304,6 +311,19 @@ export default function ReportManagementScreen() {
   useEffect(() => {
     loadData().catch(() => undefined);
   }, []);
+
+  // Async OCR: a report uploaded moments ago is still 'processing'.
+  // Refetch silently whenever this screen regains focus (back from
+  // the detail screen, tab return) so「识别中」badges resolve without
+  // the user having to pull-to-refresh.
+  useFocusEffect(
+    // loadData is recreated per render; an empty dep list runs the
+    // refetch exactly once per focus gain, which is the semantic we
+    // want (this config has no react-hooks lint plugin to appease).
+    useCallback(() => {
+      loadData(true).catch(() => undefined);
+    }, []),
+  );
 
   const displayName = profile?.preferredName?.trim() || profile?.fullName?.trim() || '系统检测报告';
   const reportCards = useMemo(

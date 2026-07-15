@@ -1090,8 +1090,22 @@ export const uploadPatientDocument = async (input: {
 };
 
 export const getPatientDocumentOcr = (documentId: string) =>
-  apiRequest<{ documentId: string; ocrPayload: PatientDocument['ocrPayload'] | null }>(
-    `/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`,
+  apiRequest<{
+    documentId: string;
+    /** Document-row status ('processing' | 'parsed' | 'needs_review'
+     *  | 'parse_failed' | legacy 'uploaded'); the async pipeline keeps
+     *  ocrPayload null while parsing, so poll on THIS. Optional for
+     *  older API builds. */
+    status?: string | null;
+    ocrPayload: PatientDocument['ocrPayload'] | null;
+  }>(`/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`);
+
+/** Recover a failed/lost parse (202 → poll again). 409 when the
+ *  document is already parsing or already parsed. */
+export const reparsePatientDocument = (documentId: string) =>
+  apiRequest<{ documentId: string; status: 'processing' }>(
+    `/profiles/me/documents/${encodeURIComponent(documentId)}/reparse`,
+    { method: 'POST' },
   );
 
 export const deletePatientDocument = (documentId: string) =>
