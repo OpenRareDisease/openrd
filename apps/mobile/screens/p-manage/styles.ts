@@ -126,6 +126,21 @@ export default StyleSheet.create({
     borderWidth: 1,
     borderColor: CLINICAL_TINTS.accentBorder,
   },
+  askTrendButton: {
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 11,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+  },
+  askTrendButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   secondaryActionText: {
     color: CLINICAL_COLORS.text,
     fontSize: 12,
