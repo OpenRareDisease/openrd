@@ -755,7 +755,16 @@ const P_QNA = () => {
 
     // Snapshot BEFORE appending the new question, so the question
     // can't duplicate itself into its own history.
-    const historyPayload = buildHistoryPayload(messagesRef.current, epoch);
+    let historyPayload = buildHistoryPayload(messagesRef.current, epoch);
+    // Retry reuses the existing user bubble — the question is already
+    // the LAST history entry there. Sending it in both places would
+    // make the model see the user ask twice in a row.
+    if (opts?.reuseUserBubble) {
+      const last = historyPayload[historyPayload.length - 1];
+      if (last?.role === 'user' && last.content === question) {
+        historyPayload = historyPayload.slice(0, -1);
+      }
+    }
 
     const assistantPlaceholder: ChatMessage = {
       id: assistantMessageId,
