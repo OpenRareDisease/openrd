@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   View,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -14,6 +15,7 @@ import { FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { LineChart } from 'react-native-chart-kit';
 import {
+  addMedication,
   ApiError,
   getMyPatientProfile,
   getProgressionSummary,
@@ -128,6 +130,38 @@ export default function ManageScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Inline medication add-form (PR-25): the med list finally becomes
+  // maintainable where it's read.
+  const [medFormVisible, setMedFormVisible] = useState(false);
+  const [medDraft, setMedDraft] = useState({ name: '', dosage: '', frequency: '' });
+  const [medBusy, setMedBusy] = useState(false);
+  const [medError, setMedError] = useState<string | null>(null);
+
+  const submitMedication = async () => {
+    const name = medDraft.name.trim();
+    if (!name) {
+      setMedError('请填写药物名称。');
+      return;
+    }
+    if (medBusy) return;
+    setMedBusy(true);
+    setMedError(null);
+    try {
+      await addMedication({
+        medicationName: name,
+        dosage: medDraft.dosage.trim() || null,
+        frequency: medDraft.frequency.trim() || null,
+        status: 'active',
+      });
+      setMedDraft({ name: '', dosage: '', frequency: '' });
+      setMedFormVisible(false);
+      await loadData(true);
+    } catch (error) {
+      setMedError(error instanceof Error ? error.message : '保存失败，请稍后重试。');
+    } finally {
+      setMedBusy(false);
+    }
+  };
 
   const loadData = async (refresh = false) => {
     if (refresh) {
@@ -313,7 +347,60 @@ export default function ManageScreen() {
               </View>
             </View>
             <View style={styles.card}>
-              <Text style={styles.cardHeading}>药物和辅具</Text>
+              <View style={styles.medHeaderRow}>
+                <Text style={styles.cardHeading}>药物和辅具</Text>
+                <TouchableOpacity
+                  style={styles.medAddButton}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setMedError(null);
+                    setMedFormVisible((prev) => !prev);
+                  }}
+                >
+                  <FontAwesome6
+                    name={medFormVisible ? 'xmark' : 'plus'}
+                    size={11}
+                    color={CLINICAL_COLORS.accentStrong}
+                  />
+                  <Text style={styles.medAddButtonText}>
+                    {medFormVisible ? '收起' : '添加用药'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {medFormVisible ? (
+                <View style={styles.medForm}>
+                  <TextInput
+                    style={styles.medInput}
+                    placeholder="药物名称（必填）"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={medDraft.name}
+                    onChangeText={(value) => setMedDraft((prev) => ({ ...prev, name: value }))}
+                  />
+                  <TextInput
+                    style={styles.medInput}
+                    placeholder="剂量，例如 5mg（可选）"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={medDraft.dosage}
+                    onChangeText={(value) => setMedDraft((prev) => ({ ...prev, dosage: value }))}
+                  />
+                  <TextInput
+                    style={styles.medInput}
+                    placeholder="频次，例如 每日一次（可选）"
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    value={medDraft.frequency}
+                    onChangeText={(value) => setMedDraft((prev) => ({ ...prev, frequency: value }))}
+                  />
+                  {medError ? <Text style={styles.medErrorText}>{medError}</Text> : null}
+                  <TouchableOpacity
+                    style={[styles.medSubmit, medBusy && { opacity: 0.6 }]}
+                    activeOpacity={0.85}
+                    disabled={medBusy}
+                    onPress={() => void submitMedication()}
+                  >
+                    <Text style={styles.medSubmitText}>{medBusy ? '保存中…' : '保存用药'}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
               <View style={styles.pillWrap}>
                 {medicationHighlights.length ? (
                   medicationHighlights.map((item) => (
