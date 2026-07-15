@@ -58,7 +58,7 @@ export const buildFollowupFeedback = (input: FollowupFeedbackInput): string => {
     }
   }
 
-  lines.push(`已累计 ${Math.max(1, input.totalRecords)} 次随访记录，坚持记录能让趋势更可信。`);
+  lines.push(`已累计 ${Math.max(1, input.totalRecords)} 次日常记录，坚持记录能让趋势更可信。`);
 
   return lines.join('\n');
 };

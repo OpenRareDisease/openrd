@@ -238,7 +238,7 @@ export default function ManageScreen() {
                 </TouchableOpacity>
               </View>
               <Text style={styles.heroTitle}>
-                {summary?.currentStatus.headline ?? '从一次快速随访开始管理病程'}
+                {summary?.currentStatus.headline ?? '从一次日常记录开始管理病程'}
               </Text>
               <Text style={styles.heroText}>
                 {riskSummary?.notes?.join('； ') ||
@@ -252,7 +252,7 @@ export default function ManageScreen() {
                       ? formatDateLabel(summary.currentStatus.lastFollowupAt)
                       : '—'}
                   </Text>
-                  <Text style={styles.metricLabel}>最近随访</Text>
+                  <Text style={styles.metricLabel}>最近记录</Text>
                 </View>
                 <View style={styles.metricCard}>
                   <Text style={[styles.metricValue, { color: riskMeta.color }]}>
@@ -302,7 +302,9 @@ export default function ManageScreen() {
                     </View>
                   ))
                 ) : (
-                  <Text style={styles.emptyText}>暂无用药记录。</Text>
+                  <Text style={styles.emptyText}>
+                    暂无用药记录。可在「记录数据 → 事件」里补充用药变化。
+                  </Text>
                 )}
                 {assistiveDevices.map((item) => (
                   <View key={item} style={styles.pill}>
@@ -337,7 +339,7 @@ export default function ManageScreen() {
               <View>
                 <Text style={styles.sectionTitle}>FSHD 关键证据</Text>
                 <Text style={styles.sectionSubtitle}>
-                  汇总诊断分型和 MRI 相关结构化证据，方便快速回顾。
+                  汇总诊断分型和 MRI 相关关键信息，方便快速回顾。
                 </Text>
               </View>
             </View>
@@ -358,7 +360,7 @@ export default function ManageScreen() {
                         </View>
                       ))
                     ) : (
-                      <Text style={styles.emptyText}>当前还没有可直接展示的结构化指标。</Text>
+                      <Text style={styles.emptyText}>报告识别出关键指标后，会在这里直接展示。</Text>
                     )}
                   </View>
                 </View>
@@ -371,7 +373,7 @@ export default function ManageScreen() {
               <View>
                 <Text style={styles.sectionTitle}>患者端数据可视化</Text>
                 <Text style={styles.sectionSubtitle}>
-                  优先显示 MRI 受累图，并继续合并患者端随访趋势。
+                  优先显示 MRI 受累图，并继续合并患者端日常记录趋势。
                 </Text>
               </View>
               <TouchableOpacity
@@ -473,7 +475,9 @@ export default function ManageScreen() {
                         </View>
                       ) : (
                         <View style={styles.chartEmpty}>
-                          <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
+                          <Text style={styles.emptyText}>
+                            完成 2 次以上日常记录后，这里会自动绘制趋势。
+                          </Text>
                         </View>
                       )}
                     </View>
@@ -494,7 +498,7 @@ export default function ManageScreen() {
               <TimelineSectionCard
                 items={timelineItems}
                 subtitle="点击卡片可进入详情；报告类记录可继续跳转到报告详情页。"
-                emptyText="还没有病程事件或报告更新。"
+                emptyText="记录数据或上传报告后，时间轴会自动汇总到这里。"
               />
             </View>
           </View>
@@ -510,7 +514,7 @@ export default function ManageScreen() {
             </View>
             <SystemMonitoringPanels
               panels={systemPanels}
-              emptyText="当前还没有可归入检查结果的结构化数据。"
+              emptyText="检查报告识别出关键指标后，会自动归入这里。"
             />
           </View>
         </ScrollView>

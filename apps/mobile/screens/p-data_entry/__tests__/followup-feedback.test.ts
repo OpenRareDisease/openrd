@@ -13,7 +13,7 @@ describe('buildFollowupFeedback', () => {
     const text = buildFollowupFeedback(base);
     expect(text).toContain('上楼比上次快了 0.5 秒');
     expect(text).toContain('睡眠评分与上次持平');
-    expect(text).toContain('已累计 5 次随访记录');
+    expect(text).toContain('已累计 5 次日常记录');
   });
 
   it('reports a slower climb without alarmist framing', () => {
@@ -44,7 +44,7 @@ describe('buildFollowupFeedback', () => {
     });
     expect(text).toContain('第一条上楼记录已保存');
     expect(text).not.toContain('睡眠评分');
-    expect(text).toContain('已累计 1 次随访记录');
+    expect(text).toContain('已累计 1 次日常记录');
   });
 
   it('sleep deltas report both directions', () => {
@@ -53,6 +53,6 @@ describe('buildFollowupFeedback', () => {
   });
 
   it('totalRecords floors at 1', () => {
-    expect(buildFollowupFeedback({ ...base, totalRecords: 0 })).toContain('已累计 1 次随访记录');
+    expect(buildFollowupFeedback({ ...base, totalRecords: 0 })).toContain('已累计 1 次日常记录');
   });
 });

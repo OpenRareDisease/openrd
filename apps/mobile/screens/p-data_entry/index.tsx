@@ -115,9 +115,9 @@ const modeCards: Array<{
     icon: 'bolt',
     order: '01',
     eyebrow: 'FOLLOW-UP',
-    title: '快速随访',
+    title: '日常记录',
     description: '记录睡眠评分、10 级台阶用时和最近跌倒次数。',
-    cta: '进入随访',
+    cta: '进入记录',
   },
   {
     key: 'event',
@@ -611,7 +611,7 @@ const DataEntryScreen = () => {
           measuredValue: stairClimbSeconds,
           unit: 'sec',
           protocol: '连续上 10 级台阶',
-          notes: '患者端快速随访量化记录',
+          notes: '患者端快速日常记录',
         }),
         addDailyImpact({
           submissionId: submission.id,
@@ -663,7 +663,7 @@ const DataEntryScreen = () => {
         { text: '继续记录', style: 'cancel' },
       ]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : '随访保存失败';
+      const message = error instanceof Error ? error.message : '日常记录保存失败';
       setFormNotice(message);
     } finally {
       setIsSubmitting(false);
@@ -881,7 +881,7 @@ const DataEntryScreen = () => {
   const renderFollowupForm = () => (
     <View style={styles.formStack}>
       <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>量化随访</Text>
+        <Text style={styles.sectionTitle}>日常记录</Text>
         <Text style={styles.sectionSubtitle}>
           这里直接记录患者端仍在持续追踪的量化数据；新问题、辅具、训练和用药变化请放到“事件记录”。
         </Text>
@@ -968,7 +968,7 @@ const DataEntryScreen = () => {
         disabled={isSubmitting}
         onPress={handleFollowupSubmit}
       >
-        <Text style={styles.submitButtonText}>完成快速随访</Text>
+        <Text style={styles.submitButtonText}>完成今日记录</Text>
       </TouchableOpacity>
     </View>
   );
@@ -980,7 +980,7 @@ const DataEntryScreen = () => {
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>上传后会自动完成这些事</Text>
         <Text style={styles.sectionSubtitle}>
-          系统会自动识别报告分类、提取日期和结构化指标，并在时间轴、报告管理和检查结果里更新展示。
+          系统会自动识别报告分类、提取日期和关键指标，并在时间轴、报告管理和检查结果里更新展示。
         </Text>
         <View style={styles.tipList}>
           <View style={styles.tipItem}>
@@ -1015,7 +1015,7 @@ const DataEntryScreen = () => {
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>事件与干预记录</Text>
         <Text style={styles.sectionSubtitle}>
-          辅具、训练、用药变化和补充说明都放在这里，不再和随访分开填。
+          辅具、训练、用药变化和补充说明都放在这里，不再和日常记录分开填。
         </Text>
         <View style={styles.choiceRow}>
           {eventOptions.map((option) => (

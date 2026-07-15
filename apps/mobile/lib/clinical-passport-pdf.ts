@@ -314,12 +314,12 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
         <div class="section-header">
           <div>
             <h2>影像受累与功能变化</h2>
-            <p class="section-copy">以 MRI 结构化结果和最近随访变化为主，不再强调主观肌力体图。</p>
+            <p class="section-copy">以 MRI 识别结果和最近日常记录变化为主，不再强调主观肌力体图。</p>
           </div>
         </div>
         <div class="info-grid">
           <article class="info-card">
-            <p class="info-label">最近随访</p>
+            <p class="info-label">最近记录</p>
             <p class="info-value">${safeDate(summary.motor.latestActivityAt || summary.motor.latestMeasurementAt)}</p>
           </article>
           <article class="info-card">

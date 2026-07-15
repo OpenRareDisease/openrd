@@ -478,7 +478,7 @@ export const buildLatestMriVisualization = (docs: DocumentLike[]): LatestMriVisu
       regions: {},
       findings: [],
       latestDate: '—',
-      summary: '等待 MRI 结构化结果',
+      summary: '等待 MRI 识别结果',
       hasFindings: false,
       sourceDocument: null,
     };
@@ -497,7 +497,7 @@ export const buildLatestMriVisualization = (docs: DocumentLike[]): LatestMriVisu
       ? `影像提示：${inferred.findings.join('、')}`
       : compactText(
           impression ?? finding ?? sourceDocument.ocrPayload?.extractedText,
-          '等待 MRI 结构化结果',
+          '等待 MRI 识别结果',
         );
 
   return {

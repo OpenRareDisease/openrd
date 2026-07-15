@@ -46,7 +46,7 @@ export interface ProgressionTimelineItem {
   title: string;
   description: string;
   timestamp: string;
-  tag: '事件' | '报告' | '功能测试' | '随访';
+  tag: '事件' | '报告' | '功能测试' | '日常记录';
   documentId?: string | null;
 }
 
@@ -296,7 +296,7 @@ const getFallSummary = (
     return {
       latestDisplay: '未记录',
       summary: '最近还没有新的跌倒次数记录。',
-      helperText: '每次快速随访都可以补充“最近跌倒次数”，便于看风险变化。',
+      helperText: '每次日常记录都可以补充“最近跌倒次数”，便于看风险变化。',
     };
   }
 
@@ -315,7 +315,7 @@ const getFallSummary = (
       currentValue === 0
         ? `最近一次记录未填跌倒次数，${comparison}`
         : `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
-    helperText: '每次快速随访都可以补充“最近跌倒次数”，便于看风险变化。',
+    helperText: '每次日常记录都可以补充“最近跌倒次数”，便于看风险变化。',
   };
 };
 
@@ -674,7 +674,7 @@ export const buildProgressionTimeline = (
       title: item.title,
       description: item.detail,
       timestamp: item.evidenceAt,
-      tag: '随访',
+      tag: '日常记录',
     });
   });
 

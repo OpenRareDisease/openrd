@@ -40,7 +40,7 @@ const tagStyleMap: Record<
     backgroundColor: CLINICAL_TINTS.warningSoft,
     borderColor: CLINICAL_TINTS.warningBorder,
   },
-  随访: {
+  日常记录: {
     textColor: CLINICAL_COLORS.accentStrong,
     backgroundColor: CLINICAL_TINTS.accentSoft,
     borderColor: CLINICAL_TINTS.accentBorder,

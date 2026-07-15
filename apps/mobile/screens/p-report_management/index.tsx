@@ -255,7 +255,7 @@ const buildReportCardMeta = (document: PatientDocument): ReportCardMeta => {
       'echo_summary',
       'ventilatoryPattern',
       'ventilatory_pattern',
-    ]) || '已完成识别，可进入详情页查看结构化结果。';
+    ]) || '已完成识别，可进入详情页查看识别出的关键指标。';
 
   return {
     id: document.id,
