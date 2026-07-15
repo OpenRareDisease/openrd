@@ -96,6 +96,25 @@ export default StyleSheet.create({
     marginHorizontal: 24,
     marginBottom: 24,
   },
+  exploreSectionTitle: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  comingSoonBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+  },
+  comingSoonBadgeText: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
   settingsList: {
     gap: 8,
   },

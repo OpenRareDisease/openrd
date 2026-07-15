@@ -159,8 +159,52 @@ const SettingsScreen = () => {
                 <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
               </View>
             </TouchableOpacity>
+          </View>
+        </View>
 
-            {/* 退出登录 */}
+        {/* 探索 · 即将上线 — pre-launch features live here instead of
+            occupying tab slots or floating as unreachable routes.
+            Every entry opens its existing placeholder screen, so the
+            promise is honest: visible, labeled, not yet functional. */}
+        <View style={styles.settingsListSection}>
+          <Text style={styles.exploreSectionTitle}>探索 · 即将上线</Text>
+          <View style={styles.settingsList}>
+            {(
+              [
+                { title: '患者社区', icon: 'users', route: '/p-community' },
+                { title: '专家咨询', icon: 'user-doctor', route: '/p-expert_consult' },
+                { title: '临床试验广场', icon: 'flask-vial', route: '/p-trial_square' },
+                { title: '医疗资源地图', icon: 'map-location-dot', route: '/p-resource_map' },
+                { title: '康复经验分享', icon: 'heart-pulse', route: '/p-rehab_share' },
+              ] as const
+            ).map((item) => (
+              <TouchableOpacity
+                key={item.route}
+                style={styles.settingItem}
+                onPress={() => router.push(item.route)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.settingItemContent}>
+                  <View style={styles.settingItemLeft}>
+                    <View style={styles.settingIconContainer}>
+                      <FontAwesome6 name={item.icon} size={18} color={CLINICAL_COLORS.textMuted} />
+                    </View>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={styles.settingTitle}>{item.title}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.comingSoonBadge}>
+                    <Text style={styles.comingSoonBadgeText}>即将上线</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* 退出登录 */}
+        <View style={styles.settingsListSection}>
+          <View style={styles.settingsList}>
             <TouchableOpacity
               style={styles.logoutItem}
               onPress={handleLogoutPress}
