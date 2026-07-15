@@ -30,8 +30,9 @@ import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { buildFollowupFeedback } from './followup-feedback';
 import InlineNotice from '../common/feedback/InlineNotice';
 import styles from './styles';
+import MuscleSelfTestForm from './MuscleSelfTestForm';
 
-type EntryMode = 'followup' | 'event' | 'report';
+type EntryMode = 'followup' | 'event' | 'report' | 'muscle';
 type EventType =
   | 'fall'
   | 'new_foot_drop'
@@ -137,6 +138,15 @@ const modeCards: Array<{
     description: '上传检查报告，系统自动识别分类、日期和指标。',
     cta: '进入上传',
   },
+  {
+    key: 'muscle',
+    icon: 'hand-fist',
+    order: '04',
+    eyebrow: 'MUSCLE',
+    title: '肌力自测',
+    description: '5 个动作按 0-5 打分，自动汇入受累可视化。',
+    cta: '进入自测',
+  },
 ];
 
 const eventOptions: Array<{ key: EventType; label: string }> = [
@@ -180,7 +190,9 @@ const persistDraft = async (key: string, value: unknown) => {
 };
 
 const normalizeEntryMode = (value: string | null | undefined): EntryMode =>
-  value === 'followup' || value === 'event' || value === 'report' ? value : 'followup';
+  value === 'followup' || value === 'event' || value === 'report' || value === 'muscle'
+    ? value
+    : 'followup';
 
 const normalizeEventType = (value: string | null | undefined): EventType =>
   eventOptions.some((option) => option.key === value) ? (value as EventType) : 'other';
@@ -1209,6 +1221,7 @@ const DataEntryScreen = () => {
           {entryMode === 'followup' ? renderFollowupForm() : null}
           {entryMode === 'event' ? renderEventForm() : null}
           {entryMode === 'report' ? renderReportForm() : null}
+          {entryMode === 'muscle' ? <MuscleSelfTestForm /> : null}
         </ScrollView>
 
         {(isLoading || isSubmitting) && (
