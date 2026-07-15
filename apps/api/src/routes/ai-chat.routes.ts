@@ -48,6 +48,7 @@ import {
   SearchMedicalKbTool,
   ToolRegistry,
 } from '../modules/ai-agents/tools/index.js';
+import { AppError } from '../utils/app-error.js';
 
 type ProgressStageStatus = 'pending' | 'active' | 'done' | 'error';
 
@@ -337,7 +338,13 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
         maxMessages: context.env.AI_HISTORY_MAX_MESSAGES,
         charBudget: context.env.AI_HISTORY_CHAR_BUDGET,
       });
-    } catch {
+    } catch (error) {
+      // Only the validator's own 400 is a client fault — anything
+      // else is a server bug and must reach the error handler (a
+      // blanket catch would disguise it as invalid_history).
+      if (!(error instanceof AppError) || error.statusCode !== 400) {
+        throw error;
+      }
       res.status(400).json({
         success: false,
         code: 'invalid_history',
@@ -441,6 +448,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: 'none',
           redactionMode: 'strict',
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],
@@ -750,6 +759,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: 'none',
           redactionMode: 'strict',
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],
