@@ -105,11 +105,17 @@ export const buildCitationSummary = (input: CitationSummaryInput): string | null
     if (labels.length === 0) {
       return '本次引用了你的个人健康数据。';
     }
+    // Three buckets: profile keys, known report keys, and unmapped
+    // keys. Unknown keys get their own bucket instead of being
+    // mislabeled as report data — verbatim but honestly grouped.
     const profileLabels: string[] = [];
     const reportLabels: string[] = [];
+    const otherLabels: string[] = [];
     for (const key of input.fieldsUsed ?? []) {
-      const label = FIELD_LABELS[baseKey(key)] ?? key;
-      const bucket = PROFILE_KEYS.has(baseKey(key)) ? profileLabels : reportLabels;
+      const base = baseKey(key);
+      const known = FIELD_LABELS[base];
+      const bucket = PROFILE_KEYS.has(base) ? profileLabels : known ? reportLabels : otherLabels;
+      const label = known ?? key;
       if (!bucket.includes(label)) bucket.push(label);
     }
     const parts: string[] = [];
@@ -118,6 +124,9 @@ export const buildCitationSummary = (input: CitationSummaryInput): string | null
     }
     if (reportLabels.length > 0) {
       parts.push(`检查报告（${reportLabels.join('、')}）`);
+    }
+    if (otherLabels.length > 0) {
+      parts.push(`其他数据（${otherLabels.join('、')}）`);
     }
     return `本次引用了你的：${parts.join('、')}`;
   }

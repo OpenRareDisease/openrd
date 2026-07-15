@@ -59,6 +59,14 @@ describe('buildCitationSummary', () => {
     );
   });
 
+  it('unmapped keys group under 其他数据, not under 检查报告', () => {
+    const line = buildCitationSummary({
+      usedPersonalData: true,
+      fieldsUsed: ['ageGroup', 'brandNewKey'],
+    });
+    expect(line).toBe('本次引用了你的：健康档案（年龄段）、其他数据（brandNewKey）');
+  });
+
   it('KB-only answers state the negative explicitly', () => {
     const line = buildCitationSummary({
       usedPersonalData: false,
