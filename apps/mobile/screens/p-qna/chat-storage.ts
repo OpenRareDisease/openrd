@@ -16,6 +16,14 @@ export type ChatMessage = {
   /** Marks a consent-gate failure: the bubble renders the inline
    *  authorization card (grant-and-resend) instead of a plain retry. */
   consentRequired?: boolean;
+  /** Consent epoch this message was generated under (see
+   *  lib/consent-epoch.ts). Messages from older epochs never replay
+   *  as multi-turn history — the client half of the consent-downgrade
+   *  defence. Absent on messages stored before the feature. */
+  epoch?: number;
+  /** Renders as a system divider (e.g.「隐私设置已变更」) instead of
+   *  a chat bubble; never replayed as history. */
+  systemDivider?: boolean;
 };
 
 /**
@@ -54,6 +62,8 @@ export const parseStoredMessages = (raw: string | null): ChatMessage[] | null =>
         metadata: normalizeStoredMetadata(item.metadata),
         failedQuestion: typeof item.failedQuestion === 'string' ? item.failedQuestion : undefined,
         consentRequired: item.consentRequired === true ? true : undefined,
+        epoch: Number.isSafeInteger(item.epoch) ? item.epoch : undefined,
+        systemDivider: item.systemDivider === true ? true : undefined,
       }));
 
     return messages.length ? messages : null;
@@ -61,3 +71,40 @@ export const parseStoredMessages = (raw: string | null): ChatMessage[] | null =>
     return null;
   }
 };
+
+/** Client-side cap mirroring the server default
+ *  (AI_HISTORY_MAX_MESSAGES) — saves payload bytes; the server
+ *  remains the authority and re-truncates regardless. */
+export const HISTORY_PAYLOAD_MAX_MESSAGES = 12;
+
+/**
+ * Select which stored messages replay as multi-turn history.
+ *
+ * Filters, in order of intent:
+ * - only settled chat bubbles (`status === 'sent'`) — errored/loading
+ *   bubbles and the welcome greeting carry no conversational value;
+ * - only messages from the CURRENT consent epoch (downgrade defence —
+ *   see lib/consent-epoch.ts); messages stored before the epoch
+ *   feature (`epoch === undefined`) only replay while the epoch is
+ *   still 0, i.e. consent has never changed since they were stored;
+ * - never system dividers;
+ * - newest HISTORY_PAYLOAD_MAX_MESSAGES only.
+ *
+ * The caller passes the message list BEFORE appending the current
+ * question, so the question itself is never duplicated into history.
+ */
+export const buildHistoryPayload = (
+  messages: ChatMessage[],
+  currentEpoch: number,
+): Array<{ role: ChatRole; content: string }> =>
+  messages
+    .filter(
+      (message) =>
+        message.status === 'sent' &&
+        message.id !== 'welcome' &&
+        !message.systemDivider &&
+        (message.epoch ?? 0) === currentEpoch &&
+        message.content.trim().length > 0,
+    )
+    .slice(-HISTORY_PAYLOAD_MAX_MESSAGES)
+    .map((message) => ({ role: message.role, content: message.content }));

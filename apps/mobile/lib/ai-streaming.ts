@@ -120,6 +120,12 @@ export const streamAiQuestion = (
   question: string,
   progressId: string,
   callbacks: StreamAiQuestionCallbacks,
+  opts?: {
+    /** Prior turns for multi-turn follow-ups. The server normalizes
+     *  (scrubs, truncates to its own budget) — this is best-effort
+     *  context, never authoritative. */
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  },
 ): StreamAiQuestionHandle => {
   let closed = false;
   let doneData: AiAskResponse['data'] | null = null;
@@ -168,7 +174,11 @@ export const streamAiQuestion = (
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ question, progressId }),
+      body: JSON.stringify({
+        question,
+        progressId,
+        ...(opts?.history?.length ? { history: opts.history } : {}),
+      }),
       // Don't auto-reconnect mid-stream — a dropped connection
       // means the orchestrator either finished and we missed the
       // tail, or errored. Re-opening would start a brand-new run

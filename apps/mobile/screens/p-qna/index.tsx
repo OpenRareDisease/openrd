@@ -28,7 +28,8 @@ import {
 } from '../../lib/api';
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
-import { type ChatMessage, parseStoredMessages } from './chat-storage';
+import { bumpConsentEpoch, getConsentEpoch } from '../../lib/consent-epoch';
+import { type ChatMessage, buildHistoryPayload, parseStoredMessages } from './chat-storage';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
 import { synthesizeLegacyToolCalls, type AssistantMetadata } from './metadata';
 import { pickCurrentMode } from './mode';
@@ -534,6 +535,15 @@ const P_QNA = () => {
   const [isGrantingConsent, setIsGrantingConsent] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([createWelcomeMessage()]);
+  // Live mirror of `messages` for async flows (sendQuestion awaits
+  // the epoch read before snapshotting history — the closure value
+  // could be stale by then).
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  // Last epoch this screen has acknowledged with a divider bubble.
+  const lastKnownEpochRef = useRef<number | null>(null);
   const [askProgress, setAskProgress] = useState<{
     progressId: string;
     status: 'running' | 'done' | 'error';
@@ -673,6 +683,11 @@ const P_QNA = () => {
     setIsGrantingConsent(true);
     try {
       await updateMyConsent({ personal: true, thirdParty: true });
+      // Any consent change starts a new history epoch (same rule as
+      // the privacy screen's switches). Sync the local ref so the
+      // retry below doesn't announce a divider for a change the user
+      // just made right here.
+      lastKnownEpochRef.current = await bumpConsentEpoch();
       handleRetry(message);
     } catch (error) {
       const detail =
@@ -707,12 +722,48 @@ const P_QNA = () => {
   const sendQuestion = async (question: string, opts?: { reuseUserBubble?: boolean }) => {
     const progressId = createProgressId();
     const assistantMessageId = createMessageId('assistant');
+
+    // Multi-turn: read the consent epoch FIRST. If it moved since the
+    // last send (privacy switches changed), announce the boundary —
+    // older messages stop replaying as history from here on. A null
+    // prevEpoch means this is the first send since mount: nothing to
+    // announce (the epoch FILTER below still applies regardless —
+    // the divider is a courtesy, the filter is the guarantee).
+    const epoch = await getConsentEpoch();
+    const prevEpoch = lastKnownEpochRef.current;
+    lastKnownEpochRef.current = epoch;
+    if (prevEpoch !== null && epoch !== prevEpoch) {
+      setMessages((prev) => {
+        const hasReplayableHistory = prev.some(
+          (item) => item.status === 'sent' && item.id !== 'welcome' && !item.systemDivider,
+        );
+        if (!hasReplayableHistory) return prev;
+        return [
+          ...prev,
+          {
+            id: createMessageId('divider'),
+            role: 'assistant',
+            content: '隐私设置已变更，新的对话不再引用之前的回答。',
+            createdAt: new Date().toISOString(),
+            status: 'sent',
+            systemDivider: true,
+            epoch,
+          },
+        ];
+      });
+    }
+
+    // Snapshot BEFORE appending the new question, so the question
+    // can't duplicate itself into its own history.
+    const historyPayload = buildHistoryPayload(messagesRef.current, epoch);
+
     const assistantPlaceholder: ChatMessage = {
       id: assistantMessageId,
       role: 'assistant',
       content: '正在整理回答...',
       createdAt: new Date().toISOString(),
       status: 'loading',
+      epoch,
     };
     if (opts?.reuseUserBubble) {
       setMessages((prev) => [...prev, assistantPlaceholder]);
@@ -723,6 +774,7 @@ const P_QNA = () => {
         content: question,
         createdAt: new Date().toISOString(),
         status: 'sent',
+        epoch,
       };
       setMessages((prev) => [...prev, userMessage, assistantPlaceholder]);
     }
@@ -830,133 +882,138 @@ const P_QNA = () => {
       }
     };
 
-    streamHandleRef.current = streamAiQuestion(question, progressId, {
-      onEvent: handleStreamEvent,
-      onComplete: (data) => {
-        streamHandleRef.current = null;
-        setIsSending(false);
-        if (!data) {
-          // Stream ended without a `done` frame (server-side error
-          // or transport blip mid-stream). Mark the bubble errored
-          // unless we already started accumulating an answer — in
-          // that case keep what we have and just flag the status.
-          setMessages((prev) =>
-            prev.map((item) =>
-              item.id === assistantMessageId
+    streamHandleRef.current = streamAiQuestion(
+      question,
+      progressId,
+      {
+        onEvent: handleStreamEvent,
+        onComplete: (data) => {
+          streamHandleRef.current = null;
+          setIsSending(false);
+          if (!data) {
+            // Stream ended without a `done` frame (server-side error
+            // or transport blip mid-stream). Mark the bubble errored
+            // unless we already started accumulating an answer — in
+            // that case keep what we have and just flag the status.
+            setMessages((prev) =>
+              prev.map((item) =>
+                item.id === assistantMessageId
+                  ? {
+                      ...item,
+                      status: 'error',
+                      content: receivedAnyDelta ? accumulatedAnswer : 'AI 回答中断，请稍后重试。',
+                      failedQuestion: question,
+                    }
+                  : item,
+              ),
+            );
+            setAskProgress((prev) =>
+              prev
                 ? {
-                    ...item,
+                    ...prev,
                     status: 'error',
-                    content: receivedAnyDelta ? accumulatedAnswer : 'AI 回答中断，请稍后重试。',
-                    failedQuestion: question,
+                    error: 'stream aborted',
+                    stages: prev.stages.map((s) =>
+                      s.id === prev.stageId ? { ...s, status: 'error' } : s,
+                    ),
                   }
-                : item,
-            ),
-          );
-          setAskProgress((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  status: 'error',
-                  error: 'stream aborted',
-                  stages: prev.stages.map((s) =>
-                    s.id === prev.stageId ? { ...s, status: 'error' } : s,
-                  ),
-                }
-              : prev,
-          );
-          return;
-        }
+                : prev,
+            );
+            return;
+          }
 
-        // Happy path: `done` frame arrived, `data` is the
-        // narrowed AiAskResponse['data']. Lock in the final
-        // content + metadata.
-        const finalAnswer = data.answer?.trim() || accumulatedAnswer || '暂时没有生成有效回答。';
-        const metadata: AssistantMetadata = {
-          toolCalls: data.toolCalls,
-          fieldsUsed: data.fieldsUsed,
-          usedPersonalData: data.usedPersonalData,
-          citations: data.citations,
-          redactionMode: data.redactionMode,
-          consentLevel: data.consentLevel,
-        };
-        setMessages((prev) =>
-          prev.map((item) =>
-            item.id === assistantMessageId
-              ? {
-                  ...item,
-                  content: finalAnswer,
-                  createdAt: data.timestamp || new Date().toISOString(),
-                  status: 'sent',
-                  metadata,
-                }
-              : item,
-          ),
-        );
-      },
-      onError: (error) => {
-        streamHandleRef.current = null;
-        setIsSending(false);
-        // Consent gate comes back as an ApiError on the initial
-        // POST (before SSE headers commit), so it surfaces here,
-        // not via an `error` SSE frame. Reuse the existing
-        // consent-required branch verbatim.
-        if (isConsentRequiredError(error)) {
-          const consentMessage = '需要你的授权，AI 才能回答这个问题。';
-          // No Alert, no detour to the settings screen: the errored
-          // bubble itself renders a consent card with a one-tap
-          // "允许并继续" that grants both required flags and resends
-          // the pinned question. The old flow (Alert → privacy screen
-          // → two switches × two dialogs → come back → retype) lost
-          // the question and most users.
+          // Happy path: `done` frame arrived, `data` is the
+          // narrowed AiAskResponse['data']. Lock in the final
+          // content + metadata.
+          const finalAnswer = data.answer?.trim() || accumulatedAnswer || '暂时没有生成有效回答。';
+          const metadata: AssistantMetadata = {
+            toolCalls: data.toolCalls,
+            fieldsUsed: data.fieldsUsed,
+            usedPersonalData: data.usedPersonalData,
+            citations: data.citations,
+            redactionMode: data.redactionMode,
+            consentLevel: data.consentLevel,
+          };
           setMessages((prev) =>
             prev.map((item) =>
               item.id === assistantMessageId
                 ? {
                     ...item,
-                    content: consentMessage,
-                    status: 'error',
-                    failedQuestion: question,
-                    consentRequired: true,
+                    content: finalAnswer,
+                    createdAt: data.timestamp || new Date().toISOString(),
+                    status: 'sent',
+                    metadata,
                   }
                 : item,
             ),
           );
-          setAskProgress((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  status: 'error',
-                  stages: prev.stages.map((stage) =>
-                    stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
-                  ),
-                  error: consentMessage,
-                }
-              : prev,
-          );
-        } else {
-          const friendlyMessage = getFriendlyErrorMessage(error);
-          setMessages((prev) =>
-            prev.map((item) =>
-              item.id === assistantMessageId
-                ? { ...item, content: friendlyMessage, status: 'error', failedQuestion: question }
-                : item,
-            ),
-          );
-          setAskProgress((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  status: 'error',
-                  stages: prev.stages.map((stage) =>
-                    stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
-                  ),
-                  error: friendlyMessage,
-                }
-              : prev,
-          );
-        }
+        },
+        onError: (error) => {
+          streamHandleRef.current = null;
+          setIsSending(false);
+          // Consent gate comes back as an ApiError on the initial
+          // POST (before SSE headers commit), so it surfaces here,
+          // not via an `error` SSE frame. Reuse the existing
+          // consent-required branch verbatim.
+          if (isConsentRequiredError(error)) {
+            const consentMessage = '需要你的授权，AI 才能回答这个问题。';
+            // No Alert, no detour to the settings screen: the errored
+            // bubble itself renders a consent card with a one-tap
+            // "允许并继续" that grants both required flags and resends
+            // the pinned question. The old flow (Alert → privacy screen
+            // → two switches × two dialogs → come back → retype) lost
+            // the question and most users.
+            setMessages((prev) =>
+              prev.map((item) =>
+                item.id === assistantMessageId
+                  ? {
+                      ...item,
+                      content: consentMessage,
+                      status: 'error',
+                      failedQuestion: question,
+                      consentRequired: true,
+                    }
+                  : item,
+              ),
+            );
+            setAskProgress((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    status: 'error',
+                    stages: prev.stages.map((stage) =>
+                      stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                    ),
+                    error: consentMessage,
+                  }
+                : prev,
+            );
+          } else {
+            const friendlyMessage = getFriendlyErrorMessage(error);
+            setMessages((prev) =>
+              prev.map((item) =>
+                item.id === assistantMessageId
+                  ? { ...item, content: friendlyMessage, status: 'error', failedQuestion: question }
+                  : item,
+              ),
+            );
+            setAskProgress((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    status: 'error',
+                    stages: prev.stages.map((stage) =>
+                      stage.id === prev.stageId ? { ...stage, status: 'error' } : stage,
+                    ),
+                    error: friendlyMessage,
+                  }
+                : prev,
+            );
+          }
+        },
       },
-    });
+      { history: historyPayload },
+    );
   };
 
   const renderProgressCard = () => {
@@ -1072,6 +1129,16 @@ const P_QNA = () => {
             const isUser = message.role === 'user';
             const isError = message.status === 'error';
             const isLoading = message.status === 'loading';
+
+            if (message.systemDivider) {
+              return (
+                <View key={message.id} style={styles.systemDividerRow}>
+                  <View style={styles.systemDividerLine} />
+                  <Text style={styles.systemDividerText}>{message.content}</Text>
+                  <View style={styles.systemDividerLine} />
+                </View>
+              );
+            }
 
             return (
               <View
