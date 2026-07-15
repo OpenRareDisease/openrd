@@ -12,6 +12,7 @@ import { LogBox } from 'react-native';
 import { useEffect } from 'react';
 import { AuthProvider } from '../contexts/AuthContext';
 import { useAuth } from '../contexts/AuthContext';
+import { ProfileProvider, useProfileContext } from '../contexts/ProfileContext';
 
 LogBox.ignoreLogs([
   "TurboModuleRegistry.getEnforcing(...): 'RNMapsAirModule' could not be found",
@@ -20,6 +21,12 @@ LogBox.ignoreLogs([
 
 const GUEST_ROUTES = new Set(['p-login_register']);
 
+// Routes reachable while the profile is still missing. The onboarding
+// destination itself must be exempt (or the gate would loop), and
+// about-us carries the legal texts a user may want before filling in
+// medical data.
+const ONBOARDING_EXEMPT_ROUTES = new Set(['p-login_register', 'p-register_profile', 'p-about_us']);
+
 function AppNavigator() {
   const pathname = usePathname();
   const searchParams = useGlobalSearchParams();
@@ -27,8 +34,13 @@ function AppNavigator() {
   const router = useRouter();
   const segments = useSegments();
   const { token, isHydrated } = useAuth();
+  const { profileStatus } = useProfileContext();
   const currentRoute = segments[0] ?? '';
   const isGuestRoute = GUEST_ROUTES.has(currentRoute);
+  const isOnboardingExempt = ONBOARDING_EXEMPT_ROUTES.has(currentRoute);
+  // The gate fires ONLY on a confirmed 404 ('missing'). 'error' is
+  // fail-open by design — see ProfileContext's status semantics.
+  const needsOnboarding = Boolean(token) && profileStatus === 'missing' && !isOnboardingExempt;
 
   useEffect(() => {
     if (!pathname) {
@@ -76,13 +88,22 @@ function AppNavigator() {
 
     if (token && isGuestRoute) {
       router.replace('/p-home');
+      return;
     }
-  }, [isHydrated, navigationState?.key, router, segments, token]);
+
+    // Onboarding gate: a logged-in user whose profile row is
+    // confirmed missing is walked to the minimal setup screen before
+    // anything else — previously they landed on an empty home screen
+    // and had to discover profile setup via scattered 404 fallbacks.
+    if (needsOnboarding) {
+      router.replace('/p-register_profile?mode=onboarding');
+    }
+  }, [isHydrated, navigationState?.key, router, segments, token, needsOnboarding]);
 
   const shouldBlockRender =
     isHydrated &&
     Boolean(navigationState?.key) &&
-    ((!token && !isGuestRoute) || (token && isGuestRoute));
+    ((!token && !isGuestRoute) || (token && isGuestRoute) || needsOnboarding);
 
   if (shouldBlockRender) {
     return null;
@@ -121,7 +142,9 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-        <AppNavigator />
+        <ProfileProvider>
+          <AppNavigator />
+        </ProfileProvider>
       </AuthProvider>
     </GestureHandlerRootView>
   );

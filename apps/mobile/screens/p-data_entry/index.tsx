@@ -24,7 +24,6 @@ import {
   getMyPatientProfile,
   type PatientProfile,
   uploadPatientDocument,
-  upsertPatientProfile,
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
@@ -477,16 +476,21 @@ const DataEntryScreen = () => {
     void persistDraft(DATA_ENTRY_DRAFT_KEYS.event, eventForm);
   }, [eventForm, isDraftsHydrated]);
 
-  const ensureProfileReady = async (fullName: string) => {
+  /** The onboarding gate (app/_layout) guarantees a profile exists
+   *  before this screen is reachable, so a missing profile here is a
+   *  defensive edge (gate fail-open during a network blip). The old
+   *  behavior — silently creating a profile named「FSHD 患者」— put
+   *  fabricated names into medical records; erroring is honest. */
+  const ensureProfileReady = async () => {
     if (profile) {
       return profile;
     }
-
-    const created = (await upsertPatientProfile({
-      fullName: fullName.trim() || 'FSHD 患者',
-    })) as PatientProfile;
-    setProfile(created);
-    return created;
+    const refreshed = await getMyPatientProfile();
+    if (refreshed) {
+      setProfile(refreshed);
+      return refreshed;
+    }
+    throw new Error('请先完成基础档案（“我的 → 编辑资料”），再记录数据。');
   };
 
   const pickDocument = async () => {
@@ -563,7 +567,7 @@ const DataEntryScreen = () => {
     setIsSubmitting(true);
 
     try {
-      const ensuredProfile = await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      const ensuredProfile = await ensureProfileReady();
 
       const previousStairClimbSeconds = getLatestFunctionTestValue(
         profile ?? ensuredProfile,
@@ -671,7 +675,7 @@ const DataEntryScreen = () => {
     setIsSubmitting(true);
 
     try {
-      await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      await ensureProfileReady();
       const submission = await createSubmission({
         submissionKind: 'event',
         summary: eventOptions.find((item) => item.key === eventForm.eventType)?.label ?? '事件记录',
@@ -717,7 +721,7 @@ const DataEntryScreen = () => {
   ) => {
     setIsSubmitting(true);
     try {
-      await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
+      await ensureProfileReady();
       const submission = await createSubmission({
         submissionKind: 'event',
         summary: uploadDraft.title.trim() || summaryName || '上传报告',
