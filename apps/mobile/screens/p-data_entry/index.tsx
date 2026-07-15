@@ -28,6 +28,7 @@ import {
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
+import { buildFollowupFeedback } from './followup-feedback';
 import InlineNotice from '../common/feedback/InlineNotice';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
@@ -638,9 +639,23 @@ const DataEntryScreen = () => {
       resetUploadDraft();
       setProfile(ensuredProfile);
       await loadContext();
+      // Instant payback: compare against the record that was current
+      // BEFORE this save (previousStairClimbSeconds/previousSleepScore
+      // were derived above, pre-submit), so every entry immediately
+      // shows the patient something about their own trend.
+      const feedback = buildFollowupFeedback({
+        stairClimbSeconds,
+        previousStairClimbSeconds:
+          typeof previousStairClimbSeconds === 'number' ? previousStairClimbSeconds : null,
+        sleepScore,
+        previousSleepScore: typeof previousSleepScore === 'number' ? previousSleepScore : null,
+        totalRecords:
+          (ensuredProfile.functionTests?.filter((t) => t.testType === 'stair_climb').length ?? 0) +
+          1,
+      });
       // Stay on this screen: users backfilling several records used to
       // get bounced to the home screen after every single save.
-      Alert.alert('已保存', '快速随访已完成，可以继续记录。', [
+      Alert.alert('已保存', feedback, [
         { text: '查看我的档案', onPress: () => router.push('/p-archive') },
         { text: '继续记录', style: 'cancel' },
       ]);
