@@ -33,6 +33,27 @@ import { buildLatestMriVisualization, buildReportInsights } from '../../lib/repo
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import styles from './styles';
 
+const archiveNavItems = [
+  {
+    route: '/p-report_management',
+    icon: 'file-medical',
+    title: '报告管理',
+    description: '按分类和时间整理全部报告',
+  },
+  {
+    route: '/p-clinical_passport',
+    icon: 'id-card',
+    title: '临床护照',
+    description: '门诊可直接出示的结构化摘要',
+  },
+  {
+    route: '/p-manage',
+    icon: 'wave-square',
+    title: '病程管理',
+    description: '时间轴与趋势变化可视化',
+  },
+] as const;
+
 const trendMeta = {
   better: {
     label: '改善',
@@ -370,33 +391,7 @@ export default function ArchiveScreen() {
                 onPress={() => router.push('/p-data_entry')}
               >
                 <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>患者自录与上传</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.headerActionRail}>
-              <TouchableOpacity
-                style={styles.outlineButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-report_management')}
-              >
-                <FontAwesome6 name="file-medical" size={13} color={CLINICAL_COLORS.accentStrong} />
-                <Text style={styles.outlineButtonText}>报告管理</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.outlineButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-clinical_passport')}
-              >
-                <FontAwesome6 name="id-card" size={13} color={CLINICAL_COLORS.accentStrong} />
-                <Text style={styles.outlineButtonText}>临床护照</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.outlineButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-manage')}
-              >
-                <FontAwesome6 name="wave-square" size={13} color={CLINICAL_COLORS.accentStrong} />
-                <Text style={styles.outlineButtonText}>病程管理</Text>
+                <Text style={styles.primaryButtonText}>记录数据</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -427,6 +422,31 @@ export default function ArchiveScreen() {
                 </View>
               </View>
             </LinearGradient>
+          </View>
+
+          {/* Archive sub-pages live here as in-page navigation — the
+              header stays a title + one primary action, so the home
+              screen remains the single global hub. */}
+          <View style={styles.section}>
+            <View style={styles.navCard}>
+              {archiveNavItems.map((nav, index) => (
+                <TouchableOpacity
+                  key={nav.route}
+                  style={[styles.navRow, index > 0 && styles.navRowDivider]}
+                  activeOpacity={0.88}
+                  onPress={() => router.push(nav.route)}
+                >
+                  <View style={styles.navIconWrap}>
+                    <FontAwesome6 name={nav.icon} size={14} color={CLINICAL_COLORS.accentStrong} />
+                  </View>
+                  <View style={styles.navCopy}>
+                    <Text style={styles.navTitle}>{nav.title}</Text>
+                    <Text style={styles.navDescription}>{nav.description}</Text>
+                  </View>
+                  <FontAwesome6 name="chevron-right" size={12} color={CLINICAL_COLORS.textMuted} />
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
 
           {errorMessage ? (

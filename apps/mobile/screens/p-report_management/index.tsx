@@ -432,15 +432,9 @@ export default function ReportManagementScreen() {
               </View>
             </View>
             {listNotice ? <InlineNotice message={listNotice} /> : null}
+            {/* No「我的档案」shortcut here: the back button already
+                returns to the archive — one hub, one way back. */}
             <View style={styles.headerActions}>
-              <TouchableOpacity
-                style={styles.outlineButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-archive')}
-              >
-                <FontAwesome6 name="folder-open" size={13} color={CLINICAL_COLORS.accentStrong} />
-                <Text style={styles.outlineButtonText}>我的档案</Text>
-              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.primaryButton}
                 activeOpacity={0.88}
@@ -615,7 +609,7 @@ export default function ReportManagementScreen() {
               <View style={styles.stateWrap}>
                 <Text style={styles.stateText}>
                   {activeReportCategory === '全部'
-                    ? '还没有上传报告，进入患者自录与上传页添加后，这里会自动按分类和时间整理。'
+                    ? '还没有上传报告，进入「记录数据」页添加后，这里会自动按分类和时间整理。'
                     : `当前没有“${activeReportCategory}”分类的报告。`}
                 </Text>
                 <TouchableOpacity

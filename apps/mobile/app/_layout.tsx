@@ -125,6 +125,11 @@ function AppNavigator() {
         <Stack.Screen name="p-register_profile" options={{ title: '编辑档案页' }} />
         <Stack.Screen name="p-data_entry" options={{ title: '添加/更新数据页' }} />
         <Stack.Screen name="p-manage" options={{ title: '病程管理页' }} />
+        <Stack.Screen name="p-report_management" options={{ title: '报告管理页' }} />
+        <Stack.Screen name="p-report_detail" options={{ title: '报告详情页' }} />
+        <Stack.Screen name="p-timeline_detail" options={{ title: '时间轴详情页' }} />
+        <Stack.Screen name="p-audit_history" options={{ title: '隐私审计记录页' }} />
+        <Stack.Screen name="p-community" options={{ title: '患者社区页' }} />
         <Stack.Screen name="p-rehab_share" options={{ title: '康复经验分享页' }} />
         <Stack.Screen name="p-trial_square" options={{ title: '临床试验广场页' }} />
         <Stack.Screen name="p-expert_consult" options={{ title: '专家咨询页' }} />

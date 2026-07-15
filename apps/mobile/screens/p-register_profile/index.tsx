@@ -361,7 +361,7 @@ const RegisterProfileScreen: React.FC = () => {
                 <View style={styles.section}>
                   <Text style={styles.sectionSubtitle}>
                     只需填写下面的基本信息就可以开始使用。其余内容（FSHD
-                    背景、联系方式、所在地区）可以稍后在「我的 → 编辑资料」随时完善。
+                    背景、联系方式、所在地区）可以稍后在「我的 → 编辑档案」随时完善。
                   </Text>
                 </View>
               ) : null}
