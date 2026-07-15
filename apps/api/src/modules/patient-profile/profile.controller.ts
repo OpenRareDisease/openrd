@@ -331,6 +331,22 @@ export const OCR_STUCK_AFTER_MINUTES = 10;
  *  in milliseconds. 10 queued jobs ≈ 100MB worst case. */
 export const OCR_MAX_IN_FLIGHT_JOBS = 10;
 
+/** Bounds for the full data export. Both exist so a pathological
+ *  account can't hold the connection (or balloon the payload)
+ *  forever; hitting either sets a `truncation` flag in the response
+ *  instead of silently cutting off. */
+export const EXPORT_MAX_SUBMISSION_PAGES = 50;
+export const EXPORT_MAX_AUDIT_ROWS = 5000;
+
+/** The slice of the AI AuditLogger the export needs. Injected as an
+ *  interface (rather than importing the class) so the profile module
+ *  doesn't take a hard dependency on ai-agents internals and tests
+ *  can hand in a stub. The real implementation scrubs PII before
+ *  returning rows. */
+export interface AiAuditReader {
+  listByUser(userId: string, opts?: { limit?: number; offset?: number }): Promise<unknown[]>;
+}
+
 export class PatientProfileController {
   /** In-flight background parses keyed by documentId. Serves three
    *  jobs: reparse-while-running returns 409 instead of double
@@ -352,6 +368,7 @@ export class PatientProfileController {
     private readonly ocr: OcrProvider,
     private readonly aiSummary?: AiSummaryDeps,
     private readonly logger?: AppLogger,
+    private readonly aiAuditReader?: AiAuditReader,
   ) {}
 
   createProfile = async (req: AuthenticatedRequest, res: Response) => {
@@ -398,6 +415,85 @@ export class PatientProfileController {
     }
 
     res.status(200).json(exported);
+  };
+
+  /**
+   * Full data export (data-portability right, 个保法可携带权): one
+   * JSON document holding everything the platform stores about the
+   * caller — profile with all nested records + document metadata,
+   * consent state and full consent history, sharing preferences,
+   * the submission timeline, and the scrubbed AI audit trail.
+   *
+   * Document binaries are NOT inlined (they can be arbitrarily
+   * large); their metadata lists every file and the detail screen
+   * offers per-file download. Loops are bounded so a pathological
+   * account can't hold the connection forever: submissions cap at
+   * EXPORT_MAX_SUBMISSION_PAGES pages, audit at
+   * EXPORT_MAX_AUDIT_ROWS rows, and the payload says so via
+   * `truncation` flags instead of silently cutting off.
+   */
+  exportMyData = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.user.id;
+    const profile = await this.service.getProfileByUserId(userId);
+    if (!profile) {
+      throw new AppError('Patient profile not found', 404);
+    }
+
+    const [consent, consentHistory, sharingPreferences] = await Promise.all([
+      this.service.getConsentDetails(userId),
+      this.service.getConsentHistory(userId, { limit: 500 }),
+      this.service.getSharingPreferences(userId),
+    ]);
+
+    const submissions: unknown[] = [];
+    let submissionsTruncated = false;
+    const pageSize = 100;
+    for (let page = 1; page <= EXPORT_MAX_SUBMISSION_PAGES; page += 1) {
+      const batch = await this.service.listSubmissions(userId, page, pageSize);
+      submissions.push(...batch.items);
+      if (submissions.length >= batch.total || batch.items.length < pageSize) {
+        break;
+      }
+      if (page === EXPORT_MAX_SUBMISSION_PAGES) {
+        submissionsTruncated = true;
+      }
+    }
+
+    const aiAuditTrail: unknown[] = [];
+    let auditTruncated = false;
+    if (this.aiAuditReader) {
+      const batchSize = 200;
+      for (let offset = 0; offset < EXPORT_MAX_AUDIT_ROWS; offset += batchSize) {
+        const rows = await this.aiAuditReader.listByUser(userId, { limit: batchSize, offset });
+        aiAuditTrail.push(...rows);
+        if (rows.length < batchSize) {
+          break;
+        }
+        if (offset + batchSize >= EXPORT_MAX_AUDIT_ROWS) {
+          auditTruncated = true;
+        }
+      }
+    }
+
+    res.status(200).json({
+      formatVersion: 1,
+      exportedAt: new Date().toISOString(),
+      profile,
+      consent,
+      consentHistory,
+      sharingPreferences,
+      submissions,
+      aiAuditTrail,
+      truncation: {
+        submissions: submissionsTruncated,
+        aiAuditTrail: auditTruncated,
+        consentHistory: consentHistory.length >= 500,
+      },
+      notes: {
+        documents:
+          '文档原始文件不包含在本导出中；profile.documents 列出全部文件元数据，可在报告详情页逐份下载原件。',
+      },
+    });
   };
 
   updateMyProfile = async (req: AuthenticatedRequest, res: Response) => {

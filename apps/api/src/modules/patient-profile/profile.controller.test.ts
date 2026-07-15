@@ -861,3 +861,111 @@ describe('PatientProfileController.uploadDocument — queue admission cap', () =
     controller.inFlightOcrJobs.clear();
   });
 });
+
+describe('PatientProfileController.exportMyData — full data export', () => {
+  const buildExportController = (overrides: {
+    profile?: unknown;
+    auditPages?: unknown[][];
+    submissionBatches?: Array<{ items: unknown[]; total: number }>;
+  }) => {
+    const submissionBatches = overrides.submissionBatches ?? [{ items: [], total: 0 }];
+    let submissionCall = 0;
+    const service = {
+      getProfileByUserId: vi.fn().mockResolvedValue(overrides.profile ?? null),
+      getConsentDetails: vi.fn().mockResolvedValue({ personal: true }),
+      getConsentHistory: vi.fn().mockResolvedValue([{ flagName: 'personal' }]),
+      getSharingPreferences: vi.fn().mockResolvedValue({ donation: false }),
+      listSubmissions: vi.fn().mockImplementation(() => {
+        const batch = submissionBatches[Math.min(submissionCall, submissionBatches.length - 1)];
+        submissionCall += 1;
+        return Promise.resolve({ page: submissionCall, pageSize: 100, ...batch });
+      }),
+    } as unknown as PatientProfileService;
+
+    const auditPages = overrides.auditPages ?? [[]];
+    let auditCall = 0;
+    const auditReader = {
+      listByUser: vi.fn().mockImplementation(() => {
+        const rows = auditPages[Math.min(auditCall, auditPages.length - 1)];
+        auditCall += 1;
+        return Promise.resolve(rows);
+      }),
+    };
+
+    const controller = new PatientProfileController(
+      service,
+      { save: vi.fn() } as unknown as StorageProvider,
+      { parse: vi.fn() } as unknown as OcrProvider,
+      undefined,
+      undefined,
+      auditReader,
+    );
+    return { controller, service, auditReader };
+  };
+
+  const req = { user: { id: 'user-1' } } as unknown as AuthenticatedRequest;
+
+  it('404s when the caller has no profile', async () => {
+    const { controller } = buildExportController({ profile: null });
+    await expect(controller.exportMyData(req, fakeRes())).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+
+  it('assembles profile, consent, history, preferences, submissions and audit trail', async () => {
+    const { controller, auditReader } = buildExportController({
+      profile: { id: 'p1', documents: [] },
+      submissionBatches: [{ items: [{ id: 's1' }], total: 1 }],
+      auditPages: [[{ id: 'a1' }]],
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.formatVersion).toBe(1);
+    expect(payload.profile).toEqual({ id: 'p1', documents: [] });
+    expect(payload.consent).toEqual({ personal: true });
+    expect(payload.consentHistory).toHaveLength(1);
+    expect(payload.sharingPreferences).toEqual({ donation: false });
+    expect(payload.submissions).toEqual([{ id: 's1' }]);
+    expect(payload.aiAuditTrail).toEqual([{ id: 'a1' }]);
+    expect(payload.truncation).toEqual({
+      submissions: false,
+      aiAuditTrail: false,
+      consentHistory: false,
+    });
+    expect(auditReader.listByUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('pages through the audit trail until a short batch', async () => {
+    const fullPage = Array.from({ length: 200 }, (_, i) => ({ id: `a${i}` }));
+    const { controller, auditReader } = buildExportController({
+      profile: { id: 'p1' },
+      auditPages: [fullPage, [{ id: 'last' }]],
+    });
+    const res = fakeRes();
+    await controller.exportMyData(req, res);
+
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.aiAuditTrail).toHaveLength(201);
+    expect(auditReader.listByUser).toHaveBeenCalledTimes(2);
+    expect(auditReader.listByUser).toHaveBeenNthCalledWith(2, 'user-1', {
+      limit: 200,
+      offset: 200,
+    });
+  });
+
+  it('works without an audit reader (empty trail, no crash)', async () => {
+    const { controller } = buildExportController({ profile: { id: 'p1' } });
+    const bare = new PatientProfileController(
+      (controller as unknown as { service: PatientProfileService }).service,
+      { save: vi.fn() } as unknown as StorageProvider,
+      { parse: vi.fn() } as unknown as OcrProvider,
+    );
+    const res = fakeRes();
+    await bare.exportMyData(req, res);
+    const payload = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.aiAuditTrail).toEqual([]);
+  });
+});

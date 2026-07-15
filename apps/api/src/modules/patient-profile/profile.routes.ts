@@ -13,6 +13,7 @@ import { LocalStorageProvider } from '../../services/storage/local-storage.js';
 import { MinioStorageProvider } from '../../services/storage/minio-storage.js';
 import { RoutedStorageProvider } from '../../services/storage/routed-storage.js';
 import { asyncHandler } from '../../utils/async-handler.js';
+import { AuditLogger } from '../ai-agents/audit/prompt-audit.js';
 
 export const createPatientProfileRouter = (context: RouteContext) => {
   const router = Router();
@@ -70,6 +71,9 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     ocr,
     aiClient ? { client: aiClient, model: context.env.AI_API_MODEL } : undefined,
     context.logger,
+    // Same scrubbing reader the /ai/audit endpoint uses — the export
+    // must never surface rows the audit screen itself would redact.
+    new AuditLogger(getPool()),
   );
 
   // Async-OCR recovery sweep: rows stuck in 'processing' belong to
@@ -101,6 +105,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/baseline', asyncHandler(controller.getMyBaseline));
   router.get('/me/passport', asyncHandler(controller.getMyPassport));
   router.get('/me/passport/export', asyncHandler(controller.exportMyPassport));
+  router.get('/me/data-export', asyncHandler(controller.exportMyData));
   router.put('/me', asyncHandler(controller.updateMyProfile));
   router.put('/me/baseline', asyncHandler(controller.updateMyBaseline));
 
