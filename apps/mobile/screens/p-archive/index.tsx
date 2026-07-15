@@ -28,6 +28,7 @@ import {
   type BodyRegionMap,
   type BodyView,
 } from '../../lib/clinical-visuals';
+import { buildDataAssetOverview } from '../../lib/data-asset';
 import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import HumanBodyFigure from '../common/HumanBodyFigure';
@@ -236,6 +237,10 @@ export default function ArchiveScreen() {
     loadData().catch(() => undefined);
   }, []);
 
+  const assetOverview = useMemo(
+    () => (profile ? buildDataAssetOverview(profile) : null),
+    [profile],
+  );
   const visualizationCards = useMemo(() => buildPatientVisualizationCards(profile), [profile]);
   const reportInsights = useMemo(
     () => buildReportInsights(profile?.documents ?? [], profile),
@@ -423,6 +428,71 @@ export default function ArchiveScreen() {
               </View>
             </LinearGradient>
           </View>
+
+          {/* Data-asset overview: completeness, report coverage,
+              record continuity, and freshness at a glance — every gap
+              chip deep-links to where it gets filled. */}
+          {assetOverview ? (
+            <View style={styles.section}>
+              <View style={styles.assetCard}>
+                <View style={styles.assetHeaderRow}>
+                  <Text style={styles.assetTitle}>我的数据资产</Text>
+                  <Text style={styles.assetPercent}>{assetOverview.completenessPercent}%</Text>
+                </View>
+                <View style={styles.assetProgressTrack}>
+                  <View
+                    style={[
+                      styles.assetProgressFill,
+                      { width: `${assetOverview.completenessPercent}%` },
+                    ]}
+                  />
+                </View>
+                {assetOverview.gaps.length > 0 ? (
+                  <View style={styles.assetGapRow}>
+                    <Text style={styles.assetGapLead}>待补充：</Text>
+                    {assetOverview.gaps.map((gap) => (
+                      <TouchableOpacity
+                        key={gap.key}
+                        style={styles.assetGapChip}
+                        activeOpacity={0.88}
+                        onPress={() => router.push(gap.route)}
+                      >
+                        <Text style={styles.assetGapChipText}>{gap.label}</Text>
+                        <FontAwesome6
+                          name="arrow-right"
+                          size={9}
+                          color={CLINICAL_COLORS.accentStrong}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.assetGapDone}>核心资料已齐全，保持记录就好。</Text>
+                )}
+                <View style={styles.assetSignalList}>
+                  {(
+                    [
+                      ['coverage', assetOverview.coverage],
+                      ['continuity', assetOverview.continuity],
+                      ['freshness', assetOverview.freshness],
+                    ] as const
+                  ).map(([key, signal]) => (
+                    <View key={key} style={styles.assetSignalRow}>
+                      <View
+                        style={[
+                          styles.assetSignalDot,
+                          signal.tone === 'ok'
+                            ? styles.assetSignalDotOk
+                            : styles.assetSignalDotWarn,
+                        ]}
+                      />
+                      <Text style={styles.assetSignalText}>{signal.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            </View>
+          ) : null}
 
           {/* Archive sub-pages live here as in-page navigation — the
               header stays a title + one primary action, so the home

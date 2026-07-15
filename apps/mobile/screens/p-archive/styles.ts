@@ -63,6 +63,95 @@ export default StyleSheet.create({
     gap: 10,
     flexWrap: 'wrap',
   },
+  assetCard: {
+    borderRadius: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    padding: 14,
+    gap: 10,
+  },
+  assetHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  assetTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  assetPercent: {
+    color: CLINICAL_COLORS.accentStrong,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  assetProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    overflow: 'hidden',
+  },
+  assetProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+  },
+  assetGapRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  assetGapLead: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+  },
+  assetGapChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  assetGapChipText: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  assetGapDone: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 11,
+  },
+  assetSignalList: {
+    gap: 7,
+  },
+  assetSignalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  assetSignalDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  assetSignalDotOk: {
+    backgroundColor: CLINICAL_COLORS.success,
+  },
+  assetSignalDotWarn: {
+    backgroundColor: CLINICAL_COLORS.warning,
+  },
+  assetSignalText: {
+    flex: 1,
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   navCard: {
     borderRadius: 18,
     backgroundColor: CLINICAL_COLORS.panel,

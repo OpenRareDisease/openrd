@@ -1,4 +1,5 @@
 import type { PatientProfile } from './api';
+import { collectProfileGaps } from './data-asset';
 
 /**
  * Rule engine for the home screen's guidance cards — the piece that
@@ -96,11 +97,12 @@ export const buildGuidanceCards = (
   }
 
   // 3) Profile completeness: missing basics blunt every downstream
-  //    feature (passport, AI precision, cohort stats).
-  const missing: string[] = [];
-  if (!profile.dateOfBirth) missing.push('出生日期');
-  if (!profile.gender) missing.push('性别');
-  if (!profile.regionProvince) missing.push('所在地区');
+  //    feature (passport, AI precision, cohort stats). The gap rules
+  //    live in data-asset.ts so this card and the archive overview
+  //    can never disagree about what's missing.
+  const missing = collectProfileGaps(profile)
+    .filter((gap) => gap.kind === 'basic')
+    .map((gap) => gap.label);
   if (missing.length > 0) {
     cards.push({
       key: 'complete-profile',
