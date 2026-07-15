@@ -925,6 +925,9 @@ export interface AiAuditEntry {
   status: AiAuditStatus;
   errorDetail: string | null;
   createdAt: string;
+  /** Multi-turn: prior conversation turns replayed into this call
+   *  (0 = single-turn; absent on rows from older servers). */
+  historyMessageCount?: number;
 }
 
 export interface AiAuditListResponse {

@@ -43,6 +43,7 @@ interface AuditRow {
   status: string;
   error_detail: string | null;
   created_at: Date | string;
+  history_message_count: number | null;
 }
 
 const coerceStringArray = (value: unknown): string[] => {
@@ -132,6 +133,7 @@ const rowToEntry = (row: AuditRow): AuditEntry => ({
     ? scrubErrorDetail(row.error_detail).slice(0, 500)
     : row.error_detail,
   createdAt: formatTimestamp(row.created_at),
+  historyMessageCount: row.history_message_count ?? 0,
 });
 
 const clampLimit = (raw: number | undefined): number => {
@@ -223,7 +225,8 @@ export class AuditLogger {
               consent_level, redaction_mode,
               redacted_prompt_hash, prompt_char_length,
               used_personal_data, fields_used, tools_called,
-              latency_ms, status, error_detail, created_at
+              latency_ms, status, error_detail, created_at,
+              history_message_count
          FROM ai_prompt_audit
         WHERE ${conditions.join(' AND ')}
         ORDER BY created_at DESC

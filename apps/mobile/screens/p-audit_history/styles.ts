@@ -35,4 +35,31 @@ export default StyleSheet.create({
   headerPlaceholder: {
     width: 40,
   },
+  filterChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 20,
+    marginTop: 10,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    backgroundColor: CLINICAL_COLORS.panel,
+  },
+  filterChipActive: {
+    borderColor: CLINICAL_COLORS.accentStrong,
+    backgroundColor: CLINICAL_COLORS.accentStrong,
+  },
+  filterChipText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+  },
 });

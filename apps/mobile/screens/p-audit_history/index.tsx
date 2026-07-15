@@ -269,6 +269,11 @@ const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
         <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
           {entry.llmProvider} · {entry.llmModel}
         </Text>
+        {(entry.historyMessageCount ?? 0) > 0 ? (
+          <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
+            携带上下文 {entry.historyMessageCount} 条
+          </Text>
+        ) : null}
         {entry.latencyMs != null ? (
           <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
             耗时 {(entry.latencyMs / 1000).toFixed(1)}s
@@ -424,6 +429,9 @@ const AuditHistoryScreen = () => {
   // see duplicate `key={entry.id}` rows or — worse — gaps where the
   // pre-refresh offset skipped entries the refresh just pulled.
   const aiFetchSeqRef = useRef(0);
+  // Status filter chips (server-side filter — the /ai/audit endpoint
+  // already supports it). Changing the filter resets pagination.
+  const [aiStatusFilter, setAiStatusFilter] = useState<AiAuditStatus | 'all'>('all');
 
   const fetchAiPage = useCallback(
     async (mode: 'initial' | 'refresh' | 'more') => {
@@ -433,7 +441,11 @@ const AuditHistoryScreen = () => {
       if (mode === 'more') setAiLoadingMore(true);
       try {
         const offset = mode === 'more' ? aiItems.length : 0;
-        const r = await getMyAuditHistory({ limit: PAGE_SIZE, offset });
+        const r = await getMyAuditHistory({
+          limit: PAGE_SIZE,
+          offset,
+          ...(aiStatusFilter !== 'all' ? { status: aiStatusFilter } : {}),
+        });
         // Drop the result if a newer fetch started after this one.
         // The newer fetch will set the canonical state; this one's
         // payload would only cause duplicates or skips.
@@ -458,44 +470,67 @@ const AuditHistoryScreen = () => {
         }
       }
     },
-    [aiItems.length],
+    [aiItems.length, aiStatusFilter],
   );
 
-  const fetchConsent = useCallback(async (mode: 'initial' | 'refresh') => {
-    if (mode === 'initial') setConsentLoading(true);
-    if (mode === 'refresh') setConsentRefreshing(true);
-    try {
-      const r = await getMyConsentHistory({ limit: CONSENT_HISTORY_LIMIT });
-      setConsentItems(r.events);
-      setConsentError(null);
-      setConsentLoaded(true);
-    } catch (err) {
-      // 404 here means the user has no patient_profiles row yet —
-      // distinct from "no events yet", which the server returns as
-      // an empty array. Distinguish so the UI can prompt for
-      // onboarding instead of an unhelpful generic error.
-      if (err instanceof ApiError && err.status === 404) {
-        setConsentError('请先完成基础档案后再查看同意历史。');
-      } else {
-        const msg =
-          err instanceof ApiError
-            ? (err.data as { message?: string })?.message || err.message
-            : err instanceof Error
-              ? err.message
-              : '加载失败';
-        setConsentError(msg);
+  const [consentFlagFilter, setConsentFlagFilter] = useState<ConsentEventFlag | 'all'>('all');
+
+  const fetchConsent = useCallback(
+    async (mode: 'initial' | 'refresh') => {
+      if (mode === 'initial') setConsentLoading(true);
+      if (mode === 'refresh') setConsentRefreshing(true);
+      try {
+        const r = await getMyConsentHistory({
+          limit: CONSENT_HISTORY_LIMIT,
+          ...(consentFlagFilter !== 'all' ? { flagName: consentFlagFilter } : {}),
+        });
+        setConsentItems(r.events);
+        setConsentError(null);
+        setConsentLoaded(true);
+      } catch (err) {
+        // 404 here means the user has no patient_profiles row yet —
+        // distinct from "no events yet", which the server returns as
+        // an empty array. Distinguish so the UI can prompt for
+        // onboarding instead of an unhelpful generic error.
+        if (err instanceof ApiError && err.status === 404) {
+          setConsentError('请先完成基础档案后再查看同意历史。');
+        } else {
+          const msg =
+            err instanceof ApiError
+              ? (err.data as { message?: string })?.message || err.message
+              : err instanceof Error
+                ? err.message
+                : '加载失败';
+          setConsentError(msg);
+        }
+      } finally {
+        setConsentLoading(false);
+        setConsentRefreshing(false);
       }
-    } finally {
-      setConsentLoading(false);
-      setConsentRefreshing(false);
-    }
-  }, []);
+      // Deps close over the flag filter by design — a filter change
+      // rebuilds the fetcher, and the invalidation effect below reopens
+      // the lazy-load gate.
+    },
+    [consentFlagFilter],
+  );
+
+  // A flag-filter change invalidates the loaded page; the lazy-load
+  // effect below re-fetches (consentLoaded gate reopens). Clearing
+  // the error matters too: the anti-retry-storm guard blocks the
+  // lazy load while an error is set, and switching filters is an
+  // explicit user action that should always attempt a fresh fetch.
+  useEffect(() => {
+    setConsentLoaded(false);
+    setConsentError(null);
+  }, [consentFlagFilter]);
 
   useEffect(() => {
     void fetchAiPage('initial');
-    // intentionally only on first mount; refresh / loadMore handle later updates.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Re-fires when the status filter changes (fetchAiPage closes
+    // over it); refresh / loadMore handle later updates. Deliberately
+    // NOT keyed on fetchAiPage itself — its identity also shifts with
+    // aiItems.length, which must not re-trigger an initial fetch.
+  }, [aiStatusFilter]);
 
   // Lazy-load consent history the first time the user opens that tab.
   //
@@ -515,6 +550,43 @@ const AuditHistoryScreen = () => {
       void fetchConsent('initial');
     }
   }, [activeTab, consentLoaded, consentLoading, consentError, fetchConsent]);
+
+  const AI_STATUS_CHIPS: Array<{ value: AiAuditStatus | 'all'; label: string }> = [
+    { value: 'all', label: '全部' },
+    { value: 'success', label: '成功' },
+    { value: 'error', label: '失败' },
+    { value: 'consent_denied', label: '授权未通过' },
+  ];
+
+  const CONSENT_FLAG_CHIPS: Array<{ value: ConsentEventFlag | 'all'; label: string }> = [
+    { value: 'all', label: '全部' },
+    { value: 'personal', label: '个人数据' },
+    { value: 'third_party', label: '第三方' },
+    { value: 'precise_values', label: '精确数值' },
+  ];
+
+  const renderFilterChips = <T extends string>(
+    chips: Array<{ value: T; label: string }>,
+    active: T,
+    onSelect: (value: T) => void,
+  ) => (
+    <View style={styles.filterChipRow}>
+      {chips.map((chip) => (
+        <TouchableOpacity
+          key={chip.value}
+          style={[styles.filterChip, active === chip.value && styles.filterChipActive]}
+          activeOpacity={0.85}
+          onPress={() => onSelect(chip.value)}
+        >
+          <Text
+            style={[styles.filterChipText, active === chip.value && styles.filterChipTextActive]}
+          >
+            {chip.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
 
   const renderAiBody = () => {
     if (aiLoading) {
@@ -723,6 +795,9 @@ const AuditHistoryScreen = () => {
           )
         }
       >
+        {activeTab === 'ai'
+          ? renderFilterChips(AI_STATUS_CHIPS, aiStatusFilter, setAiStatusFilter)
+          : renderFilterChips(CONSENT_FLAG_CHIPS, consentFlagFilter, setConsentFlagFilter)}
         {activeTab === 'ai' ? renderAiBody() : renderConsentBody()}
       </ScrollView>
     </SafeAreaView>
