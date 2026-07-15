@@ -7,10 +7,13 @@ import {
   ApiError,
   deletePatientDocument,
   generatePatientDocumentSummary,
+  getMyConsent,
   getPatientDocumentOcr,
   reparsePatientDocument,
+  updateMyConsent,
   type PatientDocument,
 } from '../../lib/api';
+import { bumpConsentEpoch } from '../../lib/consent-epoch';
 import {
   CLINICAL_COLORS,
   CLINICAL_GRADIENTS,
@@ -20,6 +23,7 @@ import {
 } from '../../lib/clinical-visuals';
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
 import styles from './styles';
+import { shouldAutoSummarize } from './auto-summary';
 import InlineNotice from '../common/feedback/InlineNotice';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
@@ -100,6 +104,30 @@ export default function ReportDetailScreen() {
   const [reparseNotice, setReparseNotice] = useState<string | null>(null);
   // Bumping this restarts the load+poll effect (used after a reparse).
   const [pollNonce, setPollNonce] = useState(0);
+  // AI consent drives interpretation automation: 'granted' →
+  // summaries generate themselves once the parse settles; 'none' →
+  // an unlock card explains what turning it on buys.
+  const [aiConsent, setAiConsent] = useState<'unknown' | 'granted' | 'none'>('unknown');
+  const [isGrantingConsent, setIsGrantingConsent] = useState(false);
+  // One auto-trigger per screen visit: a failed generation degrades
+  // to the manual button instead of retry-looping LLM calls.
+  const autoSummaryTriggeredRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMyConsent()
+      .then((consent) => {
+        if (!cancelled) setAiConsent(consent.level === 'none' ? 'none' : 'granted');
+      })
+      .catch(() => {
+        // 404 (no profile) or transient failure: treat as not granted
+        // — the unlock card's grant call will surface a real error.
+        if (!cancelled) setAiConsent('none');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = async (id: string) => {
     const res = await getPatientDocumentOcr(id);
@@ -346,6 +374,57 @@ export default function ReportDetailScreen() {
     }
   };
 
+  // Interpretation automation: once the parse settles and AI consent
+  // is granted, the summary generates itself — upload → recognize →
+  // interpret with zero manual steps. The DECISION lives in
+  // shouldAutoSummarize (pure, unit-tested — this path spends LLM
+  // calls unattended, so every guard is load-bearing); the effect
+  // only owns the timing. A failure degrades to the manual button
+  // (summaryNotice already carries the retry).
+  useEffect(() => {
+    if (!documentId) return;
+    const fire = shouldAutoSummarize({
+      aiConsent,
+      docStatus,
+      hasPayload: payload !== null,
+      isProcessing: isDocumentProcessing(docStatus, payload),
+      hasSummary: Boolean(summary),
+      summaryLoading,
+      alreadyTriggered: autoSummaryTriggeredRef.current,
+    });
+    if (!fire) return;
+    autoSummaryTriggeredRef.current = true;
+    void onGenerateSummary();
+    // onGenerateSummary is recreated per render but idempotent; the
+    // decision function holds the real dependency story (this config
+    // has no react-hooks lint plugin to appease).
+  }, [aiConsent, payload, docStatus, summary, summaryLoading, documentId]);
+
+  /** Unlock card: grant both required flags in one tap, then let the
+   *  auto-trigger effect above take over and generate the summary. */
+  const handleGrantAndSummarize = async () => {
+    if (isGrantingConsent) return;
+    setIsGrantingConsent(true);
+    setSummaryNotice(null);
+    try {
+      await updateMyConsent({ personal: true, thirdParty: true });
+      // Same rule as every consent surface: a change starts a new QnA
+      // history epoch (see lib/consent-epoch.ts).
+      await bumpConsentEpoch();
+      setAiConsent('granted');
+    } catch (error) {
+      const detail =
+        error instanceof ApiError && error.status === 404
+          ? '请先在「我的 → 编辑档案」完成基础档案，再开启 AI 授权。'
+          : error instanceof ApiError
+            ? error.message
+            : '授权失败，请稍后重试';
+      setSummaryNotice(detail);
+    } finally {
+      setIsGrantingConsent(false);
+    }
+  };
+
   const runDelete = async () => {
     if (!documentId) return;
 
@@ -549,10 +628,37 @@ export default function ReportDetailScreen() {
                 仅供参考，仍需结合医生判断。
               </Text>
             </>
+          ) : aiConsent === 'none' && !isDocumentProcessing(docStatus, payload) ? (
+            <>
+              <Text style={styles.smallText}>
+                开启 AI 授权后，每份识别完成的报告都会自动生成通俗解读，无需手动操作。AI
+                会引用你档案与报告中已脱敏的内容，可随时在「隐私设置」撤回。
+              </Text>
+              {summaryNotice ? (
+                <View style={{ marginTop: 12 }}>
+                  <InlineNotice message={summaryNotice} />
+                </View>
+              ) : null}
+              <View style={{ marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.button, isGrantingConsent && { opacity: 0.7 }]}
+                  disabled={isGrantingConsent}
+                  onPress={() => void handleGrantAndSummarize()}
+                >
+                  {isGrantingConsent ? (
+                    <ActivityIndicator color={CLINICAL_COLORS.text} />
+                  ) : (
+                    <Text style={styles.buttonText}>开启 AI 授权，自动解读这份报告</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </>
           ) : (
             <>
               <Text style={styles.smallText}>
-                当前报告暂无 AI 总结，可在解析完成后按需生成并缓存。
+                {aiConsent === 'granted' && !isDocumentProcessing(docStatus, payload)
+                  ? '识别完成后会自动生成解读；也可以手动重新生成。'
+                  : '当前报告暂无 AI 总结，可在识别完成后按需生成并缓存。'}
               </Text>
               {summaryNotice ? (
                 <View style={{ marginTop: 12 }}>
