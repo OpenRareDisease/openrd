@@ -1328,9 +1328,18 @@ export class PatientProfileService {
        SET ocr_payload = $3
        FROM patient_profiles p
        WHERE d.profile_id = p.id AND p.user_id = $1 AND d.id = $2
+         AND d.status IN ('parsed', 'needs_review')
        RETURNING d.id, d.ocr_payload`,
       [userId, documentId, JSON.stringify(nextPayload)],
     );
+    if (!updated.rowCount) {
+      // The status gate re-checks atomically at write time: a reparse
+      // that started between our SELECT and this UPDATE would flip the
+      // row to 'processing' and then overwrite ocr_payload when the
+      // job settles — silently discarding the correction. Refusing
+      // here keeps the correction from being eaten.
+      throw new AppError('当前状态不支持修正识别结果', 409);
+    }
     this.logger.info(
       { userId, documentId, keys: Object.keys(patch) },
       'Report OCR fields hand-corrected',
