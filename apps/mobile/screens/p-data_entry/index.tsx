@@ -29,7 +29,6 @@ import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals'
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { buildFollowupFeedback } from './followup-feedback';
 import InlineNotice from '../common/feedback/InlineNotice';
-import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
 type EntryMode = 'followup' | 'event' | 'report';
@@ -1098,7 +1097,8 @@ const DataEntryScreen = () => {
         >
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <ScreenBackButton fallbackHref="/p-home" />
+              {/* No back button: this screen is the「记录」tab root —
+                  a back chevron on a tab is a false affordance. */}
               <View>
                 <Text style={styles.eyebrow}>PATIENT ENTRY</Text>
                 <Text style={styles.pageTitle}>患者自录与上传</Text>
