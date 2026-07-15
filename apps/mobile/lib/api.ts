@@ -15,8 +15,12 @@ export const AUTH_USER_STORAGE_KEY = 'openrd.authUser';
  * Any new patient-scoped cache should be added to this list.
  */
 export const QNA_CHAT_STORAGE_KEY = 'openrd.qna.chatMessages.v1';
+export const QNA_HISTORY_EPOCH_STORAGE_KEY = 'openrd.qna.historyEpoch';
 
-export const PATIENT_SCOPED_CACHE_KEYS: string[] = [QNA_CHAT_STORAGE_KEY];
+export const PATIENT_SCOPED_CACHE_KEYS: string[] = [
+  QNA_CHAT_STORAGE_KEY,
+  QNA_HISTORY_EPOCH_STORAGE_KEY,
+];
 
 // Single source of truth for the API base URL. ai-streaming.ts and
 // any other caller imports this rather than re-reading the env at

@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { bumpConsentEpoch } from '../../lib/consent-epoch';
 import ScreenBackButton from '../common/ScreenBackButton';
 import ToggleSwitch from './components/ToggleSwitch';
 import ConfirmModal from './components/ConfirmModal';
@@ -234,6 +235,11 @@ const PrivacySettingsScreen = () => {
     try {
       const updated = await updateMyConsent(payload);
       setAiConsent(updated);
+      // Any AI-consent change starts a new QnA history epoch: answers
+      // generated under the OLD switches must not replay as context
+      // for questions asked under the new ones (most importantly on
+      // a precise→basic downgrade). See lib/consent-epoch.ts.
+      await bumpConsentEpoch();
       showSuccessToast();
     } catch (err) {
       const message = err instanceof Error ? err.message : '同意状态更新失败，请稍后重试。';

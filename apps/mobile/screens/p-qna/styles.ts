@@ -179,6 +179,25 @@ export default StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  systemDividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginVertical: 14,
+    paddingHorizontal: 8,
+  },
+  systemDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: CLINICAL_COLORS.border,
+  },
+  systemDividerText: {
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    maxWidth: '70%',
+    textAlign: 'center',
+  },
   consentCard: {
     marginTop: 10,
     gap: 10,
