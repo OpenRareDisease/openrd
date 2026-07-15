@@ -303,3 +303,9 @@ export const sharingPreferencesUpdateSchema = z
     },
   );
 export type SharingPreferencesUpdateBody = z.infer<typeof sharingPreferencesUpdateSchema>;
+
+/** Account deletion demands the user retype their registered phone
+ *  number — a destructive path needs more than a button tap. */
+export const deletionRequestSchema = z.object({
+  phoneNumber: z.string().trim().min(1, '请填写注册手机号'),
+});

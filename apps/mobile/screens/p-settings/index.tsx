@@ -1,12 +1,34 @@
-import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Platform } from 'react-native';
+import { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  Modal,
+  Alert,
+  Platform,
+  TextInput,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 import { useAuth } from '../../contexts/AuthContext';
-import { exportMyData, ApiError } from '../../lib/api';
+import {
+  exportMyData,
+  requestAccountDeletion,
+  cancelAccountDeletion,
+  getAccountDeletionStatus,
+  ApiError,
+  type AccountDeletionStatus,
+} from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+
+const formatPurgeDate = (iso: string): string => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
+};
 
 /** Hand a JSON payload to the browser as a file download. Web-only —
  *  production is the Expo web export, where this is the natural
@@ -29,7 +51,68 @@ const SettingsScreen = () => {
   const router = useRouter();
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [deletion, setDeletion] = useState<AccountDeletionStatus | null>(null);
+  const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
+  const [deleteConfirmPhone, setDeleteConfirmPhone] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeletionBusy, setIsDeletionBusy] = useState(false);
   const { user, logout } = useAuth();
+
+  // The pending-deletion banner is the cooling-off period's cancel
+  // surface — load it whenever the screen mounts. Fail-open: a
+  // status fetch error just hides the banner (the request endpoints
+  // still work).
+  useEffect(() => {
+    let cancelled = false;
+    getAccountDeletionStatus()
+      .then((result) => {
+        if (!cancelled) setDeletion(result.deletion);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleRequestDeletion = async () => {
+    if (isDeletionBusy) return;
+    setIsDeletionBusy(true);
+    setDeleteError(null);
+    try {
+      const status = await requestAccountDeletion(deleteConfirmPhone.trim());
+      setDeletion(status);
+      setIsDeleteModalVisible(false);
+      setDeleteConfirmPhone('');
+      Alert.alert(
+        '注销申请已提交',
+        `账号将于 ${formatPurgeDate(status.scheduledPurgeAt)} 删除。在此之前你可以随时在本页取消。`,
+      );
+    } catch (error) {
+      setDeleteError(
+        error instanceof ApiError && error.status === 409
+          ? '已有进行中的注销申请。'
+          : error instanceof Error
+            ? error.message
+            : '提交失败，请稍后重试。',
+      );
+    } finally {
+      setIsDeletionBusy(false);
+    }
+  };
+
+  const handleCancelDeletion = async () => {
+    if (isDeletionBusy) return;
+    setIsDeletionBusy(true);
+    try {
+      const status = await cancelAccountDeletion();
+      setDeletion(status);
+      Alert.alert('已取消', '注销申请已撤回，账号保持正常使用。');
+    } catch (error) {
+      Alert.alert('取消失败', error instanceof Error ? error.message : '请稍后重试。');
+    } finally {
+      setIsDeletionBusy(false);
+    }
+  };
 
   const handleExportDataPress = async () => {
     if (isExporting) return;
@@ -233,6 +316,60 @@ const SettingsScreen = () => {
                 <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
               </View>
             </TouchableOpacity>
+
+            {deletion?.status === 'pending' ? (
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={() => void handleCancelDeletion()}
+                activeOpacity={0.7}
+                disabled={isDeletionBusy}
+              >
+                <View style={styles.settingItemContent}>
+                  <View style={styles.settingItemLeft}>
+                    <View style={styles.settingIconContainer}>
+                      <FontAwesome6 name="rotate-left" size={18} color={CLINICAL_COLORS.warning} />
+                    </View>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={[styles.settingTitle, { color: CLINICAL_COLORS.warning }]}>
+                        取消注销申请
+                      </Text>
+                      <Text style={styles.settingSubtitle}>
+                        账号将于 {formatPurgeDate(deletion.scheduledPurgeAt)}{' '}
+                        删除，点此撤回并保留全部数据
+                      </Text>
+                    </View>
+                  </View>
+                  <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.settingItem}
+                onPress={() => {
+                  setDeleteError(null);
+                  setDeleteConfirmPhone('');
+                  setIsDeleteModalVisible(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.settingItemContent}>
+                  <View style={styles.settingItemLeft}>
+                    <View style={styles.settingIconContainer}>
+                      <FontAwesome6 name="user-xmark" size={18} color={CLINICAL_COLORS.danger} />
+                    </View>
+                    <View style={styles.settingTextContainer}>
+                      <Text style={[styles.settingTitle, { color: CLINICAL_COLORS.danger }]}>
+                        注销账号
+                      </Text>
+                      <Text style={styles.settingSubtitle}>
+                        7 天冷静期后删除全部数据，期间可随时反悔
+                      </Text>
+                    </View>
+                  </View>
+                  <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
+                </View>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -338,6 +475,67 @@ const SettingsScreen = () => {
                   activeOpacity={0.7}
                 >
                   <Text style={styles.confirmButtonText}>退出登录</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 注销确认：destructive path demands the registered phone
+          number retyped — a button tap alone can't erase a medical
+          record. */}
+      <Modal
+        visible={isDeleteModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsDeleteModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsDeleteModalVisible(false)}
+        >
+          <View style={styles.modalContainer}>
+            <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
+              <View style={styles.modalIconContainer}>
+                <FontAwesome6 name="user-xmark" size={24} color={CLINICAL_COLORS.danger} />
+              </View>
+              <Text style={styles.modalTitle}>确认注销账号</Text>
+              <Text style={styles.modalMessage}>
+                注销后将进入 7 天冷静期，期间可随时取消；到期后账号与全部健康数据将被永久删除。
+                建议先「导出我的数据」。{'\n\n'}请输入注册手机号确认：
+              </Text>
+              <TextInput
+                style={styles.deleteConfirmInput}
+                value={deleteConfirmPhone}
+                onChangeText={(value) => {
+                  setDeleteConfirmPhone(value);
+                  setDeleteError(null);
+                }}
+                placeholder={user?.phoneNumber ?? '注册手机号'}
+                placeholderTextColor={CLINICAL_COLORS.textMuted}
+                keyboardType="phone-pad"
+                autoFocus
+              />
+              {deleteError ? <Text style={styles.deleteErrorText}>{deleteError}</Text> : null}
+              <View style={styles.modalButtonContainer}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={() => setIsDeleteModalVisible(false)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.cancelButtonText}>再想想</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.confirmButton, isDeletionBusy && { opacity: 0.6 }]}
+                  onPress={() => void handleRequestDeletion()}
+                  activeOpacity={0.7}
+                  disabled={isDeletionBusy}
+                >
+                  <Text style={styles.confirmButtonText}>
+                    {isDeletionBusy ? '提交中…' : '申请注销'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </TouchableOpacity>

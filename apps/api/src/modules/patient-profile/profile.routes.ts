@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
+import { DELETION_PURGE_INTERVAL_MS } from './account-deletion.js';
 import { OCR_STUCK_AFTER_MINUTES, PatientProfileController } from './profile.controller.js';
 import { PatientProfileService } from './profile.service.js';
 import { getPool } from '../../db/pool.js';
@@ -92,6 +93,24 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     .catch((error) => {
       context.logger.error({ error }, 'Stuck-processing sweep failed');
     });
+  // Account-deletion purge: run once at startup, then every 6 hours.
+  // Same single-instance assumption as the OCR sweep above. unref()
+  // keeps the interval from pinning the process open in tests /
+  // graceful shutdown.
+  const runDeletionPurge = () =>
+    void service
+      .purgeDueAccountDeletions((uri) => storage.remove(uri))
+      .then((purged) => {
+        if (purged > 0) {
+          context.logger.warn({ purged }, 'Purged accounts past their deletion cooling-off');
+        }
+      })
+      .catch((error) => {
+        context.logger.error({ error }, 'Account-deletion purge sweep failed');
+      });
+  runDeletionPurge();
+  setInterval(runDeletionPurge, DELETION_PURGE_INTERVAL_MS).unref();
+
   const authMiddleware = requireAuth(context.env, context.logger);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -112,6 +131,10 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/consent', asyncHandler(controller.getMyConsent));
   router.put('/me/consent', asyncHandler(controller.updateMyConsent));
   router.get('/me/consent/history', asyncHandler(controller.getMyConsentHistory));
+
+  router.get('/me/deletion-request', asyncHandler(controller.getMyAccountDeletion));
+  router.post('/me/deletion-request', asyncHandler(controller.requestMyAccountDeletion));
+  router.post('/me/deletion-request/cancel', asyncHandler(controller.cancelMyAccountDeletion));
 
   router.get('/me/sharing-preferences', asyncHandler(controller.getMySharingPreferences));
   router.put('/me/sharing-preferences', asyncHandler(controller.updateMySharingPreferences));
