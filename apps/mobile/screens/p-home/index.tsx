@@ -33,8 +33,7 @@ const quickActions: Array<{
     | '/p-clinical_passport'
     | '/p-manage'
     | '/p-report_management'
-    | '/p-qna'
-    | '/p-community';
+    | '/p-qna';
   badge?: string;
 }> = [
   {
@@ -86,15 +85,6 @@ const quickActions: Array<{
     icon: 'wave-square',
     color: '#C98A33',
     route: '/p-manage',
-  },
-  {
-    order: '07',
-    title: '社区',
-    description: '社区功能暂未开放，先保留入口。',
-    icon: 'users',
-    color: CLINICAL_COLORS.textMuted,
-    route: '/p-community',
-    badge: '未开放',
   },
 ];
 
