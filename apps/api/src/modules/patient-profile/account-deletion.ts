@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 
 import type { AppLogger } from '../../config/logger.js';
+import { normalizePhone } from '../../utils/phone.js';
 
 /**
  * Account deletion with a cooling-off period (删除权 / right to
@@ -72,8 +73,12 @@ export const requestAccountDeletion = async (
     'SELECT phone_number FROM app_users WHERE id = $1',
     [userId],
   );
+  // normalizePhone on BOTH sides: accounts store the app's +86 form,
+  // but a user retyping their number naturally writes bare digits —
+  // strict string equality would lock them out of their own deletion
+  // right (the exact bug the OTP allowlist had).
   const registered = userResult.rows[0]?.phone_number;
-  if (!registered || registered !== confirmPhoneNumber.trim()) {
+  if (!registered || normalizePhone(registered) !== normalizePhone(confirmPhoneNumber)) {
     throw new DeletionRequestError('手机号与账号不匹配', 'phone_mismatch');
   }
 

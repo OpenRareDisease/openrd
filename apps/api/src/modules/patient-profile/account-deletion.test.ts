@@ -45,6 +45,17 @@ describe('requestAccountDeletion', () => {
     });
   });
 
+  it('accepts a bare-digit retype against a +86-stored number (normalized both sides)', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ phone_number: '+8613800000000' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [row()] });
+    const pool = { query } as unknown as Pool;
+    const status = await requestAccountDeletion(pool, 'u1', '13800000000');
+    expect(status.status).toBe('pending');
+  });
+
   it('creates the request with the 7-day cooling-off and returns the schedule', async () => {
     const query = vi
       .fn()
