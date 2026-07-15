@@ -17,6 +17,8 @@ import { LineChart } from 'react-native-chart-kit';
 import {
   addMedication,
   ApiError,
+  getMuscleInsight,
+  type MuscleInsight,
   getMyPatientProfile,
   getProgressionSummary,
   getRiskSummary,
@@ -136,6 +138,12 @@ export default function ManageScreen() {
   const [medDraft, setMedDraft] = useState({ name: '', dosage: '', frequency: '' });
   const [medBusy, setMedBusy] = useState(false);
   const [medError, setMedError] = useState<string | null>(null);
+  // Cohort comparison (PR-27): per-muscle-group percentile
+  // distribution vs the patient's own latest self-test score. Loaded
+  // best-effort alongside the page; groups without data drop out.
+  const [muscleInsights, setMuscleInsights] = useState<
+    Array<{ label: string; insight: MuscleInsight }>
+  >([]);
 
   const submitMedication = async () => {
     const name = medDraft.name.trim();
@@ -180,6 +188,31 @@ export default function ManageScreen() {
       setProfile(profileData);
       setSummary(summaryData);
       setRiskSummary(riskData as { overallLevel?: string | null; notes?: string[] });
+
+      // Best-effort, after the main payload: a failed insight fetch
+      // (or an empty cohort) silently drops that row.
+      const groups: Array<{ group: string; label: string }> = [
+        { group: 'deltoid', label: '举手过头（肩带）' },
+        { group: 'biceps', label: '屈肘（上臂）' },
+        { group: 'quadriceps', label: '伸膝（大腿）' },
+        { group: 'tibialis', label: '勾脚背（小腿）' },
+      ];
+      const settled = await Promise.allSettled(
+        groups.map(async ({ group, label }) => ({
+          label,
+          insight: await getMuscleInsight(group),
+        })),
+      );
+      setMuscleInsights(
+        settled
+          .filter(
+            (result): result is PromiseFulfilledResult<{ label: string; insight: MuscleInsight }> =>
+              result.status === 'fulfilled' &&
+              result.value.insight.userLatestScore !== null &&
+              result.value.insight.distribution !== null,
+          )
+          .map((result) => result.value),
+      );
     } catch (error) {
       setProfile(null);
       setSummary(null);
@@ -419,6 +452,27 @@ export default function ManageScreen() {
                   </View>
                 ))}
               </View>
+
+              <View style={styles.monitorDivider} />
+              <Text style={styles.cardHeading}>和病友群体相比</Text>
+              {muscleInsights.length > 0 ? (
+                muscleInsights.map(({ label, insight }) => (
+                  <View key={insight.muscleGroup} style={styles.cohortRow}>
+                    <Text style={styles.cohortLabel}>{label}</Text>
+                    <Text style={styles.cohortValue}>
+                      你 {insight.userLatestScore} 分 · 群体中位{' '}
+                      {insight.distribution?.medianScore ?? '—'} 分（
+                      {insight.distribution?.sampleCount ?? 0} 人）
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/p-data_entry')}>
+                  <Text style={styles.cohortEmptyText}>
+                    完成一次肌力自测后，这里会显示你和病友群体的对比 →
+                  </Text>
+                </TouchableOpacity>
+              )}
 
               <View style={styles.monitorDivider} />
               <Text style={styles.cardHeading}>最近记录的变化</Text>
