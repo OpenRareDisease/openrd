@@ -16,8 +16,9 @@ export interface GuidanceCard {
   icon: string;
   title: string;
   description: string;
-  /** Route the card's tap navigates to. */
-  route: string;
+  /** Route the card's tap navigates to. Kept as a literal union so a
+   *  typo'd route is a compile error, not a runtime 404. */
+  route: '/p-data_entry' | '/p-register_profile' | '/p-report_detail';
   /** Optional param bag for the route (e.g. documentId). */
   params?: Record<string, string>;
 }

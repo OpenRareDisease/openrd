@@ -224,7 +224,7 @@ const HomeScreen = () => {
             </View>
           </LinearGradient>
 
-          {guidanceCards.length > 0 ? (
+          {!errorMessage && guidanceCards.length > 0 ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>今日建议</Text>
               <View style={styles.guidanceStack}>
@@ -235,8 +235,8 @@ const HomeScreen = () => {
                     activeOpacity={0.88}
                     onPress={() =>
                       card.params
-                        ? router.push({ pathname: card.route, params: card.params } as never)
-                        : router.push(card.route as never)
+                        ? router.push({ pathname: card.route, params: card.params })
+                        : router.push(card.route)
                     }
                   >
                     <View style={styles.guidanceIconWrap}>
