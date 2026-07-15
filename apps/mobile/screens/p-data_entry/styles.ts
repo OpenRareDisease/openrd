@@ -132,10 +132,15 @@ export default StyleSheet.create({
   modeGrid: {
     marginTop: 14,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   modeCard: {
-    flex: 1,
+    // 2×2 grid: four modes in one row would squeeze each card to
+    // ~80px on a phone. 47% basis + grow keeps two per row with the
+    // gap absorbed.
+    flexBasis: '47%',
+    flexGrow: 1,
     minWidth: 0,
     minHeight: 216,
     borderRadius: 22,
