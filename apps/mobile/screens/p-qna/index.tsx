@@ -29,8 +29,11 @@ import {
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
 import { bumpConsentEpoch, getConsentEpoch } from '../../lib/consent-epoch';
+import { useProfileContext } from '../../contexts/ProfileContext';
+import { collectProfileGaps } from '../../lib/data-asset';
 import { type ChatMessage, buildHistoryPayload, parseStoredMessages } from './chat-storage';
 import { normalizeCitationIndexes, parseCitationSegments } from './citations';
+import { buildCitationSummary, humanizeToolName } from './humanize';
 import { synthesizeLegacyToolCalls, type AssistantMetadata } from './metadata';
 import { pickCurrentMode } from './mode';
 import styles from './styles';
@@ -136,13 +139,14 @@ const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
 const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
   const [expanded, setExpanded] = useState(false);
   const [traceExpanded, setTraceExpanded] = useState(false);
+  const router = useRouter();
+  const { profile } = useProfileContext();
 
   if (message.role !== 'assistant') return null;
   if (message.status !== 'sent') return null;
   const meta = message.metadata;
   if (!meta) return null;
 
-  const showFields = meta.usedPersonalData && (meta.fieldsUsed?.length ?? 0) > 0;
   const citations = meta.citations ?? [];
   const showCitations = citations.length > 0;
 
@@ -157,7 +161,21 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
     : synthesizeLegacyToolCalls(meta.legacyToolNames);
   const showTrace = toolCalls.length > 0;
 
-  if (!showFields && !showCitations && !showTrace) return null;
+  // Plain-language headline:「本次引用了你的：健康档案（…）、检查
+  // 报告（…）」— or the explicit negative for KB-only answers.
+  const citationLine = buildCitationSummary({
+    usedPersonalData: meta.usedPersonalData,
+    fieldsUsed: meta.fieldsUsed,
+    toolCalls,
+  });
+
+  // "Feed the flywheel" hint: when this answer touched (or tried to
+  // touch) personal data and the profile still has gaps, point at
+  // the first one. Shares collectProfileGaps with the archive
+  // overview / home cards so all three surfaces name the same gaps.
+  const firstGap = citationLine && profile ? (collectProfileGaps(profile)[0] ?? null) : null;
+
+  if (!citationLine && !showCitations && !showTrace) return null;
 
   const citationFiles = citations.map((c) => c.sourceFile).filter((f): f is string => Boolean(f));
   const citationFilesPreview = citationFiles.slice(0, 3).join('、');
@@ -173,9 +191,9 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
         gap: 4,
       }}
     >
-      {showFields ? (
+      {citationLine ? (
         <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
-          本回答用到了你的：{(meta.fieldsUsed ?? []).join('、')}
+          {citationLine}
         </Text>
       ) : null}
       {showTrace ? (
@@ -218,7 +236,7 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                           fontWeight: '600',
                         }}
                       >
-                        {call.name}
+                        {humanizeToolName(call.name)}
                       </Text>
                       <Text style={{ color: statusColor, fontSize: 10, fontWeight: '700' }}>
                         {isError ? '失败' : '成功'}
@@ -313,6 +331,18 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
             </View>
           ) : null}
         </>
+      ) : null}
+      {firstGap ? (
+        <TouchableOpacity
+          onPress={() => router.push(firstGap.route)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`补充${firstGap.label}，获得更贴合的回答`}
+        >
+          <Text style={{ color: CLINICAL_COLORS.accentStrong, fontSize: 11, lineHeight: 16 }}>
+            补上「{firstGap.label}」，AI 的回答会更贴合你的情况 →
+          </Text>
+        </TouchableOpacity>
       ) : null}
     </View>
   );
