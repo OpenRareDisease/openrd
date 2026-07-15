@@ -62,63 +62,76 @@ export const daysSince = (iso: string | null | undefined, now: number): number |
 };
 
 /**
- * The full gap checklist. `basic` items mirror what the home guidance
- * card nags about; `asset` items only appear on the archive overview.
+ * The completeness checklist — single source for both the gap list
+ * and the percent denominator, so adding an item can never silently
+ * skew the math. `basic` items mirror what the home guidance card
+ * nags about; `asset` items only appear on the archive overview.
  */
-export const collectProfileGaps = (profile: PatientProfile): ProfileGap[] => {
-  const gaps: ProfileGap[] = [];
-  if (!profile.dateOfBirth) {
-    gaps.push({
-      key: 'dateOfBirth',
-      label: '出生日期',
-      route: '/p-register_profile',
-      kind: 'basic',
-    });
-  }
-  if (!profile.gender) {
-    gaps.push({ key: 'gender', label: '性别', route: '/p-register_profile', kind: 'basic' });
-  }
-  if (!profile.regionProvince) {
-    gaps.push({ key: 'region', label: '所在地区', route: '/p-register_profile', kind: 'basic' });
-  }
-  const hasDiagnosis =
-    Boolean(profile.diagnosisDate) ||
-    Boolean(profile.baseline?.diseaseBackground?.diagnosisType) ||
-    Boolean(profile.baseline?.foundation?.diagnosisYear);
-  if (!hasDiagnosis) {
-    gaps.push({ key: 'diagnosis', label: '诊断信息', route: '/p-register_profile', kind: 'asset' });
-  }
-  const hasGenetics =
-    Boolean(profile.geneticMutation) || Boolean(profile.baseline?.diseaseBackground?.d4z4);
-  if (!hasGenetics) {
-    gaps.push({
-      key: 'genetics',
-      label: '基因检测信息',
-      route: '/p-register_profile',
-      kind: 'asset',
-    });
-  }
-  if (profile.documents.length === 0) {
-    gaps.push({
-      key: 'firstReport',
-      label: '第一份检查报告',
-      route: '/p-data_entry',
-      kind: 'asset',
-    });
-  }
-  if (profile.functionTests.length === 0) {
-    gaps.push({
-      key: 'firstRecord',
-      label: '第一条日常记录',
-      route: '/p-data_entry',
-      kind: 'asset',
-    });
-  }
-  return gaps;
-};
+const CHECKLIST: Array<
+  Omit<ProfileGap, 'key'> & { key: string; isFilled: (profile: PatientProfile) => boolean }
+> = [
+  {
+    key: 'dateOfBirth',
+    label: '出生日期',
+    route: '/p-register_profile',
+    kind: 'basic',
+    isFilled: (profile) => Boolean(profile.dateOfBirth),
+  },
+  {
+    key: 'gender',
+    label: '性别',
+    route: '/p-register_profile',
+    kind: 'basic',
+    isFilled: (profile) => Boolean(profile.gender),
+  },
+  {
+    key: 'region',
+    label: '所在地区',
+    route: '/p-register_profile',
+    kind: 'basic',
+    isFilled: (profile) => Boolean(profile.regionProvince),
+  },
+  {
+    key: 'diagnosis',
+    label: '诊断信息',
+    route: '/p-register_profile',
+    kind: 'asset',
+    isFilled: (profile) =>
+      Boolean(profile.diagnosisDate) ||
+      Boolean(profile.baseline?.diseaseBackground?.diagnosisType) ||
+      Boolean(profile.baseline?.foundation?.diagnosisYear),
+  },
+  {
+    key: 'genetics',
+    label: '基因检测信息',
+    route: '/p-register_profile',
+    kind: 'asset',
+    isFilled: (profile) =>
+      Boolean(profile.geneticMutation) || Boolean(profile.baseline?.diseaseBackground?.d4z4),
+  },
+  {
+    key: 'firstReport',
+    label: '第一份检查报告',
+    route: '/p-data_entry',
+    kind: 'asset',
+    isFilled: (profile) => profile.documents.length > 0,
+  },
+  {
+    key: 'firstRecord',
+    label: '第一条日常记录',
+    route: '/p-data_entry',
+    kind: 'asset',
+    isFilled: (profile) => profile.functionTests.length > 0,
+  },
+];
 
-/** Total number of items in the checklist above. */
-const CHECKLIST_SIZE = 7;
+export const collectProfileGaps = (profile: PatientProfile): ProfileGap[] =>
+  CHECKLIST.filter((item) => !item.isFilled(profile)).map(({ key, label, route, kind }) => ({
+    key,
+    label,
+    route,
+    kind,
+  }));
 
 const buildCoverage = (profile: PatientProfile, now: number): AssetSignal => {
   const uploadTimes = profile.documents
@@ -185,7 +198,9 @@ export const buildDataAssetOverview = (
   now: number = Date.now(),
 ): DataAssetOverview => {
   const gaps = collectProfileGaps(profile);
-  const completenessPercent = Math.round(((CHECKLIST_SIZE - gaps.length) / CHECKLIST_SIZE) * 100);
+  const completenessPercent = Math.round(
+    ((CHECKLIST.length - gaps.length) / CHECKLIST.length) * 100,
+  );
   return {
     completenessPercent,
     gaps,
