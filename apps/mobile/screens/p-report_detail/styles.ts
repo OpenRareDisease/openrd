@@ -95,6 +95,21 @@ export default StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  processingRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  processingText: {
+    flex: 1,
+    color: CLINICAL_COLORS.text,
+    fontSize: 13,
+    lineHeight: 19,
+  },
   highlightGrid: {
     marginTop: 16,
     flexDirection: 'row',

@@ -8,6 +8,7 @@ import {
   deletePatientDocument,
   generatePatientDocumentSummary,
   getPatientDocumentOcr,
+  reparsePatientDocument,
   type PatientDocument,
 } from '../../lib/api';
 import {
@@ -81,6 +82,7 @@ export default function ReportDetailScreen() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [payload, setPayload] = useState<OcrPayload | null>(null);
+  const [docStatus, setDocStatus] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -91,15 +93,30 @@ export default function ReportDetailScreen() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [summary, setSummary] = useState<string>('');
   const [bodyView, setBodyView] = useState<BodyView>('front');
+  // The poll gave up (10 min) without the parse settling — the job is
+  // almost certainly lost; offer「重新识别」instead of spinning forever.
+  const [pollTimedOut, setPollTimedOut] = useState(false);
+  const [isReparsing, setIsReparsing] = useState(false);
+  const [reparseNotice, setReparseNotice] = useState<string | null>(null);
+  // Bumping this restarts the load+poll effect (used after a reparse).
+  const [pollNonce, setPollNonce] = useState(0);
 
   const load = async (id: string) => {
     const res = await getPatientDocumentOcr(id);
     const next = res.ocrPayload ?? null;
     setPayload(next);
+    setDocStatus(res.status ?? null);
     const maybeSummary = next?.fields?.aiSummary;
     setSummary(typeof maybeSummary === 'string' ? maybeSummary : '');
-    return next;
+    return res;
   };
+
+  // "Still parsing" = the document ROW says processing (async
+  // pipeline keeps the payload null while the job runs). The old
+  // payload-based analysisStatus check stays as a fallback for
+  // pre-async rows whose payload carried the transient state.
+  const isDocumentProcessing = (status: string | null | undefined, ocrPayload: OcrPayload | null) =>
+    status === 'processing' || isProcessing(ocrPayload);
 
   useEffect(() => {
     if (!documentId) {
@@ -114,14 +131,15 @@ export default function ReportDetailScreen() {
       try {
         setIsLoading(true);
         setErrorMessage(null);
-        const next = await load(documentId);
+        setPollTimedOut(false);
+        const first = await load(documentId);
         if (cancelled) return;
 
         const startedAt = Date.now();
         const tick = async () => {
           try {
             const refreshed = await load(documentId);
-            if (!refreshed || !isProcessing(refreshed)) {
+            if (!isDocumentProcessing(refreshed.status, refreshed.ocrPayload ?? null)) {
               poller.current = null;
               return;
             }
@@ -131,13 +149,14 @@ export default function ReportDetailScreen() {
 
           if (Date.now() - startedAt > 10 * 60 * 1000) {
             poller.current = null;
+            setPollTimedOut(true);
             return;
           }
 
           poller.current = setTimeout(tick, 2000);
         };
 
-        if (next && isProcessing(next)) {
+        if (isDocumentProcessing(first.status, first.ocrPayload ?? null)) {
           poller.current = setTimeout(tick, 1200);
         }
       } catch (error) {
@@ -158,10 +177,33 @@ export default function ReportDetailScreen() {
         poller.current = null;
       }
     };
-  }, [documentId]);
+  }, [documentId, pollNonce]);
+
+  /** 重新识别: flip the row back to processing server-side, then
+   *  restart the whole load+poll cycle via the nonce. */
+  const handleReparse = async () => {
+    if (!documentId || isReparsing) return;
+    setIsReparsing(true);
+    setReparseNotice(null);
+    try {
+      await reparsePatientDocument(documentId);
+      setPayload(null);
+      setDocStatus('processing');
+      setPollTimedOut(false);
+      setPollNonce((n) => n + 1);
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '重新识别失败，请稍后重试';
+      setReparseNotice(message);
+    } finally {
+      setIsReparsing(false);
+    }
+  };
 
   const fields = payload?.fields ?? undefined;
-  const status = getAnalysisStatus(payload) ?? 'unknown';
+  // Prefer the document-row status: under the async pipeline the
+  // payload (and its analysisStatus) is null for the entire parse,
+  // which used to surface as a bare "unknown" in the hero chip.
+  const status = docStatus ?? getAnalysisStatus(payload) ?? 'unknown';
   const reportKind = inferReportKind(payload);
   const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
   const activeRegions = mriInference.regions;
@@ -363,8 +405,38 @@ export default function ReportDetailScreen() {
             {pickField(fields, ['reportName', 'report_name']) || '结构化报告阅读视图'}
           </Text>
           <Text style={styles.heroDescription}>
-            documentId: {documentId ?? '--'} {isProcessing(payload) ? ' · 解析进行中' : ''}
+            documentId: {documentId ?? '--'}
+            {isDocumentProcessing(docStatus, payload) && !pollTimedOut ? ' · 识别进行中' : ''}
           </Text>
+
+          {isDocumentProcessing(docStatus, payload) && !pollTimedOut ? (
+            <View style={styles.processingRow}>
+              <ActivityIndicator size="small" color={CLINICAL_COLORS.accentStrong} />
+              <Text style={styles.processingText}>
+                正在识别这份报告，通常需要 1-2 分钟。可以先离开本页，识别完成后这里会自动更新。
+              </Text>
+            </View>
+          ) : null}
+
+          {docStatus === 'parse_failed' || pollTimedOut ? (
+            <View style={{ marginTop: 12 }}>
+              <InlineNotice
+                message={
+                  pollTimedOut
+                    ? '识别时间超出预期，任务可能已中断。'
+                    : '这份报告识别失败了，可以重新识别一次。'
+                }
+                onRetry={() => void handleReparse()}
+                retryLabel="重新识别"
+                retryDisabled={isReparsing}
+              />
+            </View>
+          ) : null}
+          {reparseNotice ? (
+            <View style={{ marginTop: 8 }}>
+              <InlineNotice message={reparseNotice} />
+            </View>
+          ) : null}
 
           <View style={styles.highlightGrid}>
             {highlightItems.length > 0 ? (
@@ -495,14 +567,16 @@ export default function ReportDetailScreen() {
               <View style={{ marginTop: 12 }}>
                 <TouchableOpacity
                   style={[styles.button, summaryLoading && { opacity: 0.7 }]}
-                  disabled={summaryLoading || isProcessing(payload)}
+                  disabled={summaryLoading || isDocumentProcessing(docStatus, payload)}
                   onPress={onGenerateSummary}
                 >
                   {summaryLoading ? (
                     <ActivityIndicator color={CLINICAL_COLORS.text} />
                   ) : (
                     <Text style={styles.buttonText}>
-                      {isProcessing(payload) ? '解析完成后可生成' : '生成 AI 总结'}
+                      {isDocumentProcessing(docStatus, payload)
+                        ? '识别完成后可生成'
+                        : '生成 AI 总结'}
                     </Text>
                   )}
                 </TouchableOpacity>

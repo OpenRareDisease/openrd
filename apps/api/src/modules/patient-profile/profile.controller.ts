@@ -754,6 +754,10 @@ export class PatientProfileController {
 
     res.status(200).json({
       documentId,
+      // The async pipeline keeps ocr_payload null while the job runs,
+      // so the row status is the only way a poller can distinguish
+      // "still parsing" from "never parsed" / "failed".
+      status: document.status ?? null,
       ocrPayload: document.ocr_payload ?? null,
     });
   };
