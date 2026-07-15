@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
+import { PRIVACY_POLICY_TEXT, USER_AGREEMENT_TEXT } from '../../lib/legal-content';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 import ScreenBackButton from '../common/ScreenBackButton';
 
@@ -245,30 +246,7 @@ const AboutUsScreen = () => {
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
                     <View style={styles.modalTextContainer}>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>1. 服务条款</Text>
-                        <Text style={styles.modalSectionText}>
-                          欢迎使用FSHD-openrd应用程序。在使用我们的服务前，请仔细阅读并理解本协议的所有条款。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>2. 用户责任</Text>
-                        <Text style={styles.modalSectionText}>
-                          用户应确保所提供的信息真实有效，并对其账户下的所有活动承担责任。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>3. 隐私保护</Text>
-                        <Text style={styles.modalSectionText}>
-                          我们严格保护用户隐私，详细的隐私政策请查看隐私政策条款。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>4. 免责声明</Text>
-                        <Text style={styles.modalSectionText}>
-                          本应用提供的信息仅供参考，不能替代专业医疗建议。如有健康问题，请咨询专业医生。
-                        </Text>
-                      </View>
+                      <Text style={styles.modalSectionText}>{USER_AGREEMENT_TEXT}</Text>
                     </View>
                   </ScrollView>
                 </View>
@@ -300,30 +278,7 @@ const AboutUsScreen = () => {
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
                     <View style={styles.modalTextContainer}>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>1. 信息收集</Text>
-                        <Text style={styles.modalSectionText}>
-                          我们收集您提供的医疗信息、使用数据等，用于提供更好的服务体验。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>2. 信息使用</Text>
-                        <Text style={styles.modalSectionText}>
-                          您的信息仅用于FSHD管理、分析和改善服务质量，不会用于其他商业目的。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>3. 信息保护</Text>
-                        <Text style={styles.modalSectionText}>
-                          我们采用医疗级加密技术保护您的数据安全，符合HIPAA、GDPR等国际标准。
-                        </Text>
-                      </View>
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalSectionTitle}>4. 数据共享</Text>
-                        <Text style={styles.modalSectionText}>
-                          未经您同意，我们不会与第三方分享您的个人信息，除非法律要求。
-                        </Text>
-                      </View>
+                      <Text style={styles.modalSectionText}>{PRIVACY_POLICY_TEXT}</Text>
                     </View>
                   </ScrollView>
                 </View>

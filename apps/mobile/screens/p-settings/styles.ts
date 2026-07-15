@@ -66,6 +66,16 @@ export default StyleSheet.create({
     borderRadius: 32,
     marginRight: 12,
   },
+  avatarFallback: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
   userDetails: {
     flex: 1,
   },
