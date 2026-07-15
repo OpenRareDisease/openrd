@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import styles from './styles';
-import { PRIVACY_POLICY_TEXT, USER_AGREEMENT_TEXT } from '../../lib/legal-content';
+import { PRIVACY_POLICY_SECTIONS, USER_AGREEMENT_SECTIONS } from '../../lib/legal-content';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
 import ScreenBackButton from '../common/ScreenBackButton';
 
@@ -246,7 +246,12 @@ const AboutUsScreen = () => {
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
                     <View style={styles.modalTextContainer}>
-                      <Text style={styles.modalSectionText}>{USER_AGREEMENT_TEXT}</Text>
+                      {USER_AGREEMENT_SECTIONS.map((section) => (
+                        <View key={section.title} style={styles.modalSection}>
+                          <Text style={styles.modalSectionTitle}>{section.title}</Text>
+                          <Text style={styles.modalSectionText}>{section.body}</Text>
+                        </View>
+                      ))}
                     </View>
                   </ScrollView>
                 </View>
@@ -278,7 +283,12 @@ const AboutUsScreen = () => {
                   </View>
                   <ScrollView style={styles.modalScrollView} showsVerticalScrollIndicator={false}>
                     <View style={styles.modalTextContainer}>
-                      <Text style={styles.modalSectionText}>{PRIVACY_POLICY_TEXT}</Text>
+                      {PRIVACY_POLICY_SECTIONS.map((section) => (
+                        <View key={section.title} style={styles.modalSection}>
+                          <Text style={styles.modalSectionTitle}>{section.title}</Text>
+                          <Text style={styles.modalSectionText}>{section.body}</Text>
+                        </View>
+                      ))}
                     </View>
                   </ScrollView>
                 </View>
