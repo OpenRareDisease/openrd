@@ -58,31 +58,48 @@ export default StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
   },
-  headerActionRail: {
-    flexDirection: 'row',
-    gap: 10,
-    flexWrap: 'wrap',
-  },
   headerActions: {
     flexDirection: 'row',
     gap: 10,
     flexWrap: 'wrap',
   },
-  outlineButton: {
+  navCard: {
+    borderRadius: 18,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    paddingHorizontal: 14,
+  },
+  navRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    gap: 12,
+    paddingVertical: 13,
+  },
+  navRowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: CLINICAL_TINTS.borderSubtle,
+  },
+  navIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: CLINICAL_TINTS.accentSoft,
   },
-  outlineButtonText: {
+  navCopy: {
+    flex: 1,
+  },
+  navTitle: {
     color: CLINICAL_COLORS.text,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  navDescription: {
+    marginTop: 2,
+    color: CLINICAL_COLORS.textMuted,
+    fontSize: 11,
   },
   primaryButton: {
     flexDirection: 'row',

@@ -489,7 +489,7 @@ const DataEntryScreen = () => {
       setProfile(refreshed);
       return refreshed;
     }
-    throw new Error('请先完成基础档案（“我的 → 编辑资料”），再记录数据。');
+    throw new Error('请先完成基础档案（“我的 → 编辑档案”），再记录数据。');
   };
 
   const pickDocument = async () => {
@@ -1101,7 +1101,7 @@ const DataEntryScreen = () => {
                   a back chevron on a tab is a false affordance. */}
               <View>
                 <Text style={styles.eyebrow}>PATIENT ENTRY</Text>
-                <Text style={styles.pageTitle}>患者自录与上传</Text>
+                <Text style={styles.pageTitle}>记录数据</Text>
               </View>
             </View>
           </View>

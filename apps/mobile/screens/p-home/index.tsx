@@ -48,7 +48,7 @@ const quickActions: Array<{
   },
   {
     order: '02',
-    title: '患者自录与上传',
+    title: '记录数据',
     description: '进入统一录入页，完成量化随访、事件记录或上传一份报告。',
     icon: 'file-circle-plus',
     color: CLINICAL_COLORS.warning,
