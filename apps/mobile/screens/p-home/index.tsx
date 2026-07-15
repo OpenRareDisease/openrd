@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -19,6 +19,7 @@ import {
   type ProgressionSummary,
 } from '../../lib/api';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS, formatDateLabel } from '../../lib/clinical-visuals';
+import { buildGuidanceCards } from '../../lib/guidance-cards';
 import styles from './styles';
 
 const quickActions: Array<{
@@ -100,6 +101,8 @@ const HomeScreen = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const guidanceCards = useMemo(() => buildGuidanceCards(profile), [profile]);
 
   const loadData = async (refresh = false) => {
     if (refresh) {
@@ -220,6 +223,43 @@ const HomeScreen = () => {
               </View>
             </View>
           </LinearGradient>
+
+          {!errorMessage && guidanceCards.length > 0 ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>今日建议</Text>
+              <View style={styles.guidanceStack}>
+                {guidanceCards.map((card) => (
+                  <TouchableOpacity
+                    key={card.key}
+                    style={styles.guidanceCard}
+                    activeOpacity={0.88}
+                    onPress={() =>
+                      card.params
+                        ? router.push({ pathname: card.route, params: card.params })
+                        : router.push(card.route)
+                    }
+                  >
+                    <View style={styles.guidanceIconWrap}>
+                      <FontAwesome6
+                        name={card.icon as ComponentProps<typeof FontAwesome6>['name']}
+                        size={16}
+                        color={CLINICAL_COLORS.accentStrong}
+                      />
+                    </View>
+                    <View style={styles.guidanceTextWrap}>
+                      <Text style={styles.guidanceTitle}>{card.title}</Text>
+                      <Text style={styles.guidanceDescription}>{card.description}</Text>
+                    </View>
+                    <FontAwesome6
+                      name="chevron-right"
+                      size={13}
+                      color={CLINICAL_COLORS.textMuted}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : null}
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>快捷入口</Text>
