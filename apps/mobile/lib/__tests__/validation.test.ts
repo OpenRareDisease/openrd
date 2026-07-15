@@ -8,184 +8,97 @@ import {
   validateRegisterForm,
 } from '../validation';
 
-const validRegisterInput: RegisterValidationInput = {
+const validInput: RegisterValidationInput = {
   identity: 'patient_family',
-  fullName: '张三',
-  dateOfBirth: '1990-05-20',
-  gender: 'male',
-  diagnosisYear: '2022',
   phone: '13800000000',
   code: '123456',
-  password: 'abcd1234',
-  confirmPassword: 'abcd1234',
-  contactEmail: 'user@example.com',
-  regionProvince: '广东省',
-  regionCity: '深圳市',
-  regionDistrict: '南山区',
+  password: 'password123',
+  confirmPassword: 'password123',
 };
 
-describe('validateRegisterForm', () => {
-  it('returns no errors for a fully valid form', () => {
-    expect(validateRegisterForm(validRegisterInput)).toEqual({});
+describe('validateRegisterForm (account essentials only)', () => {
+  it('passes a fully valid form with zero errors', () => {
+    expect(validateRegisterForm(validInput)).toEqual({});
   });
 
-  it('collects EVERY failing field at once (not just the first)', () => {
+  it('collects EVERY failing field at once (no fix-resubmit loop)', () => {
     const errors = validateRegisterForm({
       identity: '',
-      fullName: '  ',
-      dateOfBirth: '',
-      gender: '',
-      diagnosisYear: '',
       phone: '',
       code: '',
       password: '',
-      confirmPassword: '',
-      contactEmail: '',
-      regionProvince: '',
-      regionCity: '',
-      regionDistrict: '',
+      confirmPassword: 'x',
     });
-
-    // Every required field reports simultaneously — this is the
-    // contract the inline-error UX depends on (the old flow showed
-    // one blocking modal per field per submit).
     expect(Object.keys(errors).sort()).toEqual(
-      [
-        'identity',
-        'fullName',
-        'dateOfBirth',
-        'gender',
-        'phone',
-        'code',
-        'password',
-        'regionProvince',
-        'regionCity',
-        'regionDistrict',
-      ].sort(),
+      ['identity', 'phone', 'code', 'password', 'confirmPassword'].sort(),
     );
   });
 
-  it('enforces the shared password policy and message', () => {
-    const short = validateRegisterForm({
-      ...validRegisterInput,
-      password: 'a'.repeat(PASSWORD_MIN_LENGTH - 1),
-      confirmPassword: 'a'.repeat(PASSWORD_MIN_LENGTH - 1),
-    });
-    expect(short.password).toBe(`密码长度应为${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位`);
-
-    const long = validateRegisterForm({
-      ...validRegisterInput,
-      password: 'a'.repeat(PASSWORD_MAX_LENGTH + 1),
-      confirmPassword: 'a'.repeat(PASSWORD_MAX_LENGTH + 1),
-    });
-    expect(long.password).toBeDefined();
-
-    const minBoundary = validateRegisterForm({
-      ...validRegisterInput,
-      password: 'a'.repeat(PASSWORD_MIN_LENGTH),
-      confirmPassword: 'a'.repeat(PASSWORD_MIN_LENGTH),
-    });
-    expect(minBoundary.password).toBeUndefined();
-  });
-
-  it('flags mismatched password confirmation', () => {
-    const errors = validateRegisterForm({
-      ...validRegisterInput,
-      confirmPassword: 'different1',
-    });
-    expect(errors.confirmPassword).toBe('两次输入的密码不一致');
-  });
-
-  it('rejects malformed phone numbers', () => {
-    expect(validateRegisterForm({ ...validRegisterInput, phone: '12345' }).phone).toBe(
+  it('rejects malformed CN mobile numbers', () => {
+    expect(validateRegisterForm({ ...validInput, phone: '12345' }).phone).toBe(
       '请输入正确的手机号',
     );
-    expect(validateRegisterForm({ ...validRegisterInput, phone: '23800000000' }).phone).toBe(
+    expect(validateRegisterForm({ ...validInput, phone: '23800000000' }).phone).toBe(
       '请输入正确的手机号',
     );
   });
 
-  it('rejects an incomplete or impossible date of birth', () => {
-    expect(validateRegisterForm({ ...validRegisterInput, dateOfBirth: '' }).dateOfBirth).toBe(
-      '请选择出生日期',
-    );
+  it('enforces the single-source password policy at both boundaries', () => {
+    const tooShort = 'a'.repeat(PASSWORD_MIN_LENGTH - 1);
+    const minOk = 'a'.repeat(PASSWORD_MIN_LENGTH);
+    const maxOk = 'a'.repeat(PASSWORD_MAX_LENGTH);
+    const tooLong = 'a'.repeat(PASSWORD_MAX_LENGTH + 1);
+
     expect(
-      validateRegisterForm({ ...validRegisterInput, dateOfBirth: '1990-5-2' }).dateOfBirth,
-    ).toBe('请选择完整有效的出生日期');
+      validateRegisterForm({ ...validInput, password: tooShort, confirmPassword: tooShort })
+        .password,
+    ).toBe(`密码长度应为${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位`);
+    expect(
+      validateRegisterForm({ ...validInput, password: minOk, confirmPassword: minOk }).password,
+    ).toBeUndefined();
+    expect(
+      validateRegisterForm({ ...validInput, password: maxOk, confirmPassword: maxOk }).password,
+    ).toBeUndefined();
+    expect(
+      validateRegisterForm({ ...validInput, password: tooLong, confirmPassword: tooLong }).password,
+    ).toBe(`密码长度应为${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位`);
   });
 
-  it('treats email and diagnosis year as optional but validates them when present', () => {
-    const empty = validateRegisterForm({
-      ...validRegisterInput,
-      contactEmail: '',
-      diagnosisYear: '',
-    });
-    expect(empty.contactEmail).toBeUndefined();
-    expect(empty.diagnosisYear).toBeUndefined();
-
-    const bad = validateRegisterForm({
-      ...validRegisterInput,
-      contactEmail: 'not-an-email',
-      diagnosisYear: '22',
-    });
-    expect(bad.contactEmail).toBe('请输入正确的邮箱格式');
-    expect(bad.diagnosisYear).toBe('确诊年份请填写 4 位年份');
+  it('flags a confirm-password mismatch', () => {
+    expect(
+      validateRegisterForm({ ...validInput, confirmPassword: 'different1' }).confirmPassword,
+    ).toBe('两次输入的密码不一致');
   });
-});
 
-describe('firstRegisterError', () => {
-  it('returns the highest field on screen, following REGISTER_FIELD_ORDER', () => {
+  it('every emittable error key appears in the visual scroll order', () => {
     const errors = validateRegisterForm({
-      ...validRegisterInput,
-      gender: '',
-      regionDistrict: '',
-    });
-    // gender precedes regionDistrict in the visual order, so the
-    // scroll-to-first-error helper must pick it.
-    expect(firstRegisterError(errors)).toBe('gender');
-  });
-
-  it('returns null when there are no errors', () => {
-    expect(firstRegisterError({})).toBeNull();
-  });
-
-  it('covers every field the validator can emit', () => {
-    // Guard against adding a new validated field without slotting it
-    // into the visual order (which would break scroll-to-error).
-    const allFailing = validateRegisterForm({
       identity: '',
-      fullName: '',
-      dateOfBirth: 'bogus',
-      gender: '',
-      diagnosisYear: 'x',
-      phone: 'x',
+      phone: 'bad',
       code: '',
       password: 'x',
       confirmPassword: 'y',
-      contactEmail: 'x',
-      regionProvince: '',
-      regionCity: '',
-      regionDistrict: '',
     });
-    for (const field of Object.keys(allFailing)) {
-      expect(REGISTER_FIELD_ORDER).toContain(field);
+    for (const key of Object.keys(errors)) {
+      expect(REGISTER_FIELD_ORDER).toContain(key);
     }
+  });
+
+  it('firstRegisterError follows the visual order', () => {
+    expect(firstRegisterError({ confirmPassword: 'x', phone: 'y' })).toBe('phone');
+    expect(firstRegisterError({})).toBeNull();
   });
 });
 
 describe('validateLoginForm', () => {
-  it('passes a valid login form', () => {
-    expect(validateLoginForm({ phone: '13800000000', password: 'x' })).toEqual({});
+  it('passes a valid login', () => {
+    expect(validateLoginForm({ phone: '13800000000', password: 'password123' })).toEqual({});
   });
 
-  it('reports both fields at once when both are empty', () => {
+  it('requires both fields and a well-formed phone', () => {
     expect(validateLoginForm({ phone: '', password: '' })).toEqual({
       phone: '请输入手机号',
       password: '请输入密码',
     });
-  });
-
-  it('rejects a malformed phone', () => {
-    expect(validateLoginForm({ phone: '138', password: 'x' }).phone).toBe('请输入正确的手机号');
+    expect(validateLoginForm({ phone: '123', password: 'x' }).phone).toBe('请输入正确的手机号');
   });
 });

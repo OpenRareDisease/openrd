@@ -27,21 +27,18 @@ export const isValidYear = (value: string): boolean => /^\d{4}$/.test(value);
  * Register-form fields that can fail validation, in visual
  * (top-to-bottom) order. `firstRegisterError` walks this list so the
  * screen scrolls to the highest failing field, not an arbitrary one.
+ *
+ * Registration is deliberately just the ACCOUNT essentials — the
+ * medical profile (name, birth, region, FSHD background) moved to
+ * the onboarding gate's dedicated setup screen, which has drafts,
+ * retries, and a minimal required set of its own.
  */
 export const REGISTER_FIELD_ORDER = [
   'identity',
-  'fullName',
-  'dateOfBirth',
-  'gender',
-  'diagnosisYear',
   'phone',
   'code',
   'password',
   'confirmPassword',
-  'contactEmail',
-  'regionProvince',
-  'regionCity',
-  'regionDistrict',
 ] as const;
 
 export type RegisterField = (typeof REGISTER_FIELD_ORDER)[number];
@@ -49,19 +46,10 @@ export type RegisterErrors = Partial<Record<RegisterField, string>>;
 
 export interface RegisterValidationInput {
   identity: string;
-  fullName: string;
-  /** Composed `YYYY-MM-DD`, or '' while any picker part is missing. */
-  dateOfBirth: string;
-  gender: string;
-  diagnosisYear: string;
   phone: string;
   code: string;
   password: string;
   confirmPassword: string;
-  contactEmail: string;
-  regionProvince: string;
-  regionCity: string;
-  regionDistrict: string;
 }
 
 /**
@@ -74,20 +62,6 @@ export const validateRegisterForm = (input: RegisterValidationInput): RegisterEr
 
   if (!input.identity) {
     errors.identity = '请选择身份';
-  }
-  if (!input.fullName.trim()) {
-    errors.fullName = '请输入姓名';
-  }
-  if (!input.dateOfBirth) {
-    errors.dateOfBirth = '请选择出生日期';
-  } else if (!isValidDateString(input.dateOfBirth)) {
-    errors.dateOfBirth = '请选择完整有效的出生日期';
-  }
-  if (!input.gender) {
-    errors.gender = '请选择性别';
-  }
-  if (input.diagnosisYear.trim() && !isValidYear(input.diagnosisYear.trim())) {
-    errors.diagnosisYear = '确诊年份请填写 4 位年份';
   }
   if (!input.phone) {
     errors.phone = '请输入手机号';
@@ -104,18 +78,6 @@ export const validateRegisterForm = (input: RegisterValidationInput): RegisterEr
   }
   if (input.password !== input.confirmPassword) {
     errors.confirmPassword = '两次输入的密码不一致';
-  }
-  if (input.contactEmail.trim() && !isValidEmail(input.contactEmail.trim())) {
-    errors.contactEmail = '请输入正确的邮箱格式';
-  }
-  if (!input.regionProvince.trim()) {
-    errors.regionProvince = '请选择所在省份';
-  }
-  if (!input.regionCity.trim()) {
-    errors.regionCity = '请选择所在城市';
-  }
-  if (!input.regionDistrict.trim()) {
-    errors.regionDistrict = '请选择所在区县';
   }
 
   return errors;
