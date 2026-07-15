@@ -22,6 +22,7 @@ import {
   updateProfileSchema,
 } from './profile.schema.js';
 import type { PatientProfileService } from './profile.service.js';
+import type { AppLogger } from '../../config/logger.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
@@ -297,12 +298,60 @@ const resolveDocumentStatusFromPayload = (payload: unknown) => {
   }
 };
 
+/** Minimal concurrency gate for the background OCR jobs. The embedded
+ *  OCR provider shells out to a Python process per parse; unbounded
+ *  parallel uploads would fork-bomb the box. Two concurrent parses
+ *  keeps a second user responsive while one big PDF grinds. */
+const createLimiter = (concurrency: number) => {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= concurrency) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    active += 1;
+    try {
+      return await fn();
+    } finally {
+      active -= 1;
+      queue.shift()?.();
+    }
+  };
+};
+
+const OCR_JOB_CONCURRENCY = 2;
+/** processing older than this is considered lost (job died with the
+ *  process) — both the startup sweep and the reparse endpoint's
+ *  "stuck" branch use it. */
+export const OCR_STUCK_AFTER_MINUTES = 10;
+/** Admission cap for the background queue. The 2-slot limiter bounds
+ *  CPU, but every queued job parks its full (≤10MB) upload buffer in
+ *  memory — without this cap an authenticated flooder could stack
+ *  buffers far faster than OCR drains them, since uploads now return
+ *  in milliseconds. 10 queued jobs ≈ 100MB worst case. */
+export const OCR_MAX_IN_FLIGHT_JOBS = 10;
+
 export class PatientProfileController {
+  /** In-flight background parses keyed by documentId. Serves three
+   *  jobs: reparse-while-running returns 409 instead of double
+   *  parsing; tests can await completion; graceful shutdown could
+   *  drain. Entries remove themselves on settle.
+   *
+   *  SINGLE-INSTANCE ASSUMPTION: this map, the concurrency limiter,
+   *  and the stuck-processing heuristics are all process-local. The
+   *  production topology is one api container (docker-compose), so
+   *  that holds. A second replica would double-parse and mis-judge
+   *  "stuck" — scaling out requires moving this coordination into
+   *  the database (e.g. a claimed_at column) first. */
+  readonly inFlightOcrJobs = new Map<string, Promise<void>>();
+  private readonly ocrLimiter = createLimiter(OCR_JOB_CONCURRENCY);
+
   constructor(
     private readonly service: PatientProfileService,
     private readonly storage: StorageProvider,
     private readonly ocr: OcrProvider,
     private readonly aiSummary?: AiSummaryDeps,
+    private readonly logger?: AppLogger,
   ) {}
 
   createProfile = async (req: AuthenticatedRequest, res: Response) => {
@@ -453,6 +502,12 @@ export class PatientProfileController {
     // Both branches are cheap SELECTs.
     await this.service.assertCallerCanWriteSubmission(req.user.id, payload.submissionId);
 
+    // Bound admission BEFORE the storage write: each queued job holds
+    // its full upload buffer in memory until the limiter drains it.
+    if (this.inFlightOcrJobs.size >= OCR_MAX_IN_FLIGHT_JOBS) {
+      throw new AppError('识别队列已满，请稍后再试', 429);
+    }
+
     const stored = await this.storage.save({
       userId: req.user.id,
       fileName: file.originalname ?? 'upload',
@@ -460,35 +515,24 @@ export class PatientProfileController {
       buffer: file.buffer,
     });
 
-    let ocrPayload: unknown | null = null;
-    try {
-      ocrPayload = await this.ocr.parse({
-        buffer: file.buffer,
-        mimeType: file.mimetype ?? null,
-        documentType: payload.documentType,
-        userId: req.user.id,
-        fileName: file.originalname ?? undefined,
-        reportName: payload.title ?? file.originalname ?? undefined,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'OCR failed';
-      ocrPayload = { provider: 'unknown', error: message };
-    }
-
-    const resolvedDocumentType = resolveDocumentTypeFromPayload(payload.documentType, ocrPayload);
+    // Async OCR: insert the row as 'processing' and return 201
+    // immediately — the parse (up to OCR_PARSER_TIMEOUT_MS, 120s by
+    // default) used to run inline here, pinning the user to a spinner
+    // for the whole ride. The mobile detail screen already polls
+    // processing documents, so it picks the result up on its own.
     let result;
     try {
       result = await this.service.addUploadedDocument({
         userId: req.user.id,
-        documentType: resolvedDocumentType,
-        status: resolveDocumentStatusFromPayload(ocrPayload),
+        documentType: payload.documentType,
+        status: 'processing',
         title: payload.title ?? null,
         submissionId: payload.submissionId ?? null,
         storageUri: stored.storageUri,
         fileName: file.originalname ?? stored.fileName,
         mimeType: file.mimetype ?? null,
         fileSizeBytes: file.size ?? stored.fileSizeBytes,
-        ocrPayload,
+        ocrPayload: null,
       });
     } catch (insertError) {
       // The file is already in storage; if the DB row never lands the
@@ -499,16 +543,127 @@ export class PatientProfileController {
       try {
         await this.storage.remove(stored.storageUri);
       } catch (cleanupError) {
-        // Surface as a warning so an operator can sweep manually. We
-        // don't have a logger handle on the controller — defer to the
-        // existing AppError flow by attaching the metadata.
         (insertError as { storageOrphan?: string }).storageOrphan = stored.storageUri;
         void cleanupError;
       }
       throw insertError;
     }
 
+    this.startOcrJob({
+      userId: req.user.id,
+      documentId: result.id,
+      buffer: file.buffer,
+      mimeType: file.mimetype ?? null,
+      documentType: payload.documentType,
+      fileName: file.originalname ?? undefined,
+      reportName: payload.title ?? file.originalname ?? undefined,
+    });
+
     res.status(201).json(result);
+  };
+
+  /** Fire-and-forget wrapper so upload/reparse can't accidentally
+   *  await the parse. The job promise is tracked in inFlightOcrJobs
+   *  for dedupe/tests and always cleans up after itself. */
+  private startOcrJob(input: {
+    userId: string;
+    documentId: string;
+    buffer: Buffer;
+    mimeType: string | null;
+    documentType: string;
+    fileName?: string;
+    reportName?: string;
+  }) {
+    const job = this.ocrLimiter(async () => {
+      let ocrPayload: unknown | null = null;
+      try {
+        ocrPayload = await this.ocr.parse({
+          buffer: input.buffer,
+          mimeType: input.mimeType,
+          documentType: input.documentType,
+          userId: input.userId,
+          fileName: input.fileName,
+          reportName: input.reportName,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'OCR failed';
+        ocrPayload = { provider: 'unknown', error: message };
+      }
+
+      const resolvedDocumentType = resolveDocumentTypeFromPayload(input.documentType, ocrPayload);
+      await this.service.updateDocumentOcrResult(input.userId, input.documentId, {
+        status: resolveDocumentStatusFromPayload(ocrPayload),
+        ocrPayload,
+        documentType: resolvedDocumentType,
+      });
+    })
+      .catch((error) => {
+        // The parse itself never throws past the inner catch — this
+        // only fires when landing the RESULT failed (DB down, row
+        // deleted mid-parse). The row stays 'processing' and the
+        // startup sweep / reparse endpoint recover it.
+        this.logger?.error(
+          { error, documentId: input.documentId },
+          'OCR job failed to persist its result',
+        );
+      })
+      .finally(() => {
+        this.inFlightOcrJobs.delete(input.documentId);
+      });
+
+    this.inFlightOcrJobs.set(input.documentId, job);
+  }
+
+  /** POST /me/documents/:id/reparse — recover a failed or lost parse
+   *  without deleting and re-uploading the file. */
+  reparseDocument = async (req: AuthenticatedRequest, res: Response) => {
+    const documentId = req.params.id;
+    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+
+    if (this.inFlightOcrJobs.has(documentId)) {
+      throw new AppError('该报告正在识别中，请稍候', 409);
+    }
+
+    const status = document.status ?? 'uploaded';
+    const uploadedAt = new Date(document.uploaded_at);
+    const stuckSinceMs = Date.now() - OCR_STUCK_AFTER_MINUTES * 60 * 1000;
+    const isStuckProcessing =
+      status === 'processing' &&
+      !Number.isNaN(uploadedAt.getTime()) &&
+      uploadedAt.getTime() < stuckSinceMs;
+    // Eligible: failed parses, legacy 'uploaded' rows (written before
+    // the async pipeline / with OCR disabled), and processing rows
+    // whose job evidently died. Fresh 'processing' waits for its job;
+    // parsed/needs_review reparse is out of scope (no user value —
+    // the source file hasn't changed).
+    const eligible = status === 'parse_failed' || status === 'uploaded' || isStuckProcessing;
+    if (!eligible) {
+      throw new AppError('该报告当前状态不支持重新识别', 409);
+    }
+
+    const loaded = await this.storage.load(document.storage_uri);
+    const chunks: Buffer[] = [];
+    for await (const chunk of loaded.stream) {
+      chunks.push(Buffer.from(chunk as Buffer));
+    }
+    const buffer = Buffer.concat(chunks);
+
+    await this.service.updateDocumentOcrResult(req.user.id, documentId, {
+      status: 'processing',
+      ocrPayload: null,
+    });
+
+    this.startOcrJob({
+      userId: req.user.id,
+      documentId,
+      buffer,
+      mimeType: document.mime_type,
+      documentType: document.document_type,
+      fileName: document.file_name ?? undefined,
+      reportName: document.title ?? document.file_name ?? undefined,
+    });
+
+    res.status(202).json({ documentId, status: 'processing' });
   };
 
   addMedication = async (req: AuthenticatedRequest, res: Response) => {
