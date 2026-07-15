@@ -16,6 +16,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
+  addActivityLog,
   addDailyImpact,
   addFunctionTest,
   addFollowupEvent,
@@ -61,6 +62,9 @@ type FollowupFormState = {
   stairClimbSeconds: string;
   sleepScore: string;
   fallCount: string;
+  /** Optional free-text activity note — saved as an activity log
+   *  alongside the followup when non-empty. */
+  activityNote: string;
 };
 
 type EventFormState = {
@@ -76,6 +80,7 @@ const DEFAULT_FOLLOWUP_FORM: FollowupFormState = {
   stairClimbSeconds: '',
   sleepScore: '6',
   fallCount: '0',
+  activityNote: '',
 };
 
 const DEFAULT_EVENT_FORM: EventFormState = {
@@ -403,6 +408,13 @@ const DataEntryScreen = () => {
                 (savedFollowup as Record<string, unknown>).sleepScore,
               ),
               fallCount: normalizeIntegerText(savedFollowup.fallCount, '0'),
+              activityNote:
+                typeof (savedFollowup as Record<string, unknown>).activityNote === 'string'
+                  ? ((savedFollowup as Record<string, unknown>).activityNote as string).slice(
+                      0,
+                      200,
+                    )
+                  : '',
             }
           : null;
         setFollowupForm({
@@ -432,6 +444,13 @@ const DataEntryScreen = () => {
                 (savedFollowup as Record<string, unknown>).sleepScore,
               ),
               fallCount: normalizeIntegerText(savedFollowup.fallCount, '0'),
+              activityNote:
+                typeof (savedFollowup as Record<string, unknown>).activityNote === 'string'
+                  ? ((savedFollowup as Record<string, unknown>).activityNote as string).slice(
+                      0,
+                      200,
+                    )
+                  : '',
             }
           : null;
         setFollowupForm({
@@ -608,6 +627,7 @@ const DataEntryScreen = () => {
         changedSinceLast: hasChanges,
       });
 
+      const activityNote = followupForm.activityNote.trim();
       const requests: Array<Promise<unknown>> = [
         addSymptomScore({
           submissionId: submission.id,
@@ -641,6 +661,17 @@ const DataEntryScreen = () => {
             severity: fallCount >= 3 ? 'severe' : fallCount >= 2 ? 'moderate' : 'mild',
             occurredAt: todayIsoDate(),
             description: `最近跌倒 ${fallCount} 次`,
+          }),
+        );
+      }
+
+      if (activityNote) {
+        requests.push(
+          addActivityLog({
+            submissionId: submission.id,
+            source: 'manual',
+            logDate: todayIsoDate(),
+            content: activityNote,
           }),
         );
       }
@@ -970,6 +1001,20 @@ const DataEntryScreen = () => {
           {followupFieldErrors.fall ? (
             <Text style={styles.fieldErrorText}>{followupFieldErrors.fall}</Text>
           ) : null}
+        </View>
+        <View style={styles.fieldBlock}>
+          <Text style={styles.fieldLabel}>今天的活动（可选）</Text>
+          <Text style={styles.sectionSubtitle}>
+            例如散步 20 分钟、拉伸训练——一句话即可，会计入时间轴。
+          </Text>
+          <TextInput
+            value={followupForm.activityNote}
+            onChangeText={(value) => setFollowupForm((prev) => ({ ...prev, activityNote: value }))}
+            placeholder="今天做了什么活动？"
+            placeholderTextColor={CLINICAL_COLORS.textMuted}
+            style={styles.input}
+            maxLength={200}
+          />
         </View>
       </View>
 
