@@ -20,6 +20,11 @@ export interface SelfTestAction {
   /** Face has no left/right in the figure map — side is forced to
    *  'none' and the picker hidden. */
   sided: boolean;
+  /** Backend MUSCLE_GROUPS value, when the movement maps onto one.
+   *  Writing it feeds GET /me/insights/muscle (cohort percentile
+   *  distribution is keyed by muscle_group, not metricKey). Face has
+   *  no cohort group. */
+  muscleGroup?: 'deltoid' | 'biceps' | 'quadriceps' | 'tibialis';
 }
 
 export const SELF_TEST_ACTIONS: SelfTestAction[] = [
@@ -32,6 +37,7 @@ export const SELF_TEST_ACTIONS: SelfTestAction[] = [
   },
   {
     metricKey: 'arm_raise_over_head',
+    muscleGroup: 'deltoid',
     label: '举手过头',
     howTo: '手臂伸直从体侧举过头顶，观察是否费力或耸肩代偿。',
     bodyRegion: 'shoulder_girdle',
@@ -39,6 +45,7 @@ export const SELF_TEST_ACTIONS: SelfTestAction[] = [
   },
   {
     metricKey: 'elbow_flexion',
+    muscleGroup: 'biceps',
     label: '屈肘抬物',
     howTo: '手持一瓶矿泉水弯曲肘部，观察能否对抗重量。',
     bodyRegion: 'upper_arm',
@@ -46,6 +53,7 @@ export const SELF_TEST_ACTIONS: SelfTestAction[] = [
   },
   {
     metricKey: 'knee_extension',
+    muscleGroup: 'quadriceps',
     label: '坐位伸膝',
     howTo: '坐着把小腿伸直抬平，观察能否保持或对抗压力。',
     bodyRegion: 'thigh',
@@ -53,6 +61,7 @@ export const SELF_TEST_ACTIONS: SelfTestAction[] = [
   },
   {
     metricKey: 'ankle_dorsiflexion',
+    muscleGroup: 'tibialis',
     label: '勾脚背',
     howTo: '脚跟着地、脚尖尽力向上勾，观察是否费力或不能完成。',
     bodyRegion: 'ankle',
@@ -79,6 +88,7 @@ export const buildSelfTestPayload = (
   score: number,
 ): Record<string, unknown> => ({
   metricKey: action.metricKey,
+  ...(action.muscleGroup ? { muscleGroup: action.muscleGroup } : {}),
   bodyRegion: action.bodyRegion,
   side: action.sided ? side : 'none',
   strengthScore: score,

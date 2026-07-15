@@ -804,4 +804,29 @@ export default StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  cohortRow: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(248, 242, 234, 0.7)',
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    gap: 3,
+  },
+  cohortLabel: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cohortValue: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 12,
+  },
+  cohortEmptyText: {
+    marginTop: 8,
+    color: CLINICAL_COLORS.accentStrong,
+    fontSize: 12,
+    lineHeight: 17,
+  },
 });

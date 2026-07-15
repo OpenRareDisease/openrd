@@ -56,6 +56,11 @@ describe('buildSelfTestPayload', () => {
   it('face forces side=none regardless of the picker', () => {
     expect(buildSelfTestPayload(face, 'left', 5).side).toBe('none');
   });
+
+  it('mapped movements carry their cohort muscleGroup; face omits it', () => {
+    expect(buildSelfTestPayload(shoulder, 'left', 4).muscleGroup).toBe('deltoid');
+    expect('muscleGroup' in buildSelfTestPayload(face, 'left', 5)).toBe(false);
+  });
 });
 
 describe('STRENGTH_LEVELS', () => {
