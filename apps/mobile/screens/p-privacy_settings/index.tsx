@@ -181,8 +181,8 @@ const PrivacySettingsScreen = () => {
       case 'hospital-sync':
         title = newState ? '开启医院数据同步' : '关闭医院数据同步';
         message = newState
-          ? '开启后，医院HIS系统将自动同步您的随访数据到个人档案，减少重复录入。'
-          : '关闭后，医院数据将不会自动同步，您需要手动录入随访信息。';
+          ? '开启后，医院HIS系统将自动同步您的日常记录数据到个人档案，减少重复录入。'
+          : '关闭后，医院数据将不会自动同步，您需要手动录入日常记录。';
         icon = newState ? 'arrows-rotate' : 'circle-xmark';
         break;
       case 'community-share':
@@ -580,7 +580,9 @@ const PrivacySettingsScreen = () => {
         <View style={styles.settingItem}>
           <View style={styles.settingContent}>
             <Text style={styles.settingTitle}>医院数据同步</Text>
-            <Text style={styles.settingDescription}>允许医院HIS系统同步您的随访数据到个人档案</Text>
+            <Text style={styles.settingDescription}>
+              允许医院HIS系统同步您的日常记录数据到个人档案
+            </Text>
           </View>
           <ToggleSwitch
             isEnabled={flags.hospitalSync}

@@ -481,7 +481,7 @@ export default function ReportDetailScreen() {
             <Text style={styles.statusText}>{status}</Text>
           </View>
           <Text style={styles.heroTitle}>
-            {pickField(fields, ['reportName', 'report_name']) || '结构化报告阅读视图'}
+            {pickField(fields, ['reportName', 'report_name']) || '报告关键指标视图'}
           </Text>
           <Text style={styles.heroDescription}>
             documentId: {documentId ?? '--'}
@@ -528,7 +528,7 @@ export default function ReportDetailScreen() {
             ) : (
               <View style={styles.highlightItem}>
                 <Text style={styles.highlightLabel}>提示</Text>
-                <Text style={styles.highlightValue}>暂无结构化字段</Text>
+                <Text style={styles.highlightValue}>暂无识别出的关键指标</Text>
               </View>
             )}
           </View>
@@ -573,7 +573,7 @@ export default function ReportDetailScreen() {
                 view={bodyView}
                 regions={activeRegions}
                 mode="mri"
-                subtitle="根据 MRI 报告正文和结构化字段推断受累区域，重点突出分布与侧别信息。"
+                subtitle="根据 MRI 报告正文和识别出的关键指标推断受累区域，重点突出分布与侧别信息。"
               />
 
               <View style={styles.tagWrap}>
@@ -591,9 +591,9 @@ export default function ReportDetailScreen() {
           )}
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>结构化证据</Text>
+          <Text style={styles.cardTitle}>识别出的关键信息</Text>
           {structuredSections.length === 0 ? (
-            <Text style={styles.smallText}>暂无结构化字段（或仍在解析中）。</Text>
+            <Text style={styles.smallText}>暂无识别出的关键指标（或仍在识别中）。</Text>
           ) : (
             structuredSections.map((section) => (
               <View key={section.title} style={styles.structuredSection}>
@@ -615,7 +615,7 @@ export default function ReportDetailScreen() {
           <Text style={styles.cardTitle}>检查结果</Text>
           <SystemMonitoringPanels
             panels={relevantSystemPanels}
-            emptyText="这份报告暂无可归入检查结果的结构化结果。"
+            emptyText="这份报告暂无可归入检查结果的识别指标。"
           />
         </View>
 

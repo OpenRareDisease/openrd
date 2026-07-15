@@ -232,7 +232,7 @@ const DataDonationScreen = () => {
               </View>
               <View style={styles.stepContent}>
                 <Text style={styles.stepTitle}>科研使用</Text>
-                <Text style={styles.stepDescription}>数据汇入中国FSHD队列数据库</Text>
+                <Text style={styles.stepDescription}>数据汇入中国 FSHD 病友群体数据库</Text>
               </View>
             </View>
           </View>

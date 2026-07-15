@@ -44,7 +44,7 @@ const archiveNavItems = [
     route: '/p-clinical_passport',
     icon: 'id-card',
     title: '临床护照',
-    description: '门诊可直接出示的结构化摘要',
+    description: '门诊可直接出示的关键信息摘要',
   },
   {
     route: '/p-manage',
@@ -504,7 +504,7 @@ export default function ArchiveScreen() {
               <View>
                 <Text style={styles.sectionTitle}>患者端数据可视化</Text>
                 <Text style={styles.sectionSubtitle}>
-                  优先显示 MRI 受累图，并继续合并患者端随访趋势。
+                  优先显示 MRI 受累图，并继续合并患者端日常记录趋势。
                 </Text>
               </View>
               <TouchableOpacity
@@ -607,7 +607,9 @@ export default function ArchiveScreen() {
                         </View>
                       ) : (
                         <View style={styles.chartEmpty}>
-                          <Text style={styles.emptyText}>还没有足够数据绘制趋势。</Text>
+                          <Text style={styles.emptyText}>
+                            完成 2 次以上日常记录后，这里会自动绘制趋势。
+                          </Text>
                         </View>
                       )}
                     </View>
@@ -620,7 +622,7 @@ export default function ArchiveScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View>
-                <Text style={styles.sectionTitle}>随访摘要</Text>
+                <Text style={styles.sectionTitle}>记录摘要</Text>
                 <Text style={styles.sectionSubtitle}>整合最近一次患者端记录。</Text>
               </View>
             </View>

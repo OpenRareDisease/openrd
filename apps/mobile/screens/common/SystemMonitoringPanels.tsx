@@ -371,7 +371,7 @@ export default function SystemMonitoringPanels({ panels, emptyText }: SystemMoni
                 })}
               </View>
             ) : heroMetrics.length === 0 ? (
-              <Text style={styles.emptyText}>当前筛选下还没有结构化指标。</Text>
+              <Text style={styles.emptyText}>当前筛选下还没有识别出的关键指标。</Text>
             ) : null}
           </View>
         );

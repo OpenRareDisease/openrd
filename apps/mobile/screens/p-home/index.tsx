@@ -49,7 +49,7 @@ const quickActions: Array<{
   {
     order: '02',
     title: '记录数据',
-    description: '进入统一录入页，完成量化随访、事件记录或上传一份报告。',
+    description: '进入统一录入页，完成日常记录、记一次事件或上传一份报告。',
     icon: 'file-circle-plus',
     color: CLINICAL_COLORS.warning,
     route: '/p-data_entry',
@@ -66,7 +66,7 @@ const quickActions: Array<{
   {
     order: '04',
     title: '临床护照',
-    description: '查看门诊和住院可直接出示的结构化摘要。',
+    description: '查看门诊和住院可直接出示的关键信息摘要。',
     icon: 'id-card',
     color: CLINICAL_COLORS.accent,
     route: '/p-clinical_passport',
@@ -314,7 +314,7 @@ const HomeScreen = () => {
               <View style={styles.reviewItem}>
                 <FontAwesome6 name="circle-check" size={12} color={CLINICAL_COLORS.accentStrong} />
                 <Text style={styles.reviewItemText}>
-                  当前已建立基础档案与系统检查入口，可继续补充量化随访、事件记录或新报告。
+                  当前已建立基础档案与系统检查入口，可继续补充日常记录、事件或新报告。
                 </Text>
               </View>
             )}

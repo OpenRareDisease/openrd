@@ -152,9 +152,9 @@ const ClinicalPassportScreen = () => {
     if (!passport) return [];
     const metrics = passport.metrics.filter((item) => item.label !== '肌力组数');
     metrics.splice(2, 0, {
-      label: '最近随访',
+      label: '最近记录',
       value: formatDateLabel(passport.motor.latestActivityAt ?? passport.motor.latestMeasurementAt),
-      hint: passport.motor.activitySummary || '暂无随访变化摘要',
+      hint: passport.motor.activitySummary || '暂无日常记录变化摘要',
     });
     return metrics;
   }, [passport]);
@@ -383,7 +383,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>影像受累与功能变化</Text>
                     <Text style={styles.sectionDescription}>
-                      主要基于 MRI 报告和最近随访变化，不再展示主观肌力体图。
+                      主要基于 MRI 报告和最近日常记录变化，不再展示主观肌力体图。
                     </Text>
                   </View>
                 </View>
@@ -430,12 +430,12 @@ const ClinicalPassportScreen = () => {
                     <View style={styles.noteCard}>
                       <Text style={styles.noteTitle}>最近功能变化</Text>
                       <Text style={styles.noteText}>
-                        {passport.motor.activitySummary || '暂无活动或随访变化摘要。'}
+                        {passport.motor.activitySummary || '暂无活动或日常记录变化摘要。'}
                       </Text>
                     </View>
                     <View style={styles.infoGrid}>
                       <View style={styles.infoCell}>
-                        <Text style={styles.infoLabel}>最近随访</Text>
+                        <Text style={styles.infoLabel}>最近记录</Text>
                         <Text style={styles.infoValue}>
                           {formatDateLabel(
                             passport.motor.latestActivityAt ?? passport.motor.latestMeasurementAt,
@@ -447,7 +447,7 @@ const ClinicalPassportScreen = () => {
                         <Text style={styles.infoValue}>
                           {passportMriHighlights.length > 0
                             ? passportMriHighlights.join('、')
-                            : '等待 MRI 结构化结果'}
+                            : '等待 MRI 识别结果'}
                         </Text>
                       </View>
                     </View>
@@ -481,7 +481,7 @@ const ClinicalPassportScreen = () => {
                 <View style={styles.sectionContentBlock}>
                   <SystemMonitoringPanels
                     panels={reportInsights.systemPanels}
-                    emptyText="当前还没有可归入检查结果的结构化数据。"
+                    emptyText="检查报告识别出关键指标后，会自动归入这里。"
                   />
                 </View>
               </View>
@@ -494,7 +494,7 @@ const ClinicalPassportScreen = () => {
                   <View style={styles.sectionHeadingGroup}>
                     <Text style={styles.sectionHeading}>时间轴</Text>
                     <Text style={styles.sectionDescription}>
-                      最近随访、事件和报告会统一整理在这里，展开后可点击卡片查看详情。
+                      最近记录、事件和报告会统一整理在这里，展开后可点击卡片查看详情。
                     </Text>
                   </View>
                 </View>
