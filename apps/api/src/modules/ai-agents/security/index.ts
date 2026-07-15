@@ -29,3 +29,5 @@ export {
   type RedactOptions,
 } from './pii-redactor.js';
 export { renderChunkForPrompt, type RenderedChunk, type RenderOptions } from './render.js';
+export { normalizeHistory, type HistoryMessage, type NormalizedHistory } from './history.js';
+export { scrubPiiText } from './text-scrub.js';

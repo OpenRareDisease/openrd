@@ -159,14 +159,16 @@ export class AuditLogger {
          user_id, request_id, llm_provider, llm_model,
          consent_level, redaction_mode,
          redacted_prompt_hash, prompt_char_length,
+         history_message_count, history_char_length,
          used_personal_data, fields_used, tools_called,
          latency_ms, status, error_detail
        ) VALUES (
          $1, $2, $3, $4,
          $5, $6,
          $7, $8,
-         $9, $10::jsonb, $11::jsonb,
-         $12, $13, $14
+         $9, $10,
+         $11, $12::jsonb, $13::jsonb,
+         $14, $15, $16
        )
        RETURNING id`,
       [
@@ -178,6 +180,8 @@ export class AuditLogger {
         input.redactionMode,
         input.redactedPromptHash ?? null,
         input.promptCharLength ?? null,
+        input.historyMessageCount ?? 0,
+        input.historyCharLength ?? null,
         input.usedPersonalData,
         JSON.stringify(input.fieldsUsed ?? []),
         JSON.stringify(input.toolsCalled ?? []),

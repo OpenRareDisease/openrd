@@ -139,6 +139,7 @@ export class Orchestrator {
     const plan = await this.planner.plan({
       systemPrompt: this.systemPrompt,
       userPrompt,
+      history: input.history,
       tools,
       requestId: input.requestId,
       signal: input.signal,
@@ -335,7 +336,10 @@ export class Orchestrator {
     llmUsage?: LlmUsage;
   }): OrchestratorRunResult {
     const systemMessage = args.finalMessages.find((m) => m.role === 'system');
-    const userMessage = args.finalMessages.find((m) => m.role === 'user');
+    // The CURRENT question is the LAST user message: with multi-turn
+    // history in the message list, `find` would return the oldest
+    // replayed turn instead.
+    const userMessage = [...args.finalMessages].reverse().find((m) => m.role === 'user');
     const systemContent = systemMessage?.role === 'system' ? systemMessage.content : '';
     const userContent = userMessage?.role === 'user' ? userMessage.content : '';
 
@@ -372,6 +376,8 @@ export class Orchestrator {
       ...(call.error ? { errorDetail: scrubErrorDetail(call.error).slice(0, 500) } : {}),
     }));
 
+    const history = args.input.history ?? [];
+
     return {
       answer: args.finalAnswer,
       citations: args.context.citations,
@@ -383,6 +389,8 @@ export class Orchestrator {
       finalPrompt: { system: systemContent, user: userContent },
       redactedPromptHash,
       promptCharLength,
+      historyMessageCount: history.length,
+      historyCharLength: history.reduce((sum, turn) => sum + turn.content.length, 0),
       llmUsage: args.llmUsage,
       latencyMs: Date.now() - args.start,
     };

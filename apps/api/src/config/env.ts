@@ -111,6 +111,14 @@ const envSchema = z
     AI_API_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),
     AI_API_MODEL: z.string().default('deepseek-ai/DeepSeek-V3'),
     AI_API_TIMEOUT: z.coerce.number().int().positive().default(30000),
+    // Multi-turn /ai/ask history budgets. The server is the authority
+    // on how much client-replayed conversation reaches the LLM: at
+    // most this many prior turns, and at most this many total chars
+    // (~2.7k tokens of Chinese at 8000 — planner + final round double
+    // that input cost, which stays affordable). Tune down to cut LLM
+    // spend without a client release.
+    AI_HISTORY_MAX_MESSAGES: z.coerce.number().int().min(0).default(12),
+    AI_HISTORY_CHAR_BUDGET: z.coerce.number().int().min(0).default(8000),
 
     BAIDU_OCR_API_KEY: z.preprocess(
       (value) => (value === '' ? undefined : value),

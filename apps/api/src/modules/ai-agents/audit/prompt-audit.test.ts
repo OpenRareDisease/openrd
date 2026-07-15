@@ -83,9 +83,13 @@ describe('AuditLogger.record', () => {
     expect(params[1]).toBe('req-1');
     expect(params[4]).toBe('basic');
     expect(params[5]).toBe('strict');
-    expect(params[8]).toBe(true);
-    expect(JSON.parse(params[9] as string)).toEqual(['ageGroup', 'd4z4_clinical']);
-    expect(JSON.parse(params[10] as string)).toEqual([
+    // $9/$10 are the multi-turn history counters (0 / null when the
+    // entry predates or omits them).
+    expect(params[8]).toBe(0);
+    expect(params[9]).toBeNull();
+    expect(params[10]).toBe(true);
+    expect(JSON.parse(params[11] as string)).toEqual(['ageGroup', 'd4z4_clinical']);
+    expect(JSON.parse(params[12] as string)).toEqual([
       {
         name: 'medical_kb',
         toolCallId: 'call-1',
@@ -101,7 +105,7 @@ describe('AuditLogger.record', () => {
         latencyMs: 45,
       },
     ]);
-    expect(params[12]).toBe('success');
+    expect(params[14]).toBe('success');
   });
 
   it('defaults optional bookkeeping fields to null', async () => {
@@ -119,8 +123,10 @@ describe('AuditLogger.record', () => {
     expect(params[1]).toBeNull(); // request_id
     expect(params[6]).toBeNull(); // redacted_prompt_hash
     expect(params[7]).toBeNull(); // prompt_char_length
-    expect(params[11]).toBeNull(); // latency_ms
-    expect(params[13]).toBeNull(); // error_detail
+    expect(params[8]).toBe(0); // history_message_count defaults to 0
+    expect(params[9]).toBeNull(); // history_char_length
+    expect(params[13]).toBeNull(); // latency_ms
+    expect(params[15]).toBeNull(); // error_detail
   });
 });
 
