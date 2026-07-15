@@ -1,16 +1,59 @@
 import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Modal, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 import { useAuth } from '../../contexts/AuthContext';
+import { exportMyData, ApiError } from '../../lib/api';
 import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+
+/** Hand a JSON payload to the browser as a file download. Web-only —
+ *  production is the Expo web export, where this is the natural
+ *  "带走我的数据" gesture. */
+const downloadJsonInBrowser = (payload: unknown, filename: string) => {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
 
 const SettingsScreen = () => {
   const router = useRouter();
   const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const { user, logout } = useAuth();
+
+  const handleExportDataPress = async () => {
+    if (isExporting) return;
+    if (Platform.OS !== 'web') {
+      Alert.alert('提示', '数据导出目前请在网页版使用（浏览器会直接下载 JSON 文件）。');
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const data = await exportMyData();
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      downloadJsonInBrowser(data, `openrd-data-export-${stamp}.json`);
+    } catch (error) {
+      const message =
+        error instanceof ApiError && error.status === 404
+          ? '还没有建立健康档案，暂无可导出的数据。'
+          : error instanceof Error
+            ? error.message
+            : '导出失败，请稍后重试。';
+      Alert.alert('导出失败', message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handlePrivacySettingsPress = () => {
     router.push('/p-privacy_settings');
@@ -153,6 +196,38 @@ const SettingsScreen = () => {
                   <View style={styles.settingTextContainer}>
                     <Text style={styles.settingTitle}>关于我们</Text>
                     <Text style={styles.settingSubtitle}>产品介绍、版本信息、联系方式</Text>
+                  </View>
+                </View>
+                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
+              </View>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* 数据与账号 — data-sovereignty actions (export now; deletion
+            joins in the account-deletion PR). Kept as its own section
+            so「带走我的数据」is a first-class, findable right, not a
+            buried menu item. */}
+        <View style={styles.settingsListSection}>
+          <View style={styles.settingsList}>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => void handleExportDataPress()}
+              activeOpacity={0.7}
+              disabled={isExporting}
+            >
+              <View style={styles.settingItemContent}>
+                <View style={styles.settingItemLeft}>
+                  <View style={[styles.settingIconContainer, styles.blueIconContainer]}>
+                    <FontAwesome6 name="download" size={18} color={CLINICAL_COLORS.accent} />
+                  </View>
+                  <View style={styles.settingTextContainer}>
+                    <Text style={styles.settingTitle}>
+                      {isExporting ? '正在整理导出…' : '导出我的数据'}
+                    </Text>
+                    <Text style={styles.settingSubtitle}>
+                      下载全部档案、记录、报告清单与授权历史（JSON）
+                    </Text>
                   </View>
                 </View>
                 <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />

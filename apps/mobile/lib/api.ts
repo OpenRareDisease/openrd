@@ -599,6 +599,20 @@ export interface ConsentUpdatePayload {
  *  incomplete) — the caller should redirect to the profile setup. */
 export const getMyConsent = () => apiRequest<ConsentDetails>('/profiles/me/consent');
 
+/** Full data export (data-portability right): one JSON document with
+ *  the profile + all nested records, document metadata, consent state
+ *  and history, sharing preferences, submissions, and the scrubbed AI
+ *  audit trail. Rendered opaque here — the settings screen hands the
+ *  whole payload to a file download without interpreting it. Uses the
+ *  slow-endpoint timeout: the server pages through submissions and
+ *  audit rows before answering. */
+export const exportMyData = () =>
+  apiRequest<Record<string, unknown>>(
+    '/profiles/me/data-export',
+    { method: 'GET' },
+    { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
+  );
+
 /** Patch one or more AI consent flags. The backend enforces the
  *  "precise requires personal+thirdParty" rule and returns 400 if the
  *  caller breaks it. */
