@@ -16,6 +16,7 @@ import {
   functionTestSchema,
   measurementSchema,
   medicationSchema,
+  ocrFieldsPatchSchema,
   sharingPreferencesUpdateSchema,
   symptomScoreSchema,
   attachDocumentsSchema,
@@ -564,6 +565,19 @@ export class PatientProfileController {
   /** Account-deletion lifecycle (删除权). DeletionRequestError codes
    *  map to HTTP here so the helper stays framework-agnostic:
    *  phone_mismatch → 400, already_pending → 409, not_pending → 404. */
+  /** PATCH /me/documents/:id/ocr — patient hand-correction of the
+   *  whitelisted OCR fields (schema-enforced). 409 while processing
+   *  or failed; the service stamps manuallyEditedAt. */
+  patchDocumentOcr = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = ocrFieldsPatchSchema.parse(req.body);
+    const result = await this.service.patchDocumentOcrFields(
+      req.user.id,
+      req.params.id,
+      payload.fields,
+    );
+    res.status(200).json(result);
+  };
+
   requestMyAccountDeletion = async (req: AuthenticatedRequest, res: Response) => {
     const payload = deletionRequestSchema.parse(req.body);
     try {

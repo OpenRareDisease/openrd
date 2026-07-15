@@ -466,4 +466,64 @@ export default StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  correctOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(24, 34, 43, 0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  correctSheet: {
+    borderRadius: 20,
+    backgroundColor: CLINICAL_COLORS.panel,
+    padding: 18,
+    maxHeight: '82%',
+    gap: 8,
+  },
+  correctList: {
+    marginTop: 4,
+  },
+  correctRow: {
+    marginBottom: 10,
+  },
+  correctLabel: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  correctInput: {
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: CLINICAL_COLORS.text,
+    fontSize: 13,
+    backgroundColor: 'rgba(248, 242, 234, 0.6)',
+  },
+  correctErrorText: {
+    color: CLINICAL_COLORS.danger,
+    fontSize: 12,
+  },
+  correctActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  correctCancel: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    alignItems: 'center',
+  },
+  correctCancelText: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  correctSubmit: {
+    flex: 1,
+  },
 });

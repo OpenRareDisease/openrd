@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +19,7 @@ import {
   generatePatientDocumentSummary,
   getMyConsent,
   getPatientDocumentOcr,
+  patchPatientDocumentOcr,
   reparsePatientDocument,
   updateMyConsent,
   type PatientDocument,
@@ -24,6 +35,17 @@ import {
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
 import styles from './styles';
 import { shouldAutoSummarize } from './auto-summary';
+
+/** Whitelisted OCR fields a patient can hand-correct — mirrors the
+ *  backend's EDITABLE_OCR_FIELDS schema exactly. */
+const CORRECTABLE_OCR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
+  { key: 'reportName', label: '报告名称', placeholder: '例如：基因检测报告' },
+  { key: 'reportTime', label: '报告时间', placeholder: '例如：2026-03-12' },
+  { key: 'diagnosisType', label: 'FSHD 分型', placeholder: '例如：FSHD1' },
+  { key: 'd4z4Repeats', label: 'D4Z4 重复数', placeholder: '例如：4/22' },
+  { key: 'haplotype', label: '单倍型', placeholder: '例如：4qA' },
+  { key: 'methylationValue', label: '甲基化', placeholder: '例如：12%' },
+];
 import InlineNotice from '../common/feedback/InlineNotice';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
@@ -85,6 +107,13 @@ export default function ReportDetailScreen() {
   const poller = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
+  // OCR hand-correction modal: whitelisted fields only (mirrors the
+  // backend schema). Draft is keyed by field, prefilled from the
+  // current payload when the modal opens.
+  const [correctVisible, setCorrectVisible] = useState(false);
+  const [correctDraft, setCorrectDraft] = useState<Record<string, string>>({});
+  const [correctBusy, setCorrectBusy] = useState(false);
+  const [correctError, setCorrectError] = useState<string | null>(null);
   const [payload, setPayload] = useState<OcrPayload | null>(null);
   const [docStatus, setDocStatus] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -257,6 +286,53 @@ export default function ReportDetailScreen() {
       (panel) => panel.metrics.length > 0 || panel.coverage.length > 0,
     );
   }, [fields, payload]);
+
+  const openCorrection = () => {
+    const current: Record<string, string> = {};
+    for (const field of CORRECTABLE_OCR_FIELDS) {
+      current[field.key] = fields ? (pickField(fields, [field.key]) ?? '') : '';
+    }
+    setCorrectDraft(current);
+    setCorrectError(null);
+    setCorrectVisible(true);
+  };
+
+  const submitCorrection = async () => {
+    if (correctBusy) return;
+    // Send only fields the user actually changed/filled — the backend
+    // rejects an empty patch, and untouched keys shouldn't get a
+    // manual-edit stamp.
+    const changed: Record<string, string> = {};
+    for (const field of CORRECTABLE_OCR_FIELDS) {
+      const next = (correctDraft[field.key] ?? '').trim();
+      const prev = fields ? (pickField(fields, [field.key]) ?? '') : '';
+      if (next && next !== prev) changed[field.key] = next;
+    }
+    if (Object.keys(changed).length === 0) {
+      setCorrectError('没有需要保存的修改。');
+      return;
+    }
+    setCorrectBusy(true);
+    setCorrectError(null);
+    try {
+      const result = await patchPatientDocumentOcr(documentId, changed);
+      const nextFields = result.ocr_payload?.fields;
+      if (nextFields) {
+        setPayload((prevPayload) => ({ ...(prevPayload ?? {}), fields: nextFields }));
+      }
+      setCorrectVisible(false);
+    } catch (error) {
+      setCorrectError(
+        error instanceof ApiError && error.status === 409
+          ? '当前状态不支持修正（识别中或失败的报告请先完成识别）。'
+          : error instanceof Error
+            ? error.message
+            : '保存失败，请稍后重试。',
+      );
+    } finally {
+      setCorrectBusy(false);
+    }
+  };
 
   const structuredSections = useMemo(() => {
     if (!fields) return [];
@@ -592,6 +668,11 @@ export default function ReportDetailScreen() {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>识别出的关键信息</Text>
+          {docStatus === 'parsed' || docStatus === 'needs_review' ? (
+            <TouchableOpacity style={styles.toggleLink} onPress={openCorrection}>
+              <Text style={styles.toggleLinkText}>识别有误？手动修正 →</Text>
+            </TouchableOpacity>
+          ) : null}
           {structuredSections.length === 0 ? (
             <Text style={styles.smallText}>暂无识别出的关键指标（或仍在识别中）。</Text>
           ) : (
@@ -762,6 +843,60 @@ export default function ReportDetailScreen() {
           </View>
         )}
       </ScrollView>
+
+      <Modal
+        visible={correctVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setCorrectVisible(false)}
+      >
+        <Pressable style={styles.correctOverlay} onPress={() => setCorrectVisible(false)}>
+          <Pressable style={styles.correctSheet} onPress={() => {}}>
+            <Text style={styles.cardTitle}>修正识别结果</Text>
+            <Text style={styles.smallText}>
+              只需要填写有误或缺失的字段；保存后档案自动补全会优先使用你修正的值。
+            </Text>
+            <ScrollView style={styles.correctList} keyboardShouldPersistTaps="handled">
+              {CORRECTABLE_OCR_FIELDS.map((field) => (
+                <View key={field.key} style={styles.correctRow}>
+                  <Text style={styles.correctLabel}>{field.label}</Text>
+                  <TextInput
+                    style={styles.correctInput}
+                    value={correctDraft[field.key] ?? ''}
+                    onChangeText={(value) =>
+                      setCorrectDraft((prev) => ({ ...prev, [field.key]: value }))
+                    }
+                    placeholder={field.placeholder}
+                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                  />
+                </View>
+              ))}
+            </ScrollView>
+            {correctError ? <Text style={styles.correctErrorText}>{correctError}</Text> : null}
+            <View style={styles.correctActions}>
+              <TouchableOpacity
+                style={styles.correctCancel}
+                onPress={() => setCorrectVisible(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.correctCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, correctBusy && { opacity: 0.7 }, styles.correctSubmit]}
+                onPress={() => void submitCorrection()}
+                disabled={correctBusy}
+                activeOpacity={0.7}
+              >
+                {correctBusy ? (
+                  <ActivityIndicator color={CLINICAL_COLORS.text} />
+                ) : (
+                  <Text style={styles.buttonText}>保存修正</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
