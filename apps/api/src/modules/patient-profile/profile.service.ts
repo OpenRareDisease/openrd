@@ -1,4 +1,11 @@
 import type { Pool, PoolClient } from 'pg';
+import {
+  cancelAccountDeletion,
+  getAccountDeletionStatus,
+  purgeDueAccountDeletions,
+  requestAccountDeletion,
+  type DeletionRequestStatus,
+} from './account-deletion.js';
 import { applyGeneticReportAutofill } from './profile.autofill.js';
 import {
   buildClinicalPassportExport,
@@ -2695,5 +2702,37 @@ export class PatientProfileService {
       }
       throw error;
     }
+  }
+
+  /** Account-deletion lifecycle — thin wrappers over the helper so
+   *  the routes layer keeps one service dependency. Error mapping to
+   *  HTTP status lives in the controller (DeletionRequestError carries
+   *  a code). */
+  async requestAccountDeletion(
+    userId: string,
+    confirmPhoneNumber: string,
+  ): Promise<DeletionRequestStatus> {
+    const status = await requestAccountDeletion(this.pool, userId, confirmPhoneNumber);
+    this.logger.info(
+      { userId, scheduledPurgeAt: status.scheduledPurgeAt },
+      'Account deletion requested',
+    );
+    return status;
+  }
+
+  async cancelAccountDeletion(userId: string): Promise<DeletionRequestStatus> {
+    const status = await cancelAccountDeletion(this.pool, userId);
+    this.logger.info({ userId }, 'Account deletion cancelled');
+    return status;
+  }
+
+  async getAccountDeletionStatus(userId: string): Promise<DeletionRequestStatus | null> {
+    return getAccountDeletionStatus(this.pool, userId);
+  }
+
+  async purgeDueAccountDeletions(
+    removeFile: (storageUri: string) => Promise<void>,
+  ): Promise<number> {
+    return purgeDueAccountDeletions(this.pool, removeFile, this.logger);
   }
 }

@@ -315,4 +315,23 @@ export default StyleSheet.create({
     fontWeight: '500',
     color: CLINICAL_COLORS.text,
   },
+  deleteConfirmInput: {
+    alignSelf: 'stretch',
+    marginTop: 4,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: CLINICAL_COLORS.border,
+    backgroundColor: CLINICAL_COLORS.panel,
+    color: CLINICAL_COLORS.text,
+    fontSize: 14,
+  },
+  deleteErrorText: {
+    alignSelf: 'stretch',
+    marginBottom: 8,
+    color: CLINICAL_COLORS.danger,
+    fontSize: 12,
+  },
 });

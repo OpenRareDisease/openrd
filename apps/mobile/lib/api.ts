@@ -613,6 +613,32 @@ export const exportMyData = () =>
     { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
   );
 
+/** Account-deletion lifecycle (right to erasure, 7-day cooling-off).
+ *  Request demands the registered phone number retyped (400 on
+ *  mismatch, 409 when one is already pending); cancel 404s when
+ *  nothing is pending; status returns `{ deletion: null }` for
+ *  accounts that never asked. */
+export interface AccountDeletionStatus {
+  status: 'pending' | 'cancelled' | 'purged';
+  requestedAt: string;
+  scheduledPurgeAt: string;
+  cancelledAt: string | null;
+}
+
+export const requestAccountDeletion = (phoneNumber: string) =>
+  apiRequest<AccountDeletionStatus>('/profiles/me/deletion-request', {
+    method: 'POST',
+    body: JSON.stringify({ phoneNumber }),
+  });
+
+export const cancelAccountDeletion = () =>
+  apiRequest<AccountDeletionStatus>('/profiles/me/deletion-request/cancel', {
+    method: 'POST',
+  });
+
+export const getAccountDeletionStatus = () =>
+  apiRequest<{ deletion: AccountDeletionStatus | null }>('/profiles/me/deletion-request');
+
 /** Patch one or more AI consent flags. The backend enforces the
  *  "precise requires personal+thirdParty" rule and returns 400 if the
  *  caller breaks it. */

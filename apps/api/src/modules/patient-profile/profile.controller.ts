@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import OpenAI from 'openai';
+import { DeletionRequestError } from './account-deletion.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
@@ -9,6 +10,7 @@ import {
   createSubmissionSchema,
   createProfileSchema,
   dailyImpactSchema,
+  deletionRequestSchema,
   documentUploadSchema,
   followupEventSchema,
   functionTestSchema,
@@ -331,6 +333,16 @@ export const OCR_STUCK_AFTER_MINUTES = 10;
  *  in milliseconds. 10 queued jobs ≈ 100MB worst case. */
 export const OCR_MAX_IN_FLIGHT_JOBS = 10;
 
+/** DeletionRequestError code → HTTP status. Kept beside the handlers
+ *  that use it; anything else passes through untouched. */
+const mapDeletionError = (error: unknown): unknown => {
+  if (error instanceof DeletionRequestError) {
+    const statusByCode = { phone_mismatch: 400, already_pending: 409, not_pending: 404 } as const;
+    return new AppError(error.message, statusByCode[error.code]);
+  }
+  return error;
+};
+
 /** Bounds for the full data export. Both exist so a pathological
  *  account can't hold the connection (or balloon the payload)
  *  forever; hitting either sets a `truncation` flag in the response
@@ -547,6 +559,36 @@ export class PatientProfileController {
     const payload = consentUpdateSchema.parse(req.body);
     const updated = await this.service.updateConsent(req.user.id, payload);
     res.status(200).json(updated);
+  };
+
+  /** Account-deletion lifecycle (删除权). DeletionRequestError codes
+   *  map to HTTP here so the helper stays framework-agnostic:
+   *  phone_mismatch → 400, already_pending → 409, not_pending → 404. */
+  requestMyAccountDeletion = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = deletionRequestSchema.parse(req.body);
+    try {
+      const status = await this.service.requestAccountDeletion(req.user.id, payload.phoneNumber);
+      res.status(201).json(status);
+    } catch (error) {
+      throw mapDeletionError(error);
+    }
+  };
+
+  cancelMyAccountDeletion = async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const status = await this.service.cancelAccountDeletion(req.user.id);
+      res.status(200).json(status);
+    } catch (error) {
+      throw mapDeletionError(error);
+    }
+  };
+
+  /** `{ deletion: null }` (not 404) when the user never requested
+   *  deletion — the settings screen renders nothing without an extra
+   *  "exists?" branch. */
+  getMyAccountDeletion = async (req: AuthenticatedRequest, res: Response) => {
+    const status = await this.service.getAccountDeletionStatus(req.user.id);
+    res.status(200).json({ deletion: status });
   };
 
   /**
