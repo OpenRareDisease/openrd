@@ -627,6 +627,26 @@ export default function ReportDetailScreen() {
               <Text style={[styles.smallText, { marginTop: 10 }]}>
                 仅供参考，仍需结合医生判断。
               </Text>
+              {/* Contextual AI entry: multi-turn chat is live, so the
+                  natural next step after reading the summary is asking
+                  about it — prefilled, user reviews and sends. */}
+              <TouchableOpacity
+                style={styles.toggleLink}
+                onPress={() => {
+                  const reportName = pickField(fields, ['reportName', 'report_name']);
+                  router.push({
+                    pathname: '/p-qna',
+                    params: {
+                      prefill: `请结合我最近上传的${
+                        reportName ? `《${reportName}》` : '这份检查报告'
+                      }，用通俗的话讲讲结果说明了什么、需要注意什么？`,
+                      prefillNonce: String(Date.now()),
+                    },
+                  });
+                }}
+              >
+                <Text style={styles.toggleLinkText}>继续问 AI 这份报告 →</Text>
+              </TouchableOpacity>
             </>
           ) : aiConsent === 'none' && !isDocumentProcessing(docStatus, payload) ? (
             <>

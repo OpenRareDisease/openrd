@@ -265,6 +265,26 @@ export default function ManageScreen() {
                   <Text style={styles.metricLabel}>变化摘要</Text>
                 </View>
               </View>
+              {/* Contextual AI entry: the trend question is what this
+                  page exists to answer — hand it to the multi-turn
+                  chat prefilled, user reviews and sends. */}
+              <TouchableOpacity
+                style={styles.askTrendButton}
+                activeOpacity={0.88}
+                onPress={() =>
+                  router.push({
+                    pathname: '/p-qna',
+                    params: {
+                      prefill:
+                        '结合我最近的日常记录和检查报告，我的病情趋势怎么样？有什么需要注意的？',
+                      prefillNonce: String(Date.now()),
+                    },
+                  })
+                }
+              >
+                <FontAwesome6 name="comments" size={13} color="#FFFFFF" />
+                <Text style={styles.askTrendButtonText}>问 AI 我的趋势</Text>
+              </TouchableOpacity>
             </LinearGradient>
           </View>
 

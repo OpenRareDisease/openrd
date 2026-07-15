@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import {
@@ -551,6 +551,7 @@ const CitationPopoverModal = ({
 const P_QNA = () => {
   const { token } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams();
   const scrollViewRef = useRef<ScrollView | null>(null);
   const inputRef = useRef<TextInput | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -562,6 +563,24 @@ const P_QNA = () => {
 
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
+
+  // Contextual entries (report detail's「问 AI 这份报告」, manage's
+  //「问我的趋势」) land here with a prefilled question. Prefill only —
+  // the user reviews and taps send themselves. `prefillNonce` changes
+  // per tap so pressing the same entry twice re-applies even though
+  // the prefill text is identical.
+  const prefillParam = Array.isArray(params.prefill) ? params.prefill[0] : params.prefill;
+  const prefillNonce = Array.isArray(params.prefillNonce)
+    ? params.prefillNonce[0]
+    : params.prefillNonce;
+  useEffect(() => {
+    if (typeof prefillParam === 'string' && prefillParam.trim()) {
+      setDraft(prefillParam);
+      inputRef.current?.focus();
+    }
+    // Deps are the params pair only — the effect re-runs per tap
+    // (nonce), never per keystroke.
+  }, [prefillParam, prefillNonce]);
   const [isGrantingConsent, setIsGrantingConsent] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([createWelcomeMessage()]);
