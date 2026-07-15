@@ -197,6 +197,8 @@ const successResult = (overrides: Partial<OrchestratorRunResult> = {}): Orchestr
   finalPrompt: { system: 's', user: 'u' },
   redactedPromptHash: 'a'.repeat(64),
   promptCharLength: 123,
+  historyMessageCount: 0,
+  historyCharLength: 0,
   llmUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
   latencyMs: 42,
   ...overrides,
@@ -907,10 +909,12 @@ describe('buildAskResponseData (response narrowing)', () => {
       redactionMode: 'strict' as const,
       llmUsage: { totalTokens: 10 },
       latencyMs: 50,
+      historyMessageCount: 2,
       // Audit-internal — MUST be stripped.
       finalPrompt: { system: 'SECRET system prompt', user: 'SECRET user prompt' },
       redactedPromptHash: 'a'.repeat(64),
       promptCharLength: 999,
+      historyCharLength: 999,
     } as unknown as Parameters<typeof _buildAskResponseData>[1];
 
     const out = _buildAskResponseData('the question', result, 'audit-9', 'prog-9');
@@ -922,6 +926,7 @@ describe('buildAskResponseData (response narrowing)', () => {
         'citations',
         'consentLevel',
         'fieldsUsed',
+        'historyMessageCount',
         'latencyMs',
         'llmUsage',
         'progressId',
@@ -937,6 +942,7 @@ describe('buildAskResponseData (response narrowing)', () => {
     expect(out).not.toHaveProperty('finalPrompt');
     expect(out).not.toHaveProperty('redactedPromptHash');
     expect(out).not.toHaveProperty('promptCharLength');
+    expect(out).not.toHaveProperty('historyCharLength');
     expect(JSON.stringify(out)).not.toContain('SECRET');
   });
 });

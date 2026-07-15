@@ -35,6 +35,13 @@ export interface AuditEntryInput {
   /** Length (chars) of the redacted prompt, for back-of-envelope
    *  cost analysis. */
   promptCharLength?: number | null;
+  /** Multi-turn: how many prior conversation turns entered this call
+   *  (0 = single-turn; pre-multi-turn rows default to 0, which is
+   *  literally true for them). */
+  historyMessageCount?: number;
+  /** Multi-turn: total chars of the normalized history. Null on rows
+   *  that predate the feature (distinct from a true 0). */
+  historyCharLength?: number | null;
   /** Whether any patient-scoped retriever contributed to the prompt
    *  (drives the "本回答用到了你的..." UI hint). */
   usedPersonalData: boolean;

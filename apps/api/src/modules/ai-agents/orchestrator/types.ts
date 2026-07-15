@@ -23,6 +23,10 @@ export interface OrchestratorRunInput {
    *  the FAQ page". Appended to the user prompt. Never include raw
    *  patient identifiers here. */
   userContextHint?: string;
+  /** Normalized multi-turn history (route layer runs
+   *  security/history.ts#normalizeHistory first — never pass raw
+   *  client input here). Empty/absent = single-turn. */
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   /**
    * Abort signal forwarded to the underlying LLM provider. When the
    * SSE route detects a client disconnect it fires this signal so the
@@ -90,6 +94,11 @@ export interface OrchestratorRunResult {
     system: string;
     user: string;
   };
+  /** Multi-turn accounting for the audit row: how many normalized
+   *  prior turns entered this run, and their total chars. 0/0 for a
+   *  single-turn call. */
+  historyMessageCount: number;
+  historyCharLength: number;
   /** sha256 hex of the rendered final prompt (system + user +
    *  rendered tool content). Recorded in audit so a row can be
    *  matched to a known prompt without storing the prompt itself. */

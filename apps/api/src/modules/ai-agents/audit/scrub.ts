@@ -1,3 +1,5 @@
+import { scrubPiiText } from '../security/text-scrub.js';
+
 /**
  * Strip caller-supplied data out of an error string before it lands
  * in an audit row OR a response body. PG errors are the worst
@@ -18,19 +20,10 @@
  * trace than to leak a phone number.
  */
 export const scrubErrorDetail = (input: string): string =>
-  input
-    // pg parameterised "$N = '...'" / "$N='...'"
-    .replace(/\$\d+\s*=\s*'[^']*'/g, '$N=[REDACTED]')
-    // pg "DETAIL:  Key (col)=(value)" / "(col)=(value)"
-    .replace(/\(\s*[^()]+\s*\)\s*=\s*\([^()]+\)/g, '(col)=(value)')
-    // Chinese ID card first (18 digits, optional final X). Run before
-    // phone so we don't redact the 11-digit window that lives inside
-    // a longer ID-shaped run as a "phone".
-    .replace(/\b\d{17}[\dXx]\b/g, '[ID]')
-    // Older 15-digit CN ID (no longer issued but still legal).
-    .replace(/\b\d{15}\b/g, '[ID]')
-    // CN mobile (11 digits, starts with 1[3-9]) — `\b` keeps us from
-    // catching a substring inside another digit run.
-    .replace(/(?<!\d)(?:\+?86)?1[3-9]\d{9}(?!\d)/g, '[PHONE]')
-    // email addresses
-    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[EMAIL]');
+  scrubPiiText(
+    input
+      // pg parameterised "$N = '...'" / "$N='...'"
+      .replace(/\$\d+\s*=\s*'[^']*'/g, '$N=[REDACTED]')
+      // pg "DETAIL:  Key (col)=(value)" / "(col)=(value)"
+      .replace(/\(\s*[^()]+\s*\)\s*=\s*\([^()]+\)/g, '(col)=(value)'),
+  );

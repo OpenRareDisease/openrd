@@ -36,13 +36,19 @@ import {
   PatientProfileRetriever,
   PatientReportsRetriever,
 } from '../modules/ai-agents/retrievers/index.js';
-import { getConsentStatus, redactionModeForConsent } from '../modules/ai-agents/security/index.js';
+import {
+  getConsentStatus,
+  normalizeHistory,
+  redactionModeForConsent,
+  type NormalizedHistory,
+} from '../modules/ai-agents/security/index.js';
 import {
   GetMyProfileTool,
   GetMyReportsTool,
   SearchMedicalKbTool,
   ToolRegistry,
 } from '../modules/ai-agents/tools/index.js';
+import { AppError } from '../utils/app-error.js';
 
 type ProgressStageStatus = 'pending' | 'active' | 'done' | 'error';
 
@@ -214,6 +220,9 @@ const buildAskResponseData = (
   redactionMode: result.redactionMode,
   llmUsage: result.llmUsage,
   latencyMs: result.latencyMs,
+  // Multi-turn transparency: how many prior turns the server actually
+  // used (post-normalization). Additive — older clients ignore it.
+  historyMessageCount: result.historyMessageCount,
   auditId,
   progressId,
   timestamp: new Date().toISOString(),
@@ -315,6 +324,37 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
     message: '进度轮询过于频繁，请稍后再试',
   });
 
+  /** Shared multi-turn history parsing for /ask and /ask/stream — one
+   *  implementation so the two endpoints can't drift. Returns null
+   *  after writing the 400 when the payload is structurally invalid;
+   *  size overruns are truncated silently (see normalizeHistory). */
+  const parseHistoryOrRespond = (
+    raw: unknown,
+    res: Response,
+    progressId: string,
+  ): NormalizedHistory | null => {
+    try {
+      return normalizeHistory(raw, {
+        maxMessages: context.env.AI_HISTORY_MAX_MESSAGES,
+        charBudget: context.env.AI_HISTORY_CHAR_BUDGET,
+      });
+    } catch (error) {
+      // Only the validator's own 400 is a client fault — anything
+      // else is a server bug and must reach the error handler (a
+      // blanket catch would disguise it as invalid_history).
+      if (!(error instanceof AppError) || error.statusCode !== 400) {
+        throw error;
+      }
+      res.status(400).json({
+        success: false,
+        code: 'invalid_history',
+        message: '对话历史格式不正确',
+        progressId,
+      });
+      return null;
+    }
+  };
+
   const pool = deps.pool ?? getPool();
   const auditLogger = deps.auditLogger ?? new AuditLogger(pool);
   const llmProvider =
@@ -379,6 +419,12 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       });
     }
 
+    const history = parseHistoryOrRespond(req.body?.history, res, progressId);
+    if (history === null) {
+      setProgressStage(progressId, 'received', 'error', 'invalid_history');
+      return;
+    }
+
     let consentStatus;
     try {
       consentStatus = await getConsentStatus(pool, userId);
@@ -402,6 +448,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: 'none',
           redactionMode: 'strict',
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],
@@ -431,6 +479,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           question: String(question),
           requestId: progressId,
           consentLevel: consentStatus.level,
+          history: history.messages,
         },
         (event) => handleOrchestratorEvent(progressId, event),
       );
@@ -446,6 +495,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           redactionMode: result.redactionMode,
           redactedPromptHash: result.redactedPromptHash,
           promptCharLength: result.promptCharLength,
+          historyMessageCount: result.historyMessageCount,
+          historyCharLength: result.historyCharLength,
           usedPersonalData: result.usedPersonalData,
           fieldsUsed: result.fieldsUsed,
           toolsCalled: result.toolCalls,
@@ -480,6 +531,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: consentStatus.level,
           redactionMode: redactionModeForConsent(consentStatus.level),
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],
@@ -681,6 +734,13 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
       });
     }
 
+    // Parse BEFORE committing to SSE: a structurally invalid history
+    // must be a JSON 400, not an error frame mid-stream.
+    const history = parseHistoryOrRespond(req.body?.history, res, progressId);
+    if (history === null) {
+      return;
+    }
+
     let consentStatus;
     try {
       consentStatus = await getConsentStatus(pool, userId);
@@ -699,6 +759,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: 'none',
           redactionMode: 'strict',
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],
@@ -819,6 +881,7 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           question: String(question),
           requestId: progressId,
           consentLevel: consentStatus.level,
+          history: history.messages,
           signal: abortController.signal,
         },
         { streamFinalAnswer: true },
@@ -859,6 +922,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           redactionMode: lastResult.redactionMode,
           redactedPromptHash: lastResult.redactedPromptHash,
           promptCharLength: lastResult.promptCharLength,
+          historyMessageCount: lastResult.historyMessageCount,
+          historyCharLength: lastResult.historyCharLength,
           usedPersonalData: lastResult.usedPersonalData,
           fieldsUsed: lastResult.fieldsUsed,
           toolsCalled: lastResult.toolCalls,
@@ -873,6 +938,8 @@ const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) 
           llmModel: llmProvider.model,
           consentLevel: consentStatus.level,
           redactionMode: redactionModeForConsent(consentStatus.level),
+          historyMessageCount: history.messages.length,
+          historyCharLength: history.charLength,
           usedPersonalData: false,
           fieldsUsed: [],
           toolsCalled: [],

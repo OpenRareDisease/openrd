@@ -424,3 +424,62 @@ describe('Orchestrator.run with streamFinalAnswer=true', () => {
     expect(result.answer).toMatch(/暂时无法生成完整回答/);
   });
 });
+
+describe('Orchestrator.run — multi-turn history', () => {
+  it('replays history between system and the current question, and covers it in the audit hash', async () => {
+    const llm = mkLlm([{ content: '带上下文的回答', toolCalls: [], finishReason: 'stop' }]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry(),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const history = [
+      { role: 'user' as const, content: '我上次肌酸激酶 800，说明什么？' },
+      { role: 'assistant' as const, content: '通常提示肌肉损伤……' },
+    ];
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: '那我需要复查吗？',
+      requestId: 'r-mt',
+      consentLevel: 'basic',
+      history,
+    });
+
+    // 1) Message order into the LLM: system, then history verbatim,
+    //    then the current question last.
+    const request = llm.chat.mock.calls[0][0] as LlmChatRequest;
+    const roles = request.messages.map((m) => m.role);
+    expect(roles).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(request.messages[1].content).toBe(history[0].content);
+    expect(request.messages[2].content).toBe(history[1].content);
+    expect(String(request.messages[3].content)).toContain('那我需要复查吗');
+
+    // 2) finalPrompt.user must be the CURRENT question, not the
+    //    oldest replayed turn.
+    expect(result.finalPrompt.user).toContain('那我需要复查吗');
+    expect(result.finalPrompt.user).not.toBe(history[0].content);
+
+    // 3) Accounting for the audit row.
+    expect(result.historyMessageCount).toBe(2);
+    expect(result.historyCharLength).toBe(history[0].content.length + history[1].content.length);
+
+    // 4) The audit hash source walks every message — the same run
+    //    WITHOUT history must produce a different hash.
+    const llm2 = mkLlm([{ content: '带上下文的回答', toolCalls: [], finishReason: 'stop' }]);
+    const orch2 = new Orchestrator(
+      llm2,
+      new ToolRegistry(),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const single = await orch2.run({
+      userId: 'u1',
+      question: '那我需要复查吗？',
+      requestId: 'r-st',
+      consentLevel: 'basic',
+    });
+    expect(single.historyMessageCount).toBe(0);
+    expect(single.redactedPromptHash).not.toBe(result.redactedPromptHash);
+  });
+});
