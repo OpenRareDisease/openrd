@@ -23,6 +23,7 @@ import {
 } from '../../lib/clinical-visuals';
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
 import styles from './styles';
+import { shouldAutoSummarize } from './auto-summary';
 import InlineNotice from '../common/feedback/InlineNotice';
 import HumanBodyFigure from '../common/HumanBodyFigure';
 import ScreenBackButton from '../common/ScreenBackButton';
@@ -375,21 +376,28 @@ export default function ReportDetailScreen() {
 
   // Interpretation automation: once the parse settles and AI consent
   // is granted, the summary generates itself — upload → recognize →
-  // interpret with zero manual steps. Guarded to fire at most once
-  // per visit; a failure degrades to the manual button (summaryNotice
-  // already carries the retry).
+  // interpret with zero manual steps. The DECISION lives in
+  // shouldAutoSummarize (pure, unit-tested — this path spends LLM
+  // calls unattended, so every guard is load-bearing); the effect
+  // only owns the timing. A failure degrades to the manual button
+  // (summaryNotice already carries the retry).
   useEffect(() => {
-    if (autoSummaryTriggeredRef.current) return;
-    if (aiConsent !== 'granted') return;
-    if (!documentId || !payload) return;
-    if (isDocumentProcessing(docStatus, payload)) return;
-    if (docStatus === 'parse_failed') return;
-    if (summary || summaryLoading) return;
+    if (!documentId) return;
+    const fire = shouldAutoSummarize({
+      aiConsent,
+      docStatus,
+      hasPayload: payload !== null,
+      isProcessing: isDocumentProcessing(docStatus, payload),
+      hasSummary: Boolean(summary),
+      summaryLoading,
+      alreadyTriggered: autoSummaryTriggeredRef.current,
+    });
+    if (!fire) return;
     autoSummaryTriggeredRef.current = true;
     void onGenerateSummary();
     // onGenerateSummary is recreated per render but idempotent; the
-    // guards above are the real dependency story (this config has no
-    // react-hooks lint plugin to appease).
+    // decision function holds the real dependency story (this config
+    // has no react-hooks lint plugin to appease).
   }, [aiConsent, payload, docStatus, summary, summaryLoading, documentId]);
 
   /** Unlock card: grant both required flags in one tap, then let the
