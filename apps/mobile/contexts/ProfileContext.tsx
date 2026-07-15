@@ -31,11 +31,9 @@ export type ProfileStatus = 'loading' | 'ready' | 'missing' | 'error';
 interface ProfileContextValue {
   profileStatus: ProfileStatus;
   profile: PatientProfile | null;
-  /** Re-probe the server (e.g. pull-to-refresh on a gate-exempt screen). */
+  /** Re-probe the server (e.g. after the onboarding save, before
+   *  navigating away — so the gate can't bounce the user back). */
   refresh: () => Promise<void>;
-  /** Flip to ready without a second request — call with the profile
-   *  the onboarding save just created/returned. */
-  markReady: (profile: PatientProfile | null) => void;
 }
 
 const ProfileContext = createContext<ProfileContextValue | null>(null);
@@ -76,14 +74,9 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
     void probe();
   }, [token, isHydrated, probe]);
 
-  const markReady = useCallback((next: PatientProfile | null) => {
-    setProfile(next);
-    setProfileStatus('ready');
-  }, []);
-
   const value = useMemo(
-    () => ({ profileStatus, profile, refresh: probe, markReady }),
-    [profileStatus, profile, probe, markReady],
+    () => ({ profileStatus, profile, refresh: probe }),
+    [profileStatus, profile, probe],
   );
 
   return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>;
