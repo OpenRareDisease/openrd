@@ -515,9 +515,13 @@ const AuditHistoryScreen = () => {
   );
 
   // A flag-filter change invalidates the loaded page; the lazy-load
-  // effect below re-fetches (consentLoaded gate reopens).
+  // effect below re-fetches (consentLoaded gate reopens). Clearing
+  // the error matters too: the anti-retry-storm guard blocks the
+  // lazy load while an error is set, and switching filters is an
+  // explicit user action that should always attempt a fresh fetch.
   useEffect(() => {
     setConsentLoaded(false);
+    setConsentError(null);
   }, [consentFlagFilter]);
 
   useEffect(() => {
