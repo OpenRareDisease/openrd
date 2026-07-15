@@ -16,6 +16,42 @@ const cardShadow =
   }) ?? {};
 
 export default StyleSheet.create({
+  guidanceStack: {
+    marginTop: 12,
+    gap: 10,
+  },
+  guidanceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: CLINICAL_COLORS.panel,
+    borderWidth: 1,
+    borderColor: CLINICAL_TINTS.accentBorder,
+  },
+  guidanceIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: CLINICAL_TINTS.accentSoft,
+  },
+  guidanceTextWrap: {
+    flex: 1,
+    gap: 3,
+  },
+  guidanceTitle: {
+    color: CLINICAL_COLORS.text,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  guidanceDescription: {
+    color: CLINICAL_COLORS.textSoft,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   container: {
     flex: 1,
     backgroundColor: CLINICAL_COLORS.background,
