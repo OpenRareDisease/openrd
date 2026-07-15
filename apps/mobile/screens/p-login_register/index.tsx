@@ -26,6 +26,12 @@ import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import {
+  PRIVACY_POLICY_TEXT,
+  PRIVACY_POLICY_TITLE,
+  USER_AGREEMENT_TEXT,
+  USER_AGREEMENT_TITLE,
+} from '../../lib/legal-content';
+import {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   type LoginErrors,
@@ -538,50 +544,10 @@ const LoginRegisterScreen: React.FC = () => {
     }
   };
 
-  // 显示协议
+  // 显示协议 — 文本单源在 lib/legal-content.ts(与关于页共享)
   const handleShowAgreement = (type: 'user' | 'privacy') => {
-    const title = type === 'user' ? '用户协议' : '隐私政策';
-    const content =
-      type === 'user'
-        ? `1. 服务条款
-
-欢迎使用FSHD-openrd应用程序。在使用本应用前，请仔细阅读并理解本用户协议。
-
-2. 服务内容
-
-本应用为FSHD患者提供健康管理、知识查询、社区交流等服务。
-
-3. 用户责任
-
-用户应确保提供真实、准确的个人信息，并妥善保管账户密码。
-
-4. 隐私保护
-
-我们严格保护用户隐私，具体请查看《隐私政策》。
-
-5. 免责声明
-
-本应用提供的信息仅供参考，不构成医疗建议，请在专业医生指导下使用。`
-        : `1. 信息收集
-
-我们收集您提供的个人信息和使用数据，用于提供更好的服务。
-
-2. 信息使用
-
-您的信息仅用于应用功能实现，不会用于其他商业目的。
-
-3. 信息保护
-
-我们采用行业标准的安全措施保护您的个人信息。
-
-4. 信息共享
-
-未经您同意，我们不会与第三方分享您的个人信息。
-
-5. 数据删除
-
-您可以随时申请删除账户和相关数据。`;
-
+    const title = type === 'user' ? USER_AGREEMENT_TITLE : PRIVACY_POLICY_TITLE;
+    const content = type === 'user' ? USER_AGREEMENT_TEXT : PRIVACY_POLICY_TEXT;
     showModal('agreement', title, '', content);
   };
 

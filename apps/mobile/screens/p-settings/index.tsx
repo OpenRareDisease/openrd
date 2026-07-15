@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
@@ -71,10 +71,9 @@ const SettingsScreen = () => {
         <View style={styles.userInfoSection}>
           <View style={styles.userInfoCard}>
             <View style={styles.userProfileInfo}>
-              <Image
-                source={{ uri: 'https://s.coze.cn/image/Pqg4BKyFb3M/' }}
-                style={styles.userAvatar}
-              />
+              <View style={styles.avatarFallback}>
+                <FontAwesome6 name="user" size={26} color={CLINICAL_COLORS.accentStrong} />
+              </View>
               <View style={styles.userDetails}>
                 <Text style={styles.userName}>{user?.phoneNumber ?? '未登录'}</Text>
                 <Text style={styles.userId}>角色：{user?.role ?? '未知'}</Text>
