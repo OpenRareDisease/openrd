@@ -200,7 +200,10 @@ export default function ReportDetailScreen() {
   };
 
   const fields = payload?.fields ?? undefined;
-  const status = getAnalysisStatus(payload) ?? 'unknown';
+  // Prefer the document-row status: under the async pipeline the
+  // payload (and its analysisStatus) is null for the entire parse,
+  // which used to surface as a bare "unknown" in the hero chip.
+  const status = docStatus ?? getAnalysisStatus(payload) ?? 'unknown';
   const reportKind = inferReportKind(payload);
   const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
   const activeRegions = mriInference.regions;

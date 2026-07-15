@@ -308,14 +308,14 @@ export default function ReportManagementScreen() {
     }
   };
 
-  useEffect(() => {
-    loadData().catch(() => undefined);
-  }, []);
-
   // Async OCR: a report uploaded moments ago is still 'processing'.
-  // Refetch silently whenever this screen regains focus (back from
-  // the detail screen, tab return) so「识别中」badges resolve without
-  // the user having to pull-to-refresh.
+  // Refetch whenever this screen gains focus — expo-router fires this
+  // on the initial mount too (so no separate mount effect: keeping
+  // one caused a double concurrent fetch on every entry), and again
+  // on every return from the detail screen / tab switch, so「识别中」
+  // badges resolve without pull-to-refresh. refresh mode keeps
+  // later focus gains to the small spinner; the first render's
+  // full-screen loading comes from isLoading's initial `true`.
   useFocusEffect(
     // loadData is recreated per render; an empty dep list runs the
     // refetch exactly once per focus gain, which is the semantic we
