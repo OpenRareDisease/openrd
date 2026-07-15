@@ -84,10 +84,21 @@ export default function TimelineSectionCard({
   }, [items]);
 
   const openDetail = (item: TimelineDetailItem) => {
+    // The full item rides in the route params so the detail screen is
+    // self-contained: a cold start, refresh, or shared deep link
+    // renders without any in-memory state. The memory cache stays as
+    // a legacy fallback for old links that only carry detailId.
     const detailId = storeTimelineDetailItem(item);
     router.push({
       pathname: '/p-timeline_detail',
-      params: { detailId },
+      params: {
+        detailId,
+        title: item.title,
+        description: item.description,
+        timestamp: item.timestamp,
+        tag: item.tag,
+        ...(item.documentId ? { documentId: item.documentId } : {}),
+      },
     });
   };
 

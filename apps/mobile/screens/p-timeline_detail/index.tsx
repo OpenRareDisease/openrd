@@ -24,12 +24,35 @@ const formatFullDate = (value?: string | null) => {
 export default function TimelineDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const detailId = useMemo(() => {
-    const raw = params.detailId;
-    return Array.isArray(raw) ? raw[0] : raw;
-  }, [params.detailId]);
 
-  const item = detailId ? getTimelineDetailItem(detailId) : null;
+  const item = useMemo(() => {
+    const pick = (value: string | string[] | undefined): string | undefined => {
+      const raw = Array.isArray(value) ? value[0] : value;
+      return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+    };
+
+    // Route params are the primary source: they make this screen
+    // fully self-contained (cold start / refresh / deep link all
+    // render). The in-memory cache remains only as a fallback for
+    // legacy links that carry just a detailId.
+    const title = pick(params.title);
+    const description = pick(params.description);
+    const timestamp = pick(params.timestamp);
+    const tag = pick(params.tag);
+    if (title && timestamp && tag) {
+      return {
+        id: pick(params.detailId) ?? `${title}:${timestamp}`,
+        title,
+        description: description ?? '',
+        timestamp,
+        tag,
+        documentId: pick(params.documentId) ?? null,
+      };
+    }
+
+    const detailId = pick(params.detailId);
+    return detailId ? getTimelineDetailItem(detailId) : null;
+  }, [params]);
 
   return (
     <SafeAreaView style={styles.container}>
