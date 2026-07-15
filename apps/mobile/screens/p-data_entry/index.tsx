@@ -2,6 +2,7 @@ import { useEffect, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
   Text,
   TextInput,
@@ -768,15 +769,32 @@ const DataEntryScreen = () => {
       }
 
       const asset = result.assets[0];
-      if (typeof asset.fileSize === 'number' && asset.fileSize > MAX_UPLOAD_BYTES) {
-        setFormNotice(
-          `报告文件不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB，请压缩后重试。`,
-        );
-        return;
+      const name = asset.fileName ?? `report-${Date.now()}.jpg`;
+      const mimeType = asset.mimeType ?? 'image/jpeg';
+      const sizeLimitMessage = `报告文件不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB，请压缩后重试。`;
+
+      let file: { uri: string; name: string; type: string } | File;
+      if (Platform.OS === 'web') {
+        // Browser FormData ignores the RN {uri,name,type} shape — the
+        // multipart would land with no file part. Materialize a real
+        // File from the blob:/data: URI (production ships as an Expo
+        // web export, so this branch is load-bearing). Web assets
+        // often omit fileSize, so the cap is checked on the blob.
+        const blob = await (await fetch(asset.uri)).blob();
+        if (blob.size > MAX_UPLOAD_BYTES) {
+          setFormNotice(sizeLimitMessage);
+          return;
+        }
+        file = new File([blob], name, { type: mimeType });
+      } else {
+        if (typeof asset.fileSize === 'number' && asset.fileSize > MAX_UPLOAD_BYTES) {
+          setFormNotice(sizeLimitMessage);
+          return;
+        }
+        file = { uri: asset.uri, name, type: mimeType };
       }
 
-      const name = asset.fileName ?? `report-${Date.now()}.jpg`;
-      await submitReportFile({ uri: asset.uri, name, type: asset.mimeType ?? 'image/jpeg' }, name);
+      await submitReportFile(file, name);
     } catch (error) {
       const message = error instanceof Error ? error.message : '拍照上传失败，请稍后重试';
       setFormNotice(message);
