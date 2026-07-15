@@ -3,7 +3,7 @@ import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
-import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import { CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
 import { LinearGradient } from 'expo-linear-gradient';
 import { getTimelineDetailItem } from '../../lib/timeline-detail';
 import ScreenBackButton from '../common/ScreenBackButton';
