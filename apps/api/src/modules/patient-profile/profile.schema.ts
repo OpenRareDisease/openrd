@@ -309,3 +309,30 @@ export type SharingPreferencesUpdateBody = z.infer<typeof sharingPreferencesUpda
 export const deletionRequestSchema = z.object({
   phoneNumber: z.string().trim().min(1, '请填写注册手机号'),
 });
+
+/** Fields a patient may hand-correct on their own report's OCR
+ *  result. Whitelist, not free-form: these are exactly the keys the
+ *  detail screen renders and the genetic autofill consumes — a wrong
+ *  OCR read here poisons the profile, so correction (not
+ *  delete-and-reupload) is the fix path. */
+export const EDITABLE_OCR_FIELDS = [
+  'reportName',
+  'reportTime',
+  'diagnosisType',
+  'd4z4Repeats',
+  'haplotype',
+  'methylationValue',
+] as const;
+
+export const ocrFieldsPatchSchema = z.object({
+  fields: z
+    .record(z.string(), z.string().trim().max(300))
+    .refine((fields) => Object.keys(fields).length > 0, '至少提供一个要修正的字段')
+    .refine(
+      (fields) =>
+        Object.keys(fields).every((key) =>
+          (EDITABLE_OCR_FIELDS as readonly string[]).includes(key),
+        ),
+      '包含不可修正的字段',
+    ),
+});

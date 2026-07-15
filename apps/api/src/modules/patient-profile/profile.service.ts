@@ -1287,6 +1287,67 @@ export class PatientProfileService {
   }
 
   /**
+   * Patient hand-correction of their own report's OCR fields. Only
+   * whitelisted keys reach this (zod), only settled documents accept
+   * edits (parsed / needs_review — a processing row is about to be
+   * overwritten by the job, a parse_failed row has no fields to fix),
+   * and the merge stamps `manuallyEditedAt` so downstream consumers
+   * can tell a corrected value from a raw OCR read.
+   */
+  async patchDocumentOcrFields(userId: string, documentId: string, patch: Record<string, string>) {
+    const existing = await this.pool.query<{
+      id: string;
+      status: string;
+      ocr_payload: { fields?: Record<string, unknown> } | null;
+    }>(
+      `SELECT d.id, d.status, d.ocr_payload
+       FROM patient_documents d
+       JOIN patient_profiles p ON p.id = d.profile_id
+       WHERE p.user_id = $1 AND d.id = $2`,
+      [userId, documentId],
+    );
+    const row = existing.rows[0];
+    if (!row) {
+      throw new AppError('Document not found', 404);
+    }
+    if (row.status !== 'parsed' && row.status !== 'needs_review') {
+      throw new AppError('当前状态不支持修正识别结果', 409);
+    }
+
+    const payload =
+      row.ocr_payload && typeof row.ocr_payload === 'object' ? { ...row.ocr_payload } : {};
+    const fields = {
+      ...((payload as { fields?: Record<string, unknown> }).fields ?? {}),
+      ...patch,
+      manuallyEditedAt: new Date().toISOString(),
+    };
+    const nextPayload = { ...payload, fields };
+
+    const updated = await this.pool.query<{ id: string; ocr_payload: unknown }>(
+      `UPDATE patient_documents d
+       SET ocr_payload = $3
+       FROM patient_profiles p
+       WHERE d.profile_id = p.id AND p.user_id = $1 AND d.id = $2
+         AND d.status IN ('parsed', 'needs_review')
+       RETURNING d.id, d.ocr_payload`,
+      [userId, documentId, JSON.stringify(nextPayload)],
+    );
+    if (!updated.rowCount) {
+      // The status gate re-checks atomically at write time: a reparse
+      // that started between our SELECT and this UPDATE would flip the
+      // row to 'processing' and then overwrite ocr_payload when the
+      // job settles — silently discarding the correction. Refusing
+      // here keeps the correction from being eaten.
+      throw new AppError('当前状态不支持修正识别结果', 409);
+    }
+    this.logger.info(
+      { userId, documentId, keys: Object.keys(patch) },
+      'Report OCR fields hand-corrected',
+    );
+    return updated.rows[0];
+  }
+
+  /**
    * Startup sweep for the async OCR pipeline: rows stuck in
    * 'processing' longer than `olderThanMinutes` belong to a job that
    * died with the previous process (there is no persistent queue by

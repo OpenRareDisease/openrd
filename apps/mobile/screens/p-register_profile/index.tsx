@@ -76,6 +76,7 @@ const RegisterProfileScreen: React.FC = () => {
     dateOfBirth: '',
     diagnosisYear: '',
     diagnosisType: '',
+    d4z4: '',
     onsetRegion: '',
     familyHistory: '',
     independentlyAmbulatory: '' as AmbulationChoice,
@@ -134,6 +135,7 @@ const RegisterProfileScreen: React.FC = () => {
               ? String(baseline.foundation.diagnosisYear)
               : '',
           diagnosisType: diseaseBackground?.diagnosisType ?? '',
+          d4z4: diseaseBackground?.d4z4 != null ? String(diseaseBackground.d4z4) : '',
           onsetRegion: diseaseBackground?.onsetRegion ?? '',
           familyHistory: diseaseBackground?.familyHistory ?? '',
           independentlyAmbulatory: toAmbulationChoice(currentStatus?.independentlyAmbulatory),
@@ -294,6 +296,7 @@ const RegisterProfileScreen: React.FC = () => {
         diseaseBackground: {
           ...(existingBaseline?.diseaseBackground ?? {}),
           diagnosisType: form.diagnosisType.trim() || null,
+          d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
           onsetRegion: form.onsetRegion.trim() || null,
           familyHistory: form.familyHistory.trim() || null,
         },
@@ -441,6 +444,15 @@ const RegisterProfileScreen: React.FC = () => {
                       placeholderTextColor={CLINICAL_COLORS.textMuted}
                       value={form.diagnosisType}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, diagnosisType: text }))}
+                    />
+
+                    <Text style={styles.inputLabel}>D4Z4 重复数（如有基因报告）</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="例如：4/22（报告识别有误时可在此修正）"
+                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      value={form.d4z4}
+                      onChangeText={(text) => setForm((prev) => ({ ...prev, d4z4: text }))}
                     />
 
                     <Text style={styles.inputLabel}>首发部位</Text>

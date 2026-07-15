@@ -983,3 +983,48 @@ describe('PatientProfileController.exportMyData — full data export', () => {
     expect(payload.aiAuditTrail).toEqual([]);
   });
 });
+
+describe('PatientProfileController.patchDocumentOcr — hand-correction whitelist', () => {
+  const buildPatchController = (patchImpl?: ReturnType<typeof vi.fn>) => {
+    const service = {
+      patchDocumentOcrFields:
+        patchImpl ?? vi.fn().mockResolvedValue({ id: 'doc-1', ocr_payload: { fields: {} } }),
+    } as unknown as PatientProfileService;
+    const controller = new PatientProfileController(
+      service,
+      { save: vi.fn() } as unknown as StorageProvider,
+      { parse: vi.fn() } as unknown as OcrProvider,
+    );
+    return { controller, service };
+  };
+
+  const reqWith = (body: unknown) =>
+    ({ user: { id: 'user-1' }, params: { id: 'doc-1' }, body }) as unknown as AuthenticatedRequest;
+
+  it('rejects keys outside the whitelist with a 400 (zod)', async () => {
+    const { controller, service } = buildPatchController();
+    await expect(
+      controller.patchDocumentOcr(reqWith({ fields: { extractedText: 'x' } }), fakeRes()),
+    ).rejects.toThrow();
+    expect(service.patchDocumentOcrFields).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty fields object', async () => {
+    const { controller } = buildPatchController();
+    await expect(controller.patchDocumentOcr(reqWith({ fields: {} }), fakeRes())).rejects.toThrow();
+  });
+
+  it('passes whitelisted corrections through to the service', async () => {
+    const { controller, service } = buildPatchController();
+    const res = fakeRes();
+    await controller.patchDocumentOcr(
+      reqWith({ fields: { d4z4Repeats: '4/22', reportName: '基因检测报告' } }),
+      res,
+    );
+    expect(service.patchDocumentOcrFields).toHaveBeenCalledWith('user-1', 'doc-1', {
+      d4z4Repeats: '4/22',
+      reportName: '基因检测报告',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});

@@ -160,6 +160,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/documents/:id', asyncHandler(controller.getDocumentFile));
   router.get('/me/documents/:id/ocr', asyncHandler(controller.getDocumentOcr));
   router.post('/me/documents/:id/reparse', asyncHandler(controller.reparseDocument));
+  router.patch('/me/documents/:id/ocr', asyncHandler(controller.patchDocumentOcr));
   router.post('/me/documents/:id/summary', asyncHandler(controller.generateDocumentSummary));
   router.post('/me/submissions', asyncHandler(controller.createSubmission));
   router.get('/me/submissions', asyncHandler(controller.listSubmissions));

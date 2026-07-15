@@ -1152,6 +1152,16 @@ export const reparsePatientDocument = (documentId: string) =>
     { method: 'POST' },
   );
 
+/** Hand-correct whitelisted OCR fields on an owned report (reportName /
+ *  reportTime / diagnosisType / d4z4Repeats / haplotype /
+ *  methylationValue). 409 while the document is processing or failed;
+ *  the server stamps manuallyEditedAt into the returned payload. */
+export const patchPatientDocumentOcr = (documentId: string, fields: Record<string, string>) =>
+  apiRequest<{ id: string; ocr_payload: { fields?: Record<string, string> } | null }>(
+    `/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`,
+    { method: 'PATCH', body: JSON.stringify({ fields }) },
+  );
+
 export const deletePatientDocument = (documentId: string) =>
   apiRequest<{
     documentId: string;
