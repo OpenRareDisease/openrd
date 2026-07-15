@@ -21,34 +21,10 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import {
-  ApiError,
-  login,
-  loginWithOtp,
-  register,
-  resetPassword,
-  sendOtp,
-  updateMyBaseline,
-  upsertPatientProfile,
-} from '../../lib/api';
+import { ApiError, login, loginWithOtp, register, resetPassword, sendOtp } from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
-import {
-  type DateParts,
-  buildRegionLabel,
-  composeDate,
-  genderOptions,
-  parseDateParts,
-} from '../../lib/demographics-options';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
-import {
-  AMBULATION_OPTIONS,
-  ASSISTIVE_DEVICE_OPTIONS,
-  type AmbulationChoice,
-  type AssistiveDeviceOption,
-  fromAmbulationChoice,
-  mergeAssistiveDevices,
-} from '../../lib/profile-baseline-options';
 import {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
@@ -62,7 +38,6 @@ import {
   validateLoginForm,
   validateRegisterForm,
 } from '../../lib/validation';
-import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenBackButton from '../common/ScreenBackButton';
 
 // Interrupted-registration draft. Secrets (passwords) and OTP state
@@ -81,20 +56,6 @@ interface RegisterFormData {
   password: string;
   confirmPassword: string;
   identity: 'doctor' | 'patient_family' | 'other';
-  fullName: string;
-  dateOfBirth: string;
-  diagnosisYear: string;
-  diagnosisType: string;
-  onsetRegion: string;
-  familyHistory: string;
-  independentlyAmbulatory: AmbulationChoice;
-  assistiveDevices: AssistiveDeviceOption[];
-  customAssistiveDevices: string;
-  gender: 'male' | 'female' | 'non_binary' | 'prefer_not_to_say' | '';
-  contactEmail: string;
-  regionProvince: string;
-  regionCity: string;
-  regionDistrict: string;
 }
 
 interface ModalState {
@@ -142,22 +103,7 @@ const LoginRegisterScreen: React.FC = () => {
     password: '',
     confirmPassword: '',
     identity: 'patient_family',
-    fullName: '',
-    dateOfBirth: '',
-    diagnosisYear: '',
-    diagnosisType: '',
-    onsetRegion: '',
-    familyHistory: '',
-    independentlyAmbulatory: '',
-    assistiveDevices: [],
-    customAssistiveDevices: '',
-    gender: '',
-    contactEmail: '',
-    regionProvince: '',
-    regionCity: '',
-    regionDistrict: '',
   });
-  const [birthDateDraft, setBirthDateDraft] = useState<DateParts>(() => parseDateParts(''));
   const [isRegisterDraftHydrated, setIsRegisterDraftHydrated] = useState(false);
 
   // Restore an interrupted registration (user switched away to read
@@ -168,15 +114,21 @@ const LoginRegisterScreen: React.FC = () => {
       try {
         const raw = await getSessionValue(REGISTER_FORM_DRAFT_KEY);
         if (raw) {
-          const draft = JSON.parse(raw) as Partial<RegisterFormData>;
-          delete draft.password;
-          delete draft.confirmPassword;
-          delete draft.code;
-          delete draft.otpRequestId;
-          setRegisterForm((prev) => ({ ...prev, ...draft }));
-          if (typeof draft.dateOfBirth === 'string' && draft.dateOfBirth) {
-            setBirthDateDraft(parseDateParts(draft.dateOfBirth));
-          }
+          const draft = JSON.parse(raw) as Partial<RegisterFormData> & Record<string, unknown>;
+          // Pick known fields explicitly: a pre-slim draft carries
+          // removed profile fields (fullName, region…), and spreading
+          // it would smuggle them into state — and back into storage
+          // — forever. Secrets/OTP state are excluded by construction.
+          setRegisterForm((prev) => ({
+            ...prev,
+            phone: typeof draft.phone === 'string' ? draft.phone : prev.phone,
+            identity:
+              draft.identity === 'doctor' ||
+              draft.identity === 'patient_family' ||
+              draft.identity === 'other'
+                ? draft.identity
+                : prev.identity,
+          }));
         }
       } catch {
         // A broken draft must never block registration.
@@ -242,14 +194,7 @@ const LoginRegisterScreen: React.FC = () => {
   const registerFieldYRef = useRef<Partial<Record<RegisterField, number>>>({});
 
   const liveLoginErrors = useMemo(() => validateLoginForm(loginForm), [loginForm]);
-  const liveRegisterErrors = useMemo(
-    () =>
-      validateRegisterForm({
-        ...registerForm,
-        dateOfBirth: composeDate(birthDateDraft.year, birthDateDraft.month, birthDateDraft.day),
-      }),
-    [registerForm, birthDateDraft],
-  );
+  const liveRegisterErrors = useMemo(() => validateRegisterForm(registerForm), [registerForm]);
 
   const visibleLoginError = (field: LoginField) =>
     loginErrors[field] ? liveLoginErrors[field] : undefined;
@@ -430,12 +375,6 @@ const LoginRegisterScreen: React.FC = () => {
 
   // 注册提交
   const handleRegisterSubmit = async () => {
-    const selectedDateOfBirth = composeDate(
-      birthDateDraft.year,
-      birthDateDraft.month,
-      birthDateDraft.day,
-    );
-
     // Surface EVERY failing field inline at once (no more one
     // blocking modal per issue), and bring the first one into view.
     if (Object.keys(liveRegisterErrors).length > 0) {
@@ -448,8 +387,14 @@ const LoginRegisterScreen: React.FC = () => {
     setIsLoading(true);
 
     try {
+      // The public register endpoint only accepts patient/caregiver —
+      // clinician accounts are provisioned through a back-office path
+      // with licence verification (auth.schema.ts). Mapping doctor →
+      // 'clinician' made every doctor-identity registration fail zod
+      // with an opaque 400; doctors sign up as caregiver-tier accounts
+      // until clinician provisioning exists.
       const roleMap = {
-        doctor: 'clinician',
+        doctor: 'caregiver',
         patient_family: 'patient',
         other: 'caregiver',
       } as const;
@@ -461,47 +406,16 @@ const LoginRegisterScreen: React.FC = () => {
         role: roleMap[registerForm.identity],
       });
 
+      // Account only — the medical profile is created behind the
+      // onboarding gate (app/_layout), which intercepts the /p-home
+      // navigation below and walks the user through the minimal
+      // 3-field setup. The old inline profile+baseline chain here
+      // could half-fail AFTER the token was stored, stranding an
+      // account with no profile and no recovery path.
       await setSession(response);
-      await upsertPatientProfile({
-        fullName: registerForm.fullName.trim(),
-        dateOfBirth: selectedDateOfBirth,
-        gender: registerForm.gender,
-        contactPhone: formatPhoneNumber(registerForm.phone),
-        contactEmail: registerForm.contactEmail.trim() || null,
-        regionProvince: registerForm.regionProvince.trim(),
-        regionCity: registerForm.regionCity.trim(),
-        regionDistrict: registerForm.regionDistrict.trim(),
-      });
-      await updateMyBaseline({
-        foundation: {
-          fullName: registerForm.fullName.trim(),
-          birthYear: Number(selectedDateOfBirth.slice(0, 4)),
-          diagnosisYear: registerForm.diagnosisYear.trim()
-            ? Number(registerForm.diagnosisYear.trim())
-            : null,
-          regionLabel:
-            buildRegionLabel({
-              regionProvince: registerForm.regionProvince.trim(),
-              regionCity: registerForm.regionCity.trim(),
-              regionDistrict: registerForm.regionDistrict.trim(),
-            }) || null,
-        },
-        diseaseBackground: {
-          diagnosisType: registerForm.diagnosisType.trim() || null,
-          onsetRegion: registerForm.onsetRegion.trim() || null,
-          familyHistory: registerForm.familyHistory.trim() || null,
-        },
-        currentStatus: {
-          independentlyAmbulatory: fromAmbulationChoice(registerForm.independentlyAmbulatory),
-          assistiveDevices: mergeAssistiveDevices(
-            registerForm.assistiveDevices,
-            registerForm.customAssistiveDevices,
-          ),
-        },
-      });
       // Registration is complete — the draft has served its purpose.
       await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
-      showModal('success', '注册成功', '账户已创建并完成基础档案');
+      showModal('success', '注册成功', '接下来用 1 分钟完成基础档案');
       router.replace('/p-home');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '注册失败，请重试';
@@ -679,23 +593,6 @@ const LoginRegisterScreen: React.FC = () => {
       }
     };
   }, []);
-
-  const handleBirthDateChange = (next: DateParts) => {
-    setBirthDateDraft(next);
-    setRegisterForm((prev) => ({
-      ...prev,
-      dateOfBirth: composeDate(next.year, next.month, next.day),
-    }));
-  };
-
-  const toggleRegisterAssistiveDevice = (device: AssistiveDeviceOption) => {
-    setRegisterForm((prev) => ({
-      ...prev,
-      assistiveDevices: prev.assistiveDevices.includes(device)
-        ? prev.assistiveDevices.filter((item) => item !== device)
-        : [...prev.assistiveDevices, device],
-    }));
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1130,185 +1027,6 @@ const LoginRegisterScreen: React.FC = () => {
                     {renderRegisterError('identity')}
                   </View>
 
-                  <Text style={styles.registerSectionTitle}>基本信息</Text>
-                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('fullName')}>
-                    <Text style={styles.inputLabel}>姓名</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="请输入姓名"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.fullName}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, fullName: text }))
-                      }
-                    />
-                    {renderRegisterError('fullName')}
-                  </View>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('dateOfBirth')}
-                  >
-                    <Text style={styles.inputLabel}>出生日期</Text>
-                    <BirthDatePickers value={birthDateDraft} onChange={handleBirthDateChange} />
-                    {renderRegisterError('dateOfBirth')}
-                  </View>
-                  <View style={styles.inputContainer} onLayout={captureRegisterFieldY('gender')}>
-                    <Text style={styles.inputLabel}>性别</Text>
-                    <View style={styles.identityRow}>
-                      {genderOptions.map((option) => {
-                        const isActive = registerForm.gender === option.value;
-                        return (
-                          <TouchableOpacity
-                            key={option.value}
-                            style={[styles.identityButton, isActive && styles.identityButtonActive]}
-                            onPress={() =>
-                              setRegisterForm((prev) => ({
-                                ...prev,
-                                gender: option.value as RegisterFormData['gender'],
-                              }))
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.identityButtonText,
-                                isActive && styles.identityButtonTextActive,
-                              ]}
-                            >
-                              {option.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </View>
-
-                  <Text style={styles.registerSectionTitle}>基础建档</Text>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('diagnosisYear')}
-                  >
-                    <Text style={styles.inputLabel}>确诊年份（可选）</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：2022"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.diagnosisYear}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({
-                          ...prev,
-                          diagnosisYear: text.replace(/[^\d]/g, ''),
-                        }))
-                      }
-                      keyboardType="number-pad"
-                      maxLength={4}
-                    />
-                    {renderRegisterError('diagnosisYear')}
-                    <Text style={styles.fieldHintText}>
-                      如果还没有上传报告，也可以在下面先补充分型、首发部位和家族史。
-                    </Text>
-                  </View>
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>分型/诊断方式（可选）</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：FSHD1"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.diagnosisType}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, diagnosisType: text }))
-                      }
-                    />
-                  </View>
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>首发部位（可选）</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="例如：肩胛带、面部、足背屈"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.onsetRegion}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, onsetRegion: text }))
-                      }
-                    />
-                  </View>
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>家族史（可选）</Text>
-                    <TextInput
-                      style={[styles.textInput, styles.multilineTextInput]}
-                      placeholder="例如：母亲疑似，家中暂无明确患者"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.familyHistory}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, familyHistory: text }))
-                      }
-                      multiline
-                      textAlignVertical="top"
-                    />
-                  </View>
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>当前行走（可选）</Text>
-                    <View style={styles.choiceRow}>
-                      {AMBULATION_OPTIONS.map((option) => {
-                        const isActive = registerForm.independentlyAmbulatory === option.value;
-                        return (
-                          <TouchableOpacity
-                            key={option.value}
-                            style={[styles.choiceButton, isActive && styles.choiceButtonActive]}
-                            onPress={() =>
-                              setRegisterForm((prev) => ({
-                                ...prev,
-                                independentlyAmbulatory:
-                                  prev.independentlyAmbulatory === option.value ? '' : option.value,
-                              }))
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.choiceButtonText,
-                                isActive && styles.choiceButtonTextActive,
-                              ]}
-                            >
-                              {option.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </View>
-                  <View style={styles.inputContainer}>
-                    <Text style={styles.inputLabel}>辅具（可选）</Text>
-                    <View style={styles.choiceRow}>
-                      {ASSISTIVE_DEVICE_OPTIONS.map((option) => {
-                        const isActive = registerForm.assistiveDevices.includes(option);
-                        return (
-                          <TouchableOpacity
-                            key={option}
-                            style={[styles.choiceButton, isActive && styles.choiceButtonActive]}
-                            onPress={() => toggleRegisterAssistiveDevice(option)}
-                          >
-                            <Text
-                              style={[
-                                styles.choiceButtonText,
-                                isActive && styles.choiceButtonTextActive,
-                              ]}
-                            >
-                              {option}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="其他辅具可直接填写，多个用顿号分隔"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      value={registerForm.customAssistiveDevices}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, customAssistiveDevices: text }))
-                      }
-                    />
-                  </View>
-
                   <Text style={styles.registerSectionTitle}>账号信息</Text>
                   <View style={styles.inputContainer} onLayout={captureRegisterFieldY('phone')}>
                     <Text style={styles.inputLabel}>手机号</Text>
@@ -1411,59 +1129,6 @@ const LoginRegisterScreen: React.FC = () => {
                       </TouchableOpacity>
                     </View>
                     {renderRegisterError('confirmPassword')}
-                  </View>
-
-                  <Text style={styles.registerSectionTitle}>联系方式</Text>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={captureRegisterFieldY('contactEmail')}
-                  >
-                    <Text style={styles.inputLabel}>邮箱（可选）</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="用于账号验证与平台通知"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
-                      keyboardType="email-address"
-                      value={registerForm.contactEmail}
-                      onChangeText={(text) =>
-                        setRegisterForm((prev) => ({ ...prev, contactEmail: text }))
-                      }
-                    />
-                    {renderRegisterError('contactEmail')}
-                  </View>
-
-                  <Text style={styles.registerSectionTitle}>所在地区</Text>
-                  <View
-                    style={styles.inputContainer}
-                    onLayout={(event) => {
-                      // The three region fields now share one shell —
-                      // point all their scroll anchors at it so
-                      // scroll-to-first-error still lands here.
-                      const { y } = event.nativeEvent.layout;
-                      registerFieldYRef.current.regionProvince = y;
-                      registerFieldYRef.current.regionCity = y;
-                      registerFieldYRef.current.regionDistrict = y;
-                    }}
-                  >
-                    <Text style={styles.inputLabel}>省 / 市 / 区县</Text>
-                    <RegionPickers
-                      value={{
-                        province: registerForm.regionProvince,
-                        city: registerForm.regionCity,
-                        district: registerForm.regionDistrict,
-                      }}
-                      onChange={(next) =>
-                        setRegisterForm((prev) => ({
-                          ...prev,
-                          regionProvince: next.province,
-                          regionCity: next.city,
-                          regionDistrict: next.district,
-                        }))
-                      }
-                    />
-                    {renderRegisterError('regionProvince')}
-                    {renderRegisterError('regionCity')}
-                    {renderRegisterError('regionDistrict')}
                   </View>
 
                   <TouchableOpacity
