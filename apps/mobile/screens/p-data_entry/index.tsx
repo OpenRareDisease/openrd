@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { FontAwesome6 } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   addDailyImpact,
@@ -530,19 +531,6 @@ const DataEntryScreen = () => {
     }));
   };
 
-  const uploadDocument = async (submissionId?: string) => {
-    if (!uploadDraft.file) {
-      throw new Error('请先选择要上传的报告文件');
-    }
-
-    return uploadPatientDocument({
-      documentType: 'other',
-      title: uploadDraft.title.trim() || undefined,
-      submissionId,
-      file: uploadDraft.file,
-    });
-  };
-
   const resetUploadDraft = () => {
     setUploadDraft(DEFAULT_UPLOAD_DRAFT);
   };
@@ -704,18 +692,28 @@ const DataEntryScreen = () => {
     }
   };
 
-  const handleReportSubmit = async () => {
+  /** Shared upload body: submission shell → upload → land on the
+   *  detail screen where the OCR progress/result lives. Used by the
+   *  file-picker submit AND the camera/library instant paths. */
+  const submitReportFile = async (
+    file: { uri: string; name: string; type: string } | File,
+    summaryName: string,
+  ) => {
     setIsSubmitting(true);
-
     try {
       await ensureProfileReady(profile?.fullName ?? 'FSHD 患者');
       const submission = await createSubmission({
         submissionKind: 'event',
-        summary: uploadDraft.title.trim() || uploadDraft.name || '上传报告',
+        summary: uploadDraft.title.trim() || summaryName || '上传报告',
         changedSinceLast: false,
       });
 
-      const document = await uploadDocument(submission.id);
+      const document = await uploadPatientDocument({
+        documentType: 'other',
+        title: uploadDraft.title.trim() || undefined,
+        submissionId: submission.id,
+        file,
+      });
 
       resetUploadDraft();
       await loadContext();
@@ -731,6 +729,57 @@ const DataEntryScreen = () => {
       setFormNotice(message);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleReportSubmit = async () => {
+    if (!uploadDraft.file) {
+      setFormNotice('请先选择要上传的报告文件');
+      return;
+    }
+    await submitReportFile(uploadDraft.file, uploadDraft.name);
+  };
+
+  /** Camera / photo-library instant path: capture → validate → upload
+   *  immediately → land on the detail screen. For a population with
+   *  limited fine motor control, photographing the paper report is
+   *  the lowest-effort way to get it into the system — no file
+   *  browsing, no extra confirm step. */
+  const captureAndUpload = async (source: 'camera' | 'library') => {
+    if (isSubmitting) return;
+    setFormNotice(null);
+
+    try {
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          setFormNotice('需要相机权限才能拍摄报告，可在系统设置中开启。');
+          return;
+        }
+      }
+
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.8 })
+          : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
+
+      if (result.canceled || !result.assets?.length) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      if (typeof asset.fileSize === 'number' && asset.fileSize > MAX_UPLOAD_BYTES) {
+        setFormNotice(
+          `报告文件不能超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))}MB，请压缩后重试。`,
+        );
+        return;
+      }
+
+      const name = asset.fileName ?? `report-${Date.now()}.jpg`;
+      await submitReportFile({ uri: asset.uri, name, type: asset.mimeType ?? 'image/jpeg' }, name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '拍照上传失败，请稍后重试';
+      setFormNotice(message);
     }
   };
 
@@ -752,12 +801,38 @@ const DataEntryScreen = () => {
         />
       </View>
 
-      <TouchableOpacity style={styles.uploadButton} activeOpacity={0.88} onPress={pickDocument}>
-        <FontAwesome6 name="file-arrow-up" size={14} color={CLINICAL_COLORS.accentStrong} />
-        <Text style={styles.uploadButtonText}>
-          {uploadDraft.name ? `已选择：${uploadDraft.name}` : '选择 PDF 或图片（10MB 以内）'}
-        </Text>
+      <TouchableOpacity
+        style={[styles.cameraButton, isSubmitting && styles.submitButtonDisabled]}
+        activeOpacity={0.88}
+        disabled={isSubmitting}
+        onPress={() => void captureAndUpload('camera')}
+      >
+        <FontAwesome6 name="camera" size={16} color="#FFFFFF" />
+        <Text style={styles.cameraButtonText}>拍照上传（拍完自动识别）</Text>
       </TouchableOpacity>
+
+      <View style={styles.uploadAltRow}>
+        <TouchableOpacity
+          style={styles.uploadAltButton}
+          activeOpacity={0.88}
+          disabled={isSubmitting}
+          onPress={() => void captureAndUpload('library')}
+        >
+          <FontAwesome6 name="images" size={13} color={CLINICAL_COLORS.accentStrong} />
+          <Text style={styles.uploadAltButtonText}>从相册选择</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.uploadAltButton}
+          activeOpacity={0.88}
+          disabled={isSubmitting}
+          onPress={pickDocument}
+        >
+          <FontAwesome6 name="file-arrow-up" size={13} color={CLINICAL_COLORS.accentStrong} />
+          <Text style={styles.uploadAltButtonText}>
+            {uploadDraft.name ? `已选：${uploadDraft.name}` : '选择 PDF 文件'}
+          </Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
