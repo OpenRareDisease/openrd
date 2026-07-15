@@ -956,6 +956,20 @@ describe('PatientProfileController.exportMyData — full data export', () => {
     });
   });
 
+  it('429s a second export within the cooldown window (with waitSeconds)', async () => {
+    const { controller } = buildExportController({ profile: { id: 'p1' } });
+    await controller.exportMyData(req, fakeRes());
+    await expect(controller.exportMyData(req, fakeRes())).rejects.toMatchObject({
+      statusCode: 429,
+      details: { waitSeconds: expect.any(Number) },
+    });
+    // A different user is unaffected by user-1's cooldown.
+    const otherReq = { user: { id: 'user-2' } } as unknown as AuthenticatedRequest;
+    const res = fakeRes();
+    await controller.exportMyData(otherReq, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   it('works without an audit reader (empty trail, no crash)', async () => {
     const { controller } = buildExportController({ profile: { id: 'p1' } });
     const bare = new PatientProfileController(

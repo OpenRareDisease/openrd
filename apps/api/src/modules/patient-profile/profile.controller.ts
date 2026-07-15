@@ -337,6 +337,10 @@ export const OCR_MAX_IN_FLIGHT_JOBS = 10;
  *  instead of silently cutting off. */
 export const EXPORT_MAX_SUBMISSION_PAGES = 50;
 export const EXPORT_MAX_AUDIT_ROWS = 5000;
+/** Minimum spacing between two exports from the same user — the
+ *  export fans out into dozens of paged queries, so it gets a
+ *  cooldown instead of riding the generic auth rate limit. */
+export const EXPORT_COOLDOWN_MS = 60_000;
 
 /** The slice of the AI AuditLogger the export needs. Injected as an
  *  interface (rather than importing the class) so the profile module
@@ -360,6 +364,11 @@ export class PatientProfileController {
    *  "stuck" — scaling out requires moving this coordination into
    *  the database (e.g. a claimed_at column) first. */
   readonly inFlightOcrJobs = new Map<string, Promise<void>>();
+
+  /** Per-user timestamps of the last data export, for the
+   *  EXPORT_COOLDOWN_MS throttle (single-instance assumption, same
+   *  as inFlightOcrJobs). Pruned inline on each export call. */
+  readonly lastExportAt = new Map<string, number>();
   private readonly ocrLimiter = createLimiter(OCR_JOB_CONCURRENCY);
 
   constructor(
@@ -434,6 +443,24 @@ export class PatientProfileController {
    */
   exportMyData = async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user.id;
+
+    // Per-user cooldown: the export fans out into up to ~75 paged
+    // queries, so an authenticated caller in a retry loop is a real
+    // DB-load hazard. Same single-instance in-memory pattern as
+    // inFlightOcrJobs; a legitimate user exports once, not per
+    // minute. Entries are pruned on each pass so the map can't grow
+    // beyond the set of users active within one cooldown window.
+    const now = Date.now();
+    for (const [key, at] of this.lastExportAt) {
+      if (now - at >= EXPORT_COOLDOWN_MS) this.lastExportAt.delete(key);
+    }
+    const lastAt = this.lastExportAt.get(userId);
+    if (lastAt !== undefined && now - lastAt < EXPORT_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((EXPORT_COOLDOWN_MS - (now - lastAt)) / 1000);
+      throw new AppError(`导出过于频繁，请 ${waitSeconds} 秒后再试`, 429, { waitSeconds });
+    }
+    this.lastExportAt.set(userId, now);
+
     const profile = await this.service.getProfileByUserId(userId);
     if (!profile) {
       throw new AppError('Patient profile not found', 404);
