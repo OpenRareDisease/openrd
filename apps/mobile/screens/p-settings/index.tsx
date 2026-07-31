@@ -1,17 +1,9 @@
 import { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  Modal,
-  Alert,
-  Platform,
-  TextInput,
-} from 'react-native';
+import { View, Text, ScrollView, Pressable, Modal, Platform, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Button from '../common/Button';
+import Icon from '../common/Icon';
 import styles from './styles';
 import { useAuth } from '../../contexts/AuthContext';
 import {
@@ -22,7 +14,10 @@ import {
   ApiError,
   type AccountDeletionStatus,
 } from '../../lib/api';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { COLOR } from '../../lib/design';
+import { isFeatureEnabled } from '../../lib/feature-flags';
+import { useAppDialog } from '../common/feedback/AppDialog';
+import ListGroup, { Row } from '../common/ListGroup';
 
 const formatPurgeDate = (iso: string): string => {
   const date = new Date(iso);
@@ -49,26 +44,40 @@ const downloadJsonInBrowser = (payload: unknown, filename: string) => {
 
 const SettingsScreen = () => {
   const router = useRouter();
-  const [isLogoutModalVisible, setIsLogoutModalVisible] = useState(false);
+  const { confirm, notify } = useAppDialog();
   const [isExporting, setIsExporting] = useState(false);
   const [deletion, setDeletion] = useState<AccountDeletionStatus | null>(null);
+  /** The status fetch failed, so we do not know whether a purge is
+   *  scheduled. Distinct from `deletion === null`, which means we
+   *  asked and there is none. */
+  const [deletionStatusUnknown, setDeletionStatusUnknown] = useState(false);
   const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
   const [deleteConfirmPhone, setDeleteConfirmPhone] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeletionBusy, setIsDeletionBusy] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const { user, logout } = useAuth();
 
   // The pending-deletion banner is the cooling-off period's cancel
-  // surface — load it whenever the screen mounts. Fail-open: a
-  // status fetch error just hides the banner (the request endpoints
-  // still work).
+  // surface — load it whenever the screen mounts. A failed fetch is
+  // reported rather than swallowed; see the catch below.
   useEffect(() => {
     let cancelled = false;
     getAccountDeletionStatus()
       .then((result) => {
-        if (!cancelled) setDeletion(result.deletion);
+        if (!cancelled) {
+          setDeletion(result.deletion);
+          setDeletionStatusUnknown(false);
+        }
       })
-      .catch(() => undefined);
+      // A failed fetch is not "no deletion pending". Swallowing it left
+      // `deletion` null, which renders the 注销账号 row — telling a user
+      // whose account IS scheduled for purge that it isn't, and hiding
+      // the cancel row that is their only way to stop it during the
+      // cooling-off period.
+      .catch(() => {
+        if (!cancelled) setDeletionStatusUnknown(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -83,10 +92,11 @@ const SettingsScreen = () => {
       setDeletion(status);
       setIsDeleteModalVisible(false);
       setDeleteConfirmPhone('');
-      Alert.alert(
-        '注销申请已提交',
-        `账号将于 ${formatPurgeDate(status.scheduledPurgeAt)} 删除。在此之前你可以随时在本页取消。`,
-      );
+      notify({
+        title: '注销申请已提交',
+        message: `账号将于 ${formatPurgeDate(status.scheduledPurgeAt)} 删除。在此之前你可以随时在本页取消。`,
+        tone: 'info',
+      });
     } catch (error) {
       setDeleteError(
         error instanceof ApiError && error.status === 409
@@ -102,13 +112,32 @@ const SettingsScreen = () => {
 
   const handleCancelDeletion = async () => {
     if (isDeletionBusy) return;
+    // Busy flag is raised *before* the dialog, not after it: it also
+    // disables the row, which is what stops a second tap from opening
+    // a second confirm and orphaning the first promise.
     setIsDeletionBusy(true);
     try {
+      // Withdrawing a deletion request is the safe direction, so no
+      // destructive styling — but it still needs a confirmation,
+      // because a mis-tap here silently discards a decision the user
+      // made on purpose.
+      const confirmed = await confirm({
+        title: '撤回注销申请',
+        message: '撤回后账号恢复正常使用，全部数据保留。你之后仍可以重新申请注销。',
+        confirmLabel: '撤回申请',
+        cancelLabel: '保持注销',
+      });
+      if (!confirmed) return;
+
       const status = await cancelAccountDeletion();
       setDeletion(status);
-      Alert.alert('已取消', '注销申请已撤回，账号保持正常使用。');
+      notify({ title: '已撤回', message: '注销申请已撤回，账号保持正常使用。', tone: 'success' });
     } catch (error) {
-      Alert.alert('取消失败', error instanceof Error ? error.message : '请稍后重试。');
+      notify({
+        title: '撤回失败',
+        message: error instanceof Error ? error.message : '请稍后重试。',
+        tone: 'error',
+      });
     } finally {
       setIsDeletionBusy(false);
     }
@@ -117,14 +146,27 @@ const SettingsScreen = () => {
   const handleExportDataPress = async () => {
     if (isExporting) return;
     if (Platform.OS !== 'web') {
-      Alert.alert('提示', '数据导出目前请在网页版使用（浏览器会直接下载 JSON 文件）。');
+      notify({
+        title: '暂不支持',
+        message: '数据导出目前请在网页版使用（浏览器会直接下载 JSON 文件）。',
+        tone: 'info',
+      });
       return;
     }
     setIsExporting(true);
     try {
       const data = await exportMyData();
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      downloadJsonInBrowser(data, `openrd-data-export-${stamp}.json`);
+      const filename = `openrd-data-export-${stamp}.json`;
+      downloadJsonInBrowser(data, filename);
+      // The browser's own download indicator is easy to miss (and on
+      // some mobile browsers it is a one-frame toast), so the app says
+      // so itself — otherwise "导出我的数据" looks like it did nothing.
+      notify({
+        title: '导出完成',
+        message: `已下载 ${filename}。文件包含你的全部档案、记录与授权历史，请妥善保管。`,
+        tone: 'success',
+      });
     } catch (error) {
       const message =
         error instanceof ApiError && error.status === 404
@@ -132,7 +174,7 @@ const SettingsScreen = () => {
           : error instanceof Error
             ? error.message
             : '导出失败，请稍后重试。';
-      Alert.alert('导出失败', message);
+      notify({ title: '导出失败', message, tone: 'error' });
     } finally {
       setIsExporting(false);
     }
@@ -143,37 +185,48 @@ const SettingsScreen = () => {
   };
 
   const handlePersonalizationSettingsPress = () => {
-    Alert.alert('提示', '个性化设置功能即将上线，敬请期待！');
+    notify({ title: '即将上线', message: '个性化设置功能正在开发中，敬请期待。', tone: 'info' });
   };
 
   const handleAboutUsPress = () => {
     router.push('/p-about_us');
   };
 
-  const handleLogoutPress = () => {
-    setIsLogoutModalVisible(true);
-  };
-
-  const handleCancelLogout = () => {
-    setIsLogoutModalVisible(false);
-  };
-
-  const handleConfirmLogout = async () => {
+  const handleLogoutPress = async () => {
+    // Guards the whole ask-then-act sequence: without it a second press
+    // while the dialog is up opens a second dialog and leaves the first
+    // promise unresolved forever.
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
     try {
+      const confirmed = await confirm({
+        title: '确认退出登录',
+        message: '退出后需要重新登录才能查看你的档案和记录，本机上的问答缓存与草稿会一并清除。',
+        confirmLabel: '退出登录',
+        destructive: true,
+      });
+      if (!confirmed) return;
+
       await logout();
-      setIsLogoutModalVisible(false);
       router.replace('/p-login_register');
-    } catch {
-      Alert.alert('错误', '退出登录失败，请重试');
+    } catch (error) {
+      // logout() keeps the session alive when local cleanup failed, so
+      // we stay on this screen — which is the only place the user can
+      // still see why and press again. Navigating first would drop
+      // them on the login screen with a credential still on the disk
+      // and no explanation.
+      notify({
+        title: '退出登录失败',
+        message: error instanceof Error ? error.message : '请稍后重试。',
+        tone: 'error',
+      });
+    } finally {
+      setIsLoggingOut(false);
     }
   };
 
   const handleEditProfilePress = () => {
     router.push('/p-register_profile');
-  };
-
-  const handleModalOverlayPress = () => {
-    setIsLogoutModalVisible(false);
   };
 
   return (
@@ -185,201 +238,130 @@ const SettingsScreen = () => {
       >
         {/* 顶部标题区域 */}
         <View style={styles.header}>
-          <View style={styles.headerRow}>
-            <View style={styles.titleSection}>
-              <Text style={styles.pageTitle}>设置</Text>
-              <Text style={styles.pageSubtitle}>管理您的应用偏好和账户设置</Text>
+          <Text style={styles.pageTitle}>我的</Text>
+          <Text style={styles.pageSubtitle}>你的档案、授权，以及可以带走的数据</Text>
+        </View>
+
+        {/* 身份 — the one filled surface on this screen. The avatar
+            circle is gone: a generic person glyph in a tinted disc told
+            the patient nothing they didn't already know, and it cost
+            the row 76pt of width that now goes to the number itself. */}
+        <View style={styles.identity}>
+          <View style={styles.identityRow}>
+            <View style={styles.identityText}>
+              <Text style={styles.identityValue}>{user?.phoneNumber ?? '未登录'}</Text>
+              <Text style={styles.identityMeta}>
+                角色：{user?.role ?? '未知'} · 注册于{' '}
+                {user ? new Date(user.createdAt).toLocaleDateString() : '—'}
+              </Text>
             </View>
+            <Button
+              label="编辑资料"
+              variant="tinted"
+              compact
+              accessibilityLabel="编辑个人资料"
+              onPress={handleEditProfilePress}
+            />
           </View>
         </View>
 
-        {/* 用户信息卡片 */}
-        <View style={styles.userInfoSection}>
-          <View style={styles.userInfoCard}>
-            <View style={styles.userProfileInfo}>
-              <View style={styles.avatarFallback}>
-                <FontAwesome6 name="user" size={26} color={CLINICAL_COLORS.accentStrong} />
-              </View>
-              <View style={styles.userDetails}>
-                <Text style={styles.userName}>{user?.phoneNumber ?? '未登录'}</Text>
-                <Text style={styles.userId}>角色：{user?.role ?? '未知'}</Text>
-                <Text style={styles.userJoinDate}>
-                  注册时间：{user ? new Date(user.createdAt).toLocaleDateString() : '—'}
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={styles.editProfileButton}
-                onPress={handleEditProfilePress}
-                activeOpacity={0.7}
-              >
-                <FontAwesome6 name="pen" size={14} color={CLINICAL_COLORS.accent} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
+        {/* Every destination on this screen is now a ListGroup Row, so
+            the chevron means one thing everywhere: this navigates.
+            Before, each section hand-rolled its own TouchableOpacity
+            and the affordance drifted — some rows carried a chevron,
+            some carried a badge, one carried nothing at all. */}
+        <ListGroup title="档案与问答">
+          {/* 智能问答 is a tab now, so a second door here would be two
+              entrances to one room. The archive has no tab, so it
+              keeps its. */}
+          <Row
+            icon="address-card"
+            label="完整档案"
+            detail="基本信息、FSHD 背景与记录摘要"
+            onPress={() => router.push('/p-archive')}
+          />
+        </ListGroup>
 
-        {/* 设置选项列表 */}
-        <View style={styles.settingsListSection}>
-          <View style={styles.settingsList}>
-            {/* 隐私设置 */}
-            <TouchableOpacity
-              style={styles.settingItem}
-              onPress={handlePrivacySettingsPress}
-              activeOpacity={0.7}
-            >
-              <View style={styles.settingItemContent}>
-                <View style={styles.settingItemLeft}>
-                  <View style={[styles.settingIconContainer, styles.blueIconContainer]}>
-                    <FontAwesome6 name="shield-halved" size={18} color={CLINICAL_COLORS.accent} />
-                  </View>
-                  <View style={styles.settingTextContainer}>
-                    <Text style={styles.settingTitle}>隐私设置</Text>
-                    <Text style={styles.settingSubtitle}>管理数据授权和隐私偏好</Text>
-                  </View>
-                </View>
-                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-              </View>
-            </TouchableOpacity>
-
-            {/* 个性化设置 */}
-            <TouchableOpacity
-              style={styles.settingItem}
+        <ListGroup title="应用设置">
+          <Row
+            icon="shield-halved"
+            label="隐私设置"
+            detail="管理数据授权和隐私偏好"
+            onPress={handlePrivacySettingsPress}
+          />
+          {/* 个性化设置 — hidden until it works. See
+              FEATURE_FLAGS.personalization for why this one is not
+              allowed to sit here as a placeholder. */}
+          {isFeatureEnabled('personalization') ? (
+            <Row
+              icon="palette"
+              label="个性化设置"
+              detail="大字体、语音读屏、高对比度"
               onPress={handlePersonalizationSettingsPress}
-              activeOpacity={0.7}
-            >
-              <View style={styles.settingItemContent}>
-                <View style={styles.settingItemLeft}>
-                  <View style={[styles.settingIconContainer, styles.greenIconContainer]}>
-                    <FontAwesome6 name="palette" size={18} color={CLINICAL_COLORS.success} />
-                  </View>
-                  <View style={styles.settingTextContainer}>
-                    <Text style={styles.settingTitle}>个性化设置</Text>
-                    <Text style={styles.settingSubtitle}>大字体、语音读屏、高对比度</Text>
-                  </View>
-                </View>
-                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-              </View>
-            </TouchableOpacity>
+            />
+          ) : null}
+          <Row
+            icon="circle-info"
+            label="关于我们"
+            detail="产品介绍、版本信息、联系方式"
+            onPress={handleAboutUsPress}
+          />
+        </ListGroup>
 
-            {/* 关于我们 */}
-            <TouchableOpacity
-              style={styles.settingItem}
-              onPress={handleAboutUsPress}
-              activeOpacity={0.7}
-            >
-              <View style={styles.settingItemContent}>
-                <View style={styles.settingItemLeft}>
-                  <View style={[styles.settingIconContainer, styles.purpleIconContainer]}>
-                    <FontAwesome6
-                      name="circle-info"
-                      size={18}
-                      color={CLINICAL_COLORS.accentStrong}
-                    />
-                  </View>
-                  <View style={styles.settingTextContainer}>
-                    <Text style={styles.settingTitle}>关于我们</Text>
-                    <Text style={styles.settingSubtitle}>产品介绍、版本信息、联系方式</Text>
-                  </View>
-                </View>
-                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-              </View>
-            </TouchableOpacity>
-          </View>
-        </View>
+        {/* 数据与账号 — data-sovereignty actions. Kept as its own
+            section so「带走我的数据」is a first-class, findable right,
+            not a buried menu item. */}
+        <ListGroup title="数据与账号">
+          <Row
+            icon="download"
+            label={isExporting ? '正在整理导出…' : '导出我的数据'}
+            detail="下载全部档案、记录、报告清单与授权历史（JSON）"
+            onPress={() => void handleExportDataPress()}
+            disabled={isExporting}
+          />
+          {deletionStatusUnknown ? (
+            <Row
+              icon="triangle-exclamation"
+              label="注销状态暂时读不到"
+              detail="无法确认是否有进行中的注销申请，请检查网络后重开本页"
+              onPress={() => {
+                setDeletionStatusUnknown(false);
+                getAccountDeletionStatus()
+                  .then((result) => setDeletion(result.deletion))
+                  .catch(() => setDeletionStatusUnknown(true));
+              }}
+            />
+          ) : deletion?.status === 'pending' ? (
+            <Row
+              icon="rotate-left"
+              label="取消注销申请"
+              detail={`账号将于 ${formatPurgeDate(deletion.scheduledPurgeAt)} 删除，点此撤回并保留全部数据`}
+              onPress={() => void handleCancelDeletion()}
+              disabled={isDeletionBusy}
+            />
+          ) : (
+            <Row
+              icon="user-xmark"
+              label="注销账号"
+              detail="7 天冷静期后删除全部数据，期间可随时反悔"
+              destructive
+              onPress={() => {
+                setDeleteError(null);
+                setDeleteConfirmPhone('');
+                setIsDeleteModalVisible(true);
+              }}
+            />
+          )}
+        </ListGroup>
 
-        {/* 数据与账号 — data-sovereignty actions (export now; deletion
-            joins in the account-deletion PR). Kept as its own section
-            so「带走我的数据」is a first-class, findable right, not a
-            buried menu item. */}
-        <View style={styles.settingsListSection}>
-          <View style={styles.settingsList}>
-            <TouchableOpacity
-              style={styles.settingItem}
-              onPress={() => void handleExportDataPress()}
-              activeOpacity={0.7}
-              disabled={isExporting}
-            >
-              <View style={styles.settingItemContent}>
-                <View style={styles.settingItemLeft}>
-                  <View style={[styles.settingIconContainer, styles.blueIconContainer]}>
-                    <FontAwesome6 name="download" size={18} color={CLINICAL_COLORS.accent} />
-                  </View>
-                  <View style={styles.settingTextContainer}>
-                    <Text style={styles.settingTitle}>
-                      {isExporting ? '正在整理导出…' : '导出我的数据'}
-                    </Text>
-                    <Text style={styles.settingSubtitle}>
-                      下载全部档案、记录、报告清单与授权历史（JSON）
-                    </Text>
-                  </View>
-                </View>
-                <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-              </View>
-            </TouchableOpacity>
-
-            {deletion?.status === 'pending' ? (
-              <TouchableOpacity
-                style={styles.settingItem}
-                onPress={() => void handleCancelDeletion()}
-                activeOpacity={0.7}
-                disabled={isDeletionBusy}
-              >
-                <View style={styles.settingItemContent}>
-                  <View style={styles.settingItemLeft}>
-                    <View style={styles.settingIconContainer}>
-                      <FontAwesome6 name="rotate-left" size={18} color={CLINICAL_COLORS.warning} />
-                    </View>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={[styles.settingTitle, { color: CLINICAL_COLORS.warning }]}>
-                        取消注销申请
-                      </Text>
-                      <Text style={styles.settingSubtitle}>
-                        账号将于 {formatPurgeDate(deletion.scheduledPurgeAt)}{' '}
-                        删除，点此撤回并保留全部数据
-                      </Text>
-                    </View>
-                  </View>
-                  <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-                </View>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={styles.settingItem}
-                onPress={() => {
-                  setDeleteError(null);
-                  setDeleteConfirmPhone('');
-                  setIsDeleteModalVisible(true);
-                }}
-                activeOpacity={0.7}
-              >
-                <View style={styles.settingItemContent}>
-                  <View style={styles.settingItemLeft}>
-                    <View style={styles.settingIconContainer}>
-                      <FontAwesome6 name="user-xmark" size={18} color={CLINICAL_COLORS.danger} />
-                    </View>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={[styles.settingTitle, { color: CLINICAL_COLORS.danger }]}>
-                        注销账号
-                      </Text>
-                      <Text style={styles.settingSubtitle}>
-                        7 天冷静期后删除全部数据，期间可随时反悔
-                      </Text>
-                    </View>
-                  </View>
-                  <FontAwesome6 name="chevron-right" size={14} color={CLINICAL_COLORS.textMuted} />
-                </View>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
-        {/* 探索 · 即将上线 — pre-launch features live here instead of
-            occupying tab slots or floating as unreachable routes.
-            Every entry opens its existing placeholder screen, so the
-            promise is honest: visible, labeled, not yet functional. */}
-        <View style={styles.settingsListSection}>
-          <Text style={styles.exploreSectionTitle}>探索 · 即将上线</Text>
-          <View style={styles.settingsList}>
+        {/* 探索 · 即将上线 — five placeholder destinations that shipped
+            nothing yet. Listing them next to privacy, audit history and
+            account deletion made the whole page read as equally real,
+            so they now sit behind EXPO_PUBLIC_ENABLE_EXPLORE: the
+            screens and routes stay, only the discoverability is gated.
+            Flip the flag per-build as each one actually launches. */}
+        {isFeatureEnabled('explore') ? (
+          <ListGroup title="探索 · 即将上线">
             {(
               [
                 { title: '患者社区', icon: 'users', route: '/p-community' },
@@ -389,100 +371,51 @@ const SettingsScreen = () => {
                 { title: '康复经验分享', icon: 'heart-pulse', route: '/p-rehab_share' },
               ] as const
             ).map((item) => (
-              <TouchableOpacity
+              <Row
                 key={item.route}
-                style={styles.settingItem}
+                icon={item.icon}
+                label={item.title}
                 onPress={() => router.push(item.route)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.settingItemContent}>
-                  <View style={styles.settingItemLeft}>
-                    <View style={styles.settingIconContainer}>
-                      <FontAwesome6 name={item.icon} size={18} color={CLINICAL_COLORS.textMuted} />
-                    </View>
-                    <View style={styles.settingTextContainer}>
-                      <Text style={styles.settingTitle}>{item.title}</Text>
-                    </View>
-                  </View>
+                // A badge instead of a chevron: these rows do open, but
+                // what they open is a placeholder, and a chevron here
+                // would promise the same thing 隐私设置 promises.
+                accessory={
                   <View style={styles.comingSoonBadge}>
                     <Text style={styles.comingSoonBadgeText}>即将上线</Text>
                   </View>
-                </View>
-              </TouchableOpacity>
+                }
+              />
             ))}
-          </View>
-        </View>
+          </ListGroup>
+        ) : null}
 
-        {/* 退出登录 */}
-        <View style={styles.settingsListSection}>
-          <View style={styles.settingsList}>
-            <TouchableOpacity
-              style={styles.logoutItem}
-              onPress={handleLogoutPress}
-              activeOpacity={0.7}
-            >
-              <View style={styles.logoutItemContent}>
-                <FontAwesome6 name="right-from-bracket" size={18} color={CLINICAL_COLORS.danger} />
-                <Text style={styles.logoutText}>退出登录</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-        </View>
+        {/* 退出登录 — an outlined button rather than another list row:
+            it is an action, not a destination, and it should not be
+            one tap away from the rows above it. */}
+        <Button
+          label="退出登录"
+          icon="right-from-bracket"
+          variant="destructive"
+          fullWidth
+          disabled={isLoggingOut}
+          onPress={() => void handleLogoutPress()}
+        />
 
         {/* 版本信息 */}
-        <View style={styles.versionInfoSection}>
-          <View style={styles.versionInfo}>
-            <Text style={styles.versionText}>FSHD-openrd v1.0.0</Text>
-            <Text style={styles.copyrightText}>© 2024 FSHD-openrd. 保留所有权利</Text>
-          </View>
+        <View style={styles.versionInfo}>
+          <Text style={styles.versionText}>FSHD-openrd v1.0.0</Text>
+          <Text style={styles.copyrightText}>© 2024 FSHD-openrd. 保留所有权利</Text>
         </View>
       </ScrollView>
 
-      {/* 退出登录确认弹窗 */}
-      <Modal
-        visible={isLogoutModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={handleCancelLogout}
-      >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={handleModalOverlayPress}
-        >
-          <View style={styles.modalContainer}>
-            <TouchableOpacity
-              style={styles.modalContent}
-              activeOpacity={1}
-              onPress={() => {}} // 阻止事件冒泡
-            >
-              <View style={styles.modalIconContainer}>
-                <FontAwesome6 name="right-from-bracket" size={24} color={CLINICAL_COLORS.danger} />
-              </View>
-              <Text style={styles.modalTitle}>确认退出登录</Text>
-              <Text style={styles.modalMessage}>您确定要退出当前账户吗？</Text>
-              <View style={styles.modalButtonContainer}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={handleCancelLogout}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.cancelButtonText}>取消</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.confirmButton}
-                  onPress={handleConfirmLogout}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.confirmButtonText}>退出登录</Text>
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+      {/* 退出登录 uses the shared `confirm()` dialog — this screen used
+          to hand-roll its own Modal for it, which meant two dialog
+          implementations on one screen and no destructive treatment on
+          the affirmative button. 注销 below keeps a bespoke Modal only
+          because it needs a text field, which `confirm()` has no room
+          for.
 
-      {/* 注销确认：destructive path demands the registered phone
+          注销确认：destructive path demands the registered phone
           number retyped — a button tap alone can't erase a medical
           record. */}
       <Modal
@@ -491,56 +424,65 @@ const SettingsScreen = () => {
         animationType="fade"
         onRequestClose={() => setIsDeleteModalVisible(false)}
       >
-        <TouchableOpacity
+        {/* `accessible={false}` on both wrappers is load-bearing.
+            TouchableOpacity and Pressable default it to true, and an
+            accessible view swallows its subtree into a single element
+            on iOS — so this dialog announced itself as one node whose
+            synthesised label ran the title, the warning and both button
+            captions together, with the phone-number field below not
+            reachable at all. A screen-reader user could not complete
+            the confirmation, and a VoiceOver double-tap hit the scrim's
+            dismiss rather than anything inside. On the app's one
+            irreversible flow. */}
+        <Pressable
           style={styles.modalOverlay}
-          activeOpacity={1}
+          accessible={false}
           onPress={() => setIsDeleteModalVisible(false)}
         >
           <View style={styles.modalContainer}>
-            <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
-              <View style={styles.modalIconContainer}>
-                <FontAwesome6 name="user-xmark" size={24} color={CLINICAL_COLORS.danger} />
+            <Pressable accessible={false} onPress={() => {}}>
+              <View style={styles.modalContent} accessibilityViewIsModal>
+                <View style={styles.modalHead}>
+                  <Icon name="user-xmark" size={16} color={COLOR.alert} />
+                  <Text style={styles.modalTitle}>确认注销账号</Text>
+                </View>
+                <Text style={styles.modalMessage}>
+                  注销后将进入 7 天冷静期，期间可随时取消；到期后账号与全部健康数据将被永久删除。
+                  建议先「导出我的数据」。{'\n\n'}请输入注册手机号确认：
+                </Text>
+                <TextInput
+                  style={styles.deleteConfirmInput}
+                  value={deleteConfirmPhone}
+                  onChangeText={(value) => {
+                    setDeleteConfirmPhone(value);
+                    setDeleteError(null);
+                  }}
+                  placeholder={user?.phoneNumber ?? '注册手机号'}
+                  placeholderTextColor={COLOR.inkFaint}
+                  keyboardType="phone-pad"
+                  accessibilityLabel="注册手机号"
+                  accessibilityHint="输入注册手机号以确认注销"
+                  autoFocus
+                />
+                {deleteError ? <Text style={styles.deleteErrorText}>{deleteError}</Text> : null}
+                <View style={styles.modalButtonContainer}>
+                  <Button
+                    label="再想想"
+                    variant="tinted"
+                    onPress={() => setIsDeleteModalVisible(false)}
+                  />
+                  <Button
+                    label="申请注销"
+                    variant="destructive"
+                    busy={isDeletionBusy}
+                    accessibilityHint="提交注销申请，进入 7 天冷静期"
+                    onPress={() => void handleRequestDeletion()}
+                  />
+                </View>
               </View>
-              <Text style={styles.modalTitle}>确认注销账号</Text>
-              <Text style={styles.modalMessage}>
-                注销后将进入 7 天冷静期，期间可随时取消；到期后账号与全部健康数据将被永久删除。
-                建议先「导出我的数据」。{'\n\n'}请输入注册手机号确认：
-              </Text>
-              <TextInput
-                style={styles.deleteConfirmInput}
-                value={deleteConfirmPhone}
-                onChangeText={(value) => {
-                  setDeleteConfirmPhone(value);
-                  setDeleteError(null);
-                }}
-                placeholder={user?.phoneNumber ?? '注册手机号'}
-                placeholderTextColor={CLINICAL_COLORS.textMuted}
-                keyboardType="phone-pad"
-                autoFocus
-              />
-              {deleteError ? <Text style={styles.deleteErrorText}>{deleteError}</Text> : null}
-              <View style={styles.modalButtonContainer}>
-                <TouchableOpacity
-                  style={styles.cancelButton}
-                  onPress={() => setIsDeleteModalVisible(false)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.cancelButtonText}>再想想</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.confirmButton, isDeletionBusy && { opacity: 0.6 }]}
-                  onPress={() => void handleRequestDeletion()}
-                  activeOpacity={0.7}
-                  disabled={isDeletionBusy}
-                >
-                  <Text style={styles.confirmButtonText}>
-                    {isDeletionBusy ? '提交中…' : '申请注销'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
+            </Pressable>
           </View>
-        </TouchableOpacity>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );

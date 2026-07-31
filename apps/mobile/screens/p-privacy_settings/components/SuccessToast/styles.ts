@@ -1,5 +1,5 @@
+import { COLOR } from '../../../../lib/design';
 import { StyleSheet, Platform } from 'react-native';
-import { CLINICAL_COLORS } from '../../../../lib/clinical-visuals';
 
 export default StyleSheet.create({
   toastContainer: {
@@ -12,15 +12,15 @@ export default StyleSheet.create({
   toastContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: CLINICAL_COLORS.panel,
+    backgroundColor: COLOR.surface,
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
     ...Platform.select({
       ios: {
-        shadowColor: CLINICAL_COLORS.accent,
+        shadowColor: COLOR.accent,
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 0.1,
         shadowRadius: 32,
@@ -32,7 +32,7 @@ export default StyleSheet.create({
   },
   toastMessage: {
     fontSize: 14,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     marginLeft: 8,
   },
 });

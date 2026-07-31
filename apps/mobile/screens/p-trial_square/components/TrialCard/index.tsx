@@ -1,8 +1,6 @@
-
-
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Icon from '../../../common/Icon';
 import styles from './styles';
 
 interface TrialData {
@@ -51,11 +49,7 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
   };
 
   return (
-    <TouchableOpacity
-      style={styles.container}
-      onPress={onPress}
-      activeOpacity={0.8}
-    >
+    <TouchableOpacity style={styles.container} onPress={onPress} activeOpacity={0.8}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>{trial.title}</Text>
@@ -70,9 +64,7 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
           </View>
         </View>
         <View style={[styles.matchBadge, getMatchBadgeStyle()]}>
-          <Text style={[styles.matchText, getMatchTextStyle()]}>
-            {trial.matchPercentage}%匹配
-          </Text>
+          <Text style={[styles.matchText, getMatchTextStyle()]}>{trial.matchPercentage}%匹配</Text>
         </View>
       </View>
 
@@ -97,19 +89,15 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
       <View style={styles.footer}>
         <View style={styles.footerLeft}>
           <View style={styles.infoItem}>
-            <FontAwesome6 name="location-dot" size={10} color="rgba(255, 255, 255, 0.5)" />
+            <Icon name="location-dot" size={10} color="rgba(255, 255, 255, 0.5)" />
             <Text style={styles.infoText}>{trial.location}</Text>
           </View>
           <View style={styles.infoItem}>
-            <FontAwesome6 name="calendar" size={10} color="rgba(255, 255, 255, 0.5)" />
+            <Icon name="calendar" size={10} color="rgba(255, 255, 255, 0.5)" />
             <Text style={styles.infoText}>{trial.duration}</Text>
           </View>
         </View>
-        <TouchableOpacity
-          style={styles.applyButton}
-          onPress={handleApplyPress}
-          activeOpacity={0.8}
-        >
+        <TouchableOpacity style={styles.applyButton} onPress={handleApplyPress} activeOpacity={0.8}>
           <Text style={styles.applyButtonText}>申请入组</Text>
         </TouchableOpacity>
       </View>
@@ -118,4 +106,3 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
 };
 
 export default TrialCard;
-

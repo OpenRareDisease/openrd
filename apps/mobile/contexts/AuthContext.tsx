@@ -10,7 +10,8 @@ import {
   registerOnUnauthorized,
   setAuthToken,
 } from '../lib/api';
-import { CLINICAL_COLORS } from '../lib/clinical-visuals';
+import { COLOR } from '../lib/design';
+import { PATIENT_SCOPED_SECURE_KEYS } from '../lib/draft-keys';
 import { getSessionValue, removeSessionValue, setSessionValue } from '../lib/session-storage';
 
 type AuthUser = AuthResponse['user'];
@@ -22,6 +23,13 @@ interface AuthContextValue {
   setSession: (session: AuthResponse) => Promise<void>;
   logout: () => Promise<void>;
 }
+
+const splashStyle = {
+  flex: 1,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  backgroundColor: COLOR.paper,
+};
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
@@ -72,13 +80,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // carries the user's RAG snippets and answer history; leaving it
     // around for the next signed-in user is a real privacy harm path
     // on shared devices.
-    await Promise.all([
+    //
+    // `allSettled`, not `all`: the cache and draft sweeps used to
+    // swallow their own rejections with `.catch(() => undefined)`, so
+    // a failed purge left another patient's chat history on a shared
+    // device and told nobody. Every removal now reports, and one
+    // failure no longer hides the outcome of the others.
+    const results = await Promise.allSettled([
       setAuthToken(null),
       removeSessionValue(AUTH_USER_STORAGE_KEY),
       // multiRemove ignores missing keys so this is safe even when a
       // cache hasn't been written this session.
-      AsyncStorage.multiRemove(PATIENT_SCOPED_CACHE_KEYS).catch(() => undefined),
+      AsyncStorage.multiRemove(PATIENT_SCOPED_CACHE_KEYS),
+      // SecureStore drafts need their own removal path — multiRemove
+      // above only touches AsyncStorage and silently misses these.
+      ...PATIENT_SCOPED_SECURE_KEYS.map((key) => removeSessionValue(key)),
     ]);
+
+    if (results.some((result) => result.status === 'rejected')) {
+      // Deliberately keep the in-memory session on failure. Clearing
+      // it would send the app to the login screen — which unmounts
+      // every surface that could tell the user that their credential
+      // or their cached answers are still sitting on this device. The
+      // caller stays where it is, shows the error, and can retry;
+      // every removal above is idempotent.
+      throw new Error('本地登录信息或缓存未能全部清除，请重试。');
+    }
+
     setToken(null);
     setUser(null);
   };
@@ -90,7 +118,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // leave the app in a stale "logged in" UI until the next manual
   // logout.
   useEffect(() => {
-    registerOnUnauthorized(() => logout());
+    registerOnUnauthorized(async () => {
+      try {
+        await logout();
+      } finally {
+        // The server has already invalidated this session, so the UI
+        // must not stay signed in even when local cleanup failed —
+        // unlike the manual logout above, there is nothing to retry
+        // and no usable session to preserve.
+        setToken(null);
+        setUser(null);
+      }
+    });
     return () => {
       registerOnUnauthorized(null);
     };
@@ -111,17 +150,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     [token, user, isHydrated],
   );
 
+  // The very first thing the app paints. It was the legacy palette's
+  // #F8F2EA and #6E9F93, so every launch showed the old sand-and-sage
+  // for a beat and then snapped to paper-and-teal on the first real
+  // render — the app visibly changing its mind about what it looks
+  // like before the user has touched anything.
   if (!isHydrated) {
     return (
-      <View
-        style={{
-          flex: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: CLINICAL_COLORS.background,
-        }}
-      >
-        <ActivityIndicator size="large" color={CLINICAL_COLORS.accent} />
+      <View style={splashStyle}>
+        <ActivityIndicator size="large" color={COLOR.accent} />
       </View>
     );
   }

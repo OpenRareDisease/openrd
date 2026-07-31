@@ -1,529 +1,321 @@
 import { Platform, StyleSheet } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
-const cardShadow = Platform.select({
-  ios: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.18,
-    shadowRadius: 30,
-  },
-  android: {
-    elevation: 8,
-  },
+/**
+ * 报告详情 — re-pitched on lib/design.ts.
+ *
+ * What this replaces
+ * ------------------
+ * Every block on this screen used to be a 22–24pt-radius, bordered,
+ * heavily shadowed panel floating on a gradient page, and the two
+ * things a patient actually comes here to read — the OCR fields and
+ * the extracted highlights — were each broken into a grid of tinted
+ * rounded tiles nested *inside* those panels. Labels and values were
+ * within 2pt of each other in size, so nothing read as data.
+ *
+ * The stance here
+ * ---------------
+ *  - One filled surface: the report identity block at the top. Every
+ *    other section is set directly on the paper and separated by a
+ *    full-width hairline.
+ *  - **The field list is a table.** A fixed label column, a value
+ *    column with tabular figures, one hairline per row. That is what
+ *    "核对识别出来的字段" looks like on paper, and it lets the eye run
+ *    down either column.
+ *  - Radii collapse to 12 / 10. The pill shape survives only on the
+ *    parse-status chip, where the shape actually means "state".
+ *  - Shadows are gone entirely — nothing on this screen floats.
+ */
+
+/** Raw OCR/JSON is machine output; a monospace column makes the
+ *  structure legible instead of just small. */
+const MONO = Platform.select({
+  ios: 'Menlo',
+  android: 'monospace',
+  default: 'monospace',
 });
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.overlay,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  eyebrow: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    letterSpacing: 1.2,
-  },
-  headerTitle: {
-    marginTop: 2,
-    color: CLINICAL_COLORS.text,
-    fontSize: 18,
-    fontWeight: '800',
-  },
+
+  /* Header — supplied by ScreenHeader, which already renders the row,
+     the gutter and the title (deliberately smaller than the report
+     name below it: this line is navigation context, the report name is
+     the subject). ------------------------------------------------- */
   content: {
-    paddingHorizontal: 20,
-    paddingBottom: 24,
+    paddingHorizontal: SPACE.gutter,
+    paddingBottom: SPACE.xxl,
   },
-  heroCard: {
-    borderRadius: 24,
-    padding: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    marginBottom: 14,
-    ...cardShadow,
+
+  /* Report identity — the one filled surface on this screen -------- */
+  hero: {
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
   },
   heroTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 14,
+    gap: SPACE.sm,
+    marginBottom: SPACE.sm,
   },
-  kindPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.accentStrong,
+  /** A genuine eyebrow: the report *kind* is not in the report name. */
+  kindEyebrow: {
+    ...TYPE.micro,
+    color: COLOR.accent,
   },
-  kindPillText: {
-    color: CLINICAL_COLORS.accentStrong,
-    fontSize: 12,
+  /** Parse state — the one place a pill still earns its shape. */
+  statusChip: {
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.lineStrong,
+    backgroundColor: COLOR.surface,
+  },
+  statusChipText: {
+    fontSize: 11,
+    lineHeight: 15,
     fontWeight: '700',
+    color: COLOR.inkSoft,
   },
-  statusText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '600',
+  statusChipGood: {
+    borderColor: 'rgba(47, 122, 92, 0.35)',
+    backgroundColor: COLOR.goodWash,
+  },
+  statusChipGoodText: {
+    color: COLOR.good,
+  },
+  statusChipWarn: {
+    borderColor: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+  },
+  statusChipWarnText: {
+    color: COLOR.warn,
+  },
+  statusChipAlert: {
+    borderColor: 'rgba(180, 71, 47, 0.35)',
+    backgroundColor: COLOR.alertWash,
+  },
+  statusChipAlertText: {
+    color: COLOR.alert,
   },
   heroTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 22,
-    fontWeight: '800',
-    lineHeight: 28,
+    ...TYPE.title,
   },
   heroDescription: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    lineHeight: 18,
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
+    color: COLOR.inkFaint,
   },
+  /** Was a tinted box inside the tinted card. Now a hairline-topped
+   *  row inside the same surface — no second container. */
   processingRow: {
-    marginTop: 12,
+    marginTop: SPACE.md,
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.accentLine,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+    gap: SPACE.sm,
   },
   processingText: {
     flex: 1,
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
-    lineHeight: 19,
+    ...TYPE.caption,
+    color: COLOR.inkSoft,
   },
+  /** Shared spacer for inline notices, replacing ad-hoc inline styles. */
+  noticeBlock: {
+    marginTop: SPACE.md,
+  },
+
+  /* Extracted highlights — bare label/value pairs, no tiles -------- */
   highlightGrid: {
-    marginTop: 16,
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.accentLine,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    rowGap: SPACE.md,
+    columnGap: SPACE.lg,
   },
   highlightItem: {
-    width: '47%',
-    padding: 12,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.panelMuted,
+    flexBasis: '45%',
+    flexGrow: 1,
+    gap: 2,
   },
   highlightLabel: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
+    ...TYPE.caption,
   },
+  /** The value outweighs its label — that inversion is the whole
+   *  point of a clinical readout. */
   highlightValue: {
-    marginTop: 6,
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '700',
+    ...TYPE.metricSmall,
+    fontSize: 17,
+    lineHeight: 23,
   },
-  card: {
-    borderRadius: 22,
-    padding: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    marginBottom: 14,
-    ...cardShadow,
+
+  /* Sections — hairline-separated, set on the page ----------------- */
+  section: {
+    marginTop: SPACE.xl,
+    paddingTop: SPACE.xl,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    gap: SPACE.sm,
+  },
+  /** Sits on top of the section's own 8pt gap — an action reads as
+   *  detached from the paragraph that explains it. */
+  actionBlock: {
+    marginTop: SPACE.xs,
   },
   sectionHeader: {
-    marginBottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: SPACE.md,
   },
-  cardTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 16,
-    fontWeight: '800',
+  sectionTitle: {
+    ...TYPE.title,
   },
-  toggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  toggleChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.overlay,
-  },
-  toggleChipActive: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  toggleChipText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  toggleChipTextActive: {
-    color: CLINICAL_COLORS.text,
-  },
+
+  /* MRI view switch ------------------------------------------------ */
   tagWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
+    gap: SPACE.sm,
+    marginTop: SPACE.md,
   },
   summaryTag: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.accentSurface,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: RADIUS.control,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
   },
   summaryTagText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
+    ...TYPE.caption,
+    color: COLOR.inkSoft,
   },
-  structuredGrid: {
+
+  /* OCR fields — an actual table ----------------------------------- */
+  fieldGroup: {
+    marginTop: SPACE.sm,
+  },
+  fieldGroupTitle: {
+    ...TYPE.label,
+    color: COLOR.inkMuted,
+    marginBottom: SPACE.xs,
+  },
+  /** The table's own top rule; each row carries the rule below it, so
+   *  the block closes cleanly. */
+  fieldTable: {
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.lineStrong,
+  },
+  fieldRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  structuredSection: {
-    marginTop: 14,
-  },
-  structuredSectionTitle: {
-    marginBottom: 10,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  structuredItem: {
-    width: '47%',
-    padding: 12,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.panelMuted,
-  },
-  structuredLabel: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-  },
-  structuredValue: {
-    marginTop: 6,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '700',
-  },
-  systemStack: {
-    marginTop: 12,
-    gap: 12,
-  },
-  systemCard: {
-    borderRadius: 22,
-    padding: 16,
-    backgroundColor: 'rgba(248, 242, 234, 0.78)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  systemCardTop: {
-    flexDirection: 'row',
-    gap: 12,
     alignItems: 'flex-start',
+    gap: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    borderBottomWidth: HAIRLINE,
+    borderBottomColor: COLOR.line,
   },
-  systemIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+  /** Fixed width so the value column starts at the same x on every
+   *  row — that alignment is what makes it read as a table. */
+  fieldLabel: {
+    ...TYPE.caption,
+    width: 92,
   },
-  systemCardCopy: {
+  fieldValue: {
     flex: 1,
-  },
-  systemBadgeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 10,
-  },
-  systemStateBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  systemStateBadgeText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  systemCoverageChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-  },
-  systemCoverageChipText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  systemTitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    alignItems: 'flex-start',
-  },
-  systemTitle: {
-    flex: 1,
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  systemDate: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  systemSummary: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  systemMetaGrid: {
-    marginTop: 14,
-    flexDirection: 'row',
-    gap: 10,
-  },
-  systemMetaCard: {
-    flex: 1,
-    borderRadius: 16,
-    padding: 12,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  systemMetaLabel: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  systemMetaValue: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.text,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  systemMetricHeroGrid: {
-    marginTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  systemMetricHeroCard: {
-    width: '47%',
-    minHeight: 84,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  systemMetricHeroLabel: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  systemMetricHeroValue: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.text,
-    fontSize: 17,
-    lineHeight: 23,
-    fontWeight: '800',
-  },
-  systemSectionStack: {
-    marginTop: 16,
-    gap: 14,
-  },
-  systemSectionBlock: {
-    borderTopWidth: 1,
-    borderTopColor: CLINICAL_COLORS.border,
-    paddingTop: 14,
-  },
-  systemSectionTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  systemMetricGrid: {
-    marginTop: 12,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  systemMetricCard: {
-    width: '47%',
-    minHeight: 74,
-    padding: 12,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.panelMuted,
-  },
-  systemMetricLabel: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  systemMetricValue: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '800',
-  },
-  systemExpandAction: {
-    marginTop: 14,
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  systemExpandText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  button: {
-    height: 46,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_COLORS.accent,
-  },
-  buttonDisabled: {
-    opacity: 0.72,
-  },
-  buttonText: {
-    color: CLINICAL_COLORS.text,
-    fontWeight: '800',
-  },
-  dangerCard: {
-    borderColor: CLINICAL_TINTS.dangerBorder,
-  },
-  dangerButton: {
-    marginTop: 14,
-    backgroundColor: CLINICAL_COLORS.danger,
-  },
-  dangerButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-  },
-  summaryText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 14,
+    ...TYPE.bodyStrong,
+    fontSize: 14.5,
     lineHeight: 21,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+
+  /* Actions -------------------------------------------------------- */
+  button: {
+    minHeight: MIN_TOUCH_TARGET,
+    borderRadius: RADIUS.control,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACE.lg,
+    backgroundColor: COLOR.accent,
+  },
+
+  /* Text ----------------------------------------------------------- */
+  summaryText: {
+    ...TYPE.body,
+    color: COLOR.ink,
   },
   smallText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...TYPE.caption,
   },
+
   codeBlock: {
-    marginTop: 10,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.28)',
+    marginTop: SPACE.md,
+    ...SURFACE.well,
+    padding: SPACE.md,
   },
   codeText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    lineHeight: 16,
+    fontFamily: MONO,
+    fontSize: 11.5,
+    lineHeight: 17,
+    color: COLOR.inkSoft,
   },
-  toggleLink: {
-    marginTop: 8,
-  },
-  toggleLinkText: {
-    color: CLINICAL_COLORS.accent,
-    fontSize: 13,
-    fontWeight: '700',
-  },
+
+  /** A text link, sized to stay tappable. */
   inlineState: {
-    marginTop: 4,
+    marginTop: SPACE.xl,
     alignItems: 'center',
-    gap: 8,
+    gap: SPACE.sm,
   },
+
+  /* Correction sheet ----------------------------------------------- */
   correctOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(24, 34, 43, 0.45)',
+    backgroundColor: 'rgba(23, 39, 46, 0.45)',
     justifyContent: 'center',
-    padding: 20,
+    padding: SPACE.gutter,
   },
   correctSheet: {
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    padding: 18,
+    ...SURFACE.card,
+    padding: SPACE.lg,
     maxHeight: '82%',
-    gap: 8,
+    gap: SPACE.sm,
   },
   correctList: {
-    marginTop: 4,
+    marginTop: SPACE.sm,
   },
   correctRow: {
-    marginBottom: 10,
+    marginBottom: SPACE.md,
+    gap: SPACE.xs,
   },
   correctLabel: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 4,
+    ...TYPE.caption,
   },
   correctInput: {
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
-    backgroundColor: 'rgba(248, 242, 234, 0.6)',
+    ...SURFACE.well,
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm,
+    fontSize: 15,
+    color: COLOR.ink,
   },
   correctErrorText: {
-    color: CLINICAL_COLORS.danger,
-    fontSize: 12,
+    ...TYPE.caption,
+    color: COLOR.alert,
   },
   correctActions: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 4,
-  },
-  correctCancel: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-  },
-  correctCancelText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  correctSubmit: {
-    flex: 1,
+    gap: SPACE.sm,
+    marginTop: SPACE.xs,
   },
 });

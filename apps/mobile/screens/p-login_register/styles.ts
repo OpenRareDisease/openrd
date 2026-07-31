@@ -1,457 +1,336 @@
-import { StyleSheet, Dimensions, Platform } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet, Dimensions } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, ELEVATION, HAIRLINE, SPACE, SURFACE, TYPE } from '../../lib/design';
 
 const { width } = Dimensions.get('window');
 
+/**
+ * 登录 / 注册 — re-pitched on lib/design.ts.
+ *
+ * This is the first screen every patient sees, and it was carrying the
+ * full set of generic-template tells: a heartbeat glyph inside a 64pt
+ * tinted rounded square with a teal drop shadow, a gradient page under
+ * everything, a centred hero, 48pt of vertical air before any content,
+ * a segmented pill switcher, and status icons in tinted circles.
+ *
+ * Now: the page is paper, the wordmark is left-aligned to the same
+ * gutter as the form so the whole screen sits on one axis, the mode
+ * switch is an underlined tab strip on a hairline, and inputs are
+ * sunken wells rather than beige panels. The accent is spent on two
+ * things only — the logo glyph and the primary button.
+ *
+ * `index.tsx` is unchanged this pass, so two things are handled here
+ * rather than removed at the source; both are flagged where they occur:
+ * the page `<LinearGradient>` and the primary button's gradient fill.
+ */
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
   backgroundGradient: {
     flex: 1,
   },
+  /**
+   * The page gradient is still mounted in index.tsx (a <LinearGradient>
+   * wrapping everything). Painting its only child opaque paper covers
+   * the gradient completely, which is the whole point: a gradient page
+   * drags down the contrast of every element sitting on it. Once the
+   * screen drops <LinearGradient> for a plain View this can go back to
+   * a bare `flex: 1`.
+   */
   keyboardAvoidingView: {
     flex: 1,
+    backgroundColor: COLOR.paper,
   },
   scrollView: {
     flex: 1,
   },
   scrollViewContent: {
     flexGrow: 1,
-    paddingHorizontal: 24,
+    paddingHorizontal: SPACE.gutter,
+    paddingBottom: SPACE.xl,
   },
 
-  // Header styles
+  /* Masthead ------------------------------------------------------ */
+  // Was 48pt of padding top and bottom around a centred logo — a third
+  // of the first screen spent on decoration. Left-aligned and tightened
+  // so the form starts above the fold on a small phone.
   header: {
-    alignItems: 'center',
-    paddingVertical: 48,
+    alignItems: 'stretch',
+    paddingTop: SPACE.sm,
+    paddingBottom: SPACE.xl,
   },
   headerTopRow: {
     width: '100%',
-    marginBottom: 24,
+    marginBottom: SPACE.xl,
     alignItems: 'flex-start',
   },
+  // Left-aligned on the same axis as the labels and inputs below.
   logoContainer: {
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
   logoWrapper: {
-    marginBottom: 16,
+    marginBottom: SPACE.md,
   },
+  // Was a 64pt tinted, bordered, teal-shadowed rounded square around a
+  // 24pt glyph — the single most template-looking element on the app.
+  // Now it only reserves space for the icon; the mark is the mark.
   logoCard: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
+    width: 28,
+    height: 28,
+    alignItems: 'flex-start',
     justifyContent: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
   },
   logoIcon: {
-    color: CLINICAL_COLORS.accent,
+    color: COLOR.accent,
   },
+  // The wordmark is set in ink, not accent: the accent is worth more
+  // pointing at the primary action than tinting a name that is already
+  // the largest thing on the screen.
   appName: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: CLINICAL_COLORS.accent,
-    marginBottom: 8,
+    ...TYPE.display,
+    marginBottom: SPACE.xs,
   },
   appSlogan: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
 
-  // Main content styles
+  /* Main content -------------------------------------------------- */
   mainContent: {
     flex: 1,
   },
 
-  // Tab switcher styles
+  /* Mode switch — underlined tabs, not a segmented pill ------------ */
+  // A two-up rounded segmented control at the top of a login form is
+  // the shape every generated sign-in screen shares. A tab strip on a
+  // hairline says the same thing with a rule instead of a box.
+  /** SegmentedControl draws its own track, so the underline and the
+   *  row layout that used to separate two bare tab buttons are gone —
+   *  they were leaving a 40pt hole between the tabs and the form. */
   tabSwitcher: {
-    flexDirection: 'row',
-    marginBottom: 24,
+    marginBottom: SPACE.xl,
   },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  tabButtonLeft: {
-    borderTopLeftRadius: 8,
-    borderBottomLeftRadius: 8,
-    borderRightWidth: 0,
-  },
-  tabButtonRight: {
-    borderTopRightRadius: 8,
-    borderBottomRightRadius: 8,
-    borderLeftWidth: 0,
-  },
-  tabButtonActive: {
-    backgroundColor: CLINICAL_COLORS.accent,
-    borderColor: CLINICAL_COLORS.accent,
-  },
-  tabButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.textSoft,
-  },
-  tabButtonTextActive: {
-    color: CLINICAL_COLORS.text,
-  },
+  // Retained for index.tsx's style arrays. The joined-segment corner
+  // radii they used to carry are gone with the segmented control; the
+  // tabs are now separated by a gap on tabSwitcher.
+  // Weight and ink both change, so the active tab is not signalled by
+  // colour alone.
 
-  // Form styles
+  /* Form ---------------------------------------------------------- */
   formContainer: {
-    marginBottom: 24,
+    marginBottom: SPACE.lg,
   },
   inputContainer: {
-    marginBottom: 16,
+    marginBottom: SPACE.lg,
   },
   fieldErrorText: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 18,
-    color: CLINICAL_COLORS.danger,
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
+    color: COLOR.alert,
   },
+  // A real section heading (账号信息 / 重置密码), so it gets heading
+  // size rather than the 14pt semibold it shared with the field labels.
   registerSectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 12,
-    marginTop: 8,
+    ...TYPE.title,
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.md,
   },
   inputLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.textSoft,
-    marginBottom: 8,
+    ...TYPE.label,
+    marginBottom: SPACE.sm,
   },
-  fieldHintText: {
-    marginTop: 8,
-    fontSize: 12,
-    lineHeight: 18,
-    color: CLINICAL_COLORS.textMuted,
-  },
+  // Inputs are sunken wells rather than beige panels: a field should
+  // read as a place to put something, and the page keeps the lighter
+  // value so the wells recede.
   textInput: {
+    ...SURFACE.well,
     width: '100%',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    color: CLINICAL_COLORS.text,
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    color: COLOR.ink,
     fontSize: 16,
   },
-  multilineTextInput: {
-    minHeight: 88,
-    paddingTop: 12,
-  },
-  pickerRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  pickerColumn: {
-    flex: 1,
-  },
-  pickerWrapper: {
-    width: '100%',
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    overflow: 'hidden',
-  },
-  picker: {
-    width: '100%',
-    color: CLINICAL_COLORS.text,
-    backgroundColor: CLINICAL_COLORS.panel,
-  },
 
-  identityRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  identityButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_COLORS.panel,
-  },
-  identityButtonActive: {
-    borderColor: CLINICAL_COLORS.accent,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  identityButtonText: {
-    fontSize: 13,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  identityButtonTextActive: {
-    color: CLINICAL_COLORS.text,
-    fontWeight: '600',
-  },
-  choiceRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  choiceButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: CLINICAL_COLORS.panel,
-  },
-  choiceButtonActive: {
-    borderColor: CLINICAL_COLORS.accent,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  choiceButtonText: {
-    fontSize: 13,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  choiceButtonTextActive: {
-    color: CLINICAL_COLORS.text,
-    fontWeight: '600',
-  },
+  /* Identity / login-method choice -------------------------------- */
+  // Border, fill and weight all move on selection — never colour alone.
 
-  // Password input styles
-  passwordInputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    borderRadius: 8,
-  },
-  passwordInput: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: CLINICAL_COLORS.text,
-    fontSize: 16,
-  },
-  passwordToggleButton: {
-    paddingHorizontal: 12,
-  },
-
-  // Verification code styles
+  /* Verification code --------------------------------------------- */
   verificationCodeWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: SPACE.sm,
   },
   verificationCodeInput: {
+    ...SURFACE.well,
     flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    color: CLINICAL_COLORS.text,
+    // Was padding-only (~44pt). Brought up to the floor like every
+    // other field on the screen.
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    color: COLOR.ink,
     fontSize: 16,
   },
+  /** Sits at the end of the code field's row. */
   getCodeButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.accent,
+    marginLeft: SPACE.sm,
   },
-  getCodeButtonDisabled: {
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  getCodeButtonText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.accent,
-  },
+  // Dimming the whole button carries the label with it — the countdown
+  // text has no disabled style of its own in index.tsx.
 
-  // Primary button styles
-  primaryButton: {
-    borderRadius: 8,
-    overflow: 'hidden',
-    marginTop: 8,
+  /* Password fields ----------------------------------------------- */
+  passwordInputWrapper: {
+    ...SURFACE.well,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: SPACE.xs,
   },
-  primaryButtonDisabled: {
-    opacity: 0.6,
+  passwordInput: {
+    flex: 1,
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    color: COLOR.ink,
+    fontSize: 16,
   },
-  primaryButtonGradient: {
-    paddingVertical: 10,
+  // Was a bare 42x17 glyph — the smallest target on the first screen
+  // every patient sees. Now a real button.
+  passwordToggleButton: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-  },
 
-  // Forgot password styles
+  /* Primary action ------------------------------------------------ */
+  /** Button owns the fill, radius and press response. */
+  // Was ink-on-teal, which reads as a disabled button and fails contrast
+  // over the darker end of the fill.
+
+  /* Secondary links ----------------------------------------------- */
   forgotPasswordContainer: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginBottom: SPACE.lg,
   },
-  forgotPasswordText: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.accent,
-  },
+  // The tappable area belongs on the Touchable, not its wrapper —
+  // padding the parent View leaves the link itself 70x20.
 
-  // Agreement styles
+  /* Agreement ----------------------------------------------------- */
+  // A rule instead of 32pt of blank space: the legal line is a footer,
+  // and a hairline says so in 1px.
   agreement: {
     alignItems: 'center',
-    marginBottom: 32,
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.xl,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  agreementLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
   },
   agreementText: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textMuted,
+    ...TYPE.caption,
     textAlign: 'center',
-    lineHeight: 20,
   },
   agreementLink: {
-    color: CLINICAL_COLORS.accent,
+    color: COLOR.accent,
+    fontWeight: '600',
   },
 
-  // Modal styles
+  /* Modals -------------------------------------------------------- */
   modalOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: CLINICAL_TINTS.modalOverlay,
+    // Ink at low alpha — the scrim should read as the page dimming, not
+    // as a grey wash of its own.
+    backgroundColor: 'rgba(23, 39, 46, 0.32)',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1000,
   },
   modalContainer: {
-    marginHorizontal: 24,
-    maxWidth: width - 48,
+    marginHorizontal: SPACE.gutter,
+    maxWidth: width - SPACE.gutter * 2,
     width: '100%',
   },
+  // A modal is one of the few things that genuinely floats, so it keeps
+  // an elevation — but the shared neutral one, not a teal-tinted glow.
   modalContent: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    ...SURFACE.card,
+    padding: SPACE.lg,
     alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    ...ELEVATION.button,
   },
   modalIconContainer: {
-    marginBottom: 12,
+    marginBottom: SPACE.md,
   },
+  // Both were 40pt tinted circles behind a 20pt glyph. The glyph is
+  // already coloured by index.tsx, so the disc was pure decoration;
+  // these now just reserve the space.
   errorIconWrapper: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_TINTS.dangerSoft,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
   },
   successIconWrapper: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_TINTS.successSoft,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
+    ...TYPE.title,
+    marginBottom: SPACE.sm,
   },
   modalMessage: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.body,
     textAlign: 'center',
-    marginBottom: 16,
-    lineHeight: 20,
-  },
-  modalButton: {
-    width: '100%',
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalButtonText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
+    marginBottom: SPACE.lg,
   },
 
-  // Agreement modal styles
+  /* Agreement modal ----------------------------------------------- */
   agreementModalContent: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    ...SURFACE.card,
+    padding: SPACE.lg,
     maxHeight: 384,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    ...ELEVATION.button,
   },
+  agreementModalClose: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Pull the 48pt hit box back so the glyph, not the box, lines up
+    // with the panel's padding. The target itself is untouched.
+    marginRight: -SPACE.md,
+  },
+  // The header rule doubles as the scroll boundary for the long legal
+  // text below it.
   agreementModalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: SPACE.md,
+    paddingBottom: SPACE.md,
+    borderBottomWidth: HAIRLINE,
+    borderBottomColor: COLOR.line,
   },
   agreementModalTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.title,
+    flex: 1,
   },
   agreementModalScrollView: {
     maxHeight: 320,
   },
   agreementModalText: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
-    lineHeight: 22,
+    ...TYPE.body,
   },
 });

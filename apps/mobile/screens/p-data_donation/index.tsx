@@ -1,18 +1,22 @@
+import { COLOR } from '../../lib/design';
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Button from '../common/Button';
+import ToggleSwitch from '../common/ToggleSwitch';
+import Icon from '../common/Icon';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import styles from './styles';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+
 import {
   ApiError,
   getMySharingPreferences,
   updateMySharingPreferences,
   type SharingPreferences,
 } from '../../lib/api';
-import ScreenBackButton from '../common/ScreenBackButton';
+import ScreenHeader from '../common/ScreenHeader';
+import { useAppDialog } from '../common/feedback/AppDialog';
 
 /**
  * Data donation screen.
@@ -31,13 +35,17 @@ import ScreenBackButton from '../common/ScreenBackButton';
  */
 const DataDonationScreen = () => {
   const router = useRouter();
+  const { confirm, notify } = useAppDialog();
   const [prefs, setPrefs] = useState<SharingPreferences | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
+  // A confirmation is open. Both entry points (the switch and the
+  // 立即开启 button) check it, so a second press can't stack a second
+  // dialog and leave the first promise unresolved.
+  const [isConfirming, setIsConfirming] = useState(false);
   const [isSuccessToastVisible, setIsSuccessToastVisible] = useState(false);
 
   const isDonationEnabled = Boolean(prefs?.flags?.dataDonation);
@@ -71,27 +79,43 @@ const DataDonationScreen = () => {
     void load();
   }, [load]);
 
-  const handleDonationToggle = () => {
-    if (isSubmitting) return;
-    if (!isDonationEnabled) {
-      setIsConfirmModalVisible(true);
-    } else {
-      void toggleDonation(false);
+  /**
+   * Ask before either direction, then apply.
+   *
+   * Turning donation *off* used to fire straight from the switch with
+   * no confirmation at all — a revocation of a research grant, one
+   * stray press away, on a control sized for a fingertip. It now asks,
+   * with the destructive treatment, and says the one thing a patient
+   * cannot undo here: data already merged into the research set stays
+   * there.
+   */
+  const requestToggle = async (enable: boolean) => {
+    if (isLoading || isSubmitting || isConfirming) return;
+
+    setIsConfirming(true);
+    let confirmed = false;
+    try {
+      confirmed = enable
+        ? await confirm({
+            title: '确认开启数据捐赠',
+            message:
+              '开启后，您的医疗数据将经过严格脱敏处理，用于FSHD科研研究。您可以随时关闭捐赠功能。',
+            confirmLabel: '确认开启',
+          })
+        : await confirm({
+            title: '确认关闭数据捐赠',
+            message:
+              '关闭后，不会再有新的匿名化数据进入科研库。此前已捐赠并汇入研究的数据无法撤回。',
+            confirmLabel: '关闭捐赠',
+            cancelLabel: '继续捐赠',
+            destructive: true,
+          });
+    } finally {
+      setIsConfirming(false);
     }
-  };
+    if (!confirmed) return;
 
-  const handleEnableDonationPress = () => {
-    if (isSubmitting) return;
-    setIsConfirmModalVisible(true);
-  };
-
-  const handleModalCancel = () => {
-    setIsConfirmModalVisible(false);
-  };
-
-  const handleModalConfirm = () => {
-    setIsConfirmModalVisible(false);
-    void toggleDonation(true);
+    await toggleDonation(enable);
   };
 
   const toggleDonation = async (enable: boolean) => {
@@ -105,7 +129,17 @@ const DataDonationScreen = () => {
     } catch (error) {
       const message =
         error instanceof ApiError && error.message ? error.message : '更新失败，请稍后重试';
+      // Both: the dialog is unmissable (the 立即开启 button sits in the
+      // status section, far below the inline error next to the switch,
+      // so the inline text alone can land off-screen), and the inline
+      // copy survives dismissal so the reason stays next to the
+      // control that still shows the old state.
       setSubmitError(message);
+      notify({
+        title: enable ? '开启失败' : '关闭失败',
+        message,
+        tone: 'error',
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -129,11 +163,7 @@ const DataDonationScreen = () => {
   if (needsOnboarding) {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <ScreenBackButton />
-          <Text style={styles.pageTitle}>数据捐赠</Text>
-          <View style={styles.headerSpacer} />
-        </View>
+        <ScreenHeader title="数据捐赠" style={styles.header} />
         <View
           style={{
             flex: 1,
@@ -143,10 +173,10 @@ const DataDonationScreen = () => {
             gap: 16,
           }}
         >
-          <FontAwesome6 name="user-plus" size={32} color={CLINICAL_COLORS.textMuted} />
+          <Icon name="user-plus" size={32} color={COLOR.inkMuted} />
           <Text
             style={{
-              color: CLINICAL_COLORS.text,
+              color: COLOR.ink,
               fontSize: 16,
               fontWeight: '600',
               textAlign: 'center',
@@ -156,7 +186,7 @@ const DataDonationScreen = () => {
           </Text>
           <Text
             style={{
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 13,
               textAlign: 'center',
               lineHeight: 20,
@@ -164,12 +194,11 @@ const DataDonationScreen = () => {
           >
             数据捐赠需要先建立个人健康档案。完成档案后即可在此处管理捐赠授权。
           </Text>
-          <TouchableOpacity
-            style={styles.enableDonationButton}
+          <Button
+            label="前往完善档案"
+            variant="prominent"
             onPress={() => router.replace('/p-register_profile')}
-          >
-            <Text style={styles.enableDonationButtonText}>前往完善档案</Text>
-          </TouchableOpacity>
+          />
         </View>
       </SafeAreaView>
     );
@@ -177,23 +206,22 @@ const DataDonationScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <ScreenBackButton />
-          <Text style={styles.pageTitle}>数据捐赠</Text>
-          <View style={styles.headerSpacer} />
-        </View>
+      {/* Header sits outside the ScrollView: it carries the only way
+          back and the only way home, and scrolling it off the top of a
+          long page took that away exactly when the patient wanted it. */}
+      <ScreenHeader title="数据捐赠" style={styles.header} />
 
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {/* Intro */}
         <View style={styles.donationIntroSection}>
           <View style={styles.introCard}>
             <LinearGradient
-              colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
+              colors={[COLOR.accent, COLOR.accent]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.donationIcon}
             >
-              <FontAwesome6 name="heart" size={18} color={CLINICAL_COLORS.text} solid />
+              <Icon name="heart" size={18} color={COLOR.ink} />
             </LinearGradient>
             <Text style={styles.introTitle}>为FSHD研究贡献力量</Text>
             <Text style={styles.introDescription}>
@@ -244,65 +272,88 @@ const DataDonationScreen = () => {
             <View style={styles.toggleContent}>
               <View style={styles.toggleTextContainer}>
                 <Text style={styles.toggleTitle}>允许匿名化数据捐赠</Text>
-                <Text style={styles.toggleDescription}>您的贡献将帮助推动FSHD研究进展</Text>
+                {/* `isDonationEnabled` is `Boolean(prefs?.flags?.…)`,
+                    and a failed load leaves `prefs` null — so the
+                    switch rendered and announced OFF for a patient who
+                    had granted donation, and was still tappable, so
+                    flipping it "on" would re-grant something already
+                    granted. Say we don't know instead. */}
+                <Text style={styles.toggleDescription}>
+                  {loadError
+                    ? '暂时读不到当前授权状态，请重试后再操作'
+                    : '您的贡献将帮助推动FSHD研究进展'}
+                </Text>
               </View>
-              <TouchableOpacity
-                style={[
-                  styles.toggleSwitch,
-                  isDonationEnabled && styles.toggleSwitchActive,
-                  (isLoading || isSubmitting) && { opacity: 0.6 },
-                ]}
-                onPress={handleDonationToggle}
-                disabled={isLoading || isSubmitting}
-              >
-                <View style={[styles.toggleThumb, isDonationEnabled && styles.toggleThumbActive]} />
-              </TouchableOpacity>
+              {/* Was a hand-rolled copy of 隐私设置's switch, sharing
+                  its 26pt height, its missing hitSlop and its snapping
+                  thumb. Same component now. */}
+              <ToggleSwitch
+                isEnabled={isDonationEnabled}
+                disabled={isLoading || isSubmitting || isConfirming || Boolean(loadError)}
+                accessibilityLabel="允许匿名化数据捐赠"
+                onToggle={(next) => void requestToggle(next)}
+              />
             </View>
           </View>
           {isLoading && (
             <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}>
-              <ActivityIndicator size="small" color={CLINICAL_COLORS.accent} />
-              <Text style={{ marginLeft: 8, color: CLINICAL_COLORS.textMuted }}>
-                正在加载共享偏好…
-              </Text>
+              <ActivityIndicator size="small" color={COLOR.accent} />
+              <Text style={{ marginLeft: 8, color: COLOR.inkMuted }}>正在加载共享偏好…</Text>
             </View>
           )}
           {loadError && (
             <View style={{ marginTop: 8 }}>
-              <Text style={{ color: CLINICAL_COLORS.warning }}>{loadError}</Text>
-              <TouchableOpacity onPress={() => void load()} style={{ marginTop: 4 }}>
-                <Text style={{ color: CLINICAL_COLORS.accent }}>重试</Text>
-              </TouchableOpacity>
+              <Text style={{ color: COLOR.warn }}>{loadError}</Text>
+              <Button
+                label="重试"
+                icon="rotate-right"
+                variant="tinted"
+                compact
+                onPress={() => void load()}
+              />
             </View>
           )}
-          {submitError && (
-            <Text style={{ marginTop: 8, color: CLINICAL_COLORS.warning }}>{submitError}</Text>
-          )}
+          {submitError && <Text style={{ marginTop: 8, color: COLOR.warn }}>{submitError}</Text>}
         </View>
 
         {/* Status */}
         <View style={styles.donationStatusSection}>
           <Text style={styles.sectionTitle}>捐赠状态</Text>
 
-          {!isDonationEnabled ? (
+          {/* `prefs === null` means the request has not landed (or
+              failed), and Boolean(undefined) turned that into the same
+              answer as an explicit "off" — so the card asserted
+              暂未开启数据捐赠 about a state it had not read, and offered
+              a button to enable something that may already be on. */}
+          {!prefs ? (
             <View style={styles.notDonatingCard}>
               <View style={styles.notDonatingIcon}>
-                <FontAwesome6 name="heart" size={18} color={CLINICAL_COLORS.textMuted} />
+                <Icon name="heart" size={18} color={COLOR.inkMuted} />
+              </View>
+              <Text style={styles.notDonatingTitle}>
+                {loadError ? '读取捐赠状态失败' : '正在读取捐赠状态'}
+              </Text>
+              <Text style={styles.notDonatingDescription}>
+                {loadError ?? '稍等一下，读到之后这里会显示你当前的授权状态。'}
+              </Text>
+            </View>
+          ) : !isDonationEnabled ? (
+            <View style={styles.notDonatingCard}>
+              <View style={styles.notDonatingIcon}>
+                <Icon name="heart" size={18} color={COLOR.inkMuted} />
               </View>
               <Text style={styles.notDonatingTitle}>暂未开启数据捐赠</Text>
               <Text style={styles.notDonatingDescription}>
                 开启捐赠后，您的数据将为FSHD研究做出重要贡献
               </Text>
-              <TouchableOpacity
-                style={[
-                  styles.enableDonationButton,
-                  (isLoading || isSubmitting) && { opacity: 0.6 },
-                ]}
-                onPress={handleEnableDonationPress}
-                disabled={isLoading || isSubmitting}
-              >
-                <Text style={styles.enableDonationButtonText}>立即开启</Text>
-              </TouchableOpacity>
+              <Button
+                label="立即开启"
+                icon="heart"
+                variant="prominent"
+                busy={isSubmitting || isConfirming}
+                disabled={isLoading}
+                onPress={() => void requestToggle(true)}
+              />
             </View>
           ) : (
             <View style={styles.donatingCard}>
@@ -316,40 +367,14 @@ const DataDonationScreen = () => {
         </View>
       </ScrollView>
 
-      {/* Confirm modal */}
-      <Modal
-        visible={isConfirmModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={handleModalCancel}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>确认开启数据捐赠</Text>
-            <Text style={styles.modalDescription}>
-              开启后，您的医疗数据将经过严格脱敏处理，用于FSHD科研研究。您可以随时关闭捐赠功能。
-            </Text>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.modalCancelButton} onPress={handleModalCancel}>
-                <Text style={styles.modalCancelButtonText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalConfirmButton, isSubmitting && { opacity: 0.6 }]}
-                onPress={handleModalConfirm}
-                disabled={isSubmitting}
-              >
-                <Text style={styles.modalConfirmButtonText}>
-                  {isSubmitting ? '处理中…' : '确认开启'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      {/* The confirmation is `useAppDialog().confirm` now — see
+          requestToggle. The screen-local Modal it replaces could only
+          ever ask about turning donation ON; turning it OFF, the one
+          direction that revokes a research grant, never asked at all. */}
 
       {isSuccessToastVisible && (
         <View style={styles.successToast}>
-          <FontAwesome6 name="circle-check" size={12} color={CLINICAL_COLORS.success} />
+          <Icon name="circle-check" size={12} color={COLOR.good} />
           <Text style={styles.successToastText}>设置已保存</Text>
         </View>
       )}

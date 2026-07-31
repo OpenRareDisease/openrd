@@ -11,6 +11,7 @@ import { StatusBar } from 'expo-status-bar';
 import { LogBox } from 'react-native';
 import { useEffect } from 'react';
 import { AuthProvider } from '../contexts/AuthContext';
+import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { ProfileProvider, useProfileContext } from '../contexts/ProfileContext';
 
@@ -110,7 +111,10 @@ function AppNavigator() {
   }
 
   return (
-    <>
+    // AppDialogProvider wraps the whole stack because confirmations
+    // and notices are cross-screen concerns — and because the thing it
+    // replaces, `Alert.alert`, was a no-op on web (see AppDialog.tsx).
+    <AppDialogProvider>
       <StatusBar style="light"></StatusBar>
       <Stack
         screenOptions={{
@@ -124,7 +128,14 @@ function AppNavigator() {
         <Stack.Screen name="p-login_register" options={{ title: '登录注册页' }} />
         <Stack.Screen name="p-register_profile" options={{ title: '编辑档案页' }} />
         <Stack.Screen name="p-data_entry" options={{ title: '添加/更新数据页' }} />
-        <Stack.Screen name="p-manage" options={{ title: '病程管理页' }} />
+        {/* This list must match the files in app/ exactly. expo-router
+            resolves it on every render (not inside a memo), so a name
+            with no matching route warns on every render, and a route
+            with no entry silently loses its declared title. p-manage
+            lives under (tabs) now — its title comes from the tabs
+            layout — while p-archive and p-qna moved out of the bar and
+            into this stack. */}
+        <Stack.Screen name="p-archive" options={{ title: '我的档案页' }} />
         <Stack.Screen name="p-report_management" options={{ title: '报告管理页' }} />
         <Stack.Screen name="p-report_detail" options={{ title: '报告详情页' }} />
         <Stack.Screen name="p-timeline_detail" options={{ title: '时间轴详情页' }} />
@@ -139,7 +150,7 @@ function AppNavigator() {
         <Stack.Screen name="p-data_donation" options={{ title: '数据捐赠页' }} />
         <Stack.Screen name="p-resource_map" options={{ title: '医疗资源地图页' }} />
       </Stack>
-    </>
+    </AppDialogProvider>
   );
 }
 

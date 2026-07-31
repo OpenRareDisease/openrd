@@ -108,3 +108,47 @@ export const buildHistoryPayload = (
     )
     .slice(-HISTORY_PAYLOAD_MAX_MESSAGES)
     .map((message) => ({ role: message.role, content: message.content }));
+
+/**
+ * Move a drawer conversation into the 问答 screen's history.
+ *
+ * The ask drawer is a sheet: it opens on a report or a chart, answers,
+ * and on close throws the whole exchange away. Nothing else in the app
+ * kept it either — the audit page records which tools ran, never the
+ * question or the answer — so a patient who read something useful and
+ * dismissed the sheet had no way back to it. That is a bad property for
+ * an app whose whole subject is keeping a record.
+ *
+ * Rather than give the drawer its own storage, the turns are appended
+ * to the chat the 问答 tab already persists, so「继续问」 and the full
+ * conversation are the same thread. Appending, not replacing: the
+ * drawer is a detour from a conversation, not a new one.
+ *
+ * Failures are swallowed. This runs on the way to another screen, and a
+ * storage error should cost the handoff, not the navigation.
+ */
+export const appendTurnsToStoredChat = async (
+  storage: {
+    getItem: (k: string) => Promise<string | null>;
+    setItem: (k: string, v: string) => Promise<void>;
+  },
+  key: string,
+  turns: Array<{ role: ChatRole; content: string }>,
+  makeId: (index: number) => string,
+  now: string,
+): Promise<void> => {
+  if (turns.length === 0) return;
+  try {
+    const existing = parseStoredMessages(await storage.getItem(key)) ?? [];
+    const appended: ChatMessage[] = turns.map((turn, index) => ({
+      id: makeId(index),
+      role: turn.role,
+      content: turn.content,
+      createdAt: now,
+      status: 'sent',
+    }));
+    await storage.setItem(key, JSON.stringify([...existing, ...appended]));
+  } catch {
+    // See above: the handoff is best-effort.
+  }
+};

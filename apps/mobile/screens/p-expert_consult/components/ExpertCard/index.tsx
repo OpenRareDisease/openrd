@@ -1,8 +1,6 @@
-
-
 import React from 'react';
 import { View, Text, TouchableOpacity, Image } from 'react-native';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Icon from '../../../common/Icon';
 import styles from './styles';
 
 interface ExpertData {
@@ -51,7 +49,7 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
           <Image source={{ uri: expert.avatar }} style={styles.avatar} />
           <View style={[styles.onlineIndicator, { backgroundColor: getOnlineStatusColor() }]} />
         </View>
-        
+
         <View style={styles.expertInfo}>
           <View style={styles.nameRow}>
             <Text style={styles.expertName}>{expert.name}</Text>
@@ -59,52 +57,50 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
               {getOnlineStatusText()}
             </Text>
           </View>
-          
+
           <Text style={styles.expertTitle}>{expert.title}</Text>
           <Text style={styles.expertHospital}>{expert.hospital}</Text>
-          
+
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
-              <FontAwesome6 name="star" style={styles.starIcon} />
+              <Icon name="star" style={styles.starIcon} />
               <Text style={styles.statText}>{expert.rating}</Text>
             </View>
             <View style={styles.statItem}>
-              <FontAwesome6 name="users" style={styles.usersIcon} />
+              <Icon name="users" style={styles.usersIcon} />
               <Text style={styles.statText}>{expert.patients}</Text>
             </View>
           </View>
-          
+
           <View style={styles.consultButtons}>
             <TouchableOpacity
-              style={[
-                styles.textConsultButton,
-                isConsultDisabled && styles.consultButtonDisabled
-              ]}
+              style={[styles.textConsultButton, isConsultDisabled && styles.consultButtonDisabled]}
               onPress={onTextConsult}
               disabled={isConsultDisabled}
             >
-              <FontAwesome6 name="comment-dots" style={styles.consultButtonIcon} />
-              <Text style={[
-                styles.textConsultButtonText,
-                isConsultDisabled && styles.consultButtonTextDisabled
-              ]}>
+              <Icon name="comment-dots" style={styles.consultButtonIcon} />
+              <Text
+                style={[
+                  styles.textConsultButtonText,
+                  isConsultDisabled && styles.consultButtonTextDisabled,
+                ]}
+              >
                 图文咨询
               </Text>
             </TouchableOpacity>
-            
+
             <TouchableOpacity
-              style={[
-                styles.phoneConsultButton,
-                isConsultDisabled && styles.consultButtonDisabled
-              ]}
+              style={[styles.phoneConsultButton, isConsultDisabled && styles.consultButtonDisabled]}
               onPress={onPhoneConsult}
               disabled={isConsultDisabled}
             >
-              <FontAwesome6 name="phone" style={styles.consultButtonIcon} />
-              <Text style={[
-                styles.phoneConsultButtonText,
-                isConsultDisabled && styles.consultButtonTextDisabled
-              ]}>
+              <Icon name="phone" style={styles.consultButtonIcon} />
+              <Text
+                style={[
+                  styles.phoneConsultButtonText,
+                  isConsultDisabled && styles.consultButtonTextDisabled,
+                ]}
+              >
                 电话咨询
               </Text>
             </TouchableOpacity>
@@ -116,4 +112,3 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
 };
 
 export default ExpertCard;
-

@@ -1,74 +1,116 @@
-import { useEffect, useMemo, useState } from 'react';
+import { COLOR, INTERACTION } from '../../lib/design';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import Button from '../common/Button';
+import SegmentedControl from '../common/SegmentedControl';
+import AnswerText from '../common/AnswerText';
+import Icon from '../common/Icon';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import styles from './styles';
 import HumanBodyFigure from '../common/HumanBodyFigure';
-import ScreenBackButton from '../common/ScreenBackButton';
+import ScreenHeader from '../common/ScreenHeader';
+import { useAppDialog } from '../common/feedback/AppDialog';
 import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
 import TimelineSectionCard from '../common/TimelineSectionCard';
 import {
   ApiError,
   getClinicalPassportSummary,
   getMyPatientProfile,
+  isConsentRequiredError,
   type ClinicalPassportSummary,
   type PatientProfile,
+  type StreamAiQuestionHandle,
 } from '../../lib/api';
+import { streamAiQuestion } from '../../lib/ai-streaming';
+import { VISIT_PREP_NOTE_KEY } from '../../lib/draft-keys';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import type { BodyRegionMap } from '../../lib/clinical-visuals';
 import { buildClinicalPassportPdfHtml } from '../../lib/clinical-passport-pdf';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
-import {
-  CLINICAL_COLORS,
-  CLINICAL_GRADIENTS,
-  CLINICAL_TINTS,
-  formatDateLabel,
-} from '../../lib/clinical-visuals';
+import { formatDateLabel } from '../../lib/clinical-visuals';
 
 const getFreshnessColors = (tone: ClinicalPassportSummary['diagnosis']['freshness']['tone']) => {
   switch (tone) {
     case 'success':
       return {
-        backgroundColor: CLINICAL_TINTS.successSoft,
-        color: CLINICAL_COLORS.success,
+        backgroundColor: COLOR.goodWash,
+        color: COLOR.good,
       };
     case 'warning':
       return {
-        backgroundColor: CLINICAL_TINTS.warningSoft,
-        color: CLINICAL_COLORS.warning,
+        backgroundColor: COLOR.warnWash,
+        color: COLOR.warn,
       };
     case 'danger':
       return {
-        backgroundColor: CLINICAL_TINTS.dangerSoft,
-        color: CLINICAL_COLORS.danger,
+        backgroundColor: COLOR.alertWash,
+        color: COLOR.alert,
       };
     default:
       return {
-        backgroundColor: CLINICAL_TINTS.neutralSoft,
-        color: CLINICAL_COLORS.textMuted,
+        backgroundColor: COLOR.well,
+        color: COLOR.inkMuted,
       };
   }
 };
 
+const createProgressId = () =>
+  `passport_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+const VISIT_PREP_QUESTION =
+  '我下次要去看门诊。请根据我最近的记录和检查报告，整理三部分内容：' +
+  '一、这段时间发生了什么变化；二、建议向医生确认的问题（最多三个）；' +
+  '三、需要带去的报告。用简短的条目，不要给治疗建议。';
+
+/** Full date, not the MM-DD `formatDateLabel` used elsewhere on this
+ *  screen: a prep note the patient is reading in a waiting room is
+ *  worth acting on only if they can tell it was drafted this week
+ *  rather than before the last appointment. */
+const formatVisitPrepTimestamp = (value: string | null) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
+};
+
 const ClinicalPassportScreen = () => {
   const router = useRouter();
+  const { notify } = useAppDialog();
   const [passport, setPassport] = useState<ClinicalPassportSummary | null>(null);
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
+  // 门诊准备: generated on demand, not on load. It costs an LLM round
+  // trip and it's only wanted when a visit is actually coming up —
+  // auto-generating on every open would spend tokens on the many
+  // times this page gets opened just to show someone the diagnosis.
+  const [visitPrep, setVisitPrep] = useState<string | null>(null);
+  const [visitPrepGeneratedAt, setVisitPrepGeneratedAt] = useState<string | null>(null);
+  const [visitPrepStream, setVisitPrepStream] = useState('');
+  const [visitPrepBusy, setVisitPrepBusy] = useState(false);
+  const [visitPrepError, setVisitPrepError] = useState<string | null>(null);
+  const visitPrepHandleRef = useRef<StreamAiQuestionHandle | null>(null);
+  // Deltas also land in a ref so `onComplete` can read the accumulated
+  // text synchronously. Reading it out of a setState updater instead
+  // would mean calling setState from inside another setState updater,
+  // which React may replay.
+  const visitPrepStreamRef = useRef('');
 
   const loadPassport = async () => {
     try {
@@ -94,15 +136,186 @@ const ClinicalPassportScreen = () => {
     loadPassport();
   }, []);
 
+  // Rehydrate the last prep note. The point of persisting it is the
+  // trip itself: the note is drafted at home where there is signal and
+  // read in the waiting room where there may not be. Before this it
+  // lived in useState only, so walking to the hospital — or just
+  // switching tabs — meant regenerating, which burns another LLM call
+  // and comes back worded differently from the version the patient
+  // already rehearsed.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let raw: string | null = null;
+      try {
+        raw = await getSessionValue(VISIT_PREP_NOTE_KEY);
+      } catch {
+        // SecureStore unavailable on this device. Nothing to restore;
+        // the empty state below is a correct fallback, and surfacing a
+        // storage error here would be noise on a screen the patient
+        // opened to read their diagnosis.
+        return;
+      }
+      if (cancelled || !raw) return;
+      try {
+        const parsed = JSON.parse(raw) as { text?: unknown; generatedAt?: unknown };
+        if (typeof parsed.text !== 'string' || !parsed.text.trim()) return;
+        setVisitPrep(parsed.text);
+        setVisitPrepGeneratedAt(typeof parsed.generatedAt === 'string' ? parsed.generatedAt : null);
+      } catch {
+        // Corrupt payload (interrupted write, older shape). Drop it
+        // rather than half-render it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // An in-flight stream outlives the screen otherwise, and the answer
+  // nobody will read still costs tokens upstream.
+  useEffect(
+    () => () => {
+      visitPrepHandleRef.current?.close();
+      visitPrepHandleRef.current = null;
+    },
+    [],
+  );
+
+  const settleVisitPrep = (text: string) => {
+    const generatedAt = new Date().toISOString();
+    setVisitPrep(text);
+    setVisitPrepGeneratedAt(generatedAt);
+    // The write can genuinely fail — SecureStore rejects values over
+    // ~2KB on Android, and a long three-part note gets close. Say so
+    // rather than swallowing it: a patient who believes the note is
+    // saved will close the app and walk to the hospital with nothing,
+    // which is worse than being told now while there is still signal to
+    // screenshot it.
+    void setSessionValue(VISIT_PREP_NOTE_KEY, JSON.stringify({ text, generatedAt })).catch(() => {
+      setVisitPrepError('这份没能存到本机，离开这个页面后要重新整理，建议先截图或导出 PDF。');
+    });
+  };
+
+  /**
+   * Draft the「下次门诊要说什么」note.
+   *
+   * Deliberately routed through the ordinary /ai/ask orchestrator
+   * rather than a bespoke endpoint: this is exactly the question the
+   * planner already has tools for (get_my_profile + get_my_reports),
+   * and reusing it means the note inherits consent gating, PII
+   * redaction and the prompt audit row for free. A second pipeline
+   * would be a second place for those guarantees to drift.
+   *
+   * Streamed rather than awaited on the blocking /ai/ask. That endpoint
+   * was the last non-streaming AI caller in the app and its client
+   * deadline never matched the server: planner + tools + final answer
+   * are 30s each and the OpenAI SDK retries twice, so a worst case runs
+   * past 180s against a 60s client timeout. Every one of those runs
+   * aborted a request the server was still paying for and told the
+   * patient nothing had happened. Streaming replaces the guess with the
+   * SSE keepalive watchdog, and — the part that matters at the point of
+   * use — puts words on screen in the first second instead of a spinner
+   * for a minute.
+   */
+  const handleGenerateVisitPrep = () => {
+    if (visitPrepBusy) return;
+    visitPrepHandleRef.current?.close();
+    visitPrepStreamRef.current = '';
+    setVisitPrepStream('');
+    setVisitPrepError(null);
+    setVisitPrepBusy(true);
+
+    // A failed regenerate leaves the saved note untouched, and saying so
+    // is the difference between「重试」and「我刚才的东西没了」. Only true
+    // on a regenerate, so don't promise it on the first run.
+    const keptNoteHint = visitPrep ? '已保存的那份还在。' : '';
+
+    visitPrepHandleRef.current = streamAiQuestion(VISIT_PREP_QUESTION, createProgressId(), {
+      onEvent: (event) => {
+        if (event.type === 'answer_delta') {
+          visitPrepStreamRef.current += event.text;
+          setVisitPrepStream(visitPrepStreamRef.current);
+        } else if (event.type === 'error') {
+          setVisitPrepError(event.message);
+        }
+      },
+      onComplete: (data) => {
+        visitPrepHandleRef.current = null;
+        setVisitPrepBusy(false);
+        // The `done` frame carries the authoritative answer; deltas can
+        // be dropped by a flaky connection, so only fall back to what
+        // we accumulated when the payload has nothing.
+        const settled = data?.answer?.trim() || visitPrepStreamRef.current.trim();
+        visitPrepStreamRef.current = '';
+        setVisitPrepStream('');
+        if (settled) {
+          settleVisitPrep(settled);
+          return;
+        }
+        // A null payload means the stream ended without `done`. Don't
+        // overwrite the note already on file — the previous draft is
+        // still the best thing the patient can walk into the room with.
+        setVisitPrepError(
+          (prev) =>
+            prev ??
+            (data
+              ? `这次没能整理出内容，再点一次就行。${keptNoteHint}`
+              : `整理没做完就中断了，再点一次就行。${keptNoteHint}`),
+        );
+      },
+      onError: (error) => {
+        visitPrepHandleRef.current = null;
+        visitPrepStreamRef.current = '';
+        setVisitPrepStream('');
+        setVisitPrepBusy(false);
+        setVisitPrepError(
+          isConsentRequiredError(error)
+            ? '需要先在「我的 › 隐私设置」里同意 AI 使用你的数据。'
+            : error instanceof ApiError && error.status
+              ? error.message
+              : // Transport failures used to surface as「请求超时，请检查
+                // 网络后重试」. The slow half is the model, not the
+                // patient's WiFi, and sending someone to go check their
+                // router for a server-side stall is both wrong and the
+                // kind of instruction this cohort can least afford to
+                // act on.
+                `整理服务这会儿没响应，稍后再点一次。${keptNoteHint}`,
+        );
+      },
+    });
+  };
+
+  const handleCancelVisitPrep = () => {
+    if (!visitPrepBusy) return;
+    // `close()` suppresses the stream's own callbacks, so unwind here.
+    // The partial text is discarded rather than kept: half a sentence
+    // is not a prep note, and `visitPrep` still holds the last complete
+    // one.
+    visitPrepHandleRef.current?.close();
+    visitPrepHandleRef.current = null;
+    visitPrepStreamRef.current = '';
+    setVisitPrepStream('');
+    setVisitPrepBusy(false);
+    setVisitPrepError(null);
+  };
+
   const handleExport = async () => {
     if (!passport?.hasRecordedData) {
-      Alert.alert('无法导出', '当前没有足够的护照数据可供导出。');
+      notify({
+        title: '无法导出',
+        message: '当前没有足够的护照数据可供导出，先记录一次数据或上传一份报告。',
+        tone: 'info',
+      });
       return;
     }
 
     try {
       setIsExporting(true);
-      const html = buildClinicalPassportPdfHtml(passport);
+      // The prep note travels with the passport when it exists — a
+      // printout handed across the desk should carry the same thing
+      // the patient was reading on the way in.
+      const html = buildClinicalPassportPdfHtml(passport, visitPrep);
 
       if (Platform.OS === 'web') {
         const printWindow = window.open('', '_blank');
@@ -137,11 +350,20 @@ const ClinicalPassportScreen = () => {
       await Print.printAsync({ html });
     } catch (error) {
       const message = error instanceof Error ? error.message : '临床护照 PDF 导出失败';
-      Alert.alert('操作失败', message);
+      // The popup-blocker branch above throws its instructions through
+      // here. On web that message was previously swallowed entirely,
+      // so a blocked print window looked like a dead button.
+      notify({ title: '导出失败', message, tone: 'error' });
     } finally {
       setIsExporting(false);
     }
   };
+
+  // During a regenerate the previously saved note stays on screen until
+  // the first delta arrives, so the card never blanks out on someone
+  // who is standing in a corridor about to be called in.
+  const visitPrepDisplayText = visitPrepBusy && visitPrepStream ? visitPrepStream : visitPrep;
+  const visitPrepTimestamp = formatVisitPrepTimestamp(visitPrepGeneratedAt);
 
   const diagnosisFreshnessStyle = useMemo(
     () => getFreshnessColors(passport?.diagnosis.freshness.tone ?? 'neutral'),
@@ -180,42 +402,46 @@ const ClinicalPassportScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
-      >
+      {/* Flat paper, not the sand gradient. CLINICAL_GRADIENTS.page is
+          ['#F8F2EA', …], the palette lib/design.ts explicitly rejected
+          — its own comment says #F8F2EA "pulled yellow enough to grey
+          out the teal sitting on it" — so the last four screens using
+          it were painting their page in the rejected colour underneath
+          the accent it greys out. */}
+      <View style={styles.backgroundGradient}>
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
-            <ScreenBackButton />
-            <Text style={styles.headerTitle}>FSHD 临床护照</Text>
-            <TouchableOpacity
-              style={styles.headerAction}
-              activeOpacity={0.75}
-              onPress={handleExport}
-              disabled={isExporting || !passport?.hasRecordedData}
-            >
-              {isExporting ? (
-                <ActivityIndicator size="small" color={CLINICAL_COLORS.accentStrong} />
-              ) : (
-                <FontAwesome6
-                  name="file-pdf"
-                  size={14}
-                  color={
-                    passport?.hasRecordedData
-                      ? CLINICAL_COLORS.accentStrong
-                      : CLINICAL_COLORS.textMuted
-                  }
-                />
-              )}
-            </TouchableOpacity>
-          </View>
+          {/* The PDF action rides in ScreenHeader's `right` slot, so
+              back / title / export / home all sit on one row and this
+              screen picks up the home control the rest of the stack
+              has. */}
+          <ScreenHeader
+            title="FSHD 临床护照"
+            style={styles.header}
+            right={
+              <TouchableOpacity
+                style={styles.headerAction}
+                activeOpacity={INTERACTION.pressOpacity}
+                accessibilityRole="button"
+                accessibilityLabel="导出临床护照 PDF"
+                onPress={handleExport}
+                disabled={isExporting || !passport?.hasRecordedData}
+              >
+                {isExporting ? (
+                  <ActivityIndicator size="small" color={COLOR.accent} />
+                ) : (
+                  <Icon
+                    name="file-pdf"
+                    size={14}
+                    color={passport?.hasRecordedData ? COLOR.accent : COLOR.inkMuted}
+                  />
+                )}
+              </TouchableOpacity>
+            }
+          />
 
           {errorMessage && !passport ? (
             <View style={styles.errorCard}>
@@ -224,17 +450,27 @@ const ClinicalPassportScreen = () => {
             </View>
           ) : null}
 
-          <LinearGradient
-            colors={CLINICAL_GRADIENTS.surface}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.heroCard}
-          >
+          {/* The hero fill was CLINICAL_GRADIENTS.surface, from the same
+              rejected palette. styles.heroCard already carries
+              SURFACE.cardAccent, which is what every other hero uses. */}
+          <View style={styles.heroCard}>
             <View style={styles.heroTopRow}>
               <View style={styles.heroCopyBlock}>
                 <Text style={styles.heroEyebrow}>CLINICAL PASSPORT</Text>
-                <Text style={styles.heroTitle}>{passport?.patientName ?? '未命名病例'}</Text>
-                <Text style={styles.heroPassportId}>{passport?.passportId ?? '待生成'}</Text>
+                {/* `?? '未命名病例'` / `?? '待生成'` are answers about
+                    the record, and `passport` is also null while the
+                    fetch is in flight and after it fails — so a patient
+                    with a full passport saw 「未命名病例 · 待生成」 every
+                    time this screen opened, and kept seeing it if the
+                    request failed. The metric line below was fixed for
+                    exactly this and the title was left behind. */}
+                <Text style={styles.heroTitle}>
+                  {passport?.patientName ?? (isLoading || errorMessage ? '—' : '未命名病例')}
+                </Text>
+                <Text style={styles.heroPassportId}>
+                  {passport?.passportId ??
+                    (isLoading ? '读取中' : errorMessage ? '暂时读不到' : '待生成')}
+                </Text>
                 <Text style={styles.heroSubtitle}>
                   汇总诊断、影像、检查结果和时间轴，方便门诊、住院或研究登记时快速出示。
                 </Text>
@@ -243,23 +479,30 @@ const ClinicalPassportScreen = () => {
                 <Text style={styles.heroStatusText}>
                   {passport
                     ? `${passport.completion.completed}/${passport.completion.total} 已完成`
-                    : '整理中'}
+                    : errorMessage
+                      ? '读取失败'
+                      : '整理中'}
                 </Text>
               </View>
             </View>
 
             <View style={styles.heroMetaRow}>
               <View style={styles.heroMetaChip}>
-                <FontAwesome6 name="clock" size={12} color={CLINICAL_COLORS.accentStrong} />
+                <Icon name="clock" size={12} color={COLOR.accent} />
                 <Text style={styles.heroMetaText}>
                   最近更新 {formatDateLabel(passport?.latestUpdatedAt)}
                 </Text>
               </View>
               <View style={styles.heroMetaChip}>
-                <FontAwesome6 name="file-lines" size={12} color={CLINICAL_COLORS.accentStrong} />
+                <Icon name="file-lines" size={12} color={COLOR.accent} />
+                {/* `?? '0'` answered "the passport hasn't loaded" with
+                    the number zero — a factual claim about the
+                    patient's account, made on the screen they export
+                    for a clinician. An em dash says nothing instead. */}
                 <Text style={styles.heroMetaText}>
-                  {passport?.metrics.find((item) => item.label === '报告数')?.value ?? '0'}{' '}
-                  份来源报告
+                  {passport
+                    ? `${passport.metrics.find((item) => item.label === '报告数')?.value ?? '0'} 份来源报告`
+                    : '报告数 —'}
                 </Text>
               </View>
             </View>
@@ -274,37 +517,105 @@ const ClinicalPassportScreen = () => {
               ))}
             </View>
 
+            {/* Both tinted, not prominent. These are shortcuts to
+                things that have their own sections further down — the
+                export card owns 生成 PDF, which is this screen's one
+                prominent action. Before this they were hand-rolled
+                Touchables with no accessibilityRole and no label at
+                all: a screen reader reached two unnamed controls. */}
             <View style={styles.heroActionRow}>
-              <TouchableOpacity
-                style={styles.heroActionButton}
-                activeOpacity={0.82}
+              <Button
+                label="去补录数据"
+                variant="tinted"
+                compact
                 onPress={() => router.push('/p-data_entry')}
-              >
-                <Text style={styles.heroActionButtonText}>去补录数据</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.heroActionButton, styles.heroActionButtonGhost]}
-                activeOpacity={0.82}
+              />
+              <Button
+                label="导出 PDF"
+                icon="file-pdf"
+                variant="tinted"
+                compact
+                busy={isExporting}
+                disabled={!passport?.hasRecordedData}
+                accessibilityHint="生成临床护照 PDF，可保存、打印或发送给医生"
                 onPress={handleExport}
-                disabled={isExporting || !passport?.hasRecordedData}
-              >
-                <Text
-                  style={[
-                    styles.heroActionButtonText,
-                    styles.heroActionButtonTextGhost,
-                    !passport?.hasRecordedData && styles.heroActionButtonTextDisabled,
-                  ]}
-                >
-                  {isExporting ? '生成中...' : '导出 PDF'}
-                </Text>
-              </TouchableOpacity>
+              />
             </View>
-          </LinearGradient>
+          </View>
 
           {isLoading ? (
             <View style={styles.loadingCard}>
-              <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+              <ActivityIndicator color={COLOR.accent} />
               <Text style={styles.loadingText}>正在整理临床护照摘要...</Text>
+            </View>
+          ) : null}
+
+          {/* 门诊准备 — sits above the passport proper because it's the
+              part with a deadline. Kept visually distinct (dashed
+              border, explicit attribution) so nobody mistakes a drafted
+              summary for recorded clinical data. */}
+          {passport?.hasRecordedData ? (
+            <View style={styles.visitPrepCard}>
+              <View style={styles.visitPrepHeader}>
+                <Icon name="clipboard-list" size={14} color={COLOR.accent} />
+                <Text style={styles.visitPrepTitle}>门诊准备</Text>
+              </View>
+
+              {visitPrepDisplayText ? (
+                <>
+                  <AnswerText style={styles.visitPrepBody}>{visitPrepDisplayText}</AnswerText>
+                  {/* While a regenerate streams, the timestamp still
+                      describes the saved note, so hide it until the new
+                      one settles rather than dating fresh text with an
+                      old time. */}
+                  {!visitPrepBusy && visitPrepTimestamp ? (
+                    <Text style={styles.visitPrepMeta}>生成于 {visitPrepTimestamp}</Text>
+                  ) : null}
+                  <Text style={styles.visitPrepFootnote}>
+                    由 AI 依据你的记录整理，供与医生沟通使用，不是诊断意见。导出 PDF 时会一并带上。
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.visitPrepHint}>
+                  整理出「这段时间的变化 + 建议向医生确认的问题 + 需要带的报告」，
+                  就诊前看一眼就知道要说什么。整理好的内容会留在本机，下次打开还在。
+                </Text>
+              )}
+
+              {visitPrepBusy ? (
+                <>
+                  <View style={styles.visitPrepStatusRow}>
+                    <ActivityIndicator size="small" color={COLOR.accent} />
+                    <Text style={styles.visitPrepStatusText}>
+                      {visitPrepStream ? '正在整理，内容会边写边出…' : '正在读你的记录和报告…'}
+                    </Text>
+                  </View>
+                  <Button
+                    label="中止"
+                    icon="stop"
+                    variant="destructive"
+                    compact
+                    accessibilityLabel="中止整理门诊准备"
+                    onPress={handleCancelVisitPrep}
+                  />
+                </>
+              ) : visitPrep ? (
+                <Button
+                  label="重新整理"
+                  icon="rotate-right"
+                  variant="tinted"
+                  onPress={handleGenerateVisitPrep}
+                />
+              ) : (
+                <Button
+                  label="生成门诊准备"
+                  icon="wand-magic-sparkles"
+                  variant="tinted"
+                  onPress={handleGenerateVisitPrep}
+                />
+              )}
+
+              {visitPrepError ? <Text style={styles.visitPrepError}>{visitPrepError}</Text> : null}
             </View>
           ) : null}
 
@@ -388,42 +699,16 @@ const ClinicalPassportScreen = () => {
                   </View>
                 </View>
 
-                <View style={styles.segmentRow}>
-                  <TouchableOpacity
-                    style={[
-                      styles.segmentButton,
-                      bodyView === 'front' && styles.segmentButtonActive,
-                    ]}
-                    activeOpacity={0.82}
-                    onPress={() => setBodyView('front')}
-                  >
-                    <Text
-                      style={[
-                        styles.segmentButtonText,
-                        bodyView === 'front' && styles.segmentButtonTextActive,
-                      ]}
-                    >
-                      正面
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.segmentButton,
-                      bodyView === 'back' && styles.segmentButtonActive,
-                    ]}
-                    activeOpacity={0.82}
-                    onPress={() => setBodyView('back')}
-                  >
-                    <Text
-                      style={[
-                        styles.segmentButtonText,
-                        bodyView === 'back' && styles.segmentButtonTextActive,
-                      ]}
-                    >
-                      背面
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                <SegmentedControl
+                  segments={[
+                    { key: 'front', label: '正面' },
+                    { key: 'back', label: '背面' },
+                  ]}
+                  value={bodyView}
+                  onChange={(key) => setBodyView(key as 'front' | 'back')}
+                  accessibilityLabel="MRI 受累分布视角"
+                  style={styles.segmentRow}
+                />
 
                 <View style={styles.figureStack}>
                   <View style={styles.figureShell}>
@@ -530,11 +815,7 @@ const ClinicalPassportScreen = () => {
                     passport.nextSteps.map((step) => (
                       <View key={step.title} style={styles.gapCard}>
                         <View style={styles.gapTopRow}>
-                          <FontAwesome6
-                            name="triangle-exclamation"
-                            size={13}
-                            color={CLINICAL_COLORS.warning}
-                          />
+                          <Icon name="triangle-exclamation" size={13} color={COLOR.warn} />
                           <Text style={styles.gapTitle}>{step.title}</Text>
                         </View>
                         <Text style={styles.gapDescription}>{step.description}</Text>
@@ -543,14 +824,15 @@ const ClinicalPassportScreen = () => {
                   )}
                 </View>
 
-                <TouchableOpacity
-                  style={styles.inlineActionButton}
-                  activeOpacity={0.84}
+                {/* Skipped by the Button migration this file's own
+                    header comment claims finished. */}
+                <Button
+                  label="去数据录入补齐"
+                  trailingIcon="arrow-right"
+                  variant="tinted"
+                  compact
                   onPress={() => router.push('/p-data_entry')}
-                >
-                  <Text style={styles.inlineActionText}>去数据录入补齐</Text>
-                  <FontAwesome6 name="arrow-right" size={12} color={CLINICAL_COLORS.accentStrong} />
-                </TouchableOpacity>
+                />
               </View>
 
               <View style={styles.exportCard}>
@@ -561,37 +843,21 @@ const ClinicalPassportScreen = () => {
                   </View>
                 </View>
 
-                <TouchableOpacity
-                  style={styles.exportButton}
+                <Button
+                  label="生成 PDF"
+                  icon="file-pdf"
+                  variant="prominent"
+                  fullWidth
+                  busy={isExporting}
+                  disabled={!passport.hasRecordedData}
+                  accessibilityHint="导出临床护照 PDF，可保存、打印或发送给医生"
                   onPress={handleExport}
-                  disabled={isExporting || !passport.hasRecordedData}
-                  activeOpacity={0.84}
-                >
-                  <LinearGradient
-                    colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.exportButtonGradient}
-                  >
-                    {isExporting ? (
-                      <ActivityIndicator color={CLINICAL_COLORS.background} />
-                    ) : (
-                      <>
-                        <FontAwesome6
-                          name="file-pdf"
-                          size={14}
-                          color={CLINICAL_COLORS.background}
-                        />
-                        <Text style={styles.exportButtonText}>生成 PDF</Text>
-                      </>
-                    )}
-                  </LinearGradient>
-                </TouchableOpacity>
+                />
               </View>
             </>
           ) : null}
         </ScrollView>
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 };

@@ -1,61 +1,27 @@
-import { Platform, StyleSheet } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { COLOR, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
-const cardShadow =
-  Platform.select({
-    ios: {
-      shadowColor: '#182B36',
-      shadowOffset: { width: 0, height: 12 },
-      shadowOpacity: 0.12,
-      shadowRadius: 26,
-    },
-    android: {
-      elevation: 7,
-    },
-    default: {},
-  }) ?? {};
-
+/**
+ * 今天 — the first screen, re-pitched on lib/design.ts.
+ *
+ * The previous version stacked tinted, 22pt-radius, shadowed cards
+ * over a gradient page; the brief wore a dot-plus-uppercase-eyebrow,
+ * and every row carried an icon in a tinted rounded square. Hierarchy
+ * came from box nesting rather than from type, and the whole thing sat
+ * in one low-contrast sage-on-sand register.
+ *
+ * Now the page is paper. Exactly one block is filled — the brief, the
+ * thing this screen is about — and everything else is set on the page
+ * and separated by hairlines. Rows are rows. The accent appears on the
+ * brief label and the primary chip, nowhere else.
+ */
 export default StyleSheet.create({
-  guidanceStack: {
-    marginTop: 12,
-    gap: 10,
-  },
-  guidanceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  guidanceIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  guidanceTextWrap: {
-    flex: 1,
-    gap: 3,
-  },
-  guidanceTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  guidanceDescription: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    lineHeight: 18,
-  },
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
+  /** Kept so the screen can drop <LinearGradient> for a plain View
+   *  without touching its JSX shape. */
   backgroundGradient: {
     flex: 1,
   },
@@ -65,539 +31,144 @@ export default StyleSheet.create({
   scrollContent: {
     paddingBottom: 120,
   },
+
+  /* Header -------------------------------------------------------- */
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.md,
+    paddingBottom: SPACE.xs,
+    gap: SPACE.xs,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
+  /** A real eyebrow: the date says something the greeting doesn't.
+   *  Muted rather than accent — it labels, it doesn't decorate. */
   eyebrow: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    letterSpacing: 1.4,
+    ...TYPE.micro,
   },
   pageTitle: {
-    marginTop: 2,
-    color: CLINICAL_COLORS.text,
-    fontSize: 20,
-    fontWeight: '800',
+    ...TYPE.display,
   },
-  settingsButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
+
+  /* 简报 — the single accented surface --------------------------- */
+  briefCard: {
+    marginHorizontal: SPACE.gutter,
+    marginTop: SPACE.lg,
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
+    gap: SPACE.sm,
   },
-  heroCard: {
-    marginHorizontal: 20,
-    padding: 20,
-    borderRadius: 28,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-    backgroundColor: CLINICAL_COLORS.panel,
-    ...cardShadow,
-  },
-  heroHeader: {
+  briefHead: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: SPACE.sm,
   },
-  heroTag: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(248, 242, 234, 0.72)',
+  /** Retained as a 1pt accent rule rather than a dot — a bullet that
+   *  bullets nothing was decoration. */
+  briefDot: {
+    width: 14,
+    height: 1.5,
+    backgroundColor: COLOR.accent,
   },
-  heroTagText: {
-    color: CLINICAL_COLORS.accentStrong,
-    fontSize: 12,
-    fontWeight: '700',
+  briefLabel: {
+    ...TYPE.micro,
+    color: COLOR.accent,
   },
-  heroTitle: {
-    marginTop: 18,
-    color: CLINICAL_COLORS.text,
-    fontSize: 26,
-    lineHeight: 34,
-    fontWeight: '800',
+  briefHeadline: {
+    ...TYPE.title,
+    lineHeight: 26,
   },
-  heroDescription: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 14,
-    lineHeight: 21,
+  briefText: {
+    ...TYPE.body,
   },
-  heroMetrics: {
-    marginTop: 20,
+  briefActions: {
     flexDirection: 'row',
-    gap: 12,
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+    marginTop: SPACE.xs,
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.accentLine,
   },
-  metricCard: {
-    flex: 1,
-    minHeight: 94,
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: 'rgba(248, 242, 234, 0.78)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  metricValue: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  metricLabel: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-  },
+
+  /* Sections ------------------------------------------------------ */
   section: {
-    marginTop: 24,
-    marginHorizontal: 20,
+    paddingHorizontal: SPACE.gutter,
+    marginTop: SPACE.section,
+    gap: SPACE.sm,
   },
-  sectionHeader: {
-    marginBottom: 12,
+  sectionHeadRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
   sectionTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 18,
-    fontWeight: '800',
+    ...TYPE.title,
   },
-  sectionLink: {
-    color: CLINICAL_COLORS.accentStrong,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  changeCard: {
-    marginTop: 10,
-    borderRadius: 22,
-    padding: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  changeTopRow: {
+
+  /* Rows — hairline-separated, not cards -------------------------- */
+  actionRow: {
+    minHeight: 64,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  changeDomain: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    letterSpacing: 0.8,
-  },
-  changeTitle: {
-    marginTop: 6,
-    color: CLINICAL_COLORS.text,
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  changeBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  changeBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  changeDetail: {
-    marginTop: 12,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  changeMeta: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-  },
-  quickActionGrid: {
-    gap: 12,
-  },
-  quickActionPrimaryGrid: {
-    gap: 12,
-  },
-  quickActionPrimaryCard: {
-    borderRadius: 22,
-    padding: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-    ...cardShadow,
-  },
-  quickActionPrimaryTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 12,
+    gap: SPACE.md,
+    paddingVertical: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
-  quickActionPrimaryIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  quickActionPrimaryBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(248, 242, 234, 0.78)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  quickActionPrimaryBadgeText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  quickActionPrimaryTitle: {
-    marginTop: 14,
-    color: CLINICAL_COLORS.text,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  quickActionPrimaryText: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  quickActionMiniGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  quickActionMiniCard: {
-    width: '48.2%',
-    minHeight: 158,
-    borderRadius: 22,
-    padding: 16,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    gap: 10,
-    ...cardShadow,
-  },
-  quickActionMiniCardMuted: {
-    opacity: 0.86,
-  },
-  quickActionMiniTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 10,
-  },
-  quickActionOrderBadge: {
-    minWidth: 36,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: 'rgba(248, 242, 234, 0.82)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-  },
-  quickActionOrderText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  quickActionMiniBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-  },
-  quickActionMiniBadgeText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  quickActionMiniIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickActionMiniTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  quickActionMiniText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  toggleChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.panel,
-  },
-  toggleChipActive: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  toggleChipText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  toggleChipTextActive: {
-    color: CLINICAL_COLORS.text,
-  },
-  bodyCard: {
-    borderRadius: 24,
-    padding: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  lateralityWrap: {
-    marginTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  lateralityTag: {
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  lateralityTagText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  timelineCard: {
-    marginTop: 10,
-    borderRadius: 20,
-    padding: 16,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  timelineHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 12,
-  },
-  timelineTag: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-  },
-  timelineTagText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  timelineTime: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-  },
-  timelineTitle: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  timelineText: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  timelinePanel: {
-    marginTop: 10,
-    borderRadius: 24,
-    padding: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  timelineRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  timelineRail: {
-    width: 18,
-    alignItems: 'center',
-  },
-  timelineDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginTop: 8,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
-  },
-  timelineLine: {
+  /** A 2pt bar carries urgency by colour, costs no horizontal room,
+   *  and replaces the tinted icon square. */
+  rowStripe: {
     width: 2,
-    flex: 1,
-    marginTop: 6,
-    marginBottom: -8,
-    backgroundColor: CLINICAL_TINTS.accentBorder,
+    alignSelf: 'stretch',
+    borderRadius: 1,
   },
-  timelineContent: {
+  /** No longer rendered — kept so an un-migrated caller compiles.
+   *  Icons in tinted squares are the look this pass removed. */
+  rowTextWrap: {
     flex: 1,
-    paddingBottom: 18,
+    gap: 2,
   },
-  timelineFooterAction: {
-    marginTop: 6,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+  rowTitle: {
+    ...TYPE.heading,
+  },
+  rowSubtitle: {
+    ...TYPE.caption,
+  },
+  trendBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    gap: SPACE.xs,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: HAIRLINE,
   },
-  timelineFooterText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
+  trendBadgeText: {
+    fontSize: 11,
+    lineHeight: 15,
     fontWeight: '700',
   },
-  reportCard: {
-    marginTop: 10,
-    borderRadius: 20,
-    padding: 16,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-  },
-  reportHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  reportTitle: {
-    flex: 1,
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  reportTime: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-  },
-  reportText: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
+
   reviewItem: {
-    marginTop: 10,
-    borderRadius: 18,
-    padding: 14,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
     flexDirection: 'row',
-    gap: 10,
     alignItems: 'flex-start',
+    gap: SPACE.sm,
+    paddingVertical: SPACE.xs,
   },
   reviewItemText: {
     flex: 1,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
+    ...TYPE.body,
+    fontSize: 14,
+    lineHeight: 21,
   },
-  emptyCard: {
-    marginTop: 10,
-    borderRadius: 20,
-    padding: 18,
-    backgroundColor: CLINICAL_TINTS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderSubtle,
-  },
-  emptyTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  emptyText: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  errorCard: {
-    borderRadius: 22,
-    padding: 18,
-    backgroundColor: 'rgba(212, 106, 84, 0.12)',
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.dangerBorder,
-  },
-  errorTitle: {
-    color: CLINICAL_COLORS.danger,
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  errorText: {
-    marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  retryButton: {
-    alignSelf: 'flex-start',
-    marginTop: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.danger,
-  },
-  retryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
+
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    backgroundColor: 'rgba(248, 242, 234, 0.76)',
+    gap: SPACE.md,
+    backgroundColor: COLOR.paper,
   },
   loadingText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    fontWeight: '600',
+    ...TYPE.caption,
   },
 });

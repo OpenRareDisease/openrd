@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  Alert,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -14,7 +15,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Icon from '../common/Icon';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import Button from '../common/Button';
+import AnswerText from '../common/AnswerText';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   ApiError,
@@ -27,7 +31,8 @@ import {
   updateMyConsent,
 } from '../../lib/api';
 import { streamAiQuestion } from '../../lib/ai-streaming';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { formatCitationLabel } from '../../lib/citation-label';
+import { COLOR, INTERACTION, MOTION } from '../../lib/design';
 import { bumpConsentEpoch, getConsentEpoch } from '../../lib/consent-epoch';
 import { useProfileContext } from '../../contexts/ProfileContext';
 import { collectProfileGaps } from '../../lib/data-asset';
@@ -36,6 +41,7 @@ import { normalizeCitationIndexes, parseCitationSegments } from './citations';
 import { buildCitationSummary, humanizeToolName } from './humanize';
 import { synthesizeLegacyToolCalls, type AssistantMetadata } from './metadata';
 import { pickCurrentMode } from './mode';
+import { useAppDialog } from '../common/feedback/AppDialog';
 import styles from './styles';
 
 // Backed by `QNA_CHAT_STORAGE_KEY` in lib/api so the AuthContext's
@@ -101,7 +107,7 @@ const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
   // Precise mode is the sensitive one ("AI can see raw values") so it
   // earns the accent colour. Strict mode is the safe default and uses
   // a muted shield treatment to read as "normal".
-  const color = isPrecise ? CLINICAL_COLORS.accentStrong : CLINICAL_COLORS.textMuted;
+  const color = isPrecise ? COLOR.accent : COLOR.inkMuted;
   return (
     <View
       style={{
@@ -113,16 +119,12 @@ const ModeBadge = ({ mode }: { mode: 'strict' | 'precise' | null }) => {
         borderRadius: 12,
         borderWidth: 1,
         borderColor: color,
-        backgroundColor: CLINICAL_COLORS.panel,
+        backgroundColor: COLOR.surface,
       }}
       accessibilityRole="text"
       accessibilityLabel={`当前隐私模式：${label}`}
     >
-      <FontAwesome6
-        name={isPrecise ? 'wand-magic-sparkles' : 'shield-halved'}
-        size={10}
-        color={color}
-      />
+      <Icon name={isPrecise ? 'wand-magic-sparkles' : 'shield-halved'} size={10} color={color} />
       <Text style={{ color, fontSize: 11, fontWeight: '700' }}>{label}</Text>
     </View>
   );
@@ -177,7 +179,9 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
 
   if (!citationLine && !showCitations && !showTrace) return null;
 
-  const citationFiles = citations.map((c) => c.sourceFile).filter((f): f is string => Boolean(f));
+  // Raw ingest filenames — 「gkaf643.pdf」、「…_副本.pdf」— defeat the
+  // point of naming a source. See lib/citation-label.ts.
+  const citationFiles = citations.map((c) => formatCitationLabel(c.sourceFile));
   const citationFilesPreview = citationFiles.slice(0, 3).join('、');
   const citationOverflow = citationFiles.length > 3 ? '…' : '';
 
@@ -187,36 +191,31 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
         marginTop: 10,
         paddingTop: 10,
         borderTopWidth: 1,
-        borderTopColor: CLINICAL_COLORS.border,
+        borderTopColor: COLOR.line,
         gap: 4,
       }}
     >
       {citationLine ? (
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
-          {citationLine}
-        </Text>
+        <Text style={{ color: COLOR.inkMuted, fontSize: 11, lineHeight: 16 }}>{citationLine}</Text>
       ) : null}
       {showTrace ? (
         <>
-          <TouchableOpacity
-            onPress={() => setTraceExpanded((prev) => !prev)}
-            activeOpacity={0.7}
-            accessibilityRole="button"
+          <Button
+            label={`AI 思考过程 (${toolCalls.length} 步)`}
+            icon="wand-magic-sparkles"
+            trailingIcon={traceExpanded ? 'chevron-up' : 'chevron-down'}
+            variant="plain"
+            compact
             accessibilityLabel={
               traceExpanded ? '收起 AI 思考过程' : `展开 AI 思考过程（${toolCalls.length} 步）`
             }
-          >
-            <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11, lineHeight: 16 }}>
-              🔧 AI 思考过程 ({toolCalls.length} 步)
-              {'  '}
-              {traceExpanded ? '▲ 收起' : '▼ 展开'}
-            </Text>
-          </TouchableOpacity>
+            onPress={() => setTraceExpanded((prev) => !prev)}
+          />
           {traceExpanded ? (
             <View style={{ marginTop: 4, gap: 6 }}>
               {toolCalls.map((call) => {
                 const isError = call.status === 'error';
-                const statusColor = isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.success;
+                const statusColor = isError ? COLOR.warn : COLOR.good;
                 return (
                   <View
                     key={call.toolCallId}
@@ -230,7 +229,7 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                       <Text
                         style={{
-                          color: CLINICAL_COLORS.text,
+                          color: COLOR.ink,
                           fontSize: 11,
                           lineHeight: 16,
                           fontWeight: '600',
@@ -242,16 +241,14 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                         {isError ? '失败' : '成功'}
                       </Text>
                     </View>
-                    <Text
-                      style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10, lineHeight: 14 }}
-                    >
+                    <Text style={{ color: COLOR.inkMuted, fontSize: 10, lineHeight: 14 }}>
                       返回 {call.chunkCount} 段
                       {call.latencyMs != null ? ` · ${call.latencyMs}ms` : ''}
                     </Text>
                     {isError && call.errorDetail ? (
                       <Text
                         style={{
-                          color: CLINICAL_COLORS.warning,
+                          color: COLOR.warn,
                           fontSize: 10,
                           lineHeight: 14,
                           fontStyle: 'italic',
@@ -270,25 +267,19 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
       ) : null}
       {showCitations ? (
         <>
-          <TouchableOpacity
-            onPress={() => setExpanded((prev) => !prev)}
-            activeOpacity={0.7}
-            accessibilityRole="button"
+          <Button
+            label={
+              citationFilesPreview
+                ? `引用 ${citations.length} 条：${citationFilesPreview}${citationOverflow}`
+                : `引用 ${citations.length} 条`
+            }
+            icon="link"
+            trailingIcon={expanded ? 'chevron-up' : 'chevron-down'}
+            variant="plain"
+            compact
             accessibilityLabel={expanded ? '收起引用列表' : `展开 ${citations.length} 条引用详情`}
-          >
-            <Text
-              style={{
-                color: CLINICAL_COLORS.textMuted,
-                fontSize: 11,
-                lineHeight: 16,
-              }}
-            >
-              📎 引用 {citations.length} 条
-              {citationFilesPreview ? `：${citationFilesPreview}${citationOverflow}` : ''}
-              {'  '}
-              {expanded ? '▲ 收起' : '▼ 展开'}
-            </Text>
-          </TouchableOpacity>
+            onPress={() => setExpanded((prev) => !prev)}
+          />
           {expanded ? (
             <View style={{ marginTop: 4, gap: 8 }}>
               {citations.map((c, idx) => (
@@ -297,19 +288,19 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                   style={{
                     paddingLeft: 8,
                     borderLeftWidth: 2,
-                    borderLeftColor: CLINICAL_COLORS.border,
+                    borderLeftColor: COLOR.line,
                     gap: 2,
                   }}
                 >
                   <Text
                     style={{
-                      color: CLINICAL_COLORS.text,
+                      color: COLOR.ink,
                       fontSize: 11,
                       lineHeight: 16,
                       fontWeight: '600',
                     }}
                   >
-                    {idx + 1}. {c.sourceFile ?? c.source}
+                    {idx + 1}. {formatCitationLabel(c.sourceFile, c.source)}
                     {c.chunkIndex !== null && c.chunkIndex !== undefined
                       ? ` · 段 ${c.chunkIndex}`
                       : ''}
@@ -317,7 +308,7 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                   {c.snippet ? (
                     <Text
                       style={{
-                        color: CLINICAL_COLORS.textMuted,
+                        color: COLOR.inkMuted,
                         fontSize: 11,
                         lineHeight: 16,
                       }}
@@ -333,16 +324,14 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
         </>
       ) : null}
       {firstGap ? (
-        <TouchableOpacity
-          onPress={() => router.push(firstGap.route)}
-          activeOpacity={0.7}
-          accessibilityRole="button"
+        <Button
+          label={`补上「${firstGap.label}」，AI 的回答会更贴合你的情况`}
+          trailingIcon="arrow-right"
+          variant="plain"
+          compact
           accessibilityLabel={`补充${firstGap.label}，获得更贴合的回答`}
-        >
-          <Text style={{ color: CLINICAL_COLORS.accentStrong, fontSize: 11, lineHeight: 16 }}>
-            补上「{firstGap.label}」，AI 的回答会更贴合你的情况 →
-          </Text>
-        </TouchableOpacity>
+          onPress={() => router.push(firstGap.route)}
+        />
       ) : null}
     </View>
   );
@@ -380,14 +369,37 @@ const renderMessageContent = (
     isUser ? styles.messageTextUser : styles.messageTextAssistant,
   ];
 
-  if (citations.length === 0) {
+  // The user's own message is never Markdown, and running it through
+  // the answer formatter would reflow whatever they typed — a question
+  // like「- 是什么意思」would come back as a bullet.
+  if (isUser) {
     return <Text style={baseStyle}>{message.content}</Text>;
   }
 
-  const segments = parseCitationSegments(message.content, citations.length);
+  if (citations.length === 0) {
+    return <AnswerText style={StyleSheet.flatten(baseStyle)}>{message.content}</AnswerText>;
+  }
 
   return (
-    <Text style={baseStyle}>
+    <AnswerText
+      style={StyleSheet.flatten(baseStyle)}
+      renderText={(text) => renderCitationSegments(text, citations, onCitationPress)}
+    >
+      {message.content}
+    </AnswerText>
+  );
+};
+
+/** `[1]` → a tappable marker, applied inside whatever block the
+ *  formatter produced. */
+const renderCitationSegments = (
+  text: string,
+  citations: AiCitation[],
+  onCitationPress: (indexes: number[], citations: AiCitation[]) => void,
+) => {
+  const segments = parseCitationSegments(text, citations.length);
+  return (
+    <>
       {segments.map((seg, idx) => {
         if (seg.type === 'text') {
           // eslint-disable-next-line react/no-array-index-key
@@ -401,7 +413,7 @@ const renderMessageContent = (
             accessibilityRole="link"
             accessibilityLabel={`查看引用 ${seg.indexes.join('、')}`}
             style={{
-              color: CLINICAL_COLORS.accentStrong,
+              color: COLOR.accent,
               fontWeight: '700',
               // Underline via textDecorationLine is the cross-platform
               // way to render a link affordance inline. Background
@@ -413,7 +425,7 @@ const renderMessageContent = (
           </Text>
         );
       })}
-    </Text>
+    </>
   );
 };
 
@@ -452,17 +464,21 @@ const CitationPopoverModal = ({
         accessibilityLabel="关闭引用详情"
         style={{
           flex: 1,
-          backgroundColor: 'rgba(0,0,0,0.45)',
+          backgroundColor: COLOR.scrim,
           justifyContent: 'flex-end',
         }}
       >
         {/* The inner card stops bubble-up so taps INSIDE the sheet
          *  don't close it. Pressable + onPress=undefined would still
          *  capture but not respond, which is what we want. */}
+        {/* Structural bubble-stopper, never a control — without
+            accessible={false} it swallows the whole citation sheet
+            into one element, the same defect the 3 modals had. */}
         <Pressable
+          accessible={false}
           onPress={() => {}}
           style={{
-            backgroundColor: CLINICAL_COLORS.backgroundRaised,
+            backgroundColor: COLOR.well,
             borderTopLeftRadius: 18,
             borderTopRightRadius: 18,
             paddingHorizontal: 18,
@@ -479,16 +495,17 @@ const CitationPopoverModal = ({
               justifyContent: 'space-between',
             }}
           >
-            <Text style={{ color: CLINICAL_COLORS.text, fontSize: 14, fontWeight: '700' }}>
+            <Text style={{ color: COLOR.ink, fontSize: 14, fontWeight: '700' }}>
               引用详情 · {visibleIndexes.length} 条
             </Text>
             <TouchableOpacity
               onPress={onClose}
               accessibilityRole="button"
-              accessibilityLabel="关闭"
-              hitSlop={10}
+              accessibilityLabel="关闭引用详情"
+              // 16pt glyph + 10 was 36pt. 16 clears MIN_TOUCH_TARGET.
+              hitSlop={16}
             >
-              <FontAwesome6 name="xmark" size={16} color={CLINICAL_COLORS.textMuted} />
+              <Icon name="xmark" size={16} color={COLOR.inkMuted} />
             </TouchableOpacity>
           </View>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
@@ -500,19 +517,19 @@ const CitationPopoverModal = ({
                   style={{
                     paddingLeft: 10,
                     borderLeftWidth: 3,
-                    borderLeftColor: CLINICAL_COLORS.accent,
+                    borderLeftColor: COLOR.accent,
                     gap: 4,
                   }}
                 >
                   <Text
                     style={{
-                      color: CLINICAL_COLORS.text,
+                      color: COLOR.ink,
                       fontSize: 12,
                       fontWeight: '700',
                       lineHeight: 17,
                     }}
                   >
-                    [{i}] {c.sourceFile ?? c.source}
+                    [{i}] {formatCitationLabel(c.sourceFile, c.source)}
                     {c.chunkIndex !== null && c.chunkIndex !== undefined
                       ? ` · 段 ${c.chunkIndex}`
                       : ''}
@@ -520,7 +537,7 @@ const CitationPopoverModal = ({
                   {c.snippet ? (
                     <Text
                       style={{
-                        color: CLINICAL_COLORS.textSoft,
+                        color: COLOR.inkSoft,
                         fontSize: 12,
                         lineHeight: 18,
                       }}
@@ -530,7 +547,7 @@ const CitationPopoverModal = ({
                   ) : (
                     <Text
                       style={{
-                        color: CLINICAL_COLORS.textMuted,
+                        color: COLOR.inkMuted,
                         fontSize: 12,
                         fontStyle: 'italic',
                       }}
@@ -551,6 +568,7 @@ const CitationPopoverModal = ({
 const P_QNA = () => {
   const { token } = useAuth();
   const router = useRouter();
+  const { confirm, notify } = useAppDialog();
   const params = useLocalSearchParams();
   const scrollViewRef = useRef<ScrollView | null>(null);
   const inputRef = useRef<TextInput | null>(null);
@@ -588,6 +606,15 @@ const P_QNA = () => {
   // the epoch read before snapshotting history — the closure value
   // could be stale by then).
   const messagesRef = useRef<ChatMessage[]>(messages);
+
+  /** Newest message still blocked on consent, if any. */
+  const latestConsentPromptId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.status === 'error' && m.failedQuestion && m.consentRequired) return m.id;
+    }
+    return null;
+  }, [messages]);
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
@@ -674,36 +701,38 @@ const P_QNA = () => {
     return () => clearTimeout(timer);
   }, [messages, askProgress]);
 
-  const handleClearConversation = () => {
-    Alert.alert('清空对话', '将删除本地聊天记录并重新开始一个新会话。', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '清空',
-        style: 'destructive',
-        onPress: () => {
-          if (progressTimerRef.current) {
-            clearInterval(progressTimerRef.current);
-            progressTimerRef.current = null;
-          }
-          // Abort any in-flight SSE so the orchestrator sees the
-          // disconnect and stops billing tokens. Without this, the
-          // server-side stream keeps running, `onComplete` fires
-          // later against a now-empty conversation, and the user's
-          // `isSending` stays true so they can't ask a new question.
-          if (streamHandleRef.current) {
-            streamHandleRef.current.close();
-            streamHandleRef.current = null;
-          }
-          setIsSending(false);
-          setAskProgress(null);
-          setDraft('');
-          setMessages([createWelcomeMessage()]);
-          AsyncStorage.removeItem(CHAT_STORAGE_KEY).catch(() => {
-            // Ignore storage cleanup failures.
-          });
-        },
-      },
-    ]);
+  /** Destroys the local transcript, and on web the confirmation step
+   *  never ran: `Alert.alert` is an empty function there, so 清空 wiped
+   *  the conversation on the first press. */
+  const handleClearConversation = async () => {
+    const confirmed = await confirm({
+      title: '清空对话',
+      message: '将删除本地聊天记录并重新开始一个新会话。',
+      confirmLabel: '清空',
+      destructive: true,
+    });
+    if (!confirmed) return;
+
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    // Abort any in-flight SSE so the orchestrator sees the disconnect
+    // and stops billing tokens. Without this, the server-side stream
+    // keeps running, `onComplete` fires later against a now-empty
+    // conversation, and the user's `isSending` stays true so they
+    // can't ask a new question.
+    if (streamHandleRef.current) {
+      streamHandleRef.current.close();
+      streamHandleRef.current = null;
+    }
+    setIsSending(false);
+    setAskProgress(null);
+    setDraft('');
+    setMessages([createWelcomeMessage()]);
+    AsyncStorage.removeItem(CHAT_STORAGE_KEY).catch(() => {
+      // Ignore storage cleanup failures.
+    });
   };
 
   const handleSendPress = () => {
@@ -711,7 +740,14 @@ const P_QNA = () => {
     if (!question || isSending) return;
 
     if (!token) {
-      Alert.alert('请先登录', '登录后才能使用智能问答功能。');
+      notify({
+        title: '请先登录',
+        message: '登录后才能使用智能问答功能。',
+        tone: 'info',
+        // The old Alert only named the problem. The route is one tap
+        // away, so offer it rather than making the patient find it.
+        action: { label: '去登录', onPress: () => router.push('/p-login_register') },
+      });
       return;
     }
 
@@ -743,7 +779,7 @@ const P_QNA = () => {
         error instanceof ApiError && error.status === 404
           ? '请先在「我的 → 编辑档案」完成基础档案，再开启 AI 授权。'
           : getFriendlyErrorMessage(error);
-      Alert.alert('授权失败', detail);
+      notify({ title: '授权失败', message: detail, tone: 'error' });
     } finally {
       setIsGrantingConsent(false);
     }
@@ -938,6 +974,19 @@ const P_QNA = () => {
           }),
         );
       }
+
+      // The server discarded what it had already streamed and re-asked.
+      // Replace rather than append: the retry's answer is a fresh reply
+      // to the question, not a continuation of the abandoned lead-in.
+      if (event.type === 'answer_reset') {
+        accumulatedAnswer = event.text;
+        receivedAnyDelta = true;
+        setMessages((prev) =>
+          prev.map((item) =>
+            item.id === assistantMessageId ? { ...item, content: event.text } : item,
+          ),
+        );
+      }
     };
 
     streamHandleRef.current = streamAiQuestion(
@@ -1129,22 +1178,29 @@ const P_QNA = () => {
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
+        {/* 问答 is a tab now, so the back control this header used to
+            carry is gone — the bar is the way out, and an arrow above
+            it would point nowhere the bar doesn't already go. What it
+            needs instead is the same title treatment 今天 and 我的
+            have, or the screen opens on a paragraph of small grey
+            text with no name on it. */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.eyebrow}>SMART CHAT</Text>
-            <Text style={styles.pageTitle}>智能问答</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.pageTitle}>问答</Text>
             <Text style={styles.pageSubtitle}>
               每条问题独立检索；回答下方会标明引用来源和是否用到你的资料。
             </Text>
           </View>
-          <TouchableOpacity
-            style={styles.headerAction}
-            activeOpacity={0.82}
-            onPress={handleClearConversation}
-          >
-            <FontAwesome6 name="trash-can" size={12} color={CLINICAL_COLORS.text} />
-            <Text style={styles.headerActionText}>清空</Text>
-          </TouchableOpacity>
+          <Button
+            label="清空"
+            icon="trash-can"
+            variant="destructive"
+            compact
+            accessibilityLabel="清空对话"
+            onPress={() => {
+              void handleClearConversation();
+            }}
+          />
         </View>
 
         <View
@@ -1157,16 +1213,16 @@ const P_QNA = () => {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: CLINICAL_COLORS.backgroundRaised,
+            backgroundColor: COLOR.well,
             borderWidth: 1,
-            borderColor: CLINICAL_COLORS.border,
+            borderColor: COLOR.line,
           }}
         >
-          <FontAwesome6 name="circle-info" size={11} color={CLINICAL_COLORS.textMuted} />
+          <Icon name="circle-info" size={11} color={COLOR.inkMuted} />
           <Text
             style={{
               flex: 1,
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 11,
               lineHeight: 16,
             }}
@@ -1185,6 +1241,12 @@ const P_QNA = () => {
         >
           {messages.map((message) => {
             const isUser = message.role === 'user';
+            // Only the newest consent-blocked bubble offers the grant
+            // action. Consent is global, so an older bubble's button
+            // does the same thing — but each one rendered a filled
+            // accent 「允许并继续」, and asking three times before
+            // granting stacked three primaries down the transcript.
+            const isLatestConsentPrompt = message.id === latestConsentPromptId;
             const isError = message.status === 'error';
             const isLoading = message.status === 'loading';
 
@@ -1199,8 +1261,12 @@ const P_QNA = () => {
             }
 
             return (
-              <View
+              <Animated.View
                 key={message.id}
+                // A message that simply appears reads as the whole list
+                // re-rendering. Entering from below is what marks it as
+                // the new one.
+                entering={FadeInDown.springify().damping(MOTION.present.damping)}
                 style={[
                   styles.messageRow,
                   isUser ? styles.messageRowUser : styles.messageRowAssistant,
@@ -1210,10 +1276,10 @@ const P_QNA = () => {
                   <View
                     style={[styles.avatar, isError ? styles.avatarError : styles.avatarAssistant]}
                   >
-                    <FontAwesome6
+                    <Icon
                       name={isError ? 'triangle-exclamation' : 'robot'}
                       size={12}
-                      color={isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.accentStrong}
+                      color={isError ? COLOR.warn : COLOR.accent}
                     />
                   </View>
                 ) : null}
@@ -1232,55 +1298,46 @@ const P_QNA = () => {
                     setCitationPopover({ indexes, citations }),
                   )}
                   <AssistantMetadataBlock message={message} />
-                  {isError && message.failedQuestion && message.consentRequired ? (
+                  {isError &&
+                  message.failedQuestion &&
+                  message.consentRequired &&
+                  isLatestConsentPrompt ? (
                     <View style={styles.consentCard}>
                       <Text style={styles.consentCardText}>
                         允许后，AI
                         会引用你档案与报告中已脱敏的内容回答，问题将发送到云端大模型处理。你可以随时在「隐私设置」撤回授权。
                       </Text>
-                      <TouchableOpacity
-                        style={[
-                          styles.consentGrantButton,
-                          (isSending || isGrantingConsent) && styles.consentGrantButtonDisabled,
-                        ]}
-                        activeOpacity={0.85}
-                        disabled={isSending || isGrantingConsent}
+                      <Button
+                        label="允许并继续"
+                        icon="check"
+                        variant="prominent"
+                        busy={isGrantingConsent}
+                        disabled={isSending}
                         onPress={() => void handleGrantConsentAndRetry(message)}
-                      >
-                        <FontAwesome6 name="check" size={13} color="#FFFFFF" />
-                        <Text style={styles.consentGrantButtonText}>
-                          {isGrantingConsent ? '正在授权...' : '允许并继续'}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.consentDetailLink}
-                        activeOpacity={0.7}
+                      />
+                      <Button
+                        label="查看详细设置"
+                        variant="plain"
+                        compact
                         onPress={() => router.push('/p-privacy_settings')}
-                      >
-                        <Text style={styles.consentDetailLinkText}>查看详细设置</Text>
-                      </TouchableOpacity>
+                      />
                     </View>
                   ) : isError && message.failedQuestion ? (
-                    <TouchableOpacity
-                      style={styles.retryButton}
-                      activeOpacity={0.85}
+                    <Button
+                      label="重试这个问题"
+                      icon="rotate-right"
+                      variant="tinted"
+                      compact
                       disabled={isSending}
                       onPress={() => handleRetry(message)}
-                    >
-                      <FontAwesome6
-                        name="rotate-right"
-                        size={12}
-                        color={CLINICAL_COLORS.accentStrong}
-                      />
-                      <Text style={styles.retryButtonText}>重试这个问题</Text>
-                    </TouchableOpacity>
+                    />
                   ) : null}
                   <View style={styles.messageMetaRow}>
                     <Text style={styles.messageTime}>{formatMessageTime(message.createdAt)}</Text>
                     {isLoading ? <Text style={styles.messageStateText}>处理中</Text> : null}
                   </View>
                 </View>
-              </View>
+              </Animated.View>
             );
           })}
 
@@ -1293,7 +1350,7 @@ const P_QNA = () => {
               ref={inputRef}
               style={styles.composerInput}
               placeholder="输入你想问的 FSHD 问题..."
-              placeholderTextColor={CLINICAL_COLORS.textMuted}
+              placeholderTextColor={COLOR.inkMuted}
               value={draft}
               onChangeText={setDraft}
               multiline
@@ -1303,15 +1360,19 @@ const P_QNA = () => {
             />
             <TouchableOpacity
               style={[styles.sendButton, (!draft.trim() || isSending) && styles.sendButtonDisabled]}
-              activeOpacity={0.85}
+              activeOpacity={INTERACTION.pressOpacity}
+              accessibilityRole="button"
+              accessibilityLabel={isSending ? '正在发送' : '发送问题'}
               onPress={handleSendPress}
               disabled={!draft.trim() || isSending}
             >
-              <FontAwesome6
-                name={isSending ? 'spinner' : 'paper-plane'}
-                size={14}
-                color="#FFFFFF"
-              />
+              {/* A spinner glyph that does not spin is worse than no
+                  spinner: it reads as a stuck button. */}
+              {isSending ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Icon name="paper-plane" size={16} color="#FFFFFF" />
+              )}
             </TouchableOpacity>
           </View>
           <Text style={styles.composerHint}>

@@ -1,8 +1,6 @@
-
-
 import React from 'react';
 import { View, Text, Modal, TouchableOpacity, Image, TouchableWithoutFeedback } from 'react-native';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Icon from '../../../common/Icon';
 import styles from './styles';
 
 interface ExpertData {
@@ -26,20 +24,11 @@ interface ExpertDetailModalProps {
   onClose: () => void;
 }
 
-const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
-  visible,
-  expert,
-  onClose,
-}) => {
+const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({ visible, expert, onClose }) => {
   if (!expert) return null;
 
   return (
-    <Modal
-      visible={visible}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent={true} animationType="slide" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
@@ -49,7 +38,7 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>专家详情</Text>
                   <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-                    <FontAwesome6 name="xmark" style={styles.closeIcon} />
+                    <Icon name="xmark" style={styles.closeIcon} />
                   </TouchableOpacity>
                 </View>
 
@@ -78,7 +67,7 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>评分</Text>
                       <View style={styles.ratingContainer}>
-                        <FontAwesome6 name="star" style={styles.detailStarIcon} />
+                        <Icon name="star" style={styles.detailStarIcon} />
                         <Text style={styles.detailValue}>{expert.rating}</Text>
                       </View>
                     </View>
@@ -104,4 +93,3 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
 };
 
 export default ExpertDetailModal;
-

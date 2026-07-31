@@ -1,337 +1,190 @@
-import { StyleSheet, Platform } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { COLOR, ELEVATION, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
+/**
+ * 我的 — re-pitched on lib/design.ts.
+ *
+ * What this replaces
+ * ------------------
+ * Every one of the ~12 destinations on this screen was its own
+ * shadowed, bordered, 8pt-radius panel, grouped into four *more*
+ * bordered sections, each row carrying its icon inside a 40pt tinted
+ * circle colour-coded by nothing in particular (blue / green / purple
+ * assigned by rotation, not by meaning). A settings screen is a list;
+ * that markup made it twelve cards stacked on a card.
+ *
+ * The stance here
+ * ---------------
+ * Rows are rows: a hairline above each, a bare icon in a fixed-width
+ * column so every title starts on the same vertical, a chevron at the
+ * end. The one filled surface is the identity block at the top — the
+ * thing this screen is actually about — and the phone number gets
+ * tabular figures and real size because it is the value the patient
+ * came here to check. Colour is spent only where it means something:
+ * warn on the pending-deletion row, alert on 注销 and 退出登录.
+ */
 export default StyleSheet.create({
+  /** A blocked control. Was an inline `{ opacity: 0.6 }` — a fresh
+   *  object allocated on every render, and a second opinion about what
+   *  「disabled」 looks like alongside Button's own. */
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 80,
+    paddingBottom: 120,
   },
+
+  /* Header -------------------------------------------------------- */
+  // Left-aligned rather than centred: a centred title/subtitle pair is
+  // a marketing header, and it broke the left margin every row below
+  // it aligns to.
   header: {
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-  },
-  headerRow: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  titleSection: {
-    alignItems: 'center',
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.md,
+    paddingBottom: SPACE.xs,
+    gap: SPACE.xs,
   },
   pageTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: CLINICAL_COLORS.accent,
-    marginBottom: 8,
+    ...TYPE.display,
   },
   pageSubtitle: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
-    textAlign: 'center',
+    ...TYPE.caption,
   },
-  userInfoSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+
+  /* Identity — the single filled block ---------------------------- */
+  identity: {
+    marginHorizontal: SPACE.gutter,
+    marginTop: SPACE.lg,
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
+    gap: SPACE.xs,
   },
-  userInfoCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  userProfileInfo: {
+  identityRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: SPACE.md,
   },
-  userAvatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    marginRight: 12,
-  },
-  avatarFallback: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  userDetails: {
+  identityText: {
     flex: 1,
+    gap: 2,
   },
-  userName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 4,
+  /** The phone number is this screen's headline value — tabular
+   *  figures so it reads as an identifier, not as prose. */
+  identityValue: {
+    ...TYPE.metricSmall,
+    fontSize: 21,
+    lineHeight: 27,
   },
-  userId: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
-    marginBottom: 2,
+  /** Role and join date collapsed onto one line. Three stacked
+   *  12–14pt greys were three lines of nothing. */
+  identityMeta: {
+    ...TYPE.caption,
   },
-  userJoinDate: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  editProfileButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  settingsListSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  exploreSectionTitle: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 8,
-    marginLeft: 4,
-  },
+  /** A labelled control instead of a tinted 48pt circle holding a
+   *  pencil: the word says what the icon only implied. */
+
+  /* Groups -------------------------------------------------------- */
+  /** With the section cards gone, this label is the only thing
+   *  separating one group of rows from the next — it names a category
+   *  no row title repeats, so it earns TYPE.micro. */
+
+  /* Rows ---------------------------------------------------------- */
+  /** Fixed width so every title in the list starts on the same
+   *  vertical — the alignment is what makes a bare icon read as
+   *  structure rather than as clip-art. */
+  /** Destructive and pending states. Colour on the title, not a
+   *  tinted box around the icon. */
+
+  /** A pill that means something: 即将上线 is a status. */
   comingSoonBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    backgroundColor: COLOR.surface,
   },
   comingSoonBadgeText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 10,
-    fontWeight: '700',
+    ...TYPE.micro,
+    letterSpacing: 0,
+    color: COLOR.inkFaint,
   },
-  settingsList: {
-    gap: 8,
-  },
-  settingItem: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  settingItemContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  settingItemLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  settingIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  blueIconContainer: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  greenIconContainer: {
-    backgroundColor: CLINICAL_TINTS.successSoft,
-  },
-  purpleIconContainer: {
-    backgroundColor: CLINICAL_TINTS.accentStrong,
-  },
-  settingTextContainer: {
-    flex: 1,
-  },
-  settingTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 2,
-  },
-  settingSubtitle: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  logoutItem: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    marginTop: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  logoutItemContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  logoutText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.danger,
-  },
-  versionInfoSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
+
+  /* Sign out ------------------------------------------------------ */
+
+  /* Footer -------------------------------------------------------- */
   versionInfo: {
+    marginTop: SPACE.xl,
+    paddingHorizontal: SPACE.gutter,
     alignItems: 'center',
+    gap: 2,
   },
   versionText: {
+    ...TYPE.caption,
     fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-    marginBottom: 4,
+    color: COLOR.inkFaint,
   },
   copyrightText: {
+    ...TYPE.caption,
     fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkFaint,
   },
+
+  /* Modals — the only things here that genuinely float ------------- */
   modalOverlay: {
     flex: 1,
-    backgroundColor: CLINICAL_TINTS.modalOverlay,
+    backgroundColor: 'rgba(23, 39, 46, 0.32)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 16,
+    padding: SPACE.lg,
   },
   modalContainer: {
     width: '100%',
-    maxWidth: 320,
+    maxWidth: 340,
   },
   modalContent: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 12,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    ...SURFACE.card,
+    padding: SPACE.xl,
+    gap: SPACE.sm,
+    ...ELEVATION.button,
   },
-  modalIconContainer: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: CLINICAL_TINTS.dangerSoft,
+  /** Bare icon beside the title. The 64pt tinted circle it replaces
+   *  was the most "generic app" object on the screen, and it pushed
+   *  the actual question a third of the way down the dialog. */
+  modalHead: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
+    gap: SPACE.sm,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
-    textAlign: 'center',
+    ...TYPE.title,
   },
   modalMessage: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
-    marginBottom: 24,
-    textAlign: 'center',
+    ...TYPE.body,
+    marginBottom: SPACE.md,
   },
   modalButtonContainer: {
     flexDirection: 'row',
-    gap: 12,
-    width: '100%',
-  },
-  cancelButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.textSoft,
-  },
-  confirmButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.danger,
-    alignItems: 'center',
-  },
-  confirmButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
+    gap: SPACE.md,
   },
   deleteConfirmInput: {
     alignSelf: 'stretch',
-    marginTop: 4,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: CLINICAL_COLORS.panel,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
+    marginBottom: SPACE.sm,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    ...SURFACE.well,
+    color: COLOR.ink,
+    fontSize: 15,
+    fontVariant: ['tabular-nums'],
   },
   deleteErrorText: {
     alignSelf: 'stretch',
-    marginBottom: 8,
-    color: CLINICAL_COLORS.danger,
-    fontSize: 12,
+    marginBottom: SPACE.sm,
+    ...TYPE.caption,
+    color: COLOR.alert,
   },
 });

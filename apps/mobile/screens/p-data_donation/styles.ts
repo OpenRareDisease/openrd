@@ -1,247 +1,147 @@
-import { StyleSheet, Platform } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { COLOR, ELEVATION, HAIRLINE, SPACE, SURFACE, TYPE } from '../../lib/design';
 
+/**
+ * 数据捐赠 — re-pitched on lib/design.ts.
+ *
+ * The previous version was five stacked cards — intro,每一条流程, the
+ * toggle, and both status states — each with its own border, its own
+ * 32pt-radius shadow and its own tinted icon circle. Nothing was more
+ * important than anything else, and the one thing the screen exists to
+ * do (grant or revoke the donation authorisation) looked exactly like
+ * the marketing paragraph above it.
+ *
+ * Now: the page is paper. The intro is set directly on it as the page's
+ * real headline. 捐赠流程 is three hairline-separated rows, its numerals
+ * kept because 授权 → 脱敏 → 科研使用 is a genuine sequence, but stripped
+ * of the three arbitrary tinted circles. The authorisation block is the
+ * single filled surface. The status is a short block marked by a 2pt
+ * semantic stripe rather than boxed again.
+ */
 export default StyleSheet.create({
+  /** A blocked control. Was an inline `{ opacity: 0.6 }` — a fresh
+   *  object allocated on every render, and a second opinion about what
+   *  「disabled」 looks like alongside Button's own. */
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
   scrollView: {
     flex: 1,
   },
+
+  /* Header -------------------------------------------------------- */
+  /** Only the page-specific chrome; layout, title and touch targets
+   *  come from common/ScreenHeader, which also adds the 首页 control
+   *  this screen used to lack. */
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+    paddingVertical: SPACE.sm,
   },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  pageTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-  },
-  headerSpacer: {
-    width: 40,
-  },
+
+  /* Intro — set on the page, no card ------------------------------ */
   donationIntroSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+    paddingHorizontal: SPACE.gutter,
+    marginTop: SPACE.md,
+    marginBottom: SPACE.section,
   },
   introCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    gap: SPACE.sm,
   },
+  /** Was a 40pt gradient circle holding a heart — the most literal
+   *  "icon in a tinted round box" tell on the screen. Hidden here so
+   *  the JSX still compiles; the <LinearGradient> and its
+   *  expo-linear-gradient import should be deleted from index.tsx. */
   donationIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
+    display: 'none',
   },
+  /** The real page title. Left-aligned: a record is a column of text,
+   *  and centred paragraphs are the giveaway of a promo screen. */
   introTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
-    textAlign: 'center',
+    ...TYPE.display,
+    textAlign: 'left',
   },
   introDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    textAlign: 'center',
-    lineHeight: 18,
+    ...TYPE.body,
+    textAlign: 'left',
   },
+
+  /* 捐赠流程 — hairline rows -------------------------------------- */
   donationProcessSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+    paddingHorizontal: SPACE.gutter,
+    marginBottom: SPACE.section,
   },
   sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
+    ...TYPE.title,
+    marginBottom: SPACE.xs,
   },
+  /** No gap: the rows are separated by their own top hairline, so a
+   *  gap would break the rule into segments. */
   processSteps: {
-    gap: 8,
+    gap: 0,
   },
   processStep: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 12,
     flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    alignItems: 'flex-start',
+    paddingVertical: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
+  /** A numbering column, not a badge. The numbers stay — 授权 → 脱敏 →
+   *  科研使用 is a real order — but the circle behind them is gone. */
   stepNumber: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
+    width: 18,
+    marginRight: SPACE.md,
+    paddingTop: 2,
   },
-  stepNumberPrimary: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  stepNumberSecondary: {
-    backgroundColor: CLINICAL_TINTS.successSoft,
-  },
-  stepNumberAccent: {
-    backgroundColor: CLINICAL_TINTS.accentStrong,
-  },
+  /** The three tints used to give each step a different colour for no
+   *  reason; steps differ in order, not in kind. Kept as no-ops so the
+   *  screen's `[styles.stepNumber, styles.stepNumberPrimary]` arrays
+   *  still resolve. */
+  stepNumberPrimary: {},
+  stepNumberSecondary: {},
+  stepNumberAccent: {},
   stepNumberTextPrimary: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.accent,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: COLOR.accent,
+    fontVariant: ['tabular-nums'],
   },
   stepNumberTextSecondary: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.success,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: COLOR.accent,
+    fontVariant: ['tabular-nums'],
   },
   stepNumberTextAccent: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.accentStrong,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    color: COLOR.accent,
+    fontVariant: ['tabular-nums'],
   },
   stepContent: {
     flex: 1,
+    gap: 2,
   },
+  /** Was 12pt/10pt — unreadably small for the only explanation a
+   *  patient gets of what happens to their data. */
   stepTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 2,
+    ...TYPE.heading,
   },
   stepDescription: {
-    fontSize: 10,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
-  privacyProtectionSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  privacyCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  privacyFeatures: {
-    gap: 8,
-  },
-  privacyItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  privacyIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  privacyIconGreen: {
-    backgroundColor: CLINICAL_TINTS.successSoft,
-  },
-  privacyIconBlue: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  privacyIconPurple: {
-    backgroundColor: CLINICAL_TINTS.accentStrong,
-  },
-  privacyIconYellow: {
-    backgroundColor: CLINICAL_TINTS.warningSoft,
-  },
-  privacyText: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    flex: 1,
-  },
+
+  /* Authorisation — the one filled surface ------------------------ */
   donationToggleSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+    paddingHorizontal: SPACE.gutter,
+    marginBottom: SPACE.section,
   },
   toggleCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
   },
   toggleContent: {
     flexDirection: 'row',
@@ -249,277 +149,98 @@ export default StyleSheet.create({
   },
   toggleTextContainer: {
     flex: 1,
-    marginRight: 16,
+    marginRight: SPACE.lg,
+    gap: 2,
   },
   toggleTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 4,
+    ...TYPE.heading,
   },
   toggleDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
-  toggleSwitch: {
-    width: 48,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    justifyContent: 'center',
-    paddingHorizontal: 2,
-  },
-  toggleSwitchActive: {
-    backgroundColor: CLINICAL_COLORS.accent,
-  },
-  toggleThumb: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: CLINICAL_COLORS.text,
-    alignSelf: 'flex-start',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  toggleThumbActive: {
-    alignSelf: 'flex-end',
-  },
+  /** A switch track is one of the few places a pill shape carries
+   *  meaning, so RADIUS.pill stays here. */
+  /** White thumb with a hairline instead of a drop shadow — the track
+   *  edge already separates it from the surface. */
+
+  /* 捐赠状态 ------------------------------------------------------ */
   donationStatusSection: {
-    marginHorizontal: 24,
-    marginBottom: 32,
+    paddingHorizontal: SPACE.gutter,
+    marginBottom: SPACE.xxl,
   },
+  /** Not a card: a 2pt neutral stripe marks the state, the way a
+   *  margin rule marks a passage in a chart. */
   notDonatingCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    alignItems: 'flex-start',
+    gap: SPACE.sm,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.lineStrong,
   },
+  /** Bare icon. The grey circle it used to sit in added a shape the
+   *  content did not have. */
   notDonatingIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
+    marginBottom: SPACE.xs,
   },
   notDonatingTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 4,
-    textAlign: 'center',
+    ...TYPE.heading,
+    textAlign: 'left',
   },
   notDonatingDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    textAlign: 'center',
-    marginBottom: 12,
-    lineHeight: 16,
+    ...TYPE.body,
+    textAlign: 'left',
   },
-  enableDonationButton: {
-    backgroundColor: CLINICAL_COLORS.accent,
-    paddingHorizontal: 20,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  enableDonationButtonText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-  },
+  /** Was COLOR.ink on an accent fill — dark on dark-ish
+   *  teal. onAccent is the contrasting pair. */
+  /** Same block, semantic stripe: donation is active. */
   donatingCard: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  progressRingContainer: {
-    position: 'relative',
-    width: 40,
-    height: 40,
-    marginBottom: 8,
-  },
-  progressRing: {
-    position: 'absolute',
-  },
-  progressRingIcon: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'flex-start',
+    gap: SPACE.xs,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.good,
   },
   donatingTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 4,
-    textAlign: 'center',
+    ...TYPE.heading,
+    textAlign: 'left',
   },
   donatingDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    textAlign: 'center',
-    marginBottom: 4,
+    ...TYPE.body,
+    textAlign: 'left',
   },
+  /** A genuine supplementary label (a date), so TYPE.caption with
+   *  tabular figures rather than a 10pt whisper. */
   lastDonationTime: {
-    fontSize: 10,
-    color: CLINICAL_COLORS.textMuted,
-    textAlign: 'center',
-    marginBottom: 12,
+    ...TYPE.caption,
+    textAlign: 'left',
+    fontVariant: ['tabular-nums'],
   },
-  donationStats: {
-    flexDirection: 'row',
-    gap: 48,
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: CLINICAL_COLORS.accent,
-    marginBottom: 2,
-  },
-  statLabel: {
-    fontSize: 10,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: CLINICAL_TINTS.modalOverlay,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalContent: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 12,
-    padding: 16,
-    marginHorizontal: 24,
-    width: '100%',
-    maxWidth: 320,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 8,
-  },
-  modalDescription: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    lineHeight: 18,
-    marginBottom: 16,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  modalCancelButton: {
-    flex: 1,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalCancelButtonText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.textSoft,
-  },
-  modalConfirmButton: {
-    flex: 1,
-    backgroundColor: CLINICAL_COLORS.accent,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalConfirmButtonText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: CLINICAL_COLORS.text,
-  },
+
+  /* The confirm-modal block that used to live here is gone with the
+     screen-local Modal — confirmations come from
+     common/feedback/AppDialog now, which styles them once for the
+     whole app. */
+
+  /* Toast — genuinely floating, so it keeps a shadow --------------- */
   successToast: {
     position: 'absolute',
-    top: 80,
+    top: 72,
     left: '50%',
+    // The screen offsets by half of this width; minWidth pins the
+    // actual width to 150 so the toast is really centred.
+    minWidth: 150,
     transform: [{ translateX: -75 }],
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    justifyContent: 'center',
+    gap: SPACE.sm,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm,
+    ...SURFACE.card,
+    ...ELEVATION.button,
   },
   successToastText: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.text,
+    ...TYPE.label,
+    color: COLOR.ink,
   },
 });
