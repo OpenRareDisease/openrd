@@ -1,5 +1,6 @@
 import type { ClinicalPassportSummary } from './api';
 import { formatDateLabel } from './clinical-visuals';
+import { parseAnswer, type TextSpan } from '../screens/common/answer-format';
 
 const escapeHtml = (value: string) =>
   value
@@ -25,12 +26,126 @@ const renderList = (items: string[], emptyLabel: string) => {
   return items.map((item) => `<li>${escapeHtml(item)}</li>`).join('');
 };
 
+/**
+ * Render the AI visit-prep note as HTML.
+ *
+ * The note is model-authored Markdown, and this file used to
+ * `escapeHtml` it — which is exactly the wrong transform: escaping
+ * guarantees every `**`, `|` and `#` survives into the printout. The
+ * one artefact that leaves the app and reaches a clinician was the
+ * only place the raw syntax was *preserved on purpose*.
+ *
+ * Parsing first and escaping per span keeps the escaping guarantee —
+ * no model-supplied string is ever interpolated unescaped — while
+ * turning the syntax into structure.
+ */
+const renderSpansHtml = (spans: TextSpan[]): string =>
+  spans
+    .map((span) => {
+      const text = escapeHtml(span.text);
+      if (span.code) return `<code>${text}</code>`;
+      let out = text;
+      if (span.bold) out = `<strong>${out}</strong>`;
+      if (span.italic) out = `<em>${out}</em>`;
+      if (span.strike) out = `<s>${out}</s>`;
+      // The href is escaped as an attribute and restricted to http(s):
+      // a model can put any string inside `(...)`, including one that
+      // starts with `javascript:`.
+      if (span.href && /^https?:\/\//i.test(span.href)) {
+        out = `<a href="${escapeHtml(span.href)}">${out}</a>`;
+      }
+      return out;
+    })
+    .join('');
+
+const renderVisitPrepHtml = (raw: string): string => {
+  const blocks = parseAnswer(raw);
+  const html: string[] = [];
+  let openList = false;
+
+  const closeList = () => {
+    if (openList) {
+      html.push('</ul>');
+      openList = false;
+    }
+  };
+
+  for (const block of blocks) {
+    if (block.kind === 'listItem') {
+      if (!openList) {
+        html.push('<ul class="visit-prep-list">');
+        openList = true;
+      }
+      // The marker is printed rather than left to the list style: a
+      // `<ul>` would renumber「1. 2. 3.」into three identical bullets,
+      // and the note's 建议问医生 section is a numbered list of things
+      // to raise in the appointment.
+      html.push(
+        `<li><span class="visit-prep-marker">${escapeHtml(block.marker)}</span>` +
+          `${renderSpansHtml(block.spans)}</li>`,
+      );
+      continue;
+    }
+    closeList();
+
+    switch (block.kind) {
+      case 'heading':
+        html.push(`<h3 class="visit-prep-heading">${renderSpansHtml(block.spans)}</h3>`);
+        break;
+      case 'pair':
+        html.push(
+          `<p class="visit-prep-pair"><span class="visit-prep-pair-label">${escapeHtml(
+            block.label,
+          )}</span>${renderSpansHtml(block.spans)}</p>`,
+        );
+        break;
+      case 'quote':
+        html.push(`<blockquote>${renderSpansHtml(block.spans)}</blockquote>`);
+        break;
+      case 'code':
+        html.push(`<pre>${escapeHtml(block.text)}</pre>`);
+        break;
+      case 'rule':
+        html.push('<hr />');
+        break;
+      default:
+        html.push(`<p class="visit-prep-body">${renderSpansHtml(block.spans)}</p>`);
+    }
+  }
+  closeList();
+  return html.join('\n');
+};
+
+export { renderVisitPrepHtml as _renderVisitPrepHtml };
+
 export const buildClinicalPassportPdfFileName = (patientName: string) => {
   const safeName = patientName.trim().replace(/[^\p{L}\p{N}_-]+/gu, '_');
   return `${safeName || 'patient'}-clinical-passport.pdf`;
 };
 
-export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) => {
+export const buildClinicalPassportPdfHtml = (
+  summary: ClinicalPassportSummary,
+  /** Optional AI-drafted visit-prep note. Rendered in its own boxed
+   *  section, visually separated from the passport proper and labelled
+   *  as machine-drafted — a clinician reading the printout must be
+   *  able to tell at a glance which parts are recorded data and which
+   *  part is a summary a model wrote. */
+  visitPrep?: string | null,
+) => {
+  const visitPrepSection = visitPrep?.trim()
+    ? `
+      <section class="section visit-prep">
+        <div class="section-header">
+          <div>
+            <h2>门诊准备</h2>
+            <p class="section-copy">由 AI 依据患者本人的记录整理，供沟通参考，非诊断意见。</p>
+          </div>
+        </div>
+        ${renderVisitPrepHtml(visitPrep.trim())}
+      </section>
+    `
+    : '';
+
   const summaryCards = summary.summaryCards
     .map(
       (card) => `
@@ -183,6 +298,68 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
         background: #e7f4eb;
         color: #1f7a43;
       }
+      .visit-prep {
+        border: 1px dashed #b6cdc6;
+        background: #f4f8f6;
+      }
+      .visit-prep-body {
+        margin-top: 10px;
+        color: #35505c;
+        font-size: 12.5px;
+        line-height: 1.75;
+        /* white-space: pre-wrap is gone with the raw text it was
+           there for. The note is now real block elements, and
+           preserving source whitespace on top of them reintroduces the
+           model's line breaks inside an already-wrapped paragraph. */
+      }
+      .visit-prep-heading {
+        margin: 14px 0 4px;
+        color: #1d3b45;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .visit-prep-list {
+        margin: 6px 0 0;
+        padding-left: 0;
+        list-style: none;
+        color: #35505c;
+        font-size: 12.5px;
+        line-height: 1.75;
+      }
+      .visit-prep-list li {
+        display: flex;
+        gap: 6px;
+      }
+      .visit-prep-marker {
+        flex: none;
+        min-width: 16px;
+        color: #6b8189;
+      }
+      .visit-prep-pair {
+        margin: 4px 0 0;
+        color: #35505c;
+        font-size: 12.5px;
+        line-height: 1.75;
+      }
+      .visit-prep-pair-label {
+        display: inline-block;
+        min-width: 84px;
+        color: #6b8189;
+      }
+      .visit-prep blockquote {
+        margin: 8px 0 0;
+        padding-left: 10px;
+        border-left: 2px solid #b6cdc6;
+        color: #4a636d;
+      }
+      .visit-prep pre {
+        margin: 8px 0 0;
+        padding: 8px;
+        background: #eef3f1;
+        border-radius: 4px;
+        font-size: 11.5px;
+        overflow-x: auto;
+      }
       .is-pending {
         background: #fff0d9;
         color: #b56a08;
@@ -277,6 +454,8 @@ export const buildClinicalPassportPdfHtml = (summary: ClinicalPassportSummary) =
           ${summaryCards}
         </div>
       </section>
+
+      ${visitPrepSection}
 
       <section class="section">
         <div class="section-header">

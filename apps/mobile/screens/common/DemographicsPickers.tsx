@@ -9,7 +9,8 @@ import {
   birthYearOptions,
   provinceOptions,
 } from '../../lib/demographics-options';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+
+import { COLOR, RADIUS } from '../../lib/design';
 
 /**
  * Shared demographic pickers for every profile-shaped form.
@@ -159,15 +160,15 @@ const pickerStyles = StyleSheet.create({
   },
   wrapper: {
     width: '100%',
-    borderRadius: 8,
-    backgroundColor: CLINICAL_COLORS.panel,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.surface,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
     overflow: 'hidden',
   },
   picker: {
     width: '100%',
-    color: CLINICAL_COLORS.text,
-    backgroundColor: CLINICAL_COLORS.panel,
+    color: COLOR.ink,
+    backgroundColor: COLOR.surface,
   },
 });

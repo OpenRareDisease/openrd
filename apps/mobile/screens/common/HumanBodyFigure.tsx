@@ -1,8 +1,8 @@
+import { COLOR } from '../../lib/design';
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle, Ellipse, Rect } from 'react-native-svg';
 import {
-  CLINICAL_COLORS,
   type BodyRegionId,
   type BodyRegionMap,
   type BodyView,
@@ -112,9 +112,7 @@ export default function HumanBodyFigure({
 
       <View style={styles.figureWrap}>
         <Svg width={160} height={292} viewBox="0 0 120 240">
-          {BASE_SHAPES.map((shape, index) =>
-            renderShape(shape, CLINICAL_COLORS.panelMuted, `base-${index}`, 0.9),
-          )}
+          {BASE_SHAPES.map((shape, index) => renderShape(shape, COLOR.well, `base-${index}`, 0.9))}
           {Object.entries(regions).map(([regionId, datum]) =>
             (regionShapes[regionId as BodyRegionId] ?? []).map((shape, index) =>
               renderShape(
@@ -155,12 +153,12 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   figureTitle: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 15,
     fontWeight: '700',
   },
   figureSubtitle: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -186,7 +184,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   legendText: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
   },
 });

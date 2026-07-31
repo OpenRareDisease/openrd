@@ -35,10 +35,65 @@ export class ApiError extends Error {
    *  for fetch TypeErrors (offline, DNS, connection reset), 'timeout'
    *  when the request exceeded its deadline. */
   code?: 'network' | 'timeout';
+  /** How long the server said to wait before retrying (429 rate limit,
+   *  429 login lockout). Lifted out of `data` so callers don't each
+   *  re-implement the "is it under `details` or top level" dig — the
+   *  server has been sending this since the rate limiter landed and
+   *  nobody was reading it, which is why a throttled patient only ever
+   *  saw「过于频繁」with no idea whether to wait 5 seconds or 5 minutes. */
+  retryAfterSeconds?: number;
 }
 
 export const NETWORK_ERROR_MESSAGE = '网络连接不稳定，请检查网络后重试';
 export const TIMEOUT_ERROR_MESSAGE = '请求超时，请检查网络后重试';
+
+/**
+ * Pull the human sentence out of a 4xx/5xx body. Handlers are
+ * inconsistent about which key carries it: `next(new AppError(...))`
+ * is serialized as `error` by the API's error-handler middleware,
+ * while the hand-written responses in ai-chat.routes.ts use `message`.
+ * Reading only one of them threw away every sentence that told the
+ * patient what to do next（「一次最多 500 字，太长的话分几次记」became
+ * 「请求失败」）.
+ *
+ * Returns null rather than a canned string so each caller keeps its
+ * own fallback — the JSON path wants「请求失败」, the SSE path wants to
+ * fall back to the raw body it already has.
+ *
+ * Shared with ai-streaming.ts on purpose: a pre-stream 429 and a
+ * plain-fetch 429 carry the identical body, so they must not decode it
+ * two different ways.
+ */
+export const extractApiErrorMessage = (payload: unknown): string | null => {
+  if (!payload || typeof payload !== 'object') return null;
+  const body = payload as { error?: unknown; message?: unknown };
+  if (typeof body.message === 'string' && body.message.trim()) return body.message;
+  if (typeof body.error === 'string' && body.error.trim()) return body.error;
+  return null;
+};
+
+/**
+ * Seconds to wait before retrying, as advertised by a 429.
+ *
+ * The value normally arrives nested under `details` because the API's
+ * error handler only forwards allow-listed `AppError.details` keys;
+ * the top-level read covers hand-written bodies that never go through
+ * that middleware. Non-numeric / non-positive values are dropped
+ * instead of forwarded — the UI renders this straight into a sentence
+ * and「NaN 秒后再试」is worse than no countdown at all. Fractions round
+ * up so we never tell the patient to retry before the window closes.
+ */
+export const extractRetryAfterSeconds = (payload: unknown): number | undefined => {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const body = payload as { retryAfterSeconds?: unknown; details?: unknown };
+  const details =
+    body.details && typeof body.details === 'object'
+      ? (body.details as { retryAfterSeconds?: unknown })
+      : null;
+  const raw = details?.retryAfterSeconds ?? body.retryAfterSeconds;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.ceil(raw);
+};
 
 // Deadlines: most JSON endpoints answer in well under a second, so
 // 15s only trips on a genuinely stuck connection. Uploads and
@@ -181,9 +236,10 @@ export const apiRequest = async <T = unknown>(
   const payload = isJson ? await response.json() : null;
 
   if (!response.ok) {
-    const error = new ApiError((payload as { error?: string })?.error ?? '请求失败');
+    const error = new ApiError(extractApiErrorMessage(payload) ?? '请求失败');
     error.status = response.status;
     error.data = payload;
+    error.retryAfterSeconds = extractRetryAfterSeconds(payload);
 
     // Centralised 401 handling. A stale token landing on any
     // authenticated endpoint must clear the local session so a
@@ -841,17 +897,68 @@ export interface AiAskProgressResponse {
   };
 }
 
-export const askAiQuestion = (question: string, progressId?: string) =>
+/** Trend keys the server will accept as `context.key`. Mirrors
+ *  METRIC_LABELS in `apps/api/src/modules/ai-agents/security/
+ *  ask-context.ts` — the server maps the key to the label itself, so
+ *  the client never supplies prompt text. */
+export type AiAskMetricKey = 'stair_climb' | 'sleep_quality' | 'fall_count' | 'muscle_strength';
+
+/** What the patient was looking at when they asked. Lets 「这什么意思」
+ *  work without the patient having to describe the thing first. */
+export type AiAskContext =
+  | { type: 'document'; id: string }
+  | { type: 'followup_event'; id: string }
+  | { type: 'metric'; key: AiAskMetricKey };
+
+export const askAiQuestion = (question: string, progressId?: string, context?: AiAskContext) =>
   apiRequest<AiAskResponse>(
     '/ai/ask',
     {
       method: 'POST',
-      body: JSON.stringify({ question, progressId }),
+      body: JSON.stringify({ question, progressId, ...(context ? { context } : {}) }),
     },
     // LLM-backed: planner + retrieval + final answer legitimately
     // exceed the default deadline.
     { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
   );
+
+/** A structured draft the AI built from one spoken sentence. Every
+ *  field is nullable: the server drops anything it couldn't validate
+ *  rather than guessing, so a blank here means "you'll have to type
+ *  this one", never "the model estimated it for you". */
+export interface AiLogDraft {
+  understanding: string | null;
+  followup: {
+    stairClimbSeconds?: number | null;
+    sleepScore?: number | null;
+    fallCount?: number | null;
+    activityNote?: string | null;
+  } | null;
+  event: {
+    eventType: string;
+    severity: 'mild' | 'moderate' | 'severe';
+    occurredAt?: string | null;
+    description?: string | null;
+  } | null;
+}
+
+/** Draft an entry from plain language. Produces a form to review —
+ *  never a database write. Saving still goes through the ordinary
+ *  `addFunctionTest` / `addFollowupEvent` / … calls below. */
+export const draftLogEntry = async (text: string): Promise<AiLogDraft> => {
+  // The route answers `{ success: true, data: draft }` — same envelope
+  // as /ai/ask. `apiRequest` hands back the whole body, so the `data`
+  // hop is the caller's job. Getting this wrong is invisible to tsc
+  // (the generic is an unchecked assertion) and shows up only as the
+  // draft looking permanently empty, which reads to the patient as
+  // "you didn't say anything I could record".
+  const response = await apiRequest<{ success: boolean; data: AiLogDraft }>(
+    '/ai/draft-log',
+    { method: 'POST', body: JSON.stringify({ text }) },
+    { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
+  );
+  return response.data;
+};
 
 /** One frame of the orchestrator's SSE stream. Mirrors the backend
  *  `OrchestratorEvent` union in `apps/api/src/modules/ai-agents/
@@ -877,6 +984,11 @@ export type AiStreamEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
+  /** Throw away everything accumulated so far and use `text`. Sent when
+   *  round 2 answered with nothing but a lead-in to a search that could
+   *  not run and the server re-asked — the retry's answer replaces the
+   *  discarded lead-in rather than continuing it. */
+  | { type: 'answer_reset'; text: string }
   | { type: 'done'; data: AiAskResponse['data'] }
   | { type: 'error'; message: string };
 
@@ -1094,7 +1206,10 @@ export interface ProgressionSummary {
 export const getProgressionSummary = () =>
   apiRequest<ProgressionSummary>('/profiles/me/progression-summary');
 
-type DocumentUploadFile =
+/** Exported so a screen holding a queue of picked files can type it
+ *  without re-declaring the union (the entry screen used to carry its
+ *  own copy, which drifts the moment this one changes). */
+export type DocumentUploadFile =
   | {
       uri: string;
       name: string;
@@ -1134,6 +1249,81 @@ export const uploadPatientDocument = async (input: {
       isFormData: true,
     },
   );
+};
+
+export interface DocumentUploadBatchItem {
+  /** Caller-side row identity, echoed back on the result. File names
+   *  collide (two IMG_0001.jpg from two albums), so the caller cannot
+   *  match results by name. */
+  key: string;
+  title?: string;
+  file: DocumentUploadFile;
+}
+
+export interface DocumentUploadBatchResult {
+  key: string;
+  document: PatientDocument | null;
+  error: Error | null;
+}
+
+/**
+ * Upload a batch one file at a time.
+ *
+ * Serial, but not for the reason it looks like. OCR does *not* run
+ * inside the upload request — `profile.controller.ts` inserts the row
+ * as `processing`, returns 201 immediately, and runs the parse on a
+ * background queue with its own concurrency cap
+ * (`OCR_JOB_CONCURRENCY = 2`) and admission limit
+ * (`OCR_MAX_IN_FLIGHT_JOBS = 10`). So `Promise.all` would *not* pin the
+ * machine: the server throttles the expensive half regardless of what
+ * the client does. An earlier version of this comment claimed
+ * otherwise; it was wrong, and the「每份大约 1 分钟」copy that grew out
+ * of it was wrong too — the network phase is milliseconds.
+ *
+ * The real reasons to keep it serial:
+ *  - **Progress that means something.**「正在上传第 3 / 7 份」requires
+ *    an order. A parallel batch can only show a spinner.
+ *  - **Upload bandwidth.** These are photos of paper from a phone;
+ *    seven concurrent multipart bodies on a clinic's wifi finish no
+ *    sooner and fail more often.
+ *  - **A failure that stays local.** One 429 from the queue-admission
+ *    cap fails one file, and the rest of the batch still goes.
+ */
+export const uploadPatientDocumentsSerially = async (input: {
+  documentType: string;
+  submissionId?: string;
+  items: DocumentUploadBatchItem[];
+  onItemStart?: (item: DocumentUploadBatchItem, index: number) => void;
+  onItemSettled?: (result: DocumentUploadBatchResult, index: number) => void;
+}): Promise<DocumentUploadBatchResult[]> => {
+  const results: DocumentUploadBatchResult[] = [];
+
+  for (let index = 0; index < input.items.length; index += 1) {
+    const item = input.items[index];
+    input.onItemStart?.(item, index);
+
+    let result: DocumentUploadBatchResult;
+    try {
+      const document = await uploadPatientDocument({
+        documentType: input.documentType,
+        title: item.title,
+        submissionId: input.submissionId,
+        file: item.file,
+      });
+      result = { key: item.key, document, error: null };
+    } catch (error) {
+      result = {
+        key: item.key,
+        document: null,
+        error: error instanceof Error ? error : new Error('上传失败'),
+      };
+    }
+
+    results.push(result);
+    input.onItemSettled?.(result, index);
+  }
+
+  return results;
 };
 
 export const getPatientDocumentOcr = (documentId: string) =>

@@ -18,10 +18,13 @@ import EventSource from 'react-native-sse';
 import {
   API_BASE_URL,
   ApiError,
+  type AiAskContext,
   type AiAskResponse,
   type StreamAiQuestionCallbacks,
   type StreamAiQuestionHandle,
   dispatchUnauthorized,
+  extractApiErrorMessage,
+  extractRetryAfterSeconds,
   getAuthToken,
 } from './api';
 import { AI_STREAM_EVENT_TYPES, parseAiStreamFrame } from './ai-streaming-parser';
@@ -43,13 +46,52 @@ const IDLE_TIMEOUT_MS = 15_000;
 export { parseAiStreamFrame } from './ai-streaming-parser';
 
 /**
+ * Decode the `message` field of a react-native-sse error event into
+ * "parsed body + the string a patient should read".
+ *
+ * The field is either a string (raw HTTP body, or a plain transport
+ * message) or an already-parsed object — some react-native-sse
+ * versions parse JSON bodies for us. Those two shapes used to be
+ * handled by two separate branches and only the object one bothered to
+ * pull the human sentence out. So every pre-stream 4xx that arrived as
+ * a string went into the answer bubble verbatim: a 429 read
+ * `{"error":"AI 请求过于频繁，请稍后再试","details":{"retryAfterSeconds":37}}`
+ * and a 404 read `{"success":false,"code":"context_not_found",...}`.
+ * Keeping one decode path is what stops the two from drifting apart
+ * again.
+ */
+const decodeSseErrorBody = (
+  message: unknown,
+  status: number | null,
+): { data: unknown; display: string } => {
+  let data: unknown = null;
+  if (message && typeof message === 'object') {
+    data = message;
+  } else if (typeof message === 'string' && status !== null && status >= 400) {
+    try {
+      data = JSON.parse(message);
+    } catch {
+      // Not JSON (proxy error page, bare status text) — leave `data`
+      // null and let the raw string serve as the display text.
+    }
+  }
+
+  const display =
+    extractApiErrorMessage(data) ??
+    (typeof message === 'string' && message.trim() ? message : null) ??
+    (status !== null ? `HTTP ${status}` : 'stream transport error');
+
+  return { data, display };
+};
+
+/**
  * Convert a react-native-sse error event into something the rest of
  * the app can pattern-match. When the backend rejects the request
  * before opening the SSE channel (e.g. 403 consent_required, 401
- * expired token, 503 LLM not configured), the lib fires its `error`
- * event with `xhrStatus` + `message` carrying the JSON body. We need
- * to re-pack that as `ApiError` with `.status` and parsed `.data`
- * because:
+ * expired token, 429 rate limit, 503 LLM not configured), the lib
+ * fires its `error` event with `xhrStatus` + `message` carrying the
+ * JSON body. We need to re-pack that as `ApiError` with `.status` and
+ * parsed `.data` because:
  *
  *   - the screen's `isConsentRequiredError(error)` guard checks
  *     `error instanceof ApiError && error.status === 403 && error.data?.code === 'consent_required'`
@@ -69,38 +111,19 @@ export const sseErrorToApiError = (rawEvent: unknown): Error => {
   }
   const evt = rawEvent as { xhrStatus?: number; message?: unknown };
   const status = typeof evt.xhrStatus === 'number' ? evt.xhrStatus : null;
-
-  // `message` can be a string (text body, plain transport error) or
-  // an already-parsed object (some react-native-sse versions parse
-  // JSON for us). Normalise to "parsed data + display string".
-  let parsedData: unknown = null;
-  let displayMessage: string;
-  if (typeof evt.message === 'string') {
-    displayMessage = evt.message;
-    if (status && status >= 400) {
-      try {
-        parsedData = JSON.parse(evt.message);
-      } catch {
-        // Not JSON — keep the raw string, parsedData stays null.
-      }
-    }
-  } else if (evt.message && typeof evt.message === 'object') {
-    parsedData = evt.message;
-    displayMessage =
-      (evt.message as { error?: string; message?: string }).message ??
-      (evt.message as { error?: string }).error ??
-      `HTTP ${status ?? '???'}`;
-  } else {
-    displayMessage = `HTTP ${status ?? 'transport error'}`;
-  }
+  const { data, display } = decodeSseErrorBody(evt.message, status);
 
   if (status !== null) {
-    const apiError = new ApiError(displayMessage);
+    const apiError = new ApiError(display);
     apiError.status = status;
-    apiError.data = parsedData;
+    apiError.data = data;
+    // Same field `apiRequest` fills in, so a 429 that arrives over SSE
+    // and one that arrives over plain fetch are indistinguishable to
+    // the UI rendering the countdown.
+    apiError.retryAfterSeconds = extractRetryAfterSeconds(data);
     return apiError;
   }
-  return new Error(displayMessage);
+  return new Error(display);
 };
 
 /**
@@ -125,6 +148,11 @@ export const streamAiQuestion = (
      *  (scrubs, truncates to its own budget) — this is best-effort
      *  context, never authoritative. */
     history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    /** The object on screen when the question was asked. The server
+     *  validates ownership and turns it into a prompt hint; an invalid
+     *  reference is a 4xx before the stream opens, never a silently
+     *  context-free answer. */
+    context?: AiAskContext;
   },
 ): StreamAiQuestionHandle => {
   let closed = false;
@@ -178,6 +206,7 @@ export const streamAiQuestion = (
         question,
         progressId,
         ...(opts?.history?.length ? { history: opts.history } : {}),
+        ...(opts?.context ? { context: opts.context } : {}),
       }),
       // Don't auto-reconnect mid-stream — a dropped connection
       // means the orchestrator either finished and we missed the

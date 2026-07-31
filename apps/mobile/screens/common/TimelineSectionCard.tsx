@@ -1,8 +1,10 @@
+import { plainAnswerText } from './answer-format';
 import { useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { CLINICAL_COLORS, CLINICAL_TINTS, formatDateLabel } from '../../lib/clinical-visuals';
+import Icon from './Icon';
+import { formatDateLabel } from '../../lib/clinical-visuals';
+import { COLOR, INTERACTION, RADIUS } from '../../lib/design';
 import { storeTimelineDetailItem, type TimelineDetailItem } from '../../lib/timeline-detail';
 
 type TimelineSectionCardProps = {
@@ -36,19 +38,19 @@ const tagStyleMap: Record<
     borderColor: 'rgba(37, 99, 235, 0.2)',
   },
   事件: {
-    textColor: CLINICAL_COLORS.warning,
-    backgroundColor: CLINICAL_TINTS.warningSoft,
-    borderColor: CLINICAL_TINTS.warningBorder,
+    textColor: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+    borderColor: COLOR.warn,
   },
   日常记录: {
-    textColor: CLINICAL_COLORS.accentStrong,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    textColor: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
+    borderColor: COLOR.accent,
   },
   活动: {
-    textColor: CLINICAL_COLORS.accentStrong,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    textColor: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
+    borderColor: COLOR.accent,
   },
   功能测试: {
     textColor: '#7C3AED',
@@ -64,9 +66,9 @@ const tagStyleMap: Record<
 
 const getTagStyle = (tag: string) =>
   tagStyleMap[tag] ?? {
-    textColor: CLINICAL_COLORS.textSoft,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    borderColor: CLINICAL_TINTS.borderSubtle,
+    textColor: COLOR.inkSoft,
+    backgroundColor: COLOR.well,
+    borderColor: COLOR.line,
   };
 
 export default function TimelineSectionCard({
@@ -106,7 +108,11 @@ export default function TimelineSectionCard({
     <View style={styles.wrapper}>
       <TouchableOpacity
         style={styles.header}
-        activeOpacity={0.88}
+        activeOpacity={INTERACTION.pressOpacity}
+        accessibilityRole="button"
+        accessibilityLabel={collapsed ? '展开时间轴' : '收起时间轴'}
+        accessibilityState={{ expanded: !collapsed }}
+        aria-expanded={!collapsed}
         onPress={() => setCollapsed((value) => !value)}
       >
         <View style={styles.headerCopy}>
@@ -119,11 +125,7 @@ export default function TimelineSectionCard({
           <View style={styles.countPill}>
             <Text style={styles.countPillText}>{items.length} 条</Text>
           </View>
-          <FontAwesome6
-            name={collapsed ? 'chevron-down' : 'chevron-up'}
-            size={13}
-            color={CLINICAL_COLORS.textSoft}
-          />
+          <Icon name={collapsed ? 'chevron-down' : 'chevron-up'} size={13} color={COLOR.inkSoft} />
         </View>
       </TouchableOpacity>
 
@@ -150,7 +152,9 @@ export default function TimelineSectionCard({
               <TouchableOpacity
                 key={`${item.id}-${item.timestamp}`}
                 style={styles.itemCard}
-                activeOpacity={0.88}
+                activeOpacity={INTERACTION.pressOpacity}
+                accessibilityRole="button"
+                accessibilityLabel={item.title}
                 onPress={() => openDetail(item)}
               >
                 <View style={styles.itemHeader}>
@@ -173,15 +177,15 @@ export default function TimelineSectionCard({
                     <Text style={styles.itemTitle} numberOfLines={1}>
                       {item.title}
                     </Text>
+                    {/* Flattened, not block-rendered: this row clamps to one line
+                and `numberOfLines` does not cross the <View> stack
+                AnswerText builds. The detail screen shows the same
+                string with its formatting intact. */}
                     <Text style={styles.itemDescription} numberOfLines={1}>
-                      {item.description}
+                      {plainAnswerText(item.description)}
                     </Text>
                   </View>
-                  <FontAwesome6
-                    name="arrow-up-right-from-square"
-                    size={12}
-                    color={CLINICAL_COLORS.textMuted}
-                  />
+                  <Icon name="arrow-up-right-from-square" size={12} color={COLOR.inkMuted} />
                 </View>
               </TouchableOpacity>
             );
@@ -194,11 +198,11 @@ export default function TimelineSectionCard({
 
 const styles = StyleSheet.create({
   wrapper: {
-    borderRadius: 22,
+    borderRadius: RADIUS.surface,
     padding: 14,
-    backgroundColor: CLINICAL_COLORS.panel,
+    backgroundColor: COLOR.surface,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
     ...cardShadow,
   },
   header: {
@@ -211,13 +215,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   title: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 15,
     fontWeight: '800',
   },
   subtitle: {
     marginTop: 4,
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
     lineHeight: 16,
   },
@@ -230,10 +234,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    backgroundColor: COLOR.well,
   },
   countPillText: {
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -246,31 +250,31 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 11,
     paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: 'rgba(248, 242, 234, 0.82)',
+    borderRadius: RADIUS.surface,
+    backgroundColor: COLOR.well,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
   },
   summaryLabel: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 10,
     fontWeight: '700',
   },
   summaryValue: {
     marginTop: 6,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 14,
     fontWeight: '800',
   },
   collapsedHint: {
     marginTop: 12,
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
     lineHeight: 16,
   },
   emptyText: {
     marginTop: 12,
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
     lineHeight: 16,
   },
@@ -281,10 +285,10 @@ const styles = StyleSheet.create({
   itemCard: {
     paddingHorizontal: 12,
     paddingVertical: 11,
-    borderRadius: 16,
-    backgroundColor: 'rgba(248, 242, 234, 0.82)',
+    borderRadius: RADIUS.surface,
+    backgroundColor: COLOR.well,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
   },
   itemHeader: {
     flexDirection: 'row',
@@ -303,7 +307,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   itemTime: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 10,
   },
   itemBody: {
@@ -316,13 +320,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   itemTitle: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 13,
     fontWeight: '800',
   },
   itemDescription: {
     marginTop: 4,
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 11,
     lineHeight: 16,
   },

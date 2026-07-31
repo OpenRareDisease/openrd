@@ -25,6 +25,7 @@ export const AI_STREAM_EVENT_TYPES = [
   'context_built',
   'answering',
   'answer_delta',
+  'answer_reset',
   'done',
   'error',
 ] as const;

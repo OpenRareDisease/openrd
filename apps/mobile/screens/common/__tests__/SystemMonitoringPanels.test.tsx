@@ -1,6 +1,6 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
-import { Text, TouchableOpacity } from 'react-native';
+import { Text } from 'react-native';
 import SystemMonitoringPanels from '../SystemMonitoringPanels';
 import type { SystemInsightPanel } from '../../../lib/report-insights';
 
@@ -17,6 +17,29 @@ const flattenText = (value: React.ReactNode): string => {
   }
   return '';
 };
+
+/**
+ * Find a control by the text inside it, without naming the component.
+ *
+ * These lookups used to be `findAllByType(TouchableOpacity)`, which
+ * meant the test was pinned to an implementation detail: the moment the
+ * filter row became a SegmentedControl (a Pressable), the test stopped
+ * finding the tab and reported it missing rather than reporting a
+ * behaviour change. Searching by accessibilityRole + label is what the
+ * test actually cares about, and it survives the next refactor.
+ */
+const findControlByText = (
+  root: TestRenderer.ReactTestInstance,
+  label: string,
+): TestRenderer.ReactTestInstance | undefined =>
+  root
+    .findAll(
+      (node) =>
+        typeof node.props?.onPress === 'function' &&
+        node.findAllByType(Text).some((t) => flattenText(t.props.children) === label),
+      { deep: false },
+    )
+    .at(0);
 
 const buildBloodPanel = (sections: SystemInsightPanel['sections']): SystemInsightPanel => ({
   key: 'blood',
@@ -55,12 +78,7 @@ describe('SystemMonitoringPanels', () => {
       renderer = TestRenderer.create(<SystemMonitoringPanels panels={[panel]} emptyText="empty" />);
     });
 
-    const pressables = renderer!.root.findAllByType(TouchableOpacity);
-    const fshdTab = pressables.find((node) =>
-      node
-        .findAllByType(Text)
-        .some((textNode) => flattenText(textNode.props.children) === 'FSHD相关'),
-    );
+    const fshdTab = findControlByText(renderer!.root, 'FSHD相关');
 
     expect(fshdTab).toBeDefined();
 
@@ -73,13 +91,7 @@ describe('SystemMonitoringPanels', () => {
       .map((node) => flattenText(node.props.children))
       .filter(Boolean);
 
-    const muscleChip = renderer!.root
-      .findAllByType(TouchableOpacity)
-      .find((node) =>
-        node
-          .findAllByType(Text)
-          .some((textNode) => flattenText(textNode.props.children) === '肌损伤'),
-      );
+    const muscleChip = findControlByText(renderer!.root, '肌损伤');
 
     expect(muscleChip).toBeDefined();
     expect(textValues.filter((value) => value === '肌损伤')).toHaveLength(1);
@@ -122,13 +134,7 @@ describe('SystemMonitoringPanels', () => {
       renderer = TestRenderer.create(<SystemMonitoringPanels panels={[panel]} emptyText="empty" />);
     });
 
-    const otherTab = renderer!.root
-      .findAllByType(TouchableOpacity)
-      .find((node) =>
-        node
-          .findAllByType(Text)
-          .some((textNode) => flattenText(textNode.props.children) === '其他'),
-      );
+    const otherTab = findControlByText(renderer!.root, '其他');
 
     expect(otherTab).toBeDefined();
 
