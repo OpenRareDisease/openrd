@@ -30,4 +30,10 @@ export {
 } from './pii-redactor.js';
 export { renderChunkForPrompt, type RenderedChunk, type RenderOptions } from './render.js';
 export { normalizeHistory, type HistoryMessage, type NormalizedHistory } from './history.js';
+export {
+  parseAskContext,
+  resolveAskContext,
+  type AskContextRef,
+  type ResolvedAskContext,
+} from './ask-context.js';
 export { scrubPiiText } from './text-scrub.js';

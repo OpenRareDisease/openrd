@@ -218,9 +218,142 @@ describe('redactFields (reports)', () => {
     const fc = fields.fields_clinical as Record<string, unknown>;
     expect(fc.patientName).toBeUndefined();
     expect(fc.freeFormFindings).toBeUndefined();
-    expect(fc.classifiedType).toBeUndefined();
+    // `classifiedType` is a classification the pipeline assigned, not a
+    // measurement and not an identifier, so strict keeps it. Dropping
+    // it left the report summariser unable to say what kind of report
+    // it was reading — it called a stool panel「血液检测报告」.
+    expect(fc.classifiedType).toBe('genetic_report');
     // Known-pattern keys still survive as clinicalised siblings.
     expect(fc.d4z4Repeats_clinical).toBe('low_repeat_severe');
+  });
+
+  it('strict mode keeps qualitative results but withholds measurements', () => {
+    const { fields } = redactFields(
+      {
+        fields: {
+          classifiedType: 'infection_screening',
+          tppa: '阴性(-)',
+          trust_ab: '阴性(-)',
+          ck: '1024',
+          fvc: '2.31',
+          patientName: '张三',
+        },
+      },
+      { scope: 'reports', mode: 'strict' },
+    );
+    const fc = fields.fields_clinical as Record<string, unknown>;
+    // The consent the patient withheld is「精确数值」, and 阴性 is not a
+    // number — it is the test's own conclusion.
+    expect(fc.tppa).toBe('阴性(-)');
+    expect(fc.trust_ab).toBe('阴性(-)');
+    // Measurements stay withheld, but their existence is stated so the
+    // model reports「需要授权」rather than「报告识别失败」.
+    expect(fc.ck).toBeUndefined();
+    expect(fc.fvc).toBeUndefined();
+    expect(fc.numericValuesWithheld).toBe(2);
+    expect(fc.patientName).toBeUndefined();
+  });
+
+  // A titre is the number, wearing a qualitative word in front of it.
+  // The value observed in production inside `ecgSummary` — a key on the
+  // precise safe list. The allowlist's premise is that a listed key
+  // holds a short structured value; the extractor broke that premise,
+  // and every row already in the database still holds the old value.
+  it('drops a safe key whose value carries an identifier', () => {
+    const { fields } = redactFields(
+      {
+        fields: {
+          classifiedType: 'ecg',
+          ecgSummary:
+            '房率: 70 bmp 实性心律不齐 年龄:23 科别:神经内科 门诊号: 住院号:R000000 本报告仅供临床医师参考',
+          heartRate: '70',
+        },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.ecgSummary).toBeUndefined();
+    expect(f.fieldsDroppedAsUnsafe).toBe(1);
+    // The rest of the report is untouched — one bad value is not a
+    // reason to withhold the whole panel.
+    expect(f.heartRate).toBe('70');
+  });
+
+  it('drops a safe key whose value is far too long to be one', () => {
+    const { fields } = redactFields(
+      { fields: { classifiedType: 'ecg', ecgSummary: '所见描述文字。'.repeat(40) } },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.ecgSummary).toBeUndefined();
+    expect(f.fieldsDroppedAsUnsafe).toBe(1);
+  });
+
+  it('keeps a normal conclusion', () => {
+    const { fields } = redactFields(
+      { fields: { classifiedType: 'ecg', ecgSummary: '窦性心律不齐，不完全性右束支传导阻滞。' } },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.ecgSummary).toBe('窦性心律不齐，不完全性右束支传导阻滞。');
+    expect(f.fieldsDroppedAsUnsafe).toBeUndefined();
+  });
+
+  // `reportImpression` is not on the safe list at all, so the MRI
+  // impression — signature and all — never reached a prompt. Pinned so
+  // a future "let the model read the impression" change has to notice
+  // that the value-level guard is what makes that safe.
+  it('still denies an un-listed free-text key by default', () => {
+    const { fields } = redactFields(
+      { fields: { classifiedType: 'muscle_mri', reportImpression: '脂肪浸润，请结合临床. 钱医' } },
+      { scope: 'reports', mode: 'precise' },
+    );
+    expect((fields.fields as Record<string, unknown>).reportImpression).toBeUndefined();
+  });
+
+  // The pipeline writes every lab field twice. Both spellings are safe
+  // keys, so both used to reach the prompt — and the model reported the
+  // duplicate as a third analyte.
+  it('collapses camelCase/snake_case aliases of the same value', () => {
+    const { fields } = redactFields(
+      {
+        fields: {
+          classifiedType: 'infection_screening',
+          trustAb: '阴性(-)',
+          trust_ab: '阴性(-)',
+          stoolColor: '黄色',
+          stool_color: '黄色',
+        },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.trustAb).toBe('阴性(-)');
+    expect(f.stoolColor).toBe('黄色');
+    expect(f.trust_ab).toBeUndefined();
+    expect(f.stool_color).toBeUndefined();
+  });
+
+  // Disagreement is data, not noise — picking one would be the redactor
+  // silently editing a clinical value.
+  it('keeps both spellings when they disagree', () => {
+    const { fields } = redactFields(
+      { fields: { stoolColor: '黄色', stool_color: '棕色' } },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.stoolColor).toBe('黄色');
+    expect(f.stool_color).toBe('棕色');
+  });
+
+  it('strict mode withholds a qualitative-looking value carrying a figure', () => {
+    const { fields } = redactFields(
+      { fields: { classifiedType: 'infection_screening', trust_ab: '阳性(1:8)' } },
+      { scope: 'reports', mode: 'strict' },
+    );
+    const fc = fields.fields_clinical as Record<string, unknown>;
+    expect(fc.trust_ab).toBeUndefined();
+    expect(fc.numericValuesWithheld).toBe(1);
   });
 
   it('strict mode strips `title` even when callers add it', () => {
@@ -241,5 +374,50 @@ describe('redactFields (reports)', () => {
     expect(f.d4z4Repeats).toBe('3/22');
     expect(f.haplotype).toBe('4qA');
     expect(fields.fields_clinical).toBeUndefined();
+  });
+});
+
+describe('OCR fields — lab panels in precise mode', () => {
+  // A coagulation report whose values were all extracted correctly
+  // still reached the model empty, because the nested-fields allowlist
+  // only ever listed the genetics keys. The model then reported an OCR
+  // failure that had not happened.
+  const COAGULATION = {
+    classifiedType: 'coagulation',
+    pt: '13.7',
+    aptt: '34',
+    inr: '1.12',
+    fibrinogen: '2.68',
+    // Identity travelling in the same payload — must not follow the
+    // values through.
+    patientName: '张三丰·李四光',
+    orderingDoctor: '赵医生',
+    bedNo: '011',
+    facility: '示例市第一人民医院',
+    department: '神经内科',
+  };
+
+  it('forwards the measured values', () => {
+    const { fields } = redactFields({ fields: COAGULATION }, { scope: 'reports', mode: 'precise' });
+    const inner = fields.fields as Record<string, unknown>;
+    expect(inner.pt).toBe('13.7');
+    expect(inner.aptt).toBe('34');
+    expect(inner.inr).toBe('1.12');
+    expect(inner.fibrinogen).toBe('2.68');
+  });
+
+  it('still denies every identity field beside them', () => {
+    const { fields } = redactFields({ fields: COAGULATION }, { scope: 'reports', mode: 'precise' });
+    const blob = JSON.stringify(fields);
+    for (const leaked of ['张三丰', '赵医生', '011', '示例市第一人民医院', '神经内科']) {
+      expect(blob).not.toContain(leaked);
+    }
+  });
+
+  it('drops lab values entirely in strict mode', () => {
+    // precise is opt-in; basic consent still gets the classification
+    // only.
+    const { fields } = redactFields({ fields: COAGULATION }, { scope: 'reports', mode: 'strict' });
+    expect(JSON.stringify(fields)).not.toContain('13.7');
   });
 });

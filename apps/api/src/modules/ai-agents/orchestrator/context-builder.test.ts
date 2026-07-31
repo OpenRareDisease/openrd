@@ -161,3 +161,39 @@ describe('buildContext', () => {
     expect(built.usedPersonalData).toBe(false);
   });
 });
+
+describe('personal-data flagging', () => {
+  it('counts followup trends as personal data', () => {
+    // The audit row and the UI hint both key off this. An answer built
+    // from the patient's own stair-climb series must not be recorded
+    // as having used no personal data.
+    const result = buildContext(
+      [
+        {
+          toolCallId: 'c1',
+          toolName: 'get_my_records',
+          display: 'patient_followups: 1 chunks',
+          latencyMs: 5,
+          retrieval: {
+            retrieverId: 'patient_followups',
+            chunks: [
+              {
+                id: 'chunk-1',
+                source: 'patient_followups',
+                content: '',
+                metadata: { fields: { metricKey: 'stair_climb', count: 3 } },
+                distance: null,
+                sourceFile: 'patient_followups/stair_climb',
+              },
+            ],
+            citations: [],
+            metadata: {},
+          },
+        } as unknown as ExecutedToolCall,
+      ],
+      { mode: 'precise', logger: silentLogger },
+    );
+
+    expect(result.usedPersonalData).toBe(true);
+  });
+});

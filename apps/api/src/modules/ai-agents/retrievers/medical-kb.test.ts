@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
-import { MedicalKbRetriever } from './medical-kb.js';
+import { MedicalKbRetriever, apparatusScore } from './medical-kb.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -141,5 +141,84 @@ describe('MedicalKbRetriever', () => {
     const [, init] = fetchMock.mock.calls[0];
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
+  });
+});
+
+describe('apparatusScore — citation-machinery filter', () => {
+  // Every string below is real text from the live corpus, trimmed.
+  it('scores clean prose at 0', () => {
+    expect(
+      apparatusScore(
+        'Patients with FSHD have a reduced gait speed, and foot dorsiflexor paresis is often present. Because of the reduced mobility and balance, patients with FSHD are six times as likely to fall than healthy controls.',
+      ),
+    ).toBe(0);
+  });
+
+  it('keeps prose that cites a single source (score 1, under the limit)', () => {
+    // A paragraph mentioning one DOI is still a paragraph.
+    expect(
+      apparatusScore('低强度有氧运动是安全的，见 Voet 等人的综述。DOI: 10.1002/14651858.CD003907'),
+    ).toBeLessThan(2);
+  });
+
+  it.each([
+    // A numbered reference list.
+    [
+      '96.  van den Heuvel A, Mahfouz A, Kloet SL, Balog J, van Engelen BGM, Tawil R, et al. Single-cell RNA sequencing. Neuromuscul Disord. 2017；27（12）：1077-1083。',
+    ],
+    // Author + affiliation block off a title page.
+    [
+      'Emiliano Giardina 1,2 Gina Ravenscroft 6 | Pilar Camaño 3,4 | Franclo Henning 7 | Sarah Burton-Jones 5 | Frederique Magdinier 8',
+    ],
+    // Submission dates + DOI header.
+    [
+      'Received: 7 December 2023  Revised: 26 March 2024  Accepted: 2 April 2024  DOI: 10.1111/cge.14533',
+    ],
+    // Grant numbers with PDF extraction residue.
+    ['[T4-AN-01 H93C22000560003 to G.P.]; INNOVA (cid:0) Grant/Award Number: MR/S005021/1 (cid:0)'],
+  ])('flags citation apparatus: %s', (text) => {
+    expect(apparatusScore(text)).toBeGreaterThanOrEqual(2);
+  });
+
+  // The failure this exists to stop: a patient asked about exercise and
+  // 6 of 8 citations were bibliographies, after which the model quoted
+  // an author-year it had read off a reference list as if it were
+  // evidence.
+  it('flags the reference list the model mined for a fake citation', () => {
+    expect(
+      apparatusScore(
+        '11. 12. 13. Voet，N. B.等人（2013年）。"肌肉疾病的力量训练和有氧运动训练。"Cochrane系统评价数据库7：CD 003907。 Voet，N.等人（2014年）。神经病学 2015；85（4）：357-364。',
+      ),
+    ).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('apparatusScore — translated and transliterated forms', () => {
+  it('flags a transliterated author list with affiliation digits', () => {
+    // A conference poster's title page, cited as a source on exercise
+    // until this pattern landed — the Latin author patterns cannot see
+    // Chinese transliterations.
+    expect(
+      apparatusScore(
+        '620P 量化 面肩肱骨肌营养不良患者的运动功能 劳伦斯J.海沃德1，爱德华多·安德拉德1，本·里德特2，杰夫·彭卡2',
+      ),
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each([
+    [
+      '英文临床指导',
+      'Clinicians might encourage patients with FSHD to engage in low-intensity aerobic exercise. An experienced physical therapist can help.',
+    ],
+    [
+      '中文正文',
+      '患有FSHD的患者会出现躯干、骨盆和下肢肌肉力量下降，这导致姿势、平衡和步态受限。低强度有氧运动被证明是安全的。',
+    ],
+    [
+      '摘要',
+      '摘要 FSHD 是一种遗传性肌肉疾病，最常见的是面部、肩胛骨和上臂肌肉无力。面部肌肉的无力程度不一，可能表现为无法完全闭合眼睛。',
+    ],
+  ])('leaves %s alone', (_label, text) => {
+    expect(apparatusScore(text)).toBe(0);
   });
 });

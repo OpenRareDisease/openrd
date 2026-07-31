@@ -23,6 +23,13 @@ export interface OrchestratorRunInput {
    *  the FAQ page". Appended to the user prompt. Never include raw
    *  patient identifiers here. */
   userContextHint?: string;
+  /** Server-enforced narrowing derived from the request's resolved
+   *  `context` reference. Reaches tools through `ToolContext.scope`,
+   *  never the prompt — see the comment there for why the hint alone
+   *  was not enough. */
+  scope?: {
+    documentId?: string;
+  };
   /** Normalized multi-turn history (route layer runs
    *  security/history.ts#normalizeHistory first — never pass raw
    *  client input here). Empty/absent = single-turn. */
@@ -142,6 +149,13 @@ export type OrchestratorEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
+  /** Discard everything streamed so far and use `text` instead.
+   *
+   *  Round 2 occasionally answers with nothing but a lead-in to a
+   *  search that cannot happen; the orchestrator re-asks once, and by
+   *  then the client has already painted the discarded lead-in. The
+   *  retry's answer is not a continuation of it. */
+  | { type: 'answer_reset'; text: string }
   | { type: 'done'; result: OrchestratorRunResult }
   | { type: 'error'; message: string };
 

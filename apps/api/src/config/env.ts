@@ -143,7 +143,24 @@ const envSchema = z
 
     OCR_PROVIDER: z.enum(['embedded', 'baidu', 'mock']).default('embedded'),
     OCR_PYTHON_BIN: z.string().default('python3'),
-    OCR_PARSER_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+    /**
+     * Wall clock for one embedded parse.
+     *
+     * Was 120s, which is the wrong side of the actual cost. Measured
+     * on a warm cache, machine otherwise idle, one document at a time:
+     * ~103s — a 14% margin. Every parse was one scheduling hiccup away
+     * from being killed, and a batch upload reliably lost several.
+     * The failure surfaced as「识别失败」on a document whose OCR was
+     * working perfectly; running the same command by hand always
+     * succeeded, which is what made it look like a parser bug.
+     *
+     * Most of that time is process start-up: each document spawns a
+     * fresh Python that reloads five PaddleOCR models. 300s is a
+     * deliberate over-provision of that constant, not an estimate of
+     * the work — the real fix is a persistent worker so the models are
+     * loaded once rather than per document.
+     */
+    OCR_PARSER_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
     OCR_DISABLE_PADDLE: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().optional(),

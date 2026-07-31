@@ -154,3 +154,118 @@ describe('PatientReportsRetriever', () => {
     expect(limit).toBeLessThanOrEqual(20);
   });
 });
+
+describe('findings_summary', () => {
+  const rowWith = (ocrFields: Record<string, unknown>) => ({
+    id: 'doc-1',
+    document_type: 'mri',
+    title: null,
+    uploaded_at: '2026-07-30T00:00:00.000Z',
+    status: 'parsed',
+    ocr_payload: { fields: ocrFields },
+    classified_type: 'muscle_mri',
+  });
+
+  const fieldsFor = async (ocrFields: Record<string, unknown>) => {
+    const pool = {
+      query: vi.fn().mockResolvedValue({ rows: [rowWith(ocrFields)], rowCount: 1 }),
+    } as unknown as Pool;
+    const result = await new PatientReportsRetriever(pool).search(
+      { question: '' },
+      {
+        userId: 'u1',
+        consentLevel: 'precise',
+        logger: silentLogger as unknown as RetrieveContext['logger'],
+      },
+    );
+    return result.chunks[0].metadata.fields as Record<string, unknown>;
+  };
+
+  it('surfaces the clinical substance of an impression', async () => {
+    // The allowlist has had a slot for this since PR #23; nothing
+    // filled it, so「这份报告说明什么」was unanswerable.
+    const f = await fieldsFor({
+      reportImpression: '以上改变，符合肌营养不良改变，请结合临床。',
+    });
+    expect(f.findings_summary).toBe('肌营养不良改变');
+  });
+
+  it('cannot leak a name, because only vocabulary terms are emitted', async () => {
+    // The exact shape the render.test.ts fence rejected: a name the
+    // OCR never filed under a key of its own, so nothing could strip
+    // it by. A vocabulary match cannot carry it either way.
+    const f = await fieldsFor({
+      reportImpression: '受检者张三，右大腿后群脂肪浸润，符合肌营养不良改变，请结合临床。李晶',
+    });
+    const s = String(f.findings_summary);
+    expect(s).not.toContain('张三');
+    expect(s).not.toContain('李晶');
+    expect(s).toContain('肌营养不良改变');
+    expect(s).toContain('脂肪浸润');
+  });
+
+  it('emits the longer term and drops the substring it covers', async () => {
+    const f = await fieldsFor({ reportImpression: '符合肌营养不良改变' });
+    expect(f.findings_summary).toBe('肌营养不良改变');
+  });
+
+  it('reads a genetic report conclusion too', async () => {
+    const f = await fieldsFor({
+      interpretationSummary: '检出 4qA 单倍型，D4Z4 重复单元缩短，符合 FSHD1。',
+    });
+    const s = String(f.findings_summary);
+    expect(s).toContain('FSHD1');
+    expect(s).toContain('4qA');
+    expect(s).toContain('D4Z4');
+  });
+
+  it('emits nothing when the narrative contains no recognised finding', async () => {
+    // Deny-by-default: unrecognised prose yields nothing at all,
+    // rather than a best-effort excerpt.
+    const f = await fieldsFor({
+      reportImpression: '受检者张三于门诊完成检查，报告已交由主管医师王五。',
+    });
+    expect(f.findings_summary).toBeUndefined();
+  });
+
+  it('does not report a finding the radiologist ruled out', async () => {
+    // Substring matching alone inverted these. The raw impression is
+    // dropped by the redactor, so whatever this emits is the only
+    // version of the report the model ever sees.
+    const f = await fieldsFor({
+      reportImpression: '双侧大腿肌群未见明显脂肪浸润，未见肌肉萎缩。',
+    });
+    expect(f.findings_summary).toBeUndefined();
+  });
+
+  it('tells a negative genetic result apart from a positive one', async () => {
+    const f = await fieldsFor({
+      interpretationSummary: '排除 FSHD1，未检出 D4Z4 重复单元缩短。',
+    });
+    expect(f.findings_summary).toBeUndefined();
+  });
+
+  it('keeps asserted findings when a later clause negates something else', async () => {
+    // Negation scopes to its own clause — it must not swallow the
+    // finding the report actually does assert.
+    const f = await fieldsFor({
+      reportImpression: '双侧大腿见脂肪浸润，未见肌肉萎缩。',
+    });
+    expect(f.findings_summary).toBe('脂肪浸润');
+  });
+
+  it('handles the mixed case across several clauses', async () => {
+    const f = await fieldsFor({
+      reportImpression: '右侧腓肠肌脂肪浸润；左侧胫骨前肌炎性改变；未见明显水肿。',
+    });
+    const s = String(f.findings_summary);
+    expect(s).toContain('脂肪浸润');
+    expect(s).toContain('炎性改变');
+    expect(s).not.toContain('水肿');
+  });
+
+  it('emits nothing when there is no impression', async () => {
+    const f = await fieldsFor({ classifiedType: 'muscle_mri' });
+    expect(f.findings_summary).toBeUndefined();
+  });
+});

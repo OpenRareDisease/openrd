@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
@@ -10,6 +11,7 @@ import {
   createSubmissionSchema,
   createProfileSchema,
   dailyImpactSchema,
+  deleteRecordParamsSchema,
   deletionRequestSchema,
   documentUploadSchema,
   followupEventSchema,
@@ -322,7 +324,21 @@ const createLimiter = (concurrency: number) => {
   };
 };
 
-const OCR_JOB_CONCURRENCY = 2;
+/**
+ * Parses run one at a time.
+ *
+ * Two was not buying throughput. This work is CPU-bound and each job
+ * loads its own copy of the PaddleOCR models, so a second concurrent
+ * parse mostly contends for the same cores and page cache: measured
+ * back to back on the same pair of documents, serial finished them in
+ * about the time the concurrent pair took to finish the *slower* one.
+ *
+ * What concurrency did buy was variance, and variance is what killed
+ * jobs against the wall clock. Serial also makes the queue's own
+ * arithmetic honest — a patient waiting behind two documents waits two
+ * parses, not "somewhere between one and two".
+ */
+const OCR_JOB_CONCURRENCY = 1;
 /** processing older than this is considered lost (job died with the
  *  process) — both the startup sweep and the reparse endpoint's
  *  "stuck" branch use it. */
@@ -333,6 +349,19 @@ export const OCR_STUCK_AFTER_MINUTES = 10;
  *  buffers far faster than OCR drains them, since uploads now return
  *  in milliseconds. 10 queued jobs ≈ 100MB worst case. */
 export const OCR_MAX_IN_FLIGHT_JOBS = 10;
+/** Advertised backoff when the queue is full. The limiter drains one
+ *  parse at a time and each is bounded by OCR_PARSER_TIMEOUT_MS
+ *  (300s by default), so a slot frees up on the order of a couple of
+ *  minutes.
+ *  Surfaced as `retryAfterSeconds`, which is on the error handler's
+ *  client-safe detail allowlist — without it a batch uploader can
+ *  only report a hard failure, because a bare 429 tells it nothing
+ *  about when to come back. */
+export const OCR_QUEUE_RETRY_AFTER_SECONDS = 90;
+/** How often the stuck-processing recovery sweep re-runs after the
+ *  startup pass. See the sweep wiring in profile.routes.ts for why a
+ *  startup-only sweep isn't enough. */
+export const OCR_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 /** DeletionRequestError code → HTTP status. Kept beside the handlers
  *  that use it; anything else passes through untouched. */
@@ -363,6 +392,24 @@ export const EXPORT_COOLDOWN_MS = 60_000;
 export interface AiAuditReader {
   listByUser(userId: string, opts?: { limit?: number; offset?: number }): Promise<unknown[]>;
 }
+
+/**
+ * How many clinical fields an OCR payload actually produced.
+ *
+ * Reads the pipeline's own `fieldCount` (a string in the payload)
+ * rather than counting keys: `fields` is padded with classification and
+ * bookkeeping entries — classifiedType, ocrStatus, extractedTextLength
+ * — so a payload holding no clinical values at all still has a dozen
+ * keys.
+ */
+const countExtractedFields = (payload: unknown): number => {
+  if (!isRecord(payload)) return 0;
+  const fields = isRecord(payload.fields) ? payload.fields : null;
+  if (!fields) return 0;
+  const raw = fields.fieldCount;
+  const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 export class PatientProfileController {
   /** In-flight background parses keyed by documentId. Serves three
@@ -683,9 +730,7 @@ export class PatientProfileController {
 
     // Bound admission BEFORE the storage write: each queued job holds
     // its full upload buffer in memory until the limiter drains it.
-    if (this.inFlightOcrJobs.size >= OCR_MAX_IN_FLIGHT_JOBS) {
-      throw new AppError('识别队列已满，请稍后再试', 429);
-    }
+    this.assertOcrQueueHasRoom(res);
 
     const stored = await this.storage.save({
       userId: req.user.id,
@@ -740,6 +785,22 @@ export class PatientProfileController {
 
     res.status(201).json(result);
   };
+
+  /** Shared admission gate for the two entry points into the OCR
+   *  queue. Reparse used to skip it entirely: its per-document
+   *  dedupe stops a second parse of the SAME row, but nothing stopped
+   *  a client from firing reparse at fifty different documents and
+   *  stacking fifty full file buffers in memory — precisely the
+   *  blow-up OCR_MAX_IN_FLIGHT_JOBS exists to prevent on the upload
+   *  path. Sets Retry-After alongside the body detail so a plain HTTP
+   *  client and the mobile batch uploader read the same backoff. */
+  private assertOcrQueueHasRoom(res: Response) {
+    if (this.inFlightOcrJobs.size < OCR_MAX_IN_FLIGHT_JOBS) return;
+    res.setHeader('Retry-After', String(OCR_QUEUE_RETRY_AFTER_SECONDS));
+    throw new AppError('识别队列已满，请稍后再试', 429, {
+      retryAfterSeconds: OCR_QUEUE_RETRY_AFTER_SECONDS,
+    });
+  }
 
   /** Fire-and-forget wrapper so upload/reparse can't accidentally
    *  await the parse. The job promise is tracked in inFlightOcrJobs
@@ -810,15 +871,30 @@ export class PatientProfileController {
       status === 'processing' &&
       !Number.isNaN(uploadedAt.getTime()) &&
       uploadedAt.getTime() < stuckSinceMs;
+    // A `parsed` row that extracted nothing is a failure wearing a
+    // success label. The patient sees「没有解析出具体数据」and, until
+    // now, had no way to act on it: reparse was refused on the
+    // reasoning that the source file hadn't changed. True, but the
+    // *parser* changes — the lab-table extractor was returning zero
+    // fields for every report whose OCR put table cells on separate
+    // lines, and each of those rows is now recoverable by re-running
+    // the same file. Reports that did extract fields stay out of
+    // scope, where the original reasoning still holds.
+    const parsedButEmpty = status === 'parsed' && countExtractedFields(document.ocr_payload) === 0;
+
     // Eligible: failed parses, legacy 'uploaded' rows (written before
-    // the async pipeline / with OCR disabled), and processing rows
-    // whose job evidently died. Fresh 'processing' waits for its job;
-    // parsed/needs_review reparse is out of scope (no user value —
-    // the source file hasn't changed).
-    const eligible = status === 'parse_failed' || status === 'uploaded' || isStuckProcessing;
+    // the async pipeline / with OCR disabled), processing rows whose
+    // job evidently died, and empty parses. Fresh 'processing' waits
+    // for its job.
+    const eligible =
+      status === 'parse_failed' || status === 'uploaded' || isStuckProcessing || parsedButEmpty;
     if (!eligible) {
       throw new AppError('该报告当前状态不支持重新识别', 409);
     }
+
+    // Before the storage read, not after: the buffer we're about to
+    // materialise is the thing the queue cap is protecting.
+    this.assertOcrQueueHasRoom(res);
 
     const loaded = await this.storage.load(document.storage_uri);
     const chunks: Buffer[] = [];
@@ -867,6 +943,31 @@ export class PatientProfileController {
     const payload = followupEventSchema.parse(req.body);
     const result = await this.service.addFollowupEvent(req.user.id, payload);
     res.status(201).json(result);
+  };
+
+  /**
+   * Retract one hand-entered follow-up record. Soft delete — see
+   * migration 016 for why the row survives as a tombstone.
+   *
+   * Idempotent by design: retracting an already-retracted record
+   * returns the original `deletedAt` with 200 rather than 404, so a
+   * double-fired tap or a retry over a flaky connection never reads
+   * as「记录不见了」to the patient.
+   */
+  deleteRecord = async (req: AuthenticatedRequest, res: Response) => {
+    const { kind, id } = deleteRecordParamsSchema.parse(req.params);
+    const result = await this.service.softDeleteRecordForUser(req.user.id, kind, id, {
+      ip: req.ip,
+      userAgent:
+        typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+    });
+
+    res.status(200).json({
+      kind: result.kind,
+      recordId: result.id,
+      deleted: true,
+      deletedAt: result.deletedAt,
+    });
   };
 
   listMedications = async (req: AuthenticatedRequest, res: Response) => {
@@ -977,24 +1078,19 @@ export class PatientProfileController {
         ? analysisStatusRaw.trim()
         : String(analysisStatusRaw ?? '');
 
-    const existingSummary = fields.aiSummary;
-    if (typeof existingSummary === 'string' && existingSummary.trim()) {
-      return res.status(200).json({ documentId, summary: existingSummary.trim() });
-    }
-
     if (analysisStatus && analysisStatus !== 'completed') {
       throw new AppError(`报告尚未解析完成（当前状态：${analysisStatus}）`, 409);
     }
 
     const documentType = resolveDocumentTypeFromPayload(document.document_type, currentPayload);
 
+    const redactionMode = redactionModeForConsent(consentStatus.level);
     // Project the OCR `fields` blob through the same PII redactor the
     // orchestrator uses. The redactor hard-deletes the long tail of
     // identifying keys (patientName, idCard, doctorName, mrn, etc.)
     // and projects clinical fields into a per-mode allowlist. Anything
     // off the allowlist is dropped — this is the only sanctioned path
     // for OCR fields to reach an LLM in this codebase.
-    const redactionMode = redactionModeForConsent(consentStatus.level);
     const redacted = redactFields({ fields }, { scope: 'reports', mode: redactionMode });
     // The `extractedText` / `rawFreeText` / `fullText` family is in
     // HARD_DELETE_KEYS — we deliberately do NOT send the OCR full-text
@@ -1015,13 +1111,44 @@ export class PatientProfileController {
     const system = [
       '你是医疗报告解读助手。请根据给定的结构化解析结果(report)输出一个简洁的中文总结。',
       '要求：',
-      '1) 仅输出纯文本，不要 Markdown。',
+      // This summary is shown in two places with different capabilities:
+      // the report-detail screen renders it through AnswerText, but the
+      // report *card* clamps it to three lines and flattens it. So the
+      // list markers are fine and headings/tables are not — a heading
+      // eaten by the clamp costs the patient the first line of the
+      // summary on the card they see first.
+      '1) 可以用「- 」列表和 **粗体**；不要用标题、表格、分隔线。',
       '2) 结构：一句总览 + 3~6 条要点（每条不超过 30 字）。',
       '3) 不要编造数据；缺失则写“未提及/不明确”。',
       '4) 适当提示：仅供参考，需结合医生意见。',
     ].join('\n');
 
     const user = `结构化信息(JSON)：\n${JSON.stringify(promptPayload, null, 2)}`;
+
+    // Serve the cached summary only when the model would be handed the
+    // same input again.
+    //
+    // A summary is a function of what reached the model, so the cache
+    // has to be keyed on exactly that. Keying it on consent alone was
+    // not enough — the input also changes when the OCR extractor
+    // improves or the redactor does, and both happened: a syphilis
+    // screen cached「具体结果：未提供」from a run that extracted zero
+    // fields, and kept serving that sentence after a re-parse found the
+    // results. A later run cached「TPPA、TrustAb及trust_ab三项」from
+    // before the redactor collapsed duplicate field spellings, and kept
+    // reporting two analytes as three.
+    //
+    // Hashing the prompt covers all three causes at once. Summaries
+    // written before this have no hash and regenerate once.
+    const summaryInputHash = createHash('sha256').update(user).digest('hex').slice(0, 16);
+    const existingSummary = fields.aiSummary;
+    if (
+      typeof existingSummary === 'string' &&
+      existingSummary.trim() &&
+      fields.aiSummaryInputHash === summaryInputHash
+    ) {
+      return res.status(200).json({ documentId, summary: existingSummary.trim() });
+    }
 
     // Cancel the upstream LLM request if the client drops, mirroring
     // the /api/ai/ask flow's res.on('close') wiring. Without this, a
@@ -1085,6 +1212,7 @@ export class PatientProfileController {
           ...fields,
           aiSummary: summary,
           aiSummarySource: usedFallback ? 'fallback' : 'llm',
+          aiSummaryInputHash: summaryInputHash,
         },
       };
 

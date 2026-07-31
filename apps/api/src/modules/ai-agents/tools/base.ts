@@ -49,6 +49,22 @@ export interface ToolContext {
    *  pool connections and HTTP sockets until the per-tool 30s timer
    *  fires. */
   signal?: AbortSignal;
+  /**
+   * The patient had one specific object open when they asked.
+   *
+   * Set from the request's `context` reference *after* it was resolved
+   * against the caller's own rows, so it is always an id this user
+   * owns. Tools that can honour it MUST apply it as a filter rather
+   * than passing it to the model — the drawer tells the patient
+   *「上下文已带入：这份检查报告」, and a hint the model may or may not
+   * act on cannot keep that promise. Before this, the reference was
+   * resolved for ownership and then discarded, so 「这份报告说明什么」
+   * about one MRI was answered with a tour of every report in the
+   * account.
+   */
+  scope?: {
+    documentId?: string;
+  };
 }
 
 export interface ToolExecutionResult {

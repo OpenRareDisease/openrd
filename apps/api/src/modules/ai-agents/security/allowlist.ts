@@ -17,14 +17,14 @@
  *   removed; the raw originals pass.
  *
  * Adding a new field:
- *   1. Decide its scope (profile / reports).
+ *   1. Decide its scope (profile / reports / followups).
  *   2. List the redacted form under `strict` (or both if the field
  *      is fundamentally non-PII).
  *   3. List the raw form under `precise` only when there's a clear
  *      clinical benefit to having the precise value in the prompt.
  */
 
-export type RedactionScope = 'profile' | 'reports';
+export type RedactionScope = 'profile' | 'reports' | 'followups';
 export type RedactionMode = 'strict' | 'precise';
 
 export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, readonly string[]>> = {
@@ -58,6 +58,40 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'independentlyAmbulatory',
       'assistiveDevices',
       'symptomCategories',
+    ],
+  },
+  followups: {
+    // Self-recorded functional measurements and event tallies. Two
+    // things are deliberately absent from BOTH modes:
+    //   - the patient's free-text `notes` / event `description`
+    //     (routinely name-bearing; same rule as report titles), and
+    //   - absolute timestamps — the series carries relative ages in
+    //     days, which is both safer and more useful for trend talk.
+    strict: [
+      'metricKey',
+      'metricLabel',
+      'count',
+      'countAtCap', // count hit MAX_ROWS_PER_SERIES; it is a floor, not a total
+      'spanDays',
+      'unableSummary', // 「做不到」days, phrased so they read as disjoint from the series
+      'changeDirection',
+      'latestBand', // direction as a phrase, no raw number
+      'eventSummary',
+      'eventCount',
+    ],
+    precise: [
+      'metricKey',
+      'metricLabel',
+      'count',
+      'countAtCap', // count hit MAX_ROWS_PER_SERIES; it is a floor, not a total
+      'spanDays',
+      'unableSummary', // 「做不到」days, phrased so they read as disjoint from the series
+      'changeDirection',
+      'unit',
+      'latestValue', // raw, e.g. 16
+      'series', // raw points, e.g. "12sec(14天前)、16sec(0天前)"
+      'eventSummary',
+      'eventCount',
     ],
   },
   reports: {
@@ -208,6 +242,7 @@ export const HARD_DELETE_KEYS_LOWER: ReadonlySet<string> = new Set(
  * when that path lands.
  */
 export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
+  // --- Report identity -------------------------------------------
   'classifiedType',
   'classified_type',
   'reportType',
@@ -228,4 +263,179 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   'normalRange',
   'normal_range',
   'status',
+
+  // --- Clinical values -------------------------------------------
+  //
+  // This half was missing, and its absence was invisible: a genetics
+  // report worked (its keys are all above), so the feature looked
+  // fine, while every lab panel arrived stripped. The model was handed
+  // a coagulation report whose PT 13.7 / APTT 34 / INR 1.12 /
+  // fibrinogen 2.68 had all been extracted correctly, saw nothing but
+  // the classification, and told the patient「系统没有解析出具体数据」
+  // — pointing them at an OCR problem that did not exist.
+  //
+  // Each key below is a measured number or a fixed clinical enum. The
+  // identity fields that travel in the same payload — patientName,
+  // orderingDoctor, bedNo, facility, department, specimen, patientAge,
+  // reportId, reportName — are deliberately NOT here and stay denied,
+  // as do the free-text narrative keys (impressionText,
+  // findingText, interpretationSummary, hint, aiSummary): prose cannot
+  // be vouched for, which is the same rule that keeps report titles
+  // off the allowlist. `findings_summary` remains the one narrative
+  // channel, and it is vocabulary-matched rather than copied.
+
+  // Genetics
+  'd4z4Repeats',
+  'd4z4RepeatPathogenic',
+  'd4z4RepeatOther',
+  'd4z4_repeat_pathogenic',
+  'd4z4_repeat_other',
+  'methylationValue',
+  'methylation_value',
+  'ecoRIFragment',
+  'ecoriFragmentKb',
+  'ecori_fragment_kb',
+  'geneticPositive',
+  'genetic_positive',
+  'haplotype',
+
+  // Muscle enzymes / biochemistry
+  'ck',
+  'ckmb',
+  'creatineKinase',
+  'ldh',
+  'alt',
+  'ast',
+  'creatinine',
+  'uricAcid',
+  'uric_acid',
+  'calcium',
+  'mb',
+  'myoglobin',
+
+  // Haematology
+  'wbc',
+  'rbc',
+  'hgb',
+  'hct',
+  'plt',
+  'mcv',
+  'mch',
+  'mchc',
+  'mpv',
+  'pct',
+  'pdw',
+  'plcr',
+  'nrbc',
+  'rdwCv',
+  'rdwSd',
+  'rdw_cv',
+  'rdw_sd',
+  'neutAbs',
+  'neutPct',
+  'neut_abs',
+  'neut_pct',
+  'lymphAbs',
+  'lymphPct',
+  'lymph_abs',
+  'lymph_pct',
+  'monoAbs',
+  'monoPct',
+  'mono_abs',
+  'mono_pct',
+  'eosAbs',
+  'eos_abs',
+  'basoAbs',
+  'basoPct',
+  'baso_abs',
+  'baso_pct',
+
+  // Coagulation
+  'pt',
+  'inr',
+  'aptt',
+  'tt',
+  'fibrinogen',
+
+  // Thyroid
+  'ft3',
+  'ft4',
+  'tsh',
+
+  // Pulmonary — the systems this cohort is monitored for
+  'fvc',
+  'fvcPredPct',
+  'fvc_pred_pct',
+  'fev1',
+  'dlco',
+  'dlcoPredPct',
+  'dlco_pred_pct',
+
+  // Cardiac
+  'heartRate',
+  'heart_rate',
+  'ecgRhythm',
+  'ecg_rhythm',
+  'ecgSummary',
+  'ecg_summary',
+  'prIntervalMs',
+  'pr_interval_ms',
+  'qrsDurationMs',
+  'qrs_duration_ms',
+  'qtMs',
+  'qt_ms',
+  'qtcMs',
+  'qtc_ms',
+  'conductionAbnormality',
+  'conduction_abnormality',
+
+  // Imaging — fixed enums produced by the FSHD extractor
+  'fattyInfiltration',
+  'fatty_infiltration',
+  'inflammatoryChange',
+  'inflammatory_change',
+  'asymmetry',
+
+  // Stool panel — enums plus counts
+  'stoolColor',
+  'stoolConsistency',
+  'stoolBlood',
+  'stoolMucus',
+  'stoolRbc',
+  'stoolWbc',
+  'stoolFatGlobules',
+  'stoolOccultBlood',
+  'stool_color',
+  'stool_consistency',
+  'stool_blood',
+  'stool_mucus',
+  'stool_rbc',
+  'stool_wbc',
+  'stool_fat_globules',
+  'stool_occult_blood',
+
+  // Infection screening — the panel every neurology admission runs
+  // before an immunosuppressant or a muscle biopsy, so an FSHD patient
+  // accumulates these. `_extract_infection_screening` has emitted them
+  // all along and this list never named one, so the whole panel was
+  // dropped in *both* modes: the patient's own syphilis and hepatitis
+  // results were unreadable to the assistant reading their file.
+  // Results are 阴性 / 阳性 enums; `trustTiter` is the one measurement.
+  'hbsag',
+  'antiHbs',
+  'anti_hbs',
+  'hbeag',
+  'antiHbe',
+  'anti_hbe',
+  'antiHbc',
+  'anti_hbc',
+  'hivAb',
+  'hiv_ab',
+  'antiHcv',
+  'anti_hcv',
+  'tppa',
+  'trustAb',
+  'trust_ab',
+  'trustTiter',
+  'trust_titer',
 ]);

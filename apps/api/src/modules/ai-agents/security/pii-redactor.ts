@@ -177,14 +177,87 @@ interface ClinicaliseResult {
   changed: string[];
 }
 
+/**
+ * `stool_color` → `stoolColor`. Used to collapse the alias pairs the
+ * OCR pipeline emits.
+ */
+const toCamel = (key: string): string =>
+  key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+
+/**
+ * Reject a value that a safe key should never have been holding.
+ *
+ * `OCR_FIELDS_SAFE_KEYS_PRECISE` is a list of keys, and it carries an
+ * unstated premise: that a listed key holds a short, structured value
+ * — a number, an enum, a one-line impression. The extractor is what
+ * makes that true, and the extractor broke it. Observed in production,
+ * inside `ecgSummary`, a key on the precise list:
+ *
+ *   "房室… 年龄:23 … 科别:神经内科 … 门诊号: 住院号:R000000 …
+ *    本报告仅供临床医师结合临床参考"
+ *
+ * An inpatient medical-record number, a department and an age, on their
+ * way to the model, through a key the allowlist trusted. The Python
+ * extractor is fixed, but "the allowlist is safe as long as the
+ * extractor behaves" is not a security property — every row already in
+ * the database still has the old value, and the next extractor change
+ * is one commit away.
+ *
+ * So the value is checked as well as the key. This is the same
+ * deny-by-default stance the rest of this module takes.
+ */
+const ID_PATTERNS: readonly RegExp[] = [
+  // Chinese record-number labels, with or without a value after them.
+  /(住院号|门诊号|病历号|就诊号|登记号|标本号|样本号|条形码|检验号|影像号|身份证)/,
+  // A bare identifier: a letter-prefixed run of digits (R000000), or a
+  // long digit run (barcode, ID card).
+  /\b[A-Za-z]{1,3}\d{5,}\b/,
+  /\b\d{9,}\b/,
+];
+
+/** A free-text field long enough that it is evidently not the short
+ *  value the key promised. Impressions in these reports run well under
+ *  this; the observed ECG dump was 230+. */
+const SAFE_VALUE_MAX_LENGTH = 200;
+
+const isUntrustworthyValue = (value: unknown): boolean => {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (text.length > SAFE_VALUE_MAX_LENGTH) return true;
+  return ID_PATTERNS.some((pattern) => pattern.test(text));
+};
+
+/**
+ * Is this OCR value a qualitative result rather than a measurement?
+ *
+ * Qualitative results survive strict mode (see projectOcrFields). The
+ * test is deliberately conservative: anything carrying a digit is
+ * treated as a measurement, so「1.02」stays withheld and so does a
+ * borderline string like「阳性(1:8)」whose titre is the number the
+ * patient did not consent to share.
+ */
+const isQualitativeResult = (value: unknown): boolean => {
+  if (typeof value === 'boolean') return true;
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!text || text.length > 24) return false;
+  return !/\d/.test(text);
+};
+
 /** Project an OCR fields blob through a mode-specific filter.
  *
  *  In **both** modes this is deny-by-default: only keys we know how to
- *  scrub (d4z4 / methylation / haplotype / date), or that are on the
- *  precise-mode safe list of structured non-clinical keys, pass
- *  through. Free-form OCR keys — including `findings`, `impression`,
- *  unknown vendor-specific fields, anything the OCR happened to
- *  extract that we haven't reviewed — are dropped.
+ *  scrub (d4z4 / methylation / haplotype / date), or that are on
+ *  `OCR_FIELDS_SAFE_KEYS_PRECISE`, pass through. Free-form OCR keys —
+ *  including `findings`, `impression`, unknown vendor-specific fields,
+ *  anything the OCR happened to extract that we haven't reviewed — are
+ *  dropped.
+ *
+ *  What the two modes differ on is *values*, not keys. Precise emits
+ *  the measurement; strict emits qualitative results verbatim and
+ *  replaces the measurements with a `numericValuesWithheld` count. The
+ *  safe-key list is shared because a key being safe to name has never
+ *  depended on consent — only the number beside it does.
  *
  *  This is the fix for the PR #23 follow-up review: precise mode used
  *  to accept the entire raw `fields` blob via the allowlist, leaking
@@ -195,7 +268,36 @@ const projectOcrFields = (
   mode: RedactionMode,
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
+  // Counted, not listed. The model needs to know that measurements
+  // exist and are withheld — otherwise it reports the report as
+  // unreadable — but naming which analytes were measured is itself a
+  // disclosure the patient did not opt into.
+  let withheldNumeric = 0;
+  /** Safe keys whose *value* failed the content check. Logged by the
+   *  caller so a regression in the extractor is visible rather than
+   *  silently absorbed here. */
+  const droppedUntrusted: string[] = [];
+
+  // The extractor writes every lab field twice — `stoolColor` and
+  // `stool_color`, `trustAb` and `trust_ab` — and both spellings are on
+  // the safe-key list, so the prompt carried each analyte twice. That
+  // is not just waste: the model reads the second spelling as a
+  // separate test and reports it as one. Observed verbatim, a syphilis
+  // screen with two analytes was summarised as three, the third being
+  //「trust_ab：阴性」.
+  //
+  // Snake_case yields to camelCase when both are present and agree.
+  // When they disagree, both stay — a silent pick between two different
+  // values would be the redactor editing clinical data.
+  const camelKeys = new Map<string, unknown>();
   for (const [key, value] of Object.entries(rawFields)) {
+    if (!key.includes('_')) camelKeys.set(key, value);
+  }
+
+  for (const [key, value] of Object.entries(rawFields)) {
+    if (key.includes('_') && camelKeys.has(toCamel(key)) && camelKeys.get(toCamel(key)) === value) {
+      continue;
+    }
     const lower = key.toLowerCase();
     if (lower.includes('d4z4')) {
       if (mode === 'strict') {
@@ -223,12 +325,47 @@ const projectOcrFields = (
       // want the exact day-of-month leaving the server.
       const y = yearFromDate(value);
       if (y !== null) out[`${key}_year`] = y;
-    } else if (mode === 'precise' && OCR_FIELDS_SAFE_KEYS_PRECISE.has(key)) {
-      // Precise-mode allowlist of structured non-clinical OCR keys.
-      if (value !== null && value !== undefined && value !== '') out[key] = value;
+    } else if (OCR_FIELDS_SAFE_KEYS_PRECISE.has(key)) {
+      if (value === null || value === undefined || value === '') continue;
+      // A safe key is not a safe value — see isUntrustworthyValue.
+      if (isUntrustworthyValue(value)) {
+        droppedUntrusted.push(key);
+        continue;
+      }
+      if (mode === 'precise') {
+        out[key] = value;
+      } else if (isQualitativeResult(value)) {
+        // Strict mode keeps qualitative results.
+        //
+        // The consent step the patient did not take is「精确数值」— the
+        // exact numbers. 阴性 / 阳性 / 黄色 / 软 are not numbers; they
+        // are the test's own conclusion, and they identify nobody.
+        //
+        // Withholding them was not a privacy decision, it was a gap:
+        // the strict branch here was written for the genetic fields
+        // (d4z4 / methylation / haplotype) and never extended when the
+        // safe-key list grew to ~90 lab keys. So every ordinary panel —
+        // stool, syphilis screen, coagulation — projected to `{}`, and
+        // the report summariser, handed an empty object, wrote
+        //「这是一份血液检测报告，但未提取到具体检测数据」about a stool
+        // report holding eight extracted values. Wrong on the data and
+        // wrong on the report type, because even `classifiedType` was
+        // gone.
+        out[key] = value;
+      } else {
+        withheldNumeric += 1;
+      }
     }
     // else: deny-by-default. Free-form / unknown OCR keys never make
     // it into the prompt regardless of mode.
+  }
+  if (withheldNumeric > 0) {
+    out.numericValuesWithheld = withheldNumeric;
+  }
+  if (droppedUntrusted.length > 0) {
+    // Named, not silent: the model should say「这份报告的这几项读不出来」
+    // rather than answer as though the fields did not exist.
+    out.fieldsDroppedAsUnsafe = droppedUntrusted.length;
   }
   return out;
 };

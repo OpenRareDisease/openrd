@@ -391,7 +391,22 @@ export class EmbeddedReportOcrProvider implements OcrProvider {
           cwd: process.cwd(),
           timeout: this.timeoutMs,
           maxBuffer: 10 * 1024 * 1024,
-          env: process.env,
+          env: {
+            ...process.env,
+            // PaddleX pings its model hosts on every start to see if a
+            // newer checkpoint exists — the log line is「Checking
+            // connectivity to the model hosters, this may take a
+            // while」and it is not idle chatter: measured on this
+            // machine it costs ~17s of a ~103s parse, on every single
+            // document, to re-confirm files we already have on disk
+            // and would not auto-update anyway.
+            //
+            // That mattered because the whole parse was landing within
+            // a few seconds of OCR_PARSER_TIMEOUT_MS. It also means a
+            // patient on a slow or captive network pays the check's
+            // full timeout before OCR even begins.
+            PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: 'True',
+          },
         },
       );
 

@@ -1052,11 +1052,24 @@ export const buildClinicalPassportSummary = (
   const completionCount = [diagnosisReady, motorReady, imagingReady, monitoringReady].filter(
     Boolean,
   ).length;
+  // Everything a patient can put into the system counts as recorded
+  // data — including the three sources this check used to miss.
+  //
+  // The daily followup form writes a function test (stair climb), a
+  // symptom score (sleep) and, on a fall, a followup event. None of
+  // those were listed here, so somebody who had faithfully logged
+  // twenty followups and a fall still read as having recorded
+  // nothing: passport id stuck at 待生成, PDF export greyed out, and
+  // (once the visit-prep note landed) no way to draft it — for
+  // exactly the patient with the clearest trend to bring to a clinic.
   const hasRecordedData =
     profile.measurements.length > 0 ||
     profile.activityLogs.length > 0 ||
     profile.documents.length > 0 ||
-    profile.medications.length > 0;
+    profile.medications.length > 0 ||
+    profile.functionTests.length > 0 ||
+    profile.symptomScores.length > 0 ||
+    profile.followupEvents.length > 0;
 
   const patientName = profile.fullName?.trim() || profile.preferredName?.trim() || '未命名病例';
   const passportId = hasRecordedData

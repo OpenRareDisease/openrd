@@ -19,6 +19,7 @@ import type {
   CreateSubmissionInput,
   CreateProfileInput,
   DailyImpactInput,
+  DeletableRecordKind,
   FollowupEventInput,
   FunctionTestInput,
   MeasurementInput,
@@ -96,6 +97,9 @@ export interface PatientMeasurementDTO {
 }
 
 export interface PatientFunctionTestDTO {
+  /** 「今天做不了」— attempted and could not be completed.
+   *  Distinct from a missing row; see migration 017. */
+  notApplicable?: boolean;
   id: string;
   testType: string;
   measuredValue: number | null;
@@ -141,6 +145,29 @@ interface DeletedPatientDocumentResult {
   title: string | null;
   storageUri: string;
 }
+
+interface SoftDeletedRecordResult {
+  kind: DeletableRecordKind;
+  id: string;
+  deletedAt: string;
+}
+
+/**
+ * Table behind each retractable record kind. The map is keyed by the
+ * `DELETABLE_RECORD_KINDS` enum, so the only strings that can ever
+ * reach the `UPDATE ${table}` interpolation are these three literals
+ * — a request body never touches the SQL text.
+ *
+ * Adding a kind here is not enough on its own: the table needs the
+ * `deleted_at` column (migration 016) AND every read path has to
+ * filter on it, or the record comes back from the dead in the next
+ * aggregate.
+ */
+const DELETABLE_RECORD_TABLES: Record<DeletableRecordKind, string> = {
+  function_test: 'patient_function_tests',
+  symptom_score: 'patient_symptom_scores',
+  followup_event: 'patient_followup_events',
+};
 
 export interface PatientMedicationDTO {
   id: string;
@@ -587,11 +614,15 @@ export class PatientProfileService {
            ORDER BY recorded_at DESC`,
           [profileId],
         ),
+        // `deleted_at IS NULL` on the three retractable tables: this
+        // query feeds the whole app — mobile timeline, passport,
+        // progression summary, data export — so a missing filter here
+        // would resurrect a retracted record everywhere at once.
         client.query(
           `SELECT id, profile_id, submission_id, test_type, measured_value, side, protocol, unit,
                   device_used, assistance_required, notes, performed_at, created_at
            FROM patient_function_tests
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY performed_at DESC`,
           [profileId],
         ),
@@ -599,7 +630,7 @@ export class PatientProfileService {
           `SELECT id, profile_id, submission_id, symptom_key, score, scale_min, scale_max, notes,
                   recorded_at, created_at
            FROM patient_symptom_scores
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY recorded_at DESC`,
           [profileId],
         ),
@@ -615,7 +646,7 @@ export class PatientProfileService {
           `SELECT id, profile_id, submission_id, event_type, severity, occurred_at, resolved_at,
                   description, linked_document_id, created_at
            FROM patient_followup_events
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY occurred_at DESC, created_at DESC`,
           [profileId],
         ),
@@ -1073,13 +1104,15 @@ export class PatientProfileService {
         device_used,
         assistance_required,
         notes,
+        not_applicable,
         performed_at
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, NOW())
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::timestamptz, NOW())
       )
       RETURNING id, submission_id, test_type, measured_value, side, protocol, unit,
-                device_used, assistance_required, notes, performed_at, created_at`,
+                device_used, assistance_required, notes, not_applicable,
+                performed_at, created_at`,
       [
         profileId,
         submissionId,
@@ -1091,6 +1124,10 @@ export class PatientProfileService {
         payload.deviceUsed ?? null,
         payload.assistanceRequired ?? null,
         payload.notes ?? null,
+        // A test the patient could not perform never carries a value —
+        // the DB CHECK says the same thing, this keeps the two from
+        // disagreeing when a caller sends both.
+        payload.notApplicable === true,
         payload.performedAt ?? null,
       ],
     );
@@ -1100,6 +1137,7 @@ export class PatientProfileService {
     return {
       id: row.id,
       testType: row.test_type,
+      notApplicable: row.not_applicable === true,
       measuredValue: row.measured_value ? Number(row.measured_value) : null,
       side: row.side ?? null,
       protocol: row.protocol ?? null,
@@ -1438,6 +1476,114 @@ export class PatientProfileService {
           await client.query('ROLLBACK');
         } catch (rollbackError) {
           this.logger.warn({ rollbackError }, 'deleteDocumentForUser: ROLLBACK after error failed');
+        }
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Retract one hand-entered follow-up record (功能测试 / 症状评分 /
+   * 病程事件).
+   *
+   * Soft delete, not DELETE — the reasoning lives in migration 016.
+   * The short version: these rows are longitudinal clinical evidence
+   * shared with clinicians, they anchor a `submission_id` group that
+   * other rows still reference, and one-tap retraction by a user with
+   * impaired fine motor control has to be recoverable by an operator.
+   *
+   * The flip and the audit row land in one transaction for the same
+   * reason deleteDocumentForUser does it: a tombstone with no trail
+   * of who set it is worse than either half alone.
+   */
+  async softDeleteRecordForUser(
+    userId: string,
+    kind: DeletableRecordKind,
+    recordId: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<SoftDeletedRecordResult> {
+    const table = DELETABLE_RECORD_TABLES[kind];
+    const client = await this.pool.connect();
+    let txOpen = false;
+    try {
+      await client.query('BEGIN');
+      txOpen = true;
+
+      // Ownership is enforced in the UPDATE itself (join through
+      // patient_profiles on user_id) so there is no window between a
+      // permission check and the write.
+      const updated = await client.query<{ id: string; deleted_at: Date }>(
+        `UPDATE ${table} r
+         SET deleted_at = NOW()
+         FROM patient_profiles p
+         WHERE r.profile_id = p.id
+           AND p.user_id = $1
+           AND r.id = $2
+           AND r.deleted_at IS NULL
+         RETURNING r.id, r.deleted_at`,
+        [userId, recordId],
+      );
+
+      if (!updated.rowCount) {
+        // Nothing flipped: either the record isn't this user's (or
+        // never existed), or it was already retracted. Re-read
+        // without the deleted_at filter to tell those apart — a
+        // patient whose tap double-fired, or who retried over a flaky
+        // connection, should see the same success as the first call
+        // rather than a 404 that reads like data loss.
+        const existing = await client.query<{ id: string; deleted_at: Date | null }>(
+          `SELECT r.id, r.deleted_at
+           FROM ${table} r
+           JOIN patient_profiles p ON p.id = r.profile_id
+           WHERE p.user_id = $1 AND r.id = $2`,
+          [userId, recordId],
+        );
+        await client.query('ROLLBACK');
+        txOpen = false;
+
+        const row = existing.rows[0];
+        if (!row?.deleted_at) {
+          throw new AppError('记录不存在', 404);
+        }
+        return { kind, id: row.id, deletedAt: toTimestampString(row.deleted_at) };
+      }
+
+      const row = updated.rows[0];
+
+      // Same shape as patient_document.deleted: the acting user goes
+      // in the payload rather than audit_logs.user_id, whose
+      // ON DELETE SET NULL would erase attribution the moment the
+      // account is purged.
+      await client.query(
+        `INSERT INTO audit_logs (event_type, event_payload)
+         VALUES ($1, $2)`,
+        [
+          'patient_record.soft_deleted',
+          {
+            userId,
+            recordKind: kind,
+            recordId: row.id,
+            ip: meta?.ip ?? null,
+            userAgent: meta?.userAgent ?? null,
+          },
+        ],
+      );
+
+      await client.query('COMMIT');
+      txOpen = false;
+
+      return { kind, id: row.id, deletedAt: toTimestampString(row.deleted_at) };
+    } catch (error) {
+      if (txOpen) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn(
+            { rollbackError },
+            'softDeleteRecordForUser: ROLLBACK after error failed',
+          );
         }
       }
       throw error;
@@ -1914,18 +2060,21 @@ export class PatientProfileService {
            ORDER BY recorded_at ASC`,
         [submissionIds],
       ),
+      // Retracted rows drop out of the submission they were entered
+      // with; the submission itself stays (its other rows are still
+      // valid) and simply lists one fewer item.
       this.pool.query(
         `SELECT id, submission_id, test_type, measured_value, side, protocol, unit, device_used,
                   assistance_required, notes, performed_at, created_at
            FROM patient_function_tests
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY performed_at ASC`,
         [submissionIds],
       ),
       this.pool.query(
         `SELECT id, submission_id, symptom_key, score, scale_min, scale_max, notes, recorded_at, created_at
            FROM patient_symptom_scores
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY recorded_at ASC`,
         [submissionIds],
       ),
@@ -1940,7 +2089,7 @@ export class PatientProfileService {
         `SELECT id, submission_id, event_type, severity, occurred_at, resolved_at, description,
                   linked_document_id, created_at
            FROM patient_followup_events
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY occurred_at ASC, created_at ASC`,
         [submissionIds],
       ),

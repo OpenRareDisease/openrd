@@ -13,6 +13,7 @@
 
 import type { ExecutedToolCall } from './executor.js';
 import type { AppLogger } from '../../../config/logger.js';
+import { retrievalFailureReason } from '../retrievers/base.js';
 import type { Citation, RetrievedChunk } from '../retrievers/base.js';
 import type { RedactionMode } from '../security/allowlist.js';
 import { renderChunkForPrompt } from '../security/render.js';
@@ -20,7 +21,16 @@ import { renderChunkForPrompt } from '../security/render.js';
 /** Sources whose contribution counts as "personal data". When any of
  *  these appear, the orchestrator surfaces a "本回答用到了你的..."
  *  hint to the UI and the audit row carries usedPersonalData=true. */
-const PERSONAL_SOURCES = new Set(['patient_profile', 'patient_reports']);
+const PERSONAL_SOURCES = new Set([
+  'patient_profile',
+  'patient_reports',
+  // Followup trends are as personal as it gets — the answer quotes the
+  // patient's own measurements back at them. Omitting this source here
+  // would leave the UI's「本回答用到了你的...」hint off and, worse,
+  // stamp the audit row usedPersonalData=false for an answer built
+  // entirely out of their records.
+  'patient_followups',
+]);
 
 export interface ToolMessagePayload {
   toolCallId: string;
@@ -64,8 +74,20 @@ const stripDelimiters = (content: string): string =>
 const renderChunks = (
   chunks: RetrievedChunk[],
   opts: BuildContextOptions,
+  failureReason?: string | null,
 ): { text: string; fieldsUsed: string[] } => {
   if (chunks.length === 0) {
+    // 「（无内容）」 was all the model ever saw, for both "the search ran
+    // and matched nothing" and "the search could not run at all". With
+    // the KB service down it read the latter as the former, kept being
+    // told by its system prompt to consult the KB, and answered by
+    // announcing another search. Name the failure so it can say so.
+    if (failureReason) {
+      return {
+        text: `（检索失败：${failureReason}。这不是"知识库里没有"，而是这次没能查成。不要重试，也不要凭印象编造内容——直接告诉用户资料暂时取不到。）`,
+        fieldsUsed: [],
+      };
+    }
     return { text: '（无内容）', fieldsUsed: [] };
   }
   const sections: string[] = [];
@@ -124,7 +146,11 @@ export const buildContext = (
       continue;
     }
 
-    const { text, fieldsUsed } = renderChunks(call.retrieval.chunks, opts);
+    const { text, fieldsUsed } = renderChunks(
+      call.retrieval.chunks,
+      opts,
+      retrievalFailureReason(call.retrieval),
+    );
     fieldsUsed.forEach((f) => allFieldsUsed.add(f));
     if (PERSONAL_SOURCES.has(call.retrieval.retrieverId) && call.retrieval.chunks.length > 0) {
       usedPersonalData = true;

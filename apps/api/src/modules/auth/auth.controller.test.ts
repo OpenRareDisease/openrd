@@ -2,6 +2,14 @@ import type { Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AuthController } from './auth.controller.js';
+import {
+  loginSchema,
+  otpLoginSchema,
+  passwordResetSchema,
+  registerSchema,
+  sendOtpSchema,
+  verifyOtpSchema,
+} from './auth.schema.js';
 import type { AuthService } from './auth.service.js';
 import type { OtpService } from '../../services/otp/otp.service.js';
 import { AppError } from '../../utils/app-error.js';
@@ -183,5 +191,47 @@ describe('OTP login / password reset — verification precedes the privileged ac
       ),
     ).rejects.toThrow();
     expect(otpService.verifyCode).not.toHaveBeenCalled();
+  });
+});
+
+describe('phone number normalisation (schema boundary)', () => {
+  // One human phone number must reach one account regardless of how it
+  // was typed. Before the schema transform, `13900000001` and
+  // `+8613900000001` created and matched *different* rows, because
+  // every lookup in auth.service is an exact string compare. In a test
+  // database that produced two profiles for the same person, each
+  // holding a different half of the record.
+  const BARE = '13900000001';
+  const E164 = '+8613900000001';
+
+  it('canonicalises every phone-bearing schema to +86 form', () => {
+    expect(
+      registerSchema.parse({
+        phoneNumber: BARE,
+        otpCode: '1234',
+        password: 'Passw0rd!',
+      }).phoneNumber,
+    ).toBe(E164);
+
+    expect(loginSchema.parse({ phoneNumber: BARE, password: 'Passw0rd!' }).phoneNumber).toBe(E164);
+    expect(sendOtpSchema.parse({ phoneNumber: BARE }).phoneNumber).toBe(E164);
+    expect(verifyOtpSchema.parse({ phoneNumber: BARE, code: '1234' }).phoneNumber).toBe(E164);
+    expect(otpLoginSchema.parse({ phoneNumber: BARE, code: '1234' }).phoneNumber).toBe(E164);
+    expect(
+      passwordResetSchema.parse({
+        phoneNumber: BARE,
+        code: '1234',
+        newPassword: 'Passw0rd!',
+      }).phoneNumber,
+    ).toBe(E164);
+  });
+
+  it('leaves an already-canonical number untouched', () => {
+    expect(sendOtpSchema.parse({ phoneNumber: E164 }).phoneNumber).toBe(E164);
+  });
+
+  it('keeps a non-mainland country code as given', () => {
+    // The rule is "assume +86 when no country code", not "always +86".
+    expect(sendOtpSchema.parse({ phoneNumber: '+14155550123' }).phoneNumber).toBe('+14155550123');
   });
 });

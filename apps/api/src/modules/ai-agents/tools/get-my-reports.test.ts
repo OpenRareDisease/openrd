@@ -123,3 +123,63 @@ describe('GetMyReportsTool.execute', () => {
     expect(result.display).toBe('patient_reports: empty (no_reports_found)');
   });
 });
+
+describe('GetMyReportsTool scope', () => {
+  const searchOf = (calls: unknown[]) =>
+    vi.fn(async (input: unknown) => {
+      calls.push(input);
+      return stub(1);
+    });
+
+  it('narrows to the document the patient had open', async () => {
+    const calls: unknown[] = [];
+    const tool = new GetMyReportsTool({
+      search: searchOf(calls),
+    } as unknown as PatientReportsRetriever);
+
+    await tool.execute(
+      {},
+      { ...ctx, scope: { documentId: '11111111-1111-1111-1111-111111111111' } },
+    );
+
+    expect(calls[0]).toMatchObject({
+      filter: { documentId: '11111111-1111-1111-1111-111111111111' },
+      limit: 1,
+    });
+  });
+
+  // The drawer's promise is「上下文已带入：这份检查报告」— singular. A
+  // model-supplied `documentType` that disagreed with the open report
+  // would turn that into zero rows, so the scope replaces the model's
+  // filters rather than intersecting with them.
+  it('drops the model’s own filters when scoped', async () => {
+    const calls: unknown[] = [];
+    const tool = new GetMyReportsTool({
+      search: searchOf(calls),
+    } as unknown as PatientReportsRetriever);
+
+    await tool.execute(
+      { documentType: 'blood_panel', since: '2020-01-01', limit: 20 },
+      { ...ctx, scope: { documentId: '22222222-2222-2222-2222-222222222222' } },
+    );
+
+    expect(calls[0]).toMatchObject({
+      filter: { documentId: '22222222-2222-2222-2222-222222222222' },
+      limit: 1,
+    });
+    expect((calls[0] as { filter: Record<string, unknown> }).filter.documentType).toBeUndefined();
+    expect((calls[0] as { filter: Record<string, unknown> }).filter.since).toBeUndefined();
+  });
+
+  it('leaves an unscoped ask alone', async () => {
+    const calls: unknown[] = [];
+    const tool = new GetMyReportsTool({
+      search: searchOf(calls),
+    } as unknown as PatientReportsRetriever);
+
+    await tool.execute({ documentType: 'mri' }, ctx);
+
+    expect(calls[0]).toMatchObject({ filter: { documentType: 'mri' } });
+    expect((calls[0] as { filter: Record<string, unknown> }).filter.documentId).toBeUndefined();
+  });
+});

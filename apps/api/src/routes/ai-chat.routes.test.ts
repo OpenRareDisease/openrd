@@ -88,10 +88,30 @@ interface FakePoolOpts {
     ai_consent_third_party: boolean;
     ai_consent_precise_values: boolean;
   } | null;
+  /** documentId -> owning userId, for the ask-context ownership probe.
+   *  Modelled as an owner map rather than a plain id list so a test can
+   *  express "this row exists but belongs to somebody else" — the case
+   *  the resolver deliberately renders indistinguishable from "no such
+   *  row". */
+  documentOwners?: Record<string, string>;
+  followupEventOwners?: Record<string, string>;
 }
 
 const buildFakePool = (opts: FakePoolOpts = {}): Pool & { query: ReturnType<typeof vi.fn> } => {
-  const query = vi.fn(async (text: string) => {
+  const ownershipAnswer = (owners: Record<string, string> | undefined, params?: unknown[]) => {
+    const [id, userId] = (params ?? []) as [string?, string?];
+    return owners && id && owners[id] === userId
+      ? { rowCount: 1, rows: [{ id }] }
+      : { rowCount: 0, rows: [] };
+  };
+
+  const query = vi.fn(async (text: string, params?: unknown[]) => {
+    if (typeof text === 'string' && /FROM patient_documents/i.test(text)) {
+      return ownershipAnswer(opts.documentOwners, params);
+    }
+    if (typeof text === 'string' && /FROM patient_followup_events/i.test(text)) {
+      return ownershipAnswer(opts.followupEventOwners, params);
+    }
     if (typeof text === 'string' && /FROM patient_profiles/i.test(text)) {
       const row = opts.consentRow;
       return row ? { rowCount: 1, rows: [row] } : { rowCount: 0, rows: [] };
@@ -690,6 +710,367 @@ describe('POST /api/ai/ask/stream', () => {
     expect(records).toHaveLength(1);
     expect(records[0].status).toBe('error');
     expect(records[0].errorDetail).toMatch(/upstream LLM blew up/);
+  });
+});
+
+/**
+ * `context` — "the patient is looking at *this* while asking".
+ *
+ * Two invariants had no test at all before this block, and both are
+ * the kind that fail silently:
+ *
+ *  1. **A bad reference is answered, not ignored.** The patient tapped
+ *     「这什么意思」on one specific report or curve. Dropping the
+ *     reference and answering generically looks like an answer rather
+ *     than a miss, which is worse than an error.
+ *  2. **Parse BEFORE committing to SSE.** `/ask/stream` must reject a
+ *     bad context as a JSON status code, not as an `error` frame the
+ *     mobile client would have to render inside a half-open answer
+ *     bubble. Once the headers flush there is no status code left to
+ *     send, so the ordering *is* the contract.
+ */
+describe('ask context (`context` request field)', () => {
+  const grantedConsent = {
+    ai_consent_personal: true,
+    ai_consent_third_party: true,
+    ai_consent_precise_values: false,
+  };
+
+  const DOC_ID = '11111111-1111-4111-8111-111111111111';
+  const EVENT_ID = '22222222-2222-4222-8222-222222222222';
+
+  /** Same scripted-event stub the streaming suite uses, kept local so
+   *  the two blocks don't share mutable state. */
+  const streamingOrchestrator = (): Orchestrator =>
+    ({
+      run: vi.fn(async (_input, onEvent) => {
+        const done = { type: 'done' as const, result: successResult({}) };
+        if (onEvent) {
+          onEvent({ type: 'planning' });
+          onEvent(done);
+        }
+        return done.result;
+      }),
+    }) as unknown as Orchestrator;
+
+  const runMockOf = (orchestrator: Orchestrator) =>
+    (orchestrator as unknown as { run: ReturnType<typeof vi.fn> }).run;
+
+  const appWith = (opts: {
+    orchestrator: Orchestrator;
+    documentOwners?: Record<string, string>;
+    followupEventOwners?: Record<string, string>;
+    records?: Array<Record<string, unknown>>;
+  }) =>
+    buildApp({
+      pool: buildFakePool({
+        consentRow: grantedConsent,
+        documentOwners: opts.documentOwners,
+        followupEventOwners: opts.followupEventOwners,
+      }),
+      llmProvider: buildFakeLlm(),
+      orchestrator: opts.orchestrator,
+      auditLogger: buildFakeAuditLogger(opts.records ?? []),
+    });
+
+  /** Every `context` payload that must be rejected with 400, and why. */
+  const INVALID_CONTEXTS: Array<[string, unknown]> = [
+    ['a bare string', 'stair_climb'],
+    ['an array', [{ type: 'metric', key: 'stair_climb' }]],
+    ['an unknown type', { type: 'chart', key: 'stair_climb' }],
+    ['a missing type', { key: 'stair_climb' }],
+    ['a metric key the server does not know', { type: 'metric', key: 'grip_strength' }],
+    ['a metric with no key', { type: 'metric' }],
+    ['a document id that is not a uuid', { type: 'document', id: 'not-a-uuid' }],
+    ['a document with no id', { type: 'document' }],
+    ['a followup_event id that is not a uuid', { type: 'followup_event', id: '42' }],
+  ];
+
+  describe('POST /api/ai/ask', () => {
+    it.each(INVALID_CONTEXTS)('400 invalid_context on %s', async (_label, context) => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '这什么意思', context });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.code).toBe('invalid_context');
+      expect(res.body.progressId).toBeTruthy();
+      // The run must not have happened — a rejected reference means the
+      // question was never asked, not asked without context.
+      expect(runMockOf(orchestrator)).not.toHaveBeenCalled();
+    });
+
+    it("404 context_not_found for another user's document", async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      // The row exists — it just belongs to somebody else. The response
+      // has to be identical to "no such row" so it can't be used as an
+      // existence oracle.
+      const app = appWith({ orchestrator, documentOwners: { [DOC_ID]: 'someone-else' } });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '这份报告什么意思', context: { type: 'document', id: DOC_ID } });
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('context_not_found');
+      expect(runMockOf(orchestrator)).not.toHaveBeenCalled();
+    });
+
+    it('404 for a document id that does not exist anywhere', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: 'q', context: { type: 'document', id: DOC_ID } });
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('context_not_found');
+    });
+
+    it("404 for another user's followup event", async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator, followupEventOwners: { [EVENT_ID]: 'someone-else' } });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: 'q', context: { type: 'followup_event', id: EVENT_ID } });
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('context_not_found');
+      expect(runMockOf(orchestrator)).not.toHaveBeenCalled();
+    });
+
+    it('200 and hands the planner a metric hint naming the tool to call', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({
+          question: '这条线是不是变差了',
+          // Extra client-supplied fields ride along on purpose: no
+          // string from the client may reach the prompt.
+          context: { type: 'metric', key: 'stair_climb', label: '张三的上楼计时' },
+        });
+
+      expect(res.status).toBe(200);
+      const hint = runMockOf(orchestrator).mock.calls[0][0].userContextHint as string;
+      expect(hint).toContain('上楼计时');
+      expect(hint).toContain('get_my_records');
+      expect(hint).toContain('metricKey="stair_climb"');
+      expect(hint).not.toContain('张三');
+    });
+
+    it('tells the planner NOT to filter for chart keys that are not metrics', async () => {
+      // 跌倒次数 is a chart on mobile but an event tally in the record.
+      // Passing it as a metricKey filter returns an empty series AND
+      // suppresses the event chunk, so the hint has to say "no filter".
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '我最近摔得多吗', context: { type: 'metric', key: 'fall_count' } });
+
+      expect(res.status).toBe(200);
+      const hint = runMockOf(orchestrator).mock.calls[0][0].userContextHint as string;
+      expect(hint).toContain('跌倒次数');
+      expect(hint).toContain('不要传 metricKey');
+    });
+
+    it('resolves an owned document into a hint that leaks neither id nor content', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator, documentOwners: { [DOC_ID]: 'u-1' } });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '这份报告什么意思', context: { type: 'document', id: DOC_ID } });
+
+      expect(res.status).toBe(200);
+      const hint = runMockOf(orchestrator).mock.calls[0][0].userContextHint as string;
+      expect(hint).toContain('get_my_reports');
+      // The hint is instructional only; the report's actual content
+      // still has to arrive through the retriever → redactor path.
+      expect(hint).not.toContain(DOC_ID);
+    });
+
+    it('resolves an owned followup event to a records hint', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator, followupEventOwners: { [EVENT_ID]: 'u-1' } });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '这条记录什么意思', context: { type: 'followup_event', id: EVENT_ID } });
+
+      expect(res.status).toBe(200);
+      const hint = runMockOf(orchestrator).mock.calls[0][0].userContextHint as string;
+      expect(hint).toContain('get_my_records');
+      expect(hint).not.toContain(EVENT_ID);
+    });
+
+    it('leaves the hint undefined when no context was supplied', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '自由提问' });
+
+      expect(res.status).toBe(200);
+      expect(runMockOf(orchestrator).mock.calls[0][0].userContextHint).toBeUndefined();
+    });
+
+    it('treats an explicit null context as "no context", not as invalid', async () => {
+      const orchestrator = buildFakeOrchestrator(successResult());
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: '自由提问', context: null });
+
+      expect(res.status).toBe(200);
+      expect(runMockOf(orchestrator).mock.calls[0][0].userContextHint).toBeUndefined();
+    });
+  });
+
+  describe('POST /api/ai/ask/stream — rejection happens before the SSE commit', () => {
+    /** The whole point: a rejected context must still be a status code.
+     *  Once `res.flushHeaders()` runs there is no code left to send. */
+    const expectJsonNotSse = (res: {
+      headers: Record<string, string | undefined>;
+      text?: string;
+    }) => {
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+      expect(res.headers['content-type']).not.toMatch(/text\/event-stream/);
+      // Set only on the SSE commit path, so its absence proves the
+      // rejection landed before `flushHeaders()`.
+      expect(res.headers['x-accel-buffering']).toBeUndefined();
+      expect(res.text ?? '').not.toMatch(/^event: /m);
+      expect(res.text ?? '').not.toMatch(/^data: /m);
+    };
+
+    it('400 as JSON, not as an SSE error frame', async () => {
+      const orchestrator = streamingOrchestrator();
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask/stream')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: 'q', context: { type: 'metric', key: 'grip_strength' } });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('invalid_context');
+      expectJsonNotSse(res);
+      expect(runMockOf(orchestrator)).not.toHaveBeenCalled();
+    });
+
+    it("404 as JSON for another user's document", async () => {
+      const orchestrator = streamingOrchestrator();
+      const app = appWith({ orchestrator, documentOwners: { [DOC_ID]: 'someone-else' } });
+
+      const res = await request(app)
+        .post('/api/ai/ask/stream')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: 'q', context: { type: 'document', id: DOC_ID } });
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('context_not_found');
+      expectJsonNotSse(res);
+      expect(runMockOf(orchestrator)).not.toHaveBeenCalled();
+    });
+
+    it('marks the reserved progress entry as failed so an already-open bar unfreezes', async () => {
+      // Mobile opens /progress/:id before the POST. Without this the
+      // bar sits at the previous stage with status 'running' until the
+      // 10-minute TTL prunes it, even though the POST came back 400.
+      const app = appWith({ orchestrator: streamingOrchestrator() });
+      const token = `Bearer ${issueToken('u-1')}`;
+      const progressId = 'ctx-stream-progress-1';
+
+      const res = await request(app)
+        .post('/api/ai/ask/stream')
+        .set('authorization', token)
+        .send({ question: 'q', progressId, context: { type: 'metric', key: 'nope' } });
+      expect(res.status).toBe(400);
+
+      const peek = await request(app)
+        .get(`/api/ai/ask/progress/${progressId}`)
+        .set('authorization', token);
+      expect(peek.status).toBe(200);
+      expect(peek.body.data.status).toBe('error');
+      expect(peek.body.data.error).toBe('invalid_context');
+    });
+
+    it('marks the progress entry as failed on a 404 too', async () => {
+      const app = appWith({
+        orchestrator: streamingOrchestrator(),
+        documentOwners: { [DOC_ID]: 'someone-else' },
+      });
+      const token = `Bearer ${issueToken('u-1')}`;
+      const progressId = 'ctx-stream-progress-2';
+
+      const res = await request(app)
+        .post('/api/ai/ask/stream')
+        .set('authorization', token)
+        .send({ question: 'q', progressId, context: { type: 'document', id: DOC_ID } });
+      expect(res.status).toBe(404);
+
+      const peek = await request(app)
+        .get(`/api/ai/ask/progress/${progressId}`)
+        .set('authorization', token);
+      expect(peek.body.data.status).toBe('error');
+      expect(peek.body.data.error).toBe('invalid_context');
+    });
+
+    it('/ask marks its progress entry as failed on a rejected context as well', async () => {
+      const app = appWith({ orchestrator: buildFakeOrchestrator(successResult()) });
+      const token = `Bearer ${issueToken('u-1')}`;
+      const progressId = 'ctx-ask-progress-1';
+
+      const res = await request(app)
+        .post('/api/ai/ask')
+        .set('authorization', token)
+        .send({ question: 'q', progressId, context: { type: 'metric', key: 'nope' } });
+      expect(res.status).toBe(400);
+
+      const peek = await request(app)
+        .get(`/api/ai/ask/progress/${progressId}`)
+        .set('authorization', token);
+      expect(peek.body.data.status).toBe('error');
+      expect(peek.body.data.error).toBe('invalid_context');
+    });
+
+    it('still streams normally when the context resolves', async () => {
+      const orchestrator = streamingOrchestrator();
+      const app = appWith({ orchestrator });
+
+      const res = await request(app)
+        .post('/api/ai/ask/stream')
+        .set('authorization', `Bearer ${issueToken('u-1')}`)
+        .send({ question: 'q', context: { type: 'metric', key: 'sleep_quality' } });
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/event-stream/);
+      expect(res.text).toMatch(/event: done/);
+      const hint = runMockOf(orchestrator).mock.calls[0][0].userContextHint as string;
+      expect(hint).toContain('睡眠质量');
+      expect(hint).toContain('metricKey="sleep_quality"');
+    });
   });
 });
 
