@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Modal } from 'react-native';
-import Icon from '../../../common/Icon';
+import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
 interface ApplyModalProps {
@@ -19,7 +19,7 @@ const ApplyModal: React.FC<ApplyModalProps> = ({ visible, onConfirm, onCancel })
           onPress={(e) => e.stopPropagation()}
         >
           <View style={styles.iconContainer}>
-            <Icon name="file-medical" size={20} color="#969FFF" />
+            <FontAwesome6 name="file-medical" size={20} color="#969FFF" />
           </View>
 
           <Text style={styles.title}>申请入组临床试验</Text>

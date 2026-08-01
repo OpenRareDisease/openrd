@@ -1,5 +1,4 @@
 import { StyleSheet, Platform } from 'react-native';
-import { MIN_TOUCH_TARGET } from '../../lib/a11y';
 
 export default StyleSheet.create({
   container: {
@@ -351,8 +350,6 @@ export default StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
   },
   cancelButton: {
-    minHeight: MIN_TOUCH_TARGET,
-    justifyContent: 'center',
     width: '100%',
     paddingVertical: 12,
     alignItems: 'center',

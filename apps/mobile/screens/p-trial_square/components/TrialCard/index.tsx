@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
-import Icon from '../../../common/Icon';
+import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
 interface TrialData {
@@ -89,11 +89,11 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
       <View style={styles.footer}>
         <View style={styles.footerLeft}>
           <View style={styles.infoItem}>
-            <Icon name="location-dot" size={10} color="rgba(255, 255, 255, 0.5)" />
+            <FontAwesome6 name="location-dot" size={10} color="rgba(255, 255, 255, 0.5)" />
             <Text style={styles.infoText}>{trial.location}</Text>
           </View>
           <View style={styles.infoItem}>
-            <Icon name="calendar" size={10} color="rgba(255, 255, 255, 0.5)" />
+            <FontAwesome6 name="calendar" size={10} color="rgba(255, 255, 255, 0.5)" />
             <Text style={styles.infoText}>{trial.duration}</Text>
           </View>
         </View>

@@ -14,17 +14,15 @@ import { COLOR, HAIRLINE, INTERACTION, RADIUS, SPACE, TYPE } from '../../lib/des
  * target depended on which screen you were on. Some rows navigated and
  * looked inert; some inert rows looked tappable.
  *
- * So there are two components and the difference between them is the
- * whole point:
+ * `<Row>` **does** something: it always has a chevron (or a supplied
+ * accessory), always fills on press, always clears the touch-target
+ * minimum — and `onPress` is required, so the chevron cannot appear on
+ * a row that goes nowhere. A reader can therefore trust it, which is
+ * the only way an affordance is worth anything.
  *
- *  - `<Row>` **does** something. It always has a chevron (or a supplied
- *    accessory), always fills on press, always clears the touch-target
- *    minimum.
- *  - `<InfoRow>` displays. It never has a chevron and never responds to
- *    touch.
- *
- * A reader can therefore trust the chevron, which is the only way an
- * affordance is worth anything.
+ * Rows that merely display are a plain `<View>`; there was an
+ * `<InfoRow>` here for that and it never acquired a caller, so it went
+ * rather than sitting in the file as a shape nothing holds.
  *
  * Separators inset to the text edge, the way an iOS grouped table does,
  * so the column of labels reads as a column rather than as a stack of
@@ -40,7 +38,10 @@ interface RowProps {
   icon?: string;
   /** Right-hand text, e.g. a current value. Sits before the chevron. */
   value?: string;
-  onPress?: () => void;
+  /** Required. A row draws a chevron unconditionally, so a row that
+   *  does not navigate would be drawing a promise it cannot keep —
+   *  the exact lie this module exists to prevent. */
+  onPress: () => void;
   /** Renders the label in the alert colour. For destructive rows only. */
   destructive?: boolean;
   disabled?: boolean;
@@ -70,13 +71,13 @@ export const Row = ({
       disabled ? styles.rowDisabled : null,
     ]}
     onPress={onPress}
-    disabled={disabled || !onPress}
+    disabled={disabled}
     accessibilityRole="button"
     accessibilityLabel={accessibilityLabel ?? label}
     accessibilityHint={accessibilityHint}
     // See Button.tsx — react-native-web 0.20 drops accessibilityState.
     accessibilityState={{ disabled: Boolean(disabled) }}
-    aria-disabled={Boolean(disabled) || !onPress}
+    aria-disabled={Boolean(disabled)}
   >
     {icon ? <Icon name={icon} size={19} color={destructive ? COLOR.alert : COLOR.inkSoft} /> : null}
 
@@ -100,28 +101,6 @@ export const Row = ({
       <Icon name="chevron-right" size={INTERACTION.chevronSize} color={INTERACTION.chevronColor} />
     )}
   </Pressable>
-);
-
-interface InfoRowProps {
-  label: string;
-  value?: string;
-  detail?: string;
-}
-
-/** A row that only displays. No chevron, no press state — see the
- *  module comment for why that distinction is load-bearing. */
-export const InfoRow = ({ label, value, detail }: InfoRowProps) => (
-  <View style={styles.row}>
-    <View style={styles.rowText}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      {detail ? <Text style={styles.rowDetail}>{detail}</Text> : null}
-    </View>
-    {value ? (
-      <Text style={styles.rowValue} numberOfLines={1}>
-        {value}
-      </Text>
-    ) : null}
-  </View>
 );
 
 interface ListGroupProps {

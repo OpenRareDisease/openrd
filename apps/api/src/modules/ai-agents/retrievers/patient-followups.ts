@@ -210,12 +210,18 @@ const MAX_ROWS_PER_SERIES = 200;
  * types into is free of names or places.
  *
  * The enum in profile.schema.ts and the CHECK in migration 015 close
- * the write path, but the CHECK is NOT VALID and legacy rows predate
- * both, so the read path cannot assume it. Mapping through a fixed
- * table makes what we emit a function of this file rather than of the
- * column: an unrecognised unit becomes null, which costs a suffix on
- * the numbers and nothing else. The aliases exist only for those
- * legacy rows — new writes can only ever be the canonical forms.
+ * the write path, and 015 back-fills the legacy rows rather than
+ * following 012's NOT VALID convention — deliberately, because a
+ * NOT VALID constraint here would have made exactly the rows most
+ * likely to hold a free-text unit undeletable under 016's soft delete.
+ * Read that migration's header for the argument.
+ *
+ * So after 015 the column really is canonical-or-null. This table stays
+ * anyway, for the window where the code is deployed and the migration
+ * has not run yet, and because it costs one lookup: mapping through it
+ * makes what we emit a function of this file rather than of the column,
+ * and an unrecognised unit becomes null, which costs a suffix on the
+ * numbers and nothing else.
  */
 const UNIT_ALIASES: Record<string, string> = {
   sec: 'sec',

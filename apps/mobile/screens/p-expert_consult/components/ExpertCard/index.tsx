@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Image } from 'react-native';
-import Icon from '../../../common/Icon';
+import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
 interface ExpertData {
@@ -63,11 +63,11 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
 
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
-              <Icon name="star" style={styles.starIcon} />
+              <FontAwesome6 name="star" style={styles.starIcon} />
               <Text style={styles.statText}>{expert.rating}</Text>
             </View>
             <View style={styles.statItem}>
-              <Icon name="users" style={styles.usersIcon} />
+              <FontAwesome6 name="users" style={styles.usersIcon} />
               <Text style={styles.statText}>{expert.patients}</Text>
             </View>
           </View>
@@ -78,7 +78,7 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
               onPress={onTextConsult}
               disabled={isConsultDisabled}
             >
-              <Icon name="comment-dots" style={styles.consultButtonIcon} />
+              <FontAwesome6 name="comment-dots" style={styles.consultButtonIcon} />
               <Text
                 style={[
                   styles.textConsultButtonText,
@@ -94,7 +94,7 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
               onPress={onPhoneConsult}
               disabled={isConsultDisabled}
             >
-              <Icon name="phone" style={styles.consultButtonIcon} />
+              <FontAwesome6 name="phone" style={styles.consultButtonIcon} />
               <Text
                 style={[
                   styles.phoneConsultButtonText,

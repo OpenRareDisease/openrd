@@ -181,6 +181,14 @@ const AskAboutDrawer = ({
         onEvent: (event) => {
           if (event.type === 'answer_delta') {
             setAnswer((prev) => prev + event.text);
+          } else if (event.type === 'answer_reset') {
+            // The server discarded what it had already streamed and
+            // re-asked — round 2 answered with nothing but a lead-in to
+            // a lookup. Replace rather than append: the retry is a
+            // fresh reply, not a continuation of the abandoned one.
+            // p-qna handles this too; this drawer is the other consumer
+            // and was missed when the frame was added.
+            setAnswer(event.text);
           } else if (event.type === 'done') {
             setCitations(event.data?.citations ?? []);
             // The done frame carries the complete answer. Deltas can be
@@ -642,9 +650,6 @@ const styles = StyleSheet.create({
     borderTopWidth: HAIRLINE,
     borderTopColor: COLOR.line,
   },
-  suggestionText: {
-    ...TYPE.heading,
-  },
   questionBubble: {
     alignSelf: 'flex-end',
     maxWidth: '88%',
@@ -724,18 +729,6 @@ const styles = StyleSheet.create({
     ...TYPE.caption,
     fontSize: 11,
     lineHeight: 15,
-  },
-  retryButton: {
-    minHeight: MIN_TOUCH_TARGET,
-    justifyContent: 'center',
-    alignSelf: 'flex-start',
-    paddingHorizontal: SPACE.lg,
-    borderRadius: RADIUS.control,
-    backgroundColor: COLOR.accent,
-  },
-  retryButtonText: {
-    ...TYPE.label,
-    color: COLOR.onAccent,
   },
   composer: {
     flexDirection: 'row',

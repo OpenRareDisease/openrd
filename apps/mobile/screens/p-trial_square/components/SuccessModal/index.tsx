@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Modal } from 'react-native';
-import Icon from '../../../common/Icon';
+import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
 interface SuccessModalProps {
@@ -18,7 +18,7 @@ const SuccessModal: React.FC<SuccessModalProps> = ({ visible, onClose }) => {
           onPress={(e) => e.stopPropagation()}
         >
           <View style={styles.iconContainer}>
-            <Icon name="check" size={20} color="#10B981" />
+            <FontAwesome6 name="check" size={20} color="#10B981" />
           </View>
 
           <Text style={styles.title}>申请提交成功</Text>

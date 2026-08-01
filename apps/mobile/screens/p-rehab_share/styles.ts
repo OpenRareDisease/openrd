@@ -1,5 +1,4 @@
 import { StyleSheet, Dimensions, Platform } from 'react-native';
-import { MIN_TOUCH_TARGET } from '../../lib/a11y';
 
 const { width } = Dimensions.get('window');
 
@@ -452,8 +451,6 @@ export default StyleSheet.create({
     color: '#FFFFFF',
   },
   cancelButton: {
-    minHeight: MIN_TOUCH_TARGET,
-    justifyContent: 'center',
     paddingVertical: 12,
     alignItems: 'center',
   },

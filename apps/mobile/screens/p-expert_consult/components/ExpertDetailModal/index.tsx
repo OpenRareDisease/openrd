@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, Modal, TouchableOpacity, Image, TouchableWithoutFeedback } from 'react-native';
-import Icon from '../../../common/Icon';
+import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
 interface ExpertData {
@@ -38,7 +38,7 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({ visible, expert, 
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>专家详情</Text>
                   <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-                    <Icon name="xmark" style={styles.closeIcon} />
+                    <FontAwesome6 name="xmark" style={styles.closeIcon} />
                   </TouchableOpacity>
                 </View>
 
@@ -67,7 +67,7 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({ visible, expert, 
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>评分</Text>
                       <View style={styles.ratingContainer}>
-                        <Icon name="star" style={styles.detailStarIcon} />
+                        <FontAwesome6 name="star" style={styles.detailStarIcon} />
                         <Text style={styles.detailValue}>{expert.rating}</Text>
                       </View>
                     </View>
