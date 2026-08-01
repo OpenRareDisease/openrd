@@ -282,6 +282,7 @@ export class Orchestrator {
       plan.llmResponse.toolCalls,
       input.question,
       new Set(tools.map((tool) => tool.name)),
+      { hasHistory: (input.history?.length ?? 0) > 0 },
     );
     if (companion.added.length > 0) {
       plan.llmResponse.toolCalls = companion.toolCalls;
@@ -425,6 +426,7 @@ export class Orchestrator {
         round.toolCalls,
         input.question,
         new Set(tools.map((tool) => tool.name)),
+        { hasHistory: (input.history?.length ?? 0) > 0 },
       );
       response = {
         content: round.content,
@@ -505,7 +507,11 @@ export class Orchestrator {
     // prevent.
     if (!answerText) {
       this.logger.warn(
-        { requestId: input.requestId, discarded: scrubbed.text.slice(0, 120) },
+        // Length, not content. The discarded text is model prose built
+        // over this patient's records, and the application log is not a
+        // place patient-derived content belongs — the audit trail is,
+        // and it is access-controlled and consent-scoped.
+        { requestId: input.requestId, discardedChars: scrubbed.text.length },
         'orchestrator round 2 produced no usable answer; retrying once',
       );
       // Clear the abandoned preamble first, then stream the retry into
@@ -517,32 +523,55 @@ export class Orchestrator {
       // itself out. The client already replaces on `answer_reset`, so
       // this needs no protocol change.
       if (opts.streamFinalAnswer) emit({ type: 'answer_reset', text: '' });
-      const retry = await this.askRound({
-        messages: [
-          ...round2Messages,
-          { role: 'assistant', content: scrubbed.text || '(empty)' },
+      const retryMessages: LlmMessage[] = [
+        ...round2Messages,
+        { role: 'assistant', content: scrubbed.text || '(empty)' },
+        {
+          role: 'system',
+          content:
+            '上一条回复没有回答用户的问题——它只是宣布要再检索一次，而这里没有下一轮。' +
+            '现在请直接用已有资料给出面向用户的完整回答；资料不足就说明哪部分不足，' +
+            '不要再提检索。',
+        },
+      ];
+
+      try {
+        const retry = await this.askRound({
+          messages: retryMessages,
+          // No tools, ever. This is the last thing the run will do.
+          tools: undefined,
+          stream: Boolean(opts.streamFinalAnswer),
+          requestId: input.requestId,
+          signal: input.signal,
+          emit,
+        });
+        const retryScrubbed = scrubToolCallMarkup(retry.content ?? '');
+        answerText = isPreambleOnly(retryScrubbed.text) ? '' : retryScrubbed.text;
+        // Added, not replaced. The discarded round was still billed, and
+        // an audit row that reports only the retry understates what the
+        // question cost by most of it.
+        finalUsage = addUsage(finalUsage, retry.usage);
+        if (answerText) {
+          // The prompt recorded in the audit has to be the one that
+          // produced the recorded answer. Before this the hash still
+          // described round 2's messages while `answer` came from a
+          // different, longer prompt — a trail that cannot be replayed.
+          round2Messages = retryMessages;
+          // Non-streaming callers never saw the deltas, so they still
+          // need the finished text handed to them.
+          if (!opts.streamFinalAnswer) emit({ type: 'answer_reset', text: answerText });
+        }
+      } catch (error) {
+        // A recoverable degraded answer must not become a hard 500. The
+        // retry is a bonus attempt on a path that already failed once;
+        // if it throws, fall through to the honest fallback below.
+        this.logger.warn(
           {
-            role: 'system',
-            content:
-              '上一条回复没有回答用户的问题——它只是宣布要再检索一次，而这里没有下一轮。' +
-              '现在请直接用已有资料给出面向用户的完整回答；资料不足就说明哪部分不足，' +
-              '不要再提检索。',
+            requestId: input.requestId,
+            error: scrubErrorDetail(error instanceof Error ? error.message : String(error)),
           },
-        ],
-        // No tools, ever. This is the last thing the run will do.
-        tools: undefined,
-        stream: Boolean(opts.streamFinalAnswer),
-        requestId: input.requestId,
-        signal: input.signal,
-        emit,
-      });
-      const retryScrubbed = scrubToolCallMarkup(retry.content ?? '');
-      answerText = isPreambleOnly(retryScrubbed.text) ? '' : retryScrubbed.text;
-      if (answerText) {
-        // Non-streaming callers never saw the deltas, so they still
-        // need the finished text handed to them.
-        if (!opts.streamFinalAnswer) emit({ type: 'answer_reset', text: answerText });
-        finalUsage = retry.usage ?? finalUsage;
+          'orchestrator retry failed; falling back',
+        );
       }
     }
 

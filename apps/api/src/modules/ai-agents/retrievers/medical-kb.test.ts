@@ -242,3 +242,61 @@ describe('isDamagedExtraction', () => {
     expect(isDamagedExtraction('低强度有氧运动对 FSHD 患者是安全的。')).toBe(false);
   });
 });
+
+describe('over-fetch, trim and dedup arithmetic', () => {
+  const chunk = (content: string) => ({ content, metadata: { source_file: 'a.pdf' } });
+  const prose = (n: number) =>
+    `低强度有氧运动对 FSHD 患者是安全的，这是第 ${n} 段可检索的正文内容，足够长以通过最小长度检查。`;
+
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const retrieverWith = (chunks: unknown[]) => {
+    const fetchMock = mockFetchOk({ chunks, metadata: {} });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    return { retriever: new MedicalKbRetriever({ kbServiceUrl: 'http://kb.test' }), fetchMock };
+  };
+
+  it('asks the service for more than the caller wanted', async () => {
+    const { retriever, fetchMock } = retrieverWith([chunk(prose(1))]);
+    await retriever.search({ question: 'q', limit: 8 }, ctx);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    // Roughly a fifth of this corpus is dropped after the service has
+    // already picked its top_k, so asking for exactly the target left
+    // the model with two or three chunks.
+    expect(body.top_k).toBeGreaterThan(8);
+  });
+
+  it("trims back to the caller's limit, and citations stay in step", async () => {
+    const many = Array.from({ length: 20 }, (_, i) => chunk(prose(i)));
+    const { retriever } = retrieverWith(many);
+    const result = await retriever.search({ question: 'q', limit: 5 }, ctx);
+    expect(result.chunks).toHaveLength(5);
+    // A citation pointing at a trimmed-away chunk would name a source
+    // for text the model never saw.
+    expect(result.citations).toHaveLength(5);
+    expect(result.citations.map((c) => c.chunkId)).toEqual(result.chunks.map((c) => c.id));
+  });
+
+  it('drops duplicate text before trimming, not after', async () => {
+    // The corpus holds the same paragraph under several rows; deduping
+    // after the trim would spend the budget on repeats.
+    const dupes = [
+      chunk(prose(1)),
+      chunk(prose(1)),
+      chunk(prose(1)),
+      chunk(prose(2)),
+      chunk(prose(3)),
+    ];
+    const { retriever } = retrieverWith(dupes);
+    const result = await retriever.search({ question: 'q', limit: 3 }, ctx);
+    const texts = result.chunks.map((c) => c.content);
+    expect(new Set(texts).size).toBe(texts.length);
+    expect(texts).toHaveLength(3);
+  });
+});

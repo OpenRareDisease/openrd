@@ -18,11 +18,13 @@
  * on a 375pt screen, and it lands on the exact sentence carrying the
  * patient's own numbers.
  *
- * Telling the model "no Markdown" helps and is also done (see the
- * orchestrator's system prompt), but instruction-following is not a
- * guarantee, and the failure mode is ugly rather than loud — nothing
- * errors, the patient just gets a worse answer. So the client parses
- * what arrives instead of trusting what was asked for.
+ * The orchestrator's system prompt takes the opposite tack — it tells
+ * the model Markdown *is* rendered and to use it — which makes this
+ * parser load-bearing rather than defensive. Either way the reasoning
+ * is the same: instruction-following is not a guarantee, and the
+ * failure mode is ugly rather than loud. Nothing errors; the patient
+ * just gets a worse answer. So the client parses what arrives instead
+ * of trusting what was asked for.
  *
  * Scope
  * -----

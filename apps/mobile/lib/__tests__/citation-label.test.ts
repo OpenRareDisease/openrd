@@ -69,3 +69,27 @@ describe('retriever-id fallbacks', () => {
     expect(formatCitationLabel(null, 'some_future_retriever')).toBe('医学知识库');
   });
 });
+
+describe('patient-report source files', () => {
+  // A report's sourceFile is its storage path. Rendering it verbatim
+  // put the internal directory layout — including the per-user id
+  // segment — under the answer a patient reads.
+  it('shows only the basename, never the storage path', () => {
+    expect(
+      formatCitationLabel(
+        '/var/data/uploads/u-d5180149/2026-07-31_基因检测.pdf',
+        'patient_reports',
+      ),
+    ).toBe('2026-07-31 基因检测');
+  });
+
+  it('falls back for an opaque upload name rather than showing the path', () => {
+    expect(formatCitationLabel('uploads/abc123.jpeg', 'patient_reports')).toBe('你的检查报告');
+  });
+
+  // Reports are photographed as often as they are scanned, so the
+  // image extensions matter as much as .pdf here.
+  it.each([['jpeg'], ['PNG'], ['heic'], ['tiff']])('strips the .%s extension', (ext) => {
+    expect(formatCitationLabel(`肌肉MRI报告.${ext}`, 'patient_reports')).toBe('肌肉MRI报告');
+  });
+});

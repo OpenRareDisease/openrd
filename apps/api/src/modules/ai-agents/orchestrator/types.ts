@@ -158,12 +158,21 @@ export type OrchestratorEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
-  /** Discard everything streamed so far and use `text` instead.
+  /** Discard everything streamed so far and show `text` instead.
    *
-   *  Round 2 occasionally answers with nothing but a lead-in to a
-   *  search that cannot happen; the orchestrator re-asks once, and by
-   *  then the client has already painted the discarded lead-in. The
-   *  retry's answer is not a continuation of it. */
+   *  Sent whenever text already on screen turns out not to be part of
+   *  the answer. Two cases, and `text` distinguishes them:
+   *
+   *  - **empty** — clear the bubble, more is still coming. A gather
+   *    round that streamed its note about fetching more, or the moment
+   *    before a streamed retry begins.
+   *  - **non-empty** — clear the bubble and show this; nothing further
+   *    will stream. Only the non-streaming retry path, which has no
+   *    deltas to send.
+   *
+   *  A consumer that only handles the non-empty case leaves the
+   *  abandoned text on screen, so both must assign rather than append,
+   *  including when the text is empty. */
   | { type: 'answer_reset'; text: string }
   | { type: 'done'; result: OrchestratorRunResult }
   | { type: 'error'; message: string };

@@ -74,3 +74,70 @@ describe('withCompanionToolCalls', () => {
     expect(added).toEqual([]);
   });
 });
+
+describe('the mirror rule — anaphoric follow-ups about own records', () => {
+  const AVAILABLE = new Set(['search_medical_kb', 'get_my_reports', 'get_my_profile']);
+  const kbOnly = [{ id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }];
+
+  // The reported failure: the planner called only the KB because 「这些」
+  // is anaphora, so the model had public material and no patient data —
+  // and asked the patient to send report images it had one turn ago.
+  it('adds the report lookup for a demonstrative follow-up', () => {
+    const { toolCalls, added } = withCompanionToolCalls(
+      kbOnly,
+      '想看看这些报告的具体数值',
+      AVAILABLE,
+      { hasHistory: true },
+    );
+    expect(added).toEqual(['get_my_reports']);
+    expect(toolCalls.map((c) => c.id)).toContain('server-companion-reports');
+  });
+
+  it('does not add it on the first turn — 这些 has no antecedent yet', () => {
+    const { added } = withCompanionToolCalls(kbOnly, '想看看这些报告的具体数值', AVAILABLE, {
+      hasHistory: false,
+    });
+    expect(added).toEqual([]);
+  });
+
+  // A demonstrative alone is not enough: 「这些注意事项」 points at advice
+  // the assistant just gave, not at the patient's records.
+  it('does not add it for a demonstrative pointing at advice', () => {
+    const { added } = withCompanionToolCalls(kbOnly, '这些注意事项能展开说说吗', AVAILABLE, {
+      hasHistory: true,
+    });
+    expect(added).toEqual([]);
+  });
+
+  it('adds nothing when the plan already reads the patient', () => {
+    const { added } = withCompanionToolCalls(
+      [
+        { id: 'c1', name: 'get_my_reports', argumentsJson: '{}' },
+        { id: 'c2', name: 'search_medical_kb', argumentsJson: '{"query":"x"}' },
+      ],
+      '这些报告的数值呢',
+      AVAILABLE,
+      { hasHistory: true },
+    );
+    expect(added).toEqual([]);
+  });
+
+  it('respects the consent gate — never adds a tool the registry withheld', () => {
+    const { added } = withCompanionToolCalls(
+      kbOnly,
+      '这些报告的数值呢',
+      new Set(['search_medical_kb']),
+      {
+        hasHistory: true,
+      },
+    );
+    expect(added).toEqual([]);
+  });
+
+  it('still catches the explicit form without history', () => {
+    const { added } = withCompanionToolCalls(kbOnly, '分析我的报告', AVAILABLE, {
+      hasHistory: false,
+    });
+    expect(added).toEqual(['get_my_reports']);
+  });
+});

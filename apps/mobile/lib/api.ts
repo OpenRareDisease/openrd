@@ -935,8 +935,13 @@ export interface AiLogDraft {
     activityNote?: string | null;
   } | null;
   event: {
-    eventType: string;
-    severity: 'mild' | 'moderate' | 'severe';
+    /** Null when the model could not tell which kind of event this was.
+     *  The server refuses to guess — see draft-log.ts: a `fall` the
+     *  patient described being silently rewritten to `other` is the
+     *  "repaired" value that file exists to not ship — so consumers get
+     *  an unfilled field to complete, not a wrong one to notice. */
+    eventType: string | null;
+    severity: 'mild' | 'moderate' | 'severe' | null;
     occurredAt?: string | null;
     description?: string | null;
   } | null;
@@ -984,10 +989,14 @@ export type AiStreamEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
-  /** Throw away everything accumulated so far and use `text`. Sent when
-   *  round 2 answered with nothing but a lead-in to a search that could
-   *  not run and the server re-asked — the retry's answer replaces the
-   *  discarded lead-in rather than continuing it. */
+  /** Throw away everything accumulated so far and show `text`.
+   *
+   *  `text` is empty when more will still stream (a gather round's note
+   *  about fetching more, or the instant before a streamed retry) and
+   *  non-empty when it is the finished answer. Assign in both cases —
+   *  treating the empty one as "nothing to do" leaves the abandoned
+   *  text on screen, which is the whole thing this frame exists to
+   *  remove. */
   | { type: 'answer_reset'; text: string }
   | { type: 'done'; data: AiAskResponse['data'] }
   | { type: 'error'; message: string };

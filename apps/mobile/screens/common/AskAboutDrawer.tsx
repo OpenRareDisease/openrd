@@ -182,10 +182,10 @@ const AskAboutDrawer = ({
           if (event.type === 'answer_delta') {
             setAnswer((prev) => prev + event.text);
           } else if (event.type === 'answer_reset') {
-            // The server discarded what it had already streamed and
-            // re-asked — round 2 answered with nothing but a lead-in to
-            // a lookup. Replace rather than append: the retry is a
-            // fresh reply, not a continuation of the abandoned one.
+            // Assign, including when `text` is empty — an empty reset
+            // means "clear the bubble, more is still coming" and
+            // treating it as a no-op would leave the abandoned text on
+            // screen, which is the whole point of the frame.
             // p-qna handles this too; this drawer is the other consumer
             // and was missed when the frame was added.
             setAnswer(event.text);

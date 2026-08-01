@@ -31,7 +31,7 @@
  */
 
 /** `.pdf`, `.docx`, `.html`… */
-const EXTENSION = /\.(pdf|docx?|html?|txt|md|pptx?|csv)$/i;
+const EXTENSION = /\.(pdf|docx?|html?|txt|md|pptx?|csv|jpe?g|png|webp|heic|tiff?)$/i;
 
 const NOISE: readonly RegExp[] = [
   // Filing prefixes used to order the corpus: `A.`, `B.`, `10、`, `1_1_`.
@@ -90,7 +90,12 @@ export const formatCitationLabel = (
   const raw = (sourceFile ?? '').trim();
   if (!raw) return fallback;
 
-  let label = raw.replace(EXTENSION, '');
+  // Only ever the basename. A patient report's `sourceFile` is its
+  // storage path, and rendering that put an internal directory layout —
+  // including the per-user id segment — under the answer, where it is
+  // both meaningless and more than the reader should be shown.
+  let label = raw.split(/[/\\]/).pop() ?? raw;
+  label = label.replace(EXTENSION, '');
   for (const pattern of NOISE) label = label.replace(pattern, '');
   label = label
     .replace(/[_]+/g, ' ')

@@ -992,9 +992,11 @@ const P_QNA = () => {
         );
       }
 
-      // The server discarded what it had already streamed and re-asked.
-      // Replace rather than append: the retry's answer is a fresh reply
-      // to the question, not a continuation of the abandoned lead-in.
+      // Assign, including when `text` is empty — an empty reset means
+      // "clear the bubble, more is still coming" (a gather round's note
+      // about fetching more, or the instant before a streamed retry).
+      // Treating that as a no-op would leave the abandoned text on
+      // screen, which is what the frame exists to remove.
       if (event.type === 'answer_reset') {
         accumulatedAnswer = event.text;
         receivedAnyDelta = true;

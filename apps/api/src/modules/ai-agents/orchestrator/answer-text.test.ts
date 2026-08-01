@@ -158,6 +158,30 @@ describe('StreamingAnswerScrubber', () => {
     expect(run(['数值 <', ' 5 mg/L 属于正常。'])).toBe('数值 < 5 mg/L 属于正常。');
   });
 
+  // The joined-output assertions above cannot see WHEN text came out,
+  // and that turned out to matter:「CK 值 < 5 mg/L」is ordinary in a lab
+  // answer, and the scrubber held everything after that `<` until the
+  // stream ended — so the answer stopped mid-sentence on screen and
+  // then arrived all at once. Assert per-chunk release, not the total.
+  it('does not stall the stream on a lab comparison', () => {
+    const scrubber = new StreamingAnswerScrubber();
+    const emitted = ['CK 值 ', '< ', '5 mg/L 属于正常，', '不用担心。'].map((c) =>
+      scrubber.push(c),
+    );
+    // Nothing withheld: every chunk leaves as it arrives.
+    expect(emitted.filter((e) => e === '')).toHaveLength(0);
+    expect(scrubber.flush()).toBe('');
+  });
+
+  it('still withholds a < that really is starting a tool call', () => {
+    const scrubber = new StreamingAnswerScrubber();
+    expect(scrubber.push('分析：')).toBe('分析：');
+    // Held — this one could still become an opener.
+    expect(scrubber.push('<minimax:tool_')).toBe('');
+    expect(scrubber.push('call><invoke name="x"></invoke></minimax:tool_call>')).toBe('');
+    expect(scrubber.push('结果。')).toBe('结果。');
+  });
+
   it('handles a whole block arriving in one chunk', () => {
     expect(run(['A<tool_call><invoke name="a"></invoke></tool_call>B'])).toBe('AB');
   });

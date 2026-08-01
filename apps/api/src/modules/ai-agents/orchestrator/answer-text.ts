@@ -144,11 +144,17 @@ export const scrubToolCallMarkup = (raw: string): ScrubbedAnswer => {
   }
   text = text.replace(TOOL_CALL_TAIL, '');
 
+  // Whether markup was found has to be decided BEFORE the cosmetic
+  // collapse below, or ordinary Markdown with a run of blank lines
+  // reports markup that was never there — and the caller logs that as
+  // an integration fact about the provider.
+  const hadToolCallMarkup = text !== before;
+
   // Collapse the blank lines the removal left behind so the surviving
   // prose does not arrive with a hole in the middle of it.
   text = text.replace(/\n{3,}/g, '\n\n').trim();
 
-  return { text, hadToolCallMarkup: text !== before.trim() };
+  return { text, hadToolCallMarkup };
 };
 
 /** Openers we hold back on, by name. Kept next to TOOL_CALL_BLOCKS so
@@ -161,6 +167,11 @@ const OPENER_NAMES = ['tool_call', 'function_calls', 'invoke', 'tool_use'] as co
 const couldBecomeOpener = (tail: string): boolean => {
   if (!tail.startsWith('<')) return false;
   const rest = tail.slice(1).toLowerCase();
+  // A tag name cannot start with whitespace, and「CK 值 < 5 mg/L」is
+  // ordinary in a lab answer. Without this the scrubber held everything
+  // after that `<` until the stream ended, so the answer stopped
+  // mid-sentence on screen and then arrived all at once.
+  if (rest.length > 0 && /^\s/.test(rest)) return false;
   const afterNamespace = rest.includes(':') ? rest.slice(rest.indexOf(':') + 1) : rest;
   // A namespace prefix still being typed: `<min`, `<minimax`.
   if (!rest.includes(':') && /^[a-z0-9_-]*$/.test(rest)) {
