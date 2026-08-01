@@ -313,7 +313,9 @@ const buildOrchestrator = (llm: ILLMProvider, context: RouteContext, pool: Pool)
     .register(new GetMyProfileTool(profile))
     .register(new GetMyReportsTool(reports))
     .register(new GetMyRecordsTool(followups));
-  return new Orchestrator(llm, registry, context.logger);
+  return new Orchestrator(llm, registry, context.logger, {
+    maxToolRounds: context.env.AI_MAX_TOOL_ROUNDS,
+  });
 };
 
 /** Optional dependency overrides — tests pass in mocks for `pool`,

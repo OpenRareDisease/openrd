@@ -111,6 +111,12 @@ const envSchema = z
     AI_API_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),
     AI_API_MODEL: z.string().default('deepseek-ai/DeepSeek-V3'),
     AI_API_TIMEOUT: z.coerce.number().int().positive().default(30000),
+    // Ceiling on tool-executing rounds in the orchestrator. Every round
+    // is a full-context LLM call plus a batch of retrievals, so this is
+    // the main dial between "answers a two-step question" and "how long
+    // a patient waits". Measured on the reference deploy: one round
+    // lands in 14-16s, two in 21-30s.
+    AI_MAX_TOOL_ROUNDS: z.coerce.number().int().min(1).max(6).default(3),
     // Multi-turn /ai/ask history budgets. The server is the authority
     // on how much client-replayed conversation reaches the LLM: at
     // most this many prior turns, and at most this many total chars

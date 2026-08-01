@@ -259,8 +259,11 @@ describe('Orchestrator.run', () => {
     expect(result.answer).not.toContain('搜索一下');
     expect(result.answer).not.toContain('<');
     expect(result.answer).toBe('抱歉，AI 这次没能把回答整理出来，请再问一次。');
-    // And it is reported, so the audit row is not a silent success.
-    expect(events.some((e) => e.type === 'error')).toBe(true);
+    // Reported on the result, not as an `error` frame: `error` is
+    // terminal to both SSE consumers, so emitting one here stopped the
+    // client before the `done` frame carrying this very fallback.
+    expect(result.answerTruncated).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
   // The whole point of the refactor: 「具体解读，然后结合解读分析我的病情
@@ -346,6 +349,46 @@ describe('Orchestrator.run', () => {
     const last = llm.chat.mock.calls[2][0] as LlmChatRequest;
     // Tools withheld — this is what makes the bound real. Asking the
     // model to stop is what failed twice.
+    expect(last.tools).toBeUndefined();
+    expect(last.messages[last.messages.length - 1].content).toBe(FINAL_TURN_DIRECTIVE);
+  });
+
+  // The earlier version of this test passed for the wrong reason: its
+  // third scripted response happened to carry no tool calls, so the
+  // loop exited on that rather than on repeat detection. A model that
+  // keeps repeating never hit the ceiling — `toolRounds` only advanced
+  // when something executed, and nothing was appended to `messages`
+  // when nothing did, so each iteration re-sent a byte-identical
+  // prompt. This one repeats forever and asserts the loop still stops.
+  it('stops when the model repeats the same call indefinitely', async () => {
+    const same = { id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' };
+    const llm = mkLlm(
+      Array.from({ length: 10 }, () => ({
+        content: '再查一次',
+        toolCalls: [{ ...same }],
+        finishReason: 'tool_calls' as const,
+      })),
+    );
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 5 },
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    // planner + the round that executes + the forced answer round.
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+    // The tool ran once despite being asked for ten times.
+    expect(result.toolCalls).toHaveLength(1);
+    // And the last call had no tools, so it could not ask again.
+    const last = llm.chat.mock.calls[2][0] as LlmChatRequest;
     expect(last.tools).toBeUndefined();
     expect(last.messages[last.messages.length - 1].content).toBe(FINAL_TURN_DIRECTIVE);
   });
@@ -471,7 +514,8 @@ describe('Orchestrator.run', () => {
     // Three calls total, never four — this is a two-round system.
     expect(llm.chat).toHaveBeenCalledTimes(3);
     expect(result.answer).toBe('抱歉，AI 这次没能把回答整理出来，请再问一次。');
-    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(result.answerTruncated).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
   // The other half of the same guard: a real answer must survive even

@@ -93,6 +93,15 @@ export interface OrchestratorRunResult {
   fieldsUsed: string[];
   /** True iff any patient-scoped retriever contributed content. */
   usedPersonalData: boolean;
+  /** The run could not produce a real answer and `answer` is the
+   *  apology fallback.
+   *
+   *  Carried on the result rather than signalled with an `error` event:
+   *  both SSE consumers treat `error` as terminal and stop reading, so
+   *  emitting one mid-run meant the `done` frame — and with it this
+   *  very fallback text — never reached the client. A property of the
+   *  run belongs on the run's result. */
+  answerTruncated?: boolean;
   redactionMode: RedactionMode;
   consentLevel: ConsentLevel;
   /** Final round system + user prompts (post-render). Useful for

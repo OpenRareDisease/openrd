@@ -383,7 +383,19 @@ export class Orchestrator {
       });
       if (executedThisRound) toolRounds += 1;
 
-      const atCeiling = toolRounds >= maxToolRounds;
+      // A round that executed nothing — every call repeated one already
+      // made — has to END the gather, which is what the header claims
+      // repeat detection does. Merely skipping the counter did not:
+      // `messages` is only appended to after the repeat check, so the
+      // next request was byte-identical to the one that just produced
+      // the repeat, with the tools still on the table and the counter
+      // frozen. Nothing bounded that but the sampler happening to
+      // diverge. The KB-unreachable path made it likely rather than
+      // exotic: the system prompt orders a KB lookup before answering,
+      // the tool message says the lookup failed, and re-issuing the
+      // identical query is the obvious next move.
+      const stalled = !executedThisRound;
+      const atCeiling = toolRounds >= maxToolRounds || stalled;
       round2Messages = atCeiling
         ? [...messages, { role: 'system', content: FINAL_TURN_DIRECTIVE }]
         : [...messages];
@@ -446,11 +458,16 @@ export class Orchestrator {
     // then a bland fallback. Surface this as a truncation by
     // emitting an `error` event the route layer will translate to an
     // audit row with `status='error'`.
-    const hasContent = Boolean(finalContent?.trim());
-    if (!hasContent && finalToolCalls.length > 0) {
-      const truncationMessage = 'orchestrator hit the tool-round ceiling without producing content';
-      this.logger.warn({ requestId: input.requestId }, truncationMessage);
-      emit({ type: 'error', message: truncationMessage });
+    // Logged, not emitted. This fires BEFORE the retry below, so a run
+    // whose retry recovers a perfectly good answer would otherwise have
+    // already told the client it failed — and `error` is terminal to
+    // both consumers, so the recovered answer never arrives. The
+    // post-retry check is the honest place to report.
+    if (!finalContent?.trim() && finalToolCalls.length > 0) {
+      this.logger.warn(
+        { requestId: input.requestId },
+        'orchestrator hit the tool-round ceiling without producing content',
+      );
     }
 
     // The provider sometimes writes a tool call into the assistant's
@@ -491,7 +508,16 @@ export class Orchestrator {
         { requestId: input.requestId, discarded: scrubbed.text.slice(0, 120) },
         'orchestrator round 2 produced no usable answer; retrying once',
       );
-      const retry = await this.llm.chat({
+      // Clear the abandoned preamble first, then stream the retry into
+      // the emptied bubble. Going through `askRound` rather than a bare
+      // `llm.chat` is what makes that possible: a non-streaming retry
+      // left the patient watching a dead bubble for the whole call and
+      // then dropped the answer in one lump — on the slowest path there
+      // is, after they had already watched the discarded text type
+      // itself out. The client already replaces on `answer_reset`, so
+      // this needs no protocol change.
+      if (opts.streamFinalAnswer) emit({ type: 'answer_reset', text: '' });
+      const retry = await this.askRound({
         messages: [
           ...round2Messages,
           { role: 'assistant', content: scrubbed.text || '(empty)' },
@@ -503,25 +529,37 @@ export class Orchestrator {
               '不要再提检索。',
           },
         ],
-        temperature: this.opts.finalAnswerTemperature ?? 0.7,
-        maxTokens: this.opts.finalAnswerMaxTokens ?? 2000,
+        // No tools, ever. This is the last thing the run will do.
+        tools: undefined,
+        stream: Boolean(opts.streamFinalAnswer),
         requestId: input.requestId,
         signal: input.signal,
+        emit,
       });
       const retryScrubbed = scrubToolCallMarkup(retry.content ?? '');
       answerText = isPreambleOnly(retryScrubbed.text) ? '' : retryScrubbed.text;
       if (answerText) {
-        // The stream already carried the discarded preamble; replace it
-        // so the client is not left with both.
-        emit({ type: 'answer_reset', text: answerText });
+        // Non-streaming callers never saw the deltas, so they still
+        // need the finished text handed to them.
+        if (!opts.streamFinalAnswer) emit({ type: 'answer_reset', text: answerText });
         finalUsage = retry.usage ?? finalUsage;
       }
     }
 
-    if (!answerText) {
-      const message = 'orchestrator round 2 produced no usable answer after one retry';
-      this.logger.warn({ requestId: input.requestId }, message);
-      emit({ type: 'error', message });
+    // NOT emitted as an `error` frame. Both SSE consumers treat `error`
+    // as terminal — ai-streaming.ts cleans up and calls
+    // onComplete(null) — so emitting here meant the `done` frame that
+    // follows was never read: p-qna kept the discarded preamble on
+    // screen and the honest fallback below never rendered, while
+    // AskAboutDrawer rendered this English diagnostic verbatim to a
+    // patient. The truncation reaches the audit through the result
+    // instead, which is where a fact about the run belongs.
+    const truncated = !answerText;
+    if (truncated) {
+      this.logger.warn(
+        { requestId: input.requestId },
+        'orchestrator produced no usable answer after one retry',
+      );
     }
 
     const finalAnswer = answerText || '抱歉，AI 这次没能把回答整理出来，请再问一次。';
@@ -530,6 +568,7 @@ export class Orchestrator {
       input,
       start,
       redactionMode,
+      truncated,
       executed: allExecuted,
       context,
       finalAnswer,
@@ -731,6 +770,7 @@ export class Orchestrator {
     input: OrchestratorRunInput;
     start: number;
     redactionMode: ReturnType<typeof redactionModeForConsent>;
+    truncated?: boolean;
     executed: ExecutedToolCall[];
     context: BuiltContext;
     finalAnswer: string;
@@ -792,6 +832,7 @@ export class Orchestrator {
 
     return {
       answer: args.finalAnswer,
+      ...(args.truncated ? { answerTruncated: true } : {}),
       citations: args.context.citations,
       toolCalls,
       fieldsUsed: args.context.fieldsUsed,

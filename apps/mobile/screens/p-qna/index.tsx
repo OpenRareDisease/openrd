@@ -924,6 +924,25 @@ const P_QNA = () => {
           if (!prev) return prev;
           const stageIdx = prev.stages.findIndex((s) => s.id === targetStage);
           if (stageIdx === -1) return prev;
+          // Retrieval can now run more than once — the orchestrator
+          // loops when the model needs a second lookup — so the event
+          // stream legitimately revisits `tool_start` after `answering`.
+          // `percent` was already guarded with Math.max, but the stage
+          // list was not: the earlier stage went back to 'active' while
+          // 生成回答 stayed active too, lighting two rows at once and
+          // walking the current-stage label backwards. Progress that
+          // retreats reads as a failure and a restart.
+          const currentIdx = prev.stages.findIndex((s) => s.id === prev.stageId);
+          if (currentIdx > stageIdx) {
+            return {
+              ...prev,
+              // Say what is actually happening instead of pretending
+              // nothing did.
+              stages: prev.stages.map((stage, idx) =>
+                idx === currentIdx ? { ...stage, label: '再检索一次并整理回答' } : stage,
+              ),
+            };
+          }
           // Mark every prior stage done; the target stage active
           // (or done, for the terminal stage); leave later stages
           // pending.
