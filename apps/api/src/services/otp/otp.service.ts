@@ -244,9 +244,11 @@ export class OtpService {
     const code = input.code.trim();
 
     const client = await this.pool.connect();
+    let txOpen = false;
 
     try {
       await client.query('BEGIN');
+      txOpen = true;
 
       const rows = await client.query<{
         id: string;
@@ -294,6 +296,22 @@ export class OtpService {
           ip: input.ip ?? null,
           userAgent: input.userAgent ?? null,
         });
+        // COMMIT before throwing, or the catch below rolls both of
+        // these back — which it did.
+        //
+        // The counter and the audit row are the entire server-side
+        // defence against guessing a 6-digit code that stays valid for
+        // OTP_TTL_MINUTES. Discarding them left `attempt_count` at 0
+        // forever, so the ceiling check above could never fire and
+        // OTP_MAX_VERIFY_ATTEMPTS was dead configuration; and it left
+        // no `otp.verify_failed` rows, so a sustained attempt was also
+        // invisible in the audit log. The only surviving throttle was
+        // the IP-keyed limiter, which a distributed caller multiplies
+        // at will — against /auth/password/reset, where a verified OTP
+        // is the sole credential for taking over an account holding
+        // someone's diagnosis, genetic results and uploaded reports.
+        await client.query('COMMIT');
+        txOpen = false;
         throw new AppError('OTP code invalid', 400);
       }
 
@@ -313,10 +331,21 @@ export class OtpService {
       });
 
       await client.query('COMMIT');
+      txOpen = false;
 
       return { requestId: record.request_id };
     } catch (error) {
-      await client.query('ROLLBACK');
+      // Guarded: the invalid-code branch has already committed on
+      // purpose, and a blind ROLLBACK there both warns and reads as if
+      // the failure bookkeeping were still pending.
+      if (txOpen) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // A rollback that itself fails must not replace the original
+          // error, which is what the caller needs to see.
+        }
+      }
       throw error;
     } finally {
       client.release();

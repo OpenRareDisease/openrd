@@ -190,6 +190,33 @@ export const purgeDueAccountDeletions = async (
         [request.id],
       );
 
+      // Everything keyed by phone number rather than by user_id, which
+      // no cascade can reach.
+      //
+      // A purge that leaves these behind does not do what the ledger
+      // two statements above says it did. On a rare-disease registry a
+      // phone number is not incidental — it is the account's primary
+      // identifier and, against a population this small, a
+      // re-identifier. Read it before the user row goes, because after
+      // the DELETE there is nothing left to read it from.
+      const identity = await client.query<{ phone_number: string | null; email: string | null }>(
+        'SELECT phone_number, email FROM app_users WHERE id = $1',
+        [request.user_id],
+      );
+      const phoneNumber = identity.rows[0]?.phone_number ?? null;
+      const email = identity.rows[0]?.email ?? null;
+
+      if (phoneNumber) {
+        await client.query('DELETE FROM otp_verification_codes WHERE phone_number = $1', [
+          phoneNumber,
+        ]);
+        await client.query('DELETE FROM auth_otps WHERE phone_number = $1', [phoneNumber]);
+        await client.query('DELETE FROM auth_login_guards WHERE identifier = $1', [phoneNumber]);
+      }
+      if (email) {
+        await client.query('DELETE FROM auth_login_guards WHERE identifier = $1', [email]);
+      }
+
       // Cascades: patient_profiles (and its whole patient_* subtree),
       // refresh tokens, donations; ai_prompt_audit rows stay with
       // user_id nulled (their own compliance trail).
