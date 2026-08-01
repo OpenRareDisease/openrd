@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
-import { MedicalKbRetriever, apparatusScore } from './medical-kb.js';
+import { MedicalKbRetriever, apparatusScore, isDamagedExtraction } from './medical-kb.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -174,8 +174,6 @@ describe('apparatusScore — citation-machinery filter', () => {
     [
       'Received: 7 December 2023  Revised: 26 March 2024  Accepted: 2 April 2024  DOI: 10.1111/cge.14533',
     ],
-    // Grant numbers with PDF extraction residue.
-    ['[T4-AN-01 H93C22000560003 to G.P.]; INNOVA (cid:0) Grant/Award Number: MR/S005021/1 (cid:0)'],
   ])('flags citation apparatus: %s', (text) => {
     expect(apparatusScore(text)).toBeGreaterThanOrEqual(2);
   });
@@ -220,5 +218,27 @@ describe('apparatusScore — translated and transliterated forms', () => {
     ],
   ])('leaves %s alone', (_label, text) => {
     expect(apparatusScore(text)).toBe(0);
+  });
+});
+
+describe('isDamagedExtraction', () => {
+  // Weight, not presence. 164 of the 184 chunks in the corpus that
+  // carry `(cid:N)` are under 5% artifact — ordinary paragraphs with a
+  // couple of unmapped glyphs. Dropping on presence threw away methods
+  // sections worth retrieving.
+  it('keeps a paragraph carrying a couple of unmapped glyphs', () => {
+    const prose =
+      'Human primary muscle cells derived from FSHD patients and healthy donors were kindly provided by the Fields Center for FSHD Research Biobank (cid:0), and cultured in skeletal muscle growth medium supplemented with glutamine and fetal bovine serum until they reached confluence.';
+    expect(isDamagedExtraction(prose)).toBe(false);
+  });
+
+  it('drops text that is mostly artifact', () => {
+    expect(
+      isDamagedExtraction('[T4-AN-01 to G.P.] (cid:0)(cid:0)(cid:0)(cid:0)(cid:0)(cid:0)'),
+    ).toBe(true);
+  });
+
+  it('ignores text with no residue at all', () => {
+    expect(isDamagedExtraction('低强度有氧运动对 FSHD 患者是安全的。')).toBe(false);
   });
 });

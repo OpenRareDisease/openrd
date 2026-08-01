@@ -90,8 +90,12 @@ const APPARATUS_PATTERNS: readonly RegExp[] = [
   // A numbered reference entry: `12. Surname AB,`
   /^\s*\d{1,2}\.\s+[A-Z][a-zA-Z-]+\s+[A-Z]{1,3}[,，]/gm,
   /Grant\/Award Number/g,
-  // PDF text-extraction residue; the chunk is damaged regardless.
-  /\(cid:\d*\)/g,
+  // NOTE: `(cid:N)` residue is deliberately NOT counted here. Presence
+  // alone says nothing about readability — 164 of the 184 chunks
+  // carrying it are under 5% artifact, i.e. an ordinary paragraph with
+  // a couple of unmapped glyphs, including methods sections worth
+  // retrieving. `isDamagedExtraction` below judges it by weight.
+
   // Two or more `Surname AB,` in a row — an author list.
   /[A-Z][a-z]+\s+[A-Z]{1,2}[,，]\s*[A-Z][a-z]+\s+[A-Z]{1,2}[,，]/g,
   // `| Name X` affiliation bars from two-column PDF headers.
@@ -140,11 +144,30 @@ export const apparatusScore = (text: string): number =>
 const isTitleFragment = (text: string): boolean =>
   text.trim().length < 120 && !/[。．.！!？?；;]/.test(text);
 
+/**
+ * A PDF text layer with no usable font encoding leaves `(cid:N)` where
+ * the glyphs should be. Judged by weight rather than presence: a
+ * paragraph carrying two of them is a paragraph, and dropping it lost
+ * real methods text, while one that is a third artifact is unreadable
+ * to a person and to a model alike.
+ */
+const CID_RESIDUE = /\(cid:\d*\)/g;
+const DAMAGED_RATIO = 0.15;
+
+export const isDamagedExtraction = (text: string): boolean => {
+  if (!text) return false;
+  const artifacts = text.match(CID_RESIDUE);
+  if (!artifacts) return false;
+  const artifactChars = artifacts.reduce((sum, a) => sum + a.length, 0);
+  return artifactChars / text.length >= DAMAGED_RATIO;
+};
+
 const isJunk = (text: string): boolean =>
   !text ||
   text.trim().length < 30 ||
   JUNK_PATTERN.test(text) ||
   isTitleFragment(text) ||
+  isDamagedExtraction(text) ||
   apparatusScore(text) >= APPARATUS_LIMIT;
 
 const coerceDistance = (raw: unknown): number | null => {
