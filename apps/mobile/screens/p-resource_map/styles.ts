@@ -1,8 +1,4 @@
-
-
-import { StyleSheet, Dimensions, Platform } from 'react-native';
-
-const { width } = Dimensions.get('window');
+import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
   container: {
@@ -521,4 +517,3 @@ export default StyleSheet.create({
     color: '#FFFFFF',
   },
 });
-

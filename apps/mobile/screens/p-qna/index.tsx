@@ -402,12 +402,10 @@ const renderCitationSegments = (
     <>
       {segments.map((seg, idx) => {
         if (seg.type === 'text') {
-          // eslint-disable-next-line react/no-array-index-key
           return <Text key={`t-${idx}`}>{seg.value}</Text>;
         }
         return (
           <Text
-            // eslint-disable-next-line react/no-array-index-key
             key={`c-${idx}`}
             onPress={() => onCitationPress(seg.indexes, citations)}
             accessibilityRole="link"

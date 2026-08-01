@@ -58,7 +58,6 @@ const Spans = ({ spans, style, renderText }: SpansProps) => (
   <Text style={style}>
     {spans.map((span, index) => (
       <Text
-        // eslint-disable-next-line react/no-array-index-key
         key={index}
         style={spanStyle(span)}
         // Opening a URL leaves the app, so it happens only on an
@@ -164,7 +163,6 @@ const AnswerText = ({ children, style, renderText }: AnswerTextProps) => {
   return (
     <View style={styles.stack}>
       {blocks.map((block, index) => (
-        // eslint-disable-next-line react/no-array-index-key
         <Block key={index} block={block} style={style} renderText={renderText} />
       ))}
     </View>

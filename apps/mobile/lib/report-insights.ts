@@ -459,9 +459,15 @@ const collectMriDocuments = (docs: DocumentLike[]) => {
     ...filterDocsByTypes(docs, ['muscle_mri', 'mri']),
     ...filterDocsContainingText(docs, MRI_TEXT_PATTERNS),
   ].forEach((doc, index) => {
-    const mapKey =
-      `${doc.uploadedAt ?? 'no-time'}::${getDocumentType(doc)}::${JSON.stringify(doc.ocrPayload?.fields ?? {})}` ||
-      `fallback-${index}`;
+    // The `||` fallback that used to sit here could never fire — a
+    // template literal is always truthy — so two documents with no
+    // upload time, the same type and no parsed fields produced the
+    // identical key and one was silently dropped from the map. Fall
+    // back on the parts actually being absent instead.
+    const identity = `${doc.uploadedAt ?? ''}::${getDocumentType(doc) ?? ''}::${JSON.stringify(
+      doc.ocrPayload?.fields ?? {},
+    )}`;
+    const mapKey = identity === '::::{}' ? `fallback-${index}` : identity;
     byKey.set(mapKey, doc);
   });
 

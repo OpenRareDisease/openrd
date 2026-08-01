@@ -136,7 +136,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // Logout body uses only setters that are stable across renders,
     // so we deliberately leave the dep array empty — the handler
     // identity stays stable across the app's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value = useMemo<AuthContextValue>(

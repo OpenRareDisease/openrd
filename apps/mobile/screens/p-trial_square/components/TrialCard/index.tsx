@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
+import type { GestureResponderEvent } from 'react-native';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
@@ -43,7 +44,7 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
     }
   };
 
-  const handleApplyPress = (event: any) => {
+  const handleApplyPress = (event: GestureResponderEvent) => {
     event.stopPropagation();
     onApplyPress();
   };

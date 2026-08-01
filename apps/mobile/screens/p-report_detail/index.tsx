@@ -32,6 +32,12 @@ import AskAboutDrawer from '../common/AskAboutDrawer';
 import styles from './styles';
 import { shouldAutoSummarize } from './auto-summary';
 
+import InlineNotice from '../common/feedback/InlineNotice';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import ScreenHeader from '../common/ScreenHeader';
+import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
+import { useAppDialog } from '../common/feedback/AppDialog';
+
 /** Whitelisted OCR fields a patient can hand-correct — mirrors the
  *  backend's EDITABLE_OCR_FIELDS schema exactly. */
 const CORRECTABLE_OCR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
@@ -42,11 +48,6 @@ const CORRECTABLE_OCR_FIELDS: Array<{ key: string; label: string; placeholder: s
   { key: 'haplotype', label: '单倍型', placeholder: '例如：4qA' },
   { key: 'methylationValue', label: '甲基化', placeholder: '例如：12%' },
 ];
-import InlineNotice from '../common/feedback/InlineNotice';
-import HumanBodyFigure from '../common/HumanBodyFigure';
-import ScreenHeader from '../common/ScreenHeader';
-import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
-import { useAppDialog } from '../common/feedback/AppDialog';
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
 type DebugPayload = OcrPayload & {

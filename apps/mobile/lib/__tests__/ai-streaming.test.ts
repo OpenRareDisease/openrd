@@ -25,11 +25,10 @@ jest.mock('react-native-sse', () => ({
   },
 }));
 
-// eslint-disable-next-line import/first
 import { parseAiStreamFrame } from '../ai-streaming-parser';
-// eslint-disable-next-line import/first
+
 import { sseErrorToApiError } from '../ai-streaming';
-// eslint-disable-next-line import/first
+
 import { ApiError, isConsentRequiredError } from '../api';
 
 describe('parseAiStreamFrame', () => {

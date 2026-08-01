@@ -120,7 +120,7 @@ const ListGroup = ({ title, footnote, children }: ListGroupProps) => {
         {rows.map((row, index) => (
           // Index keys are safe here: the array is positional layout,
           // never reordered or filtered between renders.
-          // eslint-disable-next-line react/no-array-index-key
+
           <View key={index}>
             {index > 0 ? <View style={styles.separator} /> : null}
             {row}
