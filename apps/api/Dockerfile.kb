@@ -5,7 +5,16 @@ ENV PYTHONUNBUFFERED=1
 ENV KB_SERVICE_HOST=0.0.0.0
 ENV KB_SERVICE_PORT=5010
 
-COPY requirements.txt ./requirements.txt
+# apps/api/requirements-kb.txt, NOT the repo-root requirements.txt. The root
+# file is the developer-machine bootstrap and additionally carries the whole
+# scripts/kb_parsers/ ingest toolchain plus chromadb and flask — none of which
+# has a consumer in this image, since it copies only knowledge.py,
+# knowledge_service.py, kb_backends/ and embed_models/ and its single
+# entrypoint is `python knowledge_service.py`. chromadb alone drags in
+# onnxruntime, grpcio, opentelemetry and the kubernetes client: roughly a
+# gigabyte of unused layers in the container that holds the medical corpus,
+# and a correspondingly longer wait on every rebuild over the mirror below.
+COPY apps/api/requirements-kb.txt ./requirements-kb.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0+cpu
 # Heavy ML deps (sentence-transformers, transformers, scipy, numpy...).
 # Default to the Tsinghua PyPI mirror because this platform deploys on
@@ -16,7 +25,7 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
 # non-China build:
 #   docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple ...
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements-kb.txt
 
 COPY apps/api/knowledge.py apps/api/knowledge_service.py ./apps/api/
 COPY apps/api/kb_backends ./apps/api/kb_backends

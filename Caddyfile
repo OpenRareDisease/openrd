@@ -27,6 +27,30 @@
 }
 
 {$DOMAIN:ai.fshdyouth.com} {
+	# Security headers for the whole site — both the static app and /api.
+	#
+	# Nothing set these before. The API's helmet() covers only responses the
+	# Node process produces, and Caddy routes /* straight to the nginx
+	# container, so the signed-in patient UI was framable by any third party:
+	# a plain clickjacking surface over runDeleteReport in p-report_management
+	# and the seven consent toggles in p-privacy_settings. X-Frame-Options is
+	# set here rather than only in nginx.conf so it also covers /api, and
+	# because Caddy is the only listener the public actually reaches.
+	#
+	# HSTS is a commitment: for a year after a browser sees this header it
+	# will refuse plain HTTP to this host, so the domain can never be served
+	# over http again without waiting the max-age out. That is the right
+	# trade for a PHI app that already redirects http→https, but `preload` is
+	# deliberately NOT set — that one is removable only by petition.
+	header {
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "geolocation=(), microphone=(), payment=(), usb=()"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
 	handle /api/* {
 		reverse_proxy api:4000 {
 			# Stream SSE (/api/ai/ask/stream) without buffering.
@@ -35,6 +59,14 @@
 	}
 
 	handle {
+		# frame-ancestors is scoped to the app rather than set site-wide on
+		# purpose: a site-level Content-Security-Policy would REPLACE the
+		# fuller policy helmet already emits on /api responses, trading its
+		# default-src/base-uri/form-action rules for this single directive.
+		# The API keeps helmet's; the static app, which has no helmet in
+		# front of it, gets this. nginx.conf sets the same value for the
+		# paths that reach that container without passing through Caddy.
+		header Content-Security-Policy "frame-ancestors 'none'"
 		reverse_proxy web:80
 	}
 

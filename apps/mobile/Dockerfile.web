@@ -2,8 +2,18 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# EXPO_PUBLIC_* variables are inlined into the bundle at export time, so they
+# have to exist as build args — setting them in .env at run time is silently
+# dropped, which is how a bundle baked with http://localhost:4000/api gets
+# shipped. Defaults match feature-flags.ts (both flags off; the screens they
+# reveal are pre-launch placeholders) and the Caddy routing (/api is served on
+# the same origin, so a relative path is correct everywhere).
 ARG EXPO_PUBLIC_API_URL=/api
 ENV EXPO_PUBLIC_API_URL=${EXPO_PUBLIC_API_URL}
+ARG EXPO_PUBLIC_ENABLE_EXPLORE=false
+ENV EXPO_PUBLIC_ENABLE_EXPLORE=${EXPO_PUBLIC_ENABLE_EXPLORE}
+ARG EXPO_PUBLIC_ENABLE_PERSONALIZATION=false
+ENV EXPO_PUBLIC_ENABLE_PERSONALIZATION=${EXPO_PUBLIC_ENABLE_PERSONALIZATION}
 ENV CI=1
 ENV EXPO_NO_TELEMETRY=1
 

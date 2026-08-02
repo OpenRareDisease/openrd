@@ -1,3 +1,9 @@
+# Build-context excludes.
+#
+# docker-compose.yml sets `context: .` for all three images, so anything not
+# listed here is uploaded to the daemon on every build, and anything a
+# Dockerfile COPYs from it can end up in a distributable layer.
+
 node_modules
 **/node_modules
 **/dist
@@ -5,7 +11,39 @@ node_modules
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
-minio-data
-uploads
+
+# `uploads` on its own matched only a repo-root directory that does not exist.
+# apps/api/uploads — 104 MB of real patient scans on a developer machine,
+# including a 10 MB camera-original JPEG and a 9-page genetic report PDF — was
+# therefore inside the context of `COPY apps/api ./apps/api`. The documented
+# deploy clones and builds on the server, where that directory is absent, so
+# nothing has shipped; but any image built on a laptop (a routine
+# `docker compose up --build` during dev, or a future CI/registry push) would
+# bake them into a layer, invisible at runtime because the api-uploads volume
+# is mounted over the same path.
+**/uploads
+**/minio-data
+
+# Local env files, whichever machine builds. apps/api/.env exists on developer
+# machines and would otherwise ride in on `COPY apps/api ./apps/api`, putting
+# that developer's JWT_SECRET and DATABASE_URL into non-revocable registry
+# history. The .example files are documentation and stay — note the negation
+# has to come after the two patterns above it to win.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Database dumps. scripts/db-backup.sh defaults BACKUP_DIR to <repo>/backups,
+# so a dump of the whole PHI database can appear in the working tree; it must
+# never reach a build daemon or a layer.
+**/backups
+**/*.dump
+**/*.sql.gz
+
+# The 547 MB knowledge-base source corpus. No Dockerfile copies it —
+# kb-service reads the ingested chunks out of Postgres — but leaving it in the
+# context means shipping it to the daemon on every single build.
+content/medical-kb/source
+
 .git
 .DS_Store

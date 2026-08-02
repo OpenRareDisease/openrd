@@ -1,26 +1,78 @@
+# Log rotation for every service.
+#
+# Docker's json-file driver is uncapped unless the host's daemon.json says
+# otherwise, and this stack ships without one. The api writes a pino-http
+# JSON line per request, so on a long-lived single-VPS prod deploy
+# /var/lib/docker/containers grows until the disk fills — at which point
+# postgres can no longer write WAL and the whole stack fails hard, surfacing
+# as database errors rather than as a disk-full alert. 10m x 5 bounds each
+# container at 50 MB of logs.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+# Memory ceilings — read this before sizing the host.
+#
+# Nothing bounded any container before, so when the host ran out of memory
+# the kernel OOM killer scored by RSS across all cgroups and was as likely to
+# pick postgres or the api as the KB service that caused the pressure: a
+# bge-m3 warmup turning into database downtime, with no log line pointing at
+# the KB. Each limit below makes the kernel kill inside the offending
+# container's own cgroup, where `restart: unless-stopped` brings back just
+# that one service.
+#
+# Ceilings, prod profile:  postgres 1g + kb-service 4g + api 3g +
+#                          minio 512m + web 128m + caddy 128m = 8.75 GiB
+# Minimum host:            8 GB
+#
+# The ceilings deliberately sum above the minimum host. They are per-container
+# kill thresholds, not reservations — steady state is ~3.5 GiB with the bge-m3
+# weights resident, and the api and the KB do not peak together. docs/
+# cloud-tencent-docker.md gives no RAM figure at all, which makes a 4 GB
+# Tencent instance a natural choice; the bge-m3 warmup alone can exhaust that.
+
 services:
   postgres:
     # Postgres 16 + pgvector extension preinstalled. Required by the local
     # medical KB store (see db/migrations/006_pgvector_kb.sql).
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    logging: *default-logging
+    # Comfortable for the current registry (patient_measurements is ~233
+    # rows) plus the ~12k-row kb_chunks corpus. Raise it together with
+    # shared_buffers if the corpus grows by an order of magnitude.
+    mem_limit: 1g
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # No default, on purpose. `postgres/postgres` was hardcoded here with
+      # no `${...}` at all — unlike every other credential in this file — so
+      # the credentials of the database holding every patient's records could
+      # not be changed from .env even by an operator who tried, and the
+      # comment below telling them to "change the password first" pointed at
+      # a knob that did not exist. env.ts now also rejects any production
+      # DATABASE_URL carrying the postgres:postgres pair, so a defaulted
+      # password here would just move the failure to the api's boot gate,
+      # later and less clearly. A developer who wants a plain local stack
+      # adds one line to .env:  POSTGRES_PASSWORD=postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (local dev can use POSTGRES_PASSWORD=postgres)}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
     ports:
       # Bound to 127.0.0.1 so a host-side `psql` / pgcli still works
       # but anyone scanning the public interface of a misconfigured
-      # staging VPS can't reach Postgres with the dev `postgres/
-      # postgres` credentials. To open it across an internal network
-      # set POSTGRES_HOST=0.0.0.0 in `.env` (and change the password
-      # first).
+      # staging VPS can't reach Postgres. To open it across an internal
+      # network set POSTGRES_HOST=0.0.0.0 in `.env` (POSTGRES_PASSWORD is
+      # already mandatory above, so there is no shipped default pair left
+      # to expose).
       - '${POSTGRES_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
     volumes:
       - pg-data:/var/lib/postgresql/data
       - ./db/init_db.sql:/docker-entrypoint-initdb.d/01-init-openrd.sql:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d postgres']
+      # Follows POSTGRES_USER/POSTGRES_DB rather than hardcoding `postgres`,
+      # so renaming the role does not leave the probe permanently failing.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}']
       interval: 10s
       timeout: 5s
       retries: 10
@@ -37,11 +89,34 @@ services:
         # for a non-China build.
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     restart: unless-stopped
-    env_file:
-      - .env
+    logging: *default-logging
+    # The runbook's own watch item is 「KB service 容器 RSS：不应超过 4GB」
+    # (docs/runbooks/v2.4.0-deploy.md §3.3) — a human watching a number. This
+    # is the same budget, enforced. bge-m3 is ~2 GB of weights plus the torch
+    # runtime and the per-request embed buffers.
+    mem_limit: 4g
+    # The torch CPU embed will otherwise saturate every core during warmup and
+    # starve postgres and the api on a small VPS. On a 2-core host this is a
+    # no-op; on 4+ cores it leaves headroom for the request path.
+    cpus: '2.0'
     environment:
+      # NO `env_file: - .env` here, deliberately.
+      #
+      # This container used to receive the whole platform credential set —
+      # JWT_SECRET, OTP_HASH_SECRET, AI_API_KEY, the Tencent SMS keys — even
+      # though its only job is vector search and it reads none of them. Any
+      # RCE in the Python service, any traceback that dumps os.environ, or
+      # anyone with `docker exec` on it walked away with the key that signs
+      # every patient session token. Everything below is a variable that
+      # knowledge_service.py / knowledge.py / kb_backends/ / embed_models/
+      # actually read. If you add an os.getenv() over there, add the line
+      # here too — there is no longer a catch-all behind you.
       KB_SERVICE_HOST: 0.0.0.0
       KB_SERVICE_PORT: 5010
+      # knowledge_service.py's placeholder-token guard keys on NODE_ENV, and
+      # its only source used to be env_file. Passed explicitly so both
+      # containers resolve production-ness from the same place.
+      NODE_ENV: ${NODE_ENV:-development}
       # Shared bearer token between this container and the Node API
       # container. Both services MUST see the same value. Default is a
       # well-named placeholder so `docker compose up` works on a fresh
@@ -52,16 +127,17 @@ services:
       KB_SERVICE_TOKEN: ${KB_SERVICE_TOKEN:-dev-only-local-token-NOT-FOR-PROD}
       HF_HOME: /root/.cache/huggingface
       SENTENCE_TRANSFORMERS_HOME: /root/.cache/sentence_transformers
-      # HuggingFace endpoint for downloading the embedding model on
-      # first boot. Defaults to the real huggingface.co — NOT empty:
-      # huggingface_hub treats an empty string as a host-less endpoint
-      # and breaks the fetch, whereas a real/unset value resolves
-      # correctly. In mainland China huggingface.co is blocked, so set
-      # HF_ENDPOINT=https://hf-mirror.com in .env (kb-service otherwise
-      # fails warmup with "Network is unreachable" and never turns
-      # healthy). env_file passes .env through; this line documents the
-      # knob AND supplies the safe non-empty default.
-      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      # HuggingFace endpoint for downloading the embedding model on first
+      # boot. Defaults to the hf-mirror.com mirror because this platform
+      # deploys on mainland-China servers, where huggingface.co is blocked:
+      # SentenceTransformer('BAAI/bge-m3') then hangs on "Network is
+      # unreachable", this healthcheck burns its whole 7.5-min budget, and
+      # the deploy exits with "dependency failed to start" — the entire
+      # site, not just AI chat. Same geography, same call as the pip mirror
+      # in Dockerfile.kb. Outside China set HF_ENDPOINT=https://huggingface.co
+      # in .env. Never set it empty: huggingface_hub treats an empty string
+      # as a host-less endpoint and breaks the fetch.
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       # KB read backend + DB connection. Defaults assume the
       # compose-managed pgvector postgres is the read side (matches
       # Phase 1.4 ingest output). To point kb-service at a host-side
@@ -75,7 +151,35 @@ services:
       # + KB_EMBED_MODEL=all-MiniLM-L6-v2 in .env.
       KB_BACKEND: ${KB_BACKEND:-pgvector}
       KB_EMBED_MODEL: ${KB_EMBED_MODEL:-BAAI/bge-m3}
-      DATABASE_URL: ${KB_SERVICE_DATABASE_URL:-postgres://postgres:postgres@postgres:5432/fshd_openrd}
+      DATABASE_URL: ${KB_SERVICE_DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/fshd_openrd}
+      # Retrieval width and warmup budget (knowledge.py:84-86,
+      # knowledge_service.py). These are the dials an operator reaches for
+      # under load or cost pressure; they existed only as os.getenv defaults
+      # buried in Python until now.
+      KB_READY_WAIT_SECONDS: ${KB_READY_WAIT_SECONDS:-90}
+      KB_FINAL_N: ${KB_FINAL_N:-8}
+      KB_FETCH_K: ${KB_FETCH_K:-80}
+      KB_MAX_PER_SOURCE: ${KB_MAX_PER_SOURCE:-4}
+      # Search admission control. Keep KB_MAX_CONCURRENT_SEARCHES and
+      # KB_PG_POOL_MAX moving together — raising one alone just relocates the
+      # queue into psycopg's pool timeout. KB_SEARCH_QUEUE_WAIT_SECONDS must
+      # stay below medical-kb.ts's 30s client timeout so a shed request comes
+      # back as 503 kb_busy rather than as a client-side abort.
+      KB_MAX_CONCURRENT_SEARCHES: ${KB_MAX_CONCURRENT_SEARCHES:-2}
+      KB_SEARCH_QUEUE_WAIT_SECONDS: ${KB_SEARCH_QUEUE_WAIT_SECONDS:-20}
+      KB_PG_POOL_MIN: ${KB_PG_POOL_MIN:-1}
+      KB_PG_POOL_MAX: ${KB_PG_POOL_MAX:-2}
+      # Set to 1 to forbid any network fetch of the embedding model, i.e. to
+      # require a pre-warmed kb-model-cache volume.
+      KB_LOCAL_FILES_ONLY: ${KB_LOCAL_FILES_ONLY:-}
+      # Chroma cloud rollback path only (kb_backends/chroma_cloud.py). Inert
+      # while KB_BACKEND=pgvector, but the rollback documented above needs
+      # them to survive the env_file removal.
+      CHROMA_API_KEY: ${CHROMA_API_KEY:-}
+      CHROMA_TENANT_ID: ${CHROMA_TENANT_ID:-}
+      CHROMA_TENANT: ${CHROMA_TENANT:-}
+      CHROMA_DATABASE: ${CHROMA_DATABASE:-FSHD}
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-fshd_knowledge_base}
     ports:
       # Bound to 127.0.0.1 so direct host-side `curl localhost:5010`
       # debugging still works but a public-interface scan can't reach
@@ -111,19 +215,37 @@ services:
       # volume populated) takes ~30s for bge-m3 + initial embed. Cold
       # boot — first deploy or after `docker volume rm` — pulls the
       # ~2GB model weights from HuggingFace and can comfortably take
-      # 3-5 min on a slow registry. The previous 150s budget would
-      # mark the container unhealthy mid-pull, the api `depends_on:
-      # kb-service: service_healthy` gate would never satisfy, and
-      # the whole deploy would fail. Prefer pre-warming the
+      # 3-5 min on a slow registry. A shorter budget would mark the
+      # container unhealthy mid-pull. Prefer pre-warming the
       # `kb-model-cache` volume out-of-band when feasible (see
       # runbook §3.1) so this budget never actually has to absorb a
       # full HF pull on the critical path.
+      #
+      # Note that missing this budget no longer takes the site down: the api
+      # waits only for `service_started` now (see its depends_on), so a slow
+      # or failed KB degrades AI chat instead of blocking `web` from ever
+      # starting.
       retries: 30
 
   minio:
-    image: minio/minio:latest
-    profiles: ['minio']
+    # Pinned, not `:latest`. This is the object store holding scanned
+    # hospital reports; on `:latest` it moved to whatever MinIO published
+    # most recently on any pull or rebuild, with no changelog review and no
+    # way to reproduce the previous stack. This digest-dated tag is the one
+    # `latest` resolved to when the pin was taken.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # `prod` as well as `minio`. The documented prod command is
+    # `docker compose --profile prod up -d --build` while the runbook mandates
+    # STORAGE_PROVIDER=minio for prod, so the two were separately selectable:
+    # the stack came up entirely green — readiness ok, healthchecks passing,
+    # Caddy serving — and then every patient document upload 500'd because
+    # minio:9000 resolved to nothing on the compose network. There is no
+    # fallback in the write path (routed-storage.ts save() is unconditional),
+    # so the first signal was a patient failing to upload an MRI report.
+    profiles: ['minio', 'prod']
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -147,8 +269,28 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
+    # Node heap plus the embedded OCR subprocess, which renders PDF pages at
+    # 300 dpi (~26 MB per A4 page, now capped at OCR_MAX_PDF_PAGES). If
+    # OCR_DISABLE_PADDLE is ever unset in apps/api/Dockerfile, re-measure
+    # before trusting this number — PaddleOCR has been observed peaking at
+    # 6.4 GB in a single process.
+    mem_limit: 3g
+    # index.ts arms its force-exit at SHUTDOWN_GRACE_MS (20s) from t=0 — the
+    # readiness drain is inside that budget, not added to it. Docker's default
+    # grace is 10s, so the old container was SIGKILLed at t=10s: draining got
+    # 5s of the 15s it was written for, and the force-exit log line that
+    # exists to explain the kill never printed. Must stay above
+    # SHUTDOWN_GRACE_MS; raise both together.
+    stop_grace_period: 25s
     env_file:
-      - .env
+      # `required: false` so a fresh clone fails on the POSTGRES_PASSWORD
+      # message above (which says what to do) instead of on compose's own
+      # "env file not found" before any container is created. .env is
+      # gitignored, so the prod runbook's first `docker compose up` on a
+      # freshly cloned host hits this.
+      - path: .env
+        required: false
     environment:
       # `apps/api/Dockerfile` pins ENV NODE_ENV=production for prod
       # image builds. Default to `development` here so a plain
@@ -158,9 +300,44 @@ services:
       # provider, even though the user just wants a local stack. Prod
       # / staging deploys explicitly override via secret injection.
       NODE_ENV: ${NODE_ENV:-development}
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/fshd_openrd
+      # Interpolated, not hardcoded. This was the one credential in the file
+      # written as a bare literal, sitting in `environment:` — which Compose
+      # applies AFTER `env_file:` — so an operator moving to managed Postgres
+      # per runbook §1.4 set DATABASE_URL in .env, saw no error, and the api
+      # kept writing PHI into the compose-local volume while the managed
+      # database stayed empty and the pg_dump backup targeted the wrong host.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/fshd_openrd}
+      # Pool + timeout tuning. instances × DATABASE_POOL_MAX must stay under
+      # Postgres's max_connections (stock 100 here, 97 usable) minus the
+      # kb-service pool and headroom for an operator psql — 8 api instances
+      # at 10 is the practical ceiling. See apps/api/src/db/pool.ts.
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      DATABASE_CONNECT_TIMEOUT_MS: ${DATABASE_CONNECT_TIMEOUT_MS:-10000}
+      # Shutdown budget. DRAIN must exceed the load balancer's health-check
+      # interval (Caddy does not poll readiness at all in this topology, so 0
+      # is defensible here), and GRACE must stay below stop_grace_period
+      # above.
+      SHUTDOWN_READINESS_DRAIN_MS: ${SHUTDOWN_READINESS_DRAIN_MS:-5000}
+      SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-20000}
       OCR_PROVIDER: ${OCR_PROVIDER:-embedded}
       OCR_PYTHON_BIN: python3
+      # Page cap for PDF OCR. Exceeding it raises a user-facing error rather
+      # than silently truncating a medical record.
+      OCR_MAX_PDF_PAGES: ${OCR_MAX_PDF_PAGES:-30}
+      AI_MAX_TOOL_ROUNDS: ${AI_MAX_TOOL_ROUNDS:-3}
+      # The three production acknowledgements. Each one gates a boot check
+      # that fails fast rather than letting a prod deploy quietly do the
+      # unsafe thing; they are listed here so the knob is visible in the
+      # compose file rather than only in env.ts.
+      #   STORAGE_ALLOW_LOCAL          — patient files on the container volume
+      #                                  instead of object storage
+      #   MINIO_ALLOW_INSECURE         — plaintext object storage
+      #   AI_CROSS_BORDER_ACKNOWLEDGED — a non-.cn AI endpoint, i.e. a PIPL
+      #                                  Art. 38 cross-border transfer of
+      #                                  health data
+      STORAGE_ALLOW_LOCAL: ${STORAGE_ALLOW_LOCAL:-false}
+      MINIO_ALLOW_INSECURE: ${MINIO_ALLOW_INSECURE:-false}
+      AI_CROSS_BORDER_ACKNOWLEDGED: ${AI_CROSS_BORDER_ACKNOWLEDGED:-false}
       STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -187,7 +364,14 @@ services:
       postgres:
         condition: service_healthy
       kb-service:
-        condition: service_healthy
+        # `service_started`, NOT `service_healthy`. The KB is feature-scoped —
+        # auth, profile, upload and every non-AI path work fine without it —
+        # but chaining api→kb healthy and web→api healthy meant a KB that
+        # missed its 7.5-min warm-up budget stopped `web` from starting at
+        # all, i.e. a total site outage caused by AI chat being slow to warm.
+        # The api reports the KB in its health components and degrades AI
+        # answers when it is missing.
+        condition: service_started
     volumes:
       - api-uploads:/app/apps/api/uploads
     healthcheck:
@@ -200,6 +384,12 @@ services:
         ]
       interval: 15s
       timeout: 5s
+      # The container CMD runs migrations before the listener exists. Today's
+      # set applies in seconds, but a future backfill or VALIDATE CONSTRAINT
+      # would be counted against the retry budget from t=15s with no grace
+      # window, and compose would abort the whole `up` with "dependency
+      # failed to start". start_period costs nothing when boot is fast.
+      start_period: 120s
       retries: 10
 
   web:
@@ -208,10 +398,24 @@ services:
       dockerfile: apps/mobile/Dockerfile.web
       args:
         EXPO_PUBLIC_API_URL: ${WEB_EXPO_PUBLIC_API_URL:-/api}
+        # feature-flags.ts documents both of these as 「flipped per-build via
+        # EXPO_PUBLIC_ENABLE_*」, but no build path supported it: EXPO_PUBLIC_*
+        # vars are inlined at bundle time, so setting them in .env alone was
+        # silently dropped. Both default false — the screens they reveal are
+        # pre-launch placeholders.
+        EXPO_PUBLIC_ENABLE_EXPLORE: ${EXPO_PUBLIC_ENABLE_EXPLORE:-false}
+        EXPO_PUBLIC_ENABLE_PERSONALIZATION: ${EXPO_PUBLIC_ENABLE_PERSONALIZATION:-false}
     restart: unless-stopped
+    logging: *default-logging
+    # nginx serving a static export; 128m is generous.
+    mem_limit: 128m
     depends_on:
       api:
-        condition: service_healthy
+        # `service_started`, not `service_healthy`. This is a static bundle —
+        # it renders the login screen and its own error states whether or not
+        # the API is answering, and holding it back only converts an API
+        # incident into a hard 502 from Caddy with nothing to look at.
+        condition: service_started
     ports:
       # Bound to 127.0.0.1: the public entrypoint is the caddy service
       # on 80/443. caddy reaches this container over the compose
@@ -233,6 +437,8 @@ services:
     image: caddy:2-alpine
     profiles: ['prod']
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
     environment:
       # Caddyfile reads {$DOMAIN}; override in prod `.env` if the domain
       # ever changes. Defaults to ai.fshdyouth.com.

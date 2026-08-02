@@ -1,0 +1,32 @@
+# Runtime dependencies for the kb-service container (Dockerfile.kb).
+#
+# Deliberately NOT the repo-root requirements.txt. That file is the
+# developer-machine bootstrap and additionally carries the whole
+# `scripts/kb_parsers/` ingest toolchain (pdfminer, python-docx,
+# python-pptx, pdf2image, pytesseract, beautifulsoup4, PyYAML) plus
+# chromadb and flask. None of those has a consumer inside this image:
+# Dockerfile.kb copies only knowledge.py, knowledge_service.py,
+# kb_backends/ and embed_models/, its single entrypoint is
+# `python knowledge_service.py`, the backend is pinned to pgvector, and
+# the python:3.11-slim base ships neither poppler nor the tesseract
+# binary — so pdf2image/pytesseract could not run there even if
+# something called them.
+#
+# The cost of installing them anyway was real: chromadb alone drags in
+# onnxruntime, grpcio, opentelemetry and the kubernetes client — roughly
+# a gigabyte of layers, and a correspondingly longer wait on every
+# mainland-China rebuild over the Tsinghua mirror that Dockerfile.kb's
+# PIP_INDEX_URL default exists to work around. It is also a large unused
+# dependency surface inside the container that holds the medical corpus.
+#
+# Keep the pins in sync with requirements.txt for the packages that
+# appear in both; when they drift, this file wins for the container.
+
+sentence-transformers==5.2.0
+python-dotenv==1.2.1
+
+# pgvector backend for the local KB store. psycopg_pool ships via the
+# [pool] extra and gives us a small connection pool with built-in
+# health-checking and reconnect.
+psycopg[binary,pool]>=3.2.10,<3.4
+pgvector>=0.3.6,<0.5
