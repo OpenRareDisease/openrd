@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-08-02（v2.5.0 待发布）
+
+> 本文件在 v2.4.0（2026-06-20 发布）时漏记了一次。`docs/release-checklist.md` §5 一直要求「已记录本次发布变化」，那一次勾了但没写——这条补记同时把 v2.4.0 的缺口一并说明。
+
+### 完成事项
+
+1. **v2.4.0 补记**：AI 患者问答完整链路上线（本地 pgvector 知识库 + orchestrator + 三档隐私同意 + 移动端 SSE 流式回答 + 引用与审计），patient profile 重写与 OCR `document_type` 规范化（migration 011/012），12 个 PR 的多轮安全审计闭合。详见 `docs/releases/v2.4.0.md`。
+2. **v2.5.0 主线：88 条 deploy-readiness finding 闭合**。没有新的患者侧功能面，全部是「测试全绿」到「生产能跑」之间那一层：
+   - 生产 fail-fast 补齐六道闸门（AI key 缺失、`postgres:postgres` 凭据、密钥强度、Baidu OCR 凭据、跨境 `AI_API_BASE_URL`、本地磁盘存储与明文 MinIO），新增三个显式确认位 `AI_CROSS_BORDER_ACKNOWLEDGED` / `STORAGE_ALLOW_LOCAL` / `MINIO_ALLOW_INSECURE`。
+   - compose 收口：`DATABASE_URL` 改插值（此前 operator 填的托管库连接串被静默丢弃）、`POSTGRES_PASSWORD` 强制必填、`minio` 加入 `prod` profile、每服务 `mem_limit` + 日志上限、api `stop_grace_period: 25s`、kb-service 撤掉 `env_file`（它此前持有 `JWT_SECRET`、OTP 密钥和短信/AI 凭据）。
+   - readiness 与健康端点：`ready` 只看 database + embedded OCR，KB / 对象存储 / 未配置的 AI key 走 `degraded`；生产下 `/api/healthz` 对非 loopback 调用方只返回 status，详情进日志并回 `requestId`。
+   - 数据库：迁移 013–018；`migrate --down <id>` 把 `_down.sql` 与 ledger 删除放进同一事务；015 先把患者填的 `unit` 原文存进 `unit_legacy` 再归一化；迁移跑在 advisory lock 里并记录 SHA-256 以便 `--status` 报 `drifted`。
+   - 备份成为代码：`scripts/db-backup.sh` / `scripts/db-restore.sh`（`npm run db:backup` / `db:restore`），带空语料闸、归档回读校验、非空目标拒绝覆盖。
+   - 保留期与删除权：四张此前无界增长的表接入定期清理；账号注销时对 `audit_logs` 做 tombstone（保留合规证据，剥离手机号 / 邮箱 / IP）。
+   - 客户端：根 ErrorBoundary 中文兜底页替代白屏；上传超时按体积计算；移除向任意父框架广播路由与 `documentId` 的 `postMessage`，并在 nginx 与 Caddy 两处补齐 `frame-ancestors 'none'` 等安全响应头。
+   - Python 层：kb-service 多线程 + 有界检索信号量、空语料挡 readiness、SIGTERM 处理、`/multi` 参数钳制、HF 镜像默认；PDF OCR 页数上限并流式落盘；实际使用的 OCR 引擎（Tesseract）现在可见。
+3. **文档按当前代码树重写**：新增 `docs/runbooks/v2.5.0-deploy.md`；`docs/release-checklist.md` 补齐版本号、`NODE_ENV`、备份、语料、隐私政策、备案等门禁；`docs/cloud-tencent-docker.md` 标注为不适用于生产；`docs/proposals/prd-v2.md` 标注交付渠道现状（只有 web export，产不出原生包）；v2.4.0 手册加了 superseded 横幅并逐条列出它对当前代码树的失真之处。
+
+### 验证
+
+```bash
+npm run lint
+npm run format
+npm test
+python -m pytest apps/report-manager/tests scripts/kb_parsers
+docker compose --profile prod config -q
+```
+
+### 已知问题
+
+- 隐私政策（`apps/mobile/lib/legal-content.ts`）仍是占位文本，没有协议接受记录表，第三方 LLM 同意开关未点名接收方。本次未修，已作为不打勾的门禁留在 `docs/release-checklist.md` §4。
+- 无未成年人 / 监护人同意分流（出生日期已采集但未被用作闸门）。
+- 仓库仍无 CI；发布前四条验证命令靠人手工跑。
+- `.env.example` 缺 `POSTGRES_PASSWORD`，`cp` 之后需手工补一行。
+- KB 源语料（547 MB）仍是单机单点，未纳入常规备份。
+
+### 下一步建议
+
+1. 隐私政策重写 + 协议接受记录表 + 未成年人分流，作为独立立项。
+2. 接入 CI 并在 master 打开 required status checks，把发布清单 §2 的四条手工验证换成「release commit 上 CI 全绿」。
+3. 把 KB 源语料纳入 `scripts/db-backup.sh` 之外的对象存储备份。
+
+---
+
 ## 2026-03-29
 
 ### 完成事项

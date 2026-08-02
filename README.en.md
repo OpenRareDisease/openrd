@@ -4,7 +4,8 @@
 
 FSHD-openrd is a monorepo for an FSHD patient-facing platform. It combines the mobile client, backend API, embedded OCR/report parsing, AI Q&A, and deployment tooling in one repository. The current repo is meant to support a real end-to-end workflow, not just isolated demos.
 
-Current working version: `v2.3.1`
+Current working version: `v2.5.0` (manifests bumped, tag not yet published)
+Latest published release: `v2.4.0`
 Baseline version: `master` / `v1.0.0`
 
 ## What is in the repo
@@ -124,15 +125,18 @@ Common local settings:
 - `OTP_PROVIDER=mock`
 - `OCR_PROVIDER=embedded`
 - `STORAGE_PROVIDER=local` or `STORAGE_PROVIDER=minio`
-- `EXPO_PUBLIC_API_URL=http://localhost:4000/api`
 - `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY` / `OPENAI_API_KEY`
 - `OCR_PYTHON_BIN=/path/to/python` when running the API locally
+
+> ⚠️ `EXPO_PUBLIC_API_URL` does **not** belong in the repo-root `.env`. Expo resolves dotenv files against the project root (`apps/mobile/`) and never reads the repo-root file, so a value written there is silently dropped and the bundle bakes in `http://localhost:4000/api`. Put it in `apps/mobile/.env` (template: `apps/mobile/.env.example`). The Docker web image takes a different path: a `Dockerfile.web` build ARG supplied by docker-compose's `WEB_EXPO_PUBLIC_API_URL`, default `/api`.
 
 ### Option B: Docker end-to-end
 
 ```bash
 docker compose up -d --build
 ```
+
+> ⚠️ `.env` must contain `POSTGRES_PASSWORD`; compose declares it as `${POSTGRES_PASSWORD:?…}` and refuses to render without it. For local development one line — `POSTGRES_PASSWORD=postgres` — is enough. Production must use a real password: `validateProductionEnv` independently rejects any `DATABASE_URL` still carrying the `postgres:postgres` pair.
 
 If host port `5432` is already occupied:
 
@@ -200,8 +204,9 @@ Notes:
 
 - [AI Q&A](./docs/ai-chat.md)
 - [Patient Profile Data Model](./docs/patient-profile.md)
-- [Version History / Changelog](./CHANGELOG.md)
-- [v2.3.1 Release Notes](./docs/releases/v2.3.1.md)
+- [Version History / Changelog](./CHANGELOG.md) — includes the `v2.5.0` entry (the pending release).
+- [v2.5.0 Deploy Runbook](./docs/runbooks/v2.5.0-deploy.md) — required reading before deploying `v2.5.0`; supersedes the v2.4.0 runbook.
+- [v2.4.0 Release Notes](./docs/releases/v2.4.0.md) — latest published release.
 - [v1.0.0 Release Notes](./docs/releases/v1.0.0.md)
 - [v2.0.0 Release Notes](./docs/releases/v2.0.0.md)
 

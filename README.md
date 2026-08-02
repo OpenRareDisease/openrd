@@ -4,7 +4,8 @@
 
 FSHD-openrd 是一个面向 FSHD（面肩肱型肌营养不良）患者场景的 monorepo，覆盖移动端、API、报告 OCR/结构化解析、AI 问答和部署交付链路。当前仓库已经不只是 demo，而是围绕“建档、随访、报告、问答、部署”形成了一条可联调、可演示、可发布的主路径。
 
-当前工作版本：`v2.3.1`
+当前工作版本：`v2.5.0`（manifest 已 bump，tag 待发布）
+最近一次已发布版本：`v2.4.0`
 基线版本：`master` / `v1.0.0`
 
 ## 当前包含什么
@@ -124,15 +125,18 @@ npm run dev:mobile
 - `OTP_PROVIDER=mock`
 - `OCR_PROVIDER=embedded`
 - `STORAGE_PROVIDER=local` 或 `STORAGE_PROVIDER=minio`
-- `EXPO_PUBLIC_API_URL=http://localhost:4000/api`
 - `AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY` / `OPENAI_API_KEY`
 - `OCR_PYTHON_BIN=/path/to/python`（仅本地直跑 API 时需要）
+
+> ⚠️ `EXPO_PUBLIC_API_URL` **不在**根目录 `.env` 里。Expo 的 dotenv 只解析 project root（`apps/mobile/`），根目录 `.env` 它从来不读——写在那里会静默失效、bundle 里烧进 `http://localhost:4000/api`。放 `apps/mobile/.env`（模板见 `apps/mobile/.env.example`）。Docker web 镜像走的是另一条路：`Dockerfile.web` 的 build ARG，由 docker-compose 的 `WEB_EXPO_PUBLIC_API_URL` 提供，默认 `/api`。
 
 ### 方案 B：Docker 一键联调
 
 ```bash
 docker compose up -d --build
 ```
+
+> ⚠️ `.env` 里必须有 `POSTGRES_PASSWORD`（compose 用 `${POSTGRES_PASSWORD:?…}` 强制要求，没有它直接拒绝渲染）。本地开发加一行 `POSTGRES_PASSWORD=postgres` 即可；生产必须换成真实密码——`validateProductionEnv` 会独立拒绝任何仍带 `postgres:postgres` 的 `DATABASE_URL`。
 
 如果宿主机 `5432` 已被占用：
 
@@ -200,8 +204,9 @@ npm run test:latest
 
 - [AI 问答说明](./docs/ai-chat.md)
 - [患者档案数据模型](./docs/patient-profile.md)
-- [版本历史 / Changelog](./CHANGELOG.md)
-- [v2.3.1 发布说明](./docs/releases/v2.3.1.md)
+- [版本历史 / Changelog](./CHANGELOG.md)：含 `v2.5.0` 条目（本次待发布内容）。
+- [v2.5.0 部署手册](./docs/runbooks/v2.5.0-deploy.md)：部署 `v2.5.0` 前必读，取代 v2.4.0 手册。
+- [v2.4.0 发布说明](./docs/releases/v2.4.0.md)：最近一次已发布版本。
 - [v1.0.0 发布说明](./docs/releases/v1.0.0.md)
 - [v2.0.0 发布说明](./docs/releases/v2.0.0.md)
 
