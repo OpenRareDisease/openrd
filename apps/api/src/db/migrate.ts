@@ -241,6 +241,14 @@ const applyPendingMigrations = async (client: Client) => {
     }
 
     const sql = await readSqlFile(path.join(getMigrationsDir(), file));
+    if (_hasSelfManagedTransaction(sql)) {
+      throw new Error(
+        `${file} contains its own BEGIN/COMMIT/ROLLBACK. The runner wraps each ` +
+          `migration in a transaction together with its schema_migrations row; a ` +
+          `file managing its own splits that pairing and can leave the schema ` +
+          `applied but unrecorded. Remove the transaction control from the file.`,
+      );
+    }
     await client.query('BEGIN');
     try {
       await client.query(sql);

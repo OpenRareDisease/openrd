@@ -1,4 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { _hasSelfManagedTransaction, _isForwardMigrationFile } from './migrate.js';
 
@@ -90,5 +95,36 @@ describe('_hasSelfManagedTransaction', () => {
 
   it('catches START TRANSACTION too', () => {
     expect(_hasSelfManagedTransaction('START TRANSACTION;\nUPDATE t SET x = 1;')).toBe(true);
+  });
+});
+
+/**
+ * The predicate above was, for one commit, exercised only by its own
+ * unit tests — it was exported, documented as a guard, and never
+ * called by applyPendingMigrations. A rule nothing enforces is not a
+ * rule, so this runs it over the real corpus.
+ *
+ * Reading the files off disk rather than asserting on runner internals
+ * is deliberate: this is the check that fires when someone adds
+ * migration 019 with a BEGIN in it, which is the only time it matters.
+ * `_down.sql` files are included even though the forward runner never
+ * sees them — they are applied by hand against the same runner
+ * conventions, and 011/012/015/017's down twins had the same problem.
+ */
+describe('every migration on disk leaves the transaction to the runner', () => {
+  const migrationsDir = path.resolve(__dirname, '../../../../db/migrations');
+  const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql'));
+
+  it('finds the migrations directory', () => {
+    expect(files.length).toBeGreaterThan(10);
+  });
+
+  it.each(files)('%s', (file) => {
+    // Matches readSqlFile: 003_complete_chat_system.sql is UTF-16, and
+    // reading it as UTF-8 would yield NUL-interleaved text the regex
+    // silently fails to match — a false pass, the worst kind.
+    const raw = fs.readFileSync(path.join(migrationsDir, file));
+    const sql = raw[0] === 0xff && raw[1] === 0xfe ? raw.toString('utf16le') : raw.toString('utf8');
+    expect(_hasSelfManagedTransaction(sql)).toBe(false);
   });
 });
