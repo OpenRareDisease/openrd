@@ -192,6 +192,39 @@ const applyBootstrapIfNeeded = async (client: Client, databaseName: string) => {
 export const _isForwardMigrationFile = (filename: string): boolean =>
   filename.endsWith('.sql') && !filename.endsWith('_down.sql');
 
+/**
+ * A migration must not manage its own transaction.
+ *
+ * The runner already wraps each file in BEGIN/COMMIT together with the
+ * `schema_migrations` INSERT, and that pairing is the whole point: a
+ * file either applies AND is recorded, or neither. A file carrying its
+ * own COMMIT splits them. If the ledger INSERT then fails — a pool
+ * blip, a reset connection — the schema change is live but unrecorded,
+ * so the next deploy re-runs the file. Postgres has no
+ * `ADD CONSTRAINT IF NOT EXISTS`, so it raises 42710, the runner
+ * throws, and **every migration numbered above it never applies**.
+ * Recovery is hand-editing `schema_migrations` on the production box.
+ *
+ * Four files had done this (011, 012, 015, 017) — the ones doing
+ * irreversible DDL, i.e. exactly the ones the guarantee was for. 015
+ * additionally re-runs a destructive `UPDATE … SET unit = NULL` on its
+ * way to failing.
+ *
+ * Matches only a statement-leading keyword, so the words inside a
+ * comment or a string literal do not trip it.
+ */
+const SELF_MANAGED_TX = /^\s*(BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK)\s*;/im;
+
+/** Comments only. These files are heavily commented — 015's header
+ *  explains at length why it does NOT follow 012's NOT VALID
+ *  convention — and a `-- … COMMIT …` in prose must not trip the
+ *  guard. */
+const stripSqlComments = (sql: string): string =>
+  sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+
+export const _hasSelfManagedTransaction = (sql: string): boolean =>
+  SELF_MANAGED_TX.test(stripSqlComments(sql));
+
 const listMigrationFiles = async () => {
   const migrationsDir = getMigrationsDir();
   const entries = await fs.readdir(migrationsDir);

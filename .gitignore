@@ -189,3 +189,6 @@ apps/api/uploads/
 minio-data/
 apps/report-manager/testfile/
 kb-model-cache.tar.gz
+
+# Claude Code local tooling (machine-specific paths / personal settings)
+.claude/

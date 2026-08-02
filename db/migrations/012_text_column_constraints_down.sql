@@ -3,9 +3,6 @@
 -- Reverse migration 012 in a hot rollback. All operations idempotent
 -- (IF EXISTS) so this script can re-run safely against a partially-
 -- applied or fully-rolled-back state.
-
-BEGIN;
-
 -- ---------------------------------------------------------------- function tests
 ALTER TABLE patient_function_tests
   DROP CONSTRAINT IF EXISTS patient_function_tests_type_check;
@@ -21,5 +18,3 @@ ALTER TABLE patient_documents
 -- ---------------------------------------------------------------- ai_consent_events
 ALTER TABLE ai_consent_events
   DROP CONSTRAINT IF EXISTS ai_consent_events_note_length_check;
-
-COMMIT;

@@ -1,6 +1,4 @@
 -- Reverse of 017.
-BEGIN;
-
 DROP INDEX IF EXISTS idx_patient_function_tests_not_applicable;
 
 ALTER TABLE patient_function_tests
@@ -8,5 +6,3 @@ ALTER TABLE patient_function_tests
 
 ALTER TABLE patient_function_tests
   DROP COLUMN IF EXISTS not_applicable;
-
-COMMIT;

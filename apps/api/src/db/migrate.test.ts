@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { _isForwardMigrationFile } from './migrate.js';
+import { _hasSelfManagedTransaction, _isForwardMigrationFile } from './migrate.js';
 
 /*
  * Regression: before this filter existed, the migration runner
@@ -56,5 +56,39 @@ describe('migrate — _isForwardMigrationFile filter (P0 regression)', () => {
     // substring `_down`.
     expect(_isForwardMigrationFile('015_count_down_timer.sql')).toBe(true);
     expect(_isForwardMigrationFile('016_breakdown_table.sql')).toBe(true);
+  });
+});
+
+describe('_hasSelfManagedTransaction', () => {
+  // Four migrations used to carry their own BEGIN/COMMIT, which split
+  // the schema change from its schema_migrations INSERT. A failure
+  // between the two leaves the change applied but unrecorded, and the
+  // next deploy re-runs the file — where ADD CONSTRAINT has no
+  // IF NOT EXISTS, so it raises 42710 and wedges every later migration.
+  it('flags a file that manages its own transaction', () => {
+    expect(_hasSelfManagedTransaction('BEGIN;\nALTER TABLE t ADD COLUMN y INT;\nCOMMIT;')).toBe(
+      true,
+    );
+  });
+
+  it('accepts a file that leaves the transaction to the runner', () => {
+    expect(_hasSelfManagedTransaction('ALTER TABLE t ADD CONSTRAINT c CHECK (x IS NULL);')).toBe(
+      false,
+    );
+  });
+
+  // These files are heavily commented — 015's header explains at length
+  // why it does not follow 012's NOT VALID convention — so prose that
+  // mentions the keywords must not trip the guard.
+  it.each([
+    ['a line comment', '-- explains why this does not COMMIT on its own\nUPDATE t SET x = 1;'],
+    ['a block comment', '/* BEGIN; would be wrong here */\nUPDATE t SET x = 1;'],
+    ['a string literal', "INSERT INTO logs (msg) VALUES ('COMMIT; happened');"],
+  ])('does not trip on %s', (_label, sql) => {
+    expect(_hasSelfManagedTransaction(sql)).toBe(false);
+  });
+
+  it('catches START TRANSACTION too', () => {
+    expect(_hasSelfManagedTransaction('START TRANSACTION;\nUPDATE t SET x = 1;')).toBe(true);
   });
 });

@@ -36,9 +36,6 @@
 -- column is nullable, a missing unit degrades how a measurement is
 -- displayed rather than the measurement itself, and the alternative is
 -- a row the patient can never retract.
-
-BEGIN;
-
 -- Known aliases → canonical form. Mirrors UNIT_ALIASES.
 UPDATE patient_function_tests SET unit = 'sec'
   WHERE unit IS NOT NULL AND lower(btrim(unit)) IN ('sec', 's', '秒');
@@ -62,5 +59,3 @@ UPDATE patient_function_tests SET unit = NULL
 ALTER TABLE patient_function_tests
   ADD CONSTRAINT patient_function_tests_unit_check
   CHECK (unit IS NULL OR unit IN ('sec', 'm', 'm/s', 'reps', 'kg', 'score'));
-
-COMMIT;

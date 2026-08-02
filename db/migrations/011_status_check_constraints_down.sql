@@ -7,9 +7,6 @@
 --
 -- All operations are idempotent (IF EXISTS) so this script can run
 -- against a partially-applied 011 without erroring out.
-
-BEGIN;
-
 -- ---------------------------------------------------------------- ai_prompt_audit
 ALTER TABLE ai_prompt_audit
   DROP CONSTRAINT IF EXISTS ai_prompt_audit_status_check;
@@ -57,5 +54,3 @@ ALTER TABLE auth_otps
 -- ---------------------------------------------------------------- app_users
 ALTER TABLE app_users
   DROP CONSTRAINT IF EXISTS app_users_role_check;
-
-COMMIT;

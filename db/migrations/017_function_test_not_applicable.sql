@@ -31,9 +31,6 @@
 -- carry a measurement. Recording「做不到」and「15 秒」on the same
 -- attempt is a contradiction, and this is exactly the shape of bad
 -- data the AI would otherwise narrate with confidence.
-
-BEGIN;
-
 ALTER TABLE patient_function_tests
   ADD COLUMN IF NOT EXISTS not_applicable BOOLEAN NOT NULL DEFAULT FALSE;
 
@@ -47,5 +44,3 @@ ALTER TABLE patient_function_tests
 CREATE INDEX IF NOT EXISTS idx_patient_function_tests_not_applicable
   ON patient_function_tests (profile_id, test_type, performed_at DESC)
   WHERE not_applicable AND deleted_at IS NULL;
-
-COMMIT;

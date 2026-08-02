@@ -9,9 +9,6 @@
 -- All constraints added NOT VALID so the migration succeeds on legacy
 -- rows that may carry historical strings; an operator can run ALTER
 -- TABLE ... VALIDATE CONSTRAINT once the back-fill is done.
-
-BEGIN;
-
 -- ---------------------------------------------------------------- ai_consent_events
 -- The original 009 migration documented `note` as "Never contains
 -- PII; safe to surface in the future audit viewer" but added no
@@ -60,5 +57,3 @@ ALTER TABLE patient_function_tests
     'custom'
   ))
   NOT VALID;
-
-COMMIT;

@@ -15,9 +15,6 @@
 -- `linked_document_id`, when set, references a document belonging to
 -- the same profile_id. Postgres CHECK constraints can't run a subquery
 -- so a trigger is the only correctness-preserving option.
-
-BEGIN;
-
 -- ---------------------------------------------------------------- auth
 ALTER TABLE app_users
   ADD CONSTRAINT app_users_role_check
@@ -144,5 +141,3 @@ ALTER TABLE ai_prompt_audit
   ADD CONSTRAINT ai_prompt_audit_status_check
   CHECK (status IN ('success', 'error', 'consent_denied'))
   NOT VALID;
-
-COMMIT;
