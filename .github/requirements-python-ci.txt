@@ -1,0 +1,47 @@
+# Python dependency set for the `report-manager` job in
+# .github/workflows/ci.yml. Nothing else installs this file.
+#
+# Why it exists instead of just `pip install -r requirements.txt`:
+#
+#   * the repo-root requirements.txt pins sentence-transformers, which drags in
+#     torch — gigabytes of wheels — for an embedder that nothing under test
+#     ever constructs. apps/api/embed_models/factory.py imports it lazily
+#     inside create_embedder(), so the import graph the tests touch never
+#     reaches it.
+#   * apps/report-manager/requirements.txt is worse: it pins paddleocr==2.8.1,
+#     whose single process peaks around 6.4 GB RSS. Production is already
+#     Tesseract-only (apps/api/Dockerfile sets OCR_DISABLE_PADDLE=true), so CI
+#     installing paddle would be minutes and gigabytes spent on a code path the
+#     deployed image does not take.
+#
+# Every entry below was arrived at empirically, starting from an empty 3.11
+# venv and adding only what an actual pytest collection error demanded. The
+# version specifiers mirror the ones already in the repo-root requirements.txt
+# so CI never resolves a wheel a developer's environment would not.
+#
+# When a test starts importing something new, add it here — do not "fix" it by
+# switching this job to the full requirements.txt.
+
+# Parser and OCR dependencies the apps/report-manager tests import, plus pytest
+# itself. That file in turn includes apps/api/requirements-embedded-report.txt,
+# so CI exercises the same wheel set the api image ships.
+-r ../apps/report-manager/requirements-dev.txt
+
+# scripts/kb_parsers/test_{docx,pptx,pdf,html,markdown}_parser.py build real
+# fixture documents in tmp_path and parse them with the real libraries, so
+# these are import-time requirements of the test modules, not optional extras.
+python-docx>=1.1.2
+python-pptx>=1.0
+pdfminer.six>=20240706
+beautifulsoup4>=4.12
+PyYAML>=6.0
+
+# scripts/kb_parsers/test_factory_default.py imports kb_backends.pgvector AND
+# kb_backends.chroma_cloud eagerly — it monkey-patches both constructors to
+# prove the factory default is pgvector without connecting to anything — so
+# both backends' import-time dependencies must resolve even though neither
+# backend is ever instantiated. psycopg needs the `pool` extra specifically:
+# apps/api/kb_backends/pgvector.py imports psycopg_pool at module scope.
+psycopg[binary,pool]>=3.2.10,<3.4
+pgvector>=0.3.6,<0.5
+chromadb==1.4.0
