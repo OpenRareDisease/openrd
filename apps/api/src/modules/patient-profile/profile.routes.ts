@@ -12,6 +12,7 @@ import { getPool } from '../../db/pool.js';
 import { createRateLimitMiddleware } from '../../middleware/rate-limit.js';
 import { requireAuth, type AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { RouteContext } from '../../routes/index.js';
+import { startRetentionSweep } from '../../services/audit/retention.js';
 import { BaiduOcrProvider } from '../../services/ocr/baidu-ocr.js';
 import { EmbeddedReportOcrProvider } from '../../services/ocr/embedded-report-ocr.js';
 import { MockOcrProvider } from '../../services/ocr/mock-ocr.js';
@@ -158,6 +159,11 @@ export const createPatientProfileRouter = (context: RouteContext) => {
       });
   runDeletionPurge();
   setInterval(runDeletionPurge, DELETION_PURGE_INTERVAL_MS).unref();
+  // Time-based retention for the OTP and audit tables. Wired here next
+  // to the other two sweeps because this is where the app's periodic
+  // jobs live and where the single-instance assumption is already
+  // documented — not because retention is a patient-profile concern.
+  startRetentionSweep(getPool(), context.logger);
 
   const authMiddleware = requireAuth(context.env, context.logger);
   const upload = multer({

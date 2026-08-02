@@ -1461,3 +1461,46 @@ describe('scrubErrorDetail (PR-Sec-2 #15)', () => {
     expect(_scrubErrorDetail('LLM timeout after 30000ms')).toBe('LLM timeout after 30000ms');
   });
 });
+
+/**
+ * These limiters sit behind `authMiddleware` on every mount, so keying
+ * them on IP threw away the one identity that is actually available.
+ * Chinese mobile carriers put very large subscriber pools behind a
+ * handful of CGNAT egress addresses, which made the 6-questions-a-minute
+ * AI budget shared property: a patient who had asked nothing got
+ * 「AI 请求过于频繁」 because strangers on the same carrier were asking.
+ */
+describe('AI rate limiting is per-user, not per-IP', () => {
+  const buildLimitedApp = () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/ai',
+      createAiChatRoutes(
+        {
+          env: { ...fakeEnv, AI_PROGRESS_RATE_LIMIT_MAX_REQUESTS: 1 },
+          logger: silentLogger,
+        },
+        { pool: buildFakePool(), orchestrator: null, llmProvider: null },
+      ),
+    );
+    return app;
+  };
+
+  const init = (app: express.Express, userId: string, progressId: string) =>
+    request(app)
+      .post('/api/ai/ask/progress/init')
+      .set('Authorization', `Bearer ${issueToken(userId)}`)
+      .send({ progressId });
+
+  it('does not spend one user’s budget on another user behind the same IP', async () => {
+    const app = buildLimitedApp();
+    // supertest dials from 127.0.0.1 for every request, so both users
+    // share a source address — exactly the carrier-NAT shape.
+    const suffix = `nat-${Date.now()}`;
+    expect((await init(app, `userA-${suffix}`, `p1-${suffix}`)).status).toBe(200);
+    expect((await init(app, `userA-${suffix}`, `p2-${suffix}`)).status).toBe(429);
+    // Same IP, different account: must be unaffected.
+    expect((await init(app, `userB-${suffix}`, `p3-${suffix}`)).status).toBe(200);
+  });
+});

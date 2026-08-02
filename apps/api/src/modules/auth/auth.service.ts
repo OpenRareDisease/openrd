@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import type { LoginInput, RegisterInput } from './auth.schema.js';
 import type { AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
+import { maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { AppError } from '../../utils/app-error.js';
 
 interface AuthServiceDeps {
@@ -181,11 +182,29 @@ export class AuthService {
     };
   }
 
+  /**
+   * Write an audit row with every direct identifier masked.
+   *
+   * Callers hand this the raw values they already have; the masking
+   * happens here, once, so a new audit site cannot forget it. This used
+   * to store the raw phone number, email, and client IP — while
+   * `otp.service.ts` masked the same fields into the same table, which
+   * is how we knew masking was the house style and auth simply hadn't
+   * followed it.
+   *
+   * It matters more here than the "audit log" framing suggests:
+   * `audit_logs` has no retention limit and, on a rare-disease registry
+   * of this size, a phone number is not incidental metadata — it is the
+   * account's primary identifier and a re-identifier against a
+   * population this small. And these rows survive account deletion by
+   * design (they are the compliance trail), so an unmasked value here
+   * is an unmasked value forever.
+   */
   private async logAudit(eventType: string, payload: Record<string, unknown>) {
     await this.pool.query(
       `INSERT INTO audit_logs (event_type, event_payload)
        VALUES ($1, $2)`,
-      [eventType, payload],
+      [eventType, maskAuditPayload(payload)],
     );
   }
 

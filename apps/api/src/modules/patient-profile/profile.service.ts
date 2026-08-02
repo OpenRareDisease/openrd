@@ -35,6 +35,7 @@ import {
   type SharingPreferenceUpdateInput,
 } from './sharing-preferences.js';
 import type { AppLogger } from '../../config/logger.js';
+import { maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   ConsentMutationError,
@@ -1524,21 +1525,27 @@ export class PatientProfileService {
 
       const row = result.rows[0];
 
+      // `title`, `file_name` and `storage_uri` are deliberately NOT in
+      // the audit payload, though the RETURNING clause fetches them —
+      // the caller needs storage_uri to delete the blob, which is a
+      // different job. A patient names their own uploads
+      //（「基因检测 2026」）and hospitals put names and IDs in file
+      // names, so all three are report content rather than evidence
+      // that a deletion occurred. `documentId` + `documentType` proves
+      // that completely, and unlike the other three it resolves to
+      // nothing once the account is purged.
       await client.query(
         `INSERT INTO audit_logs (event_type, event_payload)
          VALUES ($1, $2)`,
         [
           'patient_document.deleted',
-          {
+          maskAuditPayload({
             userId,
             documentId: row.id,
             documentType: row.document_type,
-            title: row.title ?? null,
-            fileName: row.file_name ?? null,
-            storageUri: row.storage_uri,
             ip: meta?.ip ?? null,
             userAgent: meta?.userAgent ?? null,
-          },
+          }),
         ],
       );
 
@@ -1642,13 +1649,13 @@ export class PatientProfileService {
          VALUES ($1, $2)`,
         [
           'patient_record.soft_deleted',
-          {
+          maskAuditPayload({
             userId,
             recordKind: kind,
             recordId: row.id,
             ip: meta?.ip ?? null,
             userAgent: meta?.userAgent ?? null,
-          },
+          }),
         ],
       );
 

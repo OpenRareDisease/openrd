@@ -15,13 +15,13 @@
  */
 
 import { Router } from 'express';
-import type { RequestHandler, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import type { Pool } from 'pg';
 
 import type { RouteContext } from './index.js';
 import { getPool } from '../db/pool.js';
 import { createRateLimitMiddleware } from '../middleware/rate-limit.js';
-import { requireAuth } from '../middleware/require-auth.js';
+import { requireAuth, type AuthenticatedRequest } from '../middleware/require-auth.js';
 import {
   AuditLogger,
   scrubErrorDetail,
@@ -330,17 +330,37 @@ export interface AiChatRoutesDeps {
 const createAiChatRoutes = (context: RouteContext, deps: AiChatRoutesDeps = {}) => {
   const router = Router();
   const authMiddleware: RequestHandler = requireAuth(context.env, context.logger);
+  /**
+   * Per-user, not per-IP. Every route these two limiters guard mounts
+   * `authMiddleware` first, so `req.user.id` is always populated by the
+   * time we get here — and Chinese mobile carriers put very large
+   * subscriber pools behind a handful of CGNAT egress addresses. Keyed
+   * on IP, the 6-questions-per-minute AI budget was shared by every
+   * unrelated patient on the same carrier: a user who had asked nothing
+   * got 「AI 请求过于频繁，请稍后再试」 because strangers were asking.
+   * `trust proxy 1` makes req.ip the real client address rather than
+   * Caddy's, so the collapse was per carrier egress IP, which is
+   * exactly the granularity that hurts.
+   *
+   * The `?? req.ip` fallback is unreachable on today's mounts and stays
+   * as the safe answer if one of these limiters is ever put in front of
+   * an anonymous route. Same shape as profile.routes.ts's uploadLimiter.
+   */
+  const authenticatedUserKey = (req: Request) =>
+    (req as AuthenticatedRequest).user?.id ?? req.ip ?? 'unknown';
   const aiAskLimiter = createRateLimitMiddleware({
     keyPrefix: 'ai:ask',
     windowMs: context.env.AI_RATE_LIMIT_WINDOW_SECONDS * 1000,
     maxRequests: context.env.AI_RATE_LIMIT_MAX_REQUESTS,
     message: 'AI 请求过于频繁，请稍后再试',
+    keyResolver: authenticatedUserKey,
   });
   const aiProgressLimiter = createRateLimitMiddleware({
     keyPrefix: 'ai:progress',
     windowMs: context.env.AI_PROGRESS_RATE_LIMIT_WINDOW_SECONDS * 1000,
     maxRequests: context.env.AI_PROGRESS_RATE_LIMIT_MAX_REQUESTS,
     message: '进度轮询过于频繁，请稍后再试',
+    keyResolver: authenticatedUserKey,
   });
 
   /** Shared multi-turn history parsing for /ask and /ask/stream — one

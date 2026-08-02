@@ -1,6 +1,6 @@
 {
   "name": "@openrd/api",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "build": "tsc --project tsconfig.json",
     "migrate": "tsx --env-file ../../.env src/db/migrate.ts",
     "migrate:status": "tsx --env-file ../../.env src/db/migrate.ts --status",
-    "start": "node --enable-source-maps dist/index.js",
+    "migrate:down": "tsx --env-file ../../.env src/db/migrate.ts --down",
+    "start": "node --enable-source-maps --env-file-if-exists=../../.env dist/index.js",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" --fix",
     "format": "prettier \"src/**/*.{ts,tsx,js,json}\" --check",
