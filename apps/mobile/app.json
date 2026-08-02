@@ -1,17 +1,21 @@
 {
   "expo": {
     "name": "肌愈通",
-    "slug": "Project 386905389314",
-    "version": "2.4.0",
+    "slug": "jiyutong",
+    "version": "2.5.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon_downloaded.png",
-    "scheme": "myapp",
+    "scheme": "jiyutong",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fshdyouth.jiyutong",
+      "buildNumber": "1"
     },
     "android": {
+      "package": "com.fshdyouth.jiyutong",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -36,9 +40,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow 肌愈通 to access your camera",
-          "microphonePermission": "Allow 肌愈通 to access your microphone",
-          "recordAudioAndroid": true
+          "cameraPermission": "肌愈通需要使用相机拍摄化验单、检查报告等纸质材料，用来自动识别其中的指标并存进你自己的健康档案。不会在后台拍摄，也不会用于其他用途。",
+          "recordAudioAndroid": false
         }
       ],
       "expo-secure-store"

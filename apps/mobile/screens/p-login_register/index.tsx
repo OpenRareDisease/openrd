@@ -5,6 +5,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
@@ -23,11 +24,21 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, loginWithOtp, register, resetPassword, sendOtp } from '../../lib/api';
+import {
+  ApiError,
+  apiRequest,
+  login,
+  loginWithOtp,
+  register,
+  resetPassword,
+  sendOtp,
+} from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
 
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import {
+  LEGAL_DOCUMENTS,
+  LEGAL_DOCUMENT_VERSIONS,
   PRIVACY_POLICY_TEXT,
   PRIVACY_POLICY_TITLE,
   USER_AGREEMENT_TEXT,
@@ -113,6 +124,18 @@ const LoginRegisterScreen: React.FC = () => {
     identity: 'patient_family',
   });
   const [isRegisterDraftHydrated, setIsRegisterDraftHydrated] = useState(false);
+
+  /**
+   * 用户协议 + 隐私政策 acceptance. Un-prechecked, and deliberately NOT
+   * part of `registerForm`: the draft persist effect below writes
+   * everything in that object to storage, so folding the flag in would
+   * mean an interrupted registration comes back with the box already
+   * ticked — i.e. the app would be asserting a consent the user never
+   * gave on this attempt. 《个人信息保护法》第 14 条 requires consent to
+   * be 「自愿、明确作出」; a restored tick is neither.
+   */
+  const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
+  const [termsError, setTermsError] = useState<string | null>(null);
 
   // Restore an interrupted registration (user switched away to read
   // the SMS, app got killed, …). Secrets and OTP state are NEVER
@@ -381,6 +404,41 @@ const LoginRegisterScreen: React.FC = () => {
     }
   };
 
+  /**
+   * Persist「这个用户在这一天同意了这一版」 to the acceptance ledger
+   * (db/migrations/019). Called once, right after the token exists —
+   * the endpoint is authenticated, and an anonymous write into a table
+   * keyed by user id would defeat the point of having the ledger.
+   *
+   * Failures are logged and swallowed. The account has already been
+   * created and the session already stored by the time we get here, so
+   * throwing would strand the user on the register screen with a
+   * working account they cannot see. The ledger is not left broken for
+   * ever either: GET /legal/acceptances returns `outstanding`, and the
+   * sensitive-PI gate re-asks before any health data is stored, so a
+   * lost write costs a re-confirmation rather than a silent gap.
+   *
+   * Both documents are recorded, not one combined「agreement」row: the
+   * two texts version independently, and a future revision of only the
+   * privacy policy has to be able to re-ask for only that one.
+   */
+  const recordRegistrationAcceptances = async () => {
+    const documents = [LEGAL_DOCUMENTS.userAgreement, LEGAL_DOCUMENTS.privacyPolicy] as const;
+    const results = await Promise.allSettled(
+      documents.map((document) =>
+        apiRequest('/legal/acceptances', {
+          method: 'POST',
+          body: JSON.stringify({ document, version: LEGAL_DOCUMENT_VERSIONS[document] }),
+        }),
+      ),
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.warn('[legal] failed to record agreement acceptance', result.reason);
+      }
+    }
+  };
+
   // 注册提交
   const handleRegisterSubmit = async () => {
     // Surface EVERY failing field inline at once (no more one
@@ -391,6 +449,18 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
     setRegisterErrors({});
+
+    // The consent gate. Checked AFTER the field errors so a user who
+    // has both problems sees the fields first (they are above the
+    // checkbox on screen) — but before the network call, because a
+    // registration completed without acceptance is an account we then
+    // have no lawful basis to hold data for.
+    if (!hasAcceptedTerms) {
+      setTermsError('请先阅读并勾选同意《用户协议》和《隐私政策》');
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+      return;
+    }
+    setTermsError(null);
 
     setIsLoading(true);
 
@@ -421,6 +491,10 @@ const LoginRegisterScreen: React.FC = () => {
       // could half-fail AFTER the token was stored, stranding an
       // account with no profile and no recovery path.
       await setSession(response);
+      // Ledger write goes here and not before setSession: apiRequest
+      // reads the token out of storage, and setSession is what puts it
+      // there.
+      await recordRegistrationAcceptances();
       // Registration is complete — the draft has served its purpose.
       await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
       showModal('success', '注册成功', '接下来用 1 分钟完成基础档案');
@@ -1041,16 +1115,80 @@ const LoginRegisterScreen: React.FC = () => {
                 </View>
               )}
 
-              {/* 用户协议
+              {/* 用户协议 / 隐私政策
                   The two documents used to be tappable spans inside the
                   sentence: 19pt tall (TYPE.caption's line box), no
                   accessibilityRole, and indistinguishable from the
                   prose except by colour — the exact「文字可以直接点」
-                  shape this app was moving away from. The sentence
-                  still says what agreeing means; the documents are now
-                  controls, which is what they are. */}
+                  shape this app was moving away from. They are now
+                  controls, which is what they are.
+
+                  What ALSO used to be here was the sentence
+                 「登录即表示同意以下条款」, and that is the part that was
+                  a legal defect rather than a UI one. 《个人信息保护法》
+                  第 14 条 requires consent to be 「自愿、明确作出」;
+                  inferring it from the act of pressing 注册 is neither
+                  voluntary nor explicit, and nothing was recorded, so
+                  there was no answer to 「这位患者同意过哪一版隐私政策」.
+                  On the register tab the box below is un-prechecked and
+                  blocks submission; the acceptance it produces is
+                  written to the ledger (db/migrations/019).
+
+                  On the login tab there is no checkbox and no implied
+                  consent: an existing account's acceptance was recorded
+                  when it registered, and re-asserting it on every login
+                  would be the same inference in a new place. The
+                  documents stay reachable because a user reading them
+                  before signing in is the point. */}
               <View style={styles.agreement}>
-                <Text style={styles.agreementText}>登录即表示同意以下条款</Text>
+                {activeTab === 'register' ? (
+                  <>
+                    {/* One control for the whole row: the box and its
+                        sentence are the same target, so the 48pt
+                        minimum applies to the text too rather than to a
+                        20pt square a patient with reduced grip has to
+                        hit. */}
+                    <Pressable
+                      style={styles.consentRow}
+                      onPress={() => {
+                        setHasAcceptedTerms((previous) => {
+                          if (!previous) {
+                            setTermsError(null);
+                          }
+                          return !previous;
+                        });
+                      }}
+                      accessibilityRole="checkbox"
+                      accessibilityLabel="我已阅读并同意《用户协议》和《隐私政策》"
+                      accessibilityHint="必须勾选才能完成注册"
+                      // Both spellings on purpose, same as ToggleSwitch:
+                      // react-native-web 0.20 drops accessibilityState,
+                      // which would leave the checkbox announcing itself
+                      // without announcing whether it is ticked — on the
+                      // one control that gates the whole registration.
+                      accessibilityState={{ checked: hasAcceptedTerms }}
+                      aria-checked={hasAcceptedTerms}
+                    >
+                      <View
+                        style={[
+                          styles.consentBox,
+                          hasAcceptedTerms ? styles.consentBoxChecked : null,
+                          termsError ? styles.consentBoxError : null,
+                        ]}
+                      >
+                        {hasAcceptedTerms ? (
+                          <Icon name="check" size={12} color={COLOR.surface} />
+                        ) : null}
+                      </View>
+                      <Text style={styles.consentLabel}>
+                        我已阅读并同意《用户协议》和《隐私政策》
+                      </Text>
+                    </Pressable>
+                    {termsError ? <Text style={styles.consentErrorText}>{termsError}</Text> : null}
+                  </>
+                ) : (
+                  <Text style={styles.agreementText}>使用前请阅读以下条款</Text>
+                )}
                 <View style={styles.agreementLinkRow}>
                   <Button
                     label="《用户协议》"

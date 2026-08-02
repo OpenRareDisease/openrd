@@ -1,12 +1,5 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import {
-  Stack,
-  useGlobalSearchParams,
-  usePathname,
-  useRootNavigationState,
-  useRouter,
-  useSegments,
-} from 'expo-router';
+import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { LogBox } from 'react-native';
 import { useEffect } from 'react';
@@ -14,6 +7,7 @@ import { AuthProvider } from '../contexts/AuthContext';
 import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { ProfileProvider, useProfileContext } from '../contexts/ProfileContext';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 LogBox.ignoreLogs([
   "TurboModuleRegistry.getEnforcing(...): 'RNMapsAirModule' could not be found",
@@ -29,8 +23,6 @@ const GUEST_ROUTES = new Set(['p-login_register']);
 const ONBOARDING_EXEMPT_ROUTES = new Set(['p-login_register', 'p-register_profile', 'p-about_us']);
 
 function AppNavigator() {
-  const pathname = usePathname();
-  const searchParams = useGlobalSearchParams();
   const navigationState = useRootNavigationState();
   const router = useRouter();
   const segments = useSegments();
@@ -43,39 +35,17 @@ function AppNavigator() {
   // fail-open by design — see ProfileContext's status semantics.
   const needsOnboarding = Boolean(token) && profileStatus === 'missing' && !isOnboardingExempt;
 
-  useEffect(() => {
-    if (!pathname) {
-      return;
-    }
-    let searchString = '';
-    if (Object.keys(searchParams).length > 0) {
-      const queryString = Object.keys(searchParams)
-        .map((key) => {
-          const value = searchParams[key];
-          if (typeof value === 'string') {
-            return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
-          }
-          return '';
-        })
-        .filter(Boolean)
-        .join('&');
-
-      searchString = '?' + queryString;
-    }
-
-    const pageId = pathname.replace('/', '').toUpperCase();
-    if (typeof window === 'object' && window.parent && window.parent.postMessage) {
-      window.parent.postMessage(
-        {
-          type: 'chux-path-change',
-          pageId: pageId,
-          pathname: pathname,
-          search: searchString,
-        },
-        '*',
-      );
-    }
-  }, [pathname, searchParams]);
+  // NOTE: there used to be a useEffect here that fired
+  // `window.parent.postMessage({ type: 'chux-path-change', pathname,
+  // search }, '*')` on every navigation. It was a low-code-editor
+  // preview hook with no consumer in this product, and on the web
+  // export — the only channel that ships — it handed any page that
+  // framed us the patient's whole browsing trail, including the
+  // `documentId` query param that /p-report_detail carries. Broadcast
+  // to targetOrigin '*' means every frame ancestor receives it, so
+  // there was no "only our own host" about it. Do not reintroduce a
+  // parent-frame channel: nothing in this app is embedded, and route
+  // params here are medical identifiers.
 
   useEffect(() => {
     if (!isHydrated || !navigationState?.key) {
@@ -156,12 +126,19 @@ function AppNavigator() {
 
 export default function RootLayout() {
   return (
+    // The boundary sits inside GestureHandlerRootView (it needs the
+    // flex:1 host to fill the screen) but outside every provider, so a
+    // throw while AuthProvider hydrates the token — or anywhere below
+    // it — still lands on a readable screen instead of unmounting the
+    // SPA to white. See components/ErrorBoundary.tsx.
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthProvider>
-        <ProfileProvider>
-          <AppNavigator />
-        </ProfileProvider>
-      </AuthProvider>
+      <ErrorBoundary>
+        <AuthProvider>
+          <ProfileProvider>
+            <AppNavigator />
+          </ProfileProvider>
+        </AuthProvider>
+      </ErrorBoundary>
     </GestureHandlerRootView>
   );
 }

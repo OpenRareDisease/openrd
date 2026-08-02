@@ -197,8 +197,16 @@ const PrivacySettingsScreen = () => {
         break;
       case AI_TOGGLE_IDS.thirdParty:
         title = newState ? '允许第三方 LLM 处理' : '关闭第三方 LLM 处理';
+        // PIPL Art. 17(1)/23 wants the RECIPIENT named, not just the
+        // fact that「云端大模型」is involved. The old copy said
+        //「SiliconFlow / DeepSeek」as if they were two interchangeable
+        // vendors; one is the processor we contract with, the other is
+        // the model it runs — a user cannot check who holds their data
+        // from that. Endpoint and data location are stated for the same
+        // reason: whether the prompt crosses a border is the question
+        // Art. 38-39 turns on, and the .cn host is the answer.
         message = newState
-          ? '开启后，你的问题会被发送到云端大模型（SiliconFlow / DeepSeek）做推理。我们只发送脱敏后的提示词，并保留每一次调用的审计记录。'
+          ? '开启后，你的问题会经我们的服务器发送给受托处理方「硅基流动 SiliconFlow」（接入地址 api.siliconflow.cn，位于中国境内）做推理，运行的模型为 DeepSeek-V3。我们只发送脱敏后的提示词——姓名、手机号、身份证号在送出前会被移除——并保留每一次调用的审计记录。详见《隐私政策》第 5 条。'
           : '关闭后，AI 助手将无法回答你的问题。';
         break;
       case AI_TOGGLE_IDS.preciseValues:
@@ -482,7 +490,8 @@ const PrivacySettingsScreen = () => {
           <View style={styles.settingContent}>
             <Text style={styles.settingTitle}>第三方 LLM 处理</Text>
             <Text style={styles.settingDescription}>
-              问题发送到云端大模型推理（SiliconFlow / DeepSeek）
+              问题发送给受托处理方「硅基流动 SiliconFlow」（api.siliconflow.cn，境内）推理，模型
+              DeepSeek-V3
               {thirdPartyLabel}
             </Text>
           </View>

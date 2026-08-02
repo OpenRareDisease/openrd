@@ -9,6 +9,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import SensitiveDataConsentGate, {
+  useSensitiveDataConsentGate,
+} from '../p-privacy_settings/components/SensitiveDataConsentGate';
+import { LEGAL_DOCUMENTS } from '../../lib/legal-content';
+import { requiresGuardianConsent } from '../../lib/guardian-consent';
 import styles from './styles';
 import { PROFILE_FORM_DRAFT_KEY } from '../../lib/draft-keys';
 import Button from '../common/Button';
@@ -215,6 +220,12 @@ const RegisterProfileScreen: React.FC = () => {
     });
   }, [form, isDraftHydrated]);
 
+  // PIPL Art. 31. The gate keys off the birth date this very form
+  // collects, which is why it lives here and not at sign-up: the
+  // phone-number registration has no age to reason about yet.
+  const { ensureSensitiveDataConsent: ensureGuardianConsent, gateProps: guardianGateProps } =
+    useSensitiveDataConsentGate(LEGAL_DOCUMENTS.guardianConsent);
+
   const toggleAssistiveDevice = (device: AssistiveDeviceOption) => {
     setForm((prev) => ({
       ...prev,
@@ -244,6 +255,21 @@ const RegisterProfileScreen: React.FC = () => {
     if (!form.gender) {
       setFeedback({ type: 'error', message: '请选择性别' });
       return;
+    }
+
+    // Under 14: a parent or guardian has to consent on the patient's
+    // behalf before the record exists, not after. The privacy policy's
+    // §8 already promises this in writing; without the gate the promise
+    // was the only place it happened.
+    if (requiresGuardianConsent(form.dateOfBirth.trim())) {
+      const consented = await ensureGuardianConsent();
+      if (!consented) {
+        setFeedback({
+          type: 'error',
+          message: '未满 14 周岁需监护人同意后才能建档。若出生日期填错了，请修改后重试。',
+        });
+        return;
+      }
     }
 
     // Onboarding asks for the bare minimum (name/birth/gender) —
@@ -632,6 +658,7 @@ const RegisterProfileScreen: React.FC = () => {
           )}
         </ScrollView>
       </View>
+      <SensitiveDataConsentGate {...guardianGateProps} />
     </SafeAreaView>
   );
 };

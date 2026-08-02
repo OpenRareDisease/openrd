@@ -12,6 +12,24 @@
  * The screens and their routes stay in the tree, so a deep link (or
  * flipping the flag) brings a feature back with no code change — the
  * flag governs discoverability, not existence.
+ *
+ * Where to actually set these
+ * ---------------------------
+ * `apps/mobile/.env` — the Expo project root, NOT the repository root,
+ * which Expo does not read. Both keys are documented in
+ * apps/mobile/.env.example.
+ *
+ * The Docker web image is a separate path and does not read that file:
+ * it only forwards EXPO_PUBLIC_API_URL as a build ARG. Turning either
+ * flag on for a compose build therefore needs an `ARG` in
+ * Dockerfile.web plus an `args:` entry in docker-compose.yml, mirroring
+ * how EXPO_PUBLIC_API_URL is plumbed. Until someone needs that, an env
+ * var exported around `docker compose build` is silently dropped at
+ * bundle time — which is worth knowing before spending an afternoon on
+ * it.
+ *
+ * These are build-time constants: Metro inlines them, so flipping one
+ * always means a rebuild, never a restart.
  */
 
 const readBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {

@@ -38,6 +38,9 @@ import { SLEEP_BUCKETS, bucketForScore, stepSleepScore } from './sleep-score';
 import InlineNotice from '../common/feedback/InlineNotice';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import ScreenHeader from '../common/ScreenHeader';
+import SensitiveDataConsentGate, {
+  useSensitiveDataConsentGate,
+} from '../p-privacy_settings/components/SensitiveDataConsentGate';
 import styles from './styles';
 import MuscleSelfTestForm from './MuscleSelfTestForm';
 
@@ -672,6 +675,13 @@ const DataEntryScreen = () => {
   // react-native-web — i.e. every「已保存」on this screen was silent on
   // the platform this product actually ships (see AppDialog.tsx).
   const { notify } = useAppDialog();
+  // PIPL Art. 29: health and genetic data need their OWN consent, not a
+  // clause inside the general agreement accepted at registration. This
+  // screen is the single place where such data first leaves the device,
+  // so the gate lives on the upload path rather than in a settings
+  // screen the patient may never open. It self-heals a lost
+  // registration write too — the ledger is read here, not assumed.
+  const { ensureSensitiveDataConsent, gateProps } = useSensitiveDataConsentGate();
   const [entryMode, setEntryMode] = useState<EntryMode>('followup');
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   /** True when the profile request failed for a reason other than 404.
@@ -1398,6 +1408,17 @@ const DataEntryScreen = () => {
     }
 
     setFormNotice(null);
+
+    // Ask BEFORE any network write. createSubmission below already
+    // persists a row tied to this patient, so a gate placed after it
+    // would have recorded the intent to upload medical records before
+    // the consent that authorises it.
+    const consented = await ensureSensitiveDataConsent();
+    if (!consented) {
+      setFormNotice('未记录敏感信息处理同意，报告没有上传。你可以稍后再来。');
+      return;
+    }
+
     const total = queue.length;
     setUploadRun({ current: 1, total, name: queue[0].name });
 
@@ -1432,6 +1453,11 @@ const DataEntryScreen = () => {
               : baseTitle
             : undefined,
           file: item.file,
+          // The row already knows how big it is (the same number the
+          // 单份上限 check used). Forwarding it lets the request
+          // deadline scale with the payload instead of giving a 9 MB
+          // scan the same budget as a 200 KB one.
+          sizeBytes: item.sizeBytes,
         })),
         onItemStart: (item, index) => {
           setUploadRun({ current: index + 1, total, name: queue[index].name });
@@ -2176,6 +2202,7 @@ const DataEntryScreen = () => {
           </View>
         )}
       </View>
+      <SensitiveDataConsentGate {...gateProps} />
     </SafeAreaView>
   );
 };

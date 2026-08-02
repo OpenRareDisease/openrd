@@ -26,7 +26,45 @@ export const PATIENT_SCOPED_CACHE_KEYS: string[] = [
 // any other caller imports this rather than re-reading the env at
 // the call site, so the dev default + env override path stays
 // consistent across modules.
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+const DEV_FALLBACK_API_URL = 'http://localhost:4000/api';
+
+/**
+ * Resolve the API base URL, or refuse to start.
+ *
+ * `EXPO_PUBLIC_API_URL` is inlined by Metro at bundle time, and Expo
+ * reads it from `apps/mobile/.env` — the *project root*, not the
+ * repository root. The docs used to point at the repo-root `.env`,
+ * which Expo never loads, so an operator who followed them got a
+ * bundle that had silently fallen through to localhost. On a phone
+ * that is not a misconfiguration the user can see: every request just
+ * fails to a host that does not exist, and the app looks offline.
+ *
+ * So the fallback now only exists where it is actually correct — a
+ * developer running `expo start` against a local API. A production
+ * bundle with no configured URL throws here, at module load, on the
+ * first launch after the build: loud, immediate, and traceable to the
+ * build that produced it, instead of a support ticket a week later.
+ *
+ * The compose/web path never depends on this: Dockerfile.web takes
+ * EXPO_PUBLIC_API_URL as a build ARG defaulting to `/api`, which is
+ * correct behind Caddy. See apps/mobile/.env.example.
+ */
+const resolveApiBaseUrl = (): string => {
+  const configured = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (configured) {
+    return configured;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'EXPO_PUBLIC_API_URL is not set. A production bundle must be built with it ' +
+        '(apps/mobile/.env, an exported shell variable, or the Dockerfile.web build ARG) — ' +
+        'the repository-root .env is NOT read by Expo. See apps/mobile/.env.example.',
+    );
+  }
+  return DEV_FALLBACK_API_URL;
+};
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export class ApiError extends Error {
   status?: number;
@@ -99,9 +137,58 @@ export const extractRetryAfterSeconds = (payload: unknown): number | undefined =
 // 15s only trips on a genuinely stuck connection. Uploads and
 // LLM-backed endpoints legitimately take longer.
 const DEFAULT_TIMEOUT_MS = 15_000;
-const UPLOAD_TIMEOUT_MS = 60_000;
 const SLOW_ENDPOINT_TIMEOUT_MS = 60_000;
 const NETWORK_RETRY_DELAY_MS = 300;
+
+/**
+ * Upload deadlines, scaled to the payload.
+ *
+ * This used to be a flat 60 s, which could not carry what the pickers
+ * are allowed to hand it. The per-file cap is 10 MB (p-data_entry's
+ * MAX_UPLOAD_BYTES, mirroring multer's limits.fileSize), and pushing
+ * 10 MB inside 60 s needs a sustained ~1.4 Mbps uplink. A hospital
+ * corridor's wifi or an indoor 4G cell at visiting hour routinely
+ * gives a fraction of that — and this is a mutation, which apiRequest
+ * deliberately never retries, so the deadline expiring is final for
+ * that file: the row goes back to the queue and the patient has to
+ * press 重试 by hand, against the same impossible budget.
+ *
+ * The budget below is a fixed part plus a per-byte part:
+ *
+ *  - **45 s fixed** covers what does not scale with size — radio
+ *    wake-up, TLS, and the server's own work after the last byte
+ *    (multer writes the file, the row is inserted, 201 comes back;
+ *    OCR does not run inline, so that part is short).
+ *  - **1 ms per 40 bytes** = 40 KB/s ≈ 320 kbit/s sustained. That is
+ *    deliberately the low end of a congested indoor cell rather than
+ *    an average: the cost of over-budgeting is a patient waiting
+ *    longer for a failure, the cost of under-budgeting is an upload
+ *    that can never succeed no matter how many times they retry.
+ *  - **4-minute ceiling**, because past that the connection is not
+ *    slow, it is gone. fetch gives no upload progress, so the patient
+ *    is watching an indeterminate spinner the whole time; four
+ *    minutes is about as long as that is honest.
+ *
+ * A typical camera scan (3-4 MB after the pickers' quality: 0.8) lands
+ * around 2.5 minutes of budget and finishes in seconds; only a
+ * near-cap file on a bad cell ever approaches the ceiling.
+ */
+const UPLOAD_TIMEOUT_BASE_MS = 45_000;
+const UPLOAD_BYTES_PER_MS = 40;
+const UPLOAD_TIMEOUT_MAX_MS = 240_000;
+
+/** Mirrors p-data_entry's MAX_UPLOAD_BYTES / the API's multer cap. Used
+ *  only as the budgeting assumption when the platform did not report a
+ *  size (some Android content providers don't). */
+const ASSUMED_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+export const uploadTimeoutMsForBytes = (sizeBytes: number | null | undefined): number => {
+  const bytes =
+    typeof sizeBytes === 'number' && Number.isFinite(sizeBytes) && sizeBytes > 0
+      ? sizeBytes
+      : ASSUMED_MAX_UPLOAD_BYTES;
+  return Math.min(UPLOAD_TIMEOUT_MAX_MS, UPLOAD_TIMEOUT_BASE_MS + bytes / UPLOAD_BYTES_PER_MS);
+};
 
 /**
  * Callback the AuthProvider registers so apiRequest can fire a single
@@ -208,8 +295,14 @@ export const apiRequest = async <T = unknown>(
 ): Promise<T> => {
   const url = `${API_BASE_URL}${path}`;
   const method = (options.method ?? 'GET').toUpperCase();
+  // A FormData caller that does not declare a size gets the
+  // cap-derived budget rather than a flat minute — the only thing this
+  // app posts as multipart is a report scan of up to 10 MB, and
+  // guessing low there is the failure mode described above
+  // uploadTimeoutMsForBytes.
   const timeoutMs =
-    config?.timeoutMs ?? (config?.isFormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    config?.timeoutMs ??
+    (config?.isFormData ? uploadTimeoutMsForBytes(undefined) : DEFAULT_TIMEOUT_MS);
   const init: RequestInit = {
     ...options,
     headers: await buildHeaders(options.headers, config),
@@ -1239,6 +1332,10 @@ export const uploadPatientDocument = async (input: {
   title?: string;
   submissionId?: string;
   file: DocumentUploadFile;
+  /** Payload size, when the picker reported one. Only used to set the
+   *  deadline (see uploadTimeoutMsForBytes) — null/omitted budgets for
+   *  the 10 MB cap rather than assuming the file is small. */
+  sizeBytes?: number | null;
 }): Promise<PatientDocument> => {
   const formData = new FormData();
   formData.append('documentType', input.documentType);
@@ -1255,11 +1352,18 @@ export const uploadPatientDocument = async (input: {
     formData.append('file', nativeFile);
   }
 
+  // Prefer the size the File object already knows over whatever the
+  // caller passed: on web it is authoritative, and a caller that
+  // forgot to thread it through would otherwise silently get the
+  // cap-sized budget for a 200 KB file.
+  const sizeBytes = isWebFile(input.file) ? input.file.size : (input.sizeBytes ?? null);
+
   return apiRequest<PatientDocument>(
     '/profiles/me/documents/upload',
     { method: 'POST', body: formData },
     {
       isFormData: true,
+      timeoutMs: uploadTimeoutMsForBytes(sizeBytes),
     },
   );
 };
@@ -1271,6 +1375,9 @@ export interface DocumentUploadBatchItem {
   key: string;
   title?: string;
   file: DocumentUploadFile;
+  /** null when the platform declined to report a size — forwarded as
+   *  such so the deadline budgets for the cap instead of guessing. */
+  sizeBytes?: number | null;
 }
 
 export interface DocumentUploadBatchResult {
@@ -1322,6 +1429,7 @@ export const uploadPatientDocumentsSerially = async (input: {
         title: item.title,
         submissionId: input.submissionId,
         file: item.file,
+        sizeBytes: item.sizeBytes,
       });
       result = { key: item.key, document, error: null };
     } catch (error) {

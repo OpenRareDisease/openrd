@@ -234,6 +234,58 @@ export default StyleSheet.create({
     justifyContent: 'center',
     flexWrap: 'wrap',
   },
+
+  /* Consent checkbox ---------------------------------------------- */
+  /**
+   * The whole row is the target, not the 20pt square.
+   *
+   * A 20pt checkbox is a fifth of MIN_TOUCH_TARGET's area, and this
+   * app's users lose grip and fine motor control — a control that
+   * gates registration is the last place to ask for pointing accuracy.
+   * `minHeight` (not a fixed height) so the sentence may wrap to two
+   * lines on a narrow phone without the box clipping, and the row
+   * stretches to the form width so the text half is tappable too.
+   */
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    minHeight: MIN_TOUCH_TARGET,
+    paddingVertical: SPACE.sm,
+    gap: SPACE.md,
+  },
+  consentBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: COLOR.lineStrong,
+    backgroundColor: COLOR.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consentBoxChecked: {
+    backgroundColor: COLOR.accent,
+    borderColor: COLOR.accent,
+  },
+  // Unticked + submitted. The box carries the error as well as the
+  // message underneath, because「哪里错了」has to be answerable without
+  // reading — the same reason field errors here are inline rather than
+  // in a modal.
+  consentBoxError: {
+    borderColor: COLOR.alert,
+  },
+  consentLabel: {
+    ...TYPE.body,
+    flex: 1,
+    color: COLOR.ink,
+  },
+  consentErrorText: {
+    ...TYPE.caption,
+    alignSelf: 'stretch',
+    color: COLOR.alert,
+    marginBottom: SPACE.sm,
+  },
   agreementText: {
     ...TYPE.caption,
     textAlign: 'center',
