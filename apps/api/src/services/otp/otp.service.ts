@@ -8,6 +8,7 @@ import { parseOtpAllowlist, type AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 import { normalizePhone } from '../../utils/phone.js';
+import { maskAuditPayload, maskAuditPhone } from '../audit/identity-masking.js';
 
 interface OtpServiceDeps {
   env: AppEnv;
@@ -34,10 +35,11 @@ interface VerifyOtpInput {
   userAgent?: string;
 }
 
-const maskPhone = (phone: string) => {
-  if (phone.length <= 4) return '****';
-  return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
-};
+// Delegates to the shared mask so this service and AuthService cannot
+// drift on what a masked phone number looks like — the account-deletion
+// tombstone reasons about that shape. The `?? '****'` keeps the local
+// signature non-nullable for the logger call sites below.
+const maskPhone = (phone: string) => maskAuditPhone(phone) ?? '****';
 
 export class OtpService {
   private readonly env: AppEnv;
@@ -120,11 +122,14 @@ export class OtpService {
       .digest('hex');
   }
 
+  /** Same write boundary as AuthService.logAudit: the raw client IP
+   *  was reaching audit_logs from here even though the phone number
+   *  next to it was already masked. */
   private async logAudit(client: PoolClient, eventType: string, payload: Record<string, unknown>) {
     await client.query(
       `INSERT INTO audit_logs (event_type, event_payload)
        VALUES ($1, $2)`,
-      [eventType, payload],
+      [eventType, maskAuditPayload(payload)],
     );
   }
 
