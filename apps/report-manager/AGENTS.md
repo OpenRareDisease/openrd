@@ -6,6 +6,7 @@
 - `app/services/fshd_report_service.py` holds FSHD-specific classification, extraction, and normalization logic.
 - `app/services/ocr_service.py` handles PDF/image OCR extraction.
 - `tests/test_fshd_report_service.py` is the committed regression suite for the parser layer.
+- `tests/test_ocr_service.py` covers the OCR layer: engine resolution and the PDF page bound.
 
 ## Build, Test, and Development Commands
 
@@ -13,13 +14,22 @@
   ```bash
   pip install -r requirements.txt
   ```
+- Install test-only dependencies (no paddleocr — see the file header):
+  ```bash
+  pip install -r requirements-dev.txt
+  ```
 - Run the embedded parser locally:
   ```bash
   python embedded_parser.py --file-path /absolute/path/to/report.pdf --mime-type application/pdf
   ```
-- Run the checked-in regression test:
+- Run the checked-in regression tests:
   ```bash
-  python -m unittest tests.test_fshd_report_service
+  python -m pytest tests
+  ```
+  `conftest.py` puts this directory on `sys.path`, so the whole Python suite
+  also runs from the repository root — which is what CI should use:
+  ```bash
+  python -m pytest apps/report-manager/tests scripts/kb_parsers
   ```
 
 ## Coding Style & Naming Conventions
@@ -34,7 +44,9 @@
 
 ## Testing Guidelines
 
-- `python -m unittest tests.test_fshd_report_service` is the current committed regression path.
+- `python -m pytest tests` is the current committed regression path.
+- OCR tests that need the `tesseract` binary or poppler skip cleanly when those
+  are missing, so the suite stays runnable on a bare machine.
 - Name tests with the `test_*.py` convention and add API tests under a `tests/` folder if you expand coverage.
 - Validate both success and failure cases for API endpoints.
 

@@ -33,6 +33,17 @@
 -- hand outside the migration runner and let the IF NOT EXISTS here
 -- become the no-op that records it.
 --
+-- To be precise about which lock, since 015/017 in this same batch take
+-- a different one: a plain CREATE INDEX takes SHARE on
+-- patient_measurements — it blocks INSERT/UPDATE/DELETE for the
+-- duration of the build but not SELECT, so reads of the manage screen
+-- keep working while writes queue. 015 and 017 take ACCESS EXCLUSIVE,
+-- which blocks both. At 233 rows neither is observable; the difference
+-- only starts to matter at the scale that would motivate the by-hand
+-- CONCURRENTLY build above, and that build has to land BEFORE the
+-- runner reaches this file, or the runner does it non-concurrently
+-- first and the manual step becomes moot.
+--
 -- Deliberately NOT a covering index on recorded_at as well. Narrowing
 -- the cohort to a recency window would change what the number MEANS —
 -- a patient comparing against "everyone ever" and against "everyone

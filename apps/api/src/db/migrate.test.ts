@@ -5,7 +5,34 @@ import { describe, expect, it } from 'vitest';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-import { _hasSelfManagedTransaction, _isForwardMigrationFile } from './migrate.js';
+import {
+  _downFilenameFor,
+  _hasSelfManagedTransaction,
+  _isForwardMigrationFile,
+  _resolveDownTarget,
+  _rollBackMigration,
+  type MigrationLedgerClient,
+} from './migrate.js';
+
+/**
+ * Records every statement the runner issues so the rollback's
+ * transaction shape can be asserted without a live Postgres. Only the
+ * ledger SELECT needs a canned answer; everything else is fire and
+ * forget from the runner's point of view.
+ */
+const recordingClient = (ledgerRows: Array<{ id: string; checksum: string | null }>) => {
+  const statements: Array<{ sql: string; values?: unknown[] }> = [];
+  const client: MigrationLedgerClient = {
+    query: async (sql, values) => {
+      statements.push({ sql, values });
+      if (sql.includes('FROM schema_migrations')) {
+        return { rows: ledgerRows, rowCount: ledgerRows.length };
+      }
+      return { rows: [], rowCount: sql.startsWith('DELETE') ? 1 : 0 };
+    },
+  };
+  return { client, statements };
+};
 
 /*
  * Regression: before this filter existed, the migration runner
@@ -126,5 +153,215 @@ describe('every migration on disk leaves the transaction to the runner', () => {
     const raw = fs.readFileSync(path.join(migrationsDir, file));
     const sql = raw[0] === 0xff && raw[1] === 0xfe ? raw.toString('utf16le') : raw.toString('utf8');
     expect(_hasSelfManagedTransaction(sql)).toBe(false);
+  });
+});
+
+/*
+ * The rollback path.
+ *
+ * Before `--down` existed, the documented hot-rollback procedure was
+ * `psql $PROD_DB < db/migrations/NNN_..._down.sql` — which reverses the
+ * schema and leaves the `schema_migrations` row in place. The ledger
+ * then claims the migration is applied while the schema no longer
+ * carries it, so the roll-forward that follows skips the file, prints
+ * nothing and exits 0. The constraint stays gone and the deploy reports
+ * success.
+ *
+ * These pin the two halves that make that impossible: the target
+ * resolution (never guess which migration to reverse) and the file
+ * naming that connects a forward migration to its rollback script.
+ */
+describe('migrate — rollback target resolution', () => {
+  const forwardFiles = [
+    '003_complete_chat_system.sql',
+    '011_status_check_constraints.sql',
+    '015_function_test_unit_constraint.sql',
+    '018_measurement_cohort_index.sql',
+  ];
+
+  it('derives the _down filename from the forward one', () => {
+    expect(_downFilenameFor('015_function_test_unit_constraint.sql')).toBe(
+      '015_function_test_unit_constraint_down.sql',
+    );
+  });
+
+  it.each([
+    ['a bare number', '015'],
+    ['the stem', '015_function_test_unit_constraint'],
+    ['the full forward filename', '015_function_test_unit_constraint.sql'],
+    // An operator reading §4.1 of the runbook has the _down name in
+    // front of them; typing that must not be a silent miss.
+    ['the _down filename', '015_function_test_unit_constraint_down.sql'],
+  ])('resolves %s to the forward migration', (_label, arg) => {
+    expect(_resolveDownTarget(arg, forwardFiles)).toBe('015_function_test_unit_constraint.sql');
+  });
+
+  it('tolerates surrounding whitespace from a copy-paste', () => {
+    expect(_resolveDownTarget('  018  ', forwardFiles)).toBe('018_measurement_cohort_index.sql');
+  });
+
+  it('refuses an id that matches nothing, and names what it knows', () => {
+    expect(() => _resolveDownTarget('019', forwardFiles)).toThrow(/No forward migration matches/);
+    expect(() => _resolveDownTarget('019', forwardFiles)).toThrow(
+      /015_function_test_unit_constraint\.sql/,
+    );
+  });
+
+  it('refuses an ambiguous id rather than guessing', () => {
+    // Two files could legitimately share a numeric prefix during a
+    // rebase or a badly-resolved merge. Rolling back the wrong one on a
+    // production PHI database is not a coin worth flipping.
+    const ambiguous = ['015_first.sql', '015_second.sql'];
+    expect(() => _resolveDownTarget('015', ambiguous)).toThrow(/ambiguous/);
+    expect(() => _resolveDownTarget('015', ambiguous)).toThrow(/015_first\.sql, 015_second\.sql/);
+  });
+
+  it('refuses an empty id', () => {
+    expect(() => _resolveDownTarget('   ', forwardFiles)).toThrow(/requires a migration id/);
+  });
+});
+
+/*
+ * Rollback scripts run through the same runner-owned transaction as
+ * forward migrations, because the DELETE against `schema_migrations`
+ * has to commit with the schema change or not at all. So they are held
+ * to the same no-self-managed-transaction rule, and 015's down script
+ * in particular contains a plpgsql DO block whose `BEGIN` must not be
+ * mistaken for transaction control.
+ */
+describe('every _down script on disk has a forward sibling and no transaction control', () => {
+  const migrationsDir = path.resolve(__dirname, '../../../../db/migrations');
+  const downFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('_down.sql'));
+
+  it('finds rollback scripts', () => {
+    expect(downFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(downFiles)('%s has the forward migration it claims to reverse', (file) => {
+    const forward = file.replace(/_down\.sql$/, '.sql');
+    expect(_downFilenameFor(forward)).toBe(file);
+    expect(fs.existsSync(path.join(migrationsDir, forward))).toBe(true);
+  });
+
+  it("015's down script restores unit from unit_legacy rather than only dropping the CHECK", () => {
+    // The regression this pins: for one release 015 NULLed every
+    // unrecognised patient-entered unit and its _down.sql said it
+    // "reverses migration 015" while doing nothing but dropping the
+    // constraint. A rollback that reports success while the data stays
+    // destroyed is worse than one that fails.
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '015_function_test_unit_constraint_down.sql'),
+      'utf8',
+    );
+    expect(sql).toMatch(/SET unit = unit_legacy/);
+    // …and says so plainly when the column is not there to restore from.
+    expect(sql).toMatch(/RAISE WARNING/);
+  });
+
+  it("015's forward migration preserves the originals before it destroys them", () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '015_function_test_unit_constraint.sql'),
+      'utf8',
+    );
+    const preserveAt = sql.indexOf('SET unit_legacy = unit');
+    const destroyAt = sql.indexOf('SET unit = NULL');
+    expect(preserveAt).toBeGreaterThan(-1);
+    expect(destroyAt).toBeGreaterThan(-1);
+    // Order is the whole point: preserving after the NULLing UPDATE
+    // would copy the NULLs.
+    expect(preserveAt).toBeLessThan(destroyAt);
+  });
+});
+
+/*
+ * The defect this whole mode exists for (audit finding 66): running a
+ * `_down.sql` by hand reverses the schema but leaves the
+ * `schema_migrations` row behind. The next roll-forward reads that row,
+ * skips the file, prints nothing and exits 0 — so the constraint or
+ * trigger the rollback removed never comes back while the deploy
+ * reports success. The runner therefore has to do both halves, and has
+ * to do them in one transaction.
+ */
+describe('migrate — _rollBackMigration', () => {
+  const applied = [
+    { id: '018_measurement_cohort_index.sql', checksum: null },
+    { id: '015_function_test_unit_constraint.sql', checksum: null },
+  ];
+
+  it('runs the _down file and deletes the ledger row inside one transaction', async () => {
+    const { client, statements } = recordingClient(applied);
+    await _rollBackMigration(client, '018_measurement_cohort_index.sql', false);
+
+    const sqls = statements.map((s) => s.sql);
+    const begin = sqls.indexOf('BEGIN');
+    const del = sqls.findIndex((s) => s.startsWith('DELETE FROM schema_migrations'));
+    const commit = sqls.indexOf('COMMIT');
+
+    expect(begin).toBeGreaterThan(-1);
+    // The rollback SQL itself is the statement between BEGIN and the
+    // DELETE — assert on its content rather than its index so the test
+    // does not break when the file gains a comment.
+    expect(sqls[begin + 1]).toMatch(/DROP INDEX IF EXISTS idx_patient_measurements_cohort/);
+    expect(del).toBeGreaterThan(begin);
+    expect(commit).toBeGreaterThan(del);
+    expect(sqls).not.toContain('ROLLBACK');
+
+    // The ledger row removed must be the FORWARD filename, since that
+    // is what `applied.has(file)` checks on the next roll-forward.
+    expect(statements[del].values).toEqual(['018_measurement_cohort_index.sql']);
+  });
+
+  it('refuses when the ledger has no row for the migration', async () => {
+    const { client, statements } = recordingClient([]);
+    await expect(
+      _rollBackMigration(client, '018_measurement_cohort_index.sql', false),
+    ).rejects.toThrow(/not recorded in schema_migrations/);
+    // Nothing may have been executed — a down script run against a
+    // database that never had the migration is how a half-migrated
+    // schema gets further mangled.
+    expect(statements.map((s) => s.sql)).not.toContain('BEGIN');
+  });
+
+  it('--force removes a ledger row for a rollback already run by hand', async () => {
+    const { client, statements } = recordingClient([]);
+    await _rollBackMigration(client, '018_measurement_cohort_index.sql', true);
+    expect(statements.map((s) => s.sql)).toContain('COMMIT');
+  });
+
+  it('rolls the transaction back when the _down script fails', async () => {
+    const statements: string[] = [];
+    const client: MigrationLedgerClient = {
+      query: async (sql) => {
+        statements.push(sql);
+        if (sql.includes('FROM schema_migrations') && sql.startsWith('SELECT')) {
+          return { rows: applied, rowCount: applied.length };
+        }
+        if (sql.includes('DROP INDEX')) {
+          throw new Error('simulated failure inside the rollback script');
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    };
+
+    await expect(
+      _rollBackMigration(client, '018_measurement_cohort_index.sql', false),
+    ).rejects.toThrow(/simulated failure/);
+    // The ledger row must survive a failed rollback: claiming a
+    // migration is un-applied while its schema change is still live is
+    // the mirror image of the bug this mode fixes.
+    expect(statements).toContain('ROLLBACK');
+    expect(statements).not.toContain('COMMIT');
+    expect(statements.some((s) => s.startsWith('DELETE FROM schema_migrations'))).toBe(false);
+  });
+
+  it('refuses a migration that has no rollback script', async () => {
+    const { client } = recordingClient([
+      { id: '013_ai_audit_history_columns.sql', checksum: null },
+    ]);
+    // 003 deliberately has no _down: dropping the chat tables would
+    // destroy data, not reverse a schema change.
+    await expect(_rollBackMigration(client, '003_complete_chat_system.sql', false)).rejects.toThrow(
+      /has no rollback script/,
+    );
   });
 });
