@@ -399,11 +399,15 @@ export interface PatientDocument {
   uploadedAt: string;
   checksum: string | null;
   submissionId?: string | null;
+  /** What a LIST document carries. The API projects the stored payload
+   *  down to these three keys — the model's raw `aiExtraction` read is
+   *  two thirds of the blob and no list screen touches it, so it is not
+   *  sent with the profile. Fetch one document to see the whole thing
+   *  (getPatientDocumentOcr). */
   ocrPayload: {
     extractedText?: string;
     fields?: Record<string, string>;
     provider?: string;
-    aiExtraction?: unknown;
   } | null;
 }
 
@@ -1343,7 +1347,15 @@ export const getPatientDocumentOcr = (documentId: string) =>
      *  ocrPayload null while parsing, so poll on THIS. Optional for
      *  older API builds. */
     status?: string | null;
-    ocrPayload: PatientDocument['ocrPayload'] | null;
+    /** The FULL stored payload, unlike the projected one on list
+     *  documents — this is the endpoint the raw-payload view reads. */
+    ocrPayload:
+      | (NonNullable<PatientDocument['ocrPayload']> & {
+          aiExtraction?: unknown;
+          ai_extraction?: unknown;
+          extracted_text?: string;
+        })
+      | null;
   }>(`/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`);
 
 /** Recover a failed/lost parse (202 → poll again). 409 when the

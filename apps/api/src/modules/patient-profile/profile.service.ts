@@ -569,6 +569,43 @@ const getDocumentDisplayTitle = (document: PatientDocumentDTO) => {
   return documentTypeLabels[document.documentType] ?? '新报告';
 };
 
+/**
+ * The slice of `ocr_payload` the profile actually needs.
+ *
+ * `SELECT … ocr_payload` handed back the whole blob for every document
+ * a patient has ever uploaded, and the largest key in it —
+ * `aiExtraction`, the model's raw structured read of the report — is
+ * read by nothing on this path. Not the passport builder, not the
+ * genetic autofill, not the patient summariser, not the app. It was
+ * loaded from disk, parsed into JS, and serialised out to the phone on
+ * every profile fetch, purely because `*`-shaped selects do not
+ * distinguish.
+ *
+ * Measured over the 131 parsed documents in the dev corpus: 938 KB of
+ * payload JSON becomes 215 KB, a 77% cut. The heaviest patient has 38
+ * documents — ~270 KB of OCR payload on a screen that reads three keys
+ * of it.
+ *
+ * Written as an allowlist rather than `ocr_payload - 'aiExtraction'`.
+ * A denylist quietly re-widens the moment the OCR provider adds a key,
+ * which is exactly how this got large in the first place; an allowlist
+ * makes the next addition a decision someone has to make on purpose.
+ *
+ * The two spellings of the text key collapse here as well — the parser
+ * has emitted both `extractedText` and `extracted_text` over its life,
+ * and readers have had to check for both ever since.
+ *
+ * Documents fetched one at a time (`GET …/documents/:id/ocr`) still
+ * return the full payload; the report-detail screen shows `aiExtraction`
+ * in its raw-payload view, and that is the right place to pay for it.
+ */
+const PROFILE_OCR_PAYLOAD_PROJECTION = `
+  CASE WHEN ocr_payload IS NULL THEN NULL ELSE jsonb_build_object(
+    'fields', ocr_payload -> 'fields',
+    'extractedText', coalesce(ocr_payload -> 'extractedText', ocr_payload -> 'extracted_text'),
+    'provider', ocr_payload -> 'provider'
+  ) END AS ocr_payload`;
+
 export class PatientProfileService {
   private readonly pool: Pool;
   private readonly logger: AppLogger;
@@ -659,7 +696,8 @@ export class PatientProfileService {
         ),
         client.query(
           `SELECT id, profile_id, submission_id, document_type, title, file_name, mime_type,
-                  file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload
+                  file_size_bytes, storage_uri, status, uploaded_at, checksum,
+                  ${PROFILE_OCR_PAYLOAD_PROJECTION}
            FROM patient_documents
            WHERE profile_id = $1
            ORDER BY uploaded_at DESC`,
@@ -822,18 +860,61 @@ export class PatientProfileService {
     return buildClinicalPassportSummary(profile);
   }
 
+  /**
+   * Four scalars, and it used to read eight tables to get them.
+   *
+   * `getProfileByUserId` loads the patient's entire history — every
+   * measurement, function test, symptom score, daily impact, follow-up
+   * event, activity log, medication and document — and this method
+   * discarded all of it but the name and the baseline. The baseline
+   * screen polls this on every open.
+   *
+   * It does genuinely need the documents: `applyGeneticReportAutofill`
+   * fills a missing diagnosis date or D4Z4 result from the most recent
+   * genetic report, so a baseline built without them would show blanks
+   * the full profile fills in. The other seven tables it never touched.
+   */
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
-    const profile = await this.getProfileByUserId(userId);
-    if (!profile) {
+    const profileResult = await this.pool.query<PatientProfileRecord>(
+      `SELECT id, full_name, preferred_name, diagnosis_date, genetic_mutation,
+              baseline_payload, updated_at
+       FROM patient_profiles
+       WHERE user_id = $1`,
+      [userId],
+    );
+
+    if (!profileResult.rowCount) {
       return null;
     }
 
+    const profile = profileResult.rows[0];
+    const documentsResult = await this.pool.query(
+      `SELECT id, document_type, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
+       FROM patient_documents
+       WHERE profile_id = $1
+       ORDER BY uploaded_at DESC`,
+      [profile.id],
+    );
+
+    const autoFilled = applyGeneticReportAutofill(
+      {
+        diagnosisDate: toDateString(profile.diagnosis_date),
+        geneticMutation: profile.genetic_mutation,
+        baseline: asRecord(profile.baseline_payload),
+      },
+      documentsResult.rows.map((row) => ({
+        documentType: row.document_type,
+        uploadedAt: toTimestampString(row.uploaded_at),
+        ocrPayload: row.ocr_payload ?? null,
+      })),
+    );
+
     return {
       profileId: profile.id,
-      fullName: profile.fullName,
-      preferredName: profile.preferredName,
-      baseline: profile.baseline,
-      updatedAt: profile.updatedAt,
+      fullName: profile.full_name,
+      preferredName: profile.preferred_name,
+      baseline: autoFilled.baseline,
+      updatedAt: toTimestampString(profile.updated_at),
     };
   }
 
@@ -2758,12 +2839,20 @@ export class PatientProfileService {
     const profileId = await this.ensureProfileForUser(userId);
 
     const [trendResult, distributionResult, latestResult] = await Promise.all([
+      // Newest-first + LIMIT, reversed in JS below. The query used to
+      // fetch a patient's entire history for this muscle group and
+      // `.slice(-limit)` it away in memory — same answer, but the cost
+      // grew with how long someone has been using the app, which is
+      // backwards for a chart that only ever draws the last `limit`
+      // points. DESC also matches idx_patient_measurements_latest's
+      // own direction, so the ordering is free.
       this.pool.query(
         `SELECT recorded_at, strength_score
          FROM patient_measurements
          WHERE profile_id = $1 AND muscle_group = $2
-         ORDER BY recorded_at ASC`,
-        [profileId, muscleGroup],
+         ORDER BY recorded_at DESC
+         LIMIT $3`,
+        [profileId, muscleGroup, limit],
       ),
       this.pool.query(
         `SELECT
@@ -2787,12 +2876,13 @@ export class PatientProfileService {
       ),
     ]);
 
+    // Back to oldest-first: the chart plots left to right in time.
     const trend = trendResult.rows
       .map((row) => ({
         recordedAt: toTimestampString(row.recorded_at),
         strengthScore: Number(row.strength_score),
       }))
-      .slice(-limit);
+      .reverse();
 
     const distributionRow = distributionResult.rows[0];
     const distribution = distributionRow?.sample_count

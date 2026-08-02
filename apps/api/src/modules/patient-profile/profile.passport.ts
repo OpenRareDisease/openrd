@@ -4,12 +4,14 @@ import type {
   PatientProfileDTO,
 } from './profile.service.js';
 
+/** Only what this file reads. `aiExtraction` / `ai_extraction` used to
+ *  be declared here and referenced nowhere — and the profile query no
+ *  longer loads them (see PROFILE_OCR_PAYLOAD_PROJECTION), so the shape
+ *  now says what actually arrives. */
 type OcrPayloadLike = {
   extractedText?: string;
   extracted_text?: string;
   fields?: Record<string, unknown>;
-  aiExtraction?: unknown;
-  ai_extraction?: unknown;
 } | null;
 
 type BodyRegionId =

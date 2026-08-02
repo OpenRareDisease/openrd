@@ -1,0 +1,43 @@
+-- Index for the cohort distribution behind「和其他患者比」.
+--
+-- getMuscleInsight runs three queries per muscle group, and the manage
+-- screen opens four at once. Two of the three are per-patient and
+-- already served by idx_patient_measurements_latest. The third is not
+-- scoped to a patient at all:
+--
+--   SELECT MIN(...), MAX(...), percentile_cont(...), COUNT(*)
+--   FROM patient_measurements
+--   WHERE muscle_group = $1
+--
+-- Every existing index on this table leads with profile_id, so that
+-- filter had nothing to use and the planner sequentially scanned the
+-- whole table — every measurement of every patient — four times per
+-- screen open. It is the one query here whose cost grows with the size
+-- of the user base rather than with one patient's history, which is
+-- exactly the shape that looks fine in dev (233 rows) and does not
+-- stay fine.
+--
+-- (muscle_group, strength_score) rather than muscle_group alone: with
+-- the aggregated column in the index, the query never has to touch the
+-- heap. Verified on dev — forcing the plan yields
+--   Index Only Scan using idx_patient_measurements_cohort
+-- reading 63 rows out of the table.
+--
+-- Note for anyone checking this by hand: at dev scale (233 rows, 9
+-- pages) the planner still picks a sequential scan, and it is right
+-- to. The index is here for the table this becomes, not the one it is.
+--
+-- Not CONCURRENTLY: migrate.ts wraps each file in a transaction, and
+-- CREATE INDEX CONCURRENTLY cannot run inside one. If this table ever
+-- grows large enough that the write lock matters, build the index by
+-- hand outside the migration runner and let the IF NOT EXISTS here
+-- become the no-op that records it.
+--
+-- Deliberately NOT a covering index on recorded_at as well. Narrowing
+-- the cohort to a recency window would change what the number MEANS —
+-- a patient comparing against "everyone ever" and against "everyone
+-- this year" are being told two different things — and that is a
+-- clinical decision, not an indexing one.
+
+CREATE INDEX IF NOT EXISTS idx_patient_measurements_cohort
+  ON patient_measurements (muscle_group, strength_score);
