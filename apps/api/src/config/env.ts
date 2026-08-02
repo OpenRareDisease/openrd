@@ -54,6 +54,26 @@ const envSchema = z
     // fail-fasts — so a remote/managed DB can't silently fall back to a
     // plaintext PHI connection just because someone forgot the SSL flag.
     DATABASE_ALLOW_INSECURE: booleanish().default(false),
+    /** Pool ceiling. pg-pool defaults to 10, which is fine for one
+     *  instance and wrong for several behind a connection-limited
+     *  Postgres — make it a deploy-time decision rather than a default
+     *  nobody knows about. */
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    /** How long a request waits for a free connection before failing.
+     *  0 (pg-pool's default) means "wait forever", which turns a
+     *  saturated database into requests that never answer. */
+    DATABASE_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
+    /** How long to keep serving after SIGTERM while readiness already
+     *  reports NOT ready. Must exceed the load balancer's health-check
+     *  interval, or the LB never observes the failing poll and keeps
+     *  routing right up to the closed listener. */
+    SHUTDOWN_READINESS_DRAIN_MS: z.coerce.number().int().min(0).default(5_000),
+    /** Hard deadline for the whole shutdown. An open SSE stream never
+     *  closes on its own, so without this one subscriber blocks the
+     *  deploy forever. Keep it below the orchestrator's own SIGKILL
+     *  timeout (Kubernetes: terminationGracePeriodSeconds) so the exit
+     *  is ours and lands in the logs. */
+    SHUTDOWN_GRACE_MS: z.coerce.number().int().min(1_000).default(20_000),
     JWT_SECRET: z
       .string()
       .min(16, 'JWT_SECRET must be at least 16 characters long')

@@ -24,8 +24,18 @@ export const initPool = (env: AppEnv, logger: AppLogger) => {
   if (!pool) {
     pool = new Pool({
       connectionString: env.DATABASE_URL,
-      max: env.isTest ? 1 : undefined,
+      max: env.isTest ? 1 : env.DATABASE_POOL_MAX,
       ssl: resolvePgSsl(env),
+      // Without this a checkout waits forever. pg-pool pushes the
+      // waiter onto a queue with no timer when connectionTimeoutMillis
+      // is 0 (its default), so a database that is up but saturated
+      // turns into requests that never answer and never fail — the
+      // client sees a spinner, the server sees nothing wrong, and
+      // nothing recovers on its own.
+      connectionTimeoutMillis: env.DATABASE_CONNECT_TIMEOUT_MS,
+      // Return idle connections rather than holding the pool at its
+      // high-water mark forever.
+      idleTimeoutMillis: 30_000,
     });
 
     pool.on('error', (error) => {

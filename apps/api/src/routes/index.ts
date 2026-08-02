@@ -8,6 +8,7 @@ import { createAiChatRoutes } from './ai-chat.routes.js';
 import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
+import { isShuttingDown } from '../lifecycle.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { createPatientProfileRouter } from '../modules/patient-profile/profile.routes.js';
 import { asyncHandler } from '../utils/async-handler.js';
@@ -115,7 +116,9 @@ const checkEmbeddedOcr = async (context: RouteContext) => {
   }
 };
 
-const getHealthSummary = async (context: RouteContext) => {
+/** Exported for tests: the readiness contract a load balancer reads
+ *  during a deploy is worth asserting on directly. */
+export const getHealthSummary = async (context: RouteContext) => {
   const [database, kbService, ocr] = await Promise.all([
     checkDatabase(context),
     checkKbService(context),
@@ -134,12 +137,20 @@ const getHealthSummary = async (context: RouteContext) => {
   };
 
   const hasCriticalFailure = database.status !== 'ok' || ocr.status !== 'ok';
-  const isReady = !hasCriticalFailure && kbService.status === 'ok';
+  // A process on its way out reports NOT ready even while every
+  // component is still healthy — that is the whole signal a load
+  // balancer has for taking an instance out of rotation before its
+  // listener closes. `status` stays truthful about the components
+  // themselves so the human-facing /healthz does not cry error over an
+  // ordinary deploy.
+  const draining = isShuttingDown();
+  const isReady = !hasCriticalFailure && kbService.status === 'ok' && !draining;
   const status = hasCriticalFailure ? 'error' : isReady ? 'ok' : 'degraded';
 
   return {
     status,
     ready: isReady,
+    ...(draining ? { draining: true } : {}),
     components,
   };
 };
