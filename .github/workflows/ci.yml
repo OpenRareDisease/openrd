@@ -1,12 +1,17 @@
 name: CI
 
-# Until this file existed the repository had no automated gate of any kind.
-# 638 vitest assertions in apps/api, 230 jest assertions in apps/mobile and 181
+# Started as @FenjuFu's #106, which is the PR that made the point: the
+# repository had 448 tests and no automated gate of any kind, so a regression
+# only surfaced when someone happened to run the suite locally. That file's
+# structure -- the concurrency group, the job split, the deliberate exclusion of
+# `npm run format` from the gate -- is kept here; this version extends it.
+#
+# 730 vitest assertions in apps/api, 298 jest assertions in apps/mobile and 181
 # pytest assertions across apps/report-manager + scripts/kb_parsers ran only
 # when a human happened to remember, on a service that stores real FSHD patient
 # records and can be merged on a single human approval.
 #
-# The Python suite is the one that most needed a gate and is the one PR #106
+# The Python suite is the one that most needed a gate and is the one #106
 # left out. apps/report-manager turns a scanned report into the structured
 # fields the API's prompt allowlist then trusts, so its failure mode is not a
 # crash — it is a silently wrong medical record. Commit 17c2e7a is the proof:
