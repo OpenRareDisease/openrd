@@ -50,18 +50,38 @@ const call = (name: string, id: string, args = '{}'): LlmToolCall => ({
 
 describe('Executor', () => {
   it('runs tool calls in parallel', async () => {
-    const registry = new ToolRegistry()
-      .register(passingTool('a', 30))
-      .register(passingTool('b', 30));
-    const executor = new Executor(registry);
+    // Asserts on the observed INTERLEAVING, not on wall-clock time.
+    //
+    // This used to time two 30ms tools and require the total under
+    // 100ms — which proves parallelism only as long as the machine is
+    // idle. Under load (a full CI runner, or this suite's own 50 files
+    // across worker threads) two 30ms sleeps can legitimately take
+    // longer than 100ms while still overlapping perfectly, so the test
+    // failed for a reason that had nothing to do with the executor. A
+    // timing test that reports a scheduling hiccup as a correctness
+    // regression is worse than no test: it trains everyone to re-run
+    // the suite instead of reading it.
+    //
+    // "b entered before a left" is the actual claim, it is exact, and
+    // it is false for any serial implementation regardless of speed.
+    const events: string[] = [];
+    const traced = (name: string): ITool => ({
+      ...passingTool(name),
+      execute: async (): Promise<ToolExecutionResult> => {
+        events.push(`${name}:enter`);
+        await new Promise((r) => setTimeout(r, 10));
+        events.push(`${name}:exit`);
+        return { retrieval: stub(name), display: `${name}: 1` };
+      },
+    });
 
-    const start = Date.now();
-    const results = await executor.executeAll([call('a', '1'), call('b', '2')], ctx);
-    const elapsed = Date.now() - start;
+    const registry = new ToolRegistry().register(traced('a')).register(traced('b'));
+    const results = await new Executor(registry).executeAll([call('a', '1'), call('b', '2')], ctx);
 
     expect(results.map((r) => r.toolName)).toEqual(['a', 'b']);
-    expect(elapsed).toBeLessThan(100); // serial would be ~60ms; parallel ~30ms
     expect(results.every((r) => !r.error)).toBe(true);
+    // Serial execution can only ever produce a:enter,a:exit,b:enter,b:exit.
+    expect(events.indexOf('b:enter')).toBeLessThan(events.indexOf('a:exit'));
   });
 
   it('captures ToolValidationError into the result instead of throwing', async () => {

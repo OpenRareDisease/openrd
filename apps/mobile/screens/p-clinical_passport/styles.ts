@@ -1,25 +1,52 @@
-import { Platform, StyleSheet } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
-const cardShadow =
-  Platform.select({
-    ios: {
-      shadowColor: CLINICAL_COLORS.accentStrong,
-      shadowOffset: { width: 0, height: 10 },
-      shadowOpacity: 0.1,
-      shadowRadius: 26,
-    },
-    android: {
-      elevation: 8,
-    },
-    default: {},
-  }) ?? {};
+/**
+ * 临床护照 — re-pitched on lib/design.ts.
+ *
+ * This is the screen a patient holds up across a desk, so it is the one
+ * that most has to read as a record rather than as an app. The previous
+ * version was the opposite: a gradient page carrying four tinted
+ * `sectionShell` panels, each of which held another shadowed card,
+ * which in turn held a grid of tinted cells and a tinted note box —
+ * three levels of box before any clinical value appeared. Every section
+ * was stamped with an 01–04 badge although the sections have no order,
+ * radii ran 18–26, and the numbers themselves were set at 14–20pt in
+ * the same weight as their labels.
+ *
+ * Now: the page is paper, the hero (identity + completion + the
+ * headline metrics) is the single filled block, and every section below
+ * it is set directly on the page and opened by a full-width hairline.
+ * Grids became hairline-ruled tables, note boxes became a 2pt left
+ * rule, and values are set in tabular figures a full step above their
+ * labels.
+ *
+ * NOTE: a few structural offenders live in the JSX, not here — the
+ * `CLINICAL PASSPORT` eyebrow and the 01–04 section badges. Since this
+ * pass may only touch the stylesheet, those two are switched off with
+ * `display: 'none'` (Yoga drops them from layout entirely, so the
+ * surrounding `gap` does not leave a hole). Their keys are kept so the
+ * screen keeps compiling.
+ */
+
+/** Opens a top-level block. This system separates with a rule and
+ *  whitespace before it reaches for another container. */
+const sectionRule = {
+  marginTop: SPACE.section,
+  paddingTop: SPACE.lg,
+  borderTopWidth: HAIRLINE,
+  borderTopColor: COLOR.lineStrong,
+} as const;
 
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
+  /** Kept so the screen can swap <LinearGradient> for a plain View
+   *  without changing its JSX shape. A page gradient drags down the
+   *  contrast of everything sitting on it. */
   backgroundGradient: {
     flex: 1,
   },
@@ -27,615 +54,396 @@ export default StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 24,
-    paddingBottom: 40,
+    paddingHorizontal: SPACE.gutter,
+    paddingBottom: SPACE.xxl + SPACE.lg,
   },
+
+  /* Header -------------------------------------------------------- */
+  /** ScreenHeader lays out the row itself; this only cancels the
+   *  component's own gutter, which `scrollContent` already applies to
+   *  everything on this screen, and keeps the vertical rhythm the
+   *  header had before. */
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 16,
+    paddingHorizontal: 0,
+    paddingVertical: SPACE.md,
   },
-  backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...cardShadow,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-  },
+  /** The PDF action. A hairline outline is enough to say "control" —
+   *  the filled, shadowed circle it replaces competed with the title. */
   headerAction: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    ...cardShadow,
   },
+
+  /* Error --------------------------------------------------------- */
   errorCard: {
-    marginTop: 4,
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_TINTS.dangerSurface,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.dangerBorder,
+    marginBottom: SPACE.lg,
+    padding: SPACE.lg,
+    borderRadius: RADIUS.surface,
+    backgroundColor: COLOR.alertWash,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.alert,
   },
   errorTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 6,
+    ...TYPE.heading,
+    marginBottom: SPACE.xs,
   },
   errorText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
+
+  /* Hero — the one filled surface on this screen ------------------ */
   heroCard: {
-    borderRadius: 26,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
+    // Retained: the JSX still renders this block as a LinearGradient,
+    // which needs clipping to the radius.
     overflow: 'hidden',
-    ...cardShadow,
   },
   heroTopRow: {
-    gap: 16,
+    gap: SPACE.md,
   },
   heroCopyBlock: {
-    gap: 6,
+    gap: SPACE.xs,
   },
+  /** `CLINICAL PASSPORT` over a screen titled 临床护照 said nothing the
+   *  title did not. Switched off rather than deleted because the key is
+   *  still referenced by the JSX. */
   heroEyebrow: {
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1.1,
-    textTransform: 'uppercase',
-    color: CLINICAL_COLORS.accentStrong,
+    display: 'none',
   },
+  /** The patient's name is what this document identifies. */
   heroTitle: {
-    fontSize: 26,
-    lineHeight: 32,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.display,
   },
   heroPassportId: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.accentStrong,
-    letterSpacing: 0.7,
+    ...TYPE.label,
+    color: COLOR.accent,
+    letterSpacing: 0.6,
+    fontVariant: ['tabular-nums'],
   },
   heroSubtitle: {
+    ...TYPE.body,
     fontSize: 14,
     lineHeight: 21,
-    color: CLINICAL_COLORS.textSoft,
   },
+  /** A genuine status chip — completion state — so the pill shape is
+   *  earned here. */
   heroStatusPill: {
     alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: 'rgba(248, 242, 234, 0.76)',
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.xs + 2,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLOR.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.accentLine,
   },
   heroStatusText: {
+    ...TYPE.label,
     fontSize: 12,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.accentStrong,
+    color: COLOR.accent,
   },
   heroMetaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 18,
+    columnGap: SPACE.lg,
+    rowGap: SPACE.xs,
+    marginTop: SPACE.md,
   },
+  /** Was a bordered pill each. Two facts do not need two containers —
+   *  bare icon plus text, spaced apart. */
   heroMetaChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: 'rgba(248, 242, 234, 0.62)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    gap: SPACE.xs + 2,
   },
   heroMetaText: {
+    ...TYPE.caption,
     fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
   },
+
+  /* Headline metrics — a ruled table, not a grid of cards ---------- */
   metricGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 12,
-    marginTop: 18,
+    columnGap: SPACE.lg,
+    rowGap: SPACE.md,
+    marginTop: SPACE.lg,
   },
   metricCard: {
-    width: '48.5%',
-    minHeight: 108,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: 'rgba(248, 242, 234, 0.68)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    width: '47%',
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.accentLine,
   },
+  /** The value leads and is set in tabular figures so the two columns
+   *  align down the page. */
   metricValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.metricSmall,
   },
   metricLabel: {
-    marginTop: 8,
-    fontSize: 13,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
+    color: COLOR.inkSoft,
   },
   metricHint: {
-    marginTop: 6,
+    ...TYPE.caption,
+    marginTop: 2,
     fontSize: 12,
-    lineHeight: 18,
-    color: CLINICAL_COLORS.textMuted,
+    lineHeight: 17,
+    color: COLOR.inkFaint,
   },
+
   heroActionRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 18,
+    gap: SPACE.sm,
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.accentLine,
   },
-  heroActionButton: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  heroActionButtonGhost: {
-    backgroundColor: 'rgba(248, 242, 234, 0.72)',
+
+  /* 门诊准备 ------------------------------------------------------- */
+  /** The dashed outline stays — it is the one border on this screen
+   *  doing semantic work, marking drafted text apart from recorded
+   *  clinical data. The tint behind it does not: an unfilled outline
+   *  reads as "provisional" without becoming a second filled card. */
+  visitPrepCard: {
+    marginTop: SPACE.section,
+    padding: SPACE.lg,
+    borderRadius: RADIUS.surface,
+    gap: SPACE.sm,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderStyle: 'dashed',
+    borderColor: COLOR.lineStrong,
   },
-  heroActionButtonText: {
+  visitPrepHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+  },
+  visitPrepTitle: {
+    ...TYPE.heading,
+  },
+  visitPrepHint: {
+    ...TYPE.caption,
+  },
+  visitPrepBody: {
+    ...TYPE.bodyStrong,
     fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.background,
+    lineHeight: 22,
   },
-  heroActionButtonTextGhost: {
-    color: CLINICAL_COLORS.accentStrong,
+  visitPrepFootnote: {
+    ...TYPE.caption,
+    fontSize: 12,
+    lineHeight: 17,
+    color: COLOR.inkFaint,
   },
-  heroActionButtonTextDisabled: {
-    color: CLINICAL_COLORS.textMuted,
+  visitPrepMeta: {
+    ...TYPE.caption,
+    fontSize: 12,
+    color: COLOR.inkFaint,
+    fontVariant: ['tabular-nums'],
   },
+  visitPrepStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+  },
+  visitPrepStatusText: {
+    ...TYPE.caption,
+  },
+  visitPrepError: {
+    ...TYPE.caption,
+    color: COLOR.alert,
+  },
+
+  /* Loading ------------------------------------------------------- */
+  /** No longer a card: a spinner is not a section of the record. */
   loadingCard: {
-    marginTop: 18,
-    paddingVertical: 20,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    paddingVertical: SPACE.xl,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
-    ...cardShadow,
+    gap: SPACE.md,
   },
   loadingText: {
-    fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
+
+  /* Sections ------------------------------------------------------ */
+  /** Was a tinted, 24pt-radius panel wrapping a card wrapping a grid.
+   *  Now a rule and some air. */
   sectionShell: {
-    marginTop: 20,
-    padding: 18,
-    borderRadius: 24,
-    backgroundColor: CLINICAL_TINTS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderSubtle,
+    ...sectionRule,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: SPACE.md,
   },
+  /** 01–04 numbered four sections that can be read in any order, and
+   *  set them in a tinted circle — two of the strongest generic-UI
+   *  tells on the screen. Dropped from layout. */
   sectionBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
+    display: 'none',
   },
   sectionBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.accentStrong,
+    ...TYPE.micro,
   },
   sectionHeadingGroup: {
     flex: 1,
-    gap: 4,
+    gap: SPACE.xs,
   },
   sectionHeading: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.title,
   },
   sectionDescription: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
   },
   sectionContentBlock: {
-    marginTop: 16,
+    marginTop: SPACE.lg,
   },
-  summaryGrid: {
-    marginTop: 16,
-    gap: 12,
-  },
-  summaryCard: {
-    padding: 16,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  summaryCardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  summaryIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  summaryStatusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  summaryStatusText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  summaryCardTitle: {
-    marginTop: 14,
-    fontSize: 15,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-  },
-  summaryCardSummary: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  summaryCardMeta: {
-    marginTop: 8,
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
+
+  /* Summary rows (kept for callers; ruled rows, not cards) --------- */
+  /** Icons in tinted rounded squares are the look this pass removes;
+   *  the 2pt semantic bar below carries the same colour in less room. */
+
+  /* 诊断与身份 ----------------------------------------------------- */
+  /** The section already announced itself; this no longer needs to be
+   *  a box inside it. */
   diagnosisCard: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 22,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
+    marginTop: SPACE.lg,
   },
   cardHeadingRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: SPACE.md,
   },
   cardTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.heading,
   },
   cardSubtitle: {
-    marginTop: 4,
-    fontSize: 13,
-    lineHeight: 19,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
   },
+  /** Freshness is a state, so it keeps the pill. Tone colours are
+   *  applied by the screen. */
   freshnessPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: RADIUS.pill,
   },
   freshnessText: {
-    fontSize: 12,
-    fontWeight: '700',
+    ...TYPE.label,
+    fontSize: 11,
   },
+
+  /* Identity values — a two-column ruled table --------------------- */
   infoGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 12,
-    marginTop: 16,
+    columnGap: SPACE.lg,
+    rowGap: SPACE.md,
+    marginTop: SPACE.lg,
   },
   infoCell: {
-    width: '48.5%',
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: CLINICAL_COLORS.backgroundRaised,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    width: '47%',
+    paddingTop: SPACE.sm,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
+  /** Label first and quiet; the value carries the weight. */
   infoLabel: {
+    ...TYPE.caption,
     fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-    marginBottom: 6,
+    marginBottom: 2,
   },
   infoValue: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.metricSmall,
+    // A step down from the headline metrics: D4Z4 repeat counts share
+    // this table with gene names and dates, which need room to wrap.
+    fontSize: 16.5,
+    lineHeight: 22,
   },
+
+  /* Prose notes — a rule in the margin, not another box ------------ */
   noteCard: {
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: CLINICAL_COLORS.backgroundRaised,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    marginTop: SPACE.lg,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.lineStrong,
   },
   noteTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 6,
+    ...TYPE.label,
+    color: COLOR.ink,
+    marginBottom: SPACE.xs,
   },
   noteText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.body,
+    fontSize: 14,
+    lineHeight: 21,
   },
+
+  /* 正面 / 背面 ---------------------------------------------------- */
+  /** SegmentedControl owns its own shape; this only keeps the place in
+   *  the page the old two-pill row had. */
   segmentRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 16,
+    marginTop: SPACE.lg,
   },
-  segmentButton: {
-    flex: 1,
-    minHeight: 42,
-    borderRadius: 14,
-    backgroundColor: CLINICAL_COLORS.backgroundRaised,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  segmentButtonActive: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-    borderColor: CLINICAL_TINTS.accentBorder,
-  },
-  segmentButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.textMuted,
-  },
-  segmentButtonTextActive: {
-    color: CLINICAL_COLORS.accentStrong,
-  },
+
+  /* Body map ------------------------------------------------------ */
   figureStack: {
-    marginTop: 16,
-    gap: 14,
+    marginTop: SPACE.lg,
+    gap: SPACE.xl,
   },
-  figureShell: {
-    padding: 16,
-    borderRadius: 22,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  monitoringStack: {
-    marginTop: 16,
-    gap: 12,
-  },
-  monitoringCard: {
-    padding: 16,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  monitoringCardTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  monitoringCardCopy: {
-    flex: 1,
-  },
-  monitoringTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  monitoringTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-  },
-  monitoringSummary: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  monitoringMeta: {
-    marginTop: 10,
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
+  /** The figure and its readings sit on the page. Boxing them was what
+   *  produced the card-inside-panel-inside-page stack. */
+  figureShell: {},
+
+  /* Monitoring rows (kept for callers) ---------------------------- */
+
+  /* 待补项 --------------------------------------------------------- */
   gapList: {
-    marginTop: 16,
-    gap: 10,
+    marginTop: SPACE.md,
   },
+  /** Ruled rows. A list of four gaps as four bordered cards was four
+   *  containers doing the work of three hairlines. */
   gapCard: {
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    paddingVertical: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
   gapTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: SPACE.sm,
   },
   gapTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.heading,
+    fontSize: 14.5,
   },
   gapDescription: {
-    marginTop: 8,
+    ...TYPE.body,
+    marginTop: SPACE.xs,
     fontSize: 13,
     lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  inlineActionButton: {
-    marginTop: 14,
-    minHeight: 46,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.backgroundRaised,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  inlineActionText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.accentStrong,
   },
   supportCard: {
-    marginTop: 20,
-    padding: 18,
-    borderRadius: 24,
-    backgroundColor: CLINICAL_TINTS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderSubtle,
+    ...sectionRule,
   },
-  timelineCard: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 22,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...cardShadow,
-  },
-  timelineCount: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.textMuted,
-  },
-  emptyText: {
-    marginTop: 14,
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textMuted,
-  },
-  timelineItem: {
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: CLINICAL_TINTS.borderSubtle,
-  },
-  timelineItemLast: {
-    borderBottomWidth: 0,
-    paddingBottom: 2,
-  },
-  timelineHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  timelineTitle: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-  },
-  timelineTag: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    fontSize: 11,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.text,
-    overflow: 'hidden',
-  },
-  timelineTagReport: {
-    backgroundColor: CLINICAL_TINTS.successSoft,
-  },
-  timelineTagStrength: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  timelineTagActivity: {
-    backgroundColor: CLINICAL_TINTS.warningSoft,
-  },
-  timelineDescription: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    color: CLINICAL_COLORS.textSoft,
-  },
-  timelineTimestamp: {
-    marginTop: 8,
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-  },
+
+  /* Timeline (kept for callers) ----------------------------------- */
+
+  /* Export -------------------------------------------------------- */
   exportCard: {
-    marginTop: 20,
-    padding: 18,
-    borderRadius: 24,
-    backgroundColor: CLINICAL_TINTS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderSubtle,
-  },
-  exportButton: {
-    marginTop: 14,
-    borderRadius: 18,
-    overflow: 'hidden',
-    ...cardShadow,
-  },
-  exportButtonGradient: {
-    minHeight: 52,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  exportButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: CLINICAL_COLORS.background,
+    ...sectionRule,
   },
 });

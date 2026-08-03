@@ -9,8 +9,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
+import SensitiveDataConsentGate, {
+  useSensitiveDataConsentGate,
+} from '../p-privacy_settings/components/SensitiveDataConsentGate';
+import { LEGAL_DOCUMENTS } from '../../lib/legal-content';
+import { requiresGuardianConsent } from '../../lib/guardian-consent';
 import styles from './styles';
+import { PROFILE_FORM_DRAFT_KEY } from '../../lib/draft-keys';
+import Button from '../common/Button';
 import {
   ApiError,
   type BaselineProfilePayload,
@@ -18,7 +24,7 @@ import {
   updateMyBaseline,
   upsertPatientProfile,
 } from '../../lib/api';
-import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+import { COLOR } from '../../lib/design';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   AMBULATION_OPTIONS,
@@ -39,7 +45,8 @@ import {
 } from '../../lib/demographics-options';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
-import ScreenBackButton from '../common/ScreenBackButton';
+import ScreenHeader from '../common/ScreenHeader';
+import { useAppDialog } from '../common/feedback/AppDialog';
 import { useProfileContext } from '../../contexts/ProfileContext';
 
 const isValidDate = (value: string) => {
@@ -52,10 +59,12 @@ const isValidDate = (value: string) => {
 
 // Unsaved-edit draft, restored on top of the server profile so a
 // half-finished edit survives leaving the screen. Cleared on save.
-const PROFILE_FORM_DRAFT_KEY = 'openrd.registerProfile.draft';
+// Key lives in lib/draft-keys.ts so logout can clear it without
+// re-declaring the string (see that file's header).
 
 const RegisterProfileScreen: React.FC = () => {
   const router = useRouter();
+  const { notify } = useAppDialog();
   const params = useLocalSearchParams();
   // Onboarding mode: the root-layout gate sends profile-less users
   // here. Only the three fields the backend requires are mandatory
@@ -66,9 +75,12 @@ const RegisterProfileScreen: React.FC = () => {
   const { user } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{ type: 'error' | 'success'; message: string } | null>(
-    null,
-  );
+  // Errors only. Success used to set this too, but it was set on the
+  // line before a `router.replace` — painted and thrown away in the
+  // same tick — and now goes through `notify`, which outlives the
+  // navigation. Failures keep the inline banner because the patient
+  // stays on this form to fix the field the message names.
+  const [feedback, setFeedback] = useState<{ type: 'error'; message: string } | null>(null);
   const [existingBaseline, setExistingBaseline] = useState<BaselineProfilePayload | null>(null);
   const [isDraftHydrated, setIsDraftHydrated] = useState(false);
   const [form, setForm] = useState({
@@ -208,6 +220,21 @@ const RegisterProfileScreen: React.FC = () => {
     });
   }, [form, isDraftHydrated]);
 
+  // PIPL Art. 31. The gate keys off the birth date this very form
+  // collects, which is why it lives here and not at sign-up: the
+  // phone-number registration has no age to reason about yet.
+  const { ensureSensitiveDataConsent: ensureGuardianConsent, gateProps: guardianGateProps } =
+    useSensitiveDataConsentGate(LEGAL_DOCUMENTS.guardianConsent);
+  // PIPL Art. 29. The baseline this form writes carries diagnosis type,
+  // D4Z4 repeat count, haplotype and methylation — the privacy policy
+  // names exactly those as 敏感个人信息 needing 单独同意, and this screen
+  // was storing them before the document had ever been rendered. The
+  // API refuses the write without a ledger row (requireSensitiveDataConsent
+  // on PUT /me/baseline), so without this the save would just fail.
+  const { ensureSensitiveDataConsent, gateProps: sensitiveGateProps } = useSensitiveDataConsentGate(
+    LEGAL_DOCUMENTS.sensitiveData,
+  );
+
   const toggleAssistiveDevice = (device: AssistiveDeviceOption) => {
     setForm((prev) => ({
       ...prev,
@@ -236,6 +263,34 @@ const RegisterProfileScreen: React.FC = () => {
 
     if (!form.gender) {
       setFeedback({ type: 'error', message: '请选择性别' });
+      return;
+    }
+
+    // Under 14: a parent or guardian has to consent on the patient's
+    // behalf before the record exists, not after. The privacy policy's
+    // §8 already promises this in writing; without the gate the promise
+    // was the only place it happened.
+    if (requiresGuardianConsent(form.dateOfBirth.trim())) {
+      const consented = await ensureGuardianConsent();
+      if (!consented) {
+        setFeedback({
+          type: 'error',
+          message: '未满 14 周岁需监护人同意后才能建档。若出生日期填错了，请修改后重试。',
+        });
+        return;
+      }
+    }
+
+    // Ordered after the guardian gate on purpose: for a child, the
+    // person answering both questions is the guardian, and asking them
+    // to consent to sensitive-data processing before establishing that
+    // they may consent at all is the wrong way round.
+    const sensitiveConsented = await ensureSensitiveDataConsent();
+    if (!sensitiveConsented) {
+      setFeedback({
+        type: 'error',
+        message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
+      });
       return;
     }
 
@@ -316,7 +371,14 @@ const RegisterProfileScreen: React.FC = () => {
       // navigating — otherwise the gate's 'missing' state would
       // bounce us straight back here.
       await refreshProfileGate();
-      setFeedback({ type: 'success', message: '档案已保存' });
+      // `setFeedback` renders inside this screen, and the very next
+      // line leaves it — so the success banner was painted and
+      // destroyed in the same tick and the patient saw nothing at all
+      // after a 15-field save. The dialog provider lives at the root,
+      // so this one survives the navigation and lands with them on the
+      // home screen. The error path below keeps the inline banner,
+      // because there the patient stays here and has to fix a field.
+      notify({ title: '档案已保存', tone: 'success' });
       router.replace('/p-home');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '保存失败，请重试';
@@ -328,41 +390,39 @@ const RegisterProfileScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
-      >
-        <View style={styles.header}>
-          {isOnboarding ? null : <ScreenBackButton />}
-          <Text style={styles.headerTitle}>
-            {isOnboarding ? '完成基础档案（约 1 分钟）' : '编辑档案'}
-          </Text>
-          <View style={styles.headerPlaceholder} />
-        </View>
+      <View style={styles.backgroundGradient}>
+        {/* Onboarding keeps a bare title: there is nowhere to go back
+            to and no home to reach until this form is saved — the
+            profile gate would bounce either control straight back
+            here. Everywhere else gets the standard header, so 编辑档案
+            now has the home control too. Unsaved edits survive leaving
+            (the draft effect above persists every keystroke), so home
+            costs no work. */}
+        {isOnboarding ? (
+          <View style={styles.header}>
+            <View style={styles.headerPlaceholder} />
+            <Text style={styles.headerTitle}>完成基础档案（约 1 分钟）</Text>
+            <View style={styles.headerPlaceholder} />
+          </View>
+        ) : (
+          <ScreenHeader title="编辑档案" style={styles.header} />
+        )}
 
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
           {isLoading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator color={CLINICAL_COLORS.accent} />
+              <ActivityIndicator color={COLOR.accent} />
             </View>
           ) : (
             <>
               {feedback && (
-                <View
-                  style={[
-                    styles.feedbackBanner,
-                    feedback.type === 'error' ? styles.feedbackError : styles.feedbackSuccess,
-                  ]}
-                >
+                <View style={[styles.feedbackBanner, styles.feedbackError]}>
                   <Text style={styles.feedbackText}>{feedback.message}</Text>
                 </View>
               )}
               {isOnboarding ? (
-                <View style={styles.section}>
-                  <Text style={styles.sectionSubtitle}>
+                <View style={styles.introNote}>
+                  <Text style={styles.introNoteText}>
                     只需填写下面的基本信息就可以开始使用。其余内容（FSHD
                     背景、联系方式、所在地区）可以稍后在「我的 → 编辑档案」随时完善。
                   </Text>
@@ -376,7 +436,7 @@ const RegisterProfileScreen: React.FC = () => {
                   <TextInput
                     style={styles.input}
                     placeholder="请输入姓名"
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
+                    placeholderTextColor={COLOR.inkFaint}
                     value={form.fullName}
                     onChangeText={(text) => setForm((prev) => ({ ...prev, fullName: text }))}
                   />
@@ -401,6 +461,10 @@ const RegisterProfileScreen: React.FC = () => {
                         <TouchableOpacity
                           key={option.value}
                           style={[styles.optionButton, isActive && styles.optionButtonActive]}
+                          accessibilityRole="radio"
+                          accessibilityLabel={option.label}
+                          accessibilityState={{ selected: isActive }}
+                          aria-checked={isActive}
                           onPress={() => setForm((prev) => ({ ...prev, gender: option.value }))}
                         >
                           <Text
@@ -425,7 +489,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="例如：2022"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       keyboardType="number-pad"
                       maxLength={4}
                       value={form.diagnosisYear}
@@ -441,7 +505,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="例如：FSHD1"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       value={form.diagnosisType}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, diagnosisType: text }))}
                     />
@@ -450,7 +514,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="例如：4/22（报告识别有误时可在此修正）"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       value={form.d4z4}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, d4z4: text }))}
                     />
@@ -459,7 +523,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="例如：肩胛带、面部、足背屈"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       value={form.onsetRegion}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, onsetRegion: text }))}
                     />
@@ -468,7 +532,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={[styles.input, styles.multilineInput]}
                       placeholder="例如：母亲疑似，家中暂无明确患者"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       value={form.familyHistory}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, familyHistory: text }))}
                       multiline
@@ -483,6 +547,10 @@ const RegisterProfileScreen: React.FC = () => {
                           <TouchableOpacity
                             key={option.value}
                             style={[styles.optionButton, isActive && styles.optionButtonActive]}
+                            accessibilityRole="radio"
+                            accessibilityLabel={option.label}
+                            accessibilityState={{ selected: isActive }}
+                            aria-checked={isActive}
                             onPress={() =>
                               setForm((prev) => ({
                                 ...prev,
@@ -510,6 +578,12 @@ const RegisterProfileScreen: React.FC = () => {
                           <TouchableOpacity
                             key={option}
                             style={[styles.optionButton, isActive && styles.optionButtonActive]}
+                            // Multi-select, unlike its two siblings above
+                            // — checkbox, not radio.
+                            accessibilityRole="checkbox"
+                            accessibilityLabel={option}
+                            accessibilityState={{ checked: isActive }}
+                            aria-checked={isActive}
                             onPress={() => toggleAssistiveDevice(option)}
                           >
                             <Text
@@ -525,7 +599,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="其他辅具可直接填写，多个用顿号分隔"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       value={form.customAssistiveDevices}
                       onChangeText={(text) =>
                         setForm((prev) => ({ ...prev, customAssistiveDevices: text }))
@@ -544,7 +618,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="请输入手机号"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       keyboardType="phone-pad"
                       value={form.contactPhone}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, contactPhone: text }))}
@@ -554,7 +628,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <TextInput
                       style={styles.input}
                       placeholder="请输入邮箱"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkFaint}
                       keyboardType="email-address"
                       value={form.contactEmail}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, contactEmail: text }))}
@@ -588,28 +662,26 @@ const RegisterProfileScreen: React.FC = () => {
                 </View>
               )}
 
-              <TouchableOpacity
-                style={[styles.primaryButton, isSaving && styles.primaryButtonDisabled]}
+              {/* This screen's one prominent action. It was a bare
+                  TouchableOpacity with no accessibilityRole, and while
+                  saving it replaced its label with a spinner — leaving a
+                  control with neither a role nor a name at the exact
+                  moment the user most needs to know what is happening.
+                  Button carries the role, keeps the name through `busy`,
+                  and announces aria-busy. */}
+              <Button
+                label="保存"
+                variant="prominent"
+                fullWidth
+                busy={isSaving}
                 onPress={handleSubmit}
-                disabled={isSaving}
-              >
-                <LinearGradient
-                  colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.primaryButtonGradient}
-                >
-                  {isSaving ? (
-                    <ActivityIndicator color={CLINICAL_COLORS.text} />
-                  ) : (
-                    <Text style={styles.primaryButtonText}>保存</Text>
-                  )}
-                </LinearGradient>
-              </TouchableOpacity>
+              />
             </>
           )}
         </ScrollView>
-      </LinearGradient>
+      </View>
+      <SensitiveDataConsentGate {...guardianGateProps} />
+      <SensitiveDataConsentGate {...sensitiveGateProps} />
     </SafeAreaView>
   );
 };

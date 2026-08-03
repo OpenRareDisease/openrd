@@ -150,14 +150,27 @@ export const formatDateLabel = (value?: string | null) => {
   return `${month}-${day}`;
 };
 
+/**
+ * The risk chip.
+ *
+ * `low` and "we don't know" are deliberately different answers. The
+ * API's `overallLevel` is `'low' | 'medium' | 'high'` and nothing else,
+ * so an absent value only ever means the summary has not loaded or the
+ * request failed — and the previous `default:` branch answered that
+ * with a green「相对稳定」. A reassuring green chip on a screen whose
+ * data never arrived is the one failure mode a patient acts on, and it
+ * is the wrong direction to fail in.
+ */
 export const getRiskMeta = (level?: string | null) => {
   switch (level) {
     case 'high':
       return { label: '高关注', color: CLINICAL_COLORS.danger };
     case 'medium':
       return { label: '需观察', color: CLINICAL_COLORS.warning };
-    default:
+    case 'low':
       return { label: '相对稳定', color: CLINICAL_COLORS.success };
+    default:
+      return { label: '暂无评估', color: CLINICAL_COLORS.textMuted };
   }
 };
 

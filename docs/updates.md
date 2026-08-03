@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-08-02（v2.5.0 待发布）
+
+> 本文件在 v2.4.0（2026-06-20 发布）时漏记了一次。`docs/release-checklist.md` §5 一直要求「已记录本次发布变化」，那一次勾了但没写——这条补记同时把 v2.4.0 的缺口一并说明。
+
+### 完成事项
+
+1. **v2.4.0 补记**：AI 患者问答完整链路上线（本地 pgvector 知识库 + orchestrator + 三档隐私同意 + 移动端 SSE 流式回答 + 引用与审计），patient profile 重写与 OCR `document_type` 规范化（migration 011/012），12 个 PR 的多轮安全审计闭合。详见 `docs/releases/v2.4.0.md`。
+2. **v2.5.0 主线：88 条 deploy-readiness finding 闭合**。没有新的患者侧功能面，全部是「测试全绿」到「生产能跑」之间那一层：
+   - 生产 fail-fast 补齐六道闸门（AI key 缺失、`postgres:postgres` 凭据、密钥强度、Baidu OCR 凭据、跨境 `AI_API_BASE_URL`、本地磁盘存储与明文 MinIO），新增三个显式确认位 `AI_CROSS_BORDER_ACKNOWLEDGED` / `STORAGE_ALLOW_LOCAL` / `MINIO_ALLOW_INSECURE`。
+   - compose 收口：`DATABASE_URL` 改插值（此前 operator 填的托管库连接串被静默丢弃）、`POSTGRES_PASSWORD` 强制必填、`minio` 加入 `prod` profile、每服务 `mem_limit` + 日志上限、api `stop_grace_period: 25s`、kb-service 撤掉 `env_file`（它此前持有 `JWT_SECRET`、OTP 密钥和短信/AI 凭据）。
+   - readiness 与健康端点：`ready` 只看 database + embedded OCR，KB / 对象存储 / 未配置的 AI key 走 `degraded`；生产下 `/api/healthz` 对非 loopback 调用方只返回 status，详情进日志并回 `requestId`。
+   - 数据库：迁移 013–020；`migrate --down <id>` 把 `_down.sql` 与 ledger 删除放进同一事务；015 先把患者填的 `unit` 原文存进 `unit_legacy` 再归一化；迁移跑在 advisory lock 里并记录 SHA-256 以便 `--status` 报 `drifted`。
+   - 备份成为代码：`scripts/db-backup.sh` / `scripts/db-restore.sh`（`npm run db:backup` / `db:restore`），带空语料闸、归档回读校验、非空目标拒绝覆盖。
+   - 保留期与删除权：四张此前无界增长的表接入定期清理；账号注销时对 `audit_logs` 做 tombstone（保留合规证据，剥离手机号 / 邮箱 / IP）。
+   - 客户端：根 ErrorBoundary 中文兜底页替代白屏；上传超时按体积计算；移除向任意父框架广播路由与 `documentId` 的 `postMessage`，并在 nginx 与 Caddy 两处补齐 `frame-ancestors 'none'` 等安全响应头。
+   - Python 层：kb-service 多线程 + 有界检索信号量、空语料挡 readiness、SIGTERM 处理、`/multi` 参数钳制、HF 镜像默认；PDF OCR 页数上限并流式落盘；实际使用的 OCR 引擎（Tesseract）现在可见。
+3. **合规层从占位文本变成实现**：`apps/mobile/lib/legal-content.ts` 写出四份成文文档（用户协议、隐私政策、敏感个人信息处理单独同意、儿童个人信息处理规则与监护人同意），点名 LLM 服务商与全部接收方、列出信息清单 / 目的 / 保留期；migration 019 建 `legal_document_acceptances` 记录 `(user_id, document, version, accepted_at)`，`GET/POST /api/legal/acceptances` 读写；服务端 `requireSensitiveDataConsent` 挡在报告上传与健康数据写入路由前面，`requireGuardianConsentForMinor` 用服务器时钟重算年龄挡住未满 14 岁的建档；migration 020 加 `withdrawn_at` + `POST /api/legal/acceptances/withdraw`，隐私设置页可以看到自己同意过的版本并撤回敏感信息处理同意——撤回是打墓碑而不是删行，因为「撤回不影响撤回前已进行的处理」这句话要能被证明。
+4. **接入 CI**：`.github/workflows/ci.yml` 三个 job —— API（lint / format / typecheck / test）、Mobile（lint / typecheck / test / web export）、Report manager（pytest）——Node 固定 20、Python 固定 3.11，与两个镜像一致；mobile job 用和 `Dockerfile.web` 相同的命令跑 `expo export`，Metro 解析与静态渲染因此有了门禁。仍**不覆盖** `docker compose build`（镜像里的 Python / ML 依赖只有真 build 会暴露）。
+5. **文档按当前代码树重写**：新增 `docs/runbooks/v2.5.0-deploy.md`；`docs/release-checklist.md` 补齐版本号、`NODE_ENV`、备份、语料、隐私政策、备案等门禁；`docs/cloud-tencent-docker.md` 标注为不适用于生产；`docs/proposals/prd-v2.md` 标注交付渠道现状（只有 web export，产不出原生包）；v2.4.0 手册加了 superseded 横幅并逐条列出它对当前代码树的失真之处。
+
+### 验证
+
+```bash
+npm run lint
+npm run format
+npm test
+python -m pytest apps/report-manager/tests scripts/kb_parsers
+docker compose --profile prod config -q
+```
+
+### 已知问题
+
+- 法律文本已成文，但 `OPERATOR_LEGAL_NAME`（运营主体登记名称）和 §5 的「服务商合同主体」仍是 `【待补】`。PIPL 第 17 条要求告知处理者名称，所以 `docs/release-checklist.md` §4 的隐私政策项仍不打勾——卡住它的是营业执照和合同，不是代码。
+- 隐私政策 §7 把「导出我的数据」和「注销账号」的路径写成「我的 → 隐私设置 → …」，实际两个控件都在「我的」页自己的「数据与账号」分组里，隐私设置页没有。功能可用，路径写错一跳。
+- CI 不跑 `docker compose build`：web bundle 有 `expo export` 门禁了，但三个镜像（api 的 Python OCR 依赖、kb 的 ML 依赖、web 的 nginx 层）第一次被构建仍然是在部署机上。
+- `.env.example` 的 `DATABASE_URL` 现在是注释掉的（本地直跑与 compose 需要不同主机名，注释掉才能一份模板两边可用）。手工取消注释并填 `localhost` 再跑 compose 会被 `validateContainerTopologyEnv` 在启动时拒绝——这是有意的兜底，不是缺陷。
+- KB 源语料（547 MB）仍是单机单点，未纳入常规备份。
+
+### 下一步建议
+
+1. 补齐两个 `【待补】`（运营主体登记名称、服务商合同主体），把清单 §4 的隐私政策项打勾——这两个填完之前，其余合规实现都不足以让那一项达标。
+2. 在 master 打开 required status checks，并给 CI 补一个 `docker compose build` 的镜像构建 job——现在 CI 绿只代表 web bundle 能导出来，不代表镜像能构建出来。
+3. 把 KB 源语料纳入 `scripts/db-backup.sh` 之外的对象存储备份。
+
+---
+
 ## 2026-03-29
 
 ### 完成事项

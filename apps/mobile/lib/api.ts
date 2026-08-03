@@ -26,7 +26,45 @@ export const PATIENT_SCOPED_CACHE_KEYS: string[] = [
 // any other caller imports this rather than re-reading the env at
 // the call site, so the dev default + env override path stays
 // consistent across modules.
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000/api';
+const DEV_FALLBACK_API_URL = 'http://localhost:4000/api';
+
+/**
+ * Resolve the API base URL, or refuse to start.
+ *
+ * `EXPO_PUBLIC_API_URL` is inlined by Metro at bundle time, and Expo
+ * reads it from `apps/mobile/.env` — the *project root*, not the
+ * repository root. The docs used to point at the repo-root `.env`,
+ * which Expo never loads, so an operator who followed them got a
+ * bundle that had silently fallen through to localhost. On a phone
+ * that is not a misconfiguration the user can see: every request just
+ * fails to a host that does not exist, and the app looks offline.
+ *
+ * So the fallback now only exists where it is actually correct — a
+ * developer running `expo start` against a local API. A production
+ * bundle with no configured URL throws here, at module load, on the
+ * first launch after the build: loud, immediate, and traceable to the
+ * build that produced it, instead of a support ticket a week later.
+ *
+ * The compose/web path never depends on this: Dockerfile.web takes
+ * EXPO_PUBLIC_API_URL as a build ARG defaulting to `/api`, which is
+ * correct behind Caddy. See apps/mobile/.env.example.
+ */
+const resolveApiBaseUrl = (): string => {
+  const configured = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (configured) {
+    return configured;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'EXPO_PUBLIC_API_URL is not set. A production bundle must be built with it ' +
+        '(apps/mobile/.env, an exported shell variable, or the Dockerfile.web build ARG) — ' +
+        'the repository-root .env is NOT read by Expo. See apps/mobile/.env.example.',
+    );
+  }
+  return DEV_FALLBACK_API_URL;
+};
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export class ApiError extends Error {
   status?: number;
@@ -34,19 +72,123 @@ export class ApiError extends Error {
   /** Set for transport-level failures (no HTTP response): 'network'
    *  for fetch TypeErrors (offline, DNS, connection reset), 'timeout'
    *  when the request exceeded its deadline. */
-  code?: 'network' | 'timeout';
+  code?: 'network' | 'timeout' | 'sensitive_consent_required' | 'consent_check_unavailable';
+  /** How long the server said to wait before retrying (429 rate limit,
+   *  429 login lockout). Lifted out of `data` so callers don't each
+   *  re-implement the "is it under `details` or top level" dig — the
+   *  server has been sending this since the rate limiter landed and
+   *  nobody was reading it, which is why a throttled patient only ever
+   *  saw「过于频繁」with no idea whether to wait 5 seconds or 5 minutes. */
+  retryAfterSeconds?: number;
 }
 
 export const NETWORK_ERROR_MESSAGE = '网络连接不稳定，请检查网络后重试';
 export const TIMEOUT_ERROR_MESSAGE = '请求超时，请检查网络后重试';
 
+/**
+ * Pull the human sentence out of a 4xx/5xx body. Handlers are
+ * inconsistent about which key carries it: `next(new AppError(...))`
+ * is serialized as `error` by the API's error-handler middleware,
+ * while the hand-written responses in ai-chat.routes.ts use `message`.
+ * Reading only one of them threw away every sentence that told the
+ * patient what to do next（「一次最多 500 字，太长的话分几次记」became
+ * 「请求失败」）.
+ *
+ * Returns null rather than a canned string so each caller keeps its
+ * own fallback — the JSON path wants「请求失败」, the SSE path wants to
+ * fall back to the raw body it already has.
+ *
+ * Shared with ai-streaming.ts on purpose: a pre-stream 429 and a
+ * plain-fetch 429 carry the identical body, so they must not decode it
+ * two different ways.
+ */
+export const extractApiErrorMessage = (payload: unknown): string | null => {
+  if (!payload || typeof payload !== 'object') return null;
+  const body = payload as { error?: unknown; message?: unknown };
+  if (typeof body.message === 'string' && body.message.trim()) return body.message;
+  if (typeof body.error === 'string' && body.error.trim()) return body.error;
+  return null;
+};
+
+/**
+ * Seconds to wait before retrying, as advertised by a 429.
+ *
+ * The value normally arrives nested under `details` because the API's
+ * error handler only forwards allow-listed `AppError.details` keys;
+ * the top-level read covers hand-written bodies that never go through
+ * that middleware. Non-numeric / non-positive values are dropped
+ * instead of forwarded — the UI renders this straight into a sentence
+ * and「NaN 秒后再试」is worse than no countdown at all. Fractions round
+ * up so we never tell the patient to retry before the window closes.
+ */
+export const extractRetryAfterSeconds = (payload: unknown): number | undefined => {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const body = payload as { retryAfterSeconds?: unknown; details?: unknown };
+  const details =
+    body.details && typeof body.details === 'object'
+      ? (body.details as { retryAfterSeconds?: unknown })
+      : null;
+  const raw = details?.retryAfterSeconds ?? body.retryAfterSeconds;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.ceil(raw);
+};
+
 // Deadlines: most JSON endpoints answer in well under a second, so
 // 15s only trips on a genuinely stuck connection. Uploads and
 // LLM-backed endpoints legitimately take longer.
 const DEFAULT_TIMEOUT_MS = 15_000;
-const UPLOAD_TIMEOUT_MS = 60_000;
 const SLOW_ENDPOINT_TIMEOUT_MS = 60_000;
 const NETWORK_RETRY_DELAY_MS = 300;
+
+/**
+ * Upload deadlines, scaled to the payload.
+ *
+ * This used to be a flat 60 s, which could not carry what the pickers
+ * are allowed to hand it. The per-file cap is 10 MB (p-data_entry's
+ * MAX_UPLOAD_BYTES, mirroring multer's limits.fileSize), and pushing
+ * 10 MB inside 60 s needs a sustained ~1.4 Mbps uplink. A hospital
+ * corridor's wifi or an indoor 4G cell at visiting hour routinely
+ * gives a fraction of that — and this is a mutation, which apiRequest
+ * deliberately never retries, so the deadline expiring is final for
+ * that file: the row goes back to the queue and the patient has to
+ * press 重试 by hand, against the same impossible budget.
+ *
+ * The budget below is a fixed part plus a per-byte part:
+ *
+ *  - **45 s fixed** covers what does not scale with size — radio
+ *    wake-up, TLS, and the server's own work after the last byte
+ *    (multer writes the file, the row is inserted, 201 comes back;
+ *    OCR does not run inline, so that part is short).
+ *  - **1 ms per 40 bytes** = 40 KB/s ≈ 320 kbit/s sustained. That is
+ *    deliberately the low end of a congested indoor cell rather than
+ *    an average: the cost of over-budgeting is a patient waiting
+ *    longer for a failure, the cost of under-budgeting is an upload
+ *    that can never succeed no matter how many times they retry.
+ *  - **4-minute ceiling**, because past that the connection is not
+ *    slow, it is gone. fetch gives no upload progress, so the patient
+ *    is watching an indeterminate spinner the whole time; four
+ *    minutes is about as long as that is honest.
+ *
+ * A typical camera scan (3-4 MB after the pickers' quality: 0.8) lands
+ * around 2.5 minutes of budget and finishes in seconds; only a
+ * near-cap file on a bad cell ever approaches the ceiling.
+ */
+const UPLOAD_TIMEOUT_BASE_MS = 45_000;
+const UPLOAD_BYTES_PER_MS = 40;
+const UPLOAD_TIMEOUT_MAX_MS = 240_000;
+
+/** Mirrors p-data_entry's MAX_UPLOAD_BYTES / the API's multer cap. Used
+ *  only as the budgeting assumption when the platform did not report a
+ *  size (some Android content providers don't). */
+const ASSUMED_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+export const uploadTimeoutMsForBytes = (sizeBytes: number | null | undefined): number => {
+  const bytes =
+    typeof sizeBytes === 'number' && Number.isFinite(sizeBytes) && sizeBytes > 0
+      ? sizeBytes
+      : ASSUMED_MAX_UPLOAD_BYTES;
+  return Math.min(UPLOAD_TIMEOUT_MAX_MS, UPLOAD_TIMEOUT_BASE_MS + bytes / UPLOAD_BYTES_PER_MS);
+};
 
 /**
  * Callback the AuthProvider registers so apiRequest can fire a single
@@ -153,8 +295,14 @@ export const apiRequest = async <T = unknown>(
 ): Promise<T> => {
   const url = `${API_BASE_URL}${path}`;
   const method = (options.method ?? 'GET').toUpperCase();
+  // A FormData caller that does not declare a size gets the
+  // cap-derived budget rather than a flat minute — the only thing this
+  // app posts as multipart is a report scan of up to 10 MB, and
+  // guessing low there is the failure mode described above
+  // uploadTimeoutMsForBytes.
   const timeoutMs =
-    config?.timeoutMs ?? (config?.isFormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    config?.timeoutMs ??
+    (config?.isFormData ? uploadTimeoutMsForBytes(undefined) : DEFAULT_TIMEOUT_MS);
   const init: RequestInit = {
     ...options,
     headers: await buildHeaders(options.headers, config),
@@ -181,9 +329,22 @@ export const apiRequest = async <T = unknown>(
   const payload = isJson ? await response.json() : null;
 
   if (!response.ok) {
-    const error = new ApiError((payload as { error?: string })?.error ?? '请求失败');
+    const error = new ApiError(extractApiErrorMessage(payload) ?? '请求失败');
     error.status = response.status;
     error.data = payload;
+    error.retryAfterSeconds = extractRetryAfterSeconds(payload);
+    // Server-side consent codes, lifted out of `data` for the same
+    // reason retryAfterSeconds is: the caller has to tell「你还没同意，
+    // 这是同意书」apart from a generic 403, and every screen digging
+    // through the body itself is how the gate ends up honoured in one
+    // place and not another. requireSensitiveDataConsent (api) refuses
+    // every route that stores health or genetic data; a client that
+    // did not ask first lands here, and the right response is to show
+    // the document rather than an error toast.
+    const serverCode = (payload as { code?: unknown } | null)?.code;
+    if (serverCode === 'sensitive_consent_required' || serverCode === 'consent_check_unavailable') {
+      error.code = serverCode;
+    }
 
     // Centralised 401 handling. A stale token landing on any
     // authenticated endpoint must clear the local session so a
@@ -343,11 +504,15 @@ export interface PatientDocument {
   uploadedAt: string;
   checksum: string | null;
   submissionId?: string | null;
+  /** What a LIST document carries. The API projects the stored payload
+   *  down to these three keys — the model's raw `aiExtraction` read is
+   *  two thirds of the blob and no list screen touches it, so it is not
+   *  sent with the profile. Fetch one document to see the whole thing
+   *  (getPatientDocumentOcr). */
   ocrPayload: {
     extractedText?: string;
     fields?: Record<string, string>;
     provider?: string;
-    aiExtraction?: unknown;
   } | null;
 }
 
@@ -841,17 +1006,73 @@ export interface AiAskProgressResponse {
   };
 }
 
-export const askAiQuestion = (question: string, progressId?: string) =>
+/** Trend keys the server will accept as `context.key`. Mirrors
+ *  METRIC_LABELS in `apps/api/src/modules/ai-agents/security/
+ *  ask-context.ts` — the server maps the key to the label itself, so
+ *  the client never supplies prompt text. */
+export type AiAskMetricKey = 'stair_climb' | 'sleep_quality' | 'fall_count' | 'muscle_strength';
+
+/** What the patient was looking at when they asked. Lets 「这什么意思」
+ *  work without the patient having to describe the thing first. */
+export type AiAskContext =
+  | { type: 'document'; id: string }
+  | { type: 'followup_event'; id: string }
+  | { type: 'metric'; key: AiAskMetricKey };
+
+export const askAiQuestion = (question: string, progressId?: string, context?: AiAskContext) =>
   apiRequest<AiAskResponse>(
     '/ai/ask',
     {
       method: 'POST',
-      body: JSON.stringify({ question, progressId }),
+      body: JSON.stringify({ question, progressId, ...(context ? { context } : {}) }),
     },
     // LLM-backed: planner + retrieval + final answer legitimately
     // exceed the default deadline.
     { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
   );
+
+/** A structured draft the AI built from one spoken sentence. Every
+ *  field is nullable: the server drops anything it couldn't validate
+ *  rather than guessing, so a blank here means "you'll have to type
+ *  this one", never "the model estimated it for you". */
+export interface AiLogDraft {
+  understanding: string | null;
+  followup: {
+    stairClimbSeconds?: number | null;
+    sleepScore?: number | null;
+    fallCount?: number | null;
+    activityNote?: string | null;
+  } | null;
+  event: {
+    /** Null when the model could not tell which kind of event this was.
+     *  The server refuses to guess — see draft-log.ts: a `fall` the
+     *  patient described being silently rewritten to `other` is the
+     *  "repaired" value that file exists to not ship — so consumers get
+     *  an unfilled field to complete, not a wrong one to notice. */
+    eventType: string | null;
+    severity: 'mild' | 'moderate' | 'severe' | null;
+    occurredAt?: string | null;
+    description?: string | null;
+  } | null;
+}
+
+/** Draft an entry from plain language. Produces a form to review —
+ *  never a database write. Saving still goes through the ordinary
+ *  `addFunctionTest` / `addFollowupEvent` / … calls below. */
+export const draftLogEntry = async (text: string): Promise<AiLogDraft> => {
+  // The route answers `{ success: true, data: draft }` — same envelope
+  // as /ai/ask. `apiRequest` hands back the whole body, so the `data`
+  // hop is the caller's job. Getting this wrong is invisible to tsc
+  // (the generic is an unchecked assertion) and shows up only as the
+  // draft looking permanently empty, which reads to the patient as
+  // "you didn't say anything I could record".
+  const response = await apiRequest<{ success: boolean; data: AiLogDraft }>(
+    '/ai/draft-log',
+    { method: 'POST', body: JSON.stringify({ text }) },
+    { timeoutMs: SLOW_ENDPOINT_TIMEOUT_MS },
+  );
+  return response.data;
+};
 
 /** One frame of the orchestrator's SSE stream. Mirrors the backend
  *  `OrchestratorEvent` union in `apps/api/src/modules/ai-agents/
@@ -877,6 +1098,15 @@ export type AiStreamEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
+  /** Throw away everything accumulated so far and show `text`.
+   *
+   *  `text` is empty when more will still stream (a gather round's note
+   *  about fetching more, or the instant before a streamed retry) and
+   *  non-empty when it is the finished answer. Assign in both cases —
+   *  treating the empty one as "nothing to do" leaves the abandoned
+   *  text on screen, which is the whole thing this frame exists to
+   *  remove. */
+  | { type: 'answer_reset'; text: string }
   | { type: 'done'; data: AiAskResponse['data'] }
   | { type: 'error'; message: string };
 
@@ -1094,7 +1324,10 @@ export interface ProgressionSummary {
 export const getProgressionSummary = () =>
   apiRequest<ProgressionSummary>('/profiles/me/progression-summary');
 
-type DocumentUploadFile =
+/** Exported so a screen holding a queue of picked files can type it
+ *  without re-declaring the union (the entry screen used to carry its
+ *  own copy, which drifts the moment this one changes). */
+export type DocumentUploadFile =
   | {
       uri: string;
       name: string;
@@ -1111,6 +1344,10 @@ export const uploadPatientDocument = async (input: {
   title?: string;
   submissionId?: string;
   file: DocumentUploadFile;
+  /** Payload size, when the picker reported one. Only used to set the
+   *  deadline (see uploadTimeoutMsForBytes) — null/omitted budgets for
+   *  the 10 MB cap rather than assuming the file is small. */
+  sizeBytes?: number | null;
 }): Promise<PatientDocument> => {
   const formData = new FormData();
   formData.append('documentType', input.documentType);
@@ -1127,13 +1364,99 @@ export const uploadPatientDocument = async (input: {
     formData.append('file', nativeFile);
   }
 
+  // Prefer the size the File object already knows over whatever the
+  // caller passed: on web it is authoritative, and a caller that
+  // forgot to thread it through would otherwise silently get the
+  // cap-sized budget for a 200 KB file.
+  const sizeBytes = isWebFile(input.file) ? input.file.size : (input.sizeBytes ?? null);
+
   return apiRequest<PatientDocument>(
     '/profiles/me/documents/upload',
     { method: 'POST', body: formData },
     {
       isFormData: true,
+      timeoutMs: uploadTimeoutMsForBytes(sizeBytes),
     },
   );
+};
+
+export interface DocumentUploadBatchItem {
+  /** Caller-side row identity, echoed back on the result. File names
+   *  collide (two IMG_0001.jpg from two albums), so the caller cannot
+   *  match results by name. */
+  key: string;
+  title?: string;
+  file: DocumentUploadFile;
+  /** null when the platform declined to report a size — forwarded as
+   *  such so the deadline budgets for the cap instead of guessing. */
+  sizeBytes?: number | null;
+}
+
+export interface DocumentUploadBatchResult {
+  key: string;
+  document: PatientDocument | null;
+  error: Error | null;
+}
+
+/**
+ * Upload a batch one file at a time.
+ *
+ * Serial, but not for the reason it looks like. OCR does *not* run
+ * inside the upload request — `profile.controller.ts` inserts the row
+ * as `processing`, returns 201 immediately, and runs the parse on a
+ * background queue with its own concurrency cap
+ * (`OCR_JOB_CONCURRENCY = 2`) and admission limit
+ * (`OCR_MAX_IN_FLIGHT_JOBS = 10`). So `Promise.all` would *not* pin the
+ * machine: the server throttles the expensive half regardless of what
+ * the client does. An earlier version of this comment claimed
+ * otherwise; it was wrong, and the「每份大约 1 分钟」copy that grew out
+ * of it was wrong too — the network phase is milliseconds.
+ *
+ * The real reasons to keep it serial:
+ *  - **Progress that means something.**「正在上传第 3 / 7 份」requires
+ *    an order. A parallel batch can only show a spinner.
+ *  - **Upload bandwidth.** These are photos of paper from a phone;
+ *    seven concurrent multipart bodies on a clinic's wifi finish no
+ *    sooner and fail more often.
+ *  - **A failure that stays local.** One 429 from the queue-admission
+ *    cap fails one file, and the rest of the batch still goes.
+ */
+export const uploadPatientDocumentsSerially = async (input: {
+  documentType: string;
+  submissionId?: string;
+  items: DocumentUploadBatchItem[];
+  onItemStart?: (item: DocumentUploadBatchItem, index: number) => void;
+  onItemSettled?: (result: DocumentUploadBatchResult, index: number) => void;
+}): Promise<DocumentUploadBatchResult[]> => {
+  const results: DocumentUploadBatchResult[] = [];
+
+  for (let index = 0; index < input.items.length; index += 1) {
+    const item = input.items[index];
+    input.onItemStart?.(item, index);
+
+    let result: DocumentUploadBatchResult;
+    try {
+      const document = await uploadPatientDocument({
+        documentType: input.documentType,
+        title: item.title,
+        submissionId: input.submissionId,
+        file: item.file,
+        sizeBytes: item.sizeBytes,
+      });
+      result = { key: item.key, document, error: null };
+    } catch (error) {
+      result = {
+        key: item.key,
+        document: null,
+        error: error instanceof Error ? error : new Error('上传失败'),
+      };
+    }
+
+    results.push(result);
+    input.onItemSettled?.(result, index);
+  }
+
+  return results;
 };
 
 export const getPatientDocumentOcr = (documentId: string) =>
@@ -1144,7 +1467,15 @@ export const getPatientDocumentOcr = (documentId: string) =>
      *  ocrPayload null while parsing, so poll on THIS. Optional for
      *  older API builds. */
     status?: string | null;
-    ocrPayload: PatientDocument['ocrPayload'] | null;
+    /** The FULL stored payload, unlike the projected one on list
+     *  documents — this is the endpoint the raw-payload view reads. */
+    ocrPayload:
+      | (NonNullable<PatientDocument['ocrPayload']> & {
+          aiExtraction?: unknown;
+          ai_extraction?: unknown;
+          extracted_text?: string;
+        })
+      | null;
   }>(`/profiles/me/documents/${encodeURIComponent(documentId)}/ocr`);
 
 /** Recover a failed/lost parse (202 → poll again). 409 when the
@@ -1246,4 +1577,28 @@ export const sendOtp = (payload: { phoneNumber: string; scene?: 'register' | 'lo
   apiRequest<OtpSendResponse>('/auth/otp/send', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+
+/** The agreement-acceptance ledger (PIPL evidence trail). */
+export interface LegalAcceptanceSummary {
+  acceptances: Array<{ document: string; version: string; acceptedAt: string }>;
+  current: Record<string, string>;
+  outstanding: string[];
+}
+
+export const getLegalAcceptances = () => apiRequest<LegalAcceptanceSummary>('/legal/acceptances');
+
+export const recordLegalAcceptance = (document: string, version: string) =>
+  apiRequest<{ document: string; version: string; acceptedAt: string }>('/legal/acceptances', {
+    method: 'POST',
+    body: JSON.stringify({ document, version }),
+  });
+
+/** Withdraw consent to a document. Idempotent — `withdrawn` is 0 when
+ *  there was nothing live to withdraw, which is not an error: the user's
+ *  intent is satisfied either way. */
+export const withdrawLegalAcceptance = (document: string) =>
+  apiRequest<{ document: string; withdrawn: number }>('/legal/acceptances/withdraw', {
+    method: 'POST',
+    body: JSON.stringify({ document }),
   });

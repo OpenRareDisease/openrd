@@ -22,13 +22,16 @@
 这些文档描述“现在仓库怎么跑、怎么测、怎么发”：
 
 - [测试指南](./testing-guide.md)：本地联调、冒烟、回归、手工验证入口。
-- [腾讯云 Docker 上线测试指南](./cloud-tencent-docker.md)：单机部署和上线前检查。
+- **[v2.5.0 部署手册](./runbooks/v2.5.0-deploy.md)：生产部署以这份为准**（env 必填表、迁移 013–020、部署顺序、监控、回滚）。
+- [腾讯云 Docker 上线测试指南](./cloud-tencent-docker.md)：服务器准备与单机联调。**不适用于生产**——它给的 compose 命令不带 `--profile prod`（没有 HTTPS、没有对象存储），已在文首标注。
 - [智能问答 / AI Q&A](./ai-chat.md)：AI 问答与知识库服务链路。
 - [患者档案数据模型](./patient-profile.md)：当前患者档案及子表设计。
-- [版本历史 / Changelog](../CHANGELOG.md)：主版本入口与里程碑索引。
-- [v2.3.1 发布说明](./releases/v2.3.1.md)：当前工作版本的功能、验证与发布文案。
+- [版本历史 / Changelog](../CHANGELOG.md)：主版本入口与里程碑索引。当前工作版本 `v2.5.0`（manifest 已 bump，tag 待发布）。
+- [v2.4.0 发布说明](./releases/v2.4.0.md)：最近一次已发布版本的功能、验证与发布文案。
+- [v2.3.1 发布说明](./releases/v2.3.1.md)：上一版本说明。
 - [v1.0.0 发布说明](./releases/v1.0.0.md)：`master` 基线版本说明。
 - [v2.0.0 发布说明](./releases/v2.0.0.md)：`v2` 正式切换时的历史里程碑说明。
+- [v2.4.0 部署手册](./runbooks/v2.4.0-deploy.md)：**历史归档**。迁移范围、必填 env 表、回滚命令和移动端发版步骤在当前树上均已失真，不要照它部署。
 
 ## 2. 子系统说明
 

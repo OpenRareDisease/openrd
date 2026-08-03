@@ -1,3 +1,26 @@
+# Dependencies for the embedded OCR + FSHD report parser
+# (apps/report-manager/embedded_parser.py), installed into the api image.
+#
+# paddleocr is deliberately NOT here, even though
+# apps/report-manager/app/services/ocr_service.py prefers it and
+# apps/report-manager/requirements.txt pins paddleocr==2.8.1 for local
+# development. A single PaddleOCR process peaks around 6.4 GB RSS; the
+# api container also runs the Express app and shares a host with
+# postgres and the torch-based kb-service, and no compose service
+# declares a mem_limit. So production is Tesseract-only, which is what
+# apps/api/Dockerfile's `ENV OCR_DISABLE_PADDLE=true` pins.
+#
+# That is an accepted trade-off, not an oversight — but it used to be
+# invisible. The parser now resolves and logs the engine at startup and
+# records it per document in the `provider` field
+# (「embedded_report_pipeline_v1+tesseract」), and
+# apps/report-manager/tests/test_ocr_service.py pins the Tesseract
+# behaviour. If paddleocr is ever added here, drop OCR_DISABLE_PADDLE
+# from the Dockerfile in the same change and budget both the memory and
+# a longer OCR_PARSER_TIMEOUT_MS.
+#
+# The tesseract binary itself (with the eng + chi_sim language packs)
+# and poppler-utils come from the image's apt layer, not from pip.
 python-dotenv==1.2.1
 PyPDF2==3.0.1
 Pillow==12.0.0

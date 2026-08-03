@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { Orchestrator } from './run.js';
+import { FINAL_TURN_DIRECTIVE, Orchestrator } from './run.js';
 import { OrchestratorConsentDenied, type OrchestratorEvent } from './types.js';
 import type { ILLMProvider, LlmChatRequest, LlmChatResponse } from '../llm/base.js';
 import type { RetrieveContext, RetrieveResult } from '../retrievers/base.js';
@@ -121,6 +121,438 @@ describe('Orchestrator.run', () => {
     expect(events.map((e) => e.type)).toEqual(['planning', 'plan_complete', 'done']);
   });
 
+  // With the Python KB service down, `medical-kb.ts` returns an empty
+  // result carrying `reason: 'kb_service_unreachable'`. Nothing read
+  // that reason, so the audit recorded a clean success and the model
+  // was handed 「（无内容）」 with no way to tell a dead service from a
+  // topic the KB does not cover. Every knowledge question hit this.
+  it('reports an unreachable retriever as an error, not an empty success', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '知识库暂时取不到资料，我先根据你已有的记录说。',
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    ]);
+    const downTool: ITool = {
+      name: 'search_medical_kb',
+      description: 'kb',
+      parametersSchema: { type: 'object' },
+      parseArgs: () => ({}),
+      execute: async () => ({
+        retrieval: {
+          retrieverId: 'medical_kb',
+          chunks: [],
+          citations: [],
+          metadata: { reason: 'kb_service_unreachable', detail: 'fetch failed' },
+        },
+        display: 'medical_kb: 0 chunks',
+      }),
+    };
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(downTool),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'FSHD 有什么需要注意的',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    const kb = result.toolCalls.find((c) => c.name === 'search_medical_kb');
+    expect(kb?.status).toBe('error');
+    expect(kb?.errorDetail).toContain('kb_service_unreachable');
+
+    // And the model is told which kind of empty this is.
+    const round2Arg = llm.chat.mock.calls[1][0] as LlmChatRequest;
+    const toolMessage = round2Arg.messages.find((m) => m.role === 'tool');
+    expect(toolMessage?.content).toContain('检索失败');
+    expect(toolMessage?.content).not.toBe('（无内容）');
+  });
+
+  // The other side: an empty result that is a real answer about the
+  // patient's own data must stay a success, so the model says "you have
+  // no reports" rather than reporting a malfunction.
+  it('keeps a genuinely-empty patient retrieval as a success', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'get_my_reports', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '你还没有上传报告。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const emptyTool: ITool = {
+      name: 'get_my_reports',
+      description: 'reports',
+      parametersSchema: { type: 'object' },
+      parseArgs: () => ({}),
+      execute: async () => ({
+        retrieval: {
+          retrieverId: 'patient_reports',
+          chunks: [],
+          citations: [],
+          metadata: { reason: 'no_reports_found' },
+        },
+        display: 'patient_reports: 0 chunks',
+      }),
+    };
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(emptyTool),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: '我有哪些报告',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.toolCalls[0].status).toBe('ok');
+    expect(result.answer).toBe('你还没有上传报告。');
+  });
+
+  // The reported failure, end to end: a patient asked「有什么需要注意的」
+  // and the entire bubble read「让我再用其他关键词搜索一下：」— round 2's
+  // lead-in to a search that this being the last round could never run,
+  // with the call itself stripped out behind it. `hasContent` was true,
+  // so no truncation was signalled and the audit row said success.
+  it('does not answer with a round-2 tool-call preamble', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        // Prose + a second call, exactly as observed.
+        content:
+          '让我再用其他关键词搜索一下：\n<minimax:tool_call>\n<invoke name="search_medical_kb">\n<parameter name="query">FSHD 注意事项</parameter>\n</invoke>\n</minimax:tool_call>',
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    ]);
+    const registry = new ToolRegistry().register(
+      mkTool('search_medical_kb', stubResult('medical_kb', 2)),
+    );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      { userId: 'u1', question: '有什么需要注意的', requestId: 'r1', consentLevel: 'basic' },
+      (e) => events.push(e),
+    );
+
+    expect(result.answer).not.toContain('搜索一下');
+    expect(result.answer).not.toContain('<');
+    expect(result.answer).toBe('抱歉，AI 这次没能把回答整理出来，请再问一次。');
+    // Reported on the result, not as an `error` frame: `error` is
+    // terminal to both SSE consumers, so emitting one here stopped the
+    // client before the `done` frame carrying this very fallback.
+    expect(result.answerTruncated).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  // The whole point of the refactor: 「具体解读，然后结合解读分析我的病情
+  // 发展」 needs two lookups — read the report, then look up what its
+  // findings mean. The model said exactly that and the old single-round
+  // shape turned the sentence into the answer.
+  it('runs a second lookup when the model asks for one', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'c1', name: 'get_my_reports', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        // Round 2, tools still on the table: it wants more.
+        content: '我看到你的报告了，让我再查一下FSHD病情发展相关的医学信息。',
+        toolCalls: [
+          { id: 'c2', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD 进展"}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      { content: '结合你的报告和资料，你的情况是这样的……', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry()
+        .register(mkTool('get_my_reports', stubResult('patient_reports', 1)))
+        .register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      {
+        userId: 'u1',
+        question: '具体解读，然后结合解读分析我的病情发展',
+        requestId: 'r1',
+        consentLevel: 'basic',
+      },
+      (e) => events.push(e),
+    );
+
+    // Round 1 is get_my_reports plus the companion KB search that
+    // always accompanies it (companion-tools.ts); round 2 adds the
+    // follow-up the model asked for — and that one is the interesting
+    // difference, because its query is informed by what the report
+    // actually said rather than by the original question.
+    expect(result.toolCalls.map((c) => c.name)).toEqual([
+      'get_my_reports',
+      'search_medical_kb',
+      'search_medical_kb',
+    ]);
+    expect(result.citations.length).toBeGreaterThanOrEqual(3);
+    // The announcement is no longer the answer.
+    expect(result.answer).toBe('结合你的报告和资料，你的情况是这样的……');
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  it('stops at the ceiling and withholds tools on the last round', async () => {
+    // Always asks for one more, forever.
+    const greedy = (n: number) => ({
+      content: `第 ${n} 轮`,
+      toolCalls: [{ id: `c${n}`, name: 'search_medical_kb', argumentsJson: `{"query":"q${n}"}` }],
+      finishReason: 'tool_calls' as const,
+    });
+    const llm = mkLlm([greedy(1), greedy(2), greedy(3), greedy(4), greedy(5)]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 2 },
+    );
+
+    await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    // planner + 2 rounds = 3 calls, and no more however hard it asks.
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+    const last = llm.chat.mock.calls[2][0] as LlmChatRequest;
+    // Tools withheld — this is what makes the bound real. Asking the
+    // model to stop is what failed twice.
+    expect(last.tools).toBeUndefined();
+    expect(last.messages[last.messages.length - 1].content).toBe(FINAL_TURN_DIRECTIVE);
+  });
+
+  // The earlier version of this test passed for the wrong reason: its
+  // third scripted response happened to carry no tool calls, so the
+  // loop exited on that rather than on repeat detection. A model that
+  // keeps repeating never hit the ceiling — `toolRounds` only advanced
+  // when something executed, and nothing was appended to `messages`
+  // when nothing did, so each iteration re-sent a byte-identical
+  // prompt. This one repeats forever and asserts the loop still stops.
+  it('stops when the model repeats the same call indefinitely', async () => {
+    const same = { id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' };
+    const llm = mkLlm(
+      Array.from({ length: 10 }, () => ({
+        content: '再查一次',
+        toolCalls: [{ ...same }],
+        finishReason: 'tool_calls' as const,
+      })),
+    );
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 5 },
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    // planner + the round that executes + the forced answer round.
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+    // The tool ran once despite being asked for ten times.
+    expect(result.toolCalls).toHaveLength(1);
+    // And the last call had no tools, so it could not ask again.
+    const last = llm.chat.mock.calls[2][0] as LlmChatRequest;
+    expect(last.tools).toBeUndefined();
+    expect(last.messages[last.messages.length - 1].content).toBe(FINAL_TURN_DIRECTIVE);
+  });
+
+  it('ends the gather when the model repeats a call it already made', async () => {
+    const same = { id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' };
+    const llm = mkLlm([
+      { content: null, toolCalls: [same], finishReason: 'tool_calls' },
+      // Byte-identical request — rerunning it returns the same chunks.
+      { content: '再查一次', toolCalls: [{ ...same, id: 'c2' }], finishReason: 'tool_calls' },
+      { content: '根据已有资料：……', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 5 },
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    // The tool ran once, not twice, despite being asked for twice.
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.answer).toBe('根据已有资料：……');
+  });
+
+  // Key order is not promised by providers, and a repeat that slips
+  // through costs a whole round.
+  it('treats reordered arguments as the same call', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [
+          { id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"a","limit":5}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '再来',
+        toolCalls: [
+          { id: 'c2', name: 'search_medical_kb', argumentsJson: '{"limit":5,"query":"a"}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      { content: '答案', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 5 },
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.toolCalls).toHaveLength(1);
+  });
+
+  // A preamble-only round 2 is a sampling fluke — the same question
+  // against the same context answered fine on a re-run — so we re-ask
+  // once instead of turning it into an apology.
+  it('retries once when round 2 answers with only a preamble', async () => {
+    const good = '需要注意的主要是三点：定期复查呼吸功能、避免过度疲劳、跟主治医生讨论康复方案。';
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '让我再用其他关键词搜索一下：', toolCalls: [], finishReason: 'stop' },
+      { content: good, toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      { userId: 'u1', question: '有什么需要注意的', requestId: 'r1', consentLevel: 'basic' },
+      (e) => events.push(e),
+    );
+
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+    expect(result.answer).toBe(good);
+    // The retry succeeded, so this is NOT an error run.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    // …and the client is told to drop what it already painted.
+    expect(events.some((e) => e.type === 'answer_reset')).toBe(true);
+  });
+
+  it('gives up after exactly one retry', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '让我再搜索一下：', toolCalls: [], finishReason: 'stop' },
+      { content: '我再查一下：', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const events: OrchestratorEvent[] = [];
+    const result = await orch.run(
+      { userId: 'u1', question: '有什么需要注意的', requestId: 'r1', consentLevel: 'basic' },
+      (e) => events.push(e),
+    );
+
+    // Three calls total, never four — this is a two-round system.
+    expect(llm.chat).toHaveBeenCalledTimes(3);
+    expect(result.answer).toBe('抱歉，AI 这次没能把回答整理出来，请再问一次。');
+    expect(result.answerTruncated).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  // The other half of the same guard: a real answer must survive even
+  // when the model appended a stray tool call after writing it.
+  it('keeps a substantive answer that happens to carry a stray tool call', async () => {
+    const answer =
+      '需要留意的主要是三点：呼吸功能每年查一次、体重别掉太快、肩胛固定手术要跟主治医生充分讨论后再决定。';
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'call-1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: `${answer}<tool_call><invoke name="x"></invoke></tool_call>`,
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    ]);
+    const registry = new ToolRegistry().register(
+      mkTool('search_medical_kb', stubResult('medical_kb', 2)),
+    );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+
+    const result = await orch.run({
+      userId: 'u1',
+      question: '有什么需要注意的',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.answer).toBe(answer);
+  });
+
   it('runs tool calls, renders context, and produces a final answer', async () => {
     const llm = mkLlm([
       {
@@ -172,10 +604,16 @@ describe('Orchestrator.run', () => {
       (e) => events.push(e),
     );
 
+    // Still two calls when one round of tools is enough — the common
+    // case did not get more expensive when gathering became loopable.
     expect(llm.chat).toHaveBeenCalledTimes(2);
     const round2Arg = llm.chat.mock.calls[1][0] as LlmChatRequest;
-    expect(round2Arg.tools).toBeUndefined();
-    // system + user + assistant(toolCalls) + 2 tool messages
+    // Round 2 carries the tools: it may answer (it does here) or ask
+    // for another lookup. Withholding them is reserved for the ceiling.
+    expect(round2Arg.tools?.map((t) => t.name)).toEqual(['search_medical_kb', 'get_my_profile']);
+    // system + user + assistant(toolCalls) + 2 tool messages. No
+    // final-turn directive: this round can still ask for more, so
+    // telling it there is no next round would be false.
     expect(round2Arg.messages).toHaveLength(5);
     expect(round2Arg.messages[2].role).toBe('assistant');
     expect(round2Arg.messages[3].role).toBe('tool');
@@ -421,7 +859,11 @@ describe('Orchestrator.run with streamFinalAnswer=true', () => {
     );
 
     expect(events.filter((e) => e.type === 'answer_delta')).toHaveLength(0);
-    expect(result.answer).toMatch(/暂时无法生成完整回答/);
+    // The wording changed when the tool-call scrubber landed: an empty
+    // round-2 answer is now usually *because* the whole output was
+    // provider tool-call markup that got stripped, so the copy invites
+    // a retry rather than reporting the assistant as unavailable.
+    expect(result.answer).toMatch(/没能把回答整理出来/);
   });
 });
 

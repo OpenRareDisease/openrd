@@ -19,6 +19,7 @@ import type {
   CreateSubmissionInput,
   CreateProfileInput,
   DailyImpactInput,
+  DeletableRecordKind,
   FollowupEventInput,
   FunctionTestInput,
   MeasurementInput,
@@ -34,6 +35,7 @@ import {
   type SharingPreferenceUpdateInput,
 } from './sharing-preferences.js';
 import type { AppLogger } from '../../config/logger.js';
+import { maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   ConsentMutationError,
@@ -96,6 +98,9 @@ export interface PatientMeasurementDTO {
 }
 
 export interface PatientFunctionTestDTO {
+  /** 「今天做不了」— attempted and could not be completed.
+   *  Distinct from a missing row; see migration 017. */
+  notApplicable?: boolean;
   id: string;
   testType: string;
   measuredValue: number | null;
@@ -141,6 +146,29 @@ interface DeletedPatientDocumentResult {
   title: string | null;
   storageUri: string;
 }
+
+interface SoftDeletedRecordResult {
+  kind: DeletableRecordKind;
+  id: string;
+  deletedAt: string;
+}
+
+/**
+ * Table behind each retractable record kind. The map is keyed by the
+ * `DELETABLE_RECORD_KINDS` enum, so the only strings that can ever
+ * reach the `UPDATE ${table}` interpolation are these three literals
+ * — a request body never touches the SQL text.
+ *
+ * Adding a kind here is not enough on its own: the table needs the
+ * `deleted_at` column (migration 016) AND every read path has to
+ * filter on it, or the record comes back from the dead in the next
+ * aggregate.
+ */
+const DELETABLE_RECORD_TABLES: Record<DeletableRecordKind, string> = {
+  function_test: 'patient_function_tests',
+  symptom_score: 'patient_symptom_scores',
+  followup_event: 'patient_followup_events',
+};
 
 export interface PatientMedicationDTO {
   id: string;
@@ -542,6 +570,43 @@ const getDocumentDisplayTitle = (document: PatientDocumentDTO) => {
   return documentTypeLabels[document.documentType] ?? '新报告';
 };
 
+/**
+ * The slice of `ocr_payload` the profile actually needs.
+ *
+ * `SELECT … ocr_payload` handed back the whole blob for every document
+ * a patient has ever uploaded, and the largest key in it —
+ * `aiExtraction`, the model's raw structured read of the report — is
+ * read by nothing on this path. Not the passport builder, not the
+ * genetic autofill, not the patient summariser, not the app. It was
+ * loaded from disk, parsed into JS, and serialised out to the phone on
+ * every profile fetch, purely because `*`-shaped selects do not
+ * distinguish.
+ *
+ * Measured over the 131 parsed documents in the dev corpus: 938 KB of
+ * payload JSON becomes 215 KB, a 77% cut. The heaviest patient has 38
+ * documents — ~270 KB of OCR payload on a screen that reads three keys
+ * of it.
+ *
+ * Written as an allowlist rather than `ocr_payload - 'aiExtraction'`.
+ * A denylist quietly re-widens the moment the OCR provider adds a key,
+ * which is exactly how this got large in the first place; an allowlist
+ * makes the next addition a decision someone has to make on purpose.
+ *
+ * The two spellings of the text key collapse here as well — the parser
+ * has emitted both `extractedText` and `extracted_text` over its life,
+ * and readers have had to check for both ever since.
+ *
+ * Documents fetched one at a time (`GET …/documents/:id/ocr`) still
+ * return the full payload; the report-detail screen shows `aiExtraction`
+ * in its raw-payload view, and that is the right place to pay for it.
+ */
+const PROFILE_OCR_PAYLOAD_PROJECTION = `
+  CASE WHEN ocr_payload IS NULL THEN NULL ELSE jsonb_build_object(
+    'fields', ocr_payload -> 'fields',
+    'extractedText', coalesce(ocr_payload -> 'extractedText', ocr_payload -> 'extracted_text'),
+    'provider', ocr_payload -> 'provider'
+  ) END AS ocr_payload`;
+
 export class PatientProfileService {
   private readonly pool: Pool;
   private readonly logger: AppLogger;
@@ -587,11 +652,15 @@ export class PatientProfileService {
            ORDER BY recorded_at DESC`,
           [profileId],
         ),
+        // `deleted_at IS NULL` on the three retractable tables: this
+        // query feeds the whole app — mobile timeline, passport,
+        // progression summary, data export — so a missing filter here
+        // would resurrect a retracted record everywhere at once.
         client.query(
           `SELECT id, profile_id, submission_id, test_type, measured_value, side, protocol, unit,
                   device_used, assistance_required, notes, performed_at, created_at
            FROM patient_function_tests
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY performed_at DESC`,
           [profileId],
         ),
@@ -599,7 +668,7 @@ export class PatientProfileService {
           `SELECT id, profile_id, submission_id, symptom_key, score, scale_min, scale_max, notes,
                   recorded_at, created_at
            FROM patient_symptom_scores
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY recorded_at DESC`,
           [profileId],
         ),
@@ -615,7 +684,7 @@ export class PatientProfileService {
           `SELECT id, profile_id, submission_id, event_type, severity, occurred_at, resolved_at,
                   description, linked_document_id, created_at
            FROM patient_followup_events
-           WHERE profile_id = $1
+           WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY occurred_at DESC, created_at DESC`,
           [profileId],
         ),
@@ -628,7 +697,8 @@ export class PatientProfileService {
         ),
         client.query(
           `SELECT id, profile_id, submission_id, document_type, title, file_name, mime_type,
-                  file_size_bytes, storage_uri, status, uploaded_at, checksum, ocr_payload
+                  file_size_bytes, storage_uri, status, uploaded_at, checksum,
+                  ${PROFILE_OCR_PAYLOAD_PROJECTION}
            FROM patient_documents
            WHERE profile_id = $1
            ORDER BY uploaded_at DESC`,
@@ -791,18 +861,61 @@ export class PatientProfileService {
     return buildClinicalPassportSummary(profile);
   }
 
+  /**
+   * Four scalars, and it used to read eight tables to get them.
+   *
+   * `getProfileByUserId` loads the patient's entire history — every
+   * measurement, function test, symptom score, daily impact, follow-up
+   * event, activity log, medication and document — and this method
+   * discarded all of it but the name and the baseline. The baseline
+   * screen polls this on every open.
+   *
+   * It does genuinely need the documents: `applyGeneticReportAutofill`
+   * fills a missing diagnosis date or D4Z4 result from the most recent
+   * genetic report, so a baseline built without them would show blanks
+   * the full profile fills in. The other seven tables it never touched.
+   */
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
-    const profile = await this.getProfileByUserId(userId);
-    if (!profile) {
+    const profileResult = await this.pool.query<PatientProfileRecord>(
+      `SELECT id, full_name, preferred_name, diagnosis_date, genetic_mutation,
+              baseline_payload, updated_at
+       FROM patient_profiles
+       WHERE user_id = $1`,
+      [userId],
+    );
+
+    if (!profileResult.rowCount) {
       return null;
     }
 
+    const profile = profileResult.rows[0];
+    const documentsResult = await this.pool.query(
+      `SELECT id, document_type, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
+       FROM patient_documents
+       WHERE profile_id = $1
+       ORDER BY uploaded_at DESC`,
+      [profile.id],
+    );
+
+    const autoFilled = applyGeneticReportAutofill(
+      {
+        diagnosisDate: toDateString(profile.diagnosis_date),
+        geneticMutation: profile.genetic_mutation,
+        baseline: asRecord(profile.baseline_payload),
+      },
+      documentsResult.rows.map((row) => ({
+        documentType: row.document_type,
+        uploadedAt: toTimestampString(row.uploaded_at),
+        ocrPayload: row.ocr_payload ?? null,
+      })),
+    );
+
     return {
       profileId: profile.id,
-      fullName: profile.fullName,
-      preferredName: profile.preferredName,
-      baseline: profile.baseline,
-      updatedAt: profile.updatedAt,
+      fullName: profile.full_name,
+      preferredName: profile.preferred_name,
+      baseline: autoFilled.baseline,
+      updatedAt: toTimestampString(profile.updated_at),
     };
   }
 
@@ -1073,13 +1186,15 @@ export class PatientProfileService {
         device_used,
         assistance_required,
         notes,
+        not_applicable,
         performed_at
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, NOW())
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::timestamptz, NOW())
       )
       RETURNING id, submission_id, test_type, measured_value, side, protocol, unit,
-                device_used, assistance_required, notes, performed_at, created_at`,
+                device_used, assistance_required, notes, not_applicable,
+                performed_at, created_at`,
       [
         profileId,
         submissionId,
@@ -1091,6 +1206,10 @@ export class PatientProfileService {
         payload.deviceUsed ?? null,
         payload.assistanceRequired ?? null,
         payload.notes ?? null,
+        // A test the patient could not perform never carries a value —
+        // the DB CHECK says the same thing, this keeps the two from
+        // disagreeing when a caller sends both.
+        payload.notApplicable === true,
         payload.performedAt ?? null,
       ],
     );
@@ -1100,6 +1219,7 @@ export class PatientProfileService {
     return {
       id: row.id,
       testType: row.test_type,
+      notApplicable: row.not_applicable === true,
       measuredValue: row.measured_value ? Number(row.measured_value) : null,
       side: row.side ?? null,
       protocol: row.protocol ?? null,
@@ -1405,21 +1525,27 @@ export class PatientProfileService {
 
       const row = result.rows[0];
 
+      // `title`, `file_name` and `storage_uri` are deliberately NOT in
+      // the audit payload, though the RETURNING clause fetches them —
+      // the caller needs storage_uri to delete the blob, which is a
+      // different job. A patient names their own uploads
+      //（「基因检测 2026」）and hospitals put names and IDs in file
+      // names, so all three are report content rather than evidence
+      // that a deletion occurred. `documentId` + `documentType` proves
+      // that completely, and unlike the other three it resolves to
+      // nothing once the account is purged.
       await client.query(
         `INSERT INTO audit_logs (event_type, event_payload)
          VALUES ($1, $2)`,
         [
           'patient_document.deleted',
-          {
+          maskAuditPayload({
             userId,
             documentId: row.id,
             documentType: row.document_type,
-            title: row.title ?? null,
-            fileName: row.file_name ?? null,
-            storageUri: row.storage_uri,
             ip: meta?.ip ?? null,
             userAgent: meta?.userAgent ?? null,
-          },
+          }),
         ],
       );
 
@@ -1438,6 +1564,114 @@ export class PatientProfileService {
           await client.query('ROLLBACK');
         } catch (rollbackError) {
           this.logger.warn({ rollbackError }, 'deleteDocumentForUser: ROLLBACK after error failed');
+        }
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Retract one hand-entered follow-up record (功能测试 / 症状评分 /
+   * 病程事件).
+   *
+   * Soft delete, not DELETE — the reasoning lives in migration 016.
+   * The short version: these rows are longitudinal clinical evidence
+   * shared with clinicians, they anchor a `submission_id` group that
+   * other rows still reference, and one-tap retraction by a user with
+   * impaired fine motor control has to be recoverable by an operator.
+   *
+   * The flip and the audit row land in one transaction for the same
+   * reason deleteDocumentForUser does it: a tombstone with no trail
+   * of who set it is worse than either half alone.
+   */
+  async softDeleteRecordForUser(
+    userId: string,
+    kind: DeletableRecordKind,
+    recordId: string,
+    meta?: { ip?: string; userAgent?: string },
+  ): Promise<SoftDeletedRecordResult> {
+    const table = DELETABLE_RECORD_TABLES[kind];
+    const client = await this.pool.connect();
+    let txOpen = false;
+    try {
+      await client.query('BEGIN');
+      txOpen = true;
+
+      // Ownership is enforced in the UPDATE itself (join through
+      // patient_profiles on user_id) so there is no window between a
+      // permission check and the write.
+      const updated = await client.query<{ id: string; deleted_at: Date }>(
+        `UPDATE ${table} r
+         SET deleted_at = NOW()
+         FROM patient_profiles p
+         WHERE r.profile_id = p.id
+           AND p.user_id = $1
+           AND r.id = $2
+           AND r.deleted_at IS NULL
+         RETURNING r.id, r.deleted_at`,
+        [userId, recordId],
+      );
+
+      if (!updated.rowCount) {
+        // Nothing flipped: either the record isn't this user's (or
+        // never existed), or it was already retracted. Re-read
+        // without the deleted_at filter to tell those apart — a
+        // patient whose tap double-fired, or who retried over a flaky
+        // connection, should see the same success as the first call
+        // rather than a 404 that reads like data loss.
+        const existing = await client.query<{ id: string; deleted_at: Date | null }>(
+          `SELECT r.id, r.deleted_at
+           FROM ${table} r
+           JOIN patient_profiles p ON p.id = r.profile_id
+           WHERE p.user_id = $1 AND r.id = $2`,
+          [userId, recordId],
+        );
+        await client.query('ROLLBACK');
+        txOpen = false;
+
+        const row = existing.rows[0];
+        if (!row?.deleted_at) {
+          throw new AppError('记录不存在', 404);
+        }
+        return { kind, id: row.id, deletedAt: toTimestampString(row.deleted_at) };
+      }
+
+      const row = updated.rows[0];
+
+      // Same shape as patient_document.deleted: the acting user goes
+      // in the payload rather than audit_logs.user_id, whose
+      // ON DELETE SET NULL would erase attribution the moment the
+      // account is purged.
+      await client.query(
+        `INSERT INTO audit_logs (event_type, event_payload)
+         VALUES ($1, $2)`,
+        [
+          'patient_record.soft_deleted',
+          maskAuditPayload({
+            userId,
+            recordKind: kind,
+            recordId: row.id,
+            ip: meta?.ip ?? null,
+            userAgent: meta?.userAgent ?? null,
+          }),
+        ],
+      );
+
+      await client.query('COMMIT');
+      txOpen = false;
+
+      return { kind, id: row.id, deletedAt: toTimestampString(row.deleted_at) };
+    } catch (error) {
+      if (txOpen) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          this.logger.warn(
+            { rollbackError },
+            'softDeleteRecordForUser: ROLLBACK after error failed',
+          );
         }
       }
       throw error;
@@ -1914,18 +2148,21 @@ export class PatientProfileService {
            ORDER BY recorded_at ASC`,
         [submissionIds],
       ),
+      // Retracted rows drop out of the submission they were entered
+      // with; the submission itself stays (its other rows are still
+      // valid) and simply lists one fewer item.
       this.pool.query(
         `SELECT id, submission_id, test_type, measured_value, side, protocol, unit, device_used,
                   assistance_required, notes, performed_at, created_at
            FROM patient_function_tests
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY performed_at ASC`,
         [submissionIds],
       ),
       this.pool.query(
         `SELECT id, submission_id, symptom_key, score, scale_min, scale_max, notes, recorded_at, created_at
            FROM patient_symptom_scores
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY recorded_at ASC`,
         [submissionIds],
       ),
@@ -1940,7 +2177,7 @@ export class PatientProfileService {
         `SELECT id, submission_id, event_type, severity, occurred_at, resolved_at, description,
                   linked_document_id, created_at
            FROM patient_followup_events
-           WHERE submission_id = ANY($1::uuid[])
+           WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY occurred_at ASC, created_at ASC`,
         [submissionIds],
       ),
@@ -2609,12 +2846,20 @@ export class PatientProfileService {
     const profileId = await this.ensureProfileForUser(userId);
 
     const [trendResult, distributionResult, latestResult] = await Promise.all([
+      // Newest-first + LIMIT, reversed in JS below. The query used to
+      // fetch a patient's entire history for this muscle group and
+      // `.slice(-limit)` it away in memory — same answer, but the cost
+      // grew with how long someone has been using the app, which is
+      // backwards for a chart that only ever draws the last `limit`
+      // points. DESC also matches idx_patient_measurements_latest's
+      // own direction, so the ordering is free.
       this.pool.query(
         `SELECT recorded_at, strength_score
          FROM patient_measurements
          WHERE profile_id = $1 AND muscle_group = $2
-         ORDER BY recorded_at ASC`,
-        [profileId, muscleGroup],
+         ORDER BY recorded_at DESC
+         LIMIT $3`,
+        [profileId, muscleGroup, limit],
       ),
       this.pool.query(
         `SELECT
@@ -2638,12 +2883,13 @@ export class PatientProfileService {
       ),
     ]);
 
+    // Back to oldest-first: the chart plots left to right in time.
     const trend = trendResult.rows
       .map((row) => ({
         recordedAt: toTimestampString(row.recorded_at),
         strengthScore: Number(row.strength_score),
       }))
-      .slice(-limit);
+      .reverse();
 
     const distributionRow = distributionResult.rows[0];
     const distribution = distributionRow?.sample_count

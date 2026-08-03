@@ -167,4 +167,83 @@ describe('purgeDueAccountDeletions', () => {
     const purged = await purgeDueAccountDeletions(pool, removeFile, logger);
     expect(purged).toBe(1);
   });
+
+  /**
+   * The ledger row says 「purged」; audit_logs used to keep the raw
+   * phone number, email and client IP forever, because no insert site
+   * ever populates audit_logs.user_id and so init_db.sql's
+   * ON DELETE SET NULL never fires.
+   */
+  describe('audit_logs erasure', () => {
+    const buildAuditClient = () => {
+      const calls: { sql: string; params: unknown[] }[] = [];
+      const client = {
+        query: vi.fn().mockImplementation((sql: string, params: unknown[] = []) => {
+          calls.push({ sql, params });
+          if (sql.includes('SELECT d.storage_uri')) return Promise.resolve({ rows: [] });
+          if (sql.includes('SELECT phone_number, email FROM app_users')) {
+            return Promise.resolve({
+              rows: [{ phone_number: '+8613800000000', email: 'a@example.com' }],
+            });
+          }
+          return Promise.resolve({ rows: [] });
+        }),
+        release: vi.fn(),
+      };
+      return { client, calls };
+    };
+
+    const runPurge = async () => {
+      const { client, calls } = buildAuditClient();
+      const pool = {
+        query: vi.fn().mockResolvedValue({ rows: [{ id: 'req-1', user_id: 'u1' }] }),
+        connect: vi.fn().mockResolvedValue(client),
+      } as unknown as Pool;
+      await purgeDueAccountDeletions(pool, vi.fn().mockResolvedValue(undefined), logger);
+      return calls;
+    };
+
+    it('tombstones the rows instead of deleting them', async () => {
+      const calls = await runPurge();
+      const audit = calls.find((call) => call.sql.includes('audit_logs'));
+      expect(audit).toBeDefined();
+      // Deleting would destroy the evidence that the deletion itself
+      // was handled correctly — the one record a data-deletion review
+      // actually asks to see.
+      expect(audit!.sql).toContain('UPDATE audit_logs');
+      expect(calls.some((call) => /DELETE\s+FROM\s+audit_logs/i.test(call.sql))).toBe(false);
+    });
+
+    it('strips every identifier-bearing key and stamps the tombstone', async () => {
+      const calls = await runPurge();
+      const sql = calls.find((call) => call.sql.includes('audit_logs'))!.sql;
+      for (const key of ['phoneNumber', 'email', 'identifier', 'ip', 'userAgent']) {
+        expect(sql).toContain(`- '${key}'`);
+      }
+      expect(sql).toContain('subjectPurgedAt');
+      // userId survives on purpose: with app_users gone it resolves to
+      // nothing, and it is what still distinguishes one account with
+      // forty failed logins from forty accounts with one each.
+      expect(sql).not.toContain(`- 'userId'`);
+    });
+
+    it('also catches pre-masking rows keyed by the raw phone or email', async () => {
+      const calls = await runPurge();
+      const audit = calls.find((call) => call.sql.includes('audit_logs'))!;
+      expect(audit.params).toEqual(['u1', '+8613800000000', 'a@example.com']);
+      expect(audit.sql).toContain(`event_payload->>'userId'`);
+      expect(audit.sql).toContain(`event_payload->>'phoneNumber'`);
+      expect(audit.sql).toContain(`event_payload->>'identifier'`);
+    });
+
+    it('runs before the app_users delete, while the identity is still readable', async () => {
+      const calls = await runPurge();
+      const auditIndex = calls.findIndex((call) => call.sql.includes('UPDATE audit_logs'));
+      const userIndex = calls.findIndex((call) => call.sql.includes('DELETE FROM app_users'));
+      const commitIndex = calls.findIndex((call) => call.sql.trim() === 'COMMIT');
+      expect(auditIndex).toBeGreaterThan(-1);
+      expect(auditIndex).toBeLessThan(userIndex);
+      expect(userIndex).toBeLessThan(commitIndex);
+    });
+  });
 });

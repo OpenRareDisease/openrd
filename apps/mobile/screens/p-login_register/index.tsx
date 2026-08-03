@@ -1,9 +1,11 @@
+import { COLOR } from '../../lib/design';
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
@@ -11,8 +13,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome5, FontAwesome6 } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import Icon from '../common/Icon';
+import Button from '../common/Button';
+import SegmentedControl from '../common/SegmentedControl';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -21,11 +24,21 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import styles from './styles';
-import { ApiError, login, loginWithOtp, register, resetPassword, sendOtp } from '../../lib/api';
+import {
+  ApiError,
+  apiRequest,
+  login,
+  loginWithOtp,
+  register,
+  resetPassword,
+  sendOtp,
+} from '../../lib/api';
 import { useAuth } from '../../contexts/AuthContext';
-import { CLINICAL_COLORS, CLINICAL_GRADIENTS } from '../../lib/clinical-visuals';
+
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import {
+  LEGAL_DOCUMENTS,
+  LEGAL_DOCUMENT_VERSIONS,
   PRIVACY_POLICY_TEXT,
   PRIVACY_POLICY_TITLE,
   USER_AGREEMENT_TEXT,
@@ -45,10 +58,8 @@ import {
   validateRegisterForm,
 } from '../../lib/validation';
 import ScreenBackButton from '../common/ScreenBackButton';
-
-// Interrupted-registration draft. Secrets (passwords) and OTP state
-// are stripped before persisting — see the persist effect.
-const REGISTER_FORM_DRAFT_KEY = 'openrd.register.draft';
+import { REGISTER_FORM_DRAFT_KEY, REGISTER_FORM_DRAFT_MAX_AGE_MS } from '../../lib/draft-keys';
+import { parseRegisterDraft } from '../../lib/register-draft';
 
 interface LoginFormData {
   phone: string;
@@ -112,6 +123,28 @@ const LoginRegisterScreen: React.FC = () => {
   });
   const [isRegisterDraftHydrated, setIsRegisterDraftHydrated] = useState(false);
 
+  /**
+   * 用户协议 + 隐私政策 acceptance. Un-prechecked, and deliberately NOT
+   * part of `registerForm`: the draft persist effect below writes
+   * everything in that object to storage, so folding the flag in would
+   * mean an interrupted registration comes back with the box already
+   * ticked — i.e. the app would be asserting a consent the user never
+   * gave on this attempt. 《个人信息保护法》第 14 条 requires consent to
+   * be 「自愿、明确作出」; a restored tick is neither.
+   */
+  const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
+  const [termsError, setTermsError] = useState<string | null>(null);
+
+  /**
+   * When the number in the draft was FIRST typed, not when it was last
+   * written. The expiry below has to be anchored to something the user
+   * did; if each persist stamped `Date.now()` the hydrate effect would
+   * re-stamp it on mount, and merely opening the 注册 tab once a day
+   * would keep someone else's phone number alive for ever — which is
+   * the exact failure the bound exists to close.
+   */
+  const registerDraftSavedAtRef = useRef<number | null>(null);
+
   // Restore an interrupted registration (user switched away to read
   // the SMS, app got killed, …). Secrets and OTP state are NEVER
   // persisted — see the persist effect below.
@@ -119,21 +152,26 @@ const LoginRegisterScreen: React.FC = () => {
     (async () => {
       try {
         const raw = await getSessionValue(REGISTER_FORM_DRAFT_KEY);
-        if (raw) {
-          const draft = JSON.parse(raw) as Partial<RegisterFormData> & Record<string, unknown>;
-          // Pick known fields explicitly: a pre-slim draft carries
-          // removed profile fields (fullName, region…), and spreading
-          // it would smuggle them into state — and back into storage
-          // — forever. Secrets/OTP state are excluded by construction.
+        // Expiry, the pre-bound (no savedAt) shape and the pre-slim
+        // shape are all decided in lib/register-draft.ts, where they
+        // are covered by tests. A null here always means「delete」, not
+        // 「keep it and look again later」: a draft we refuse to restore
+        // is a phone number with no owner, and leaving it on disk is
+        // the whole defect.
+        const draft = parseRegisterDraft(raw, {
+          now: Date.now(),
+          maxAgeMs: REGISTER_FORM_DRAFT_MAX_AGE_MS,
+        });
+        if (!draft) {
+          if (raw) {
+            await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
+          }
+        } else {
+          registerDraftSavedAtRef.current = draft.savedAt;
           setRegisterForm((prev) => ({
             ...prev,
-            phone: typeof draft.phone === 'string' ? draft.phone : prev.phone,
-            identity:
-              draft.identity === 'doctor' ||
-              draft.identity === 'patient_family' ||
-              draft.identity === 'other'
-                ? draft.identity
-                : prev.identity,
+            phone: draft.phone,
+            identity: draft.identity ?? prev.identity,
           }));
         }
       } catch {
@@ -156,9 +194,28 @@ const LoginRegisterScreen: React.FC = () => {
     void confirmPassword;
     void code;
     void otpRequestId;
-    setSessionValue(REGISTER_FORM_DRAFT_KEY, JSON.stringify(safeDraft)).catch(() => {
-      // Draft persistence must never block typing.
-    });
+
+    // Nothing to restore means nothing to store. Without this the
+    // effect fired once on mount with an empty form and planted the
+    // key on every device that merely *opened* the 注册 tab; and a
+    // patient who deliberately cleared the number would have watched
+    // the cleared value be written straight back. `identity` alone is
+    // a three-value enum, not worth a storage entry on its own.
+    if (!safeDraft.phone.trim()) {
+      registerDraftSavedAtRef.current = null;
+      setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
+      return;
+    }
+
+    // Carried forward, never re-stamped — see registerDraftSavedAtRef.
+    const savedAt = registerDraftSavedAtRef.current ?? Date.now();
+    registerDraftSavedAtRef.current = savedAt;
+
+    setSessionValue(REGISTER_FORM_DRAFT_KEY, JSON.stringify({ ...safeDraft, savedAt })).catch(
+      () => {
+        // Draft persistence must never block typing.
+      },
+    );
   }, [registerForm, isRegisterDraftHydrated]);
 
   // UI状态
@@ -283,6 +340,14 @@ const LoginRegisterScreen: React.FC = () => {
   // 标签切换
   const handleTabSwitch = (tab: 'login' | 'register') => {
     setActiveTab(tab);
+    if (tab === 'login') {
+      // Switching to 登录 is the clearest「I am not registering after
+      // all」signal this screen ever gets, and it is the abandonment
+      // path that never reaches logout — the device has no session, so
+      // PATIENT_SCOPED_SECURE_KEYS is never swept. Drop the number now
+      // rather than leaving it to the 24h expiry.
+      void setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
+    }
   };
 
   // 密码显示切换
@@ -364,6 +429,12 @@ const LoginRegisterScreen: React.FC = () => {
       });
 
       await setSession(response);
+      // Somebody logged in on this device, so whoever was half-way
+      // through 注册 is not coming back to it. This is the second
+      // abandonment point (the first is handleTabSwitch); together
+      // with the 24h bound they cover the paths that never reach
+      // logout, which is the only sweep that knows about the key.
+      await setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
       // Show only the last 4 digits — the full phone number on a
       // shoulder-surfable success toast is a "we're showing PII we
       // don't need to" case the strict review flagged.
@@ -379,6 +450,41 @@ const LoginRegisterScreen: React.FC = () => {
     }
   };
 
+  /**
+   * Persist「这个用户在这一天同意了这一版」 to the acceptance ledger
+   * (db/migrations/019). Called once, right after the token exists —
+   * the endpoint is authenticated, and an anonymous write into a table
+   * keyed by user id would defeat the point of having the ledger.
+   *
+   * Failures are logged and swallowed. The account has already been
+   * created and the session already stored by the time we get here, so
+   * throwing would strand the user on the register screen with a
+   * working account they cannot see. The ledger is not left broken for
+   * ever either: GET /legal/acceptances returns `outstanding`, and the
+   * sensitive-PI gate re-asks before any health data is stored, so a
+   * lost write costs a re-confirmation rather than a silent gap.
+   *
+   * Both documents are recorded, not one combined「agreement」row: the
+   * two texts version independently, and a future revision of only the
+   * privacy policy has to be able to re-ask for only that one.
+   */
+  const recordRegistrationAcceptances = async () => {
+    const documents = [LEGAL_DOCUMENTS.userAgreement, LEGAL_DOCUMENTS.privacyPolicy] as const;
+    const results = await Promise.allSettled(
+      documents.map((document) =>
+        apiRequest('/legal/acceptances', {
+          method: 'POST',
+          body: JSON.stringify({ document, version: LEGAL_DOCUMENT_VERSIONS[document] }),
+        }),
+      ),
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.warn('[legal] failed to record agreement acceptance', result.reason);
+      }
+    }
+  };
+
   // 注册提交
   const handleRegisterSubmit = async () => {
     // Surface EVERY failing field inline at once (no more one
@@ -389,6 +495,18 @@ const LoginRegisterScreen: React.FC = () => {
       return;
     }
     setRegisterErrors({});
+
+    // The consent gate. Checked AFTER the field errors so a user who
+    // has both problems sees the fields first (they are above the
+    // checkbox on screen) — but before the network call, because a
+    // registration completed without acceptance is an account we then
+    // have no lawful basis to hold data for.
+    if (!hasAcceptedTerms) {
+      setTermsError('请先阅读并勾选同意《用户协议》和《隐私政策》');
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+      return;
+    }
+    setTermsError(null);
 
     setIsLoading(true);
 
@@ -419,6 +537,10 @@ const LoginRegisterScreen: React.FC = () => {
       // could half-fail AFTER the token was stored, stranding an
       // account with no profile and no recovery path.
       await setSession(response);
+      // Ledger write goes here and not before setSession: apiRequest
+      // reads the token out of storage, and setSession is what puts it
+      // there.
+      await recordRegistrationAcceptances();
       // Registration is complete — the draft has served its purpose.
       await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
       showModal('success', '注册成功', '接下来用 1 分钟完成基础档案');
@@ -485,6 +607,8 @@ const LoginRegisterScreen: React.FC = () => {
         requestId: otpLoginForm.requestId,
       });
       await setSession(response);
+      // Same reasoning as the password-login path above.
+      await setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
       const lastFour = (response.user.phoneNumber ?? '').slice(-4) || '****';
       showModal('success', '登录成功', `欢迎回来，尾号 ${lastFour}`);
       router.replace('/p-home');
@@ -562,13 +686,13 @@ const LoginRegisterScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
-      >
+      {/* Flat paper, not the sand gradient. CLINICAL_GRADIENTS.page is
+          ['#F8F2EA', …], the palette lib/design.ts explicitly rejected
+          — its own comment says #F8F2EA "pulled yellow enough to grey
+          out the teal sitting on it" — so the last four screens using
+          it were painting their page in the rejected colour underneath
+          the accent it greys out. */}
+      <View style={styles.backgroundGradient}>
         <KeyboardAvoidingView
           style={styles.keyboardAvoidingView}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -588,7 +712,7 @@ const LoginRegisterScreen: React.FC = () => {
               <View style={styles.logoContainer}>
                 <Animated.View style={[styles.logoWrapper, logoAnimatedStyle]}>
                   <View style={styles.logoCard}>
-                    <FontAwesome5 name="heartbeat" size={24} style={styles.logoIcon} />
+                    <Icon name="heartbeat" size={24} style={styles.logoIcon} />
                   </View>
                 </Animated.View>
                 <Text style={styles.appName}>FSHD-openrd</Text>
@@ -604,72 +728,32 @@ const LoginRegisterScreen: React.FC = () => {
               }}
             >
               {/* 切换标签 */}
-              <View style={styles.tabSwitcher}>
-                <TouchableOpacity
-                  style={[
-                    styles.tabButton,
-                    styles.tabButtonLeft,
-                    activeTab === 'login' && styles.tabButtonActive,
-                  ]}
-                  onPress={() => handleTabSwitch('login')}
-                >
-                  <Text
-                    style={[
-                      styles.tabButtonText,
-                      activeTab === 'login' && styles.tabButtonTextActive,
-                    ]}
-                  >
-                    登录
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.tabButton,
-                    styles.tabButtonRight,
-                    activeTab === 'register' && styles.tabButtonActive,
-                  ]}
-                  onPress={() => handleTabSwitch('register')}
-                >
-                  <Text
-                    style={[
-                      styles.tabButtonText,
-                      activeTab === 'register' && styles.tabButtonTextActive,
-                    ]}
-                  >
-                    注册
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              <SegmentedControl
+                segments={[
+                  { key: 'login', label: '登录' },
+                  { key: 'register', label: '注册' },
+                ]}
+                value={activeTab}
+                onChange={(key) => handleTabSwitch(key as 'login' | 'register')}
+                accessibilityLabel="登录或注册"
+                style={styles.tabSwitcher}
+              />
 
               {/* 登录表单 */}
               {activeTab === 'login' && !isResetMode && (
                 <View style={styles.formContainer}>
-                  <View style={styles.identityRow}>
-                    {(
-                      [
-                        { value: 'password', label: '密码登录' },
-                        { value: 'otp', label: '验证码登录' },
-                      ] as const
-                    ).map((option) => {
-                      const isActive = loginMethod === option.value;
-                      return (
-                        <TouchableOpacity
-                          key={option.value}
-                          style={[styles.identityButton, isActive && styles.identityButtonActive]}
-                          onPress={() => setLoginMethod(option.value)}
-                        >
-                          <Text
-                            style={[
-                              styles.identityButtonText,
-                              isActive && styles.identityButtonTextActive,
-                            ]}
-                          >
-                            {option.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  {/* 密码登录 / 验证码登录 — one exclusive choice. It
+                      borrowed the register form's identityRow style,
+                      which is why it looked like the same control. */}
+                  <SegmentedControl
+                    segments={[
+                      { key: 'password', label: '密码登录' },
+                      { key: 'otp', label: '验证码登录' },
+                    ]}
+                    value={loginMethod}
+                    onChange={(key) => setLoginMethod(key as 'password' | 'otp')}
+                    accessibilityLabel="登录方式"
+                  />
 
                   {loginMethod === 'password' ? (
                     <>
@@ -678,7 +762,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <TextInput
                           style={styles.textInput}
                           placeholder="请输入手机号"
-                          placeholderTextColor={CLINICAL_COLORS.textMuted}
+                          placeholderTextColor={COLOR.inkMuted}
                           value={loginForm.phone}
                           onChangeText={(text) =>
                             setLoginForm((prev) => ({ ...prev, phone: text }))
@@ -695,7 +779,7 @@ const LoginRegisterScreen: React.FC = () => {
                           <TextInput
                             style={styles.passwordInput}
                             placeholder="请输入密码"
-                            placeholderTextColor={CLINICAL_COLORS.textMuted}
+                            placeholderTextColor={COLOR.inkMuted}
                             value={loginForm.password}
                             onChangeText={(text) =>
                               setLoginForm((prev) => ({ ...prev, password: text }))
@@ -705,34 +789,27 @@ const LoginRegisterScreen: React.FC = () => {
                           />
                           <TouchableOpacity
                             style={styles.passwordToggleButton}
+                            accessibilityRole="button"
+                            accessibilityLabel={isLoginPasswordVisible ? '隐藏密码' : '显示密码'}
                             onPress={() => togglePasswordVisibility('login')}
                           >
-                            <FontAwesome6
+                            <Icon
                               name={isLoginPasswordVisible ? 'eye-slash' : 'eye'}
                               size={16}
-                              color={CLINICAL_COLORS.textMuted}
+                              color={COLOR.inkMuted}
                             />
                           </TouchableOpacity>
                         </View>
                         {renderLoginError('password')}
                       </View>
 
-                      <TouchableOpacity
-                        style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                      <Button
+                        label="登录"
+                        variant="prominent"
+                        fullWidth
+                        busy={isLoading}
                         onPress={handleLoginSubmit}
-                        disabled={isLoading}
-                      >
-                        <LinearGradient
-                          colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={styles.primaryButtonGradient}
-                        >
-                          <Text style={styles.primaryButtonText}>
-                            {isLoading ? '登录中...' : '登录'}
-                          </Text>
-                        </LinearGradient>
-                      </TouchableOpacity>
+                      />
                     </>
                   ) : (
                     <>
@@ -741,7 +818,7 @@ const LoginRegisterScreen: React.FC = () => {
                         <TextInput
                           style={styles.textInput}
                           placeholder="请输入手机号"
-                          placeholderTextColor={CLINICAL_COLORS.textMuted}
+                          placeholderTextColor={COLOR.inkMuted}
                           value={otpLoginForm.phone}
                           onChangeText={(text) => {
                             setOtpLoginForm((prev) => ({ ...prev, phone: text }));
@@ -761,7 +838,7 @@ const LoginRegisterScreen: React.FC = () => {
                           <TextInput
                             style={styles.verificationCodeInput}
                             placeholder="请输入验证码"
-                            placeholderTextColor={CLINICAL_COLORS.textMuted}
+                            placeholderTextColor={COLOR.inkMuted}
                             value={otpLoginForm.code}
                             onChangeText={(text) => {
                               setOtpLoginForm((prev) => ({ ...prev, code: text }));
@@ -770,11 +847,13 @@ const LoginRegisterScreen: React.FC = () => {
                             keyboardType="number-pad"
                             maxLength={6}
                           />
-                          <TouchableOpacity
-                            style={[
-                              styles.getCodeButton,
-                              countdown > 0 && styles.getCodeButtonDisabled,
-                            ]}
+                          <Button
+                            label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
+                            variant="tinted"
+                            compact
+                            disabled={countdown > 0}
+                            accessibilityLabel="获取短信验证码"
+                            style={styles.getCodeButton}
                             onPress={() => {
                               if (!isValidChinaMobile(otpLoginForm.phone)) {
                                 setOtpLoginErrors((prev) => ({
@@ -787,34 +866,20 @@ const LoginRegisterScreen: React.FC = () => {
                                 setOtpLoginForm((prev) => ({ ...prev, requestId })),
                               );
                             }}
-                            disabled={countdown > 0}
-                          >
-                            <Text style={styles.getCodeButtonText}>
-                              {countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
-                            </Text>
-                          </TouchableOpacity>
+                          />
                         </View>
                         {otpLoginErrors.code ? (
                           <Text style={styles.fieldErrorText}>{otpLoginErrors.code}</Text>
                         ) : null}
                       </View>
 
-                      <TouchableOpacity
-                        style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                      <Button
+                        label="验证码登录"
+                        variant="prominent"
+                        fullWidth
+                        busy={isLoading}
                         onPress={handleOtpLoginSubmit}
-                        disabled={isLoading}
-                      >
-                        <LinearGradient
-                          colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={styles.primaryButtonGradient}
-                        >
-                          <Text style={styles.primaryButtonText}>
-                            {isLoading ? '登录中...' : '验证码登录'}
-                          </Text>
-                        </LinearGradient>
-                      </TouchableOpacity>
+                      />
                     </>
                   )}
                 </View>
@@ -829,7 +894,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入注册时的手机号"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkMuted}
                       value={resetForm.phone}
                       onChangeText={(text) => {
                         setResetForm((prev) => ({ ...prev, phone: text }));
@@ -849,7 +914,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.verificationCodeInput}
                         placeholder="请输入验证码"
-                        placeholderTextColor={CLINICAL_COLORS.textMuted}
+                        placeholderTextColor={COLOR.inkMuted}
                         value={resetForm.code}
                         onChangeText={(text) => {
                           setResetForm((prev) => ({ ...prev, code: text }));
@@ -858,11 +923,13 @@ const LoginRegisterScreen: React.FC = () => {
                         keyboardType="number-pad"
                         maxLength={6}
                       />
-                      <TouchableOpacity
-                        style={[
-                          styles.getCodeButton,
-                          countdown > 0 && styles.getCodeButtonDisabled,
-                        ]}
+                      <Button
+                        label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
+                        variant="tinted"
+                        compact
+                        disabled={countdown > 0}
+                        accessibilityLabel="获取短信验证码"
+                        style={styles.getCodeButton}
                         onPress={() => {
                           if (!isValidChinaMobile(resetForm.phone)) {
                             setResetErrors((prev) => ({
@@ -875,12 +942,7 @@ const LoginRegisterScreen: React.FC = () => {
                             setResetForm((prev) => ({ ...prev, requestId })),
                           );
                         }}
-                        disabled={countdown > 0}
-                      >
-                        <Text style={styles.getCodeButtonText}>
-                          {countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
-                        </Text>
-                      </TouchableOpacity>
+                      />
                     </View>
                     {resetErrors.code ? (
                       <Text style={styles.fieldErrorText}>{resetErrors.code}</Text>
@@ -892,7 +954,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder={`请设置${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位新密码`}
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkMuted}
                       value={resetForm.newPassword}
                       onChangeText={(text) => {
                         setResetForm((prev) => ({ ...prev, newPassword: text }));
@@ -911,7 +973,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请再次输入新密码"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkMuted}
                       value={resetForm.confirmPassword}
                       onChangeText={(text) => {
                         setResetForm((prev) => ({ ...prev, confirmPassword: text }));
@@ -925,27 +987,21 @@ const LoginRegisterScreen: React.FC = () => {
                     ) : null}
                   </View>
 
-                  <TouchableOpacity
-                    style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                  <Button
+                    label="重置密码"
+                    variant="prominent"
+                    fullWidth
+                    busy={isLoading}
                     onPress={handlePasswordResetSubmit}
-                    disabled={isLoading}
-                  >
-                    <LinearGradient
-                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.primaryButtonGradient}
-                    >
-                      <Text style={styles.primaryButtonText}>
-                        {isLoading ? '提交中...' : '重置密码'}
-                      </Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
+                  />
 
                   <View style={styles.forgotPasswordContainer}>
-                    <TouchableOpacity onPress={() => setIsResetMode(false)}>
-                      <Text style={styles.forgotPasswordText}>返回登录</Text>
-                    </TouchableOpacity>
+                    <Button
+                      label="返回登录"
+                      variant="plain"
+                      compact
+                      onPress={() => setIsResetMode(false)}
+                    />
                   </View>
                 </View>
               )}
@@ -960,36 +1016,21 @@ const LoginRegisterScreen: React.FC = () => {
                 >
                   <View style={styles.inputContainer} onLayout={captureRegisterFieldY('identity')}>
                     <Text style={styles.inputLabel}>身份选择</Text>
-                    <View style={styles.identityRow}>
-                      {[
-                        { value: 'doctor', label: '医生' },
-                        { value: 'patient_family', label: '患者或家属' },
-                        { value: 'other', label: '其他' },
-                      ].map((option) => {
-                        const isActive = registerForm.identity === option.value;
-                        return (
-                          <TouchableOpacity
-                            key={option.value}
-                            style={[styles.identityButton, isActive && styles.identityButtonActive]}
-                            onPress={() =>
-                              setRegisterForm((prev) => ({
-                                ...prev,
-                                identity: option.value as RegisterFormData['identity'],
-                              }))
-                            }
-                          >
-                            <Text
-                              style={[
-                                styles.identityButtonText,
-                                isActive && styles.identityButtonTextActive,
-                              ]}
-                            >
-                              {option.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
+                    <SegmentedControl
+                      segments={[
+                        { key: 'doctor', label: '医生' },
+                        { key: 'patient_family', label: '患者或家属' },
+                        { key: 'other', label: '其他' },
+                      ]}
+                      value={registerForm.identity}
+                      onChange={(key) =>
+                        setRegisterForm((prev) => ({
+                          ...prev,
+                          identity: key as RegisterFormData['identity'],
+                        }))
+                      }
+                      accessibilityLabel="身份选择"
+                    />
                     {renderRegisterError('identity')}
                   </View>
 
@@ -999,7 +1040,7 @@ const LoginRegisterScreen: React.FC = () => {
                     <TextInput
                       style={styles.textInput}
                       placeholder="请输入手机号"
-                      placeholderTextColor={CLINICAL_COLORS.textMuted}
+                      placeholderTextColor={COLOR.inkMuted}
                       value={registerForm.phone}
                       onChangeText={(text) => setRegisterForm((prev) => ({ ...prev, phone: text }))}
                       keyboardType="phone-pad"
@@ -1014,7 +1055,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.verificationCodeInput}
                         placeholder="请输入验证码"
-                        placeholderTextColor={CLINICAL_COLORS.textMuted}
+                        placeholderTextColor={COLOR.inkMuted}
                         value={registerForm.code}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, code: text }))
@@ -1022,18 +1063,15 @@ const LoginRegisterScreen: React.FC = () => {
                         keyboardType="number-pad"
                         maxLength={6}
                       />
-                      <TouchableOpacity
-                        style={[
-                          styles.getCodeButton,
-                          countdown > 0 && styles.getCodeButtonDisabled,
-                        ]}
-                        onPress={handleGetVerificationCode}
+                      <Button
+                        label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
+                        variant="tinted"
+                        compact
                         disabled={countdown > 0}
-                      >
-                        <Text style={styles.getCodeButtonText}>
-                          {countdown > 0 ? `${countdown}秒后重发` : '获取验证码'}
-                        </Text>
-                      </TouchableOpacity>
+                        accessibilityLabel="获取短信验证码"
+                        style={styles.getCodeButton}
+                        onPress={handleGetVerificationCode}
+                      />
                     </View>
                     {renderRegisterError('code')}
                   </View>
@@ -1044,7 +1082,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder={`请设置${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH}位密码`}
-                        placeholderTextColor={CLINICAL_COLORS.textMuted}
+                        placeholderTextColor={COLOR.inkMuted}
                         value={registerForm.password}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, password: text }))
@@ -1054,12 +1092,14 @@ const LoginRegisterScreen: React.FC = () => {
                       />
                       <TouchableOpacity
                         style={styles.passwordToggleButton}
+                        accessibilityRole="button"
+                        accessibilityLabel={isRegisterPasswordVisible ? '隐藏密码' : '显示密码'}
                         onPress={() => togglePasswordVisibility('register')}
                       >
-                        <FontAwesome6
+                        <Icon
                           name={isRegisterPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color={CLINICAL_COLORS.textMuted}
+                          color={COLOR.inkMuted}
                         />
                       </TouchableOpacity>
                     </View>
@@ -1075,7 +1115,7 @@ const LoginRegisterScreen: React.FC = () => {
                       <TextInput
                         style={styles.passwordInput}
                         placeholder="请再次输入密码"
-                        placeholderTextColor={CLINICAL_COLORS.textMuted}
+                        placeholderTextColor={COLOR.inkMuted}
                         value={registerForm.confirmPassword}
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, confirmPassword: text }))
@@ -1085,63 +1125,137 @@ const LoginRegisterScreen: React.FC = () => {
                       />
                       <TouchableOpacity
                         style={styles.passwordToggleButton}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          isConfirmPasswordVisible ? '隐藏确认密码' : '显示确认密码'
+                        }
                         onPress={() => togglePasswordVisibility('confirm')}
                       >
-                        <FontAwesome6
+                        <Icon
                           name={isConfirmPasswordVisible ? 'eye-slash' : 'eye'}
                           size={16}
-                          color={CLINICAL_COLORS.textMuted}
+                          color={COLOR.inkMuted}
                         />
                       </TouchableOpacity>
                     </View>
                     {renderRegisterError('confirmPassword')}
                   </View>
 
-                  <TouchableOpacity
-                    style={[styles.primaryButton, isLoading && styles.primaryButtonDisabled]}
+                  <Button
+                    label="注册"
+                    variant="prominent"
+                    fullWidth
+                    busy={isLoading}
                     onPress={handleRegisterSubmit}
-                    disabled={isLoading}
-                  >
-                    <LinearGradient
-                      colors={[CLINICAL_COLORS.accent, CLINICAL_COLORS.accentStrong]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.primaryButtonGradient}
-                    >
-                      <Text style={styles.primaryButtonText}>
-                        {isLoading ? '注册中...' : '注册'}
-                      </Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
+                  />
                 </View>
               )}
 
               {/* 忘记密码 → 自助重置流 */}
               {activeTab === 'login' && !isResetMode && (
                 <View style={styles.forgotPasswordContainer}>
-                  <TouchableOpacity onPress={() => setIsResetMode(true)}>
-                    <Text style={styles.forgotPasswordText}>忘记密码？</Text>
-                  </TouchableOpacity>
+                  <Button
+                    label="忘记密码？"
+                    variant="plain"
+                    compact
+                    onPress={() => setIsResetMode(true)}
+                  />
                 </View>
               )}
 
-              {/* 用户协议 */}
+              {/* 用户协议 / 隐私政策
+                  The two documents used to be tappable spans inside the
+                  sentence: 19pt tall (TYPE.caption's line box), no
+                  accessibilityRole, and indistinguishable from the
+                  prose except by colour — the exact「文字可以直接点」
+                  shape this app was moving away from. They are now
+                  controls, which is what they are.
+
+                  What ALSO used to be here was the sentence
+                 「登录即表示同意以下条款」, and that is the part that was
+                  a legal defect rather than a UI one. 《个人信息保护法》
+                  第 14 条 requires consent to be 「自愿、明确作出」;
+                  inferring it from the act of pressing 注册 is neither
+                  voluntary nor explicit, and nothing was recorded, so
+                  there was no answer to 「这位患者同意过哪一版隐私政策」.
+                  On the register tab the box below is un-prechecked and
+                  blocks submission; the acceptance it produces is
+                  written to the ledger (db/migrations/019).
+
+                  On the login tab there is no checkbox and no implied
+                  consent: an existing account's acceptance was recorded
+                  when it registered, and re-asserting it on every login
+                  would be the same inference in a new place. The
+                  documents stay reachable because a user reading them
+                  before signing in is the point. */}
               <View style={styles.agreement}>
-                <Text style={styles.agreementText}>
-                  登录即表示同意{' '}
-                  <Text style={styles.agreementLink} onPress={() => handleShowAgreement('user')}>
-                    《用户协议》
-                  </Text>{' '}
-                  和{' '}
-                  <Text style={styles.agreementLink} onPress={() => handleShowAgreement('privacy')}>
-                    《隐私政策》
-                  </Text>
-                </Text>
+                {activeTab === 'register' ? (
+                  <>
+                    {/* One control for the whole row: the box and its
+                        sentence are the same target, so the 48pt
+                        minimum applies to the text too rather than to a
+                        20pt square a patient with reduced grip has to
+                        hit. */}
+                    <Pressable
+                      style={styles.consentRow}
+                      onPress={() => {
+                        setHasAcceptedTerms((previous) => {
+                          if (!previous) {
+                            setTermsError(null);
+                          }
+                          return !previous;
+                        });
+                      }}
+                      accessibilityRole="checkbox"
+                      accessibilityLabel="我已阅读并同意《用户协议》和《隐私政策》"
+                      accessibilityHint="必须勾选才能完成注册"
+                      // Both spellings on purpose, same as ToggleSwitch:
+                      // react-native-web 0.20 drops accessibilityState,
+                      // which would leave the checkbox announcing itself
+                      // without announcing whether it is ticked — on the
+                      // one control that gates the whole registration.
+                      accessibilityState={{ checked: hasAcceptedTerms }}
+                      aria-checked={hasAcceptedTerms}
+                    >
+                      <View
+                        style={[
+                          styles.consentBox,
+                          hasAcceptedTerms ? styles.consentBoxChecked : null,
+                          termsError ? styles.consentBoxError : null,
+                        ]}
+                      >
+                        {hasAcceptedTerms ? (
+                          <Icon name="check" size={12} color={COLOR.surface} />
+                        ) : null}
+                      </View>
+                      <Text style={styles.consentLabel}>
+                        我已阅读并同意《用户协议》和《隐私政策》
+                      </Text>
+                    </Pressable>
+                    {termsError ? <Text style={styles.consentErrorText}>{termsError}</Text> : null}
+                  </>
+                ) : (
+                  <Text style={styles.agreementText}>使用前请阅读以下条款</Text>
+                )}
+                <View style={styles.agreementLinkRow}>
+                  <Button
+                    label="《用户协议》"
+                    variant="plain"
+                    compact
+                    onPress={() => handleShowAgreement('user')}
+                  />
+                  <Button
+                    label="《隐私政策》"
+                    variant="plain"
+                    compact
+                    onPress={() => handleShowAgreement('privacy')}
+                  />
+                </View>
               </View>
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
-      </LinearGradient>
+      </View>
 
       {/* 错误提示弹窗 */}
       {modalState.isVisible && modalState.type === 'error' && (
@@ -1150,18 +1264,12 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.errorIconWrapper}>
-                  <FontAwesome6
-                    name="triangle-exclamation"
-                    size={20}
-                    color={CLINICAL_COLORS.danger}
-                  />
+                  <Icon name="triangle-exclamation" size={20} color={COLOR.alert} />
                 </View>
               </View>
               <Text style={styles.modalTitle}>错误</Text>
               <Text style={styles.modalMessage}>{modalState.message}</Text>
-              <TouchableOpacity style={styles.modalButton} onPress={closeModal}>
-                <Text style={styles.modalButtonText}>确定</Text>
-              </TouchableOpacity>
+              <Button label="确定" variant="prominent" fullWidth onPress={closeModal} />
             </View>
           </View>
         </View>
@@ -1174,14 +1282,12 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.modalContent}>
               <View style={styles.modalIconContainer}>
                 <View style={styles.successIconWrapper}>
-                  <FontAwesome6 name="check" size={20} color={CLINICAL_COLORS.success} />
+                  <Icon name="check" size={20} color={COLOR.good} />
                 </View>
               </View>
               <Text style={styles.modalTitle}>成功</Text>
               <Text style={styles.modalMessage}>{modalState.message}</Text>
-              <TouchableOpacity style={styles.modalButton} onPress={closeModal}>
-                <Text style={styles.modalButtonText}>确定</Text>
-              </TouchableOpacity>
+              <Button label="确定" variant="prominent" fullWidth onPress={closeModal} />
             </View>
           </View>
         </View>
@@ -1194,8 +1300,13 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.agreementModalContent}>
               <View style={styles.agreementModalHeader}>
                 <Text style={styles.agreementModalTitle}>{modalState.title}</Text>
-                <TouchableOpacity onPress={closeModal}>
-                  <FontAwesome6 name="xmark" size={16} color={CLINICAL_COLORS.textMuted} />
+                <TouchableOpacity
+                  style={styles.agreementModalClose}
+                  accessibilityRole="button"
+                  accessibilityLabel="关闭"
+                  onPress={closeModal}
+                >
+                  <Icon name="xmark" size={16} color={COLOR.inkMuted} />
                 </TouchableOpacity>
               </View>
               <ScrollView style={styles.agreementModalScrollView}>

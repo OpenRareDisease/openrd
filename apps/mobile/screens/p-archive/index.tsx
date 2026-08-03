@@ -1,18 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  RefreshControl,
-  ScrollView,
-  Text,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { LineChart } from 'react-native-chart-kit';
+import Button from '../common/Button';
+import ListGroup, { Row } from '../common/ListGroup';
 import {
   ApiError,
   getClinicalPassportSummary,
@@ -20,18 +11,12 @@ import {
   type ClinicalPassportSummary,
   type PatientProfile,
 } from '../../lib/api';
-import {
-  CLINICAL_COLORS,
-  CLINICAL_GRADIENTS,
-  CLINICAL_TINTS,
-  formatDateLabel,
-  type BodyRegionMap,
-  type BodyView,
-} from '../../lib/clinical-visuals';
+import { formatDateLabel } from '../../lib/clinical-visuals';
+import { COLOR } from '../../lib/design';
 import { buildDataAssetOverview } from '../../lib/data-asset';
 import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
-import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
-import HumanBodyFigure from '../common/HumanBodyFigure';
+import { buildReportInsights } from '../../lib/report-insights';
+import ScreenHeader from '../common/ScreenHeader';
 import styles from './styles';
 
 const archiveNavItems = [
@@ -55,76 +40,30 @@ const archiveNavItems = [
   },
 ] as const;
 
+// Semantic colours, kept clearly apart from the accent so teal never
+// has to mean "good" — see lib/design.ts.
 const trendMeta = {
   better: {
     label: '改善',
-    color: CLINICAL_COLORS.success,
-    backgroundColor: CLINICAL_TINTS.successSoft,
+    color: COLOR.good,
+    backgroundColor: COLOR.goodWash,
   },
   stable: {
     label: '平稳',
-    color: CLINICAL_COLORS.textSoft,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    color: COLOR.inkMuted,
+    backgroundColor: COLOR.well,
   },
   worse: {
     label: '加重',
-    color: CLINICAL_COLORS.danger,
-    backgroundColor: CLINICAL_TINTS.dangerSoft,
+    color: COLOR.alert,
+    backgroundColor: COLOR.alertWash,
   },
   new: {
     label: '新增',
-    color: CLINICAL_COLORS.warning,
-    backgroundColor: CLINICAL_TINTS.warningSoft,
+    color: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
   },
 } as const;
-
-const toRgba = (hex: string, opacity = 1) => {
-  const normalized = hex.replace('#', '');
-  const safeHex =
-    normalized.length === 3
-      ? normalized
-          .split('')
-          .map((part) => `${part}${part}`)
-          .join('')
-      : normalized;
-
-  const red = Number.parseInt(safeHex.slice(0, 2), 16);
-  const green = Number.parseInt(safeHex.slice(2, 4), 16);
-  const blue = Number.parseInt(safeHex.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
-};
-
-const createChartConfig = (lineColor: string) => ({
-  backgroundColor: CLINICAL_COLORS.panel,
-  backgroundGradientFrom: CLINICAL_COLORS.panel,
-  backgroundGradientTo: CLINICAL_COLORS.panel,
-  decimalPlaces: 1,
-  color: (opacity = 1) => toRgba(lineColor, opacity),
-  labelColor: () => CLINICAL_COLORS.textMuted,
-  propsForDots: {
-    r: '3',
-    strokeWidth: '2',
-    stroke: lineColor,
-  },
-});
-
-const renderChartPoints = (points: Array<{ timestamp: string; value: number }>) => {
-  if (!points.length) {
-    return null;
-  }
-
-  if (points.length === 1) {
-    return {
-      labels: [formatDateLabel(points[0].timestamp), formatDateLabel(points[0].timestamp)],
-      datasets: [{ data: [points[0].value, points[0].value] }],
-    };
-  }
-
-  return {
-    labels: points.map((item) => formatDateLabel(item.timestamp)),
-    datasets: [{ data: points.map((item) => item.value) }],
-  };
-};
 
 const formatGenderLabel = (value?: string | null) => {
   if (!value) return '未填写';
@@ -199,11 +138,8 @@ const buildPassportId = (
 
 export default function ArchiveScreen() {
   const router = useRouter();
-  const { width: windowWidth } = useWindowDimensions();
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [passport, setPassport] = useState<ClinicalPassportSummary | null>(null);
-  const [bodyView, setBodyView] = useState<BodyView>('front');
-  const [visualizationExpanded, setVisualizationExpanded] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -246,10 +182,6 @@ export default function ArchiveScreen() {
     () => buildReportInsights(profile?.documents ?? [], profile),
     [profile],
   );
-  const latestMriVisualization = useMemo(
-    () => buildLatestMriVisualization(profile?.documents ?? []),
-    [profile],
-  );
   const displayName =
     profile?.preferredName?.trim() ||
     profile?.fullName?.trim() ||
@@ -257,9 +189,14 @@ export default function ArchiveScreen() {
     '我的档案';
   const passportId = buildPassportId(profile, passport);
   const reportCount = profile?.documents.length ?? 0;
+  // `parsed` is what the async pipeline writes (migration 011);
+  // `processed` / `completed` are the pre-pipeline vocabulary that
+  // migration kept for old rows. Matching only the legacy pair meant
+  // this counter read 0 on every account whose reports were parsed by
+  // the current code — which is all of them.
+  const RECOGNIZED_STATUSES = ['parsed', 'processed', 'completed'];
   const recognizedReportCount =
-    profile?.documents.filter((item) => ['processed', 'completed'].includes(item.status)).length ??
-    0;
+    profile?.documents.filter((item) => RECOGNIZED_STATUSES.includes(item.status)).length ?? 0;
   const diagnosisDateText =
     profile?.baseline?.foundation?.diagnosisYear !== undefined &&
     profile?.baseline?.foundation?.diagnosisYear !== null
@@ -326,7 +263,6 @@ export default function ArchiveScreen() {
           {
             label: '遗传信息',
             value: geneticInfoText,
-            wide: true,
           },
         ],
       },
@@ -349,27 +285,12 @@ export default function ArchiveScreen() {
     ],
     [diagnosisDateText, diagnosisTypeText, displayName, geneticInfoText, passportId, profile],
   );
-  const archiveMriRegions =
-    Object.keys(passport?.imaging.bodyRegions ?? {}).length > 0
-      ? ((passport?.imaging.bodyRegions ?? {}) as BodyRegionMap)
-      : latestMriVisualization.regions;
-  const archiveMriHighlights =
-    passport?.imaging.highlights && passport.imaging.highlights.length > 0
-      ? passport.imaging.highlights
-      : latestMriVisualization.findings;
-  const archiveMriSubtitle = archiveMriHighlights.length
-    ? `影像提示：${archiveMriHighlights.join('、')}`
-    : passport?.imaging.summary || latestMriVisualization.summary;
-  const chartWidth = Math.max(220, windowWidth - 92);
-
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        style={styles.backgroundGradient}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
+      {/* Was a page-wide LinearGradient. A gradient behind a record
+          lowers the contrast of everything set on it; the page is now
+          flat paper and the hierarchy comes from rules and type. */}
+      <View style={styles.backgroundGradient}>
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -378,56 +299,68 @@ export default function ArchiveScreen() {
             <RefreshControl
               refreshing={isRefreshing}
               onRefresh={() => loadData(true).catch(() => undefined)}
-              tintColor={CLINICAL_COLORS.accentStrong}
+              tintColor={COLOR.accent}
             />
           }
         >
           <View style={styles.header}>
-            <View style={styles.headerTopRow}>
-              <View style={styles.headerLead}>
-                <View>
-                  <Text style={styles.eyebrow}>MY ARCHIVE</Text>
-                  <Text style={styles.pageTitle}>我的档案</Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                activeOpacity={0.88}
+            {/* Since the archive left the tab bar it renders no
+                AppTabBar and the root stack hides its header, so
+                without this the only way out is the iOS edge swipe —
+                the gesture our users are least able to perform.
+                `MY ARCHIVE` used to sit above the title; it said
+                nothing 我的档案 does not already say. */}
+            <ScreenHeader title="我的档案" style={styles.screenHeaderRow} />
+            <View style={styles.headerActionRow}>
+              <Button
+                label="记录数据"
+                icon="plus"
+                variant="prominent"
+                compact
                 onPress={() => router.push('/p-data_entry')}
-              >
-                <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>记录数据</Text>
-              </TouchableOpacity>
+              />
             </View>
           </View>
 
-          <View style={styles.section}>
-            <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
-              <Text style={styles.heroEyebrow}>PATIENT ARCHIVE</Text>
-              <Text style={styles.heroTitle}>{displayName}</Text>
-              <Text style={styles.heroMeta}>{passportId}</Text>
-              <Text style={styles.heroSummary}>
-                已建立患者档案、临床护照与系统检查入口。这里集中查看个人信息、FSHD
-                相关信息和患者端可视化。
-              </Text>
-              <View style={styles.reportStatGrid}>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>{reportCount}</Text>
-                  <Text style={styles.reportStatLabel}>报告总数</Text>
-                </View>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>{recognizedReportCount}</Text>
-                  <Text style={styles.reportStatLabel}>已识别</Text>
-                </View>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>
-                    {formatDateLabel(passport?.latestUpdatedAt ?? profile?.updatedAt)}
-                  </Text>
-                  <Text style={styles.reportStatLabel}>最近更新</Text>
+          {/* The one filled block on this screen: whose record this is,
+              plus the three counts that describe it. Everything below
+              is set on the page. */}
+          {/* Suppressed on a failed load, the same guard the data-asset
+              console directly below already had. `loadData`'s catch
+              nulls the profile, so a failed request produced exactly
+              the shape of a brand-new empty account: the hero asserted
+              FSHD-UNASSIGNED, 0 报告总数, 0 已识别 and 「已建立患者档案」
+              — the app telling a patient whose network blipped that
+              their record is empty, directly above the error saying it
+              could not read it. */}
+          {errorMessage ? null : (
+            <View style={styles.section}>
+              <View style={styles.heroCard}>
+                <Text style={styles.heroTitle}>{displayName}</Text>
+                <Text style={styles.heroMeta}>{passportId}</Text>
+                <Text style={styles.heroSummary}>
+                  已建立患者档案、临床护照与系统检查入口。这里集中查看个人信息、FSHD
+                  相关信息和患者端可视化。
+                </Text>
+                <View style={styles.reportStatGrid}>
+                  <View style={styles.reportStatCard}>
+                    <Text style={styles.reportStatValue}>{reportCount}</Text>
+                    <Text style={styles.reportStatLabel}>报告总数</Text>
+                  </View>
+                  <View style={styles.reportStatCard}>
+                    <Text style={styles.reportStatValue}>{recognizedReportCount}</Text>
+                    <Text style={styles.reportStatLabel}>已识别</Text>
+                  </View>
+                  <View style={styles.reportStatCard}>
+                    <Text style={styles.reportStatValue}>
+                      {formatDateLabel(passport?.latestUpdatedAt ?? profile?.updatedAt)}
+                    </Text>
+                    <Text style={styles.reportStatLabel}>最近更新</Text>
+                  </View>
                 </View>
               </View>
-            </LinearGradient>
-          </View>
+            </View>
+          )}
 
           {/* Data-asset overview: completeness, report coverage,
               record continuity, and freshness at a glance — every gap
@@ -451,19 +384,14 @@ export default function ArchiveScreen() {
                   <View style={styles.assetGapRow}>
                     <Text style={styles.assetGapLead}>待补充：</Text>
                     {assetOverview.gaps.map((gap) => (
-                      <TouchableOpacity
+                      <Button
                         key={gap.key}
-                        style={styles.assetGapChip}
-                        activeOpacity={0.88}
+                        label={gap.label}
+                        variant="tinted"
+                        compact
+                        trailingIcon="arrow-right"
                         onPress={() => router.push(gap.route)}
-                      >
-                        <Text style={styles.assetGapChipText}>{gap.label}</Text>
-                        <FontAwesome6
-                          name="arrow-right"
-                          size={9}
-                          color={CLINICAL_COLORS.accentStrong}
-                        />
-                      </TouchableOpacity>
+                      />
                     ))}
                   </View>
                 ) : (
@@ -498,195 +426,97 @@ export default function ArchiveScreen() {
               header stays a title + one primary action, so the home
               screen remains the single global hub. */}
           <View style={styles.section}>
-            <View style={styles.navCard}>
-              {archiveNavItems.map((nav, index) => (
-                <TouchableOpacity
+            {/* These were hand-rolled Touchables with no accessibilityRole
+                — three cards that navigate, reaching a screen reader as
+                unlabelled text. ListGroup.Row is what the pattern is for:
+                it carries the role, the name, the press fill and the 48pt
+                target, and it draws the chevron on exactly the rows that
+                navigate, which is what makes the chevron mean anything. */}
+            <ListGroup>
+              {archiveNavItems.map((nav) => (
+                <Row
                   key={nav.route}
-                  style={[styles.navRow, index > 0 && styles.navRowDivider]}
-                  activeOpacity={0.88}
+                  icon={nav.icon}
+                  label={nav.title}
+                  detail={nav.description}
                   onPress={() => router.push(nav.route)}
-                >
-                  <View style={styles.navIconWrap}>
-                    <FontAwesome6 name={nav.icon} size={14} color={CLINICAL_COLORS.accentStrong} />
-                  </View>
-                  <View style={styles.navCopy}>
-                    <Text style={styles.navTitle}>{nav.title}</Text>
-                    <Text style={styles.navDescription}>{nav.description}</Text>
-                  </View>
-                  <FontAwesome6 name="chevron-right" size={12} color={CLINICAL_COLORS.textMuted} />
-                </TouchableOpacity>
+                />
               ))}
-            </View>
+            </ListGroup>
           </View>
 
           {errorMessage ? (
             <View style={styles.section}>
               <View style={styles.stateWrap}>
                 <Text style={styles.stateText}>{errorMessage}</Text>
-                <TouchableOpacity
-                  style={styles.primaryButton}
-                  activeOpacity={0.88}
+                <Button
+                  label="重新加载"
+                  icon="rotate-right"
+                  variant="tinted"
                   onPress={() => loadData().catch(() => undefined)}
-                >
-                  <Text style={styles.primaryButtonText}>重新加载</Text>
-                </TouchableOpacity>
+                />
               </View>
             </View>
           ) : null}
 
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>档案控制台</Text>
-                <Text style={styles.sectionSubtitle}>集中查看个人基本信息和 FSHD 关键背景。</Text>
-              </View>
-            </View>
-
-            <View style={styles.consoleStack}>
-              {consoleSections.map((section) => (
-                <View key={section.key} style={styles.consoleCard}>
-                  <Text style={styles.consoleTitle}>{section.title}</Text>
-                  <View style={styles.consoleItemGrid}>
-                    {section.items.map((item) => (
-                      <View
-                        key={`${section.key}-${item.label}`}
-                        style={[styles.consoleItemCard, item.wide && styles.consoleItemCardWide]}
-                      >
-                        <Text style={styles.consoleItemLabel}>{item.label}</Text>
-                        <Text
-                          style={[
-                            styles.consoleItemValue,
-                            item.accent && styles.consoleItemValueAccent,
-                          ]}
-                        >
-                          {item.value}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
+          {/* Hidden when the profile never arrived. The catch nulls
+              `profile`, and every field helper answers null with
+              「未填写」/「未记录」— so a failed request rendered a
+              complete, plausible, entirely false archive: the screen
+              told the patient they had filled in nothing. */}
+          {profile ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <View>
+                  <Text style={styles.sectionTitle}>档案控制台</Text>
+                  <Text style={styles.sectionSubtitle}>集中查看个人基本信息和 FSHD 关键背景。</Text>
                 </View>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>患者端数据可视化</Text>
-                <Text style={styles.sectionSubtitle}>
-                  优先显示 MRI 受累图，并继续合并患者端日常记录趋势。
-                </Text>
               </View>
-              <TouchableOpacity
-                style={styles.inlineAction}
-                activeOpacity={0.88}
-                onPress={() => setVisualizationExpanded((prev) => !prev)}
-              >
-                <FontAwesome6
-                  name={visualizationExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={12}
-                  color={CLINICAL_COLORS.accentStrong}
-                />
-                <Text style={styles.inlineActionText}>
-                  {visualizationExpanded ? '收起' : '展开'}
-                </Text>
-              </TouchableOpacity>
-            </View>
 
-            {visualizationExpanded ? (
-              <View style={styles.visualizationChartStack}>
-                <View style={styles.card}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.consoleTitle}>受累可视化</Text>
-                    <View style={styles.toggleRow}>
-                      <TouchableOpacity
-                        style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
-                        activeOpacity={0.88}
-                        onPress={() => setBodyView('front')}
-                      >
-                        <Text
-                          style={[
-                            styles.toggleChipText,
-                            bodyView === 'front' && styles.toggleChipTextActive,
-                          ]}
-                        >
-                          正面
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
-                        activeOpacity={0.88}
-                        onPress={() => setBodyView('back')}
-                      >
-                        <Text
-                          style={[
-                            styles.toggleChipText,
-                            bodyView === 'back' && styles.toggleChipTextActive,
-                          ]}
-                        >
-                          背面
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <HumanBodyFigure
-                    view={bodyView}
-                    regions={archiveMriRegions}
-                    mode="mri"
-                    title="MRI 受累分布"
-                    subtitle={archiveMriSubtitle}
-                  />
-                </View>
-
-                {visualizationCards.map((item) => {
-                  const chartData = renderChartPoints(item.points);
-                  const meta = trendMeta[item.trend];
-                  return (
-                    <View key={item.key} style={styles.visualizationChartCard}>
-                      <View style={styles.visualizationChartHeader}>
-                        <View style={styles.visualizationChartHeaderMain}>
-                          <Text style={styles.visualizationChartTitle}>{item.label}</Text>
-                          <Text style={styles.visualizationChartValue}>{item.latestDisplay}</Text>
-                        </View>
-                        <View
-                          style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
-                        >
-                          <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
-                            {meta.label}
+              <View style={styles.consoleStack}>
+                {consoleSections.map((section) => (
+                  <View key={section.key} style={styles.consoleCard}>
+                    <Text style={styles.consoleTitle}>{section.title}</Text>
+                    {/* Label/value rows on one aligned column instead of a
+                      2-up grid of tinted mini-cards: values line up, and
+                      a long 遗传信息 string no longer needs a special
+                      full-width variant. */}
+                    <View style={styles.consoleItemGrid}>
+                      {section.items.map((item) => (
+                        <View key={`${section.key}-${item.label}`} style={styles.consoleItemCard}>
+                          <Text style={styles.consoleItemLabel}>{item.label}</Text>
+                          <Text
+                            style={[
+                              styles.consoleItemValue,
+                              item.accent && styles.consoleItemValueAccent,
+                            ]}
+                          >
+                            {item.value}
                           </Text>
                         </View>
-                      </View>
-                      <Text style={styles.visualizationChartSummary}>{item.summary}</Text>
-                      <Text style={styles.visualizationChartHint}>{item.helperText}</Text>
-                      {chartData ? (
-                        <View style={styles.chartWrap}>
-                          <LineChart
-                            data={chartData}
-                            width={chartWidth}
-                            height={164}
-                            chartConfig={createChartConfig(item.chartColor)}
-                            withInnerLines={false}
-                            withOuterLines={false}
-                            withVerticalLines={false}
-                            fromZero
-                            yAxisInterval={2}
-                            style={styles.chart}
-                            bezier
-                          />
-                        </View>
-                      ) : (
-                        <View style={styles.chartEmpty}>
-                          <Text style={styles.emptyText}>
-                            完成 2 次以上日常记录后，这里会自动绘制趋势。
-                          </Text>
-                        </View>
-                      )}
+                      ))}
                     </View>
-                  );
-                })}
+                  </View>
+                ))}
               </View>
-            ) : null}
+            </View>
+          ) : null}
+
+          {/* 患者端数据可视化 used to be rendered here *and* on 病程,
+              from the same `buildPatientVisualizationCards` source —
+              two copies of one answer, which is why "我最近是不是变差
+              了" felt like it needed cross-referencing. The charts now
+              live on 病程 only; the archive keeps the digest below and
+              points at the full view. */}
+          <View style={styles.crossLinkSection}>
+            <ListGroup>
+              <Row
+                icon="wave-square"
+                label="趋势与受累可视化在「病程」"
+                detail="时间轴、MRI 受累图和日常记录曲线都集中在那里，不再分两处显示。"
+                onPress={() => router.push('/p-manage')}
+              />
+            </ListGroup>
           </View>
 
           <View style={styles.section}>
@@ -697,39 +527,41 @@ export default function ArchiveScreen() {
               </View>
             </View>
 
+            {/* Was a card wrapping a list wrapping one tinted card per
+                item — three boxes deep for a three-line summary. Now
+                each entry is a rule-separated block on the page, with
+                the value promoted above its own description. */}
             <View style={styles.visualizationDigestCard}>
-              <View style={styles.visualizationDigestList}>
-                {visualizationCards.map((item) => {
-                  const meta = trendMeta[item.trend];
-                  return (
-                    <View key={`${item.key}-digest`} style={styles.visualizationDigestItem}>
-                      <View style={styles.visualizationDigestTopRow}>
-                        <Text style={styles.visualizationDigestTitle}>{item.label}</Text>
-                        <View
-                          style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
-                        >
-                          <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
-                            {meta.label}
-                          </Text>
-                        </View>
+              {visualizationCards.map((item) => {
+                const meta = trendMeta[item.trend];
+                return (
+                  <View key={`${item.key}-digest`} style={styles.visualizationDigestItem}>
+                    <View style={styles.visualizationDigestTopRow}>
+                      <Text style={styles.visualizationDigestTitle}>{item.label}</Text>
+                      <View
+                        style={[styles.summaryBadge, { backgroundColor: meta.backgroundColor }]}
+                      >
+                        <Text style={[styles.summaryBadgeText, { color: meta.color }]}>
+                          {meta.label}
+                        </Text>
                       </View>
-                      <Text style={styles.visualizationDigestValue}>{item.latestDisplay}</Text>
-                      <Text style={styles.visualizationDigestText}>{item.summary}</Text>
                     </View>
-                  );
-                })}
-              </View>
+                    <Text style={styles.visualizationDigestValue}>{item.latestDisplay}</Text>
+                    <Text style={styles.visualizationDigestText}>{item.summary}</Text>
+                  </View>
+                );
+              })}
             </View>
           </View>
         </ScrollView>
 
         {isLoading ? (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <ActivityIndicator color={COLOR.accent} />
             <Text style={styles.loadingText}>正在整理我的档案...</Text>
           </View>
         ) : null}
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 }

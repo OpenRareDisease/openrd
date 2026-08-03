@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 
 import type { AppLogger } from '../../config/logger.js';
+import { AUDIT_IDENTITY_KEYS } from '../../services/audit/identity-masking.js';
 import { normalizePhone } from '../../utils/phone.js';
 
 /**
@@ -18,10 +19,24 @@ import { normalizePhone } from '../../utils/phone.js';
  *
  * account_deletion_requests deliberately has no FK to app_users —
  * its rows are the compliance ledger proving the deletion happened,
- * so they must survive the very DELETE they describe.
+ * so they must survive the very DELETE they describe. audit_logs is in
+ * the same category and is tombstoned rather than deleted; see the
+ * UPDATE inside purgeDueAccountDeletions for why.
  */
 
 export const ACCOUNT_DELETION_COOLING_DAYS = 7;
+
+/**
+ * `event_payload - 'phoneNumber' - 'email' - …`, built from the single
+ * list of identifier-bearing keys so a new audit field cannot be masked
+ * at write time and then forgotten here.
+ *
+ * Interpolated into SQL rather than parameterised because jsonb's `-`
+ * operator takes a key literal, not a bind slot. Safe only because
+ * AUDIT_IDENTITY_KEYS is a frozen `as const` tuple of compile-time
+ * literals — never widen it to anything derived from input.
+ */
+const AUDIT_PAYLOAD_STRIP_EXPR = AUDIT_IDENTITY_KEYS.map((key) => `- '${key}'`).join(' ');
 
 /** How often the purge sweep re-runs after the startup pass. */
 export const DELETION_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -188,6 +203,74 @@ export const purgeDueAccountDeletions = async (
          SET status = 'purged', purged_at = NOW(), updated_at = NOW()
          WHERE id = $1`,
         [request.id],
+      );
+
+      // Everything keyed by phone number rather than by user_id, which
+      // no cascade can reach.
+      //
+      // A purge that leaves these behind does not do what the ledger
+      // two statements above says it did. On a rare-disease registry a
+      // phone number is not incidental — it is the account's primary
+      // identifier and, against a population this small, a
+      // re-identifier. Read it before the user row goes, because after
+      // the DELETE there is nothing left to read it from.
+      const identity = await client.query<{ phone_number: string | null; email: string | null }>(
+        'SELECT phone_number, email FROM app_users WHERE id = $1',
+        [request.user_id],
+      );
+      const phoneNumber = identity.rows[0]?.phone_number ?? null;
+      const email = identity.rows[0]?.email ?? null;
+
+      if (phoneNumber) {
+        await client.query('DELETE FROM otp_verification_codes WHERE phone_number = $1', [
+          phoneNumber,
+        ]);
+        await client.query('DELETE FROM auth_otps WHERE phone_number = $1', [phoneNumber]);
+        await client.query('DELETE FROM auth_login_guards WHERE identifier = $1', [phoneNumber]);
+      }
+      if (email) {
+        await client.query('DELETE FROM auth_login_guards WHERE identifier = $1', [email]);
+      }
+
+      // audit_logs: TOMBSTONE, do not delete.
+      //
+      // These rows are the compliance trail — 「this account registered
+      // on that date, failed login N times, requested deletion」 — and
+      // deleting them destroys the evidence that the deletion itself was
+      // handled correctly, which is the one record a PIPL Art. 47
+      // complaint or an app-store data-deletion review actually asks to
+      // see. So the row survives and the identifiers inside it do not:
+      // phoneNumber / email / identifier / ip / userAgent are stripped
+      // and a `subjectPurgedAt` marker is written in their place.
+      //
+      // `userId` deliberately stays. Once app_users is gone that UUID
+      // resolves to nothing and re-identifies no one, but it is what
+      // still lets an auditor tell「one account, forty failed logins」
+      // from「forty accounts, one each」.
+      //
+      // Three WHERE branches because nothing here is keyed by user_id at
+      // the column level (init_db.sql:386's ON DELETE SET NULL is inert
+      // — no insert site ever populates audit_logs.user_id):
+      //   1. userId in the payload — every post-login/registration row.
+      //   2. the raw phone/email — pre-masking rows written before
+      //      logAudit started masking identifiers at the write boundary.
+      //      Rows written after that carry only a masked value, which is
+      //      already pseudonymous and matches nothing here by design.
+      //   3. `identifier`, which holds either shape depending on whether
+      //      the user typed a phone or an email at the login form.
+      // Seq scan on an unindexed jsonb key, deliberately: this runs at
+      // most a handful of times per six-hour sweep, and the retention
+      // sweep bounds how large the table can get.
+      await client.query(
+        `UPDATE audit_logs
+         SET event_payload = (event_payload ${AUDIT_PAYLOAD_STRIP_EXPR})
+             || jsonb_build_object('subjectPurgedAt', to_jsonb(NOW()))
+         WHERE event_payload->>'userId' = $1
+            OR ($2::text IS NOT NULL
+                AND (event_payload->>'phoneNumber' = $2 OR event_payload->>'identifier' = $2))
+            OR ($3::text IS NOT NULL
+                AND (event_payload->>'email' = $3 OR event_payload->>'identifier' = $3))`,
+        [request.user_id, phoneNumber, email],
       );
 
       // Cascades: patient_profiles (and its whole patient_* subtree),

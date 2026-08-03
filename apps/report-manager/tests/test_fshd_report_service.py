@@ -1,12 +1,12 @@
 import unittest
 
-from app.services.fshd_report_service import analyze_fshd_report
+from app.services.fshd_report_service import analyze_fshd_report, extract_lab_table_rows
 
 
 class FshdReportServiceCoverageTest(unittest.TestCase):
     def test_blood_routine(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 血常规
         白细胞计数(WBC) 6.69 3.5-9.5
         血红蛋白量(HGB) 155 130-175
@@ -21,7 +21,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_abdominal_ultrasound(self):
         text = """
-        福建医科大学附属第一医院 彩色超声诊断报告单
+        示例市第一人民医院 彩色超声诊断报告单
         检查部位: 男性全腹彩超
         检查所见:
         肝大小形态正常，胆囊欠光滑，胰腺形态大小正常，脾大小形态正常。
@@ -35,7 +35,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_diaphragm_ultrasound(self):
         text = """
-        福建医科大学附属第一医院 彩色超声诊断报告单
+        示例市第一人民医院 彩色超声诊断报告单
         检查部位: 膈肌彩超
         活动度(cm) QB DB VS 膈肌厚度(mm) E-E E-I D-I
         右侧膈肌 1.47 5.32 1.67 1.9 2.8 7.1
@@ -52,7 +52,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_echocardiography(self):
         text = """
-        福建医科大学附属第一医院 彩色超声诊断报告单
+        示例市第一人民医院 彩色超声诊断报告单
         检查部位: 心脏彩色多普勒超声
         HR: 58bpm AoD: 2.81cm LAD: 2.93cm LVDd: 4.58cm
         FS: 37.42% EF: 67.42%
@@ -69,7 +69,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_ecg(self):
         text = """
-        福建医科大学附属第一医院 心电图报告
+        示例市第一人民医院 心电图报告
         心率: 70 bpm P-R间期: 180 ms QRS时限: 88 ms QT/QTc: 358/386 ms
         心电图诊断:
         窦性心律不齐
@@ -84,7 +84,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_thyroid_function(self):
         text = """
-        福建医科大学附属第一医院核医学报告单
+        示例市第一人民医院核医学报告单
         检验目的: FT3、FT4、STSH
         游离T3(FT3) 6.000 3.5-6.59
         游离T4(FT4) 13.580 11.5-22.7
@@ -99,7 +99,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_infection_screening_hbv(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 乙肝两对半定量+HIV.
         乙型肝炎病毒表面抗原(HBsAg) 0.00(-) <0.05
         抗乙型肝炎病毒表面抗体(Anti-HBs) 0.35(-) <10
@@ -117,7 +117,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_stool_hp_breath(self):
         text = """
-        福建医科大学附属第一医院13C呼气试验检验报告
+        示例市第一人民医院13C呼气试验检验报告
         Basal 0.0
         30-Minutes 15.8
         检测结果:DOB=15.8 阳性+
@@ -131,7 +131,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_muscle_enzyme(self):
         text = """
-        福建医科大学附属第一医院核医学报告单
+        示例市第一人民医院核医学报告单
         检验目的: 血清肌红蛋白(Mb)
         肌红蛋白(MYO) 158.810 ↑ 0-110 ug/L
         """
@@ -142,7 +142,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_muscle_mri(self):
         text = """
-        福建医科大学附属第一医院 磁共振检查报告单
+        示例市第一人民医院 磁共振检查报告单
         检查项目: 双侧小腿肌肉MRI平扫
         影像所见:
         右侧小腿腓肠肌内侧头、右侧胫前肌肌腹片状短T1长T2信号影，左侧腓肠肌内侧头、胫骨前肌与趾长伸肌肌腹片絮状长T1长T2信号影。
@@ -155,7 +155,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_pulmonary_function(self):
         text = """
-        福建医科大学附属第一医院 通气弥散残气检查报告
+        示例市第一人民医院 通气弥散残气检查报告
         FVC [L] 5.55 3.45 62.1
         FEV1 [L] 4.65 3.03 65.0
         FEV1/FVC [%] 83.20 87.72 105.4
@@ -173,7 +173,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_biochemistry(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 生化全套检查
         谷丙转氨酶(ALT) 21 9-50
         谷草转氨酶(AST) 23 15-40
@@ -192,7 +192,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_urinalysis(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 尿沉渣定量+尿常规
         颜色 黄色
         透明度 澄清
@@ -211,7 +211,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_coagulation_panel(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 凝血全套
         凝血酶原时间(PT) 13.7 11.0-14.5
         国际标准化比值(PT-INR) 1.12
@@ -228,7 +228,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_d_dimer(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: D-二聚体定量
         D-二聚体定量(D-Dimer) 0.06 0-0.55
         """
@@ -239,7 +239,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_syphilis_screening(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: TPPA+TRUST滴度
         抗梅毒螺旋体抗体(TPPA) 阴性(-) 阴性
         抗梅毒螺旋体非特异性抗体(TRUST) 阴性(-) 阴性
@@ -251,9 +251,211 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
         self.assertTrue(panel["tppa"].startswith("阴性"))
         self.assertTrue(panel["trust_ab"].startswith("阴性"))
 
+    def test_syphilis_screening_table_cells_on_separate_lines(self):
+        """The layout PaddleOCR actually produces for a lab table.
+
+        Every cell is its own detected text box, so a row arrives as
+        four consecutive lines instead of one. The fixture above keeps
+        a row on one line and passed throughout, while this exact
+        report — 813 characters of text, classified `infection_screening`
+        at 0.99 — produced `field_count: 0` in production and a summary
+        that told the patient「具体结果：未提供」.
+        """
+        text = "\n".join([
+            "示例市第一人民医院检验报告单",
+            "检验目的：TPPA+TRUST滴度",
+            "项目",
+            "结果",
+            "参考区间",
+            "抗梅毒螺旋体抗体(TPPA)",
+            "阴性（-)",
+            "阴性",
+            "凝集法",
+            "抗梅毒螺旋体非特异性抗体(TRUST)",
+            "阴性（-）",
+            "阴性",
+            "凝集法",
+        ])
+        result = analyze_fshd_report(text, "other", "Syphilis Test.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "infection_screening")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertTrue(panel["tppa"].startswith("阴性"))
+        self.assertTrue(panel["trust_ab"].startswith("阴性"))
+        self.assertGreater(result["fshd"]["field_count"], 0)
+
+    # Every case below is a real value pulled from the user's database.
+    # They are all one of two shared failures: a block capture that ran
+    # past its section, or a summary line that returned a header.
+    def test_ecg_conclusion_stops_before_identifiers(self):
+        """The ECG summary swallowed the whole report, MRN included.
+
+        `ecgSummary` is on the API's precise prompt allowlist, so the
+        captured 「住院号:R000000」 was reaching the LLM.
+        """
+        text = "\n".join([
+            "心电图报告单",
+            "姓名: 张三丰",
+            "年龄:23",
+            "科别:神经内科",
+            "心电图诊断",
+            "实性心律不齐",
+            "不完全性右束支传导阻滞",
+            "门诊号:",
+            "住院号:R000000",
+            "2023/12/2217:30:35",
+            "本报告仅供临床医师结合临床参考,不作诊断证明之用)",
+        ])
+        result = analyze_fshd_report(text, "other", "ECG.jpeg")
+        summary = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]["ecg_summary"]
+        # Both halves matter. Truncating at the first identifier was the
+        # first fix and it threw away findings: this ECG's OCR merged two
+        # columns onto one line, so 「不完全性右束支传导阻滞」 sat after
+        # 「年龄:23」 and went with it. Identifiers are excised as pairs;
+        # the diagnosis around them survives.
+        self.assertIn("不完全性右束支传导阻滞", summary)
+        self.assertIn("实性心律不齐", summary)
+        self.assertNotIn("R000000", summary)
+        self.assertNotIn("住院号", summary)
+        self.assertNotIn("年龄", summary)
+        self.assertNotIn("本报告仅供", summary)
+        self.assertNotIn("神经内科", summary)
+
+    def test_mri_impression_drops_the_radiologist_signature(self):
+        """「钱医」 is the reporting radiologist, not part of the finding."""
+        text = "\n".join([
+            "磁共振检查报告单",
+            "印象:",
+            "1. 右侧腓肠肌内侧头、双侧胫骨前肌与趾长伸肌脂肪浸润.",
+            "2. 左侧腓肠肌内侧头、胫骨前肌与趾长伸肌炎性改变,请结合临床.",
+            "钱医",
+        ])
+        result = analyze_fshd_report(text, "mri", "Muscle MRI.jpeg")
+        impression = next(
+            (f["field_value"] for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "report_impression"),
+            None,
+        )
+        self.assertIsNotNone(impression)
+        self.assertIn("脂肪浸润", impression)
+        self.assertNotIn("钱医", impression)
+        # The header itself is not the impression.
+        self.assertNotEqual(impression.strip(), "印象:")
+
+    def test_diaphragm_summaries_are_values_not_headers(self):
+        """「膈肌厚度(mm)」 is a column header; 「孙医」 is the sonographer."""
+        text = "\n".join([
+            "超声检查报告单",
+            "膈肌厚度(mm)",
+            "右侧膈肌 1.8 2.4 33.3",
+            "检查提示",
+            "双侧膈肌运动及增厚率未见明显异常声像 请结合临床",
+            "孙医",
+        ])
+        result = analyze_fshd_report(text, "other", "Diaphragm.jpeg")
+        panel = result["fshd"]["normalized_summary"]["cardio_respiratory_panel"]
+        motion = panel.get("diaphragm_motion_summary")
+        self.assertIsNotNone(motion)
+        self.assertIn("未见明显异常", motion)
+        self.assertNotIn("孙医", motion)
+        # A thickening summary is a measurement; a header is not one, and
+        # neither is the motion conclusion that happens to say 增厚率.
+        thickening = panel.get("diaphragm_thickening_summary")
+        self.assertNotEqual(thickening, "膈肌厚度(mm)")
+        self.assertNotEqual(thickening, motion)
+
+    def test_free_text_is_capped(self):
+        """A stop-marker list is always incomplete; length is the backstop."""
+        text = "\n".join(["磁共振检查报告单", "印象:"] + [f"第{i}段所见描述文字。" for i in range(60)])
+        result = analyze_fshd_report(text, "mri", "Long.jpeg")
+        impression = next(
+            (f["field_value"] for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "report_impression"),
+            "",
+        )
+        self.assertLessEqual(len(impression), 201)
+
+    def test_genetic_conclusion_is_the_finding_not_the_disclaimer(self):
+        """A positive report was showing a caveat about negative results.
+
+        The 附录信息-检测局限 section of a genetic report is a dozen
+        numbered items thick with clinical vocabulary, so a keyword
+        search over the whole page lands there: this report's
+        `interpretation_summary` came out as a mid-sentence fragment of
+        caveat #5 —「即使基因检测结果为阴性,仍建议以医生诊断…」— on a
+        report whose own result is FSHD1-positive with D4Z4 = 3.
+        """
+        text = "\n".join([
+            "基因检测报告",
+            "检测结果",
+            "本项目对受检者样本进行光学图谱分析,检出受检者在染色体4q35的D4Z4重复单元"
+            "存在致病性杂合缺失变异,可导致1型面肩肱型肌营养不良症(FSHD1)",
+            "D4Z4重复单元数: 3",
+            "单倍型: 4qA",
+            "遗传咨询和建议",
+            "1. 建议根据该检测结果,对受检者进行进一步临床检查。",
+            "附录信息 -检测局限",
+            "4. 不能排除生殖细胞嵌合所致的解读偏差。",
+            "5. 遗传因素并非受检者发病的主导原因。即使基因检测结果为阴性,"
+            "仍建议以医生诊断、其他临床检测和家族史为准。",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Genetic.pdf")
+        summary = next(
+            (f["field_value"] for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "interpretation_summary"),
+            None,
+        )
+        self.assertIsNotNone(summary)
+        self.assertIn("FSHD1", summary)
+        # None of the caveat text may appear in a conclusion.
+        self.assertNotIn("为阴性", summary)
+        self.assertNotIn("以医生诊断", summary)
+        self.assertNotIn("解读偏差", summary)
+
+    def test_generic_table_reads_analytes_nobody_wrote_a_pattern_for(self):
+        """The per-analyte regexes only cover reports we have seen.
+
+        Chinese lab reports share a shape —「No 项目 结果 参考区间 单位
+        方法」— and PaddleOCR emits one cell per line, so a row is N
+        consecutive lines. Reading the structure extracts every analyte
+        on the page. Motivating case: an FT3/FT4/TSH panel classified at
+        0.99 confidence produced 3 fields, because only three analytes
+        had hand-written patterns.
+        """
+        rows = extract_lab_table_rows([
+            "检验报告单",
+            "No", "项目", "结果", "参考区间", "单位", "方法",
+            "1", "游离T3(FT3)", "6.000", "3.5-6.59", "pmol/L", "化学发光法",
+            "2", "游离T4(FT4)", "13.580", "11.5-22.7", "pmol/L", "化学发光法",
+            "3", "某个没人写过规则的指标", "1.23", "1.0-2.0", "mg/L", "酶法",
+        ])
+        by_name = {r["name"]: r for r in rows}
+        self.assertIn("游离T3(FT3)", by_name)
+        self.assertEqual(by_name["游离T3(FT3)"]["value"], "6.000")
+        self.assertEqual(by_name["游离T3(FT3)"]["unit"], "pmol/L")
+        self.assertEqual(by_name["游离T3(FT3)"]["reference"], "3.5-6.59")
+        # The whole point: an analyte with no hand-written pattern.
+        self.assertIn("某个没人写过规则的指标", by_name)
+        # A method is not a test, and a unit is not a test — both sit in
+        # their own column and are followed by the next row's number.
+        self.assertNotIn("化学发光法", by_name)
+        self.assertNotIn("pmol/L", by_name)
+
+    def test_generic_table_strips_row_numbers_and_metadata(self):
+        rows = extract_lab_table_rows([
+            "申请时间:2023-12-2014:01",
+            "*1白细胞计数(WBC)", "6.69", "3.5-9.5", "10^9/L",
+            "22血小板比积(PCT)", "0.23", "0.11-0.28", "%",
+        ])
+        names = [r["name"] for r in rows]
+        # The leading index is the table's own numbering, not the name.
+        self.assertIn("白细胞计数(WBC)", names)
+        self.assertIn("血小板比积(PCT)", names)
+        # `label:value` is report metadata, not a results row.
+        self.assertFalse(any("申请时间" in n for n in names))
+
     def test_il6(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: IL-6
         白介素6(IL-6) 2.04 <10 pg/ml
         """
@@ -264,7 +466,7 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
 
     def test_stool_routine(self):
         text = """
-        福建医科大学附属第一医院检验报告单
+        示例市第一人民医院检验报告单
         检验目的: 粪便常规+粪便隐血
         颜色 黄色
         硬度 软

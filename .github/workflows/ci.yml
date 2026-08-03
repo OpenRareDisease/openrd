@@ -1,9 +1,28 @@
 name: CI
 
-# The repo ships 448 tests across the API and mobile workspaces, but nothing
-# ran them automatically -- a regression only showed up when someone happened
-# to run the suite locally. Every check below was verified green on master
-# before being added, so a red run always means "this PR broke something".
+# Started as @FenjuFu's #106, which is the PR that made the point: the
+# repository had 448 tests and no automated gate of any kind, so a regression
+# only surfaced when someone happened to run the suite locally. That file's
+# structure -- the concurrency group, the job split, the deliberate exclusion of
+# `npm run format` from the gate -- is kept here; this version extends it.
+#
+# 730 vitest assertions in apps/api, 298 jest assertions in apps/mobile and 181
+# pytest assertions across apps/report-manager + scripts/kb_parsers ran only
+# when a human happened to remember, on a service that stores real FSHD patient
+# records and can be merged on a single human approval.
+#
+# The Python suite is the one that most needed a gate and is the one #106
+# left out. apps/report-manager turns a scanned report into the structured
+# fields the API's prompt allowlist then trusts, so its failure mode is not a
+# crash — it is a silently wrong medical record. Commit 17c2e7a is the proof:
+# a genetic report whose conclusion field swallowed a negative-results
+# disclaimer on an FSHD1-POSITIVE result, and an ECG summary that carried an
+# inpatient record number into a trusted field. Its +240 lines of regression
+# tests would still have been opt-in without the report-manager job below.
+#
+# Every step here was executed against this tree before it was committed, and
+# every one exits 0. That is deliberate: a gate that is red the day it lands
+# teaches the team to ignore red, which is worse than having no gate at all.
 
 on:
   pull_request:
@@ -14,8 +33,36 @@ permissions:
   contents: read
 
 concurrency:
+  # Superseded runs on the same branch are cancelled; the last push is the only
+  # one whose result anybody acts on. Keyed on ref, not SHA, or nothing would
+  # ever match and nothing would ever be cancelled.
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # Node 20 is what both shipped images actually run: apps/api/Dockerfile is
+  # `FROM node:20-bookworm-slim` (both stages) and apps/mobile/Dockerfile.web
+  # is `FROM node:20-alpine`. The root package.json declares engines.node
+  # ">=20.12" — the exact floor, because db:migrate:down, db:backup, db:restore
+  # and kb:prune all run `node --env-file-if-exists`, a flag that does not
+  # exist before 20.12/21.7. Do not raise this to 22 without raising the
+  # Dockerfiles in the same change: a CI that is green on a runtime production
+  # never executes is a gate that lies.
+  #
+  # Places that state the floor and must move together: the two Dockerfiles,
+  # engines.node, README.md / README.en.md's 环境要求 line, and .nvmrc if one is
+  # ever added. There is no .npmrc, so engine-strict is off and a contributor
+  # on an older Node installs cleanly and only finds out at `npm run db:backup`
+  # — with an error ("bad option: --env-file-if-exists") that names no version.
+  NODE_VERSION: '20'
+  # apps/api/Dockerfile.kb is `FROM python:3.11-slim`, and the python3 inside
+  # the api image comes from bookworm, which is also 3.11. This pin is
+  # load-bearing rather than cosmetic: pytesseract 0.3.10 — pinned by
+  # apps/api/requirements-embedded-report.txt, which the api image installs —
+  # does `from pkgutil import find_loader` at import time, and find_loader was
+  # removed in Python 3.12. On 3.12+ every report-manager test errors during
+  # collection before a single assertion runs.
+  PYTHON_VERSION: '3.11'
 
 jobs:
   api:
@@ -29,31 +76,67 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
 
-      # Workspaces are hoisted to the repo root, so install from there.
+      # npm workspaces hoist every dependency to the repo root, so there is
+      # exactly one lockfile and the install has to run from there even though
+      # every later step runs inside apps/api.
       - name: Install
         run: npm ci
         working-directory: .
 
+      # `eslint .` rather than the workspace's `npm run lint`, which is scoped
+      # to src/**/*.{ts,tsx}. The wider run covers 135 files instead of 134 —
+      # eslint.config.mjs itself is the extra one — and the config already
+      # ignores dist and node_modules, so nothing generated is linted.
       - name: Lint
-        run: npm run lint
+        run: npx eslint .
 
-      # `npm run format` (prettier --check) is deliberately NOT a gate yet:
-      # the sources are committed with CRLF and there is no .gitattributes,
-      # so prettier's default endOfLine:"lf" fails on 113 files on any
-      # checkout, Linux included. Content is otherwise prettier-clean --
-      # normalising line endings makes the check pass. See the PR notes.
+      # PR #106 dropped this step on the premise that the sources are committed
+      # with CRLF and would fail prettier's default endOfLine:"lf" on 113 files.
+      # That does not reproduce on this tree: `git grep -Il $'\r$'` over
+      # *.ts/*.tsx/*.json/*.md finds nothing, and `prettier --check` over
+      # apps/api/src passes clean. So the check goes back in and the job name
+      # names all four things it runs.
+      #
+      # Scoped to apps/api/src, which is what the workspace's `format` script
+      # checks. A repo-wide `prettier --check` is deliberately NOT gated: 16
+      # tracked files outside apps/api/src fail it today (most of
+      # apps/mobile/screens/p-trial_square/**, both tsconfig.json,
+      # apps/mobile/metro.config.js, docker-compose.yml). Widening the glob is
+      # a normalisation commit of its own, not something to smuggle into the
+      # commit that introduces CI.
+      - name: Format
+        run: npm run format
 
+      # tsconfig.test.json, NOT tsconfig.json. The latter is the BUILD config
+      # and excludes src/**/*.test.ts so the runtime image does not ship ~50
+      # modules importing vitest and supertest — correct for the build, and a
+      # hole the size of the whole suite when this step pointed at it: vitest
+      # transpiles with esbuild and checks no types, so nothing in the repo
+      # typechecked API test code at all. A required field added to an
+      # orchestrator type, with run.test.ts's mocks left without it, was green
+      # here and green in Test. `npm run typecheck` is the same command a
+      # developer runs locally, so a red gate is reproducible in one line.
       - name: Typecheck
-        run: npx tsc --project tsconfig.json --noEmit
+        run: npm run typecheck
 
+      # No postgres service container here, and that is a decision rather than
+      # an oversight. src/db/migrate.ts used to call main() at module scope, so
+      # migrate.test.ts importing it for its exported predicates opened a real
+      # connection — a suite that needed either a database or a skip. main() is
+      # now guarded on the module being the resolved entry point, and the full
+      # suite passes in 1.7s with DATABASE_URL pointed at a dead port, so a
+      # service container would be 15s of startup for a socket nothing dials.
+      # If a test ever does need a live database, add `services: postgres:` to
+      # this job — do not reintroduce a module-scope connect to get around it.
       - name: Test
-        run: npm test
+        run: npx vitest run
 
   mobile:
-    name: Mobile (lint, test)
+    name: Mobile (lint, typecheck, test, web export)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -63,15 +146,99 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install
         run: npm ci
         working-directory: .
 
+      # Identical to the workspace's `npm run lint`. react-hooks/exhaustive-deps
+      # currently reports 6 warnings and 0 errors, so this exits 0; --max-warnings
+      # is intentionally not set, because turning today's warning backlog into a
+      # merge blocker is a separate decision from turning tests on.
       - name: Lint
-        run: npm run lint
+        run: npx eslint .
 
+      # The mobile workspace has no `typecheck` script, but it does have a
+      # tsconfig.json and the whole app is TypeScript, so the check is run
+      # directly. It passes on this tree.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # --runInBand mirrors the workspace's test script; jest-expo's transform
+      # is memory-hungry and the parallel default is what produced the
+      # first-run flake reported on PR #106. --ci makes an unexpected snapshot
+      # a failure instead of a silent write. The workspace script's
+      # --passWithNoTests is deliberately NOT carried over: on a runner, "jest
+      # collected zero suites" means the preset or the glob broke, and that has
+      # to be red rather than green.
       - name: Test
-        run: npm test
+        run: npx jest --runInBand --ci
+
+      # The artifact that actually ships. apps/mobile/Dockerfile.web builds the
+      # site with this exact command, and until now no gate ran Metro at all:
+      # a resolution or transform break — a package.json export map change, a
+      # bad import path in a screen no test renders — reached the first Docker
+      # build unchallenged, which on this project means it reaches it during a
+      # deploy window.
+      #
+      # It is more than a bundler run. app.json sets `web.output: "static"`, so
+      # `expo export` static-renders every route in Node, which means every
+      # module-scope side effect in app/_layout.tsx and everything it imports
+      # (contexts/AuthContext → lib/api, including its fail-fast on a blank
+      # EXPO_PUBLIC_API_URL) is evaluated here. EXPO_PUBLIC_API_URL is set to
+      # the same `/api` the compose build bakes in, because a blank one is a
+      # legitimate build failure and this step must fail on real breakage only.
+      #
+      # Output goes to a temp dir: apps/mobile/dist is a tracked build artifact
+      # in this repo and CI must not be what rewrites it.
+      - name: Build web export
+        run: npx expo export --platform web --output-dir "${RUNNER_TEMP}/web-export"
+        env:
+          EXPO_NO_TELEMETRY: '1'
+          EXPO_PUBLIC_API_URL: /api
+
+  report-manager:
+    name: Report manager (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          # All three files feed the resolved dependency set — the CI file
+          # includes report-manager's dev file, which in turn includes the api
+          # image's embedded-report pins — so all three have to invalidate the
+          # cache.
+          cache-dependency-path: |
+            .github/requirements-python-ci.txt
+            apps/report-manager/requirements-dev.txt
+            apps/api/requirements-embedded-report.txt
+
+      # pytesseract and pdf2image are thin wrappers around binaries that pip
+      # cannot install. The OCR tests skip cleanly when they are missing, which
+      # would leave the job green while silently testing nothing — exactly the
+      # kind of hollow gate this workflow exists to avoid — so the binaries are
+      # installed. chi-sim is required as well as eng: the reports being parsed
+      # are Chinese hospital documents.
+      - name: Install OCR system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-chi-sim poppler-utils
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r .github/requirements-python-ci.txt
+
+      # Run from the repo root over both trees at once. apps/report-manager
+      # needs its own conftest.py on sys.path for `app.services...` to resolve
+      # from here; scripts/kb_parsers bootstraps apps/api itself. 181
+      # assertions, ~6s.
+      - name: Test
+        run: pytest apps/report-manager/tests scripts/kb_parsers

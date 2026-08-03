@@ -1,16 +1,20 @@
-import { Redirect, type Href } from 'expo-router';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import Page from '../screens/p-data_entry';
 
 /**
- * Data entry was promoted from a buried stack screen to the「记录」
- * tab — the single most frequent patient action deserves a tab slot
- * (it replaced the placeholder community tab). This redirect keeps
- * every pre-existing `router.push('/p-data_entry')` call site and
- * deep link working.
+ * Data entry renders here again.
  *
- * The Href cast bridges expo-router's generated route types, which
- * only refresh on the next `expo start` — the route file exists in
- * this same commit.
+ * It briefly held a tab slot (as `(tabs)/p-record`), and this file was
+ * a redirect pointing at it. Recording is an action rather than a
+ * destination, so it moved out of the bar and into the raised center
+ * button (see AppTabBar) — which means this route is the real screen
+ * once more, and every `router.push('/p-data_entry')` call site lands
+ * on it directly instead of bouncing through a redirect.
  */
-export default function DataEntryRedirect() {
-  return <Redirect href={'/(tabs)/p-record' as Href} />;
+export default function DataEntry() {
+  return (
+    <SafeAreaProvider>
+      <Page />
+    </SafeAreaProvider>
+  );
 }

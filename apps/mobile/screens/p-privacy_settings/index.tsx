@@ -1,14 +1,23 @@
+import { COLOR } from '../../lib/design';
 import { useEffect, useState } from 'react';
-import { Alert, View, Text, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Icon from '../common/Icon';
+import { useCallback } from 'react';
+import {
+  getLegalAcceptances,
+  withdrawLegalAcceptance,
+  type LegalAcceptanceSummary,
+} from '../../lib/api';
+import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_TITLES } from '../../lib/legal-content';
 import styles from './styles';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
-import ScreenBackButton from '../common/ScreenBackButton';
-import ToggleSwitch from './components/ToggleSwitch';
-import ConfirmModal from './components/ConfirmModal';
+import ScreenHeader from '../common/ScreenHeader';
+import { useAppDialog } from '../common/feedback/AppDialog';
+import Button from '../common/Button';
+import ToggleSwitch from '../common/ToggleSwitch';
 import SuccessToast from './components/SuccessToast';
 import {
   ApiError,
@@ -23,9 +32,9 @@ import {
   updateMySharingPreferences,
 } from '../../lib/api';
 
-interface ToggleInfo {
-  id: string;
-  newState: boolean;
+interface ToggleCopy {
+  title: string;
+  message: string;
 }
 
 type AiConsentField = 'personal' | 'thirdParty' | 'preciseValues';
@@ -57,6 +66,62 @@ const formatConsentDateLabel = (iso: string | null, granted: boolean): string =>
 
 const PrivacySettingsScreen = () => {
   const router = useRouter();
+  const { confirm, notify } = useAppDialog();
+
+  /**
+   * The acceptance ledger, and the withdrawal the documents promise.
+   *
+   * 《敏感个人信息处理单独同意》 tells the user 「同意后可随时在「隐私
+   * 设置」中撤回」 and the privacy policy lists 撤回同意 among the
+   * rights it grants — this screen is the place both sentences name,
+   * and until now neither was reachable from it. A promise a product
+   * makes in a legal document and does not implement is the worst of
+   * both: it reads as compliance and is not.
+   */
+  const [acceptances, setAcceptances] = useState<LegalAcceptanceSummary | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
+
+  const loadAcceptances = useCallback(() => {
+    getLegalAcceptances()
+      .then(setAcceptances)
+      .catch(() => {
+        // A failed read must not blank the rest of the screen; the
+        // section simply does not render.
+        setAcceptances(null);
+      });
+  }, []);
+
+  useEffect(loadAcceptances, [loadAcceptances]);
+
+  const onWithdrawSensitive = async () => {
+    const ok = await confirm({
+      title: '撤回敏感信息处理同意',
+      message:
+        '撤回后将无法继续上传报告或记录健康数据；已上传的内容不会被删除，你可以在「报告管理」中单独删除。撤回不影响撤回前已进行的处理，需要时可以再次同意。',
+      confirmLabel: '确认撤回',
+      cancelLabel: '取消',
+      destructive: true,
+    });
+    if (!ok) return;
+
+    setWithdrawing(true);
+    try {
+      await withdrawLegalAcceptance(LEGAL_DOCUMENTS.sensitiveData);
+      // The AI surfaces cache consent state; without this the app would
+      // keep offering features the server will now refuse.
+      bumpConsentEpoch();
+      loadAcceptances();
+      notify({ title: '已撤回', message: '敏感个人信息处理同意已撤回。', tone: 'success' });
+    } catch (error) {
+      notify({
+        title: '撤回失败',
+        message: error instanceof ApiError ? error.message : '请检查网络后重试',
+        tone: 'error',
+      });
+    } finally {
+      setWithdrawing(false);
+    }
+  };
 
   // AI 同意状态（来自后端）
   const [aiConsent, setAiConsent] = useState<ConsentDetails | null>(null);
@@ -124,14 +189,10 @@ const PrivacySettingsScreen = () => {
   }, []);
 
   // 弹窗和提示状态
-  const [isConfirmModalVisible, setIsConfirmModalVisible] = useState(false);
   const [isSuccessToastVisible, setIsSuccessToastVisible] = useState(false);
-  const [currentToggleInfo, setCurrentToggleInfo] = useState<ToggleInfo | null>(null);
-  const [modalConfig, setModalConfig] = useState({
-    title: '',
-    message: '',
-    icon: '',
-  });
+  // A confirmation is on screen. It disables every switch, so a second
+  // press can't open a second dialog and orphan the first promise.
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const handleDonationDetailsPress = () => {
     router.push('/p-data_donation');
@@ -158,10 +219,12 @@ const PrivacySettingsScreen = () => {
       : '操作后等级：基础 —— AI 仅可引用脱敏后的档案字段。';
   };
 
-  const showConfirmModal = (toggleId: string, newState: boolean) => {
+  /** Copy for the confirmation of one toggle. Kept separate from the
+   *  asking so the wording stays a pure function of (toggle, target
+   *  state) and can be read in one place. */
+  const describeToggle = (toggleId: string, newState: boolean): ToggleCopy => {
     let title = '';
     let message = '';
-    let icon = '';
 
     switch (toggleId) {
       case 'trial-permission':
@@ -169,49 +232,50 @@ const PrivacySettingsScreen = () => {
         message = newState
           ? '开启后，临床试验机构将能够访问您的档案数据以评估入组资格。您可以随时在此页面关闭此授权。'
           : '关闭后，临床试验机构将无法访问您的档案数据，可能影响您参与临床试验的机会。';
-        icon = newState ? 'check-circle' : 'exclamation-triangle';
         break;
       case 'donation-permission':
         title = newState ? '开启数据捐赠' : '关闭数据捐赠';
         message = newState
           ? '开启后，您的匿名化数据将被捐赠给FSHD科研项目，助力医学研究。我们会严格保护您的隐私。'
           : '关闭后，您的数据将不再被捐赠给科研项目。之前捐赠的数据仍将用于科研。';
-        icon = newState ? 'heart' : 'heart-crack';
         break;
       case 'hospital-sync':
         title = newState ? '开启医院数据同步' : '关闭医院数据同步';
         message = newState
           ? '开启后，医院HIS系统将自动同步您的日常记录数据到个人档案，减少重复录入。'
           : '关闭后，医院数据将不会自动同步，您需要手动录入日常记录。';
-        icon = newState ? 'arrows-rotate' : 'circle-xmark';
         break;
       case 'community-share':
         title = newState ? '开启社区分享' : '关闭社区分享';
         message = newState
           ? '开启后，您可以在社区中分享康复经验和训练视频，帮助其他患者。'
           : '关闭后，您将无法在社区中发布内容，但仍可浏览他人分享。';
-        icon = newState ? 'share-nodes' : 'lock';
         break;
       case AI_TOGGLE_IDS.personal:
         title = newState ? '开启个人数据用于 AI' : '关闭个人数据用于 AI';
         message = newState
           ? '开启后，AI 助手在回答问题时可以引用你的档案和报告中已脱敏的字段。原始姓名、身份证、电话等绝不会出现在提示词里。'
           : '关闭后，AI 助手将无法引用你的任何个人数据；为了完全停用 AI 还需要同时关闭"第三方 LLM 处理"。';
-        icon = newState ? 'user-shield' : 'circle-xmark';
         break;
       case AI_TOGGLE_IDS.thirdParty:
         title = newState ? '允许第三方 LLM 处理' : '关闭第三方 LLM 处理';
+        // PIPL Art. 17(1)/23 wants the RECIPIENT named, not just the
+        // fact that「云端大模型」is involved. The old copy said
+        //「SiliconFlow / DeepSeek」as if they were two interchangeable
+        // vendors; one is the processor we contract with, the other is
+        // the model it runs — a user cannot check who holds their data
+        // from that. Endpoint and data location are stated for the same
+        // reason: whether the prompt crosses a border is the question
+        // Art. 38-39 turns on, and the .cn host is the answer.
         message = newState
-          ? '开启后，你的问题会被发送到云端大模型（SiliconFlow / DeepSeek）做推理。我们只发送脱敏后的提示词，并保留每一次调用的审计记录。'
+          ? '开启后，你的问题会经我们的服务器发送给受托处理方「硅基流动 SiliconFlow」（接入地址 api.siliconflow.cn，位于中国境内）做推理，运行的模型为 DeepSeek-V3。我们只发送脱敏后的提示词——姓名、手机号、身份证号在送出前会被移除——并保留每一次调用的审计记录。详见《隐私政策》第 5 条。'
           : '关闭后，AI 助手将无法回答你的问题。';
-        icon = newState ? 'cloud-arrow-up' : 'cloud-slash';
         break;
       case AI_TOGGLE_IDS.preciseValues:
         title = newState ? '开启精确数值授权' : '关闭精确数值授权';
         message = newState
           ? '开启后，AI 可以看到精确的 D4Z4 重复数、甲基化百分比、具体报告日期等原始数值。这些数据更有助于精准建议，但属于敏感信息。需要同时开启上面两项。'
           : '关闭后，AI 只会看到临床化的描述（如"D4Z4 短"），具体数值不会进入提示词。';
-        icon = newState ? 'wand-magic-sparkles' : 'minus-circle';
         break;
     }
 
@@ -220,14 +284,39 @@ const PrivacySettingsScreen = () => {
       message = `${message}\n\n${projectedLevel}`;
     }
 
-    setModalConfig({ title, message, icon });
-    setCurrentToggleInfo({ id: toggleId, newState });
-    setIsConfirmModalVisible(true);
+    return { title, message };
   };
 
-  const hideConfirmModal = () => {
-    setIsConfirmModalVisible(false);
-    setCurrentToggleInfo(null);
+  /**
+   * Ask, then apply.
+   *
+   * This used to drive a screen-local `<ConfirmModal>` whose 确认
+   * button looked the same whichever way the switch was moving. Every
+   * one of these switches is a consent grant, so turning one *off* is
+   * a revocation — `destructive` puts that button in the alert colour
+   * and off the default position, which is the only visual difference
+   * between "start sharing my genome with a cloud model" and "stop".
+   */
+  const requestToggle = async (toggleId: string, newState: boolean) => {
+    if (isConfirming) return;
+    const { title, message } = describeToggle(toggleId, newState);
+
+    setIsConfirming(true);
+    let confirmed = false;
+    try {
+      confirmed = await confirm({
+        title,
+        message,
+        confirmLabel: newState ? '开启' : '关闭',
+        cancelLabel: '取消',
+        destructive: !newState,
+      });
+    } finally {
+      setIsConfirming(false);
+    }
+    if (!confirmed) return;
+
+    applyToggle(toggleId, newState);
   };
 
   const applyAiConsentUpdate = async (payload: ConsentUpdatePayload) => {
@@ -243,7 +332,7 @@ const PrivacySettingsScreen = () => {
       showSuccessToast();
     } catch (err) {
       const message = err instanceof Error ? err.message : '同意状态更新失败，请稍后重试。';
-      Alert.alert('更新失败', message);
+      notify({ title: '更新失败', message, tone: 'error' });
     } finally {
       setAiConsentSaving(false);
     }
@@ -257,17 +346,13 @@ const PrivacySettingsScreen = () => {
       showSuccessToast();
     } catch (err) {
       const message = err instanceof Error ? err.message : '设置更新失败，请稍后重试。';
-      Alert.alert('更新失败', message);
+      notify({ title: '更新失败', message, tone: 'error' });
     } finally {
       setSharingSaving(false);
     }
   };
 
-  const confirmToggle = () => {
-    if (!currentToggleInfo) return;
-
-    const { id, newState } = currentToggleInfo;
-
+  const applyToggle = (id: string, newState: boolean) => {
     switch (id) {
       case 'trial-permission':
         void applySharingUpdate({ clinicalTrial: newState });
@@ -291,8 +376,6 @@ const PrivacySettingsScreen = () => {
         void applyAiConsentUpdate({ preciseValues: newState });
         break;
     }
-
-    hideConfirmModal();
   };
 
   const showSuccessToast = () => {
@@ -332,10 +415,24 @@ const PrivacySettingsScreen = () => {
   }, [donationGranted]);
 
   const getDonationStatus = () => {
+    // `sharingPrefs === null` is "not loaded yet / the request failed",
+    // and `?? false` collapsed it into the same value as an explicit
+    // denial — so the screen asserted 未授权 about a state it had not
+    // read. On a consent screen that is the assertion that matters
+    // most, and the patient's next move is to grant something they may
+    // already have granted.
+    if (!sharingPrefs) {
+      return {
+        status: '读取中',
+        statusColor: COLOR.inkMuted,
+        grantedAt: '--',
+        shareableRecords: '--',
+      };
+    }
     if (!donationGranted) {
       return {
         status: '未授权',
-        statusColor: CLINICAL_COLORS.textMuted,
+        statusColor: COLOR.inkMuted,
         grantedAt: '--',
         shareableRecords: '--',
       };
@@ -343,7 +440,7 @@ const PrivacySettingsScreen = () => {
 
     return {
       status: '已授权',
-      statusColor: CLINICAL_COLORS.success,
+      statusColor: COLOR.good,
       // Same YYYY-MM-DD formatter the AI-consent rows use, so the
       // screen doesn't mix date formats.
       grantedAt: formatGrantDate(sharingPrefs?.timestamps.dataDonationAt ?? null) ?? '—',
@@ -362,7 +459,7 @@ const PrivacySettingsScreen = () => {
             style={{
               paddingHorizontal: 24,
               paddingVertical: 12,
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 13,
             }}
           >
@@ -380,7 +477,7 @@ const PrivacySettingsScreen = () => {
             style={{
               paddingHorizontal: 24,
               paddingVertical: 12,
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 13,
             }}
           >
@@ -416,7 +513,7 @@ const PrivacySettingsScreen = () => {
           style={{
             paddingHorizontal: 24,
             paddingTop: 4,
-            color: CLINICAL_COLORS.textMuted,
+            color: COLOR.inkMuted,
             fontSize: 12,
           }}
         >
@@ -427,7 +524,7 @@ const PrivacySettingsScreen = () => {
             paddingHorizontal: 24,
             paddingTop: 6,
             paddingBottom: 12,
-            color: CLINICAL_COLORS.textMuted,
+            color: COLOR.inkMuted,
             fontSize: 12,
             lineHeight: 18,
           }}
@@ -444,9 +541,10 @@ const PrivacySettingsScreen = () => {
             </Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="个人数据用于 AI"
             isEnabled={flags.personal}
-            disabled={aiConsentSaving}
-            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.personal, newState)}
+            disabled={aiConsentSaving || isConfirming}
+            onToggle={(newState) => void requestToggle(AI_TOGGLE_IDS.personal, newState)}
           />
         </View>
 
@@ -454,14 +552,16 @@ const PrivacySettingsScreen = () => {
           <View style={styles.settingContent}>
             <Text style={styles.settingTitle}>第三方 LLM 处理</Text>
             <Text style={styles.settingDescription}>
-              问题发送到云端大模型推理（SiliconFlow / DeepSeek）
+              问题发送给受托处理方「硅基流动 SiliconFlow」（api.siliconflow.cn，境内）推理，模型
+              DeepSeek-V3
               {thirdPartyLabel}
             </Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="第三方 LLM 处理"
             isEnabled={flags.thirdParty}
-            disabled={aiConsentSaving}
-            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.thirdParty, newState)}
+            disabled={aiConsentSaving || isConfirming}
+            onToggle={(newState) => void requestToggle(AI_TOGGLE_IDS.thirdParty, newState)}
           />
         </View>
 
@@ -475,15 +575,22 @@ const PrivacySettingsScreen = () => {
             </Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="精确数值授权"
             isEnabled={flags.preciseValues}
-            disabled={aiConsentSaving || !preciseAllowed}
-            onToggle={(newState) => showConfirmModal(AI_TOGGLE_IDS.preciseValues, newState)}
+            disabled={aiConsentSaving || isConfirming || !preciseAllowed}
+            onToggle={(newState) => void requestToggle(AI_TOGGLE_IDS.preciseValues, newState)}
           />
         </View>
 
-        <TouchableOpacity
+        {/* A row that navigates, so it says so. It was a bare Touchable
+            with a chevron and no accessibilityRole — on the privacy
+            screen of all places, the audit trail was unreachable by
+            screen reader. */}
+        <Pressable
           style={styles.settingItem}
-          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="查看 AI 调用记录"
+          accessibilityHint="打开审计历史，查看每次问答的模型、工具与字段"
           // expo-router's typed-routes union is regenerated by
           // `expo start`; the new screen file is recognised at runtime
           // but tsc hasn't seen it yet. Cast for now.
@@ -495,8 +602,8 @@ const PrivacySettingsScreen = () => {
               每次问答的元数据（模型、工具、字段、状态），不含提示词原文
             </Text>
           </View>
-          <FontAwesome6 name="chevron-right" size={12} color={CLINICAL_COLORS.textMuted} />
-        </TouchableOpacity>
+          <Icon name="chevron-right" size={12} color={COLOR.inkMuted} />
+        </Pressable>
       </View>
     );
   };
@@ -513,7 +620,7 @@ const PrivacySettingsScreen = () => {
             style={{
               paddingHorizontal: 24,
               paddingVertical: 12,
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 13,
             }}
           >
@@ -531,7 +638,7 @@ const PrivacySettingsScreen = () => {
             style={{
               paddingHorizontal: 24,
               paddingVertical: 12,
-              color: CLINICAL_COLORS.textMuted,
+              color: COLOR.inkMuted,
               fontSize: 13,
             }}
           >
@@ -557,9 +664,10 @@ const PrivacySettingsScreen = () => {
             </Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="临床试验数据授权"
             isEnabled={flags.clinicalTrial}
-            disabled={sharingSaving}
-            onToggle={(newState) => showConfirmModal('trial-permission', newState)}
+            disabled={sharingSaving || isConfirming}
+            onToggle={(newState) => void requestToggle('trial-permission', newState)}
           />
         </View>
 
@@ -570,9 +678,10 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.settingDescription}>将您的匿名化数据捐赠给FSHD科研项目</Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="匿名化数据捐赠"
             isEnabled={flags.dataDonation}
-            disabled={sharingSaving}
-            onToggle={(newState) => showConfirmModal('donation-permission', newState)}
+            disabled={sharingSaving || isConfirming}
+            onToggle={(newState) => void requestToggle('donation-permission', newState)}
           />
         </View>
 
@@ -585,9 +694,10 @@ const PrivacySettingsScreen = () => {
             </Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="医院数据同步"
             isEnabled={flags.hospitalSync}
-            disabled={sharingSaving}
-            onToggle={(newState) => showConfirmModal('hospital-sync', newState)}
+            disabled={sharingSaving || isConfirming}
+            onToggle={(newState) => void requestToggle('hospital-sync', newState)}
           />
         </View>
 
@@ -598,9 +708,10 @@ const PrivacySettingsScreen = () => {
             <Text style={styles.settingDescription}>允许在社区中分享您的康复经验和训练视频</Text>
           </View>
           <ToggleSwitch
+            accessibilityLabel="社区内容分享"
             isEnabled={flags.communityShare}
-            disabled={sharingSaving}
-            onToggle={(newState) => showConfirmModal('community-share', newState)}
+            disabled={sharingSaving || isConfirming}
+            onToggle={(newState) => void requestToggle('community-share', newState)}
           />
         </View>
       </View>
@@ -609,12 +720,10 @@ const PrivacySettingsScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* 顶部导航栏 */}
-      <View style={styles.header}>
-        <ScreenBackButton />
-        <Text style={styles.headerTitle}>隐私设置</Text>
-        <View style={styles.headerPlaceholder} />
-      </View>
+      {/* 顶部导航栏 — ScreenHeader adds the 首页 control the hand-rolled
+          row never had. Privacy is typically reached from 我的 → 隐私设置
+          → 数据捐赠, so leaving it took two targeted presses. */}
+      <ScreenHeader title="隐私设置" style={styles.header} />
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {/* AI 数据授权 */}
@@ -630,12 +739,17 @@ const PrivacySettingsScreen = () => {
           <View style={styles.donationInfoCard}>
             <View style={styles.donationInfoHeader}>
               <Text style={styles.donationInfoTitle}>了解数据捐赠</Text>
-              <TouchableOpacity onPress={handleDonationDetailsPress}>
-                <View style={styles.detailsButton}>
-                  <Text style={styles.detailsButtonText}>查看详情</Text>
-                  <FontAwesome6 name="chevron-right" size={10} color={CLINICAL_COLORS.accent} />
-                </View>
-              </TouchableOpacity>
+              {/* Beside a heading, so `plain` is legal here — position
+                  establishes that it is interactive. It had no
+                  accessibilityRole at all before. */}
+              <Button
+                label="查看详情"
+                trailingIcon="chevron-right"
+                variant="plain"
+                compact
+                accessibilityLabel="查看数据捐赠详情"
+                onPress={handleDonationDetailsPress}
+              />
             </View>
 
             <View style={styles.donationStatus}>
@@ -657,34 +771,80 @@ const PrivacySettingsScreen = () => {
           </View>
         </View>
 
+        {/* 授权记录 — the ledger the consent documents point at.
+            Rendered only when the read succeeded; a failed fetch leaves
+            the rest of the screen usable rather than showing an empty
+            shell that looks like「你没同意过任何东西」. */}
+        {acceptances && acceptances.acceptances.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>授权记录</Text>
+            {acceptances.acceptances.map((item) => (
+              <View key={item.document} style={styles.statusRow}>
+                <Text style={styles.statusLabel}>
+                  {LEGAL_DOCUMENT_TITLES[item.document] ?? item.document}
+                </Text>
+                <Text style={styles.statusValue}>
+                  {item.version} · {item.acceptedAt.slice(0, 10)}
+                </Text>
+              </View>
+            ))}
+            {acceptances.acceptances.some(
+              (item) => item.document === LEGAL_DOCUMENTS.sensitiveData,
+            ) ? (
+              <Button
+                label="撤回敏感信息处理同意"
+                variant="plain"
+                fullWidth
+                busy={withdrawing}
+                onPress={onWithdrawSensitive}
+                accessibilityHint="撤回后将无法继续上传报告或记录健康数据，已上传的内容不会被删除"
+              />
+            ) : null}
+          </View>
+        ) : null}
+
         {/* 隐私保护说明 */}
         <View style={styles.section}>
           <View style={styles.privacyNoticeCard}>
             <View style={styles.privacyNoticeHeader}>
               <View style={styles.privacyIconContainer}>
-                <FontAwesome6 name="shield-halved" size={14} color={CLINICAL_COLORS.accent} />
+                <Icon name="shield-halved" size={14} color={COLOR.accent} />
               </View>
               <View style={styles.privacyNoticeContent}>
                 <Text style={styles.privacyNoticeTitle}>隐私保护承诺</Text>
                 <View style={styles.privacyNoticeList}>
+                  {/* Every line here must be something the code
+                      actually does. This block used to claim
+                      「区块链存证数据操作日志」— there is no blockchain
+                      anywhere in this product — and 「严格遵守 HIPAA、
+                      GDPR 等国际隐私标准」, which is a US healthcare
+                      statute that does not apply and a compliance
+                      claim nobody has assessed. Telling patients that
+                      about their own medical records is worse than
+                      saying nothing; what replaced it is the shorter,
+                      true list. */}
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
                     <Text style={styles.privacyNoticeText}>
-                      采用医疗级数据加密技术，确保数据安全
+                      传输使用 HTTPS，密码加盐哈希存储，我们无法还原你的原始密码
                     </Text>
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>严格遵守HIPAA、GDPR等国际隐私标准</Text>
-                  </View>
-                  <View style={styles.privacyNoticeItem}>
-                    <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>区块链存证数据操作日志，确保可追溯</Text>
+                    <Text style={styles.privacyNoticeText}>
+                      报告存放在权限受限的对象存储，只能通过你本人登录后的接口取回
+                    </Text>
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
                     <Text style={styles.privacyNoticeText}>
-                      支持“最小必要”授权原则，您可随时撤销
+                      每一次同意的开启与关闭都有带时间戳的记录，可在「授权记录」查看
+                    </Text>
+                  </View>
+                  <View style={styles.privacyNoticeItem}>
+                    <Text style={styles.bulletPoint}>•</Text>
+                    <Text style={styles.privacyNoticeText}>
+                      按《个人信息保护法》处理；我们团队规模有限，不承诺绝对安全
                     </Text>
                   </View>
                 </View>
@@ -694,15 +854,7 @@ const PrivacySettingsScreen = () => {
         </View>
       </ScrollView>
 
-      {/* 确认弹窗 */}
-      <ConfirmModal
-        isVisible={isConfirmModalVisible}
-        title={modalConfig.title}
-        message={modalConfig.message}
-        icon={modalConfig.icon}
-        onCancel={hideConfirmModal}
-        onConfirm={confirmToggle}
-      />
+      {/* 确认弹窗 now comes from useAppDialog() — see requestToggle. */}
 
       {/* 成功提示 */}
       <SuccessToast isVisible={isSuccessToastVisible} message="设置已更新" />

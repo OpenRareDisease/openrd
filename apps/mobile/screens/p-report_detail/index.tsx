@@ -1,18 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import {
   ApiError,
   deletePatientDocument,
@@ -25,16 +22,21 @@ import {
   type PatientDocument,
 } from '../../lib/api';
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
-import {
-  CLINICAL_COLORS,
-  CLINICAL_GRADIENTS,
-  inferMriBodyMap,
-  inferReportKind,
-  type BodyView,
-} from '../../lib/clinical-visuals';
+import { inferMriBodyMap, inferReportKind, type BodyView } from '../../lib/clinical-visuals';
+import { COLOR } from '../../lib/design';
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
+import Button from '../common/Button';
+import SegmentedControl from '../common/SegmentedControl';
+import AnswerText from '../common/AnswerText';
+import AskAboutDrawer from '../common/AskAboutDrawer';
 import styles from './styles';
 import { shouldAutoSummarize } from './auto-summary';
+
+import InlineNotice from '../common/feedback/InlineNotice';
+import HumanBodyFigure from '../common/HumanBodyFigure';
+import ScreenHeader from '../common/ScreenHeader';
+import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
+import { useAppDialog } from '../common/feedback/AppDialog';
 
 /** Whitelisted OCR fields a patient can hand-correct — mirrors the
  *  backend's EDITABLE_OCR_FIELDS schema exactly. */
@@ -46,10 +48,6 @@ const CORRECTABLE_OCR_FIELDS: Array<{ key: string; label: string; placeholder: s
   { key: 'haplotype', label: '单倍型', placeholder: '例如：4qA' },
   { key: 'methylationValue', label: '甲基化', placeholder: '例如：12%' },
 ];
-import InlineNotice from '../common/feedback/InlineNotice';
-import HumanBodyFigure from '../common/HumanBodyFigure';
-import ScreenBackButton from '../common/ScreenBackButton';
-import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
 type DebugPayload = OcrPayload & {
@@ -79,6 +77,50 @@ const pickField = (fields: Record<string, string> | undefined, keys: string[]) =
   return undefined;
 };
 
+/** Chip colour only — the label stays the raw pipeline status so the
+ *  string a patient reads is unchanged by this styling pass. */
+const statusChipTone = (status: string) => {
+  switch (status) {
+    case 'parsed':
+      return { chip: styles.statusChipGood, text: styles.statusChipGoodText };
+    case 'processing':
+    case 'pending':
+    case 'needs_review':
+      return { chip: styles.statusChipWarn, text: styles.statusChipWarnText };
+    case 'parse_failed':
+      return { chip: styles.statusChipAlert, text: styles.statusChipAlertText };
+    default:
+      return { chip: undefined, text: undefined };
+  }
+};
+
+/** Pipeline status → what the patient should read. `parsed` /
+ *  `parse_failed` are our state machine's vocabulary, not theirs. */
+const formatStatusLabel = (status: string): string => {
+  switch (status) {
+    case 'parsed':
+      return '识别完成';
+    case 'processing':
+      return '识别中';
+    case 'parse_failed':
+      return '识别失败';
+    case 'needs_review':
+      return '待核对';
+    case 'uploaded':
+      return '待识别';
+    default:
+      return status;
+  }
+};
+
+/** `0.99` → `99%`. A 0–1 float is a number for a log line. */
+const formatConfidence = (raw: string | undefined): string | undefined => {
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return raw;
+  return `${Math.round(value * 100)}%`;
+};
+
 const formatKindLabel = (kind: string) => {
   switch (kind) {
     case 'genetic':
@@ -98,6 +140,7 @@ const formatKindLabel = (kind: string) => {
 
 export default function ReportDetailScreen() {
   const router = useRouter();
+  const { confirm, notify } = useAppDialog();
   const params = useLocalSearchParams();
   const documentId = useMemo(() => {
     const raw = params.documentId;
@@ -125,6 +168,7 @@ export default function ReportDetailScreen() {
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [summary, setSummary] = useState<string>('');
+  const [askVisible, setAskVisible] = useState(false);
   const [bodyView, setBodyView] = useState<BodyView>('front');
   // The poll gave up (10 min) without the parse settling — the job is
   // almost certainly lost; offer「重新识别」instead of spinning forever.
@@ -261,6 +305,7 @@ export default function ReportDetailScreen() {
   // payload (and its analysisStatus) is null for the entire parse,
   // which used to surface as a bare "unknown" in the hero chip.
   const status = docStatus ?? getAnalysisStatus(payload) ?? 'unknown';
+  const statusTone = statusChipTone(status);
   const reportKind = inferReportKind(payload);
   const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
   const activeRegions = mriInference.regions;
@@ -334,14 +379,55 @@ export default function ReportDetailScreen() {
     }
   };
 
+  // Both empty states below depend on the parse being *over*. See the
+  // comment at the 提示 row.
+  const parseInProgress = isDocumentProcessing(docStatus, payload) && !pollTimedOut;
+  const parseFailed = status === 'parse_failed';
+  // `isLoading` and `errorMessage` come first, and they are the whole
+  // point of this chain. The three parse-state branches below were
+  // correct but only reachable once the document had actually arrived;
+  // before that — and after a failed fetch — `payload` is null, so every
+  // branch fell through to 「暂无识别出的关键指标」. The screen was
+  // telling the patient their report contained nothing recognisable
+  // while it was still loading it, and again when it had failed to load
+  // it at all. Neither is a statement about the report.
+  const emptyHighlightText = isLoading
+    ? '正在载入'
+    : errorMessage
+      ? '暂时读不到这份报告'
+      : parseInProgress
+        ? '正在识别，稍等一下'
+        : parseFailed
+          ? '这份没能识别出来'
+          : '暂无识别出的关键指标';
+  const emptySectionText = isLoading
+    ? '正在载入这份报告。'
+    : errorMessage
+      ? '这份报告暂时读取失败，请重试；这不代表报告里没有内容。'
+      : parseInProgress
+        ? '正在识别这份报告，完成后这里会显示检查结果。'
+        : parseFailed
+          ? '这份报告没能识别出来，可以重新识别或换一张更清晰的图。'
+          : '这份报告暂无可归入检查结果的识别指标。';
+
   const structuredSections = useMemo(() => {
     if (!fields) return [];
     const reportItems: Array<{ label: string; value?: string }> = [
-      { label: '解析状态', value: status },
-      { label: '识别类型', value: pickField(fields, ['classifiedType', 'classified_type']) },
+      { label: '解析状态', value: formatStatusLabel(status) },
+      {
+        label: '识别类型',
+        // `reportTypeLabel` is the pipeline's own Chinese name for the
+        // type it concluded. Showing `infection_screening` instead was
+        // showing the patient our enum.
+        value:
+          pickField(fields, ['reportTypeLabel', 'report_type_label']) ??
+          pickField(fields, ['classifiedType', 'classified_type']),
+      },
       {
         label: '识别置信度',
-        value: pickField(fields, ['classifiedTypeConfidence', 'classified_type_confidence']),
+        value: formatConfidence(
+          pickField(fields, ['classifiedTypeConfidence', 'classified_type_confidence']),
+        ),
       },
       { label: '报告时间', value: pickField(fields, ['reportTime', 'report_time']) },
       { label: '报告名称', value: pickField(fields, ['reportName', 'report_name']) },
@@ -507,14 +593,15 @@ export default function ReportDetailScreen() {
     try {
       setDeleteLoading(true);
       await deletePatientDocument(documentId);
-      Alert.alert('已删除', '这份报告已移除，相关汇总会在返回后按最新数据重新计算。', [
-        {
-          text: '知道了',
-          onPress: () => {
-            router.replace('/p-report_management');
-          },
-        },
-      ]);
+      // The banner lives in the root provider, so it survives this
+      // navigation — the patient lands on the list and still sees the
+      // confirmation, instead of arriving at a silently shorter list.
+      notify({
+        title: '已删除',
+        message: '这份报告已移除，相关汇总会按最新数据重新计算。',
+        tone: 'success',
+      });
+      router.replace('/p-report_management');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';
       setDeleteNotice(`删除失败：${message}`);
@@ -523,50 +610,64 @@ export default function ReportDetailScreen() {
     }
   };
 
-  const onDelete = () => {
-    Alert.alert('删除报告', '删除后将从病程、临床护照和汇总视图中移除，且无法恢复。', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: deleteLoading ? '删除中...' : '删除',
-        style: 'destructive',
-        onPress: () => {
-          runDelete().catch(() => undefined);
-        },
-      },
-    ]);
+  /**
+   * The most dangerous call site in this screen. `Alert.alert` is a
+   * no-op on web, so on the platform patients actually use, the
+   * "confirm" step did not exist: one press on 删除 and the report was
+   * gone, unrecoverably, with nothing shown in between.
+   */
+  const onDelete = async () => {
+    if (deleteLoading) return;
+    const confirmed = await confirm({
+      title: '删除报告',
+      message: '删除后将从病程、临床护照和汇总视图中移除，且无法恢复。',
+      confirmLabel: '删除',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    await runDelete();
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <ScreenBackButton />
-          <View>
-            <Text style={styles.eyebrow}>REPORT READER</Text>
-            <Text style={styles.headerTitle}>报告详情</Text>
-          </View>
-        </View>
-      </View>
+      {/* The "REPORT READER" eyebrow said nothing the title didn't.
+          Back + home now come from the shared header: this screen is
+          commonly reached three deep (档案 → 报告管理 → 报告详情). */}
+      <ScreenHeader title="报告详情" fallbackHref="/p-report_management" />
 
       <ScrollView contentContainerStyle={styles.content}>
-        <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
+        <View style={styles.hero}>
           <View style={styles.heroTopRow}>
-            <View style={styles.kindPill}>
-              <Text style={styles.kindPillText}>{formatKindLabel(reportKind)}</Text>
+            {/* Kind is a real eyebrow — it isn't in the report name. */}
+            <Text style={styles.kindEyebrow}>{formatKindLabel(reportKind)}</Text>
+            <View style={[styles.statusChip, statusTone.chip]}>
+              <Text style={[styles.statusChipText, statusTone.text]}>
+                {formatStatusLabel(status)}
+              </Text>
             </View>
-            <Text style={styles.statusText}>{status}</Text>
           </View>
+          {/* The report's own name, then the classifier's label, then
+              a generic. What was here before was 「报告关键指标视图」 —
+              a description of the screen, not of the report — over a
+              line reading 「documentId: 0ccb8d23-2c53-…」. The uuid is
+              a database key; it tells the patient nothing and it is the
+              second-largest thing on the card. It lives in 来源追溯
+              below, where a support conversation can find it. */}
           <Text style={styles.heroTitle}>
-            {pickField(fields, ['reportName', 'report_name']) || '报告关键指标视图'}
+            {pickField(fields, ['reportName', 'report_name']) ||
+              pickField(fields, ['reportTypeLabel', 'report_type_label']) ||
+              '检查报告'}
           </Text>
           <Text style={styles.heroDescription}>
-            documentId: {documentId ?? '--'}
+            {[pickField(fields, ['facility']), pickField(fields, ['reportTime', 'report_time'])]
+              .filter(Boolean)
+              .join(' · ') || '暂无报告日期'}
             {isDocumentProcessing(docStatus, payload) && !pollTimedOut ? ' · 识别进行中' : ''}
           </Text>
 
           {isDocumentProcessing(docStatus, payload) && !pollTimedOut ? (
             <View style={styles.processingRow}>
-              <ActivityIndicator size="small" color={CLINICAL_COLORS.accentStrong} />
+              <ActivityIndicator size="small" color={COLOR.accent} />
               <Text style={styles.processingText}>
                 正在识别这份报告，通常需要 1-2 分钟。可以先离开本页，识别完成后这里会自动更新。
               </Text>
@@ -574,7 +675,7 @@ export default function ReportDetailScreen() {
           ) : null}
 
           {docStatus === 'parse_failed' || pollTimedOut ? (
-            <View style={{ marginTop: 12 }}>
+            <View style={styles.noticeBlock}>
               <InlineNotice
                 message={
                   pollTimedOut
@@ -588,7 +689,7 @@ export default function ReportDetailScreen() {
             </View>
           ) : null}
           {reparseNotice ? (
-            <View style={{ marginTop: 8 }}>
+            <View style={styles.noticeBlock}>
               <InlineNotice message={reparseNotice} />
             </View>
           ) : null}
@@ -604,45 +705,32 @@ export default function ReportDetailScreen() {
             ) : (
               <View style={styles.highlightItem}>
                 <Text style={styles.highlightLabel}>提示</Text>
-                <Text style={styles.highlightValue}>暂无识别出的关键指标</Text>
+                {/* 「暂无」 is a conclusion, and it is only available
+                    once the parse has finished. Said while the chip
+                    beside it reads 识别中, it is the screen
+                    contradicting itself — and it is the reading a
+                    patient acts on, because it is the sentence in
+                    words. */}
+                <Text style={styles.highlightValue}>{emptyHighlightText}</Text>
               </View>
             )}
           </View>
-        </LinearGradient>
+        </View>
 
         {reportKind === 'mri' &&
           (Object.keys(activeRegions).length > 0 || activeSummary.length > 0) && (
-            <View style={styles.card}>
+            <View style={styles.section}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.cardTitle}>MRI 受累示意图</Text>
-                <View style={styles.toggleRow}>
-                  <TouchableOpacity
-                    style={[styles.toggleChip, bodyView === 'front' && styles.toggleChipActive]}
-                    onPress={() => setBodyView('front')}
-                  >
-                    <Text
-                      style={[
-                        styles.toggleChipText,
-                        bodyView === 'front' && styles.toggleChipTextActive,
-                      ]}
-                    >
-                      正面
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.toggleChip, bodyView === 'back' && styles.toggleChipActive]}
-                    onPress={() => setBodyView('back')}
-                  >
-                    <Text
-                      style={[
-                        styles.toggleChipText,
-                        bodyView === 'back' && styles.toggleChipTextActive,
-                      ]}
-                    >
-                      背面
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                <Text style={styles.sectionTitle}>MRI 受累示意图</Text>
+                <SegmentedControl
+                  segments={[
+                    { key: 'front', label: '正面' },
+                    { key: 'back', label: '背面' },
+                  ]}
+                  value={bodyView}
+                  onChange={(key) => setBodyView(key as 'front' | 'back')}
+                  accessibilityLabel="受累分布视角"
+                />
               </View>
 
               <HumanBodyFigure
@@ -666,24 +754,30 @@ export default function ReportDetailScreen() {
             </View>
           )}
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>识别出的关键信息</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>识别出的关键信息</Text>
           {docStatus === 'parsed' || docStatus === 'needs_review' ? (
-            <TouchableOpacity style={styles.toggleLink} onPress={openCorrection}>
-              <Text style={styles.toggleLinkText}>识别有误？手动修正 →</Text>
-            </TouchableOpacity>
+            <Button
+              label="识别有误？手动修正"
+              icon="pen-to-square"
+              variant="tinted"
+              compact
+              onPress={openCorrection}
+            />
           ) : null}
           {structuredSections.length === 0 ? (
             <Text style={styles.smallText}>暂无识别出的关键指标（或仍在识别中）。</Text>
           ) : (
+            // A label column and a value column, one hairline per row:
+            // the field list is a table, so it is set as one.
             structuredSections.map((section) => (
-              <View key={section.title} style={styles.structuredSection}>
-                <Text style={styles.structuredSectionTitle}>{section.title}</Text>
-                <View style={styles.structuredGrid}>
+              <View key={section.title} style={styles.fieldGroup}>
+                <Text style={styles.fieldGroupTitle}>{section.title}</Text>
+                <View style={styles.fieldTable}>
                   {section.items.map((item) => (
-                    <View key={`${section.title}-${item.label}`} style={styles.structuredItem}>
-                      <Text style={styles.structuredLabel}>{item.label}</Text>
-                      <Text style={styles.structuredValue}>{item.value}</Text>
+                    <View key={`${section.title}-${item.label}`} style={styles.fieldRow}>
+                      <Text style={styles.fieldLabel}>{item.label}</Text>
+                      <Text style={styles.fieldValue}>{item.value}</Text>
                     </View>
                   ))}
                 </View>
@@ -692,42 +786,29 @@ export default function ReportDetailScreen() {
           )}
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>检查结果</Text>
-          <SystemMonitoringPanels
-            panels={relevantSystemPanels}
-            emptyText="这份报告暂无可归入检查结果的识别指标。"
-          />
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>检查结果</Text>
+          <SystemMonitoringPanels panels={relevantSystemPanels} emptyText={emptySectionText} />
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>AI 总结</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>AI 总结</Text>
           {summary ? (
             <>
-              <Text style={styles.summaryText}>{summary}</Text>
-              <Text style={[styles.smallText, { marginTop: 10 }]}>
-                仅供参考，仍需结合医生判断。
-              </Text>
-              {/* Contextual AI entry: multi-turn chat is live, so the
-                  natural next step after reading the summary is asking
-                  about it — prefilled, user reviews and sends. */}
-              <TouchableOpacity
-                style={styles.toggleLink}
-                onPress={() => {
-                  const reportName = pickField(fields, ['reportName', 'report_name']);
-                  router.push({
-                    pathname: '/p-qna',
-                    params: {
-                      prefill: `请结合我最近上传的${
-                        reportName ? `《${reportName}》` : '这份检查报告'
-                      }，用通俗的话讲讲结果说明了什么、需要注意什么？`,
-                      prefillNonce: String(Date.now()),
-                    },
-                  });
-                }}
-              >
-                <Text style={styles.toggleLinkText}>继续问 AI 这份报告 →</Text>
-              </TouchableOpacity>
+              <AnswerText style={styles.summaryText}>{summary}</AnswerText>
+              <Text style={styles.smallText}>仅供参考，仍需结合医生判断。</Text>
+              {/* Asking about the report no longer means leaving it.
+                  The drawer sends only the document id; the server
+                  checks ownership and routes the planner at
+                  get_my_reports, so the report's actual contents still
+                  reach the model through the redacted retriever path
+                  rather than being pasted into a prefilled sentence. */}
+              <Button
+                label="继续问 AI 这份报告"
+                icon="comment-dots"
+                variant="prominent"
+                onPress={() => setAskVisible(true)}
+              />
             </>
           ) : aiConsent === 'none' && !isDocumentProcessing(docStatus, payload) ? (
             <>
@@ -736,22 +817,19 @@ export default function ReportDetailScreen() {
                 会引用你档案与报告中已脱敏的内容，可随时在「隐私设置」撤回。
               </Text>
               {summaryNotice ? (
-                <View style={{ marginTop: 12 }}>
+                <View style={styles.actionBlock}>
                   <InlineNotice message={summaryNotice} />
                 </View>
               ) : null}
-              <View style={{ marginTop: 12 }}>
-                <TouchableOpacity
-                  style={[styles.button, isGrantingConsent && { opacity: 0.7 }]}
-                  disabled={isGrantingConsent}
+              <View style={styles.actionBlock}>
+                <Button
+                  label="开启 AI 授权，自动解读这份报告"
+                  icon="check"
+                  variant="prominent"
+                  fullWidth
+                  busy={isGrantingConsent}
                   onPress={() => void handleGrantAndSummarize()}
-                >
-                  {isGrantingConsent ? (
-                    <ActivityIndicator color={CLINICAL_COLORS.text} />
-                  ) : (
-                    <Text style={styles.buttonText}>开启 AI 授权，自动解读这份报告</Text>
-                  )}
-                </TouchableOpacity>
+                />
               </View>
             </>
           ) : (
@@ -762,7 +840,7 @@ export default function ReportDetailScreen() {
                   : '当前报告暂无 AI 总结，可在识别完成后按需生成并缓存。'}
               </Text>
               {summaryNotice ? (
-                <View style={{ marginTop: 12 }}>
+                <View style={styles.actionBlock}>
                   <InlineNotice
                     message={summaryNotice}
                     onRetry={() => void onGenerateSummary()}
@@ -771,35 +849,42 @@ export default function ReportDetailScreen() {
                   />
                 </View>
               ) : null}
-              <View style={{ marginTop: 12 }}>
-                <TouchableOpacity
-                  style={[styles.button, summaryLoading && { opacity: 0.7 }]}
-                  disabled={summaryLoading || isDocumentProcessing(docStatus, payload)}
+              <View style={styles.actionBlock}>
+                {/* This branch is the no-summary-yet state of the AI 总结
+                    section, and this is its generate button. It had been
+                    left labelled 删除这份报告 with a trash icon in the
+                    alert colour while calling onGenerateSummary — a
+                    destructive-looking control wired to a harmless one,
+                    which is the worse direction of that mistake only
+                    because the harmless direction would have deleted a
+                    report. Nothing on this screen deletes; deletion
+                    lives on 报告管理. */}
+                <Button
+                  label="生成 AI 解读"
+                  icon="wand-magic-sparkles"
+                  variant="prominent"
+                  busy={summaryLoading}
+                  disabled={isDocumentProcessing(docStatus, payload)}
+                  accessibilityHint="根据这份报告的识别结果生成通俗解读"
                   onPress={onGenerateSummary}
-                >
-                  {summaryLoading ? (
-                    <ActivityIndicator color={CLINICAL_COLORS.text} />
-                  ) : (
-                    <Text style={styles.buttonText}>
-                      {isDocumentProcessing(docStatus, payload)
-                        ? '识别完成后可生成'
-                        : '生成 AI 总结'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
+                />
               </View>
             </>
           )}
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>来源追溯</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>来源追溯</Text>
           <Text style={styles.smallText}>
             保留原始字段、AI 抽取结果和 OCR 文本，便于设计稿之外的临床核对。
           </Text>
-          <TouchableOpacity style={styles.toggleLink} onPress={() => setShowRaw((value) => !value)}>
-            <Text style={styles.toggleLinkText}>{showRaw ? '收起原始结果' : '展开原始结果'}</Text>
-          </TouchableOpacity>
+          <Button
+            label={showRaw ? '收起原始结果' : '展开原始结果'}
+            variant="plain"
+            compact
+            trailingIcon={showRaw ? 'chevron-up' : 'chevron-down'}
+            onPress={() => setShowRaw((value) => !value)}
+          />
           {showRaw && (
             <View style={styles.codeBlock}>
               <Text style={styles.codeText}>{rawText}</Text>
@@ -807,32 +892,33 @@ export default function ReportDetailScreen() {
           )}
         </View>
 
-        <View style={[styles.card, styles.dangerCard]}>
-          <Text style={styles.cardTitle}>删除报告</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>删除报告</Text>
           <Text style={styles.smallText}>
             如果这份报告传错了、识别错了，或只是重复上传，可以直接删除。删除后护照和病程摘要会按剩余数据重新计算。
           </Text>
           {deleteNotice ? (
-            <View style={{ marginTop: 12 }}>
+            <View style={styles.actionBlock}>
               <InlineNotice message={deleteNotice} />
             </View>
           ) : null}
-          <TouchableOpacity
-            style={[styles.button, styles.dangerButton, deleteLoading && styles.buttonDisabled]}
-            disabled={deleteLoading}
-            onPress={onDelete}
-          >
-            {deleteLoading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.dangerButtonText}>删除这份报告</Text>
-            )}
-          </TouchableOpacity>
+          {/* The red-bordered card is gone; the destructive weight now
+              sits on the button itself, where the action is. */}
+          <Button
+            label="删除这份报告"
+            icon="trash-can"
+            variant="destructive"
+            fullWidth
+            busy={deleteLoading}
+            onPress={() => {
+              void onDelete();
+            }}
+          />
         </View>
 
         {isLoading && (
           <View style={styles.inlineState}>
-            <ActivityIndicator color={CLINICAL_COLORS.accent} />
+            <ActivityIndicator color={COLOR.accent} />
             <Text style={styles.smallText}>正在加载报告内容...</Text>
           </View>
         )}
@@ -850,53 +936,68 @@ export default function ReportDetailScreen() {
         animationType="fade"
         onRequestClose={() => setCorrectVisible(false)}
       >
-        <Pressable style={styles.correctOverlay} onPress={() => setCorrectVisible(false)}>
-          <Pressable style={styles.correctSheet} onPress={() => {}}>
-            <Text style={styles.cardTitle}>修正识别结果</Text>
-            <Text style={styles.smallText}>
-              只需要填写有误或缺失的字段；保存后档案自动补全会优先使用你修正的值。
-            </Text>
-            <ScrollView style={styles.correctList} keyboardShouldPersistTaps="handled">
-              {CORRECTABLE_OCR_FIELDS.map((field) => (
-                <View key={field.key} style={styles.correctRow}>
-                  <Text style={styles.correctLabel}>{field.label}</Text>
-                  <TextInput
-                    style={styles.correctInput}
-                    value={correctDraft[field.key] ?? ''}
-                    onChangeText={(value) =>
-                      setCorrectDraft((prev) => ({ ...prev, [field.key]: value }))
-                    }
-                    placeholder={field.placeholder}
-                    placeholderTextColor={CLINICAL_COLORS.textMuted}
-                  />
-                </View>
-              ))}
-            </ScrollView>
-            {correctError ? <Text style={styles.correctErrorText}>{correctError}</Text> : null}
-            <View style={styles.correctActions}>
-              <TouchableOpacity
-                style={styles.correctCancel}
-                onPress={() => setCorrectVisible(false)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.correctCancelText}>取消</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.button, correctBusy && { opacity: 0.7 }, styles.correctSubmit]}
-                onPress={() => void submitCorrection()}
-                disabled={correctBusy}
-                activeOpacity={0.7}
-              >
-                {correctBusy ? (
-                  <ActivityIndicator color={CLINICAL_COLORS.text} />
-                ) : (
-                  <Text style={styles.buttonText}>保存修正</Text>
-                )}
-              </TouchableOpacity>
+        {/* Pressable defaults `accessible` to true, and an accessible
+            view swallows its whole subtree into one element on iOS. The
+            overlay is flex:1, so VoiceOver stopped at it and never
+            reached a single one of the TextInputs below — the sheet
+            whose entire purpose is correcting a misread lab value was
+            not operable by screen reader. Both of these are structural
+            (a scrim and a bubble-stopper), never controls. */}
+        <Pressable
+          style={styles.correctOverlay}
+          accessible={false}
+          onPress={() => setCorrectVisible(false)}
+        >
+          <Pressable style={styles.correctSheet} accessible={false} onPress={() => {}}>
+            <View accessibilityViewIsModal>
+              <Text style={styles.sectionTitle}>修正识别结果</Text>
+              <Text style={styles.smallText}>
+                只需要填写有误或缺失的字段；保存后档案自动补全会优先使用你修正的值。
+              </Text>
+              <ScrollView style={styles.correctList} keyboardShouldPersistTaps="handled">
+                {CORRECTABLE_OCR_FIELDS.map((field) => (
+                  <View key={field.key} style={styles.correctRow}>
+                    <Text style={styles.correctLabel}>{field.label}</Text>
+                    <TextInput
+                      style={styles.correctInput}
+                      value={correctDraft[field.key] ?? ''}
+                      onChangeText={(value) =>
+                        setCorrectDraft((prev) => ({ ...prev, [field.key]: value }))
+                      }
+                      placeholder={field.placeholder}
+                      placeholderTextColor={COLOR.inkFaint}
+                      accessibilityLabel={field.label}
+                    />
+                  </View>
+                ))}
+              </ScrollView>
+              {correctError ? <Text style={styles.correctErrorText}>{correctError}</Text> : null}
+              {/* Was two hand-rolled Touchables — the last consumers of
+                  styles.button on a screen whose other six actions had
+                  already moved. 保存修正 had no role, and while busy it
+                  swapped its label for a spinner and became a control
+                  with no name at all. */}
+              <View style={styles.correctActions}>
+                <Button label="取消" variant="tinted" onPress={() => setCorrectVisible(false)} />
+                <Button
+                  label="保存修正"
+                  variant="prominent"
+                  busy={correctBusy}
+                  onPress={() => void submitCorrection()}
+                />
+              </View>
             </View>
           </Pressable>
         </Pressable>
       </Modal>
+
+      <AskAboutDrawer
+        visible={askVisible}
+        onClose={() => setAskVisible(false)}
+        context={documentId ? { type: 'document', id: documentId } : undefined}
+        contextLabel={pickField(fields, ['reportName', 'report_name']) || '这份检查报告'}
+        suggestions={['这份报告说明什么', '有哪些数值需要注意', '下次门诊我该问什么']}
+      />
     </SafeAreaView>
   );
 }

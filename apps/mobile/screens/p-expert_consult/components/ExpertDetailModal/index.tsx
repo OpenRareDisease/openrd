@@ -1,5 +1,3 @@
-
-
 import React from 'react';
 import { View, Text, Modal, TouchableOpacity, Image, TouchableWithoutFeedback } from 'react-native';
 import { FontAwesome6 } from '@expo/vector-icons';
@@ -26,20 +24,11 @@ interface ExpertDetailModalProps {
   onClose: () => void;
 }
 
-const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
-  visible,
-  expert,
-  onClose,
-}) => {
+const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({ visible, expert, onClose }) => {
   if (!expert) return null;
 
   return (
-    <Modal
-      visible={visible}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent={true} animationType="slide" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
@@ -104,4 +93,3 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
 };
 
 export default ExpertDetailModal;
-

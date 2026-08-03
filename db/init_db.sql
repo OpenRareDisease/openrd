@@ -27,7 +27,17 @@ CREATE EXTENSION IF NOT EXISTS citext;
 -- service_healthy`. kb waits on the extension, the extension waits on
 -- api, api waits on kb. Creating it at init severs the cycle.
 -- Migration 006's own `CREATE EXTENSION IF NOT EXISTS vector` stays as
--- the idempotent backstop for native-pg / non-compose setups.
+-- the idempotent backstop for databases bootstrapped before this line
+-- existed.
+--
+-- Note what that backstop is NOT: it does not rescue a Postgres that
+-- has no pgvector binaries installed. `CREATE EXTENSION IF NOT EXISTS`
+-- still has to read the extension control file, so on a stock
+-- native-pg box this statement fails here — during bootstrap, before
+-- migration 006 is ever reached — with 「could not open extension
+-- control file .../vector.control」. That is the correct failure (the
+-- app cannot work without kb_chunks), but install pgvector first
+-- rather than reading it as a problem with this file.
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Users and authentication.
@@ -466,6 +476,30 @@ FOR EACH ROW
 EXECUTE PROCEDURE set_updated_at();
 
 -- Grant read/write privileges to application role if it exists.
+--
+-- Read the guard literally: as shipped, `openrd_app` is never created
+-- by anything in this repository (`grep -rn openrd_app` finds this
+-- block and nothing else), and docker-compose.yml points the api at
+-- the `postgres` superuser. So this entire DO block is skipped on every
+-- environment that exists today, and the api holds superuser on a
+-- database of patient records — meaning any SQL injection or app
+-- compromise escalates to DROP / COPY … TO PROGRAM / extension
+-- loading.
+--
+-- The block is kept rather than deleted because it is the target
+-- state, and it is one out-of-band statement away from being live:
+--
+--   CREATE ROLE openrd_app LOGIN PASSWORD '<from your secret store>';
+--
+-- run once by a superuser, then re-run this file (it is idempotent) and
+-- point DATABASE_URL at openrd_app. The role is deliberately NOT
+-- created here: this file is world-readable in a public repo and is
+-- also mounted into the container's docker-entrypoint-initdb.d, so any
+-- password written here would be a committed credential. Note that
+-- flipping DATABASE_URL to a non-superuser also requires the migration
+-- runner to stop needing CREATE DATABASE — see the `ensureDatabaseExists`
+-- probe-first path in apps/api/src/db/migrate.ts, which no longer
+-- touches the maintenance database when the target already exists.
 DO $$
 BEGIN
     IF EXISTS (

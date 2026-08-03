@@ -1,80 +1,29 @@
 import { Tabs } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import AppTabBar from '../../screens/common/AppTabBar';
 
+/**
+ * Four destinations: 今天 / 病程 / 问答 / 我的, plus the center action.
+ *
+ * 我的档案 left the bar — not because it matters less, but because it
+ * is reference material you reach for from 我的 rather than a place you
+ * set out for. 问答 stayed: asking about something you are already
+ * looking at happens in the drawer, but a question that arrives on its
+ * own needs somewhere to go. Recording is the bar's center action (see
+ * AppTabBar), which keeps the most frequent task one thumb away from
+ * every screen.
+ */
 export default function Layout() {
   return (
-    <Tabs
-      backBehavior="order"
-      screenOptions={{
-        tabBarActiveTintColor: CLINICAL_COLORS.accent,
-        tabBarInactiveTintColor: CLINICAL_COLORS.textMuted,
-        tabBarStyle: {
-          backgroundColor: CLINICAL_COLORS.panel,
-          borderTopColor: CLINICAL_COLORS.border,
-          height: 72,
-        },
-        tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
-          paddingBottom: 6,
-        },
-      }}
-    >
+    <Tabs backBehavior="order" tabBar={(props) => <AppTabBar {...props} />}>
       <Tabs.Screen name="index" options={{ href: null }} />
 
-      <Tabs.Screen
-        name="p-home"
-        options={{
-          title: '首页',
-          headerShown: false,
-          tabBarIcon: ({ color }) => <FontAwesome6 name="house" size={18} color={color} />,
-        }}
-      />
+      <Tabs.Screen name="p-home" options={{ title: '今天', headerShown: false }} />
 
-      <Tabs.Screen
-        name="p-qna"
-        options={{
-          title: '问答',
-          headerShown: false,
-          tabBarIcon: ({ color }) => (
-            <FontAwesome6 name="circle-question" size={18} color={color} />
-          ),
-        }}
-      />
+      <Tabs.Screen name="p-manage" options={{ title: '病程', headerShown: false }} />
 
-      {/* The most frequent patient action — recording followups,
-          events, and report uploads — earns the tab slot the
-          placeholder community screen used to occupy. Community
-          (still pre-launch) moved to Settings' 探索 section. */}
-      <Tabs.Screen
-        name="p-record"
-        options={{
-          title: '记录',
-          headerShown: false,
-          tabBarIcon: ({ color }) => (
-            <FontAwesome6 name="file-circle-plus" size={18} color={color} />
-          ),
-        }}
-      />
+      <Tabs.Screen name="p-qna" options={{ title: '问答', headerShown: false }} />
 
-      <Tabs.Screen
-        name="p-archive"
-        options={{
-          title: '我的档案',
-          headerShown: false,
-          tabBarIcon: ({ color }) => <FontAwesome6 name="file-medical" size={18} color={color} />,
-        }}
-      />
-
-      <Tabs.Screen
-        name="p-settings"
-        options={{
-          title: '我的',
-          headerShown: false,
-          tabBarIcon: ({ color }) => <FontAwesome6 name="user" size={18} color={color} />,
-        }}
-      />
+      <Tabs.Screen name="p-settings" options={{ title: '我的', headerShown: false }} />
     </Tabs>
   );
 }

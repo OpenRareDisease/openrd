@@ -1,7 +1,6 @@
-
-
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
+import type { GestureResponderEvent } from 'react-native';
 import { FontAwesome6 } from '@expo/vector-icons';
 import styles from './styles';
 
@@ -45,17 +44,13 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
     }
   };
 
-  const handleApplyPress = (event: any) => {
+  const handleApplyPress = (event: GestureResponderEvent) => {
     event.stopPropagation();
     onApplyPress();
   };
 
   return (
-    <TouchableOpacity
-      style={styles.container}
-      onPress={onPress}
-      activeOpacity={0.8}
-    >
+    <TouchableOpacity style={styles.container} onPress={onPress} activeOpacity={0.8}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>{trial.title}</Text>
@@ -70,9 +65,7 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
           </View>
         </View>
         <View style={[styles.matchBadge, getMatchBadgeStyle()]}>
-          <Text style={[styles.matchText, getMatchTextStyle()]}>
-            {trial.matchPercentage}%匹配
-          </Text>
+          <Text style={[styles.matchText, getMatchTextStyle()]}>{trial.matchPercentage}%匹配</Text>
         </View>
       </View>
 
@@ -105,11 +98,7 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
             <Text style={styles.infoText}>{trial.duration}</Text>
           </View>
         </View>
-        <TouchableOpacity
-          style={styles.applyButton}
-          onPress={handleApplyPress}
-          activeOpacity={0.8}
-        >
+        <TouchableOpacity style={styles.applyButton} onPress={handleApplyPress} activeOpacity={0.8}>
           <Text style={styles.applyButtonText}>申请入组</Text>
         </TouchableOpacity>
       </View>
@@ -118,4 +107,3 @@ const TrialCard: React.FC<TrialCardProps> = ({ trial, onPress, onApplyPress }) =
 };
 
 export default TrialCard;
-

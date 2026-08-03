@@ -6,13 +6,20 @@ import { loadAppEnv, parseOtpAllowlist, resetAppEnvCache } from './env.js';
 // credentials, so they live in the base too — a test that needs a
 // different provider just overrides OTP_PROVIDER (+ that provider's
 // fields); the unused tencent creds are harmless.
+// Every secret here is >= 32 chars with plenty of distinct characters,
+// because validateProductionEnv now enforces that (assertStrongSecret).
+// AI_API_KEY and the storage/TLS acks are spelled out rather than left
+// to inherit whatever the developer's own apps/api/.env happens to
+// carry — loadAppEnv merges process.env underneath these overrides, so
+// an omitted key here would make the test's result depend on the
+// machine it runs on.
 const prodBase: Record<string, string | undefined> = {
   NODE_ENV: 'production',
   DATABASE_URL: 'postgres://prod-user:prod-pass@db.internal:5432/openrd',
   DATABASE_SSL_ENABLED: 'true',
   DATABASE_SSL_REJECT_UNAUTHORIZED: 'true',
-  JWT_SECRET: 'prod-jwt-secret-1234567890',
-  OTP_HASH_SECRET: 'prod-otp-secret-1234567890',
+  JWT_SECRET: 'f3a91c7e5b204d68a1c0e97b2d4f6a8c',
+  OTP_HASH_SECRET: '7b2e4d9a1c6f80e3b5d7a92c4e6f1038',
   OTP_PROVIDER: 'tencent',
   TENCENT_SECRET_ID: 'AKIDtestsecretid000000000000',
   TENCENT_SECRET_KEY: 'test-secret-key-000000000000',
@@ -22,6 +29,10 @@ const prodBase: Record<string, string | undefined> = {
   CORS_ORIGIN: 'https://app.example.com',
   OCR_PROVIDER: 'embedded',
   KB_SERVICE_TOKEN: 'prod-kb-bearer-token-1234567890',
+  AI_API_KEY: 'sk-prod-ai-key-0000000000000000',
+  AI_API_BASE_URL: 'https://api.siliconflow.cn/v1',
+  STORAGE_PROVIDER: 'local',
+  STORAGE_ALLOW_LOCAL: 'true',
 };
 
 describe('loadAppEnv', () => {
@@ -49,12 +60,15 @@ describe('loadAppEnv', () => {
     expect(env.OTP_PROVIDER).toBe('tencent');
   });
 
-  it('accepts prod with empty optional API keys (AI / OPENAI / CHROMA)', () => {
+  it('coerces empty optional API keys (AI / OPENAI / CHROMA) to undefined', () => {
     // Regression: these used `.min(1).optional()`, which REJECTS an
     // empty string (`AI_API_KEY=`) instead of treating it as unset —
-    // crashing prod boot when .env carried the .env.example blanks.
+    // crashing boot with a zod parse error when .env carried the
+    // .env.example blanks. Asserted in development because production
+    // now (correctly) refuses to boot without an AI key at all; the
+    // property under test here is the coercion, not the acceptance.
     const env = loadAppEnv({
-      ...prodBase,
+      NODE_ENV: 'development',
       OPENAI_API_KEY: '',
       AI_API_KEY: '',
       CHROMA_API_KEY: '',
@@ -62,6 +76,17 @@ describe('loadAppEnv', () => {
     });
     expect(env.AI_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CHROMA_API_KEY).toBeUndefined();
+  });
+
+  it('reports a blank prod AI key as a missing-config error, not a parse error', () => {
+    // The empty-string coercion must stay ahead of the production gate:
+    // an operator who left `AI_API_KEY=` in .env should read 「required
+    // in production」, not zod's 「String must contain at least 1
+    // character」, which says nothing about what to do.
+    expect(() => loadAppEnv({ ...prodBase, AI_API_KEY: '', OPENAI_API_KEY: '' })).toThrow(
+      /Invalid environment configuration: AI_API_KEY/,
+    );
   });
 
   it('rejects prod with SSL disabled and no insecure ack', () => {
@@ -71,6 +96,26 @@ describe('loadAppEnv', () => {
     expect(() => loadAppEnv({ ...prodBase, DATABASE_SSL_ENABLED: 'false' })).toThrow(
       /SSL disabled|DATABASE_ALLOW_INSECURE/,
     );
+  });
+
+  it('rejects prod TLS with certificate verification turned off and no ack', () => {
+    // pool.ts passes this straight into `ssl: { rejectUnauthorized }`, so
+    // true/false is an encrypted but UNAUTHENTICATED connection carrying
+    // PHI — while the SSL-disabled check above is satisfied and every log
+    // line says SSL is on.
+    expect(() => loadAppEnv({ ...prodBase, DATABASE_SSL_REJECT_UNAUTHORIZED: 'false' })).toThrow(
+      /DATABASE_SSL_REJECT_UNAUTHORIZED=false/,
+    );
+  });
+
+  it('accepts prod TLS without verification when DATABASE_ALLOW_INSECURE acks it', () => {
+    // Private-CA / self-signed managed Postgres: allowed, but written down.
+    const env = loadAppEnv({
+      ...prodBase,
+      DATABASE_SSL_REJECT_UNAUTHORIZED: 'false',
+      DATABASE_ALLOW_INSECURE: 'true',
+    });
+    expect(env.DATABASE_SSL_REJECT_UNAUTHORIZED).toBe(false);
   });
 
   it('accepts prod with SSL disabled when DATABASE_ALLOW_INSECURE acks it', () => {
@@ -138,8 +183,8 @@ describe('loadAppEnv', () => {
       ...prodBase,
       NODE_ENV: 'staging',
       DATABASE_URL: 'postgres://staging:pw@db.staging:5432/openrd',
-      JWT_SECRET: 'staging-jwt-secret-1234567890',
-      OTP_HASH_SECRET: 'staging-otp-secret-1234567890',
+      JWT_SECRET: '0d4c8b1f6e39a72c5d08b3f7e1a94c62',
+      OTP_HASH_SECRET: 'a91f37e2c8b04d6f5a7c93e18b2d40f6',
       CORS_ORIGIN: 'https://app.staging.example.com',
       KB_SERVICE_TOKEN: 'staging-kb-bearer-token-1234567890',
     });
@@ -190,6 +235,399 @@ describe('loadAppEnv', () => {
       OTP_TEST_FIXED_CODE: '123456',
     });
     expect(env.OTP_PROVIDER).toBe('internal_test');
+  });
+
+  // --- signing / HMAC secret strength -------------------------------
+
+  it('rejects a production JWT_SECRET shorter than 32 characters', () => {
+    // `openrd-prod-2026` shape: passes zod's .min(16) and is not a known
+    // placeholder, so before assertStrongSecret it reached production.
+    expect(() => loadAppEnv({ ...prodBase, JWT_SECRET: 'openrd-prod-2026' })).toThrow(
+      /JWT_SECRET must be at least 32 characters/,
+    );
+  });
+
+  it('rejects a long but low-entropy production JWT_SECRET', () => {
+    // 36 chars, but a passphrase padded by repetition — length alone is
+    // not the property that makes an HS256 key unforgeable.
+    expect(() =>
+      loadAppEnv({ ...prodBase, JWT_SECRET: 'abababababababababababababababababab' }),
+    ).toThrow(/JWT_SECRET looks low-entropy/);
+  });
+
+  it('accepts an `openssl rand -hex 32` production JWT_SECRET', () => {
+    // Regression guard on the STRENGTH RULE ITSELF: hex output is
+    // lowercase + digits, i.e. only two character classes, so the
+    // obvious "must mix upper/lower/digit/symbol" check would reject
+    // the very command .env.example tells operators to run.
+    const env = loadAppEnv({
+      ...prodBase,
+      JWT_SECRET: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+    });
+    expect(env.JWT_SECRET).toHaveLength(64);
+  });
+
+  it('rejects a production OTP_HASH_SECRET shorter than 32 characters', () => {
+    expect(() => loadAppEnv({ ...prodBase, OTP_HASH_SECRET: 'otp-secret-2026' })).toThrow(
+      /OTP_HASH_SECRET must be at least 32 characters/,
+    );
+  });
+
+  // --- DATABASE_URL default-credential rejection ---------------------
+
+  it('rejects the compose-internal DATABASE_URL that still uses postgres:postgres', () => {
+    // The old check compared against the `@localhost:5432` literal only,
+    // so THIS string — what docker-compose actually injects — sailed
+    // through the gate it existed for.
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: 'postgres://postgres:postgres@postgres:5432/fshd_openrd',
+      }),
+    ).toThrow(/postgres:postgres credential pair/);
+  });
+
+  it('rejects the .env.example DATABASE_URL literal in production', () => {
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/fshd_openrd',
+      }),
+    ).toThrow(/postgres:postgres credential pair/);
+  });
+
+  it('accepts a rotated password containing a lone percent sign', () => {
+    // Regression: the two decodeURIComponent calls in
+    // usesDefaultPostgresCredentials used to sit outside the try/catch,
+    // so `pa%ssword` — which pg accepts, because pg-connection-string
+    // pre-escapes invalid percent sequences — threw a bare
+    // 「URIError: URI malformed」 before any validation output. The
+    // container then crash-looped under `restart: unless-stopped` with a
+    // stack naming neither DATABASE_URL nor the config error, on exactly
+    // the dedicated role the deploy runbook tells operators to create.
+    const env = loadAppEnv({
+      ...prodBase,
+      DATABASE_URL: 'postgres://openrd_app:pa%ssword@db.internal:5432/openrd',
+    });
+    expect(env.DATABASE_URL).toContain('pa%ssword');
+  });
+
+  it('accepts other undecodable percent sequences in the password', () => {
+    // The same guard, on the two other shapes decodeURIComponent rejects:
+    // a trailing `%` and a percent escape that decodes to invalid UTF-8.
+    for (const password of ['secret%', 'caf%E9pw']) {
+      resetAppEnvCache();
+      const env = loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: `postgres://openrd_app:${password}@db.internal:5432/openrd`,
+      });
+      expect(env.DATABASE_URL).toContain(password);
+    }
+  });
+
+  it('still rejects a percent-encoded rewrite of the shipped credential pair', () => {
+    // The decode is not decoration: `postgres%3Apostgres` style escaping
+    // of the very pair this guard exists to reject must not slip past it.
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: 'postgres://%70ostgres:%70ostgres@postgres:5432/fshd_openrd',
+      }),
+    ).toThrow(/postgres:postgres credential pair/);
+  });
+
+  it('accepts a compose-internal host with a dedicated role', () => {
+    // The rule is about the credential pair, NOT the hostname: reaching
+    // Postgres as `postgres:5432` over the private bridge network is a
+    // legitimate production topology and must keep working.
+    const env = loadAppEnv({
+      ...prodBase,
+      DATABASE_URL: 'postgres://openrd_app:s3cr3t-rotated@postgres:5432/fshd_openrd',
+      DATABASE_SSL_ENABLED: 'false',
+      DATABASE_ALLOW_INSECURE: 'true',
+    });
+    expect(env.DATABASE_URL).toContain('@postgres:5432');
+  });
+
+  // --- AI configuration ----------------------------------------------
+
+  it('rejects production with neither AI_API_KEY nor OPENAI_API_KEY', () => {
+    // Without this the container boots clean and reports ready while
+    // every patient question answers 「AI 服务未配置」.
+    expect(() =>
+      loadAppEnv({ ...prodBase, AI_API_KEY: undefined, OPENAI_API_KEY: undefined }),
+    ).toThrow(/AI_API_KEY \(or OPENAI_API_KEY\) is required in production/);
+  });
+
+  it('accepts production when only OPENAI_API_KEY is set', () => {
+    const env = loadAppEnv({
+      ...prodBase,
+      AI_API_KEY: undefined,
+      OPENAI_API_KEY: 'sk-openai-key-000000000000000000',
+    });
+    expect(env.AI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBe('sk-openai-key-000000000000000000');
+  });
+
+  it('rejects an unacknowledged non-.cn AI_API_BASE_URL in production', () => {
+    expect(() =>
+      loadAppEnv({ ...prodBase, AI_API_BASE_URL: 'https://api.siliconflow.com/v1' }),
+    ).toThrow(/cross-border transfer of health data/);
+  });
+
+  it('accepts a non-.cn AI_API_BASE_URL once the cross-border ack is set', () => {
+    const env = loadAppEnv({
+      ...prodBase,
+      AI_API_BASE_URL: 'https://api.siliconflow.com/v1',
+      AI_CROSS_BORDER_ACKNOWLEDGED: 'true',
+    });
+    expect(env.AI_CROSS_BORDER_ACKNOWLEDGED).toBe(true);
+  });
+
+  it('does not demand a cross-border ack for a self-hosted LLM that cannot leave the network', () => {
+    // A compose service name, an RFC1918 address and loopback carry no
+    // byte across a border, so requiring AI_CROSS_BORDER_ACKNOWLEDGED for
+    // them was worse than useless: the only way past the gate was to make
+    // the deploy's own configuration assert a transfer that never happens
+    // — and that flag is what a compliance reviewer reads.
+    for (const baseUrl of [
+      'http://llm:8000/v1',
+      'http://10.0.0.5:8000/v1',
+      'http://192.168.1.20:8000/v1',
+      'http://172.16.3.4:8000/v1',
+      'http://127.0.0.1:8000/v1',
+      'http://localhost:8000/v1',
+      'http://[::1]:8000/v1',
+    ]) {
+      resetAppEnvCache();
+      const env = loadAppEnv({ ...prodBase, AI_API_BASE_URL: baseUrl });
+      expect(env.AI_CROSS_BORDER_ACKNOWLEDGED).toBe(false);
+    }
+  });
+
+  it('still demands the ack for a public non-.cn host, including a routable IP literal', () => {
+    // The exemption is about reachability, not geography: a public
+    // address is an overseas recipient until someone says otherwise, and
+    // 172.32/12 is deliberately outside the private 172.16/12 block.
+    for (const baseUrl of [
+      'https://api.openai.com/v1',
+      'http://8.8.8.8:8000/v1',
+      'http://172.32.0.1:8000/v1',
+    ]) {
+      resetAppEnvCache();
+      expect(() => loadAppEnv({ ...prodBase, AI_API_BASE_URL: baseUrl })).toThrow(
+        /cross-border transfer of health data/,
+      );
+    }
+  });
+
+  // --- OCR provider credentials --------------------------------------
+
+  it('rejects OCR_PROVIDER=baidu that is missing its credentials', () => {
+    // Symmetric with the tencent branch: a missing key here does not
+    // fail, it silently swaps the OCR engine for every patient document.
+    expect(() =>
+      loadAppEnv({ ...prodBase, OCR_PROVIDER: 'baidu', BAIDU_OCR_SECRET_KEY: undefined }),
+    ).toThrow(/OCR_PROVIDER=baidu requires/);
+  });
+
+  it('accepts OCR_PROVIDER=baidu with both credentials', () => {
+    const env = loadAppEnv({
+      ...prodBase,
+      OCR_PROVIDER: 'baidu',
+      BAIDU_OCR_API_KEY: 'baidu-api-key',
+      BAIDU_OCR_SECRET_KEY: 'baidu-secret-key',
+    });
+    expect(env.OCR_PROVIDER).toBe('baidu');
+  });
+
+  // --- storage --------------------------------------------------------
+
+  it('rejects production on local storage without an explicit ack', () => {
+    // `local` is the default in the schema, .env.example and compose, so
+    // this is what an operator who never touched the setting gets:
+    // patient files on one unreplicated container volume.
+    expect(() => loadAppEnv({ ...prodBase, STORAGE_ALLOW_LOCAL: 'false' })).toThrow(
+      /STORAGE_ALLOW_LOCAL=true/,
+    );
+  });
+
+  it('rejects production minio over plaintext without an insecure ack', () => {
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        STORAGE_PROVIDER: 'minio',
+        STORAGE_ALLOW_LOCAL: undefined,
+        MINIO_ENDPOINT: 's3.example.com',
+        MINIO_ACCESS_KEY: 'prod-access-key',
+        MINIO_SECRET_KEY: 'prod-secret-key-0000000000',
+        MINIO_USE_HTTPS: 'false',
+      }),
+    ).toThrow(/object storage has TLS disabled/);
+  });
+
+  it('accepts compose-internal minio over plaintext when acknowledged', () => {
+    const env = loadAppEnv({
+      ...prodBase,
+      STORAGE_PROVIDER: 'minio',
+      STORAGE_ALLOW_LOCAL: undefined,
+      MINIO_ENDPOINT: 'minio:9000',
+      MINIO_ACCESS_KEY: 'prod-access-key',
+      MINIO_SECRET_KEY: 'prod-secret-key-0000000000',
+      MINIO_USE_HTTPS: 'false',
+      MINIO_ALLOW_INSECURE: 'true',
+    });
+    expect(env.STORAGE_PROVIDER).toBe('minio');
+  });
+
+  it('accepts production minio over TLS with rotated credentials', () => {
+    const env = loadAppEnv({
+      ...prodBase,
+      STORAGE_PROVIDER: 'minio',
+      STORAGE_ALLOW_LOCAL: undefined,
+      MINIO_ENDPOINT: 's3.example.com',
+      MINIO_ACCESS_KEY: 'prod-access-key',
+      MINIO_SECRET_KEY: 'prod-secret-key-0000000000',
+      MINIO_USE_HTTPS: 'true',
+    });
+    expect(env.MINIO_USE_HTTPS).toBe(true);
+  });
+
+  it('still rejects the minioadmin demo credentials in production', () => {
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        STORAGE_PROVIDER: 'minio',
+        STORAGE_ALLOW_LOCAL: undefined,
+        MINIO_ENDPOINT: 'minio:9000',
+        MINIO_ACCESS_KEY: 'minioadmin',
+        MINIO_SECRET_KEY: 'minioadmin12345678',
+        MINIO_ALLOW_INSECURE: 'true',
+      }),
+    ).toThrow(/MINIO_ACCESS_KEY must be replaced|MINIO_SECRET_KEY must be replaced/);
+  });
+
+  // --- shutdown budget ordering ---------------------------------------
+
+  it('rejects a readiness drain that is not inside the shutdown grace', () => {
+    // The exact misconfiguration the DRAIN docstring invited: it said
+    // 「must exceed the load balancer's health-check interval」 and named
+    // no ceiling, so a 20s LB poll produced DRAIN=30000 against the
+    // default GRACE=20000. index.ts arms the force-exit at t=0 for the
+    // grace and only schedules `server.close()` at t=DRAIN, so that pair
+    // exits(1) with the listener still open and the pg pool abandoned.
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'development',
+        SHUTDOWN_READINESS_DRAIN_MS: '30000',
+        SHUTDOWN_GRACE_MS: '20000',
+      }),
+    ).toThrow(/SHUTDOWN_READINESS_DRAIN_MS/);
+  });
+
+  it('rejects a drain that equals the grace, and one that leaves under a second', () => {
+    // Equal is the same broken shutdown as greater — the drain timer and
+    // the force-exit fire in the same tick — and 19_500/20_000 leaves
+    // 500ms for server.close() + closePool(), which is not a shutdown,
+    // just a less obvious kill.
+    for (const drain of ['20000', '19500']) {
+      resetAppEnvCache();
+      expect(() =>
+        loadAppEnv({
+          NODE_ENV: 'development',
+          SHUTDOWN_READINESS_DRAIN_MS: drain,
+          SHUTDOWN_GRACE_MS: '20000',
+        }),
+      ).toThrow(/ordered, not additive/);
+    }
+  });
+
+  it('accepts the shipped drain/grace pair and a widened one', () => {
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      SHUTDOWN_READINESS_DRAIN_MS: '30000',
+      SHUTDOWN_GRACE_MS: '45000',
+    });
+    expect(env.SHUTDOWN_READINESS_DRAIN_MS).toBe(30000);
+    expect(env.SHUTDOWN_GRACE_MS).toBe(45000);
+  });
+
+  it('boots on the defaults, i.e. the ceiling does not reject the shipped pair', () => {
+    // Explicit `undefined` rather than omission: loadAppEnv merges
+    // process.env underneath these overrides, so an omitted key would
+    // make the assertion depend on the machine the suite runs on.
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      SHUTDOWN_READINESS_DRAIN_MS: undefined,
+      SHUTDOWN_GRACE_MS: undefined,
+    });
+    expect(env.SHUTDOWN_READINESS_DRAIN_MS).toBe(5000);
+    expect(env.SHUTDOWN_GRACE_MS).toBe(20000);
+  });
+
+  // --- container topology ----------------------------------------------
+
+  it('rejects a loopback DATABASE_URL when running inside the api container', () => {
+    // `cp .env.example .env && docker compose up` with the host-side
+    // 「@localhost:5432」 line uncommented: inside the container that host
+    // is the api itself, and the raw symptom is dist/db/migrate.js dying
+    // on ECONNREFUSED in a restart loop whose stack never names
+    // DATABASE_URL.
+    for (const host of ['localhost', '127.0.0.1', '[::1]']) {
+      resetAppEnvCache();
+      expect(() =>
+        loadAppEnv({
+          NODE_ENV: 'development',
+          OPENRD_IN_CONTAINER: 'true',
+          DATABASE_URL: `postgres://postgres:postgres@${host}:5432/fshd_openrd`,
+        }),
+      ).toThrow(/from inside the api container/);
+    }
+  });
+
+  it('accepts the compose-internal and managed hostnames inside the container', () => {
+    for (const host of ['postgres', 'db.internal']) {
+      resetAppEnvCache();
+      const env = loadAppEnv({
+        NODE_ENV: 'development',
+        OPENRD_IN_CONTAINER: 'true',
+        DATABASE_URL: `postgres://openrd_app:pw@${host}:5432/fshd_openrd`,
+      });
+      expect(env.DATABASE_URL).toContain(host);
+    }
+  });
+
+  it('leaves a bare-metal process alone: localhost is correct off-container', () => {
+    // The flag is set by docker-compose.yml and nothing else, so the
+    // documented native flow (npm run dev:api against a host Postgres,
+    // which is also env.ts's own DATABASE_URL default) must not trip it.
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      OPENRD_IN_CONTAINER: undefined,
+      DATABASE_URL: undefined,
+    });
+    expect(env.OPENRD_IN_CONTAINER).toBe(false);
+    expect(env.DATABASE_URL).toBe('postgres://postgres:postgres@localhost:5432/fshd_openrd');
+  });
+
+  // --- development stays permissive -----------------------------------
+
+  it('leaves development alone: every placeholder in .env.example boots', () => {
+    // The whole gate is downstream of NODE_ENV. This is the property
+    // that lets .env.example keep working defaults, so it is worth a
+    // test of its own: a dev copy of .env.example must never fail-fast.
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/fshd_openrd',
+      JWT_SECRET: 'change-me-super-secret',
+      OTP_HASH_SECRET: 'change-me-otp-secret',
+      OTP_PROVIDER: 'mock',
+      CORS_ORIGIN: '*',
+      STORAGE_PROVIDER: 'local',
+      AI_API_KEY: '',
+      OPENAI_API_KEY: '',
+    });
+    expect(env.isProductionLike).toBe(false);
   });
 });
 

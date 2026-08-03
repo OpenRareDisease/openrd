@@ -1,0 +1,51 @@
+# Code owners for the paths that touch patient health information.
+#
+# master's branch protection currently requires one approving review from any
+# collaborator, with require_code_owner_reviews disabled. That means a diff to
+# the AI agent tool allowlist, the patient profile service, or a database
+# migration can be approved by whoever is around, on exactly the same terms as
+# a README typo. This file is the input GitHub needs before that setting can be
+# turned on.
+#
+# BEFORE ENABLING require_code_owner_reviews: add a second maintainer to the
+# PHI blocks below. Every entry today is @fjiexiao, who authors nearly every
+# commit in this repository, and GitHub does not let a pull request author
+# satisfy their own code-owner review — flipping the setting with a single
+# owner listed would block that author's own PRs outright.
+
+# Default owner. More specific rules below win; the last matching line wins in
+# CODEOWNERS, so the PHI paths are listed after this one.
+*                                       @fjiexiao
+
+# ---------------------------------------------------------------------------
+# PHI paths. A change here can leak or corrupt a patient's medical record.
+# ---------------------------------------------------------------------------
+
+# AI agent tooling: the retrievers, the prompt allowlist, the PII redactor and
+# the renderer that decides what leaves the process and reaches a model.
+/apps/api/src/modules/ai-agents/         @fjiexiao
+
+# Patient profile and document handling: reads, writes and deletes of the
+# records themselves.
+/apps/api/src/modules/patient-profile/   @fjiexiao
+
+# Authentication and OTP: the only thing standing between a phone number and
+# somebody else's medical history.
+/apps/api/src/modules/auth/              @fjiexiao
+/apps/api/src/services/otp/              @fjiexiao
+
+# Schema changes. Migrations are applied automatically on every api container
+# start, and several down scripts are destructive by nature — 016's own header
+# warns that dropping deleted_at resurrects every retracted follow-up record.
+/db/migrations/                          @fjiexiao
+/db/init_db.sql                          @fjiexiao
+
+# The OCR and report-parsing layer. Its failure mode is not a crash but a
+# structured field that is confidently wrong, which the API's prompt allowlist
+# then treats as trusted input.
+/apps/report-manager/                    @fjiexiao
+/apps/api/src/services/ocr/              @fjiexiao
+
+# The gate itself. Weakening CI, the owner list, or the release process should
+# not be reviewable by someone other than an owner.
+/.github/                                @fjiexiao

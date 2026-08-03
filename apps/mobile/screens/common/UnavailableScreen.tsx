@@ -2,9 +2,9 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import Icon from './Icon';
+
+import { COLOR, RADIUS } from '../../lib/design';
 import { goBackOrFallback } from '../../lib/navigation';
 
 interface UnavailableScreenProps {
@@ -17,26 +17,31 @@ const UnavailableScreen: React.FC<UnavailableScreenProps> = ({ title, descriptio
 
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        locations={[0, 0.5, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.backgroundGradient}
-      >
+      {/* Flat paper, not the sand gradient. CLINICAL_GRADIENTS.page is
+          ['#F8F2EA', …], the palette lib/design.ts explicitly rejected
+          — its own comment says #F8F2EA "pulled yellow enough to grey
+          out the teal sitting on it" — so the last four screens using
+          it were painting their page in the rejected colour underneath
+          the accent it greys out. */}
+      <View style={styles.backgroundGradient}>
         <View style={styles.content}>
           <View style={styles.iconCircle}>
-            <FontAwesome6 name="circle-exclamation" size={22} color={CLINICAL_COLORS.warning} />
+            <Icon name="circle-exclamation" size={22} color={COLOR.warn} />
           </View>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.description}>
             {description ?? '该服务当前仅面向试运行开放，暂未开放使用。'}
           </Text>
-          <TouchableOpacity style={styles.backButton} onPress={() => goBackOrFallback(router)}>
+          <TouchableOpacity
+            style={styles.backButton}
+            accessibilityRole="button"
+            accessibilityLabel="返回"
+            onPress={() => goBackOrFallback(router)}
+          >
             <Text style={styles.backButtonText}>返回</Text>
           </TouchableOpacity>
         </View>
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 };
@@ -44,7 +49,7 @@ const UnavailableScreen: React.FC<UnavailableScreenProps> = ({ title, descriptio
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
   backgroundGradient: {
     flex: 1,
@@ -58,21 +63,21 @@ const styles = StyleSheet.create({
   iconCircle: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: RADIUS.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.warningSoft,
+    backgroundColor: COLOR.warnWash,
     marginBottom: 16,
   },
   title: {
     fontSize: 18,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontWeight: '600',
     marginBottom: 8,
   },
   description: {
     fontSize: 14,
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     textAlign: 'center',
     lineHeight: 20,
     marginBottom: 24,
@@ -81,10 +86,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.accent,
+    backgroundColor: COLOR.accent,
   },
   backButtonText: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 14,
     fontWeight: '600',
   },

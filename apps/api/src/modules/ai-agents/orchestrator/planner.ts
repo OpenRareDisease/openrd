@@ -38,7 +38,7 @@ export interface PlanResult {
   messages: LlmMessage[];
 }
 
-const toLlmTool = (tool: ITool): LlmToolDefinition => ({
+export const toLlmTool = (tool: ITool): LlmToolDefinition => ({
   name: tool.name,
   description: tool.description,
   parametersSchema: tool.parametersSchema,

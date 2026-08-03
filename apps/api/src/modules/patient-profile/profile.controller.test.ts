@@ -19,6 +19,11 @@ const fakeRes = () =>
   ({
     status: vi.fn().mockReturnThis(),
     json: vi.fn().mockReturnThis(),
+    // The queue-full path sets `Retry-After` before throwing, so the
+    // double has to answer it — otherwise the test fails on a
+    // TypeError and reports it as "no 429", hiding the behaviour it
+    // was written to pin.
+    setHeader: vi.fn().mockReturnThis(),
   }) as unknown as Response;
 
 const makeFile = (size = 32): Express.Multer.File =>
@@ -723,7 +728,11 @@ describe('PatientProfileController.deleteDocument — service receives audit met
  * perfectly good document.
  */
 describe('PatientProfileController.reparseDocument', () => {
-  const buildReparseDeps = (documentStatus: string, uploadedAt = new Date()) => {
+  const buildReparseDeps = (
+    documentStatus: string,
+    uploadedAt = new Date(),
+    ocrPayload: unknown = null,
+  ) => {
     const service = {
       getDocumentForUser: vi.fn().mockResolvedValue({
         id: 'doc-1',
@@ -733,7 +742,7 @@ describe('PatientProfileController.reparseDocument', () => {
         storage_uri: 'local://uploads/x/scan.pdf',
         file_name: 'scan.pdf',
         mime_type: 'application/pdf',
-        ocr_payload: null,
+        ocr_payload: ocrPayload,
         uploaded_at: uploadedAt,
       }),
       updateDocumentOcrResult: vi.fn().mockResolvedValue({ id: 'doc-1', status: 'processing' }),
@@ -815,13 +824,33 @@ describe('PatientProfileController.reparseDocument', () => {
     expect(res.status).toHaveBeenCalledWith(202);
   });
 
-  it('parsed → 409 (nothing to recover, source file unchanged)', async () => {
-    const { service, storage, ocr } = buildReparseDeps('parsed');
+  it('parsed with fields → 409 (nothing to recover, source file unchanged)', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), {
+      fields: { fieldCount: '8', classifiedType: 'stool_test' },
+    });
     const controller = new PatientProfileController(service, storage, ocr);
 
     await expect(controller.reparseDocument(reparseReq(), fakeRes())).rejects.toMatchObject({
       statusCode: 409,
     });
+    expect(storage.load).not.toHaveBeenCalled();
+  });
+
+  // `parsed` with nothing extracted is a failure wearing a success
+  // label — the state a patient sees as「没有解析出具体数据」. The
+  // source file is unchanged but the extractor is not, so this is the
+  // one parsed case worth re-running.
+  it('parsed but empty → re-runs the parse', async () => {
+    const { service, storage, ocr } = buildReparseDeps('parsed', new Date(), {
+      fields: { fieldCount: '0', classifiedType: 'infection_screening' },
+    });
+    const controller = new PatientProfileController(service, storage, ocr);
+    const res = fakeRes();
+
+    await controller.reparseDocument(reparseReq(), res);
+    await controller.inFlightOcrJobs.get('doc-1');
+
+    expect(storage.load).toHaveBeenCalled();
   });
 
   it('an in-flight job for the same document → 409, no duplicate parse', async () => {

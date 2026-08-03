@@ -130,24 +130,65 @@ export const measurementSchema = z
   });
 export type MeasurementInput = z.infer<typeof measurementSchema>;
 
-export const functionTestSchema = z.object({
-  testType: z.enum(FUNCTION_TEST_TYPES),
-  // `.finite()` rejects `Infinity` / `-Infinity` / `NaN` that
-  // `z.coerce.number()` would otherwise admit (string "Infinity"
-  // coerces to Infinity, then passes the bounds-less z.number()).
-  // Bounded numeric fields elsewhere are protected by `.min/.max`
-  // returning false for NaN, but this one is unbounded on purpose
-  // (caller decides the unit) so the guard belongs here.
-  measuredValue: z.coerce.number().finite().optional().nullable(),
-  unit: z.string().max(32).optional().nullable(),
-  side: z.enum(MEASUREMENT_SIDES).optional().nullable(),
-  protocol: z.string().max(120).optional().nullable(),
-  deviceUsed: z.string().max(120).optional().nullable(),
-  assistanceRequired: z.boolean().optional().nullable(),
-  notes: z.string().optional().nullable(),
-  performedAt: z.string().datetime().optional(),
-  submissionId: z.string().uuid().optional().nullable(),
-});
+/**
+ * Units a function test may be recorded in.
+ *
+ * This was `z.string().max(32)` — unconstrained patient-supplied free
+ * text on a column that the AI followup retriever ships to the model
+ * verbatim: `unit` sits on the `followups` precise allowlist both as
+ * its own field and concatenated into the rendered series string, with
+ * no escaping and no truncation. Every sibling field on this schema
+ * that reaches the same allowlist (`testType`, `side`) is an enum, and
+ * the retriever's own privacy contract excludes `notes` / event
+ * descriptions precisely because no static rule can prove patient free
+ * text is PII-free. `unit` was the one column that made that argument
+ * untrue.
+ *
+ * The set covers how the six FUNCTION_TEST_TYPES are actually
+ * measured: timed tests in seconds, six-minute walk in metres, gait
+ * speed, sit-to-stand repetitions, plus kg / score for `custom`
+ * (dynamometer readings, ordinal scales). The only client today sends
+ * 'sec'. Widening the set is a one-line change here plus the matching
+ * DB CHECK in migration 015 — deliberately a two-place edit, so that
+ * adding a unit is a decision rather than a side effect.
+ */
+export const FUNCTION_TEST_UNITS = ['sec', 'm', 'm/s', 'reps', 'kg', 'score'] as const;
+export type FunctionTestUnit = (typeof FUNCTION_TEST_UNITS)[number];
+
+export const functionTestSchema = z
+  .object({
+    testType: z.enum(FUNCTION_TEST_TYPES),
+    // `.finite()` rejects `Infinity` / `-Infinity` / `NaN` that
+    // `z.coerce.number()` would otherwise admit (string "Infinity"
+    // coerces to Infinity, then passes the bounds-less z.number()).
+    // Bounded numeric fields elsewhere are protected by `.min/.max`
+    // returning false for NaN, but this one is unbounded on purpose
+    // (caller decides the unit) so the guard belongs here.
+    measuredValue: z.coerce.number().finite().optional().nullable(),
+    /** 「今天做不了」— the test was attempted and could not be completed.
+     *  Kept separate from a null `measuredValue` because "unable" and
+     *  "not recorded" are opposite readings of the same gap, and only
+     *  the first is a clinical observation. Mutually exclusive with a
+     *  measurement (DB CHECK in migration 017 enforces the same rule). */
+    notApplicable: z.boolean().optional(),
+    unit: z.enum(FUNCTION_TEST_UNITS).optional().nullable(),
+    side: z.enum(MEASUREMENT_SIDES).optional().nullable(),
+    protocol: z.string().max(120).optional().nullable(),
+    deviceUsed: z.string().max(120).optional().nullable(),
+    assistanceRequired: z.boolean().optional().nullable(),
+    notes: z.string().optional().nullable(),
+    performedAt: z.string().datetime().optional(),
+    submissionId: z.string().uuid().optional().nullable(),
+  })
+  .refine((value) => !(value.notApplicable === true && value.measuredValue != null), {
+    // The DB has the same CHECK (migration 017), but reaching it means
+    // a contradictory body comes back as a 500. 「做不到」and「15 秒」
+    // on one attempt is the caller's mistake, so it is answered as
+    // one — and the message names both fields, because the client that
+    // sends this is a form that had them on screen together.
+    message: '标记为「今天做不了」时不能同时填写测量值',
+    path: ['measuredValue'],
+  });
 export type FunctionTestInput = z.infer<typeof functionTestSchema>;
 
 export const activityLogSchema = z.object({
@@ -224,6 +265,33 @@ export const followupEventSchema = z.object({
   submissionId: z.string().uuid().optional().nullable(),
 });
 export type FollowupEventInput = z.infer<typeof followupEventSchema>;
+
+/**
+ * Record kinds a patient may retract from their own timeline. The
+ * three tables here are the ones a patient hand-enters and can
+ * therefore mis-enter (a stray digit in a stair-climb time is a
+ * permanent spike on the trend line otherwise).
+ *
+ * Measurements, daily impacts, activity logs and medications are
+ * deliberately NOT in this list yet — they have no `deleted_at`
+ * column (migration 016), so admitting them here would produce a
+ * silent no-op. Widening the list means widening the migration and
+ * every read path first.
+ *
+ * The enum doubles as the key of the kind→table map in
+ * profile.service.ts: nothing user-supplied is ever interpolated into
+ * the SQL, only a value that survived this parse.
+ */
+export const DELETABLE_RECORD_KINDS = ['function_test', 'symptom_score', 'followup_event'] as const;
+export type DeletableRecordKind = (typeof DELETABLE_RECORD_KINDS)[number];
+
+/** Path params for DELETE /api/profiles/me/records/:kind/:id. The
+ *  uuid() check matters: without it a malformed id reaches Postgres
+ *  and surfaces as a 500 (invalid input syntax) instead of a 400. */
+export const deleteRecordParamsSchema = z.object({
+  kind: z.enum(DELETABLE_RECORD_KINDS),
+  id: z.string().uuid(),
+});
 
 export const createSubmissionSchema = z.object({
   submissionKind: z.enum(SUBMISSION_KINDS).optional(),

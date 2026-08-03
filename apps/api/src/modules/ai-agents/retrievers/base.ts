@@ -130,6 +130,37 @@ export interface IRetriever {
 }
 
 /** Convenience for retrievers that have nothing to return. */
+/**
+ * Reasons that mean the retrieval **could not run**, as opposed to
+ * running and finding nothing.
+ *
+ * The distinction was invisible to everything downstream. When the
+ * Python KB service is unreachable, `medical-kb.ts` returns
+ * `emptyResult(..., 'kb_service_unreachable')` — but the tool wrapper
+ * only reads `chunks.length`, so the call was reported to the audit as
+ * `status: 'ok'` and to the model as「0 chunks」. The model, whose
+ * system prompt requires it to consult the KB before answering
+ * anything about FSHD, saw a successful-but-empty search and did the
+ * only sensible thing: announced it would search again. That is the
+ * whole of the observed「让我再用其他关键词搜索一下：」failure — with
+ * the service down, EVERY knowledge question hit this path.
+ *
+ * `no_reports_found` and friends are NOT here: those are true answers
+ * about the patient's data ("you have no reports"), and the model
+ * should say so rather than report a malfunction.
+ */
+export const RETRIEVAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  'kb_service_unreachable',
+  'kb_service_error',
+  'not_implemented',
+]);
+
+/** The failure reason when the retrieval could not run, else null. */
+export const retrievalFailureReason = (result: RetrieveResult): string | null => {
+  const reason = result.metadata?.reason;
+  return typeof reason === 'string' && RETRIEVAL_FAILURE_REASONS.has(reason) ? reason : null;
+};
+
 export const emptyResult = (
   retrieverId: string,
   reason: string,

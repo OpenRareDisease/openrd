@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderChunkForPrompt } from './render.js';
 import type { RetrieveContext, RetrievedChunk } from '../retrievers/base.js';
+import { PatientFollowupRetriever } from '../retrievers/patient-followups.js';
 import { PatientProfileRetriever } from '../retrievers/patient-profile.js';
 import { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 
@@ -45,6 +46,29 @@ const fakePool = (rows: unknown[]) =>
       rowCount: rows.length,
     } as unknown as QueryResult),
   }) as unknown as Pool;
+
+/** The followup retriever issues two queries — the metric UNION first,
+ *  then the event tally — so it needs an ordered pool rather than the
+ *  single-answer one the other two retrievers get. */
+const sequencedPool = (
+  seriesRows: unknown[],
+  eventRows: unknown[] = [],
+  unableRows: unknown[] = [],
+) => {
+  const answer = (rows: unknown[]) => ({ rows, rowCount: rows.length }) as unknown as QueryResult;
+  return {
+    query: vi
+      .fn()
+      .mockResolvedValueOnce(answer(seriesRows))
+      .mockResolvedValueOnce(answer(eventRows))
+      // Third query: 「做不到」 counts (migration 017). Defaulting to
+      // empty keeps the existing fences describing a plain series.
+      .mockResolvedValueOnce(answer(unableRows)),
+  } as unknown as Pool;
+};
+
+const daysAgoIso = (days: number) =>
+  new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
 const PROFILE_ROW = {
   id: 'profile-1',
@@ -256,6 +280,141 @@ describe('renderChunkForPrompt — patient reports, strict mode (regression fenc
     // Exact issue date is also stripped to year-only.
     expect(genetic.content).not.toContain('2023-06-01');
     expect(genetic.content).toContain('2023');
+  });
+});
+
+/**
+ * The `followups` scope had no fence at all, unlike `profile` and
+ * `reports`. Two mutations proved it: adding `latestValue` / `series`
+ * to `PROMPT_ALLOWLIST.followups.strict` left the whole suite green,
+ * and deleting `case 'patient_followups'` from `scopeForSource` also
+ * left it green — the chunk fell through to `passthrough`, which for a
+ * patient source renders `chunk.content`, and that is always `''`. A
+ * followup chunk silently contributed nothing to the prompt and no
+ * assertion noticed.
+ *
+ * So the tests below pin both directions: strict must strip the raw
+ * numbers and must still render the scope's own header and bands.
+ */
+describe('renderChunkForPrompt — patient followups, strict mode (regression fence)', () => {
+  // Values chosen to be unmistakable in a haystack: `16.75` cannot be
+  // confused with `count` or `spanDays`, and 「天前」 appears only in
+  // `series` on a metric chunk.
+  const SERIES_ROWS = [
+    // `unit` is a patient-writable column that was free text for most
+    // of this table's life, so it belongs in the leak probes alongside
+    // report titles and notes.
+    { metric_key: 'stair_climb', unit: '张三的秒表', value: '12.5', recorded_at: daysAgoIso(14) },
+    { metric_key: 'stair_climb', unit: '张三的秒表', value: '14.25', recorded_at: daysAgoIso(7) },
+    { metric_key: 'stair_climb', unit: '张三的秒表', value: '16.75', recorded_at: daysAgoIso(0) },
+  ];
+
+  it('strips latestValue / series / unit and keeps only the coarse trend', async () => {
+    const retriever = new PatientFollowupRetriever(sequencedPool(SERIES_ROWS));
+    const result = await retriever.search({ question: '' }, makeCtx());
+    expect(result.chunks).toHaveLength(1);
+
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    // The renderer has to recognise `patient_followups` as a patient
+    // scope. If it ever falls through to passthrough, `content` is ''
+    // and this is the assertion that says so.
+    expect(rendered.content).toContain('【患者随访记录】');
+
+    // What strict mode is allowed to say.
+    expect(rendered.content).toContain('指标: 上楼计时');
+    expect(rendered.content).toContain('记录次数: 3');
+    expect(rendered.content).toContain('跨度(天): 14');
+    expect(rendered.content).toContain('变化方向: up');
+    expect(rendered.content).toContain('最近变化: 较前升高');
+
+    // What it must not. `latestValue` and `series` are precise-mode
+    // fields; leaking either would put self-reported raw numbers in
+    // front of a model the user only granted basic consent to.
+    expect(rendered.content).not.toContain('16.75');
+    expect(rendered.content).not.toContain('14.25');
+    expect(rendered.content).not.toContain('12.5');
+    expect(rendered.content).not.toContain('天前'); // series point formatting
+    expect(rendered.content).not.toContain('最近数值');
+    expect(rendered.content).not.toContain('历次记录');
+    expect(rendered.content).not.toContain('单位');
+
+    // Same probe set the other two scopes use: nothing the patient
+    // typed reaches the prompt, no matter which column it rode in on.
+    assertNoLeak(rendered.content);
+
+    // `fieldsUsed` is what the audit row records, so pin it exactly —
+    // an addition to the strict allowlist has to show up here.
+    expect(rendered.fieldsUsed).toEqual([
+      'metricKey',
+      'metricLabel',
+      'count',
+      'countAtCap',
+      'spanDays',
+      'changeDirection',
+      'latestBand',
+    ]);
+    expect(rendered.stats).not.toBeNull();
+    expect(rendered.stats?.notAllowed).toEqual(
+      expect.arrayContaining(['unit', 'latestValue', 'series']),
+    );
+  });
+
+  it('keeps the raw series once the user opted into precise mode', async () => {
+    // The mirror of the test above: strict must not be "fixed" by
+    // deleting the precise fields from the retriever altogether.
+    //
+    // The fixture keeps its「张三的秒表」unit rather than being mapped
+    // to 'sec' first. Precise is the ONLY mode where `unit` is on the
+    // allowlist, so rewriting the fixture washed out the one probe that
+    // could ever catch the thing the alias table was added for — the
+    // assertion passed identically before and after that work existed.
+    const retriever = new PatientFollowupRetriever(sequencedPool(SERIES_ROWS));
+    const result = await retriever.search({ question: '' }, makeCtx({ consentLevel: 'precise' }));
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'precise' });
+
+    // An unrecognised unit is dropped by UNIT_ALIASES on the way out,
+    // so precise mode renders the values without one rather than
+    // forwarding whatever the patient typed into the box.
+    expect(rendered.content).not.toContain('张三');
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    expect(fields.unit).toBeNull();
+    expect(String(fields.series)).not.toContain('张三');
+
+    expect(rendered.content).toContain('【患者随访记录】');
+    expect(rendered.content).toContain('16.75');
+    expect(rendered.content).toContain('天前');
+    // The coarse band is the strict-mode duplicate and is dropped here.
+    expect(rendered.fieldsUsed).toEqual([
+      'metricKey',
+      'metricLabel',
+      'count',
+      'countAtCap',
+      'spanDays',
+      'changeDirection',
+      // Present but null: the allowlist filter keys off the field name,
+      // not the value, so a dropped unit still shows up here. What
+      // matters is the assertions above — the value is null and the
+      // patient's text reaches neither `unit` nor `series`.
+      'unit',
+      'latestValue',
+      'series',
+    ]);
+    assertNoLeak(rendered.content);
+  });
+
+  it('renders the event tally in strict mode without the patient description', async () => {
+    const retriever = new PatientFollowupRetriever(
+      sequencedPool([], [{ event_type: 'fall', severity: 'mild', occurred_at: daysAgoIso(3) }]),
+    );
+    const result = await retriever.search({ question: '' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    expect(rendered.content).toContain('【患者随访记录】');
+    expect(rendered.content).toContain('病程事件: 跌倒（轻）×1，最近 3 天前');
+    expect(rendered.content).toContain('事件条数: 1');
+    expect(rendered.fieldsUsed).toEqual(['eventSummary', 'eventCount']);
+    assertNoLeak(rendered.content);
   });
 });
 

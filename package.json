@@ -1,6 +1,6 @@
 {
   "name": "openrd",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "workspaces": [
     "apps/*"
@@ -11,6 +11,9 @@
     "dev:mobile": "npm run start --workspace @openrd/mobile",
     "db:migrate": "npm run migrate --workspace @openrd/api",
     "db:migrate:status": "npm run migrate:status --workspace @openrd/api",
+    "db:migrate:down": "node --env-file-if-exists=.env node_modules/.bin/tsx apps/api/src/db/migrate.ts --down",
+    "db:backup": "node --env-file-if-exists=.env -e \"process.exit(require('node:child_process').spawnSync('bash',['scripts/db-backup.sh'],{stdio:'inherit'}).status ?? 1)\"",
+    "db:restore": "node --env-file-if-exists=.env -e \"process.exit(require('node:child_process').spawnSync('bash',['scripts/db-restore.sh',...process.argv.slice(1)],{stdio:'inherit'}).status ?? 1)\"",
     "lint": "npm run lint --workspaces --if-present",
     "format": "npm run format --workspaces --if-present",
     "format:write": "npm run format:write --workspaces --if-present",
@@ -20,6 +23,7 @@
     "kb:warmup": "python3 scripts/kb-warmup.py",
     "kb:ingest": "python3 scripts/kb-ingest.py",
     "kb:ingest:dry": "python3 scripts/kb-ingest.py --dry-run --verbose",
+    "kb:prune": "node --env-file-if-exists=.env scripts/kb-prune.mjs",
     "kb:import:chroma": "python3 scripts/kb-import-from-chroma.py",
     "kb:verify": "python3 scripts/kb-verify.py",
     "github:app-token": "node --env-file-if-exists=.env scripts/github-app-token.mjs",

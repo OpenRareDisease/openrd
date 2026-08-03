@@ -1,7 +1,9 @@
-import { useState, type ComponentProps } from 'react';
+import { useState } from 'react';
+import SegmentedControl from './SegmentedControl';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import Icon from './Icon';
+
+import { COLOR, INTERACTION, RADIUS } from '../../lib/design';
 import {
   getSystemPanelHeroMetrics,
   getSystemPanelScopedSections,
@@ -33,7 +35,7 @@ const PREVIEW_LIMIT = 2;
 
 const systemPanelMeta: Record<
   SystemInsightPanel['key'],
-  { icon: ComponentProps<typeof FontAwesome6>['name']; accentColor: string; accentBg: string }
+  { icon: string; accentColor: string; accentBg: string }
 > = {
   blood: {
     icon: 'flask',
@@ -57,19 +59,19 @@ const systemStateMeta: Record<
   { textColor: string; backgroundColor: string; borderColor: string }
 > = {
   updated: {
-    textColor: CLINICAL_COLORS.success,
-    backgroundColor: CLINICAL_TINTS.successSoft,
-    borderColor: CLINICAL_TINTS.successBorder,
+    textColor: COLOR.good,
+    backgroundColor: COLOR.goodWash,
+    borderColor: COLOR.good,
   },
   partial: {
-    textColor: CLINICAL_COLORS.warning,
-    backgroundColor: CLINICAL_TINTS.warningSoft,
-    borderColor: CLINICAL_TINTS.warningBorder,
+    textColor: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+    borderColor: COLOR.warn,
   },
   missing: {
-    textColor: CLINICAL_COLORS.textMuted,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    borderColor: CLINICAL_TINTS.borderSubtle,
+    textColor: COLOR.inkMuted,
+    backgroundColor: COLOR.well,
+    borderColor: COLOR.line,
   },
 };
 
@@ -134,7 +136,7 @@ export default function SystemMonitoringPanels({ panels, emptyText }: SystemMoni
                   { backgroundColor: systemPanelMeta[panel.key].accentBg },
                 ]}
               >
-                <FontAwesome6
+                <Icon
                   name={systemPanelMeta[panel.key].icon}
                   size={15}
                   color={systemPanelMeta[panel.key].accentColor}
@@ -191,75 +193,31 @@ export default function SystemMonitoringPanels({ panels, emptyText }: SystemMoni
             </View>
 
             {tabs.length > 1 ? (
-              <View style={styles.tabRow}>
-                {tabs.map((tab) => {
-                  const isActive = selectedTab === tab.key;
-                  return (
-                    <TouchableOpacity
-                      key={`${panel.key}-${tab.key}`}
-                      style={[
-                        styles.tabChip,
-                        isActive && {
-                          backgroundColor: systemPanelMeta[panel.key].accentBg,
-                          borderColor: systemPanelMeta[panel.key].accentColor,
-                        },
-                      ]}
-                      activeOpacity={0.88}
-                      onPress={() =>
-                        setSelectedTabs((prev) => ({
-                          ...prev,
-                          [panel.key]: tab.key,
-                        }))
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.tabChipText,
-                          isActive && { color: systemPanelMeta[panel.key].accentColor },
-                        ]}
-                      >
-                        {tab.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              /* Was a row of independent rounded pills. These options are
+                 mutually exclusive — picking one replaces the view — and a
+                 pill row is the shape iOS uses for multi-select tags, so
+                 nothing about the old row said "pick exactly one". */
+              <SegmentedControl
+                segments={tabs.map((tab) => ({ key: tab.key, label: tab.label }))}
+                value={selectedTab}
+                onChange={(key) => setSelectedTabs((prev) => ({ ...prev, [panel.key]: key }))}
+                accessibilityLabel={`${panel.title}检查类型`}
+                style={styles.tabControl}
+              />
             ) : null}
 
             {sectionTabs.length > 0 ? (
-              <View style={styles.subtabRow}>
-                {sectionTabs.map((tab) => {
-                  const isActive = selectedSubtab === tab.key;
-                  return (
-                    <TouchableOpacity
-                      key={`${panel.key}-${selectedTab}-${tab.key}`}
-                      style={[
-                        styles.subtabChip,
-                        isActive && {
-                          backgroundColor: systemPanelMeta[panel.key].accentBg,
-                          borderColor: systemPanelMeta[panel.key].accentColor,
-                        },
-                      ]}
-                      activeOpacity={0.88}
-                      onPress={() =>
-                        setSelectedSubtabs((prev) => ({
-                          ...prev,
-                          [subtabStateKey]: tab.key,
-                        }))
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.subtabChipText,
-                          isActive && { color: systemPanelMeta[panel.key].accentColor },
-                        ]}
-                      >
-                        {tab.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              /* Same reasoning as the row above — this is the second
+                 level of the same exclusive choice. */
+              <SegmentedControl
+                segments={sectionTabs.map((tab) => ({ key: tab.key, label: tab.label }))}
+                value={selectedSubtab}
+                onChange={(key) =>
+                  setSelectedSubtabs((prev) => ({ ...prev, [subtabStateKey]: key }))
+                }
+                accessibilityLabel={`${panel.title}细分项目`}
+                style={styles.subtabControl}
+              />
             ) : null}
 
             {showHeroMetrics ? (
@@ -335,7 +293,13 @@ export default function SystemMonitoringPanels({ panels, emptyText }: SystemMoni
                         {!forceExpanded && hiddenCount > 0 ? (
                           <TouchableOpacity
                             style={styles.sectionToggle}
-                            activeOpacity={0.88}
+                            activeOpacity={INTERACTION.pressOpacity}
+                            // fontSize 11 + 6pt padding drew a ~25pt
+                            // pill — barely half the target, on three
+                            // live screens. Drawn size is right for a
+                            // pill this quiet; the finger gets the rest.
+                            hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                            accessibilityRole="button"
                             onPress={() =>
                               setExpandedSections((prev) => ({
                                 ...prev,
@@ -346,10 +310,10 @@ export default function SystemMonitoringPanels({ panels, emptyText }: SystemMoni
                             <Text style={styles.sectionToggleText}>
                               {expanded ? '收起' : `查看全部 ${hiddenCount} 项`}
                             </Text>
-                            <FontAwesome6
+                            <Icon
                               name={expanded ? 'chevron-up' : 'chevron-down'}
                               size={11}
-                              color={CLINICAL_COLORS.textSoft}
+                              color={COLOR.inkSoft}
                             />
                           </TouchableOpacity>
                         ) : null}
@@ -385,11 +349,11 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   systemCard: {
-    borderRadius: 22,
+    borderRadius: RADIUS.surface,
     padding: 16,
-    backgroundColor: CLINICAL_COLORS.panel,
+    backgroundColor: COLOR.surface,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
     ...cardShadow,
   },
   systemCardTop: {
@@ -400,10 +364,10 @@ const styles = StyleSheet.create({
   systemIconWrap: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: RADIUS.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+    backgroundColor: COLOR.accentWash,
   },
   systemCardCopy: {
     flex: 1,
@@ -428,10 +392,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    backgroundColor: COLOR.well,
   },
   systemCoverageChipText: {
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -443,18 +407,18 @@ const styles = StyleSheet.create({
   },
   systemTitle: {
     flex: 1,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 15,
     fontWeight: '800',
   },
   systemDate: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 12,
     fontWeight: '700',
   },
   systemSummary: {
     marginTop: 8,
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 13,
     lineHeight: 20,
   },
@@ -465,62 +429,28 @@ const styles = StyleSheet.create({
   },
   systemMetaCard: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: RADIUS.surface,
     padding: 12,
     backgroundColor: 'rgba(248, 242, 234, 0.78)',
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
   },
   systemMetaLabel: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
     fontWeight: '700',
   },
   systemMetaValue: {
     marginTop: 8,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 16,
     fontWeight: '800',
   },
-  tabRow: {
+  tabControl: {
     marginTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
   },
-  subtabRow: {
+  subtabControl: {
     marginTop: 10,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  tabChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: CLINICAL_COLORS.backgroundRaised,
-    outlineWidth: 0,
-  },
-  tabChipText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  subtabChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: 'rgba(248, 242, 234, 0.78)',
-    outlineWidth: 0,
-  },
-  subtabChipText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
   },
   systemMetricHeroGrid: {
     marginTop: 14,
@@ -532,21 +462,21 @@ const styles = StyleSheet.create({
     width: '47%',
     minHeight: 84,
     padding: 14,
-    borderRadius: 18,
+    borderRadius: RADIUS.surface,
     borderWidth: 1,
   },
   systemMetricHeroCardNeutral: {
-    backgroundColor: CLINICAL_COLORS.panelMuted,
+    backgroundColor: COLOR.well,
     borderColor: 'transparent',
   },
   systemMetricHeroLabel: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 11,
     fontWeight: '700',
   },
   systemMetricHeroValue: {
     marginTop: 10,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 17,
     lineHeight: 23,
     fontWeight: '800',
@@ -557,7 +487,7 @@ const styles = StyleSheet.create({
   },
   systemSectionBlock: {
     borderTopWidth: 1,
-    borderTopColor: CLINICAL_COLORS.border,
+    borderTopColor: COLOR.line,
     paddingTop: 14,
   },
   systemSectionHeader: {
@@ -574,7 +504,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   systemSectionTitle: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -595,10 +525,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
+    backgroundColor: COLOR.well,
   },
   sectionToggleText: {
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -612,23 +542,23 @@ const styles = StyleSheet.create({
     width: '47%',
     minHeight: 74,
     padding: 12,
-    borderRadius: 16,
-    backgroundColor: CLINICAL_COLORS.panelMuted,
+    borderRadius: RADIUS.surface,
+    backgroundColor: COLOR.well,
   },
   systemMetricLabel: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 12,
     fontWeight: '700',
   },
   systemMetricValue: {
     marginTop: 8,
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 16,
     lineHeight: 22,
     fontWeight: '800',
   },
   emptyText: {
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 12,
     lineHeight: 18,
   },

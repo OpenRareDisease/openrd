@@ -52,9 +52,9 @@ jest.mock('../../common/ScreenBackButton', () => {
 });
 
 // Imported after the mocks so the screen wires up against them.
-// eslint-disable-next-line import/first
+
 import AuditHistoryScreen from '../index';
-// eslint-disable-next-line import/first
+
 import { ApiError, getMyAuditHistory, getMyConsentHistory } from '../../../lib/api';
 
 const asMock = <T extends (...args: never[]) => unknown>(fn: T) => fn as unknown as jest.Mock;

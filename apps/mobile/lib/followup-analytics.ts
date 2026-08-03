@@ -107,9 +107,12 @@ const pushBucketValue = (
   buckets.set(key, { timestamp, values: [value] });
 };
 
+/** How many points a trend chart shows. */
+const CHART_POINT_LIMIT = 6;
+
 const finalizeTrendPoints = (
   buckets: Map<string, { timestamp: string; values: number[] }>,
-  limit = 6,
+  limit = CHART_POINT_LIMIT,
 ): DomainTrendPoint[] =>
   Array.from(buckets.entries())
     .map(([date, item]) => ({
@@ -122,7 +125,7 @@ const finalizeTrendPoints = (
 
 const finalizeSummedPoints = (
   buckets: Map<string, { timestamp: string; value: number }>,
-  limit = 6,
+  limit = CHART_POINT_LIMIT,
 ): DomainTrendPoint[] =>
   Array.from(buckets.entries())
     .map(([date, item]) => ({
@@ -288,15 +291,34 @@ const getStairSummary = (
   };
 };
 
+const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。';
+
 const getFallSummary = (
   currentValue: number | null,
   previousValue: number | null,
+  zeroRecordStreak: number,
 ): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
+  // Only "no daily record has ever been made" lands here. A record
+  // that answered 0 is a result, and is handled below.
   if (currentValue === null) {
     return {
       latestDisplay: '未记录',
-      summary: '最近还没有新的跌倒次数记录。',
-      helperText: '每次日常记录都可以补充“最近跌倒次数”，便于看风险变化。',
+      summary: '还没有可以统计跌倒次数的日常记录。',
+      helperText: FALL_HELPER_TEXT,
+    };
+  }
+
+  if (currentValue === 0) {
+    return {
+      latestDisplay: '0 次',
+      summary:
+        zeroRecordStreak > 1
+          ? `已经连续 ${zeroRecordStreak} 次日常记录没有跌倒。`
+          : previousValue === null
+            ? '最近一次日常记录没有跌倒。'
+            : // A streak of 1 means the record before it wasn't zero.
+              '最近一次日常记录没有跌倒，比上次更少。',
+      helperText: FALL_HELPER_TEXT,
     };
   }
 
@@ -311,12 +333,70 @@ const getFallSummary = (
 
   return {
     latestDisplay: `${Math.round(currentValue)} 次`,
-    summary:
-      currentValue === 0
-        ? `最近一次记录未填跌倒次数，${comparison}`
-        : `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
-    helperText: '每次日常记录都可以补充“最近跌倒次数”，便于看风险变化。',
+    summary: `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
+    helperText: FALL_HELPER_TEXT,
   };
+};
+
+/**
+ * Days on which the patient completed a daily record.
+ *
+ * A daily record writes a sleep score and a stair-climb test under one
+ * submission (p-data_entry `handleFollowupSubmit`), and that form has
+ * always asked 跌倒次数. The pair is therefore our evidence that the
+ * patient was *asked* about falls that day. A stair test on its own is
+ * not — it can arrive from a clinic-side entry that never asked, and
+ * counting it would invent a "0 falls" answer nobody gave.
+ */
+const collectFollowupRecordDays = (profile: PatientProfile | null): Map<string, string> => {
+  const bySubmission = new Map<string, { sleep?: string; stair?: string }>();
+
+  profile?.symptomScores.forEach((item) => {
+    if (item.symptomKey !== 'sleep_quality' || !item.submissionId) {
+      return;
+    }
+    const entry = bySubmission.get(item.submissionId) ?? {};
+    entry.sleep = item.recordedAt;
+    bySubmission.set(item.submissionId, entry);
+  });
+
+  profile?.functionTests.forEach((item) => {
+    if (item.testType !== 'stair_climb' || !item.submissionId) {
+      return;
+    }
+    const entry = bySubmission.get(item.submissionId) ?? {};
+    entry.stair = item.performedAt;
+    bySubmission.set(item.submissionId, entry);
+  });
+
+  const days = new Map<string, string>();
+  bySubmission.forEach(({ sleep, stair }) => {
+    if (!sleep || !stair) {
+      return;
+    }
+    const timestamp = new Date(sleep).getTime() >= new Date(stair).getTime() ? sleep : stair;
+    const key = toIsoDate(timestamp);
+    const current = days.get(key);
+    if (!current || new Date(timestamp).getTime() > new Date(current).getTime()) {
+      days.set(key, timestamp);
+    }
+  });
+
+  return days;
+};
+
+/** How many of the most recent records in a row came back zero. Counted
+ *  over the full history, not the charted window, so a patient who has
+ *  gone twenty records without a fall gets told twenty. */
+const countTrailingZeroRecords = (points: DomainTrendPoint[]): number => {
+  let streak = 0;
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    if (points[index].value !== 0) {
+      break;
+    }
+    streak += 1;
+  }
+  return streak;
 };
 
 export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTrendCard[] => {
@@ -416,6 +496,18 @@ export const buildPatientVisualizationCards = (
     }
   });
 
+  // "Had a followup, logged no fall" means zero falls — not missing
+  // data. The write side only posts a `fall` event when the count is
+  // above zero, so a patient who has honestly answered 0 at twenty
+  // records in a row had nothing at all in this bucket, and the card
+  // answered 未记录 — reading the best news he has to report as an
+  // omission on his part. Seed every day that carries a daily record
+  // with 0 and let the events below add on top. A day with neither
+  // stays absent, and *that* is what never-recorded looks like.
+  collectFollowupRecordDays(profile).forEach((timestamp, date) => {
+    fallBuckets.set(date, { timestamp, value: 0 });
+  });
+
   profile?.followupEvents.forEach((item) => {
     if (item.eventType !== 'fall') {
       return;
@@ -449,7 +541,10 @@ export const buildPatientVisualizationCards = (
 
   const sleepPoints = finalizeTrendPoints(sleepBuckets);
   const stairPoints = finalizeTrendPoints(stairBuckets);
-  const fallPoints = finalizeSummedPoints(fallBuckets);
+  // The streak sentence reads the full history; the chart still shows
+  // the same window as every other card.
+  const fallHistory = finalizeSummedPoints(fallBuckets, fallBuckets.size);
+  const fallPoints = fallHistory.slice(-CHART_POINT_LIMIT);
   const latestLegacyStairs = profile?.dailyImpacts.find((item) => item.adlKey === 'stairs') ?? null;
 
   const sleepCurrent = sleepPoints.length ? sleepPoints[sleepPoints.length - 1].value : null;
@@ -461,7 +556,7 @@ export const buildPatientVisualizationCards = (
 
   const sleepText = getSleepSummary(sleepCurrent, sleepPrevious);
   const stairText = getStairSummary(stairCurrent, stairPrevious, Boolean(latestLegacyStairs));
-  const fallText = getFallSummary(fallCurrent, fallPrevious);
+  const fallText = getFallSummary(fallCurrent, fallPrevious, countTrailingZeroRecords(fallHistory));
 
   return [
     {

@@ -1,17 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentProps } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  RefreshControl,
-  ScrollView,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import { plainAnswerText } from '../common/answer-format';
+import Button from '../common/Button';
+import SegmentedControl from '../common/SegmentedControl';
+import Icon from '../common/Icon';
 import {
   ApiError,
   deletePatientDocument,
@@ -19,10 +13,28 @@ import {
   type PatientDocument,
   type PatientProfile,
 } from '../../lib/api';
-import { CLINICAL_COLORS, CLINICAL_GRADIENTS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { COLOR } from '../../lib/design';
 import InlineNotice from '../common/feedback/InlineNotice';
-import ScreenBackButton from '../common/ScreenBackButton';
+import ScreenHeader from '../common/ScreenHeader';
+import { useAppDialog } from '../common/feedback/AppDialog';
 import styles from '../p-archive/styles';
+
+/**
+ * 报告管理 — a list of records, set as a record.
+ *
+ * The previous version opened with two stacked filled blocks (a hero
+ * whose body was copied verbatim from the section subtitle below it,
+ * then a stat panel), sat on a page gradient, and rendered each report
+ * as a 26pt-radius shadowed card containing three more boxes: a tinted
+ * icon square, three pill badges, and two filled date tiles. The one
+ * thing a patient comes here for — which report, from when — was the
+ * smallest type on screen.
+ *
+ * Now: one filled block (the counts), hairline-separated report rows,
+ * dates set as values rather than tiles, and a single pill left on the
+ * row — the OCR status, which is the only badge that reports a state
+ * rather than restating the title.
+ */
 
 type ReportCategory = '诊断' | '影像' | '呼吸' | '心脏' | '实验室' | '其他';
 
@@ -36,140 +48,43 @@ interface ReportCardMeta {
   uploadedDate: string;
   fileName: string;
   statusLabel: string;
-  icon: ComponentProps<typeof FontAwesome6>['name'];
-  iconColor: string;
-  iconBackground: string;
+  /** Semantic colour for the status pill — 识别失败 and 已识别 used to
+   *  render in the same teal, which made a failed parse invisible. */
+  statusTone: string;
+  icon: string;
 }
 
+/**
+ * Per-type icons are kept (they make a long list scannable) but the
+ * per-type colour and tint were dropped: a rainbow of purple/blue/red
+ * chips in tinted rounded squares was the loudest decoration on the
+ * screen, and the category is already written out next to it.
+ */
 const reportTypeCatalog: Record<
   string,
   {
     label: string;
     category: ReportCategory;
-    icon: ComponentProps<typeof FontAwesome6>['name'];
-    iconColor: string;
-    iconBackground: string;
+    icon: string;
   }
 > = {
-  genetic_report: {
-    label: '基因报告',
-    category: '诊断',
-    icon: 'dna',
-    iconColor: '#8B5CF6',
-    iconBackground: 'rgba(139, 92, 246, 0.12)',
-  },
-  mri: {
-    label: 'MRI 报告',
-    category: '影像',
-    icon: 'magnet',
-    iconColor: '#3B82F6',
-    iconBackground: 'rgba(59, 130, 246, 0.12)',
-  },
-  muscle_mri: {
-    label: '肌肉 MRI',
-    category: '影像',
-    icon: 'magnet',
-    iconColor: '#3B82F6',
-    iconBackground: 'rgba(59, 130, 246, 0.12)',
-  },
-  abdominal_ultrasound: {
-    label: '腹部超声',
-    category: '影像',
-    icon: 'wave-square',
-    iconColor: '#0F766E',
-    iconBackground: 'rgba(15, 118, 110, 0.12)',
-  },
-  diaphragm_ultrasound: {
-    label: '膈肌超声',
-    category: '呼吸',
-    icon: 'lungs',
-    iconColor: '#0EA5A4',
-    iconBackground: 'rgba(14, 165, 164, 0.12)',
-  },
-  pulmonary_function: {
-    label: '肺功能报告',
-    category: '呼吸',
-    icon: 'lungs',
-    iconColor: '#0EA5A4',
-    iconBackground: 'rgba(14, 165, 164, 0.12)',
-  },
-  ecg: {
-    label: '心电图',
-    category: '心脏',
-    icon: 'heart-pulse',
-    iconColor: '#DC2626',
-    iconBackground: 'rgba(220, 38, 38, 0.12)',
-  },
-  echocardiography: {
-    label: '心脏超声',
-    category: '心脏',
-    icon: 'heart',
-    iconColor: '#DC2626',
-    iconBackground: 'rgba(220, 38, 38, 0.12)',
-  },
-  biochemistry: {
-    label: '生化报告',
-    category: '实验室',
-    icon: 'flask',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  muscle_enzyme: {
-    label: '肌酶报告',
-    category: '实验室',
-    icon: 'flask',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  blood_routine: {
-    label: '血常规',
-    category: '实验室',
-    icon: 'droplet',
-    iconColor: '#B91C1C',
-    iconBackground: 'rgba(185, 28, 28, 0.12)',
-  },
-  thyroid_function: {
-    label: '甲功报告',
-    category: '实验室',
-    icon: 'vial',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  coagulation: {
-    label: '凝血报告',
-    category: '实验室',
-    icon: 'shield-halved',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  urinalysis: {
-    label: '尿常规',
-    category: '实验室',
-    icon: 'vial',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  infection_screening: {
-    label: '感染筛查',
-    category: '实验室',
-    icon: 'shield-halved',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  stool_test: {
-    label: '粪便/幽门检测',
-    category: '实验室',
-    icon: 'microscope',
-    iconColor: '#C2410C',
-    iconBackground: 'rgba(194, 65, 12, 0.12)',
-  },
-  other: {
-    label: '医学报告',
-    category: '其他',
-    icon: 'file-medical',
-    iconColor: CLINICAL_COLORS.accentStrong,
-    iconBackground: CLINICAL_TINTS.accentSoft,
-  },
+  genetic_report: { label: '基因报告', category: '诊断', icon: 'dna' },
+  mri: { label: 'MRI 报告', category: '影像', icon: 'magnet' },
+  muscle_mri: { label: '肌肉 MRI', category: '影像', icon: 'magnet' },
+  abdominal_ultrasound: { label: '腹部超声', category: '影像', icon: 'wave-square' },
+  diaphragm_ultrasound: { label: '膈肌超声', category: '呼吸', icon: 'lungs' },
+  pulmonary_function: { label: '肺功能报告', category: '呼吸', icon: 'lungs' },
+  ecg: { label: '心电图', category: '心脏', icon: 'heart-pulse' },
+  echocardiography: { label: '心脏超声', category: '心脏', icon: 'heart' },
+  biochemistry: { label: '生化报告', category: '实验室', icon: 'flask' },
+  muscle_enzyme: { label: '肌酶报告', category: '实验室', icon: 'flask' },
+  blood_routine: { label: '血常规', category: '实验室', icon: 'droplet' },
+  thyroid_function: { label: '甲功报告', category: '实验室', icon: 'vial' },
+  coagulation: { label: '凝血报告', category: '实验室', icon: 'shield-halved' },
+  urinalysis: { label: '尿常规', category: '实验室', icon: 'vial' },
+  infection_screening: { label: '感染筛查', category: '实验室', icon: 'shield-halved' },
+  stool_test: { label: '粪便/幽门检测', category: '实验室', icon: 'microscope' },
+  other: { label: '医学报告', category: '其他', icon: 'file-medical' },
 };
 
 const pickDocumentField = (document: PatientDocument, keys: string[]) => {
@@ -213,7 +128,7 @@ const formatCalendarDate = (value?: string | null) => {
   return `${year}.${month}.${day}`;
 };
 
-const getDocumentStatusLabel = (status?: string | null) => {
+const getDocumentStatus = (status?: string | null): { label: string; tone: string } => {
   switch (status) {
     // 'parsed' / 'needs_review' / 'parse_failed' are the async
     // pipeline's vocabulary (migration 011); the older values stay
@@ -221,16 +136,38 @@ const getDocumentStatusLabel = (status?: string | null) => {
     case 'processed':
     case 'completed':
     case 'parsed':
-      return '已识别';
+      return { label: '已识别', tone: COLOR.good };
     case 'needs_review':
-      return '待复核';
+      return { label: '待复核', tone: COLOR.warn };
     case 'processing':
-      return '识别中';
+      return { label: '识别中', tone: COLOR.inkMuted };
     case 'failed':
     case 'parse_failed':
-      return '识别失败';
+      return { label: '识别失败', tone: COLOR.alert };
     default:
-      return '已上传';
+      return { label: '已上传', tone: COLOR.inkMuted };
+  }
+};
+
+/** What a card says when the pipeline produced no summary line for it
+ *  yet. Mirrors `getDocumentStatus`'s vocabulary — the two must not
+ *  drift, which is the whole reason this is a function of the same
+ *  input rather than a constant. */
+const fallbackSummaryForStatus = (status?: string | null): string => {
+  switch (status) {
+    case 'processed':
+    case 'completed':
+    case 'parsed':
+      return '已完成识别，可进入详情页查看识别出的关键指标。';
+    case 'needs_review':
+      return '识别完成，但有指标需要你核对一下。';
+    case 'processing':
+      return '正在识别，通常需要 1-2 分钟，完成后这里会自动更新。';
+    case 'failed':
+    case 'parse_failed':
+      return '这份没能识别出来，可以在详情页重新识别或换一张更清晰的图。';
+    default:
+      return '已上传，等待识别。';
   }
 };
 
@@ -243,19 +180,35 @@ const buildReportCardMeta = (document: PatientDocument): ReportCardMeta => {
   const label =
     pickDocumentField(document, ['reportTypeLabel', 'report_type_label']) || catalogMeta.label;
   const title = document.title?.trim() || label;
-  const summary =
-    pickDocumentField(document, [
-      'aiSummary',
-      'ai_summary',
-      'reportImpression',
-      'report_impression',
-      'ecgSummary',
-      'ecg_summary',
-      'echoSummary',
-      'echo_summary',
-      'ventilatoryPattern',
-      'ventilatory_pattern',
-    ]) || '已完成识别，可进入详情页查看识别出的关键指标。';
+  const status = getDocumentStatus(document.status);
+  const extracted = pickDocumentField(document, [
+    'aiSummary',
+    'ai_summary',
+    'reportImpression',
+    'report_impression',
+    'ecgSummary',
+    'ecg_summary',
+    'echoSummary',
+    'echo_summary',
+    'ventilatoryPattern',
+    'ventilatory_pattern',
+  ]);
+  // The fallback has to answer to the status beside it.
+  //
+  // It used to be one unconditional sentence —「已完成识别，可进入详情
+  // 页查看识别出的关键指标。」— chosen for the case where a report
+  // parsed but produced no impression worth quoting. Every other case
+  // got it too, so a card whose chip read 识别中 sat directly above a
+  // line telling the patient recognition had finished, and a card that
+  // had failed said the same thing. Two states, one sentence, and the
+  // sentence was right for neither.
+  // Flattened, not block-rendered: this card clamps to three lines and
+  // `numberOfLines` does not cross the <View> stack AnswerText builds,
+  // so dropping AnswerText in here would silently remove the clamp and
+  // let one card push the next off screen. The syntax goes instead.
+  const summary = extracted
+    ? plainAnswerText(extracted)
+    : fallbackSummaryForStatus(document.status);
 
   return {
     id: document.id,
@@ -266,15 +219,15 @@ const buildReportCardMeta = (document: PatientDocument): ReportCardMeta => {
     reportDate: pickDocumentField(document, ['reportTime', 'report_time']) ?? null,
     uploadedDate: document.uploadedAt,
     fileName: document.fileName?.trim() || '未命名文件',
-    statusLabel: getDocumentStatusLabel(document.status),
+    statusLabel: status.label,
+    statusTone: status.tone,
     icon: catalogMeta.icon,
-    iconColor: catalogMeta.iconColor,
-    iconBackground: catalogMeta.iconBackground,
   };
 };
 
 export default function ReportManagementScreen() {
   const router = useRouter();
+  const { confirm } = useAppDialog();
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [activeReportCategory, setActiveReportCategory] = useState<'全部' | ReportCategory>('全部');
   const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
@@ -325,7 +278,10 @@ export default function ReportManagementScreen() {
     }, []),
   );
 
-  const displayName = profile?.preferredName?.trim() || profile?.fullName?.trim() || '系统检测报告';
+  // Whose record this is. Falls back to nothing rather than to a
+  // stand-in string: the old '系统检测报告' placeholder sat under a
+  // page title that already said the same thing.
+  const patientName = profile?.preferredName?.trim() || profile?.fullName?.trim() || null;
   const reportCards = useMemo(
     () =>
       [...(profile?.documents ?? [])]
@@ -390,27 +346,28 @@ export default function ReportManagementScreen() {
     }
   };
 
-  const confirmDeleteReport = (report: ReportCardMeta) => {
-    Alert.alert('删除报告', `确认删除“${report.title}”吗？删除后会从时间轴和汇总视图中移除。`, [
-      { text: '取消', style: 'cancel' },
-      {
-        text: deletingReportId === report.id ? '删除中...' : '删除',
-        style: 'destructive',
-        onPress: () => {
-          runDeleteReport(report.id).catch(() => undefined);
-        },
-      },
-    ]);
+  /** Deleting a report is irreversible and, on web, used to be
+   *  unconfirmed: `Alert.alert` is an empty function there, so the row
+   *  simply vanished on the first press. The in-flight label stays on
+   *  the row button — the dialog is built fresh each time it opens and
+   *  the only way in is a button that's disabled mid-delete. */
+  const confirmDeleteReport = async (report: ReportCardMeta) => {
+    if (deletingReportId) return;
+    const confirmed = await confirm({
+      title: '删除报告',
+      message: `确认删除“${report.title}”吗？删除后会从时间轴和汇总视图中移除。`,
+      confirmLabel: '删除',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    await runDeleteReport(report.id);
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <LinearGradient
-        colors={CLINICAL_GRADIENTS.page}
-        style={styles.backgroundGradient}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
+      {/* Plain paper. The page gradient was decorative and cost every
+          surface above it contrast. */}
+      <View style={styles.backgroundGradient}>
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -419,148 +376,120 @@ export default function ReportManagementScreen() {
             <RefreshControl
               refreshing={isRefreshing}
               onRefresh={() => loadData(true).catch(() => undefined)}
-              tintColor={CLINICAL_COLORS.accentStrong}
+              tintColor={COLOR.accent}
             />
           }
         >
+          {/* The REPORT MANAGEMENT eyebrow is gone: it translated the
+              title sitting directly beneath it. Title + back + home now
+              come from ScreenHeader so every stack screen exits the
+              same way; 添加报告 and the patient name keep the row
+              below, which is still one row rather than the two the
+              original layout spent. */}
           <View style={styles.header}>
-            <View style={styles.headerLead}>
-              <ScreenBackButton fallbackHref="/p-home" />
-              <View>
-                <Text style={styles.eyebrow}>REPORT MANAGEMENT</Text>
-                <Text style={styles.pageTitle}>报告管理</Text>
+            <ScreenHeader title="报告管理" fallbackHref="/p-home" style={styles.screenHeaderRow} />
+            <View style={styles.headerTopRow}>
+              <View style={styles.headerLead}>
+                {patientName ? <Text style={styles.pageSubtitle}>{patientName}</Text> : null}
               </View>
+              <Button
+                label="添加报告"
+                icon="plus"
+                variant="prominent"
+                compact
+                onPress={() => router.push('/p-data_entry')}
+              />
             </View>
             {listNotice ? <InlineNotice message={listNotice} /> : null}
-            {/* No「我的档案」shortcut here: the back button already
-                returns to the archive — one hub, one way back. */}
-            <View style={styles.headerActions}>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                activeOpacity={0.88}
-                onPress={() => router.push('/p-data_entry')}
-              >
-                <FontAwesome6 name="plus" size={12} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>添加报告</Text>
-              </TouchableOpacity>
-            </View>
           </View>
 
-          <View style={styles.section}>
-            <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.heroCard}>
-              <Text style={styles.heroEyebrow}>系统检测报告</Text>
-              <Text style={styles.heroTitle}>{displayName}</Text>
-              <Text style={styles.heroSummary}>
-                按分类和日期整理全部系统检测报告，支持查看详情、继续新增和直接删除。
-              </Text>
-            </LinearGradient>
-          </View>
+          {/* The one filled block on this screen. 已覆盖分类 was dropped:
+              it counted the filter chips rendered immediately below it.
+
+              Suppressed on a failed load, matching the empty-list
+              branch further down that already had this guard: the
+              catch nulls the profile, so a failed refresh rendered
+              「0 报告总数 / 0 已识别 / 还没有上传系统检测报告」 directly
+              above the 加载失败 notice — the page contradicting itself,
+              in the direction that says the patient's uploads are
+              gone. */}
+          {errorMessage ? null : (
+            <View style={styles.section}>
+              <View style={styles.reportHeroCard}>
+                <View style={styles.reportStatGrid}>
+                  <View style={styles.reportStatCard}>
+                    <Text style={styles.reportStatValue}>{reportCards.length}</Text>
+                    <Text style={styles.reportStatLabel}>报告总数</Text>
+                  </View>
+                  <View style={styles.reportStatCard}>
+                    <Text style={styles.reportStatValue}>{recognizedReportCount}</Text>
+                    <Text style={styles.reportStatLabel}>已识别</Text>
+                  </View>
+                </View>
+                <Text style={styles.reportHeroMeta}>
+                  {latestReportDate
+                    ? `最近一份报告 ${formatCalendarDate(latestReportDate)}`
+                    : '还没有上传系统检测报告'}
+                </Text>
+              </View>
+            </View>
+          )}
 
           {errorMessage ? (
             <View style={styles.section}>
               <View style={styles.stateWrap}>
                 <Text style={styles.stateText}>{errorMessage}</Text>
-                <TouchableOpacity
-                  style={styles.primaryButton}
-                  activeOpacity={0.88}
+                <Button
+                  label="重新加载"
+                  icon="rotate-right"
                   onPress={() => loadData().catch(() => undefined)}
-                >
-                  <Text style={styles.primaryButtonText}>重新加载</Text>
-                </TouchableOpacity>
+                />
               </View>
             </View>
           ) : null}
 
+          {/* 报告清单 heading dropped along with its subtitle: the page
+              title names the list, and the subtitle was the same
+              sentence as the hero body it sat under. */}
           <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>报告清单</Text>
-                <Text style={styles.sectionSubtitle}>
-                  按分类和日期整理，支持查看详情、继续新增和直接删除。
-                </Text>
-              </View>
-            </View>
-
-            <LinearGradient colors={CLINICAL_GRADIENTS.surface} style={styles.reportHeroCard}>
-              <View style={styles.reportStatGrid}>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>{reportCards.length}</Text>
-                  <Text style={styles.reportStatLabel}>报告总数</Text>
-                </View>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>{reportCategoryOptions.length - 1}</Text>
-                  <Text style={styles.reportStatLabel}>已覆盖分类</Text>
-                </View>
-                <View style={styles.reportStatCard}>
-                  <Text style={styles.reportStatValue}>{recognizedReportCount}</Text>
-                  <Text style={styles.reportStatLabel}>已识别</Text>
-                </View>
-              </View>
-              <Text style={styles.reportHeroMeta}>
-                {latestReportDate
-                  ? `最近一份报告日期 ${formatCalendarDate(latestReportDate)}`
-                  : '还没有上传系统检测报告'}
-              </Text>
-            </LinearGradient>
-
-            <View style={styles.categoryFilterWrap}>
-              {reportCategoryOptions.map((item) => {
-                const active = activeReportCategory === item.label;
-                return (
-                  <TouchableOpacity
-                    key={item.label}
-                    style={[styles.categoryChip, active && styles.categoryChipActive]}
-                    activeOpacity={0.88}
-                    onPress={() => setActiveReportCategory(item.label)}
-                  >
-                    <Text
-                      style={[styles.categoryChipText, active && styles.categoryChipTextActive]}
-                    >
-                      {item.label}
-                    </Text>
-                    <View
-                      style={[styles.categoryChipCount, active && styles.categoryChipCountActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.categoryChipCountText,
-                          active && styles.categoryChipCountTextActive,
-                        ]}
-                      >
-                        {item.count}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* One exclusive choice, so one track — see
+                SegmentedControl. The per-category count rides in the
+                label rather than as a second line of type: a count is
+                what makes「其他 0」worth not tapping, and it was the
+                reason this row had to be a pill in the first place. */}
+            <SegmentedControl
+              segments={reportCategoryOptions.map((item) => ({
+                key: item.label,
+                label: `${item.label} ${item.count}`,
+              }))}
+              value={activeReportCategory}
+              onChange={(key) => setActiveReportCategory(key as typeof activeReportCategory)}
+              accessibilityLabel="报告分类"
+              style={styles.categoryControl}
+            />
 
             {visibleReportCards.length ? (
               <View style={styles.reportManagerList}>
                 {visibleReportCards.map((item) => (
                   <View key={item.id} style={styles.reportManagerCard}>
                     <View style={styles.reportManagerHeader}>
-                      <View
-                        style={[styles.reportIconWrap, { backgroundColor: item.iconBackground }]}
-                      >
-                        <FontAwesome6 name={item.icon} size={16} color={item.iconColor} />
-                      </View>
-
-                      <View style={styles.reportManagerHeaderMain}>
-                        <View style={styles.reportBadgeRow}>
-                          <View style={styles.reportCategoryBadge}>
-                            <Text style={styles.reportCategoryBadgeText}>{item.category}</Text>
-                          </View>
-                          <View style={styles.reportTypeBadge}>
-                            <Text style={styles.reportTypeBadgeText}>{item.label}</Text>
-                          </View>
-                          <View style={styles.reportStatusBadge}>
-                            <Text style={styles.reportStatusBadgeText}>{item.statusLabel}</Text>
-                          </View>
-                        </View>
-                        <Text style={styles.reportManagerTitle}>{item.title}</Text>
+                      {/* Bare icon — it used to sit in a tinted rounded
+                          square in one of nine different hues. */}
+                      <Icon name={item.icon} size={14} color={COLOR.inkMuted} />
+                      <Text style={styles.reportManagerTitle}>{item.title}</Text>
+                      <View style={[styles.reportStatusBadge, { borderColor: item.statusTone }]}>
+                        <Text style={[styles.reportStatusBadgeText, { color: item.statusTone }]}>
+                          {item.statusLabel}
+                        </Text>
                       </View>
                     </View>
+
+                    {/* Category and type were two separate pills that
+                        only ever restated the catalog entry; one muted
+                        line carries both. */}
+                    <Text style={styles.reportManagerMeta}>
+                      {item.category} · {item.label}
+                    </Text>
 
                     <View style={styles.reportDateRow}>
                       <View style={styles.reportDateCard}>
@@ -577,48 +506,66 @@ export default function ReportManagementScreen() {
                       </View>
                     </View>
 
-                    <Text style={styles.reportManagerSummary}>{item.summary}</Text>
-                    <Text style={styles.reportFileText}>{item.fileName}</Text>
+                    <Text style={styles.reportManagerSummary} numberOfLines={3}>
+                      {item.summary}
+                    </Text>
+                    <Text style={styles.reportFileText} numberOfLines={1}>
+                      {item.fileName}
+                    </Text>
 
                     <View style={styles.reportActionRow}>
-                      <TouchableOpacity
-                        style={styles.reportPrimaryAction}
-                        activeOpacity={0.88}
+                      <Button
+                        label="查看详情"
+                        variant="tinted"
+                        compact
                         onPress={() => openReportDetail(item.id)}
-                      >
-                        <FontAwesome6 name="arrow-up-right-from-square" size={12} color="#FFFFFF" />
-                        <Text style={styles.reportPrimaryActionText}>查看详情</Text>
-                      </TouchableOpacity>
+                      />
 
-                      <TouchableOpacity
-                        style={styles.reportGhostAction}
-                        activeOpacity={0.88}
-                        disabled={deletingReportId === item.id}
-                        onPress={() => confirmDeleteReport(item)}
-                      >
-                        <FontAwesome6 name="trash-can" size={12} color={CLINICAL_COLORS.danger} />
-                        <Text style={styles.reportGhostActionText}>
-                          {deletingReportId === item.id ? '删除中...' : '删除'}
-                        </Text>
-                      </TouchableOpacity>
+                      {/* Its neighbour moved to Button and this one
+                          didn't — the same row, two different kinds of
+                          control, and the destructive one was the
+                          hand-rolled half with no accessibilityRole. */}
+                      <Button
+                        label="删除"
+                        icon="trash-can"
+                        variant="destructive"
+                        compact
+                        busy={deletingReportId === item.id}
+                        accessibilityLabel={`删除${item.title}`}
+                        onPress={() => {
+                          void confirmDeleteReport(item);
+                        }}
+                      />
                     </View>
                   </View>
                 ))}
               </View>
-            ) : (
+            ) : errorMessage ? null : (
+              // Suppressed while `errorMessage` is set: the catch in
+              // loadData nulls the profile, so a failed request and an
+              // empty account produce the identical empty list — and
+              // the page was stacking「加载失败」on top of「还没有上传
+              // 报告」, which is the app telling the patient their
+              // uploads are gone.
               <View style={styles.stateWrap}>
                 <Text style={styles.stateText}>
                   {activeReportCategory === '全部'
                     ? '还没有上传报告，进入「记录数据」页添加后，这里会自动按分类和时间整理。'
                     : `当前没有“${activeReportCategory}”分类的报告。`}
                 </Text>
-                <TouchableOpacity
-                  style={styles.primaryButton}
-                  activeOpacity={0.88}
+                {/* Tinted: the header's 添加报告 is already on screen,
+                    filled, going to the same place. Two filled accent
+                    buttons with one destination was every new user's
+                    first view of this screen. The header's is the
+                    standing primary across all filter states; this one
+                    sits under a sentence that explains it and doesn't
+                    need fill to be found. */}
+                <Button
+                  label="去添加报告"
+                  icon="plus"
+                  variant="tinted"
                   onPress={() => router.push('/p-data_entry')}
-                >
-                  <Text style={styles.primaryButtonText}>去添加报告</Text>
-                </TouchableOpacity>
+                />
               </View>
             )}
           </View>
@@ -626,11 +573,11 @@ export default function ReportManagementScreen() {
 
         {isLoading ? (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator color={CLINICAL_COLORS.accentStrong} />
+            <ActivityIndicator color={COLOR.accent} />
             <Text style={styles.loadingText}>正在整理报告管理视图...</Text>
           </View>
         ) : null}
-      </LinearGradient>
+      </View>
     </SafeAreaView>
   );
 }

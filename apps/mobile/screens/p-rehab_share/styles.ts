@@ -1,15 +1,11 @@
-
-
-import { StyleSheet, Dimensions, Platform } from 'react-native';
-
-const { width } = Dimensions.get('window');
+import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0F0F23',
   },
-  
+
   // 顶部导航栏
   header: {
     flexDirection: 'row',
@@ -52,12 +48,12 @@ export default StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  
+
   // 滚动视图
   scrollView: {
     flex: 1,
   },
-  
+
   // 视频播放器区域
   videoPlayerSection: {
     marginHorizontal: 24,
@@ -137,7 +133,7 @@ export default StyleSheet.create({
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.9)',
   },
-  
+
   // 视频控制栏
   videoControls: {
     padding: 16,
@@ -167,7 +163,7 @@ export default StyleSheet.create({
   fullscreenButton: {
     padding: 4,
   },
-  
+
   // 进度条
   progressContainer: {
     flexDirection: 'row',
@@ -190,7 +186,7 @@ export default StyleSheet.create({
     backgroundColor: '#969FFF',
     borderRadius: 2,
   },
-  
+
   // 动作捕捉纠错提示
   actionCorrectionSection: {
     marginHorizontal: 24,
@@ -240,7 +236,7 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.7)',
   },
-  
+
   // 视频列表区域
   videoListSection: {
     marginHorizontal: 24,
@@ -272,7 +268,7 @@ export default StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  
+
   // 视频列表
   videoList: {
     gap: 12,
@@ -373,7 +369,7 @@ export default StyleSheet.create({
     fontSize: 10,
     color: 'rgba(255, 255, 255, 0.5)',
   },
-  
+
   // 模态框通用样式
   modalOverlay: {
     flex: 1,
@@ -381,7 +377,7 @@ export default StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
   },
-  
+
   // 上传视频弹窗
   uploadModal: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -460,7 +456,7 @@ export default StyleSheet.create({
     fontSize: 16,
     color: 'rgba(255, 255, 255, 0.7)',
   },
-  
+
   // 上传进度弹窗
   progressModal: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -519,7 +515,7 @@ export default StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.5)',
   },
-  
+
   // 成功提示
   successToast: {
     position: 'absolute',
@@ -563,4 +559,3 @@ export default StyleSheet.create({
     color: '#FFFFFF',
   },
 });
-

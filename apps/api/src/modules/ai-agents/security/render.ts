@@ -54,6 +54,8 @@ const scopeForSource = (source: string): RedactionScope | null => {
       return 'profile';
     case 'patient_reports':
       return 'reports';
+    case 'patient_followups':
+      return 'followups';
     default:
       return null;
   }
@@ -101,9 +103,37 @@ const REPORT_FIELD_LABELS: Record<string, string> = {
   findings_summary: '影像/报告印象',
 };
 
+const FOLLOWUP_FIELD_LABELS: Record<string, string> = {
+  metricKey: '指标键',
+  metricLabel: '指标',
+  count: '记录次数',
+  countAtCap: '记录次数已达上限(实际更多)',
+  spanDays: '跨度(天)',
+  unableSummary: '无法完成的记录',
+  changeDirection: '变化方向',
+  latestBand: '最近变化',
+  unit: '单位',
+  latestValue: '最近数值',
+  series: '历次记录',
+  eventSummary: '病程事件',
+  eventCount: '事件条数',
+};
+
+const SCOPE_HEADERS: Record<RedactionScope, string> = {
+  profile: '【患者基础档案】',
+  reports: '【患者报告】',
+  followups: '【患者随访记录】',
+};
+
+const SCOPE_LABELS: Record<RedactionScope, Record<string, string>> = {
+  profile: PROFILE_FIELD_LABELS,
+  reports: REPORT_FIELD_LABELS,
+  followups: FOLLOWUP_FIELD_LABELS,
+};
+
 const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionScope): string => {
-  const header = scope === 'profile' ? '【患者基础档案】' : '【患者报告】';
-  const labels = scope === 'profile' ? PROFILE_FIELD_LABELS : REPORT_FIELD_LABELS;
+  const header = SCOPE_HEADERS[scope];
+  const labels = SCOPE_LABELS[scope];
   const entries = Object.entries(fields);
   if (entries.length === 0) {
     return `${header}\n（无可用字段）`;

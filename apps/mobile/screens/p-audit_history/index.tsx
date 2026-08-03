@@ -8,7 +8,9 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { FontAwesome6 } from '@expo/vector-icons';
+import Button from '../common/Button';
+import SegmentedControl from '../common/SegmentedControl';
+import Icon from '../common/Icon';
 import {
   ApiError,
   type AiAuditEntry,
@@ -19,7 +21,7 @@ import {
   getMyAuditHistory,
   getMyConsentHistory,
 } from '../../lib/api';
-import { CLINICAL_COLORS } from '../../lib/clinical-visuals';
+import { COLOR, INTERACTION } from '../../lib/design';
 import ScreenBackButton from '../common/ScreenBackButton';
 import styles from './styles';
 
@@ -73,10 +75,19 @@ const STATUS_LABEL: Record<AiAuditStatus, string> = {
   consent_denied: '拒绝（未同意）',
 };
 
+/** Status is the only thing on this screen allowed to carry colour, so
+ *  the three states stay clearly apart: green / red / grey, each with
+ *  its matching wash for the chip behind it. */
 const STATUS_COLOR: Record<AiAuditStatus, string> = {
-  success: CLINICAL_COLORS.success,
-  error: CLINICAL_COLORS.warning,
-  consent_denied: CLINICAL_COLORS.textMuted,
+  success: COLOR.good,
+  error: COLOR.alert,
+  consent_denied: COLOR.inkMuted,
+};
+
+const STATUS_WASH: Record<AiAuditStatus, string> = {
+  success: COLOR.goodWash,
+  error: COLOR.alertWash,
+  consent_denied: 'transparent',
 };
 
 const CONSENT_LABEL: Record<string, string> = {
@@ -101,9 +112,15 @@ const CONSENT_SOURCE_LABEL: Record<ConsentEventSource, string> = {
 };
 
 const CONSENT_SOURCE_COLOR: Record<ConsentEventSource, string> = {
-  user: CLINICAL_COLORS.accent,
-  admin: CLINICAL_COLORS.warning,
-  system: CLINICAL_COLORS.textMuted,
+  user: COLOR.accent,
+  admin: COLOR.warn,
+  system: COLOR.inkMuted,
+};
+
+const CONSENT_SOURCE_WASH: Record<ConsentEventSource, string> = {
+  user: COLOR.accentWash,
+  admin: COLOR.warnWash,
+  system: 'transparent',
 };
 
 const formatRelative = (iso: string): string => {
@@ -131,83 +148,56 @@ const formatAbsolute = (iso: string): string => {
   return `${y}-${mo}-${d} ${h}:${mi}`;
 };
 
-const Chip = ({
-  label,
-  color = CLINICAL_COLORS.textMuted,
-  bg = CLINICAL_COLORS.panel,
-}: {
-  label: string;
-  color?: string;
-  bg?: string;
-}) => (
-  <View
-    style={{
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: 10,
-      backgroundColor: bg,
-      borderWidth: 1,
-      borderColor: CLINICAL_COLORS.border,
-    }}
-  >
-    <Text style={{ color, fontSize: 11, fontWeight: '600' }}>{label}</Text>
+/** Status / provenance badge. The only pill left on the screen — here
+ *  the shape carries meaning, which is the bar this system sets. */
+const StatusChip = ({ label, color, wash }: { label: string; color: string; wash: string }) => (
+  <View style={[styles.statusChip, { borderColor: color, backgroundColor: wash }]}>
+    <Text style={[styles.statusChipText, { color }]}>{label}</Text>
   </View>
 );
 
-const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
+/** One line of the AI call log.
+ *
+ *  Was a rounded card holding a grid of bordered mini-chips. Chips
+ *  bought nothing here — every one of them is a plain value, and a
+ *  dozen outlined boxes per entry is what made ten records fill three
+ *  screens. Metadata is now a dot-separated line; tool calls and
+ *  fields sit in a label/value column pair that aligns down the list. */
+const AuditRow = ({ entry }: { entry: AiAuditEntry }) => {
   const statusColor = STATUS_COLOR[entry.status];
   const consentLabel = CONSENT_LABEL[entry.consentLevel] ?? entry.consentLevel;
   const modeLabel = entry.redactionMode === 'precise' ? '精确模式' : '严格模式';
+  const footRight = [
+    (entry.historyMessageCount ?? 0) > 0 ? `携带上下文 ${entry.historyMessageCount} 条` : null,
+    entry.latencyMs != null ? `耗时 ${(entry.latencyMs / 1000).toFixed(1)}s` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <View
-      style={{
-        marginHorizontal: 16,
-        marginBottom: 10,
-        padding: 14,
-        borderRadius: 14,
-        backgroundColor: CLINICAL_COLORS.backgroundRaised,
-        borderWidth: 1,
-        borderColor: CLINICAL_COLORS.border,
-        gap: 8,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ color: CLINICAL_COLORS.text, fontSize: 13, fontWeight: '700' }}>
-          {formatRelative(entry.createdAt)}
-        </Text>
-        <View
-          style={{
-            paddingHorizontal: 8,
-            paddingVertical: 3,
-            borderRadius: 10,
-            backgroundColor: CLINICAL_COLORS.panel,
-            borderWidth: 1,
-            borderColor: statusColor,
-          }}
-        >
-          <Text style={{ color: statusColor, fontSize: 11, fontWeight: '700' }}>
-            {STATUS_LABEL[entry.status]}
-          </Text>
-        </View>
+    <View style={styles.entry}>
+      <View style={styles.entryHead}>
+        <Text style={styles.entryTime}>{formatRelative(entry.createdAt)}</Text>
+        <StatusChip
+          label={STATUS_LABEL[entry.status]}
+          color={statusColor}
+          wash={STATUS_WASH[entry.status]}
+        />
       </View>
 
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-        <Chip label={`同意 · ${consentLabel}`} />
-        <Chip label={modeLabel} />
-        {entry.usedPersonalData ? (
-          <Chip label="用到个人数据" color={CLINICAL_COLORS.accentStrong} />
-        ) : null}
-      </View>
+      <Text style={styles.metaText}>
+        {`同意 ${consentLabel} · ${modeLabel}`}
+        {entry.usedPersonalData ? <Text style={styles.metaAccent}>{' · 用到个人数据'}</Text> : null}
+      </Text>
 
       {entry.toolsCalled.length > 0 ? (
-        <View style={{ gap: 4 }}>
-          <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11 }}>调用工具</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            {entry.toolsCalled.map((tool) => {
+        <View style={styles.defRow}>
+          <Text style={styles.defLabel}>调用工具</Text>
+          <Text style={styles.defValue}>
+            {entry.toolsCalled.map((tool, index) => {
               const isError = tool.status === 'error';
-              // Show "name · chunks · ms" inline; failures get the
-              // warning colour so they jump out in a long list.
+              // Show "name · chunks · ms" inline; failures take the
+              // alert colour so they jump out in a long list.
               const detail = [
                 tool.chunkCount > 0 ? `${tool.chunkCount} 段` : null,
                 tool.latencyMs != null ? `${tool.latencyMs}ms` : null,
@@ -216,69 +206,37 @@ const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
                 .join(' · ');
               const label = detail ? `${tool.name} · ${detail}` : tool.name;
               return (
-                <Chip
-                  key={tool.toolCallId}
-                  label={label}
-                  color={isError ? CLINICAL_COLORS.warning : CLINICAL_COLORS.text}
-                />
+                <Text key={tool.toolCallId} style={isError ? styles.defValueAlert : undefined}>
+                  {index > 0 ? '\n' : ''}
+                  {label}
+                </Text>
               );
             })}
-          </View>
+          </Text>
         </View>
       ) : null}
 
       {entry.fieldsUsed.length > 0 ? (
-        <View style={{ gap: 4 }}>
-          <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 11 }}>使用字段</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-            {entry.fieldsUsed.map((field) => (
-              <Chip key={field} label={field} />
-            ))}
-          </View>
+        <View style={styles.defRow}>
+          <Text style={styles.defLabel}>使用字段</Text>
+          <Text style={styles.defValue}>{entry.fieldsUsed.join('、')}</Text>
         </View>
       ) : null}
 
       {entry.errorDetail ? (
-        <View
-          style={{
-            backgroundColor: CLINICAL_COLORS.panel,
-            padding: 8,
-            borderRadius: 8,
-            borderLeftWidth: 3,
-            borderLeftColor: CLINICAL_COLORS.warning,
-          }}
-        >
-          <Text
-            style={{ color: CLINICAL_COLORS.textSoft, fontSize: 11, lineHeight: 16 }}
-            numberOfLines={3}
-          >
+        <View style={styles.noteRow}>
+          <View style={[styles.noteStripe, styles.noteStripeAlert]} />
+          <Text style={styles.noteText} numberOfLines={3}>
             {humanizeAiErrorDetail(entry.errorDetail)}
           </Text>
         </View>
       ) : null}
 
-      <View
-        style={{
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          paddingTop: 6,
-          borderTopWidth: 1,
-          borderTopColor: CLINICAL_COLORS.border,
-        }}
-      >
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
+      <View style={styles.footRow}>
+        <Text style={styles.footText} numberOfLines={1}>
           {entry.llmProvider} · {entry.llmModel}
         </Text>
-        {(entry.historyMessageCount ?? 0) > 0 ? (
-          <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
-            携带上下文 {entry.historyMessageCount} 条
-          </Text>
-        ) : null}
-        {entry.latencyMs != null ? (
-          <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
-            耗时 {(entry.latencyMs / 1000).toFixed(1)}s
-          </Text>
-        ) : null}
+        {footRight ? <Text style={styles.footTextRight}>{footRight}</Text> : null}
       </View>
     </View>
   );
@@ -286,87 +244,47 @@ const AuditCard = ({ entry }: { entry: AiAuditEntry }) => {
 
 /** Render one row from `ai_consent_events`. The from→to arrow is the
  *  whole point of this view: per-flag `_at` timestamps on
- *  patient_profiles only retain the latest transition, so this card
+ *  patient_profiles only retain the latest transition, so this row
  *  is where re-toggles become visible. */
-const ConsentEventCard = ({ event }: { event: ConsentEvent }) => {
+const ConsentEventRow = ({ event }: { event: ConsentEvent }) => {
   const flagLabel = CONSENT_FLAG_LABEL[event.flagName] ?? event.flagName;
   const sourceLabel = CONSENT_SOURCE_LABEL[event.source] ?? event.source;
-  const sourceColor = CONSENT_SOURCE_COLOR[event.source] ?? CLINICAL_COLORS.textMuted;
+  const sourceColor = CONSENT_SOURCE_COLOR[event.source] ?? COLOR.inkMuted;
+  const sourceWash = CONSENT_SOURCE_WASH[event.source] ?? 'transparent';
   const fromLabel = event.fromValue ? '开' : '关';
   const toLabel = event.toValue ? '开' : '关';
-  const directionColor = event.toValue ? CLINICAL_COLORS.success : CLINICAL_COLORS.warning;
+  const directionColor = event.toValue ? COLOR.good : COLOR.warn;
 
   return (
-    <View
-      style={{
-        marginHorizontal: 16,
-        marginBottom: 10,
-        padding: 14,
-        borderRadius: 14,
-        backgroundColor: CLINICAL_COLORS.backgroundRaised,
-        borderWidth: 1,
-        borderColor: CLINICAL_COLORS.border,
-        gap: 8,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ color: CLINICAL_COLORS.text, fontSize: 13, fontWeight: '700' }}>
+    <View style={styles.entry}>
+      <View style={styles.entryHead}>
+        <Text style={styles.entryTitle} numberOfLines={1}>
           {flagLabel}
         </Text>
-        <View
-          style={{
-            paddingHorizontal: 8,
-            paddingVertical: 3,
-            borderRadius: 10,
-            backgroundColor: CLINICAL_COLORS.panel,
-            borderWidth: 1,
-            borderColor: sourceColor,
-          }}
-        >
-          <Text style={{ color: sourceColor, fontSize: 11, fontWeight: '700' }}>{sourceLabel}</Text>
-        </View>
+        <StatusChip label={sourceLabel} color={sourceColor} wash={sourceWash} />
       </View>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Chip label={fromLabel} />
-        <FontAwesome6 name="arrow-right" size={11} color={CLINICAL_COLORS.textMuted} />
-        <Chip label={toLabel} color={directionColor} bg={CLINICAL_COLORS.panel} />
+      {/* The transition is the record. Both halves get value weight,
+          and only the new state is coloured — the old one has already
+          stopped being true. */}
+      <View style={styles.transitionRow}>
+        <Text style={styles.transitionFrom}>{fromLabel}</Text>
+        <Icon name="arrow-right" size={11} color={COLOR.inkFaint} />
+        <Text style={[styles.transitionTo, { color: directionColor }]}>{toLabel}</Text>
       </View>
 
       {event.note ? (
-        <View
-          style={{
-            backgroundColor: CLINICAL_COLORS.panel,
-            padding: 8,
-            borderRadius: 8,
-            borderLeftWidth: 3,
-            borderLeftColor: CLINICAL_COLORS.textMuted,
-          }}
-        >
-          <Text
-            style={{ color: CLINICAL_COLORS.textSoft, fontSize: 11, lineHeight: 16 }}
-            numberOfLines={3}
-          >
+        <View style={styles.noteRow}>
+          <View style={styles.noteStripe} />
+          <Text style={styles.noteText} numberOfLines={3}>
             {event.note}
           </Text>
         </View>
       ) : null}
 
-      <View
-        style={{
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          paddingTop: 6,
-          borderTopWidth: 1,
-          borderTopColor: CLINICAL_COLORS.border,
-        }}
-      >
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
-          {formatRelative(event.changedAt)}
-        </Text>
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 10 }}>
-          {formatAbsolute(event.changedAt)}
-        </Text>
+      <View style={styles.footRow}>
+        <Text style={styles.footText}>{formatRelative(event.changedAt)}</Text>
+        <Text style={styles.footTextRight}>{formatAbsolute(event.changedAt)}</Text>
       </View>
     </View>
   );
@@ -382,25 +300,14 @@ const TabButton = ({
   onPress: () => void;
 }) => (
   <TouchableOpacity
+    accessibilityRole="tab"
+    accessibilityState={{ selected: active }}
+    aria-selected={active}
     onPress={onPress}
-    style={{
-      flex: 1,
-      paddingVertical: 10,
-      alignItems: 'center',
-      borderBottomWidth: 2,
-      borderBottomColor: active ? CLINICAL_COLORS.accent : 'transparent',
-    }}
-    activeOpacity={0.7}
+    style={[styles.tabButton, active && styles.tabButtonActive]}
+    activeOpacity={INTERACTION.pressOpacity}
   >
-    <Text
-      style={{
-        color: active ? CLINICAL_COLORS.text : CLINICAL_COLORS.textMuted,
-        fontSize: 13,
-        fontWeight: active ? '700' : '500',
-      }}
-    >
-      {label}
-    </Text>
+    <Text style={[styles.tabButtonText, active && styles.tabButtonTextActive]}>{label}</Text>
   </TouchableOpacity>
 );
 
@@ -565,83 +472,71 @@ const AuditHistoryScreen = () => {
     { value: 'precise_values', label: '精确数值' },
   ];
 
+  /**
+   * One exclusive filter, drawn as one track.
+   *
+   * These were independent pills — the shape iOS uses for multi-select
+   * tags — so nothing said that picking 「成功」 replaces 「全部」 rather
+   * than adding to it. They also carried no accessibilityRole and no
+   * selected state, so a screen reader could not say which filter was
+   * on.
+   */
   const renderFilterChips = <T extends string>(
     chips: Array<{ value: T; label: string }>,
     active: T,
     onSelect: (value: T) => void,
+    accessibilityLabel: string,
   ) => (
-    <View style={styles.filterChipRow}>
-      {chips.map((chip) => (
-        <TouchableOpacity
-          key={chip.value}
-          style={[styles.filterChip, active === chip.value && styles.filterChipActive]}
-          activeOpacity={0.85}
-          onPress={() => onSelect(chip.value)}
-        >
-          <Text
-            style={[styles.filterChipText, active === chip.value && styles.filterChipTextActive]}
-          >
-            {chip.label}
-          </Text>
-        </TouchableOpacity>
-      ))}
-    </View>
+    <SegmentedControl
+      segments={chips.map((chip) => ({ key: chip.value, label: chip.label }))}
+      value={active}
+      onChange={(key) => onSelect(key as T)}
+      accessibilityLabel={accessibilityLabel}
+      style={styles.filterControl}
+    />
   );
 
   const renderAiBody = () => {
     if (aiLoading) {
       return (
-        <View style={{ paddingVertical: 60, alignItems: 'center' }}>
-          <ActivityIndicator color={CLINICAL_COLORS.accent} />
-          <Text style={{ marginTop: 10, color: CLINICAL_COLORS.textMuted, fontSize: 12 }}>
-            加载中...
-          </Text>
+        <View style={styles.stateBlock}>
+          <ActivityIndicator color={COLOR.accent} />
+          <Text style={styles.stateText}>加载中...</Text>
         </View>
       );
     }
     if (aiError) {
       return (
-        <View style={{ paddingVertical: 40, paddingHorizontal: 24, alignItems: 'center' }}>
-          <FontAwesome6 name="triangle-exclamation" size={20} color={CLINICAL_COLORS.warning} />
-          <Text
-            style={{
-              marginTop: 10,
-              color: CLINICAL_COLORS.textSoft,
-              fontSize: 13,
-              textAlign: 'center',
-            }}
-          >
-            {aiError}
-          </Text>
-          <TouchableOpacity
+        <View style={styles.stateBlock}>
+          <Icon name="triangle-exclamation" size={20} color={COLOR.alert} />
+          <Text style={styles.stateText}>{aiError}</Text>
+          <Button
+            label="重试"
+            icon="rotate-right"
+            variant="tinted"
+            compact
             onPress={() => fetchAiPage('initial')}
-            style={{
-              marginTop: 12,
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 18,
-              backgroundColor: CLINICAL_COLORS.accent,
-            }}
-          >
-            <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>重试</Text>
-          </TouchableOpacity>
+          />
         </View>
       );
     }
     if (aiItems.length === 0) {
       return (
-        <View style={{ paddingVertical: 60, paddingHorizontal: 32, alignItems: 'center' }}>
-          <FontAwesome6 name="file-shield" size={20} color={CLINICAL_COLORS.textMuted} />
-          <Text
-            style={{
-              marginTop: 10,
-              color: CLINICAL_COLORS.textMuted,
-              fontSize: 13,
-              textAlign: 'center',
-              lineHeight: 20,
-            }}
-          >
-            还没有任何 AI 调用记录。在「智能问答」里问一次问题，这里就会出现一条记录。
+        <View style={styles.stateBlock}>
+          <Icon name="file-shield" size={20} color={COLOR.inkMuted} />
+          {/* Naming only 问答 sent people looking for a tab that no
+              longer exists, and it understated the log: the in-page
+              「这什么意思」drawer is now the main way questions get
+              asked, and every one of those lands here too. */}
+          {/* An active filter changes what "empty" means. Telling a
+              patient「还没有任何 AI 调用记录」while a 状态 filter is
+              narrowing the list says their audit trail is gone — on the
+              one screen whose whole purpose is showing them it is not.
+              The route back is the filter, not the ask flow. */}
+          <Text style={styles.stateText}>
+            {aiStatusFilter === 'all'
+              ? '还没有任何 AI 调用记录。在页面里点「这什么意思」问一次，或去「问答」提问，这里就会出现一条记录。'
+              : '当前筛选条件下没有记录。把状态切回「全部」就能看到其余记录。'}
           </Text>
         </View>
       );
@@ -649,28 +544,16 @@ const AuditHistoryScreen = () => {
     return (
       <>
         {aiItems.map((entry) => (
-          <AuditCard key={entry.id} entry={entry} />
+          <AuditRow key={entry.id} entry={entry} />
         ))}
         {aiHasMore ? (
-          <TouchableOpacity
-            disabled={aiLoadingMore}
+          <Button
+            label="加载更多"
+            variant="tinted"
+            fullWidth
+            busy={aiLoadingMore}
             onPress={() => fetchAiPage('more')}
-            style={{
-              marginHorizontal: 16,
-              marginBottom: 24,
-              paddingVertical: 10,
-              borderRadius: 14,
-              alignItems: 'center',
-              borderWidth: 1,
-              borderColor: CLINICAL_COLORS.border,
-              backgroundColor: CLINICAL_COLORS.panel,
-              opacity: aiLoadingMore ? 0.6 : 1,
-            }}
-          >
-            <Text style={{ color: CLINICAL_COLORS.text, fontSize: 12, fontWeight: '600' }}>
-              {aiLoadingMore ? '加载中...' : '加载更多'}
-            </Text>
-          </TouchableOpacity>
+          />
         ) : null}
       </>
     );
@@ -679,67 +562,50 @@ const AuditHistoryScreen = () => {
   const renderConsentBody = () => {
     if (consentLoading) {
       return (
-        <View style={{ paddingVertical: 60, alignItems: 'center' }}>
-          <ActivityIndicator color={CLINICAL_COLORS.accent} />
-          <Text style={{ marginTop: 10, color: CLINICAL_COLORS.textMuted, fontSize: 12 }}>
-            加载中...
-          </Text>
+        <View style={styles.stateBlock}>
+          <ActivityIndicator color={COLOR.accent} />
+          <Text style={styles.stateText}>加载中...</Text>
         </View>
       );
     }
     if (consentError) {
       return (
-        <View style={{ paddingVertical: 40, paddingHorizontal: 24, alignItems: 'center' }}>
-          <FontAwesome6 name="triangle-exclamation" size={20} color={CLINICAL_COLORS.warning} />
-          <Text
-            style={{
-              marginTop: 10,
-              color: CLINICAL_COLORS.textSoft,
-              fontSize: 13,
-              textAlign: 'center',
-            }}
-          >
-            {consentError}
-          </Text>
-          <TouchableOpacity
+        <View style={styles.stateBlock}>
+          <Icon name="triangle-exclamation" size={20} color={COLOR.alert} />
+          <Text style={styles.stateText}>{consentError}</Text>
+          <Button
+            label="重试"
+            icon="rotate-right"
+            variant="tinted"
+            compact
             onPress={() => fetchConsent('initial')}
-            style={{
-              marginTop: 12,
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 18,
-              backgroundColor: CLINICAL_COLORS.accent,
-            }}
-          >
-            <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>重试</Text>
-          </TouchableOpacity>
+          />
         </View>
       );
     }
     if (consentItems.length === 0) {
       return (
-        <View style={{ paddingVertical: 60, paddingHorizontal: 32, alignItems: 'center' }}>
-          <FontAwesome6 name="clock-rotate-left" size={20} color={CLINICAL_COLORS.textMuted} />
-          <Text
-            style={{
-              marginTop: 10,
-              color: CLINICAL_COLORS.textMuted,
-              fontSize: 13,
-              textAlign: 'center',
-              lineHeight: 20,
-            }}
-          >
-            还没有同意变更记录。在「隐私设置」开启或关闭任一 AI 数据授权后，这里会保留每一次变更。
+        <View style={styles.stateBlock}>
+          <Icon name="clock-rotate-left" size={20} color={COLOR.inkMuted} />
+          {/* Same fix as the AI tab's empty state twelve lines up, which
+              this one was left out of: with a flag filter active,
+             「还没有同意变更记录」 tells the patient their consent
+              history is gone, on the screen that exists to prove it
+              isn't. */}
+          <Text style={styles.stateText}>
+            {consentFlagFilter === 'all'
+              ? '还没有同意变更记录。在「隐私设置」开启或关闭任一 AI 数据授权后，这里会保留每一次变更。'
+              : '当前筛选条件下没有记录。把授权类型切回「全部」就能看到其余变更。'}
           </Text>
         </View>
       );
     }
-    return consentItems.map((event) => <ConsentEventCard key={event.id} event={event} />);
+    return consentItems.map((event) => <ConsentEventRow key={event.id} event={event} />);
   };
 
   const helpText =
     activeTab === 'ai'
-      ? '每条记录对应一次「智能问答」请求。我们只保存调用的元数据（模型、工具、字段、状态），从不保存提示词原文或回答内容。'
+      ? '每条记录对应一次 AI 提问：页面里的「这什么意思」和「智能问答」都会记在这里。我们只保存调用的元数据（模型、工具、字段、状态），从不保存提示词原文或回答内容。'
       : '每条记录对应一次 AI 数据授权开关的开/关。系统自动触发的连锁变更（例如关闭基础授权时自动收回精确数值授权）会标记为「系统自动」。';
 
   return (
@@ -750,13 +616,7 @@ const AuditHistoryScreen = () => {
         <View style={styles.headerPlaceholder} />
       </View>
 
-      <View
-        style={{
-          flexDirection: 'row',
-          borderBottomWidth: 1,
-          borderBottomColor: CLINICAL_COLORS.border,
-        }}
-      >
+      <View style={styles.tabRow}>
         <TabButton
           label="AI 调用记录"
           active={activeTab === 'ai'}
@@ -769,20 +629,12 @@ const AuditHistoryScreen = () => {
         />
       </View>
 
-      <View
-        style={{
-          paddingHorizontal: 20,
-          paddingTop: 12,
-          paddingBottom: 8,
-        }}
-      >
-        <Text style={{ color: CLINICAL_COLORS.textMuted, fontSize: 12, lineHeight: 18 }}>
-          {helpText}
-        </Text>
+      <View style={styles.helpBlock}>
+        <Text style={styles.helpText}>{helpText}</Text>
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 }}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
           activeTab === 'ai' ? (
@@ -796,8 +648,13 @@ const AuditHistoryScreen = () => {
         }
       >
         {activeTab === 'ai'
-          ? renderFilterChips(AI_STATUS_CHIPS, aiStatusFilter, setAiStatusFilter)
-          : renderFilterChips(CONSENT_FLAG_CHIPS, consentFlagFilter, setConsentFlagFilter)}
+          ? renderFilterChips(AI_STATUS_CHIPS, aiStatusFilter, setAiStatusFilter, 'AI 调用状态筛选')
+          : renderFilterChips(
+              CONSENT_FLAG_CHIPS,
+              consentFlagFilter,
+              setConsentFlagFilter,
+              '授权类型筛选',
+            )}
         {activeTab === 'ai' ? renderAiBody() : renderConsentBody()}
       </ScrollView>
     </SafeAreaView>

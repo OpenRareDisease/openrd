@@ -23,6 +23,13 @@ export interface OrchestratorRunInput {
    *  the FAQ page". Appended to the user prompt. Never include raw
    *  patient identifiers here. */
   userContextHint?: string;
+  /** Server-enforced narrowing derived from the request's resolved
+   *  `context` reference. Reaches tools through `ToolContext.scope`,
+   *  never the prompt — see the comment there for why the hint alone
+   *  was not enough. */
+  scope?: {
+    documentId?: string;
+  };
   /** Normalized multi-turn history (route layer runs
    *  security/history.ts#normalizeHistory first — never pass raw
    *  client input here). Empty/absent = single-turn. */
@@ -86,6 +93,15 @@ export interface OrchestratorRunResult {
   fieldsUsed: string[];
   /** True iff any patient-scoped retriever contributed content. */
   usedPersonalData: boolean;
+  /** The run could not produce a real answer and `answer` is the
+   *  apology fallback.
+   *
+   *  Carried on the result rather than signalled with an `error` event:
+   *  both SSE consumers treat `error` as terminal and stop reading, so
+   *  emitting one mid-run meant the `done` frame — and with it this
+   *  very fallback text — never reached the client. A property of the
+   *  run belongs on the run's result. */
+  answerTruncated?: boolean;
   redactionMode: RedactionMode;
   consentLevel: ConsentLevel;
   /** Final round system + user prompts (post-render). Useful for
@@ -142,6 +158,22 @@ export type OrchestratorEvent =
     }
   | { type: 'answering' }
   | { type: 'answer_delta'; text: string }
+  /** Discard everything streamed so far and show `text` instead.
+   *
+   *  Sent whenever text already on screen turns out not to be part of
+   *  the answer. Two cases, and `text` distinguishes them:
+   *
+   *  - **empty** — clear the bubble, more is still coming. A gather
+   *    round that streamed its note about fetching more, or the moment
+   *    before a streamed retry begins.
+   *  - **non-empty** — clear the bubble and show this; nothing further
+   *    will stream. Only the non-streaming retry path, which has no
+   *    deltas to send.
+   *
+   *  A consumer that only handles the non-empty case leaves the
+   *  abandoned text on screen, so both must assign rather than append,
+   *  including when the text is empty. */
+  | { type: 'answer_reset'; text: string }
   | { type: 'done'; result: OrchestratorRunResult }
   | { type: 'error'; message: string };
 

@@ -1,5 +1,3 @@
-
-
 import { StyleSheet, Platform } from 'react-native';
 
 export default StyleSheet.create({
@@ -486,4 +484,3 @@ export default StyleSheet.create({
     lineHeight: 18,
   },
 });
-

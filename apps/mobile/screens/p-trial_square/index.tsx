@@ -1,4 +1,3 @@
-import React from 'react';
 import UnavailableScreen from '../common/UnavailableScreen';
 
 const TrialSquareScreen = () => {

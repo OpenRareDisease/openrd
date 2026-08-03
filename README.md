@@ -4,7 +4,8 @@
 
 FSHD-openrd 是一个面向 FSHD（面肩肱型肌营养不良）患者场景的 monorepo，覆盖移动端、API、报告 OCR/结构化解析、AI 问答和部署交付链路。当前仓库已经不只是 demo，而是围绕“建档、随访、报告、问答、部署”形成了一条可联调、可演示、可发布的主路径。
 
-当前工作版本：`v2.3.1`
+当前工作版本：`v2.5.0`（manifest 已 bump，tag 待发布）
+最近一次已发布版本：`v2.4.0`
 基线版本：`master` / `v1.0.0`
 
 ## 当前包含什么
@@ -58,7 +59,7 @@ openrd/
 
 ## 环境要求
 
-- Node.js >= 18
+- Node.js >= 20.12（根 `package.json` 的 `engines.node` 就是这个下限；`db:migrate:down` / `db:backup` / `db:restore` / `kb:prune` 四条脚本都用 `node --env-file-if-exists=.env`，这个 flag 从 20.12 才有。仓库没有 `.npmrc`，所以 `npm install` 在更低版本上只会警告一句、装完照样成功，直到你跑备份脚本时报 `bad option`。两个镜像和 CI 都固定在 Node 20）
 - npm >= 10
 - Python >= 3.10（本地直跑 OCR / KB 服务需要）
 - PostgreSQL >= 14（本地模式）
@@ -124,15 +125,20 @@ npm run dev:mobile
 - `OTP_PROVIDER=mock`
 - `OCR_PROVIDER=embedded`
 - `STORAGE_PROVIDER=local` 或 `STORAGE_PROVIDER=minio`
-- `EXPO_PUBLIC_API_URL=http://localhost:4000/api`
 - `AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY` / `OPENAI_API_KEY`
 - `OCR_PYTHON_BIN=/path/to/python`（仅本地直跑 API 时需要）
+
+> ⚠️ `EXPO_PUBLIC_API_URL` **不在**根目录 `.env` 里。Expo 的 dotenv 只解析 project root（`apps/mobile/`），根目录 `.env` 它从来不读——写在那里会静默失效、bundle 里烧进 `http://localhost:4000/api`。放 `apps/mobile/.env`（模板见 `apps/mobile/.env.example`）。Docker web 镜像走的是另一条路：`Dockerfile.web` 的 build ARG，由 docker-compose 的 `WEB_EXPO_PUBLIC_API_URL` 提供，默认 `/api`。
 
 ### 方案 B：Docker 一键联调
 
 ```bash
 docker compose up -d --build
 ```
+
+> ⚠️ `.env` 里必须有 `POSTGRES_PASSWORD`（compose 用 `${POSTGRES_PASSWORD:?…}` 强制要求，没有它直接拒绝渲染）。`.env.example` 里**已经有这一行**（`POSTGRES_PASSWORD=postgres`），本地开发照抄即可，不用另加；生产改掉这一行的值，不要在文件末尾再补一行同名的——`validateProductionEnv` 会独立拒绝任何仍带 `postgres:postgres` 的 `DATABASE_URL`。
+>
+> ⚠️ **不要取消 `.env` 里 `DATABASE_URL` 那行的注释。** 模板里它是故意注释掉的：方案 A 需要 `@localhost:5432`，方案 B 需要 compose 内网的 `@postgres:5432`，而 compose 现在把 api 的 `DATABASE_URL` 写成插值，`.env` 里的值会赢过它的默认值。保持注释，两种方案各用各的默认值都能跑。只有数据库是两边同名可达的托管实例时才显式写它；真写成了 loopback，api 会带着点名 `DATABASE_URL` 的启动错误退出（compose 给容器硬编码了 `OPENRD_IN_CONTAINER=true`），而不是留下一串 `migrate.js` ECONNREFUSED 重启循环。
 
 如果宿主机 `5432` 已被占用：
 
@@ -151,6 +157,8 @@ POSTGRES_PORT=5433 docker compose up -d --build
 - API 容器固定使用 `OCR_PYTHON_BIN=python3`
 - KB 容器固定监听 `0.0.0.0:5010`
 - API 容器固定访问 `KB_SERVICE_URL=http://kb-service:5010`
+
+**`DATABASE_URL` 不在这份覆盖清单里**，这是有意的：以前 compose 把它硬编码成内网地址，结果 operator 填的托管库连接串被静默丢弃；现在它是插值，`.env` 说了算，而 compose 的默认值 `@postgres:5432` 只在 `.env` 没写它时生效——这就是模板里那行保持注释的原因。
 
 如果需要兼容 `v1` 的 MinIO 历史报告，可启用：
 
@@ -200,8 +208,9 @@ npm run test:latest
 
 - [AI 问答说明](./docs/ai-chat.md)
 - [患者档案数据模型](./docs/patient-profile.md)
-- [版本历史 / Changelog](./CHANGELOG.md)
-- [v2.3.1 发布说明](./docs/releases/v2.3.1.md)
+- [版本历史 / Changelog](./CHANGELOG.md)：含 `v2.5.0` 条目（本次待发布内容）。
+- [v2.5.0 部署手册](./docs/runbooks/v2.5.0-deploy.md)：部署 `v2.5.0` 前必读，取代 v2.4.0 手册。
+- [v2.4.0 发布说明](./docs/releases/v2.4.0.md)：最近一次已发布版本。
 - [v1.0.0 发布说明](./docs/releases/v1.0.0.md)
 - [v2.0.0 发布说明](./docs/releases/v2.0.0.md)
 

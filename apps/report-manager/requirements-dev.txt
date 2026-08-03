@@ -1,0 +1,20 @@
+# Test-only dependencies for apps/report-manager.
+#
+# Kept separate from requirements.txt on purpose: that file pins
+# paddleocr==2.8.1 for local development, and a single PaddleOCR process
+# peaks around 6.4 GB RSS — far too heavy to install on a CI runner that
+# only needs to import the modules and run assertions. The OCR tests are
+# written to pin the Tesseract-only behaviour production actually has,
+# so they never need paddle.
+#
+# Install the production parser deps rather than re-listing them, so CI
+# exercises the same wheel set the api image ships.
+-r ../api/requirements-embedded-report.txt
+
+pytest>=8.0
+
+# The OCR tests additionally need the `tesseract` binary with the eng +
+# chi_sim language packs, and poppler-utils for pdf2image. Tests that
+# require them skip cleanly when they are absent, so a runner without
+# them still gets the engine-resolution and page-bound coverage:
+#   apt-get install -y tesseract-ocr tesseract-ocr-chi-sim poppler-utils

@@ -1,9 +1,18 @@
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { FontAwesome6 } from '@expo/vector-icons';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Button from '../common/Button';
 
 import { addPatientMeasurement } from '../../lib/api';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, INTERACTION, RADIUS } from '../../lib/design';
+
+/**
+ * Migrated with the rest of p-data_entry: this form renders *inside*
+ * that screen as one of its four modes, so leaving it on the old
+ * palette put a sand-and-shadow panel on the new paper page — visibly
+ * a different app one tap away. Its buttons were also ~42pt (padding
+ * only, no minHeight), under the floor lib/a11y.ts sets.
+ */
 import InlineNotice from '../common/feedback/InlineNotice';
 import {
   SELF_TEST_ACTIONS,
@@ -83,7 +92,19 @@ const MuscleSelfTestForm = () => {
             key={action.metricKey}
             style={[styles.actionCard, isActive && styles.actionCardActive]}
           >
-            <TouchableOpacity activeOpacity={0.85} onPress={() => selectAction(action)}>
+            {/* No style at all before, so the hit frame was exactly the
+                text — about 38pt. minHeight brings it to the target and
+                the role/state make it announce as the expandable
+                selector it is. */}
+            <TouchableOpacity
+              style={styles.actionSelect}
+              activeOpacity={INTERACTION.pressOpacity}
+              accessibilityRole="button"
+              accessibilityLabel={saved ? `${action.label}，已记 ${saved}` : action.label}
+              accessibilityState={{ expanded: isActive }}
+              aria-expanded={isActive}
+              onPress={() => selectAction(action)}
+            >
               <View style={styles.actionHeader}>
                 <Text style={styles.actionLabel}>{action.label}</Text>
                 {saved ? <Text style={styles.savedBadge}>已记 {saved}</Text> : null}
@@ -105,7 +126,11 @@ const MuscleSelfTestForm = () => {
                       <TouchableOpacity
                         key={value}
                         style={[styles.sideButton, side === value && styles.sideButtonActive]}
-                        activeOpacity={0.85}
+                        activeOpacity={INTERACTION.pressOpacity}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ selected: side === value }}
+                        aria-checked={side === value}
                         onPress={() => setSide(value)}
                       >
                         <Text
@@ -125,7 +150,11 @@ const MuscleSelfTestForm = () => {
                   <TouchableOpacity
                     key={level.score}
                     style={[styles.scoreButton, score === level.score && styles.scoreButtonActive]}
-                    activeOpacity={0.85}
+                    activeOpacity={INTERACTION.pressOpacity}
+                    accessibilityRole="radio"
+                    accessibilityLabel={`${level.score} 分 · ${level.label}`}
+                    accessibilityState={{ selected: score === level.score }}
+                    aria-checked={score === level.score}
                     onPress={() => setScore(level.score)}
                   >
                     <Text
@@ -145,21 +174,19 @@ const MuscleSelfTestForm = () => {
                   <InlineNotice message={errorMessage} onRetry={() => void save()} />
                 ) : null}
 
-                <TouchableOpacity
-                  style={[styles.saveButton, (score === null || isSaving) && { opacity: 0.5 }]}
-                  disabled={score === null || isSaving}
-                  activeOpacity={0.85}
+                {/* Had no role, and while saving it swapped label for a
+                    spinner and became nameless. Button keeps the name
+                    through `busy`. */}
+                <Button
+                  label="保存这一项"
+                  icon="check"
+                  variant="prominent"
+                  fullWidth
+                  busy={isSaving}
+                  disabled={score === null}
+                  accessibilityLabel={`保存${action.label}`}
                   onPress={() => void save()}
-                >
-                  {isSaving ? (
-                    <ActivityIndicator color="#FFFFFF" />
-                  ) : (
-                    <>
-                      <FontAwesome6 name="check" size={13} color="#FFFFFF" />
-                      <Text style={styles.saveButtonText}>保存这一项</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
+                />
               </View>
             ) : null}
           </View>
@@ -171,35 +198,41 @@ const MuscleSelfTestForm = () => {
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
+    borderRadius: RADIUS.surface,
+    backgroundColor: COLOR.surface,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    borderColor: COLOR.line,
     padding: 16,
   },
   title: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 15,
     fontWeight: '800',
   },
   subtitle: {
     marginTop: 6,
     marginBottom: 12,
-    color: CLINICAL_COLORS.textMuted,
+    color: COLOR.inkMuted,
     fontSize: 12,
     lineHeight: 17,
   },
   actionCard: {
-    borderRadius: 16,
+    borderRadius: RADIUS.surface,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: 'rgba(248, 242, 234, 0.6)',
+    borderColor: COLOR.line,
+    backgroundColor: COLOR.well,
     padding: 13,
     marginBottom: 10,
   },
   actionCardActive: {
-    borderColor: CLINICAL_TINTS.accentBorder,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderColor: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
+  },
+  /** The card's tap target. Without a minHeight the frame was
+   *  exactly the text (~38pt) — under lib/a11y.ts MIN_TOUCH_TARGET. */
+  actionSelect: {
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: 'center',
   },
   actionHeader: {
     flexDirection: 'row',
@@ -208,18 +241,18 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   actionLabel: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 14,
     fontWeight: '800',
   },
   savedBadge: {
-    color: CLINICAL_COLORS.success,
+    color: COLOR.good,
     fontSize: 11,
     fontWeight: '700',
   },
   actionHowTo: {
     marginTop: 4,
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 12,
     lineHeight: 17,
   },
@@ -232,73 +265,62 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   sideButton: {
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: 'center',
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 12,
+    borderRadius: RADIUS.control,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: CLINICAL_COLORS.panel,
+    borderColor: COLOR.line,
+    backgroundColor: COLOR.surface,
     alignItems: 'center',
   },
   sideButtonActive: {
-    borderColor: CLINICAL_COLORS.accentStrong,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
+    borderColor: COLOR.accent,
+    backgroundColor: COLOR.accent,
   },
   sideButtonText: {
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 13,
     fontWeight: '700',
   },
   sideButtonTextActive: {
-    color: '#FFFFFF',
+    color: COLOR.onAccent,
   },
   scoreButton: {
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    borderRadius: 12,
+    borderRadius: RADIUS.control,
     borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    backgroundColor: CLINICAL_COLORS.panel,
+    borderColor: COLOR.line,
+    backgroundColor: COLOR.surface,
   },
   scoreButtonActive: {
-    borderColor: CLINICAL_COLORS.accentStrong,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
+    borderColor: COLOR.accent,
+    backgroundColor: COLOR.accent,
   },
   scoreValue: {
     width: 26,
     textAlign: 'center',
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
     fontSize: 17,
     fontWeight: '800',
   },
   scoreValueActive: {
-    color: '#FFFFFF',
+    color: COLOR.onAccent,
   },
   scoreLabel: {
     flex: 1,
-    color: CLINICAL_COLORS.textSoft,
+    color: COLOR.inkSoft,
     fontSize: 13,
   },
   scoreLabelActive: {
-    color: '#FFFFFF',
-  },
-  saveButton: {
-    marginTop: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 13,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
-  },
-  saveButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
+    color: COLOR.onAccent,
   },
 });
 

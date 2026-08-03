@@ -11,6 +11,31 @@ import { ToolValidationError, isPlainObject, safeParseJson } from './base.js';
 import type { ConsentLevel } from '../retrievers/base.js';
 import type { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 
+/** What the patient picks at upload — DOCUMENT_TYPES in
+ *  profile.constants.ts. */
+const UPLOAD_DOCUMENT_TYPES = ['mri', 'genetic_report', 'blood_panel', 'other'] as const;
+
+/** What the FSHD OCR classifier concludes, written into
+ *  `ocr_payload.fields.classifiedType`. The retriever matches a filter
+ *  against either column, so both vocabularies are accepted. */
+const CLASSIFIED_REPORT_TYPES = [
+  'biochemistry',
+  'blood_routine',
+  'coagulation',
+  'ecg',
+  'infection_screening',
+  'muscle_enzyme',
+  'muscle_mri',
+  'pulmonary_function',
+  'stool_test',
+  'thyroid_function',
+] as const;
+
+const KNOWN_DOCUMENT_TYPES: ReadonlySet<string> = new Set<string>([
+  ...UPLOAD_DOCUMENT_TYPES,
+  ...CLASSIFIED_REPORT_TYPES,
+]);
+
 interface GetMyReportsArgs {
   documentType?: string;
   since?: string;
@@ -22,8 +47,9 @@ const PARAMETERS_SCHEMA = {
   properties: {
     documentType: {
       type: 'string',
+      enum: [...UPLOAD_DOCUMENT_TYPES, ...CLASSIFIED_REPORT_TYPES],
       description:
-        'Optional filter by report category, e.g. `genetic_report`, `mri`, `lab`, `clinical_visit`. Omit to consider all types.',
+        'Optional filter, matched against BOTH the type the patient chose at upload (`mri`, `genetic_report`, `blood_panel`, `other`) and the type OCR concluded (`coagulation`, `blood_routine`, `biochemistry`, `muscle_enzyme`, `muscle_mri`, `pulmonary_function`, `thyroid_function`, `infection_screening`, `stool_test`, `ecg`, `genetic_report`). Prefer omitting it: the default already returns the most recent readable reports, and a filter that matches nothing yields an empty result you cannot recover from in this turn.',
     },
     since: {
       type: 'string',
@@ -50,7 +76,22 @@ const validate = (raw: unknown): GetMyReportsArgs => {
     if (typeof raw.documentType !== 'string' || !raw.documentType.trim()) {
       throw new ToolValidationError('`documentType` must be a non-empty string when provided.');
     }
-    out.documentType = raw.documentType.trim();
+    const type = raw.documentType.trim();
+    // Reject an unknown value rather than filtering every row away.
+    // The schema used to advertise `lab` and `clinical_visit`, neither
+    // of which exists in either vocabulary, and a free-string filter
+    // invites the model to invent the report's own wording (「凝血」,
+    // `coagulation_panel`). Every miss looked identical to having no
+    // reports at all — and with a fixed two-round orchestrator there
+    // is no retry, so「还没有查到你的凝血报告」was the final answer
+    // about a report sitting in the account fully parsed.
+    if (!KNOWN_DOCUMENT_TYPES.has(type)) {
+      throw new ToolValidationError(
+        `Unknown documentType \`${type}\`. Valid: ${[...KNOWN_DOCUMENT_TYPES].join(', ')}. ` +
+          'Omit documentType to search every report.',
+      );
+    }
+    out.documentType = type;
   }
 
   if (raw.since !== undefined) {
@@ -93,12 +134,26 @@ export class GetMyReportsTool implements ITool {
     if (parsed.documentType) filter.documentType = parsed.documentType;
     if (parsed.since) filter.since = parsed.since;
 
+    // A drawer opened on one report wins over whatever the model asked
+    // for. The model cannot see this id and cannot widen past it: the
+    // patient pointed at a specific document, and the other filters
+    // would only ever subtract from that one row anyway. Dropping them
+    // keeps「这份报告说明什么」from returning nothing because the model
+    // guessed `blood_panel` for a report OCR classified `coagulation`.
+    if (ctx.scope?.documentId) {
+      return this.run({ documentId: ctx.scope.documentId }, 1, ctx);
+    }
+
+    return this.run(Object.keys(filter).length > 0 ? filter : undefined, parsed.limit, ctx);
+  }
+
+  private async run(
+    filter: Record<string, unknown> | undefined,
+    limit: number | undefined,
+    ctx: ToolContext,
+  ): Promise<ToolExecutionResult> {
     const retrieval = await this.retriever.search(
-      {
-        question: '',
-        filter: Object.keys(filter).length > 0 ? filter : undefined,
-        limit: parsed.limit,
-      },
+      { question: '', filter, limit },
       {
         userId: ctx.userId,
         consentLevel: ctx.consentLevel,

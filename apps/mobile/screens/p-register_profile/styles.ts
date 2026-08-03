@@ -1,173 +1,188 @@
-import { StyleSheet, Platform } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
+/**
+ * 建档 / 编辑档案 — the intake form, re-pitched on lib/design.ts.
+ *
+ * The previous version wrapped every field group in a tinted,
+ * shadowed panel floating over a gradient page: four cards stacked
+ * down a form that is already four screens long, each one repeating
+ * the same border-plus-shadow noise while the fields inside stayed
+ * small and low-contrast. On a form, a card around a group says
+ * nothing a heading and a rule don't say more quietly — and the
+ * shadows cost the inputs the contrast they need.
+ *
+ * So: the page is paper, the groups are a title, a caption and a
+ * hairline, and the only filled surface on the screen is the
+ * onboarding note — the one thing a brand-new user has to read before
+ * they start typing. Inputs became sunken wells at full touch height,
+ * because on this screen the fields *are* the content.
+ */
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
+  /** Kept so the screen can render a plain View in place of the old
+   *  <LinearGradient> page background without changing its JSX shape.
+   *  The gradient greyed down every input border sitting on it. */
   backgroundGradient: {
     flex: 1,
   },
+
+  /* Header -------------------------------------------------------- */
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: CLINICAL_COLORS.panel,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+    paddingHorizontal: SPACE.gutter,
+    paddingVertical: SPACE.md,
+    // A rule anchors the header instead of a shadow or a fill.
+    borderBottomWidth: HAIRLINE,
+    borderBottomColor: COLOR.line,
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
+    ...TYPE.title,
+    flex: 1,
+    textAlign: 'center',
   },
+  /** Matches the back button's real footprint (MIN_TOUCH_TARGET) so
+   *  the centred title is actually centred; it was 40 against a 48pt
+   *  button. */
   headerPlaceholder: {
-    width: 40,
+    width: MIN_TOUCH_TARGET,
   },
+
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 24,
-    paddingBottom: 32,
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.lg,
+    paddingBottom: SPACE.xxl,
   },
   loadingContainer: {
-    paddingVertical: 48,
+    paddingVertical: SPACE.xxl,
     alignItems: 'center',
     justifyContent: 'center',
   },
+
+  /* Feedback ------------------------------------------------------ */
   feedbackBanner: {
-    marginHorizontal: 24,
-    marginBottom: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
+    // No marginHorizontal: this renders inside scrollContent, which
+    // already carries the page gutter — the old 24 stacked on top of
+    // it and inset the banner from every field it referred to.
+    marginBottom: SPACE.lg,
+    paddingVertical: SPACE.md,
+    paddingHorizontal: SPACE.md,
+    borderRadius: RADIUS.control,
+    borderWidth: HAIRLINE,
+    // A 3pt semantic edge carries the state at a glance; the wash
+    // alone was too faint to read as an error.
+    borderLeftWidth: 3,
   },
   feedbackError: {
-    backgroundColor: CLINICAL_TINTS.dangerSurface,
-    borderColor: CLINICAL_TINTS.dangerBorder,
-  },
-  feedbackSuccess: {
-    backgroundColor: CLINICAL_TINTS.successSurface,
-    borderColor: CLINICAL_TINTS.successBorder,
+    backgroundColor: COLOR.alertWash,
+    borderColor: 'rgba(180, 71, 47, 0.28)',
+    borderLeftColor: COLOR.alert,
   },
   feedbackText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
+    ...TYPE.body,
+    fontSize: 14,
+    lineHeight: 20,
+    color: COLOR.ink,
   },
+
+  /* Onboarding note — the single filled surface on this screen ----- */
+  introNote: {
+    ...SURFACE.cardAccent,
+    padding: SPACE.lg,
+    marginBottom: SPACE.section,
+  },
+  introNoteText: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
+
+  /* Field groups — heading + rule, not a card --------------------- */
   section: {
-    marginBottom: 20,
+    marginBottom: SPACE.section,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-    marginBottom: 6,
+    ...TYPE.title,
   },
   sectionSubtitle: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textMuted,
-    marginBottom: 12,
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
   },
+  /** Was a shadowed, bordered panel. Now it is just the field block,
+   *  separated from its heading by a hairline — the group reads as a
+   *  group without another box around it. */
   card: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    ...Platform.select({
-      ios: {
-        shadowColor: CLINICAL_COLORS.accent,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.08,
-        shadowRadius: 24,
-      },
-      android: { elevation: 6 },
-    }),
+    marginTop: SPACE.md,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
+
+  /* Fields -------------------------------------------------------- */
   inputLabel: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
-    marginBottom: 6,
+    ...TYPE.label,
+    marginBottom: SPACE.sm,
   },
   input: {
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderStrong,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
-    marginBottom: 12,
+    ...SURFACE.well,
+    // Inputs are the content of this screen, so they get the full
+    // touch height and body-size text rather than 14pt in a 38pt box.
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    fontSize: 15,
+    color: COLOR.ink,
+    marginBottom: SPACE.lg,
   },
   multilineInput: {
     minHeight: 88,
-    paddingTop: 12,
+    paddingTop: SPACE.md,
   },
   optionRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 4,
+    gap: SPACE.sm,
+    // Matches the input's bottom margin so a mixed group keeps one
+    // vertical rhythm.
+    marginBottom: SPACE.lg,
   },
   optionButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.borderStrong,
-    backgroundColor: CLINICAL_TINTS.panel,
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: 'center',
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm,
+    // 16 read as a pill; these are choices, not status chips.
+    borderRadius: RADIUS.control,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.lineStrong,
+    backgroundColor: COLOR.surface,
   },
   optionButtonActive: {
-    borderColor: CLINICAL_COLORS.accent,
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+    borderColor: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
   },
   optionText: {
-    fontSize: 12,
-    color: CLINICAL_COLORS.textSoft,
+    ...TYPE.label,
+    fontWeight: '500',
   },
+  /** Selection is carried by colour AND weight — the old version
+   *  changed only the tint, which is invisible to a colour-blind or
+   *  low-contrast reader. */
   optionTextActive: {
-    color: CLINICAL_COLORS.text,
-    fontWeight: '600',
+    ...TYPE.label,
+    color: COLOR.accent,
+    fontWeight: '700',
   },
-  primaryButton: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginTop: 8,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.7,
-  },
-  primaryButtonGradient: {
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.text,
-  },
+
+  /* Save ---------------------------------------------------------- */
+  /** Name kept for the screen's JSX; it is now a plain padding box,
+   *  not a <LinearGradient>. */
 });

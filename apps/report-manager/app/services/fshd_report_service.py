@@ -635,6 +635,34 @@ def _append_panel_text(
     )
 
 
+def _panel_haystacks(text: str, lines: List[str]) -> List[str]:
+    """Where a panel pattern may look for `分析物 … 结果`.
+
+    The whole text first, so a report that keeps a row on one line keeps
+    behaving exactly as before. Then two-line windows, because a *table*
+    does not survive OCR as rows.
+
+    PaddleOCR detects text boxes, and every cell of a lab table is its
+    own box — so a row that reads
+
+        抗梅毒螺旋体抗体(TPPA)   阴性(-)   阴性   凝集法
+
+    arrives as four separate lines. Every panel pattern in this module
+    is written `分析物[^\\n]{0,24}(结果)`, which cannot cross a newline,
+    so the analyte matched and the result never did. The report was
+    classified `infection_screening` at 0.99 confidence off the same
+    text, and still produced `field_count: 0` — a patient's syphilis
+    screening summarised as「具体结果：未提供」with the answer sitting
+    one line below the question.
+
+    The window is deliberately two lines wide and joined without a
+    separator: it reunites a cell with the one that follows it and
+    nothing further, so a miss stays a miss rather than pairing one
+    analyte's name with another analyte's result.
+    """
+    return [text, *_build_line_windows(lines, max_window=2)]
+
+
 def _extract_numeric_panel(
     text: str,
     lines: List[str],
@@ -644,12 +672,17 @@ def _extract_numeric_panel(
     *,
     confidence: float = 0.93,
 ) -> None:
+    haystacks = _panel_haystacks(text, lines)
     for field_name, meta in definitions.items():
-        raw_value, normalized_value, unit = _extract_named_number(
-            text,
-            meta.get("patterns", []),
-            meta.get("unit"),
-        )
+        raw_value = normalized_value = unit = None
+        for haystack in haystacks:
+            raw_value, normalized_value, unit = _extract_named_number(
+                haystack,
+                meta.get("patterns", []),
+                meta.get("unit"),
+            )
+            if raw_value is not None:
+                break
         if raw_value is None:
             continue
         _append_panel_number(
@@ -673,8 +706,13 @@ def _extract_text_panel(
     *,
     confidence: float = 0.88,
 ) -> None:
+    haystacks = _panel_haystacks(text, lines)
     for field_name, meta in definitions.items():
-        raw_value = _extract_named_text(text, meta.get("patterns", []))
+        raw_value = None
+        for haystack in haystacks:
+            raw_value = _extract_named_text(haystack, meta.get("patterns", []))
+            if raw_value is not None:
+                break
         if raw_value is None:
             continue
         if meta.get("normalize_qualitative"):
@@ -956,8 +994,256 @@ def _extract_encounter_info(lines: List[str]) -> Dict[str, Any]:
     }
 
 
-def _extract_summary_line(lines: List[str], keywords: Iterable[str]) -> Optional[str]:
-    return _find_best_line(lines, keywords)
+# --------------------------------------------------------------------
+# Free-text guards
+#
+# Two shared mechanisms produced every bad conclusion the user found:
+#
+#   1. `_extract_block_after_header` captures every line after a header
+#      until a stop keyword. Each call site passed its own stop list,
+#      each list was incomplete, and a miss means "capture to the end of
+#      the document". That is how an ECG summary became the whole report
+#      —「…门诊号: 住院号:R000000 … 本报告仅供临床医师结合临床参考」—
+#      with an inpatient medical-record number inside a field that the
+#      API's prompt allowlist trusts.
+#
+#   2. `_extract_summary_line` returns the whole line containing a
+#      keyword. In a table, the line containing 「膈肌厚度」 is the
+#      *column header*, so `diaphragm_thickening_summary` came out as
+#      「膈肌厚度(mm)」, and 「印象」 matched the bare header 「印象:」.
+#
+# The guards below are shared rather than per-extractor, because the
+# failure was never specific to one report type.
+# --------------------------------------------------------------------
+
+#: Lines that end a captured block no matter which extractor asked.
+#: Signature blocks, timestamps, identifiers and the boilerplate
+#: disclaimer are never part of a clinical conclusion.
+_BLOCK_STOP_MARKERS: Tuple[str, ...] = (
+    # Signatures
+    "诊断医生", "记录医生", "审核医生", "报告医生", "检查医生", "超声医师",
+    "检验者", "核对者", "报告者", "医师签名", "签名",
+    # Timestamps
+    "检查日期", "打印日期", "报告日期", "报告时间", "检查时间", "采集时间",
+    # Identifiers — the reason this list is not optional
+    "住院号", "门诊号", "病历号", "条形码", "标本号", "样本号", "检验号",
+    "申请单号", "影像号", "检查号", "登记号", "身份证",
+    # Demographics. These sit inline in single-line layouts, so they end
+    # a value as surely as a signature does — the ECG's own summary ran
+    # straight through 「年龄:23」 into the rest of the header.
+    "送检医生", "送检科室", "科别", "床别", "床号",
+    "年龄", "姓名", "性别", "民族", "婚否",
+    # Boilerplate
+    "本报告", "仅供", "不作诊断", "结果仅对",
+)
+
+#: A signature: two to four CJK characters alone on a line, no digits,
+#: no punctuation. 「钱医」「李晶」「孙医」 all match; so would a short
+#: clinical phrase, which is why the clinical vocabulary below is
+#: excluded first.
+_BARE_NAME = re.compile(r"^[\u4e00-\u9fa5]{2,4}$")
+
+#: Short clinical phrases that look like a name but are not. Anything
+#: here is kept even when it stands alone on a line.
+_NOT_A_NAME = frozenset({
+    "未见异常", "大致正常", "心律不齐", "窦性心律", "脂肪浸润", "肌肉萎缩",
+    "肌萎缩", "水肿", "正常", "异常", "阴性", "阳性", "轻度", "中度", "重度",
+    "无异常", "未见", "请结合临床",
+})
+
+
+#: Headers that open a report's boilerplate tail. Everything from here
+#: on is legal text about the *method*, not findings about the patient.
+#:
+#: This is the structural version of the phrase list below, and it is
+#: the one that actually works. A genetic report's caveats run to a
+#: dozen numbered items full of clinical vocabulary — 「解读偏差」,
+#: 「医生诊断」, 「基因检测结果为阴性」 — so any keyword search over the
+#: whole page lands in them. Cutting the tail off first means the search
+#: only ever sees the part of the report that is about this patient.
+_DISCLAIMER_SECTION_HEADERS: Tuple[str, ...] = (
+    "检测局限", "局限性", "方法学局限", "附录信息", "附录",
+    "免责声明", "声明", "注意事项", "参考文献", "术语说明",
+)
+
+
+def _before_disclaimer_section(lines: List[str]) -> List[str]:
+    """Drop the boilerplate tail so a conclusion search cannot reach it."""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        # A header is short. The same words inside a sentence are not a
+        # section break.
+        if len(stripped) <= 16 and any(h in stripped for h in _DISCLAIMER_SECTION_HEADERS):
+            return lines[:index]
+    return lines
+
+
+#: Boilerplate. A report's *conclusion* never comes from its disclaimer,
+#: and the two look alike to a keyword search: the limitations section of
+#: a genetic report says 「仍建议以医生诊断…为准」, which matches 「诊断」.
+#:
+#: Observed on a real FSHD1-positive report — D4Z4 = 3, haplotype 4qA —
+#: whose `interpretation_summary` came out as a mid-sentence fragment of
+#: caveat #5:「检者发病的主导原因.即使基因检测结果为阴性,仍建议以医生
+#: 诊断…」. A patient reading their own positive result was shown a
+#: sentence about what a *negative* result would mean.
+_DISCLAIMER_MARKERS: Tuple[str, ...] = (
+    "仅供参考", "仅供临床", "不作诊断", "不能完全排除", "不能排除",
+    "受限于", "局限性", "免责", "本报告", "结果仅对", "以医生诊断",
+    "建议以医生", "检测技术", "若受检者", "结果注释", "解释权",
+    "并不能", "复核", "如有疑问", "有疑问请",
+)
+
+
+def _is_disclaimer(text: str) -> bool:
+    return any(marker in text for marker in _DISCLAIMER_MARKERS)
+
+
+def _looks_like_signature(text: str) -> bool:
+    stripped = text.strip()
+    return bool(_BARE_NAME.match(stripped)) and stripped not in _NOT_A_NAME
+
+
+def _strip_trailing_signature(text: str) -> str:
+    """Drop a doctor's name from the tail of a conclusion.
+
+    The signature is usually its own OCR line and gets joined onto the
+    conclusion with a space —「…请结合临床. 钱医」. It is the reporting
+    physician's name: a third party's identifier, in a field that is
+    shown to the patient and sent to the model.
+    """
+    parts = text.strip().split()
+    while parts and _looks_like_signature(parts[-1]):
+        parts.pop()
+    return " ".join(parts).strip()
+
+
+#: Ceiling on any free-text field. A clinical impression is one or two
+#: sentences; anything longer means the extractor ran past its block,
+#: and a length cap is the backstop for a stop-marker list that will
+#: always be incomplete.
+_FREE_TEXT_MAX = 200
+
+
+#: Markers that carry a value with them —「年龄:23」,「住院号:R000000」.
+#: These are excised as a pair; the text around them survives.
+_INLINE_PAIR_MARKERS: Tuple[str, ...] = (
+    "住院号", "门诊号", "病历号", "就诊号", "登记号", "标本号", "样本号",
+    "检验号", "申请单号", "影像号", "检查号", "条形码", "身份证",
+    "年龄", "姓名", "性别", "民族", "婚否", "科别", "床别", "床号",
+    "送检医生", "送检科室", "检查日期", "打印日期", "报告日期",
+    "报告时间", "检查时间", "采集时间",
+)
+
+#: Markers that run to the end of the text once they start — a
+#: signature block or a disclaimer has nothing after it worth keeping.
+_TAIL_MARKERS: Tuple[str, ...] = (
+    "诊断医生", "记录医生", "审核医生", "报告医生", "检查医生", "超声医师",
+    "检验者", "核对者", "报告者", "医师签名", "签名",
+    "本报告", "仅供", "不作诊断", "结果仅对",
+)
+
+
+def _strip_inline_metadata(text: str) -> str:
+    """Remove identifier/demographic pairs; truncate at a tail marker.
+
+    Truncating at the *first* marker was the first attempt, and it threw
+    away findings: this ECG's OCR merged two columns into one line, so
+    「不完全性右束支传导阻滞」— a real diagnosis — sat after 「年龄:23」
+    and went with it. A label carrying a value is a pair that can be
+    lifted out; only signatures and disclaimers genuinely end the
+    useful text.
+    """
+    for marker in _TAIL_MARKERS:
+        index = text.find(marker)
+        if index > 0:
+            text = text[:index]
+
+    for marker in _INLINE_PAIR_MARKERS:
+        # `label: value` where the value runs to the next whitespace.
+        text = re.sub(rf"{marker}\s*[:：]\s*\S*", " ", text)
+
+    return re.sub(r"\s{2,}", " ", text).strip(" ,，;；")
+
+
+def _clean_free_text(value: Optional[str]) -> Optional[str]:
+    """Every free-text conclusion goes through here before becoming a field."""
+    if not value:
+        return None
+    text = _strip_trailing_signature(_strip_inline_metadata(value))
+    if not text:
+        return None
+    if len(text) > _FREE_TEXT_MAX:
+        text = text[:_FREE_TEXT_MAX].rstrip() + "…"
+    return text or None
+
+
+#: A label with a colon and nothing after it: 「印象:」,「检查提示：」.
+_LABEL_ONLY = re.compile(r"^[\u4e00-\u9fa5A-Za-z/]{1,12}\s*[:：]\s*$")
+
+#: Lines that describe the examination rather than its result.
+_EXAM_METADATA_PREFIXES: Tuple[str, ...] = (
+    "检查部位", "检查项目", "检查方法", "检查设备", "检查途径",
+    "送检项目", "标本类型", "仪器型号", "检验目的",
+)
+
+#: A short label carrying a *unit*: 「膈肌厚度(mm)」,「LVEF(%)」. The
+#: parenthetical must be unit-shaped — latin letters, digits, symbols —
+#: because a parenthetical in Chinese is content, not a unit.
+_LABEL_WITH_UNIT = re.compile(
+    r"^[\u4e00-\u9fa5A-Za-z/]{1,10}\s*[(（][A-Za-z%/·°μ\d.\s^-]{1,10}[)）]\s*$"
+)
+
+
+def _is_header_only(line: str) -> bool:
+    """Is this line a column header or a section label rather than a value?
+
+    Deliberately narrow. An earlier, looser version treated *any*
+    「词语(括号)」 as a header, which threw away real conclusions —
+    「房室大小及LVEF值正常范围(检查时心动过缓)」 is a finding, not a
+    header, and it has exactly that shape. The distinction that holds is
+    what is inside the brackets: a unit is latin/symbolic, a clarifying
+    remark is Chinese.
+    """
+    stripped = line.strip()
+    if any(stripped.startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES):
+        return True
+    return bool(_LABEL_ONLY.match(stripped) or _LABEL_WITH_UNIT.match(stripped))
+
+
+def _extract_summary_line(
+    lines: List[str],
+    keywords: Iterable[str],
+    *,
+    require_digit: bool = False,
+) -> Optional[str]:
+    """First line carrying one of `keywords` that actually says something.
+
+    `_find_best_line` returns the whole matched line, and in a table the
+    line carrying 「膈肌厚度」 is the column header — so this used to
+    answer 「膈肌厚度(mm)」 when asked for a thickening summary, and
+    「印象:」 when asked for an impression. A header is a label with no
+    value; skip it and keep looking.
+
+    `require_digit` is for fields that are measurements wearing a
+    summary's name: 膈肌增厚 is a thickness, so a line with no figure in
+    it is the wrong line however well its keywords match. Without it,
+    「增厚率」matched the *conclusion* sentence and the 膈肌增厚 card
+    showed the same text as 膈肌运动.
+    """
+    lowered_keywords = [keyword.lower() for keyword in keywords]
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or _is_header_only(stripped):
+            continue
+        if require_digit and not re.search(r"\d", stripped):
+            continue
+        if _is_disclaimer(stripped):
+            continue
+        lowered = stripped.lower()
+        if any(keyword in lowered for keyword in lowered_keywords):
+            return _clean_free_text(stripped)
+    return None
 
 
 def _extract_block_after_header(
@@ -978,11 +1264,46 @@ def _extract_block_after_header(
                 parts.append(inline[1].strip())
             continue
         if capture:
+            # The caller's stop list is additive to the shared one. Every
+            # call site used to pass its own, every list was missing
+            # something, and a miss means "run to the end of the
+            # document" — which is exactly what happened to the ECG.
             if any(keyword in stripped for keyword in stop_keywords):
+                break
+            if any(marker in stripped for marker in _BLOCK_STOP_MARKERS):
+                break
+            if _is_disclaimer(stripped):
+                break
+            if _looks_like_signature(stripped):
                 break
             parts.append(stripped)
     joined = " ".join(parts).strip()
-    return joined or None
+    return _clean_free_text(joined)
+
+
+#: Words that mark the sentence a patient is actually looking for.
+_FINDING_MARKERS: Tuple[str, ...] = (
+    "检出", "符合", "提示", "诊断为", "考虑为", "支持", "阳性", "阴性",
+    "FSHD", "肌营养不良", "重复单元", "缩短",
+)
+
+
+def _pick_finding_sentence(block: Optional[str]) -> Optional[str]:
+    """Reduce a results section to the sentence that states the result.
+
+    The 检测结果 section of a genetic report opens with a paragraph of
+    method — sample prep, platform, pipeline — before it says what was
+    found. Truncated to fit, that paragraph is all a patient sees, and
+    it tells them nothing about themselves. Prefer the sentence naming
+    the finding; fall back to the whole block when none stands out.
+    """
+    if not block:
+        return None
+    sentences = [part.strip() for part in re.split(r"[。.;；\n]", block) if part.strip()]
+    hits = [s for s in sentences if any(m in s for m in _FINDING_MARKERS)]
+    if not hits:
+        return block
+    return _clean_free_text("。".join(hits))
 
 
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -1020,7 +1341,17 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     methylation_value = methylation_match.group(1) if methylation_match else None
     methylation_unit = methylation_match.group(2) if methylation_match else "%"
 
-    interpretation = _extract_summary_line(lines, ["结论", "提示", "interpretation", "impression", "诊断"])
+    body = _before_disclaimer_section(lines)
+    interpretation = _pick_finding_sentence(
+        _extract_block_after_header(
+            body,
+            ["检测结果", "检测结论", "结果分析"],
+            ["遗传咨询", "建议", "变异位点", "检测方法"],
+        )
+    ) or _extract_summary_line(
+        body,
+        ["检测结论", "结论", "结果分析", "解读", "提示", "interpretation", "impression"],
+    )
     genetic_positive = "yes" if diagnosis_type or d4z4_pathogenic else "uncertain"
 
     _append_field(
@@ -1623,7 +1954,14 @@ def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
         ["检查提示", "印象"],
         ["诊断医生", "记录医生", "审核医生", "检查日期", "打印日期"],
     ) or _extract_summary_line(lines, ["未见明显异常声像", "膈肌运动", "运动幅度"])
-    thickening_summary = _extract_summary_line(lines, ["增厚率", "厚度", "thickening"])
+    thickening_summary = _extract_summary_line(
+        lines, ["增厚率", "厚度", "thickening"], require_digit=True
+    )
+    # The conclusion sentence mentions 增厚率 too, so without the digit
+    # requirement above this field mirrored 膈肌运动. Guard the residual
+    # case where both keywords land on the same line anyway.
+    if thickening_summary and thickening_summary == motion_summary:
+        thickening_summary = None
     if motion_summary:
         _append_field(fields, _build_field("diaphragm_motion_summary", motion_summary, source_text=motion_summary, confidence=0.82))
         findings.append(
@@ -2013,6 +2351,141 @@ def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optio
     return None, None, None
 
 
+# --------------------------------------------------------------------
+# Generic lab-table reader
+#
+# Everything above is per-analyte: someone wrote a regex for FT3, so FT3
+# is extracted; nobody wrote one for 「游离甲状腺素指数」, so it is not.
+# That is a list that can only ever cover reports we have already seen,
+# and the user's ask was the opposite —「如果有其他格式的报告也可以识别
+# 出来，不局限于我这几个」.
+#
+# The way out is that the *shape* is universal. Chinese lab reports put
+# a header row over the results —「No 项目 结果 参考区间 单位 方法」— and
+# PaddleOCR emits one cell per line, so a row is N consecutive lines
+# where N is the header's width. Reading that structure extracts every
+# analyte on the page, including ones nobody anticipated.
+#
+# Observed motivating case: an FT3/FT4/TSH panel classified correctly at
+# 0.99 confidence and yielded 3 fields, because only three analytes had
+# hand-written patterns and the rest of the table was invisible.
+# --------------------------------------------------------------------
+
+#: Header cells that mark a results table. 「项目」 and 「结果」 are the
+#: load-bearing pair; the rest disambiguate.
+_TABLE_HEADER_CELLS: Tuple[str, ...] = (
+    "项目", "结果", "参考区间", "参考值", "单位", "方法", "提示", "结果值",
+    "检验项目", "检测项目", "英文缩写", "No", "NO", "序号",
+)
+
+#: A cell holding a measurement: an optional comparator, digits, and
+#: nothing else. 「6.000」 yes; 「3.5-6.59」 no (that is a range).
+_VALUE_CELL = re.compile(r"^[<>≤≥]?\s*\d+(?:\.\d+)?$")
+
+#: A reference range rather than a result.
+_RANGE_CELL = re.compile(r"^[<>≤≥]?\s*\d+(?:\.\d+)?\s*[-~—]\s*\d+(?:\.\d+)?$")
+
+#: A unit. Deliberately loose — units vary wildly — but never CJK.
+_UNIT_CELL = re.compile(r"^[A-Za-zμµ%/·\^\d\.\*]{1,14}$")
+
+
+#: Assay methods. They sit in the last column, look exactly like an
+#: analyte name, and are followed by the next row's number — so without
+#: this list 「化学发光法」 was read as a test whose result was the row
+#: number below it.
+_METHOD_WORDS: Tuple[str, ...] = (
+    "化学发光", "凝集法", "酶法", "免疫", "比浊", "electrode", "速率法",
+    "终点法", "干化学", "镜检", "培养", "PCR", "测定法", "显色",
+    "双缩脲", "溴甲酚绿", "比色", "电极", "计算", "电阻抗", "流式",
+    "鞘流", "散射", "分光", "亲和", "钼酸", "脲酶", "氧化",
+)
+
+#: A row number glued to the analyte name — 「*1白细胞计数(WBC)」,
+#: 「22血小板比积(PCT)」. The number is the table's own index, not part
+#: of the test's name.
+_ROW_NUMBER_PREFIX = re.compile(r"^[*#\s]*\d{1,3}\s*")
+
+
+def _looks_like_analyte(cell: str) -> bool:
+    """A cell naming a test: has letters or CJK, is not a header, is short."""
+    if not cell or len(cell) > 28:
+        return False
+    if cell in _TABLE_HEADER_CELLS or _is_header_only(cell):
+        return False
+    if _VALUE_CELL.match(cell) or _RANGE_CELL.match(cell):
+        return False
+    # `label:value` is report metadata — 「申请时间:2023-12-20」 — not a
+    # row of the results table.
+    if re.search(r"[:：]", cell):
+        return False
+    if any(word in cell for word in _METHOD_WORDS):
+        return False
+    # A unit is not a test. 「fL」 and 「U/L」 sit in their own column and
+    # are followed by the next row's figures, so an unfiltered scan read
+    # them as analytes whose result was someone else's number.
+    if _UNIT_CELL.match(cell) and not re.search(r"[\u4e00-\u9fa5]", cell):
+        return False
+    return bool(re.search(r"[\u4e00-\u9fa5A-Za-z]", cell))
+
+
+def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
+    """Read every `analyte / value / unit` triple out of a results table.
+
+    Scans for an analyte cell followed, within a short window, by a
+    value cell. The window is what makes this layout-agnostic: whether
+    the row is `名称 结果 区间 单位` or `No 名称 结果 单位`, the value is
+    the first bare number after the name, and the unit is the first
+    unit-shaped cell after that.
+
+    Stops at the boilerplate tail so a page number or a phone number in
+    the footer is never read as a result.
+    """
+    body = _before_disclaimer_section(lines)
+    rows: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    index = 0
+    while index < len(body):
+        name = body[index].strip()
+        if not _looks_like_analyte(name) or any(m in name for m in _BLOCK_STOP_MARKERS):
+            index += 1
+            continue
+
+        value = unit = ref = None
+        cursor = index + 1
+        end = min(len(body), index + 6)
+        while cursor < end:
+            cell = body[cursor].strip()
+            # The next analyte ends this row, whether or not this one
+            # found a value. Scanning past it skipped every other row:
+            # the cursor landed beyond the next name, so a table read as
+            # rows 1, 3, 5.
+            if _looks_like_analyte(cell):
+                break
+            if value is None and _VALUE_CELL.match(cell):
+                value = cell
+            elif value is not None and ref is None and _RANGE_CELL.match(cell):
+                ref = cell
+            elif value is not None and unit is None and _UNIT_CELL.match(cell):
+                unit = cell
+            cursor += 1
+
+        if value is None:
+            index += 1
+            continue
+
+        clean = _ROW_NUMBER_PREFIX.sub("", name).strip()
+        key = clean.lower()
+        if clean and key not in seen:
+            seen.add(key)
+            rows.append({"name": clean, "value": value, "unit": unit, "reference": ref})
+        # Resume at the cell that ended the row — the next analyte, or
+        # the first cell this row did not claim.
+        index = max(cursor, index + 1)
+
+    return rows
+
+
 def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     analytes = {
         "ck": ["肌酸激酶", "ck"],
@@ -2086,6 +2559,41 @@ def _dedupe_preserve_order(values: Iterable[Any]) -> List[Any]:
         seen.add(marker)
         items.append(value)
     return items
+
+
+def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]]) -> None:
+    """Add table rows the type-specific extractors did not already cover.
+
+    Keys are prefixed `table_` and slugged from the printed analyte
+    name. They are deliberately NOT canonical keys: the API's prompt
+    allowlist is deny-by-default, so these reach the patient's own
+    report screen but not a model prompt until someone reviews the name.
+    That is the right default for a value read off an arbitrary table.
+    """
+    existing = {str(f.get("source_text") or "") for f in fields}
+    existing_names = {str(f.get("field_name") or "").lower() for f in fields}
+
+    for row in extract_lab_table_rows(lines):
+        slug = re.sub(r"[^a-z0-9]+", "_", row["name"].lower()).strip("_")
+        if not slug:
+            slug = re.sub(r"\s+", "_", row["name"])[:24]
+        key = f"table_{slug}"[:48]
+        if key.lower() in existing_names or row["value"] in existing:
+            continue
+        existing_names.add(key.lower())
+        _append_field(
+            fields,
+            _build_field(
+                key,
+                row["value"],
+                normalized_value=_safe_float(row["value"]),
+                unit=row["unit"],
+                source_text=f"{row['name']} {row['value']} {row['unit'] or ''}".strip(),
+                # Lower than a hand-written pattern: the analyte was
+                # matched by table position, not by knowing what it is.
+                confidence=0.7,
+            ),
+        )
 
 
 def _build_observations(structured_fields: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2261,6 +2769,14 @@ def analyze_fshd_report(
         "other",
     }:
         _extract_labs(lines, structured_fields, normalized_summary)
+
+    # Whatever the hand-written extractors missed, read off the table
+    # itself. Runs last and only *adds*: a type-specific extractor knows
+    # this analyte's canonical key, its unit conversion and its
+    # reference semantics, so where one exists it wins. The generic
+    # reader is what makes a report nobody anticipated still produce
+    # values — see extract_lab_table_rows.
+    _append_generic_table_fields(lines, structured_fields)
 
     observations = _build_observations(structured_fields)
     latest_summary = _build_latest_summary(observations)

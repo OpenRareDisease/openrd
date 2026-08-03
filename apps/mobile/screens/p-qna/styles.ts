@@ -1,119 +1,94 @@
-import { Platform, StyleSheet } from 'react-native';
-import { CLINICAL_COLORS, CLINICAL_TINTS } from '../../lib/clinical-visuals';
+import { StyleSheet } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, HAIRLINE, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
-const cardShadow =
-  Platform.select({
-    ios: {
-      shadowColor: '#182B36',
-      shadowOffset: { width: 0, height: 12 },
-      shadowOpacity: 0.1,
-      shadowRadius: 24,
-    },
-    android: {
-      elevation: 5,
-    },
-    default: {},
-  }) ?? {};
-
+/**
+ * 智能问答 — re-pitched on lib/design.ts.
+ *
+ * What this pass removed
+ * ----------------------
+ * The previous version was the generic-chatbot look: every message in
+ * a 22pt-radius shadowed bubble, the assistant's answers boxed at 82%
+ * width behind a robot glyph in a tinted rounded square, a 24pt-radius
+ * shadowed composer, a shadowed progress *card*, and a `SMART CHAT`
+ * eyebrow over a title that already said 智能问答.
+ *
+ * The stance here
+ * ---------------
+ * A Q&A transcript in a medical record is a *document*, not a
+ * messaging app. So the assistant's answer — the long-form clinical
+ * content, the thing the user actually came to read — is set directly
+ * on the page at full width, delimited by a 2pt accent rule down its
+ * left edge (the same device as p-home's `rowStripe`). Only the
+ * user's own turns keep a container, right-aligned and tinted, so
+ * "who said this" still reads at a glance. Nothing carries a shadow;
+ * the only saturated accent on the screen is the send button.
+ *
+ * Body copy went 14/21 → 15/23: these answers are the densest reading
+ * on any screen in the app and were set smaller than the paragraphs
+ * everywhere else.
+ */
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: CLINICAL_COLORS.background,
+    backgroundColor: COLOR.paper,
   },
   keyboardAvoidingView: {
     flex: 1,
   },
+
+  /* Header -------------------------------------------------------- */
+  /** The strip below ScreenHeader: what this screen does, plus 清空.
+   *  The page title moved into the shared header, and `SMART CHAT`
+   *  (previously kept alive as `display: none`) is gone with it. */
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 12,
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.md,
+    paddingBottom: SPACE.md,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: SPACE.md,
   },
-  eyebrow: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    letterSpacing: 1.2,
+  headerText: {
+    flex: 1,
+    gap: SPACE.xs,
   },
   pageTitle: {
-    marginTop: 4,
-    color: CLINICAL_COLORS.text,
-    fontSize: 24,
-    fontWeight: '800',
+    ...TYPE.display,
   },
   pageSubtitle: {
-    marginTop: 8,
-    maxWidth: 240,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
+    ...TYPE.caption,
   },
+  /** 清空. A destructive-ish secondary action, not a status — so a
+   *  control radius, not a pill. */
   headerAction: {
-    marginTop: 4,
+    minHeight: MIN_TOUCH_TARGET,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.neutralSoft,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    gap: SPACE.sm,
+    paddingHorizontal: SPACE.md,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.lineStrong,
   },
-  headerActionText: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  memoryBanner: {
-    marginHorizontal: 20,
-    marginBottom: 12,
-    padding: 16,
-    borderRadius: 24,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_TINTS.accentBorder,
-    ...cardShadow,
-  },
-  memoryIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CLINICAL_TINTS.accentSoft,
-  },
-  memoryContent: {
-    flex: 1,
-  },
-  memoryTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  memoryText: {
-    marginTop: 6,
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
-  },
+
+  /* Transcript ---------------------------------------------------- */
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 24,
-    gap: 14,
+    paddingHorizontal: SPACE.gutter,
+    paddingBottom: SPACE.xl,
+    gap: SPACE.lg,
   },
   messageRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 10,
+    // `stretch` lets the assistant rule run the full height of the
+    // answer beside it.
+    alignItems: 'stretch',
+    gap: SPACE.md,
   },
   messageRowAssistant: {
     justifyContent: 'flex-start',
@@ -121,266 +96,247 @@ export default StyleSheet.create({
   messageRowUser: {
     justifyContent: 'flex-end',
   },
+  /**
+   * Was a 34pt tinted rounded square holding a robot glyph — the most
+   * recognisable "generated UI" tell in the app. It is now a 2pt
+   * semantic rule spanning the answer. The glyph the JSX still puts
+   * inside is clipped by `overflow: hidden`; removing the <FontAwesome6>
+   * belongs with the next index.tsx edit.
+   */
   avatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
+    width: 2,
+    alignSelf: 'stretch',
+    borderRadius: 1,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarAssistant: {
-    backgroundColor: CLINICAL_TINTS.accentSoft,
+    backgroundColor: COLOR.accent,
   },
   avatarError: {
-    backgroundColor: CLINICAL_TINTS.warningSoft,
+    backgroundColor: COLOR.alert,
   },
   messageBubble: {
-    maxWidth: '82%',
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderWidth: 1,
-    ...cardShadow,
+    maxWidth: '100%',
+    borderRadius: RADIUS.surface,
   },
+  /** Not a bubble any more: the answer is set on the page, full
+   *  width, with the rule at its left doing the containing. */
   messageBubbleAssistant: {
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderColor: CLINICAL_COLORS.border,
-    borderBottomLeftRadius: 8,
+    flex: 1,
+    paddingVertical: 2,
   },
+  /** The user's own turn keeps a container so authorship reads
+   *  without a colour-coded avatar. Tinted rather than solid accent —
+   *  ink-on-tint keeps the timestamp and metadata legible, which
+   *  white-on-teal never did. */
   messageBubbleUser: {
-    backgroundColor: CLINICAL_COLORS.accentStrong,
-    borderColor: CLINICAL_COLORS.accentStrong,
-    borderBottomRightRadius: 8,
+    ...SURFACE.cardAccent,
+    maxWidth: '84%',
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
   },
+  /** Applied last, so it restores the padding the assistant variant
+   *  drops — an error bubble is a real surface again. */
   messageBubbleError: {
-    backgroundColor: CLINICAL_TINTS.warningSurface,
-    borderColor: CLINICAL_TINTS.warningBorder,
+    backgroundColor: COLOR.alertWash,
+    borderWidth: HAIRLINE,
+    borderColor: 'rgba(180, 71, 47, 0.22)',
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
   },
+  /** Real speaker attribution, not decoration — kept, but demoted.
+   *  No letter-spacing: this label is Chinese. */
   messageAuthor: {
-    color: CLINICAL_COLORS.textMuted,
+    marginBottom: SPACE.xs,
     fontSize: 11,
-    fontWeight: '700',
-    marginBottom: 6,
+    lineHeight: 15,
+    fontWeight: '600',
+    color: COLOR.inkMuted,
   },
   messageText: {
-    fontSize: 14,
-    lineHeight: 21,
+    ...TYPE.body,
   },
   messageTextAssistant: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
   },
   messageTextUser: {
-    color: '#FFFFFF',
+    color: COLOR.ink,
   },
   messageMetaRow: {
-    marginTop: 8,
+    marginTop: SPACE.sm,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: SPACE.md,
   },
+  messageTime: {
+    fontSize: 11,
+    lineHeight: 15,
+    // inkMuted, not inkFaint: this row also renders inside the tinted
+    // user surface, where faint drops under 3:1.
+    color: COLOR.inkMuted,
+  },
+  messageStateText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '600',
+    color: COLOR.accent,
+  },
+
+  /* Consent-epoch divider ----------------------------------------- */
   systemDividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginVertical: 14,
-    paddingHorizontal: 8,
+    gap: SPACE.md,
+    marginVertical: SPACE.xs,
   },
   systemDividerLine: {
     flex: 1,
-    height: 1,
-    backgroundColor: CLINICAL_COLORS.border,
+    ...SURFACE.rule,
   },
   systemDividerText: {
-    color: CLINICAL_COLORS.textMuted,
     fontSize: 11,
     lineHeight: 16,
     maxWidth: '70%',
     textAlign: 'center',
+    color: COLOR.inkMuted,
   },
+
+  /* Consent gate, inside an errored bubble ------------------------ */
   consentCard: {
-    marginTop: 10,
-    gap: 10,
+    marginTop: SPACE.md,
+    gap: SPACE.md,
   },
   consentCardText: {
-    color: CLINICAL_COLORS.textSoft,
-    fontSize: 13,
-    lineHeight: 20,
+    ...TYPE.caption,
+    color: COLOR.inkSoft,
   },
-  consentGrantButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    minHeight: 46,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
-  },
-  consentGrantButtonDisabled: {
-    opacity: 0.6,
-  },
-  consentGrantButtonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  consentDetailLink: {
-    alignSelf: 'center',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  consentDetailLinkText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 12,
-    textDecorationLine: 'underline',
-  },
-  retryButton: {
-    marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.accent,
-    alignSelf: 'flex-start',
-  },
-  retryButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: CLINICAL_COLORS.accentStrong,
-  },
-  messageTime: {
-    color: CLINICAL_TINTS.textFaint,
-    fontSize: 11,
-  },
-  messageStateText: {
-    color: CLINICAL_COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
+
+  /* Per-answer progress ------------------------------------------- */
+  /** Was a tinted 22pt-radius card stacked under the bubbles — a
+   *  second container for something transient. It is now the tail of
+   *  the transcript, opened by a hairline. */
   progressCard: {
-    marginTop: 4,
-    padding: 16,
-    borderRadius: 22,
-    backgroundColor: 'rgba(248, 242, 234, 0.8)',
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
+    marginTop: SPACE.xs,
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    gap: SPACE.sm,
   },
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 12,
+    gap: SPACE.md,
   },
   progressTitle: {
-    color: CLINICAL_COLORS.text,
-    fontSize: 13,
-    fontWeight: '700',
+    ...TYPE.label,
   },
   progressStatus: {
-    color: CLINICAL_COLORS.textMuted,
+    ...TYPE.caption,
     fontSize: 12,
   },
   progressBar: {
-    marginTop: 10,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: CLINICAL_TINTS.panelStrong,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: COLOR.line,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    borderRadius: 999,
-    backgroundColor: CLINICAL_COLORS.accentStrong,
+    borderRadius: 1.5,
+    backgroundColor: COLOR.accent,
   },
   progressStages: {
-    marginTop: 12,
-    gap: 8,
+    marginTop: SPACE.xs,
+    gap: SPACE.sm,
   },
   progressStageItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: SPACE.sm,
   },
   progressStageDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: CLINICAL_TINTS.disabledTrack,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLOR.lineStrong,
   },
   progressStageDotActive: {
-    backgroundColor: CLINICAL_COLORS.accentStrong,
+    backgroundColor: COLOR.accent,
   },
   progressStageDotDone: {
-    backgroundColor: CLINICAL_COLORS.success,
+    backgroundColor: COLOR.good,
   },
   progressStageDotError: {
-    backgroundColor: CLINICAL_COLORS.warning,
+    backgroundColor: COLOR.alert,
   },
   progressStageText: {
-    color: CLINICAL_COLORS.textMuted,
+    ...TYPE.caption,
     fontSize: 12,
   },
   progressStageTextActive: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.ink,
+    fontWeight: '600',
   },
   progressStageTextDone: {
-    color: CLINICAL_COLORS.text,
+    color: COLOR.inkSoft,
   },
   progressStageTextError: {
-    color: CLINICAL_COLORS.warning,
+    color: COLOR.alert,
   },
+
+  /* Composer ------------------------------------------------------ */
   composerShell: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 16,
-    backgroundColor: CLINICAL_TINTS.surfaceOverlay,
-    borderTopWidth: 1,
-    borderTopColor: CLINICAL_COLORS.border,
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.md,
+    paddingBottom: SPACE.lg,
+    // Opaque paper, not a translucent overlay: the transcript must not
+    // ghost through the thing the user is typing into.
+    backgroundColor: COLOR.paper,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
   },
+  /** A sunken well, per the token doc — an input should read as
+   *  recessed, not as another floating card. */
   composerCard: {
+    ...SURFACE.well,
     minHeight: 66,
-    borderRadius: 24,
-    backgroundColor: CLINICAL_COLORS.panel,
-    borderWidth: 1,
-    borderColor: CLINICAL_COLORS.border,
-    paddingLeft: 16,
-    paddingRight: 10,
-    paddingVertical: 10,
+    paddingLeft: SPACE.md,
+    paddingRight: SPACE.sm,
+    paddingVertical: SPACE.sm,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 12,
-    ...cardShadow,
+    gap: SPACE.sm,
   },
   composerInput: {
     flex: 1,
     minHeight: 44,
     maxHeight: 140,
-    color: CLINICAL_COLORS.text,
-    fontSize: 14,
-    lineHeight: 21,
-    paddingTop: 4,
-    paddingBottom: 4,
+    color: COLOR.ink,
+    fontSize: 15,
+    lineHeight: 23,
+    paddingTop: SPACE.sm,
+    paddingBottom: SPACE.sm,
   },
+  /** The one saturated accent on this screen. */
   sendButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+    borderRadius: RADIUS.control,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: CLINICAL_COLORS.accentStrong,
+    backgroundColor: COLOR.accent,
   },
   sendButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
   },
   composerHint: {
-    marginTop: 10,
-    color: CLINICAL_COLORS.textMuted,
+    marginTop: SPACE.sm,
+    ...TYPE.caption,
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 17,
   },
 });
