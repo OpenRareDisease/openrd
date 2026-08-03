@@ -197,3 +197,25 @@ class PdfPageLimitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_tesseract_reads_chinese_not_latin():
+    """中文单语，不要 chi_sim+eng。
+
+    2026-08-03 线上一张大便常规：项目名读出来了，结果值全成了乱码——
+    阴性(-) 被 Tesseract 读成 BAEC) / BARE(-) / KARE / BAPE(-)。原因是
+    两个语言模型竞争时 eng 拿拉丁字母去套中文字形。
+
+    这条断言看起来琐碎，但它守的是一个反直觉的结论：加上 eng 会让
+    「拉丁字符数」上升而**识别质量下降**，因为多出来的拉丁不是识别到
+    了英文，是把中文误读成了英文。下一个人看到「只用 chi_sim 是不是
+    读不了 ALT/AST」而想加回 eng 时，应该先重跑 ocr_service.py 顶部
+    记的那两组实测数字——医学缩写行数在两种配置下都是 7。
+    """
+    from app.services.ocr_service import TESSERACT_LANG, TESSERACT_CONFIG
+
+    assert TESSERACT_LANG == "chi_sim", "加回 eng 前先读顶部的实测数据"
+    assert "--psm 6" in TESSERACT_CONFIG, (
+        "化验单是表格版式，默认的全自动分页会把行内的"
+        "「项目—结果—参考值」对应关系切散"
+    )

@@ -12,6 +12,39 @@ PaddleOCR = None
 np = None
 _PADDLE_AVAILABLE = False
 
+# Tesseract 配置：中文单语 + PSM 6。
+#
+# 生产上是 Tesseract-only（OCR_DISABLE_PADDLE=true），而这条流水线原本
+# 是围绕 PaddleOCR 调的。2026-08-03 线上传了一张福建某院的大便常规，
+# 项目名读出来了、结果值全成了乱码：阴性(-) 被读成 BAEC) / BARE(-) /
+# KARE / BAPE(-)。
+#
+# 原因是 lang="chi_sim+eng"：两个模型竞争时，eng 会拿拉丁字母去套中文
+# 字形。多出来的「拉丁字符」不是识别到了英文，是把中文误读成了英文。
+#
+# 在两张真实报告上实测（同一张图、同一台机器、只改这两个参数）：
+#
+#   大便常规 1190x840        「阴性」次数  非空白字符  数字  拉丁
+#     chi_sim+eng (原)            8          683       94    35
+#     chi_sim --psm 6            12          946       98     7
+#
+#   生化全套                     医学缩写行  非空白字符  数字  拉丁
+#     chi_sim+eng (原)               7         2214     290   376
+#     chi_sim --psm 6                7         2698     443   316
+#
+# 关键的两点：ALT/AST/GGT 这类医学缩写在两种配置下都是 7 行，去掉 eng
+# 并没有丢掉英文缩写（chi_sim 的字库本身含 ASCII）；而数字从 290 涨到
+# 443，对化验单来说数字就是数据本身。拉丁计数下降是好事——降掉的是
+# 上面那些 BAEC/KARE 之类的噪声。
+#
+# --psm 6（假定整页是一个统一文本块）比默认的全自动分页更适合化验单
+# 的表格版式：默认模式会把表格切成互不相关的区域，行内的「项目—结果—
+# 参考值」对应关系因此散掉。
+#
+# 如果哪天 PaddleOCR 装回来了，这些就只影响 fallback 路径。
+TESSERACT_LANG = "chi_sim"
+TESSERACT_CONFIG = "--psm 6"
+
 def _paddle_disabled() -> bool:
     """
     Allow disabling PaddleOCR on platforms where Paddle may crash (e.g. Apple Silicon via emulation).
@@ -335,7 +368,8 @@ def extract_text_from_pdf(pdf_path):
                     with Image.open(temp_image_path) as page_image:
                         page_text = pytesseract.image_to_string(
                             page_image,
-                            lang="chi_sim+eng",
+                            lang=TESSERACT_LANG,
+                            config=TESSERACT_CONFIG,
                         )
                     if page_text.strip():
                         _engines_used.add("tesseract")
@@ -377,7 +411,9 @@ def extract_text_from_file(file_path, content_type):
                 if not _tesseract_logged:
                     _log_ocr_message("OCR engine: Tesseract (fallback)")
                     _tesseract_logged = True
-                image_text = pytesseract.image_to_string(image, lang="chi_sim+eng")
+                image_text = pytesseract.image_to_string(
+                    image, lang=TESSERACT_LANG, config=TESSERACT_CONFIG
+                )
                 if image_text.strip():
                     _engines_used.add("tesseract")
                 return image_text
