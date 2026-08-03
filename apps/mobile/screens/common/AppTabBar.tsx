@@ -7,7 +7,7 @@ import { COMFORTABLE_TOUCH_TARGET, MIN_TOUCH_TARGET } from '../../lib/a11y';
 import { COLOR, ELEVATION, HAIRLINE, INTERACTION } from '../../lib/design';
 
 /**
- * Three destinations and one action.
+ * Four destinations and one action.
  *
  * The old bar carried five tabs — 首页 / 问答 / 记录 / 我的档案 / 我的 —
  * of which 记录 is not a place at all but the single most frequent
@@ -60,11 +60,15 @@ const AppTabBar = ({ state, navigation }: BottomTabBarProps) => {
   // the two halves rather than on top of a real tab's touch target.
   //
   // The halves are weighted by how many tabs each holds, not given
-  // `flex: 1` apiece. With three tabs the naive split puts two on the
-  // left and one on the right, and equal-flex halves then hand the
-  // lone tab twice the width of its neighbours: on a 375pt screen 我的
-  // owned 145pt against 73pt each, visibly lopsided, with a dead strip
-  // beside the FAB that navigated to 我的 when tapped.
+  // `flex: 1` apiece, so an uneven split stays proportional. At today's
+  // four tabs `Math.ceil(4 / 2)` splits 2/2 and the weighting is a
+  // no-op — it is kept for the next time the count changes. The
+  // regression it was written for happened at three tabs: the naive
+  // split put two on the left and one on the right, and equal-flex
+  // halves then handed the lone tab twice the width of its neighbours
+  // — on a 375pt screen 我的 owned 145pt against 73pt each, visibly
+  // lopsided, with a dead strip beside the FAB that navigated to 我的
+  // when tapped.
   const midpoint = Math.ceil(visibleRoutes.length / 2);
   const leftRoutes = visibleRoutes.slice(0, midpoint);
   const rightRoutes = visibleRoutes.slice(midpoint);
@@ -88,8 +92,34 @@ const AppTabBar = ({ state, navigation }: BottomTabBarProps) => {
     return (
       <TouchableOpacity
         key={route.key}
-        accessibilityRole="button"
-        accessibilityState={isFocused ? { selected: true } : {}}
+        // `tab`, not `button`. ARIA does not list aria-selected as a
+        // supported property of role=button (it is supported on tab,
+        // option, row, gridcell, treeitem, columnheader, rowheader), so
+        // browsers drop it from the accessibility tree: the bar used to
+        // emit literally <div role="button" aria-selected="true"> and a
+        // VoiceOver/NVDA user on the web export heard
+        // 「今天，按钮」「病程，按钮」「问答，按钮」「我的，按钮」 — identical
+        // whether or not that tab was the current one. The only other
+        // cue for「you are here」is COLOR.accent vs COLOR.inkMuted below,
+        // which a screen reader cannot see. Matches p-manage,
+        // p-audit_history and SegmentedControl.
+        //
+        // The row deliberately does NOT carry accessibilityRole=
+        // "tablist": 记一笔 is a button sitting between the two halves,
+        // and a tablist may only own tabs — declaring one here would put
+        // an invalid child in the group and leave the whole thing in an
+        // undefined state. An orphan tab still exposes its selected
+        // state; an invalid tablist may expose nothing.
+        accessibilityRole="tab"
+        // Native reads `accessibilityState`; react-native-web 0.20 drops
+        // it entirely (it is absent from forwardedProps and
+        // createDOMProps). aria-* is first-class in RN 0.71+ and maps
+        // back to accessibilityState on device, so both must be present
+        // — see SegmentedControl and Button. Passed unconditionally
+        // rather than `isFocused ? { selected: true } : {}`, so an
+        // unselected tab announces「not selected」instead of announcing
+        // no state at all.
+        accessibilityState={{ selected: isFocused }}
         aria-selected={isFocused}
         accessibilityLabel={meta.title}
         style={styles.tab}

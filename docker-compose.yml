@@ -283,6 +283,18 @@ services:
     # exists to explain the kill never printed. Must stay above
     # SHUTDOWN_GRACE_MS; raise both together.
     stop_grace_period: 25s
+    # PID 1 must be an init, because the image's CMD is
+    # `sh -c "node dist/db/migrate.js && exec node dist/index.js"`. During the
+    # migrate phase PID 1 is dash, which installs no signal handler and does
+    # not forward: a SIGTERM to a container that is still migrating is
+    # discarded by the kernel (default disposition, PID 1) and is NOT
+    # redelivered after the `exec`. `docker compose down` seconds into an `up`,
+    # or an operator aborting a bad boot, therefore stops nothing — compose
+    # waits out the full stop_grace_period above and SIGKILLs, and every line
+    # of the graceful-shutdown path (readiness drain, server.close, closePool)
+    # is inert for that stop. docker-init becomes PID 1 and forwards TERM to
+    # the shell, which is enough to stop the migrate child.
+    init: true
     env_file:
       # `required: false` so a fresh clone fails on the POSTGRES_PASSWORD
       # message above (which says what to do) instead of on compose's own
@@ -306,17 +318,39 @@ services:
       # per runbook §1.4 set DATABASE_URL in .env, saw no error, and the api
       # kept writing PHI into the compose-local volume while the managed
       # database stayed empty and the pg_dump backup targeted the wrong host.
+      #
+      # The cost of that fix: whatever .env says now reaches this container,
+      # and the container's network is not the host's. `.env.example` therefore
+      # ships DATABASE_URL COMMENTED OUT, so `cp .env.example .env &&
+      # docker compose up` resolves to the compose-internal default below
+      # instead of to a `@localhost:5432` that means the api container itself.
+      # Set DATABASE_URL in .env only for a database BOTH contexts can reach by
+      # the same name (a managed instance); the host-side tools that want the
+      # localhost form (npm run db:backup / db:restore / kb:prune) can be given
+      # it per-invocation. If it does end up loopback here, OPENRD_IN_CONTAINER
+      # below turns the resulting ECONNREFUSED crash-loop into one boot error
+      # that names the variable.
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/fshd_openrd}
+      # Read by exactly one check in apps/api/src/config/env.ts
+      # (validateContainerTopologyEnv): inside a container, a DATABASE_URL host
+      # of localhost / 127.0.0.1 / ::1 is the api itself and never Postgres.
+      # Hardcoded rather than interpolated — it is a fact about where this
+      # process runs, not a knob, and a `.env` value must not be able to switch
+      # the check off.
+      OPENRD_IN_CONTAINER: 'true'
       # Pool + timeout tuning. instances × DATABASE_POOL_MAX must stay under
       # Postgres's max_connections (stock 100 here, 97 usable) minus the
       # kb-service pool and headroom for an operator psql — 8 api instances
       # at 10 is the practical ceiling. See apps/api/src/db/pool.ts.
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       DATABASE_CONNECT_TIMEOUT_MS: ${DATABASE_CONNECT_TIMEOUT_MS:-10000}
-      # Shutdown budget. DRAIN must exceed the load balancer's health-check
-      # interval (Caddy does not poll readiness at all in this topology, so 0
-      # is defensible here), and GRACE must stay below stop_grace_period
-      # above.
+      # Shutdown budget, in three ordered parts: DRAIN must exceed the load
+      # balancer's health-check interval (Caddy does not poll readiness at all
+      # in this topology, so 0 is defensible here), GRACE must stay at least a
+      # second above DRAIN — the drain runs INSIDE the grace budget, it is not
+      # added to it, and env.ts now refuses to boot on a pair that inverts the
+      # shutdown — and stop_grace_period above must stay above GRACE so the
+      # exit is ours and gets logged rather than being a SIGKILL.
       SHUTDOWN_READINESS_DRAIN_MS: ${SHUTDOWN_READINESS_DRAIN_MS:-5000}
       SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-20000}
       OCR_PROVIDER: ${OCR_PROVIDER:-embedded}

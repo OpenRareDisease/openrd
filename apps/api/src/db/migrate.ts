@@ -69,8 +69,22 @@ const quoteIdentifier = (value: string) => `"${value.replace(/"/g, '""')}"`;
 
 const normalizeSqlText = (value: string) => value.replace(/^\uFEFF/, '');
 
-const readSqlFile = async (filePath: string) => {
-  const raw = await fs.readFile(filePath);
+/**
+ * The ONE decoder. Exported so the corpus guard in migrate.test.ts can
+ * call it instead of maintaining a second one.
+ *
+ * It had a second one: the test decoded with an LE-BOM-only ternary and
+ * no BOM strip, while this handles the BE BOM too. A migration saved as
+ * UTF-16BE \u2014 Windows Notepad's \u300CUnicode big endian\u300D, the same route
+ * that produced 003_complete_chat_system.sql \u2014 containing `BEGIN;` would
+ * decode under the test's `toString('utf8')` to NUL-interleaved
+ * mojibake, `_hasSelfManagedTransaction` would return false, the
+ * assertion would pass, and CI would be green. The runner, decoding it
+ * correctly, then throws inside the container CMD at deploy time, after
+ * the health gate is already armed. Two decoders that must agree is a
+ * guard that fails open; there is now one.
+ */
+export const _decodeSqlBuffer = (raw: Buffer): string => {
   const isUtf16Le = raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe;
   const isUtf16Be = raw.length >= 2 && raw[0] === 0xfe && raw[1] === 0xff;
 
@@ -90,6 +104,8 @@ const readSqlFile = async (filePath: string) => {
 
   return normalizeSqlText(raw.toString('utf8'));
 };
+
+const readSqlFile = async (filePath: string) => _decodeSqlBuffer(await fs.readFile(filePath));
 
 /** SQLSTATE 3D000 — invalid_catalog_name, i.e. "database does not exist". */
 const INVALID_CATALOG_NAME = '3D000';
@@ -126,6 +142,7 @@ const errorCodeOf = (error: unknown): string | undefined =>
 const ensureDatabaseExists = async (
   connectionString: string,
   ssl: ReturnType<typeof resolvePgSsl>,
+  { create }: { create: boolean },
 ) => {
   const targetDatabase = getDatabaseName(connectionString);
 
@@ -141,6 +158,20 @@ const ensureDatabaseExists = async (
     if (errorCodeOf(error) !== INVALID_CATALOG_NAME) {
       throw error;
     }
+  }
+
+  if (!create) {
+    // `--status` is the command the runbook calls 「先看一眼将要发生什么」,
+    // and it used to run this branch unconditionally: an operator whose
+    // shell still held a stale DATABASE_URL from another environment
+    // typed the look-first command and silently created a fully
+    // bootstrapped database on whatever host that URL resolved to. A
+    // read-only-sounding command must not write.
+    throw new Error(
+      `Database "${targetDatabase}" does not exist, so nothing has been applied to it. ` +
+        `--status will not create it — run 「npm run db:migrate」 if creating it is what you want, ` +
+        `and check DATABASE_URL first if it is not.`,
+    );
   }
 
   const adminClient = new Client({
@@ -471,6 +502,30 @@ export const _resolveDownTarget = (arg: string, forwardFiles: string[]): string 
  * where refusing is wrong: the operator already ran the down file by
  * hand under the old procedure and needs the ledger row gone.
  */
+/**
+ * Forward migrations recorded as applied that sort ABOVE the rollback
+ * target — i.e. that were written assuming the target is in place.
+ *
+ * Concretely, in today's corpus: 016's down script does
+ * `ALTER TABLE patient_function_tests DROP COLUMN IF EXISTS deleted_at`,
+ * and 017 built a partial index `… WHERE not_applicable AND deleted_at
+ * IS NULL` on that column. `--down 016` with 017 still applied drops
+ * 017's index as a silent CASCADE, prints 「Rolled back 016」, exits 0,
+ * and the roll-forward then re-applies 016 only — because 017's ledger
+ * row was never removed. The index is permanently gone while `--status`
+ * says `applied  017_…`.
+ *
+ * Lexicographic comparison on the whole filename, matching the ordering
+ * `listMigrationFiles()` sorts by and `applyPendingMigrations` applies
+ * in, so 「later」 here means exactly 「applied after」. Ledger ids that are
+ * not forward migration filenames (the bootstrap pseudo-entry, ghost
+ * `_down.sql` rows from before PR #58) are excluded: they are not things
+ * an operator can roll back in order, and reporting them here would
+ * force --force in a case where the real answer is to clean the ledger.
+ */
+export const _laterMigrationsStillApplied = (forwardFile: string, appliedIds: string[]): string[] =>
+  appliedIds.filter((id) => _isForwardMigrationFile(id) && id > forwardFile).sort();
+
 export const _rollBackMigration = async (
   client: MigrationLedgerClient,
   forwardFile: string,
@@ -495,6 +550,21 @@ export const _rollBackMigration = async (
     );
   }
 
+  const stillApplied = _laterMigrationsStillApplied(forwardFile, [...applied.keys()]);
+  if (stillApplied.length > 0 && !force) {
+    throw new Error(
+      `${stillApplied.join(', ')} ${stillApplied.length === 1 ? 'is' : 'are'} still applied and ` +
+        `${stillApplied.length === 1 ? 'was' : 'were'} written on top of ${forwardFile}. Rolling ` +
+        `${forwardFile} back first drops objects the later migration depends on — Postgres ` +
+        `CASCADEs silently, this command prints success, and the roll-forward re-applies only ` +
+        `${forwardFile} because the later ledger row is still there. The dropped object never ` +
+        `comes back while --status keeps reporting it as applied, which is the exact ` +
+        `ledger-says-applied-but-schema-lacks-it failure this mode exists to eliminate. ` +
+        `Roll them back first (highest number first), or pass --force if you have already ` +
+        `established that nothing above depends on it.`,
+    );
+  }
+
   const sql = await readSqlFile(downPath);
   assertRunnerOwnsTransaction(downFile, sql);
 
@@ -512,13 +582,104 @@ export const _rollBackMigration = async (
   }
 };
 
-const printStatus = async (client: MigrationLedgerClient) => {
-  const applied = await getAppliedMigrations(client);
-  const files = await listMigrationFiles();
+const BOOTSTRAP_ID = '000_init_db_bootstrap';
 
-  const bootstrapId = '000_init_db_bootstrap';
+/**
+ * Does the ledger table exist, without creating it.
+ *
+ * `ensureMigrationsTable` is DDL, and `--status` must not issue any.
+ * On a database that has never been migrated the honest status is
+ * 「everything pending」, not 「I made you a schema_migrations table and
+ * then told you everything is pending」.
+ */
+const migrationsTableExists = async (client: MigrationLedgerClient) => {
+  const result = await client.query(
+    "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists",
+  );
+  return result.rows[0]?.exists === true;
+};
+
+/**
+ * Read the ledger without issuing a single DDL statement, or return
+ * null when there is no ledger at all.
+ *
+ * The checksum column is added by `ensureMigrationsTable` via
+ * `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, which status mode no longer
+ * runs. Any environment migrated before checksums shipped therefore has
+ * a two-column schema_migrations, and a plain
+ * `SELECT id, checksum FROM schema_migrations` would die on 42703 —
+ * turning 「--status stopped writing」 into 「--status stopped working on
+ * exactly the old databases whose drift you most want to inspect」.
+ * Substituting a NULL literal gives those rows the same 「applied, no
+ * baseline」 verdict the column-present path gives them.
+ */
+const readLedgerWithoutDdl = async (
+  client: MigrationLedgerClient,
+): Promise<Map<string, string | null> | null> => {
+  if (!(await migrationsTableExists(client))) {
+    return null;
+  }
+
+  const columnProbe = await client.query(`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'schema_migrations'
+        AND column_name = 'checksum'
+    ) AS exists
+  `);
+  const hasChecksum = columnProbe.rows[0]?.exists === true;
+
+  const result = await client.query(
+    hasChecksum
+      ? 'SELECT id, checksum FROM schema_migrations'
+      : 'SELECT id, NULL::text AS checksum FROM schema_migrations',
+  );
+  return new Map<string, string | null>(
+    result.rows.map((row) => [String(row.id), row.checksum == null ? null : String(row.checksum)]),
+  );
+};
+
+/**
+ * Ledger ids with no file behind them.
+ *
+ * The status report used to iterate the DISK listing and look each file
+ * up in the ledger, so a ledger row with no file was structurally
+ * invisible. That is not hypothetical: any environment deployed before
+ * PR #58 carries `011_status_check_constraints_down.sql` and
+ * `012_text_column_constraints_down.sql` as applied rows — the down
+ * scripts ran as forwards on the same boot and dropped every CHECK
+ * constraint and the same-profile trigger that their forward siblings
+ * had just created. `--status` printed a clean all-applied list on
+ * exactly those databases, and the drift column could not flag it
+ * either, because rows that old predate the checksum column and get no
+ * verdict.
+ *
+ * The runbook has a hand-written `SELECT id FROM schema_migrations
+ * WHERE id LIKE '%_down.sql'` pre-flight for this. A pre-flight the
+ * command itself could run is one the operator can skip.
+ */
+export const _findOrphanLedgerIds = (appliedIds: string[], filesOnDisk: string[]): string[] => {
+  const known = new Set([...filesOnDisk, BOOTSTRAP_ID]);
+  return appliedIds.filter((id) => !known.has(id)).sort();
+};
+
+/** Returns the number of orphans that make the status a failure, so
+ *  main() can set a non-zero exit code without printStatus knowing
+ *  about process exit. */
+const printStatus = async (client: MigrationLedgerClient): Promise<number> => {
+  const files = await listMigrationFiles();
+  const ledger = await readLedgerWithoutDdl(client);
+  const applied = ledger ?? new Map<string, string | null>();
+
+  if (ledger === null) {
+    process.stdout.write(
+      'schema_migrations does not exist — nothing has ever been applied to this database.\n',
+    );
+  }
+
   process.stdout.write(
-    `${(applied.has(bootstrapId) ? 'applied' : 'pending').padEnd(8)} ${bootstrapId}\n`,
+    `${(applied.has(BOOTSTRAP_ID) ? 'applied' : 'pending').padEnd(8)} ${BOOTSTRAP_ID}\n`,
   );
 
   for (const file of files) {
@@ -541,6 +702,26 @@ const printStatus = async (client: MigrationLedgerClient) => {
       );
     }
   }
+
+  const orphans = _findOrphanLedgerIds([...applied.keys()], files);
+  const ghostDownRows = orphans.filter((id) => id.endsWith('_down.sql'));
+
+  for (const id of orphans) {
+    process.stdout.write(`${'orphan'.padEnd(8)} ${id}  (in schema_migrations, no file on disk)\n`);
+  }
+
+  if (ghostDownRows.length > 0) {
+    process.stderr.write(
+      `\n${ghostDownRows.length} rollback script(s) are recorded as applied migrations: ` +
+        `${ghostDownRows.join(', ')}.\n` +
+        `This database ran those _down.sql files as forward migrations, so the objects their ` +
+        `forward siblings create are missing while the ledger reports the forward migration as ` +
+        `applied. Delete the ghost rows and re-apply the forward migrations by hand before ` +
+        `deploying — see the pre-flight in the release runbook.\n`,
+    );
+  }
+
+  return ghostDownRows.length;
 };
 
 const USAGE = [
@@ -563,7 +744,10 @@ const main = async () => {
     throw new Error(`--down requires a migration id.\n${USAGE}`);
   }
 
-  await ensureDatabaseExists(env.DATABASE_URL, resolvePgSsl(env));
+  // `--status` never creates. Every other mode is allowed to, because
+  // creating the database is the first half of what applying migrations
+  // to a fresh environment means.
+  await ensureDatabaseExists(env.DATABASE_URL, resolvePgSsl(env), { create: mode !== 'status' });
 
   const pgClient = new Client({
     connectionString: env.DATABASE_URL,
@@ -573,7 +757,12 @@ const main = async () => {
   await pgClient.connect();
   const client = asLedgerClient(pgClient);
   try {
-    await ensureMigrationsTable(client);
+    // DDL, so it is skipped in status mode — printStatus probes for the
+    // table instead and reports 「nothing has ever been applied」 when it
+    // is absent.
+    if (mode !== 'status') {
+      await ensureMigrationsTable(client);
+    }
 
     // Every mode runs under the lock, including --status: a status
     // read taken while another container is halfway through the loop
@@ -590,13 +779,20 @@ const main = async () => {
         return;
       }
 
-      await applyBootstrapIfNeeded(client, databaseName);
-
       if (mode === 'status') {
-        await printStatus(client);
+        // No bootstrap here either. applyBootstrapIfNeeded used to run
+        // one line above this branch, so the look-first command either
+        // executed the whole extracted init_db.sql inside a transaction
+        // or INSERTed a 000_init_db_bootstrap row into whatever ledger
+        // it found — before printing a single status line.
+        const ghostDownRows = await printStatus(client);
+        if (ghostDownRows > 0) {
+          process.exitCode = 1;
+        }
         return;
       }
 
+      await applyBootstrapIfNeeded(client, databaseName);
       await applyPendingMigrations(client);
       process.stdout.write('Database migrations completed\n');
     });

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import type { OcrProvider, OcrResult } from './ocr-provider.js';
+import { ON_PREMISE_OCR, type OcrProvider, type OcrResult } from './ocr-provider.js';
 import { AppError } from '../../utils/app-error.js';
 
 const execFileAsync = promisify(execFile);
@@ -349,6 +349,7 @@ const buildFields = (
 };
 
 export class EmbeddedReportOcrProvider implements OcrProvider {
+  readonly disclosure = ON_PREMISE_OCR;
   private readonly pythonBin: string;
   private readonly timeoutMs: number;
   private readonly scriptPath: string;
@@ -441,6 +442,10 @@ export class EmbeddedReportOcrProvider implements OcrProvider {
 
       return {
         provider: payload.provider ?? 'embedded_report_pipeline_v1',
+        // The parse is a local child process over a file in our own
+        // tmpdir — this is the mode 隐私政策 §3(三) describes, and the
+        // only one for which that sentence is true as written.
+        disclosure: ON_PREMISE_OCR,
         extractedText: payload.extracted_text ?? '',
         fields: mapped.fields,
         confidence: mapped.confidence,

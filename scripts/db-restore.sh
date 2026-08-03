@@ -17,6 +17,12 @@
 #   DATABASE_URL   default restore target. `npm run db:restore` loads it
 #                  from .env. --into overrides it.
 #
+# Whichever of the two is used, the URI is parsed into PGHOST/PGUSER/
+# PGPASSWORD/PGDATABASE before any client runs, so the password never
+# appears in argv and therefore never in /proc/<pid>/cmdline. See
+# scripts/lib/pg-connect-env.sh for why that matters more here than
+# anywhere else: a restore is the longest-running command in the repo.
+#
 # THE --force GATE
 # ----------------
 # Without --force this refuses any target that already holds application
@@ -29,6 +35,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 fail() {
   printf 'ERROR: %s\n' "$1" >&2
   exit 1
@@ -37,6 +45,9 @@ fail() {
 log() {
   printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1"
 }
+
+# shellcheck source=lib/pg-connect-env.sh
+. "$SCRIPT_DIR/lib/pg-connect-env.sh"
 
 DUMP_PATH=""
 TARGET_URL="${DATABASE_URL:-}"
@@ -84,12 +95,21 @@ fi
 
 [ -n "$TARGET_URL" ] || fail "no restore target. Set DATABASE_URL (npm run db:restore loads .env) or pass --into."
 
-# Report the target by host/database only. The connection URI carries a
-# password and this output routinely ends up pasted into an incident
-# channel.
-TARGET_DESC="$(printf '%s' "$TARGET_URL" | sed -E 's#^(postgres(ql)?://)[^@]*@#\1***@#')"
+# Puts the credential in PGPASSWORD rather than in argv. `pg_restore
+# --dbname="$URI"` published the production password in
+# /proc/<pid>/cmdline — world readable on a stock Linux host — for the
+# whole duration of a restore, which is the slowest operation in this
+# repo. See scripts/lib/pg-connect-env.sh.
+#
+# It also gives us a credential-free description for free. The old
+# sed-based masking only stripped a `user:pass@` authority; a URI whose
+# password appeared anywhere else (a `password=` query parameter, a
+# path-less URI) was printed verbatim into output that routinely ends up
+# pasted into an incident channel.
+pg_use_connection_uri "$TARGET_URL" "the restore target" || exit 1
+TARGET_DESC="$PG_DESC"
 
-psql "$TARGET_URL" -tAc 'SELECT 1' >/dev/null 2>&1 || fail "cannot connect to $TARGET_DESC"
+psql -tAc 'SELECT 1' >/dev/null 2>&1 || fail "cannot connect to $TARGET_DESC"
 
 # --- emptiness gate -----------------------------------------------------
 #
@@ -99,7 +119,7 @@ psql "$TARGET_URL" -tAc 'SELECT 1' >/dev/null 2>&1 || fail "cannot connect to $T
 # the gate. So count rows in the tables that hold irreplaceable data.
 EXISTING=0
 for table in app_users patient_profiles patient_measurements patient_function_tests patient_documents kb_chunks; do
-  n="$(psql "$TARGET_URL" -tAc "SELECT count(*) FROM $table" 2>/dev/null || echo 0)"
+  n="$(psql -tAc "SELECT count(*) FROM $table" 2>/dev/null || echo 0)"
   EXISTING=$((EXISTING + n))
 done
 
@@ -125,7 +145,7 @@ log "restoring $DUMP_PATH -> $TARGET_DESC"
 # the first failure and leaves the partial state visible for diagnosis
 # rather than silently rolling back the evidence.
 if ! pg_restore \
-  --dbname="$TARGET_URL" \
+  --dbname="$PGDATABASE" \
   --clean --if-exists \
   --no-owner --no-privileges \
   --exit-on-error \
@@ -136,7 +156,7 @@ fi
 log "restore finished; verifying"
 
 for table in app_users patient_profiles patient_measurements patient_function_tests kb_chunks schema_migrations; do
-  n="$(psql "$TARGET_URL" -tAc "SELECT count(*) FROM $table" 2>/dev/null || echo '?')"
+  n="$(psql -tAc "SELECT count(*) FROM $table" 2>/dev/null || echo '?')"
   log "  $table: $n rows"
 done
 
@@ -144,7 +164,7 @@ done
 # schema_migrations leaves the next api boot re-running every migration
 # against an already-migrated schema, which dies on 42710/42P07 and
 # crash-loops the container.
-LEDGER="$(psql "$TARGET_URL" -tAc 'SELECT count(*) FROM schema_migrations' 2>/dev/null || echo 0)"
+LEDGER="$(psql -tAc 'SELECT count(*) FROM schema_migrations' 2>/dev/null || echo 0)"
 [ "$LEDGER" -gt 0 ] || fail "schema_migrations is empty after the restore. Do not start the api against this database — it would try to re-apply every migration."
 
 log "restore complete. Run 'npm run db:migrate:status' against the target before starting the api."

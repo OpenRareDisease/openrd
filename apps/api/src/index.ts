@@ -1,55 +1,12 @@
 import { loadAppEnv } from './config/env.js';
 import { createLogger } from './config/logger.js';
 import { getPool } from './db/pool.js';
-import { beginShutdown } from './lifecycle.js';
+import { createShutdownSequencer } from './lifecycle.js';
 import { createServer } from './server.js';
 
 const env = loadAppEnv();
 const logger = createLogger(env);
 const app = createServer({ env, logger });
-
-const server = app.listen(env.PORT, () => {
-  logger.info({ port: env.PORT }, 'API server started');
-});
-
-/**
- * Shut down without dropping work.
- *
- * There was no signal handling at all, so every deploy killed whatever
- * was in flight: an upload mid-write, an SSE answer mid-stream, a
- * transaction between its BEGIN and its COMMIT. The sweep timers in
- * profile.routes.ts are already `.unref()`ed "for graceful shutdown",
- * and profile.controller.ts notes its in-flight OCR map could be
- * drained by one — the pieces were written for a shutdown path that did
- * not exist.
- *
- * Four steps, in this order:
- *
- *  1. Fail readiness. A load balancer only stops routing after a
- *     /healthz/ready poll fails, so closing the listener first would
- *     reset every request dispatched in between — the exact failure
- *     draining exists to prevent.
- *  2. Wait one poll interval, still serving normally.
- *  3. Stop accepting connections and let the open ones finish.
- *  4. Close the pool — last, because the requests being waited on are
- *     still using it.
- *
- * The deadline is the honest part. `server.close()` waits for every
- * open connection, and an SSE stream with a keepalive timer never
- * closes on its own, so without one a single subscribed client would
- * block the deploy indefinitely. Past the grace period the process
- * exits and says why — otherwise the orchestrator's SIGKILL arrives
- * with nothing in the logs to explain it.
- *
- * Background OCR is deliberately NOT waited for. A PaddleOCR parse runs
- * 30–90s, past any sane deploy window, so a document caught mid-parse
- * stays `processing` and the startup stuck-processing sweep flips it to
- * `parse_failed`, which the patient can reparse. Pretending to drain it
- * would just mean always hitting the force-exit.
- */
-const READINESS_DRAIN_MS = env.SHUTDOWN_READINESS_DRAIN_MS;
-const SHUTDOWN_GRACE_MS = env.SHUTDOWN_GRACE_MS;
-let shuttingDown = false;
 
 const closePool = async () => {
   try {
@@ -63,50 +20,66 @@ const closePool = async () => {
   }
 };
 
-const shutdown = (signal: NodeJS.Signals) => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  beginShutdown();
-  logger.info(
-    { signal, readinessDrainMs: READINESS_DRAIN_MS, graceMs: SHUTDOWN_GRACE_MS },
-    'shutting down: readiness now reports draining',
-  );
+/**
+ * Built BEFORE `app.listen`, on purpose.
+ *
+ * `createShutdownSequencer` validates that the readiness drain fits
+ * inside the grace period, and an invalid pair has to be fatal at boot
+ * rather than at the next SIGTERM — a process that has already bound the
+ * port and is answering /healthz/ready would otherwise look healthy for
+ * days and then tear every in-flight request off the socket on the
+ * deploy that stops it. Throwing here means the container crash-loops
+ * with the message, which is what an operator can act on.
+ *
+ * The sequencer itself lives in lifecycle.ts so it can be unit-tested;
+ * everything that made it untestable — the listener, the pool, the
+ * signal handlers — stays in this file.
+ */
+const shutdown = createShutdownSequencer({
+  server: {
+    // Bound lazily: `server` is assigned on the next statement, and the
+    // sequencer is only ever invoked from a signal handler installed
+    // after that. Passing `server` directly would need it declared
+    // first, which would put `app.listen` above the timing validation.
+    close: (callback) => server.close(callback),
+    closeIdleConnections: () => server.closeIdleConnections(),
+    closeAllConnections: () => server.closeAllConnections(),
+  },
+  closePool,
+  readinessDrainMs: env.SHUTDOWN_READINESS_DRAIN_MS,
+  graceMs: env.SHUTDOWN_GRACE_MS,
+  logger,
+});
 
-  const forceExit = setTimeout(() => {
-    logger.warn(
-      { signal, graceMs: SHUTDOWN_GRACE_MS },
-      'shutdown grace expired with connections still open; exiting anyway',
-    );
-    process.exit(1);
-  }, SHUTDOWN_GRACE_MS);
-  // The deadline must not itself be the thing keeping the process alive
-  // once the work it guards is done.
-  forceExit.unref();
-
-  const drainDelay = setTimeout(() => {
-    logger.info({ signal }, 'no longer accepting connections');
-    server.close((error) => {
-      if (error) logger.error({ error }, 'error while closing the HTTP server');
-      void closePool().then(() => {
-        clearTimeout(forceExit);
-        logger.info({ signal }, 'shutdown complete');
-        process.exit(0);
-      });
-    });
-    // Keep-alive sockets sitting idle between requests would otherwise
-    // hold `close()` open for their full timeout with no work to show
-    // for it. In-flight requests are untouched by this.
-    server.closeIdleConnections();
-  }, READINESS_DRAIN_MS);
-  drainDelay.unref();
-};
+const server = app.listen(env.PORT, () => {
+  logger.info({ port: env.PORT }, 'API server started');
+});
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// An unhandled rejection takes the process down on Node 15+ with no log
-// line of its own. Say what it was first — a silent restart loop is the
-// hardest kind of production failure to diagnose.
+/**
+ * Log the rejection and KEEP SERVING. This is a deliberate choice, and
+ * it is the opposite of what this comment used to claim.
+ *
+ * Node's default for an unhandled rejection is `--unhandled-rejections=
+ * throw`, i.e. terminate. But merely INSTALLING a listener switches that
+ * default off — so the handler that was added to "say what it was first"
+ * silently turned a fatal condition into a logged one while its own
+ * comment described the fatal behaviour it had just removed.
+ *
+ * Keeping the process up is the right call for this server: one stray
+ * rejection in a background OCR job or a sweep timer must not take an
+ * SSE answer away from a patient mid-stream, and every floating promise
+ * in apps/api/src terminates in a `.catch` today. The cost is that there
+ * is no restart-on-wedge backstop in this topology — compose's
+ * `restart: unless-stopped` only fires on exit, so a process that logs
+ * this and is genuinely wedged stays in rotation until someone notices.
+ * That is what the error level is for: this line is a page, not a note.
+ */
 process.on('unhandledRejection', (reason) => {
-  logger.error({ reason }, 'unhandled promise rejection');
+  logger.error(
+    { reason },
+    'unhandled promise rejection; the process is deliberately staying up — investigate, this is not routine',
+  );
 });

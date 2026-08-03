@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch --env-file ../../.env src/index.ts",
     "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.test.json --noEmit",
     "migrate": "tsx --env-file ../../.env src/db/migrate.ts",
     "migrate:status": "tsx --env-file ../../.env src/db/migrate.ts --status",
     "migrate:down": "tsx --env-file ../../.env src/db/migrate.ts --down",

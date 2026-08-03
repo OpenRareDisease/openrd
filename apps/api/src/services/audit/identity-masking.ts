@@ -94,6 +94,94 @@ export const maskAuditIp = (ip: string | null | undefined): string | null => {
 };
 
 /**
+ * Browser and platform families, longest-specific first.
+ *
+ * Order is load-bearing twice over. Every Chromium browser ships
+ * Chrome's *and* Safari's tokens, so Edge/Opera/Samsung/WeChat have to
+ * be tested before Chrome and Chrome before Safari; and an Android UA
+ * carries `Linux`, so Android has to be tested before it. Getting that
+ * backwards does not throw — it just quietly relabels every Edge user
+ * as Chrome, which is the kind of wrong that is never noticed.
+ *
+ * Each entry matches its raw token OR the label itself, which is what
+ * makes the mask idempotent: `maskAuditUserAgent('Chrome on Android')`
+ * has to come back 「Chrome on Android」, because OtpService already
+ * masks at the call site AND at the write boundary and the same double
+ * pass will eventually be applied here.
+ */
+const UA_BROWSER_FAMILIES: ReadonlyArray<readonly [token: string, label: string]> = [
+  ['Edg', 'Edge'],
+  ['OPR', 'Opera'],
+  ['SamsungBrowser', 'Samsung Internet'],
+  ['MicroMessenger', 'WeChat'],
+  ['QQBrowser', 'QQ Browser'],
+  ['UCBrowser', 'UC Browser'],
+  ['Firefox', 'Firefox'],
+  ['Chrome', 'Chrome'],
+  ['Safari', 'Safari'],
+];
+
+const UA_PLATFORM_FAMILIES: ReadonlyArray<readonly [tokens: readonly string[], label: string]> = [
+  [['Windows'], 'Windows'],
+  [['Android'], 'Android'],
+  [['iPhone', 'iPad', 'iPod', 'iOS'], 'iOS'],
+  [['Macintosh', 'Mac OS X', 'macOS'], 'macOS'],
+  [['Linux'], 'Linux'],
+];
+
+/** A product token we are willing to keep verbatim for a non-browser
+ *  client: a name, not a build string. Capped so a caller cannot use
+ *  the field as free storage. */
+const UA_PRODUCT_PATTERN = /^[A-Za-z][A-Za-z0-9 ._-]{0,31}$/;
+
+/**
+ * `Mozilla/5.0 (Linux; Android 13; SM-G991B) … Chrome/126.0.0.0 …` →
+ * `Chrome on Android`. `okhttp/4.9.0` → `okhttp`.
+ *
+ * A full User-Agent is a device fingerprint: the build number, the
+ * exact patch version and — on Android — the phone model (`SM-G991B`)
+ * are together narrow enough to single out one person's handset across
+ * unrelated rows. Two families and nothing else answers the question
+ * these rows exist to answer (「这些失败登录来自同一种客户端吗」)
+ * without carrying that.
+ *
+ * This one matters beyond its own merits. `purgeDueAccountDeletions`
+ * can only tombstone audit rows it can match back to the account, and
+ * the OTP and failed-login rows carry no `userId` and only a masked
+ * phone — so they are never matched, and account-deletion.ts justifies
+ * that with 「rows written after that carry only a masked value, which
+ * is already pseudonymous」. That sentence was false for as long as
+ * `userAgent` sat in the payload raw: a deleted account's exact device
+ * string survived its own erasure for the rest of the 180-day
+ * retention window. Masking here is what makes the erasure argument
+ * true, which is why it is not optional.
+ */
+export const maskAuditUserAgent = (userAgent: string | null | undefined): string | null => {
+  if (!userAgent) return null;
+  const trimmed = userAgent.trim();
+  if (trimmed.length === 0) return null;
+
+  const browser = UA_BROWSER_FAMILIES.find(
+    ([token, label]) => trimmed.includes(token) || trimmed.includes(label),
+  )?.[1];
+  const platform = UA_PLATFORM_FAMILIES.find(
+    ([tokens, label]) => tokens.some((token) => trimmed.includes(token)) || trimmed.includes(label),
+  )?.[1];
+
+  if (browser && platform) return `${browser} on ${platform}`;
+  if (browser) return browser;
+  if (platform) return platform;
+
+  // Non-browser callers — okhttp, curl, python-requests, a health
+  // prober — keep their product name and lose the version, because
+  // 「forty failed logins, all from python-requests」 is exactly the
+  // shape this table is read for. Anything that does not look like a
+  // product name is masked wholesale rather than passed through.
+  const product = trimmed.split('/')[0].trim();
+  return UA_PRODUCT_PATTERN.test(product) ? product : '****';
+};
+
+/**
  * Every `event_payload` key that can hold a direct identifier.
  *
  * `purgeDueAccountDeletions` strips exactly these when it tombstones a
@@ -103,6 +191,10 @@ export const maskAuditIp = (ip: string | null | undefined): string | null => {
  * Deliberately excludes `userId`: after `app_users` is gone that UUID
  * resolves to nothing, and keeping it is what lets an auditor still see
  * that N failed logins belonged to one account rather than N.
+ *
+ * Stays a literal `as const` tuple because account-deletion.ts
+ * interpolates it straight into the jsonb `-` operator, which takes a
+ * key literal and not a bind slot.
  */
 export const AUDIT_IDENTITY_KEYS = [
   'phoneNumber',
@@ -111,6 +203,31 @@ export const AUDIT_IDENTITY_KEYS = [
   'ip',
   'userAgent',
 ] as const;
+
+export type AuditIdentityKey = (typeof AUDIT_IDENTITY_KEYS)[number];
+
+/**
+ * The mask each declared identity key is rewritten by.
+ *
+ * `Record<AuditIdentityKey, …>` is the whole point of this table. As
+ * first written, AUDIT_IDENTITY_KEYS listed `userAgent` and
+ * `maskAuditPayload` had a hand-written `if` chain that did not — so
+ * the list claimed a key was masked while every audit row stored the
+ * raw device string, and the two sat fifteen lines apart in this file,
+ * each looking complete. Now adding a key to the tuple without adding
+ * its mask here is a compile error, and dropping the mask without
+ * dropping the key is one too.
+ */
+const AUDIT_IDENTITY_MASKS: Record<
+  AuditIdentityKey,
+  (value: string | null | undefined) => string | null
+> = {
+  phoneNumber: maskAuditPhone,
+  email: maskAuditEmail,
+  identifier: maskAuditIdentifier,
+  ip: maskAuditIp,
+  userAgent: maskAuditUserAgent,
+};
 
 /**
  * Mask the identifier-bearing keys of an `audit_logs` payload, leaving
@@ -127,17 +244,10 @@ export const AUDIT_IDENTITY_KEYS = [
  */
 export const maskAuditPayload = (payload: Record<string, unknown>): Record<string, unknown> => {
   const masked: Record<string, unknown> = { ...payload };
-  if ('phoneNumber' in masked) {
-    masked.phoneNumber = maskAuditPhone(masked.phoneNumber as string | null | undefined);
-  }
-  if ('email' in masked) {
-    masked.email = maskAuditEmail(masked.email as string | null | undefined);
-  }
-  if ('identifier' in masked) {
-    masked.identifier = maskAuditIdentifier(masked.identifier as string | null | undefined);
-  }
-  if ('ip' in masked) {
-    masked.ip = maskAuditIp(masked.ip as string | null | undefined);
+  for (const key of AUDIT_IDENTITY_KEYS) {
+    if (key in masked) {
+      masked[key] = AUDIT_IDENTITY_MASKS[key](masked[key] as string | null | undefined);
+    }
   }
   return masked;
 };

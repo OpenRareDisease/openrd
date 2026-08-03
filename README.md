@@ -59,7 +59,7 @@ openrd/
 
 ## 环境要求
 
-- Node.js >= 18
+- Node.js >= 20.12（根 `package.json` 的 `engines.node` 就是这个下限；`db:migrate:down` / `db:backup` / `db:restore` / `kb:prune` 四条脚本都用 `node --env-file-if-exists=.env`，这个 flag 从 20.12 才有。仓库没有 `.npmrc`，所以 `npm install` 在更低版本上只会警告一句、装完照样成功，直到你跑备份脚本时报 `bad option`。两个镜像和 CI 都固定在 Node 20）
 - npm >= 10
 - Python >= 3.10（本地直跑 OCR / KB 服务需要）
 - PostgreSQL >= 14（本地模式）
@@ -136,7 +136,9 @@ npm run dev:mobile
 docker compose up -d --build
 ```
 
-> ⚠️ `.env` 里必须有 `POSTGRES_PASSWORD`（compose 用 `${POSTGRES_PASSWORD:?…}` 强制要求，没有它直接拒绝渲染）。本地开发加一行 `POSTGRES_PASSWORD=postgres` 即可；生产必须换成真实密码——`validateProductionEnv` 会独立拒绝任何仍带 `postgres:postgres` 的 `DATABASE_URL`。
+> ⚠️ `.env` 里必须有 `POSTGRES_PASSWORD`（compose 用 `${POSTGRES_PASSWORD:?…}` 强制要求，没有它直接拒绝渲染）。`.env.example` 里**已经有这一行**（`POSTGRES_PASSWORD=postgres`），本地开发照抄即可，不用另加；生产改掉这一行的值，不要在文件末尾再补一行同名的——`validateProductionEnv` 会独立拒绝任何仍带 `postgres:postgres` 的 `DATABASE_URL`。
+>
+> ⚠️ **不要取消 `.env` 里 `DATABASE_URL` 那行的注释。** 模板里它是故意注释掉的：方案 A 需要 `@localhost:5432`，方案 B 需要 compose 内网的 `@postgres:5432`，而 compose 现在把 api 的 `DATABASE_URL` 写成插值，`.env` 里的值会赢过它的默认值。保持注释，两种方案各用各的默认值都能跑。只有数据库是两边同名可达的托管实例时才显式写它；真写成了 loopback，api 会带着点名 `DATABASE_URL` 的启动错误退出（compose 给容器硬编码了 `OPENRD_IN_CONTAINER=true`），而不是留下一串 `migrate.js` ECONNREFUSED 重启循环。
 
 如果宿主机 `5432` 已被占用：
 
@@ -155,6 +157,8 @@ POSTGRES_PORT=5433 docker compose up -d --build
 - API 容器固定使用 `OCR_PYTHON_BIN=python3`
 - KB 容器固定监听 `0.0.0.0:5010`
 - API 容器固定访问 `KB_SERVICE_URL=http://kb-service:5010`
+
+**`DATABASE_URL` 不在这份覆盖清单里**，这是有意的：以前 compose 把它硬编码成内网地址，结果 operator 填的托管库连接串被静默丢弃；现在它是插值，`.env` 说了算，而 compose 的默认值 `@postgres:5432` 只在 `.env` 没写它时生效——这就是模板里那行保持注释的原因。
 
 如果需要兼容 `v1` 的 MinIO 历史报告，可启用：
 

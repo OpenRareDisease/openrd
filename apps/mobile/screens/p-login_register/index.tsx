@@ -58,10 +58,8 @@ import {
   validateRegisterForm,
 } from '../../lib/validation';
 import ScreenBackButton from '../common/ScreenBackButton';
-
-// Interrupted-registration draft. Secrets (passwords) and OTP state
-// are stripped before persisting — see the persist effect.
-const REGISTER_FORM_DRAFT_KEY = 'openrd.register.draft';
+import { REGISTER_FORM_DRAFT_KEY, REGISTER_FORM_DRAFT_MAX_AGE_MS } from '../../lib/draft-keys';
+import { parseRegisterDraft } from '../../lib/register-draft';
 
 interface LoginFormData {
   phone: string;
@@ -137,6 +135,16 @@ const LoginRegisterScreen: React.FC = () => {
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [termsError, setTermsError] = useState<string | null>(null);
 
+  /**
+   * When the number in the draft was FIRST typed, not when it was last
+   * written. The expiry below has to be anchored to something the user
+   * did; if each persist stamped `Date.now()` the hydrate effect would
+   * re-stamp it on mount, and merely opening the 注册 tab once a day
+   * would keep someone else's phone number alive for ever — which is
+   * the exact failure the bound exists to close.
+   */
+  const registerDraftSavedAtRef = useRef<number | null>(null);
+
   // Restore an interrupted registration (user switched away to read
   // the SMS, app got killed, …). Secrets and OTP state are NEVER
   // persisted — see the persist effect below.
@@ -144,21 +152,26 @@ const LoginRegisterScreen: React.FC = () => {
     (async () => {
       try {
         const raw = await getSessionValue(REGISTER_FORM_DRAFT_KEY);
-        if (raw) {
-          const draft = JSON.parse(raw) as Partial<RegisterFormData> & Record<string, unknown>;
-          // Pick known fields explicitly: a pre-slim draft carries
-          // removed profile fields (fullName, region…), and spreading
-          // it would smuggle them into state — and back into storage
-          // — forever. Secrets/OTP state are excluded by construction.
+        // Expiry, the pre-bound (no savedAt) shape and the pre-slim
+        // shape are all decided in lib/register-draft.ts, where they
+        // are covered by tests. A null here always means「delete」, not
+        // 「keep it and look again later」: a draft we refuse to restore
+        // is a phone number with no owner, and leaving it on disk is
+        // the whole defect.
+        const draft = parseRegisterDraft(raw, {
+          now: Date.now(),
+          maxAgeMs: REGISTER_FORM_DRAFT_MAX_AGE_MS,
+        });
+        if (!draft) {
+          if (raw) {
+            await setSessionValue(REGISTER_FORM_DRAFT_KEY, null);
+          }
+        } else {
+          registerDraftSavedAtRef.current = draft.savedAt;
           setRegisterForm((prev) => ({
             ...prev,
-            phone: typeof draft.phone === 'string' ? draft.phone : prev.phone,
-            identity:
-              draft.identity === 'doctor' ||
-              draft.identity === 'patient_family' ||
-              draft.identity === 'other'
-                ? draft.identity
-                : prev.identity,
+            phone: draft.phone,
+            identity: draft.identity ?? prev.identity,
           }));
         }
       } catch {
@@ -181,9 +194,28 @@ const LoginRegisterScreen: React.FC = () => {
     void confirmPassword;
     void code;
     void otpRequestId;
-    setSessionValue(REGISTER_FORM_DRAFT_KEY, JSON.stringify(safeDraft)).catch(() => {
-      // Draft persistence must never block typing.
-    });
+
+    // Nothing to restore means nothing to store. Without this the
+    // effect fired once on mount with an empty form and planted the
+    // key on every device that merely *opened* the 注册 tab; and a
+    // patient who deliberately cleared the number would have watched
+    // the cleared value be written straight back. `identity` alone is
+    // a three-value enum, not worth a storage entry on its own.
+    if (!safeDraft.phone.trim()) {
+      registerDraftSavedAtRef.current = null;
+      setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
+      return;
+    }
+
+    // Carried forward, never re-stamped — see registerDraftSavedAtRef.
+    const savedAt = registerDraftSavedAtRef.current ?? Date.now();
+    registerDraftSavedAtRef.current = savedAt;
+
+    setSessionValue(REGISTER_FORM_DRAFT_KEY, JSON.stringify({ ...safeDraft, savedAt })).catch(
+      () => {
+        // Draft persistence must never block typing.
+      },
+    );
   }, [registerForm, isRegisterDraftHydrated]);
 
   // UI状态
@@ -308,6 +340,14 @@ const LoginRegisterScreen: React.FC = () => {
   // 标签切换
   const handleTabSwitch = (tab: 'login' | 'register') => {
     setActiveTab(tab);
+    if (tab === 'login') {
+      // Switching to 登录 is the clearest「I am not registering after
+      // all」signal this screen ever gets, and it is the abandonment
+      // path that never reaches logout — the device has no session, so
+      // PATIENT_SCOPED_SECURE_KEYS is never swept. Drop the number now
+      // rather than leaving it to the 24h expiry.
+      void setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
+    }
   };
 
   // 密码显示切换
@@ -389,6 +429,12 @@ const LoginRegisterScreen: React.FC = () => {
       });
 
       await setSession(response);
+      // Somebody logged in on this device, so whoever was half-way
+      // through 注册 is not coming back to it. This is the second
+      // abandonment point (the first is handleTabSwitch); together
+      // with the 24h bound they cover the paths that never reach
+      // logout, which is the only sweep that knows about the key.
+      await setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
       // Show only the last 4 digits — the full phone number on a
       // shoulder-surfable success toast is a "we're showing PII we
       // don't need to" case the strict review flagged.
@@ -561,6 +607,8 @@ const LoginRegisterScreen: React.FC = () => {
         requestId: otpLoginForm.requestId,
       });
       await setSession(response);
+      // Same reasoning as the password-login path above.
+      await setSessionValue(REGISTER_FORM_DRAFT_KEY, null).catch(() => {});
       const lastFour = (response.user.phoneNumber ?? '').slice(-4) || '****';
       showModal('success', '登录成功', `欢迎回来，尾号 ${lastFour}`);
       router.replace('/p-home');

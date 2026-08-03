@@ -6,7 +6,7 @@
 
 ## 0. 版本号与发布材料
 
-**这一节整节是 v2.5.0 新增。** 此前清单里完全没有版本号步骤：bump 全靠记性，没有 CI 也没有 hook 会发现 manifest 还停在一个已经打过 tag 的版本上。
+**这一节整节是 v2.5.0 新增。** 此前清单里完全没有版本号步骤：bump 全靠记性，而没有任何自动检查会发现 manifest 还停在一个已经打过 tag 的版本上——现在有了 CI，但它跑的是 lint / typecheck / test，**不比对版本号**，所以这一节仍然是人来过。
 
 - [ ] 四个 manifest 的 `version` 已 bump 到本次版本，且四个值一致：
   - `package.json`
@@ -14,7 +14,7 @@
   - `apps/mobile/package.json`
   - `apps/mobile/app.json`（`expo.version`）
 - [ ] 根 `package-lock.json` 里那四处 workspace 版本号已同步（跑一次 `npm install --package-lock-only`，不要手改）。
-      （`apps/mobile/package-lock.json` 是个残留文件，自 `1.0.0` 起就没跟过版本，npm workspace 用的是根 lock。要么删掉它，要么就别假装它在跟。）
+      （`apps/mobile/package-lock.json` 那个残留文件已在 v2.5.0 删除——它自 `1.0.0` 起就没跟过版本。npm workspace 用的是根 lock，仓库里现在只有这一份，不用去找第二个。）
 - [ ] `CHANGELOG.md` 顶部已有本次版本条目。
 - [ ] `docs/releases/<version>.md` 已写（如果本次按惯例出 release note）。
 - [ ] `README.md` / `README.en.md` 的「当前工作版本」行和发布说明链接已更新。
@@ -35,18 +35,20 @@
 - [ ] 数据库传输：`DATABASE_SSL_ENABLED=true`（远程 / 托管库必须），或 `DATABASE_ALLOW_INSECURE=true`（compose 内网）二选一显式表态。
 - [ ] `WEB_EXPO_PUBLIC_API_URL` 指向目标 API（compose web 服务的 build arg，默认 `/api`，走 Caddy 时就是对的）。
       **`EXPO_PUBLIC_API_URL` 不在仓库根 `.env` 里**——Expo 只解析 `apps/mobile/` 下的 dotenv，根目录那份它从来不读。本地 / EAS 构建看 `apps/mobile/.env`（模板 `apps/mobile/.env.example`）。
-- [ ] `OCR_PROVIDER` 已确认，生产默认 `embedded`。`OCR_PARSER_TIMEOUT_MS` 是 300000 而不是 120000（120s 是已知会误杀健康解析的旧值，实测单份要 ~103s）。
-- [ ] 四个调参项的耦合已确认：`实例数 × DATABASE_POOL_MAX` < Postgres `max_connections`；`SHUTDOWN_GRACE_MS` < compose `stop_grace_period`（25s）；`SHUTDOWN_READINESS_DRAIN_MS` > 负载均衡器健康检查间隔（本仓库 Caddy 不做健康轮询，单副本可设 0）；`DATABASE_CONNECT_TIMEOUT_MS` 与托管库的网络延迟相称。
+- [ ] `OCR_PROVIDER=embedded`。**生产不要用 `baidu`**：那个模式会把患者上传的报告图片 base64 后 POST 给 `aip.baidubce.com`，而隐私政策 §3（三）对患者写的是「OCR 在我们自己的服务器上完成，不外发给第三方识别服务」，§5 的受托方名单里也没有这一家。换过去之前要先改政策文本、把接收方写进 §5、签委托处理协议——不是一个环境变量的决定。`OCR_PARSER_TIMEOUT_MS` 是 300000 而不是 120000（120s 是已知会误杀健康解析的旧值，实测单份要 ~103s）。
+- [ ] 四个调参项的耦合已确认：`实例数 × DATABASE_POOL_MAX` < Postgres `max_connections`；`SHUTDOWN_READINESS_DRAIN_MS` < `SHUTDOWN_GRACE_MS` < compose `stop_grace_period`（25s）；`SHUTDOWN_READINESS_DRAIN_MS` > 负载均衡器健康检查间隔（本仓库 Caddy 不做健康轮询，单副本可设 0）；`DATABASE_CONNECT_TIMEOUT_MS` 与托管库的网络延迟相称。
+      中间那条**三段不等式**别拆开看：GRACE 是从 t=0 起算的强制退出 deadline，DRAIN 只是推迟 `server.close()` 的等待。DRAIN ≥ GRACE 时 `server.close()` 和 `closePool()` 永远排不上，进程到点被 `process.exit(1)` 打断，正在流式回答的 SSE 从 socket 层被切断，而日志打出来的是「shutdown grace expired with connections still open」——读起来像慢客户端，其实是这两个值设反了。左半边（DRAIN + 1s ≤ GRACE）现在由 env schema 在启动时强制，配错直接起不来；右半边（GRACE < `stop_grace_period`）仍然只有这份清单在管，compose 的值代码读不到。
 - [ ] `docker compose --profile prod config -q` 通过（只做插值和校验，不启动任何东西）。
 
 ## 2. 构建与启动验证
 
 - [ ] `npm run lint` 通过。
 - [ ] `npm run format` 通过（**不要**跳过：仓库里没有 CRLF 问题，prettier 在 master 上是干净的）。
-- [ ] `npm test` 通过（API 48 个测试文件 + 移动端 24 个）。
+- [ ] `npm test` 通过（API + 移动端两个 workspace）。
 - [ ] `python -m pytest apps/report-manager/tests scripts/kb_parsers` 通过（13 个 Python 测试文件；依赖二进制的用例会自行 skip）。
-      仓库目前**没有 CI**（没有 `.github/workflows`，master 分支保护也没有 required status checks），所以上面四条是唯一的自动化验证，必须人手工跑。装上 CI 之后把这四条换成「release commit 上的 CI 全绿」。
-- [ ] `npm run db:migrate:status` 输出符合预期：没有意外的 `pending`，没有 `drifted`（`drifted` = ledger 里的 SHA-256 和磁盘文件对不上）。
+- [ ] **release commit 上的 CI 全绿**：`.github/workflows/ci.yml` 的三个 job —— `API (lint, format, typecheck, test)`、`Mobile (lint, typecheck, test, web export)`、`Report manager (pytest)` —— 都是绿的。CI 存在**不代表**上面四条可以跳过：workflow 只在 push / PR 上跑，而 release commit 有可能是本地打完 tag 直接推的。所以本地手工跑 + CI 全绿是两道，不是二选一。
+- [ ] `docker compose --profile prod build` 在发布前至少成功过一次。CI 的 mobile job 已经跑 `expo export`（Metro 解析 + 静态渲染都过了），但**镜像本身**——api 镜像里的 Python OCR 依赖、`Dockerfile.kb` 的 ML 依赖、nginx 层——仍然只有真 build 会暴露。
+- [ ] `npm run db:migrate:status` 输出符合预期且**退出码为 0**：没有意外的 `pending`，没有 `drifted`（ledger 里的 SHA-256 和磁盘文件对不上），没有 `orphan`（ledger 有行、磁盘没文件；`*_down.sql` 形态的 orphan 会让这条命令直接非零退出，处理办法见 runbook §2.1 的 pre-flight）。这条命令是只读的，可以在生产上放心跑。
 - [ ] `npm run db:migrate` 已执行并成功。
 - [ ] `docker compose --profile prod up -d --build` 可正常拉起服务。**必须带 `--profile prod`**：不带的话 Caddy 和 MinIO 都不启动——没有对外入口，而且每一次患者上传都会在 connect 阶段 500。
 - [ ] 健康检查可用，且语义符合预期：
@@ -72,7 +74,7 @@
 ## 4. 数据与安全
 
 - [ ] **迁移前备份已完成并通过回读校验**：`BACKUP_DIR=/mnt/offsite/… npm run db:backup`。
-      `BACKUP_DIR` 必须在宿主机之外——和 `pg-data` 同一块盘上的 dump 扛不住任何一种真正会发生的故障。脚本自带三道闸：语料为空拒绝出档、先写 `.partial` 再改名、`pg_restore --list` 回读通过后才允许清理旧档。
+      `BACKUP_DIR` 必须是**绝对路径**（相对路径直接被拒，因为它会解析到仓库根，把 PHI dump 写进工作区），而且必须在宿主机之外——和 `pg-data` 同一块盘上的 dump 扛不住任何一种真正会发生的故障。脚本自带的闸：`app_users` / `kb_chunks` 低于下限拒绝出档、行数比上一份 dump 跌超 10% 或库名变了就停下（`.dump.meta` 旁挂清单）、先写 `.partial` 再改名、`pg_restore --list` 回读通过后才写清单，且新 dump 比上一份少患者或小 40% 时**跳过**清理旧档。
 - [ ] **恢复演练**：本季度至少做过一次 `npm run db:restore -- <dump> --into <空的演练库>` 并核对行数。没被恢复过的备份是一个假设，不是备份。
 - [ ] `api-uploads` 卷（`STORAGE_PROVIDER=local` 时）的备份任务在跑，或已确认走 minio。
 - [ ] 数据库初始化脚本 / 迁移已执行。
@@ -82,7 +84,8 @@
 - [ ] **ICP 备案**：`fshdyouth.com` 的备案号已记录在案，且站点页脚已渲染。
       大陆区域的服务器，未备案域名的 80/443 入站会被拦，Caddy 的 HTTP-01 challenge 一直失败、站点根本起不来，而日志里只有取证循环，看不出原因。
 - [ ] **隐私政策**：本次发布的政策文本已声明处理者、联系方式、个人信息清单、目的、**保留期**和接收方（含 LLM 服务商的名字）；且用户接受记录 `(user_id, document, version, accepted_at)` 可查。
-      ⚠️ **截至 v2.5.0 这一项是未达标的**：`apps/mobile/lib/legal-content.ts` 仍是五条一句话的占位文本，没有任何表记录谁接受过哪个版本。第三方 LLM 的单独同意开关存在且默认关闭（`ai_consent_events`），但没点名接收方。这是独立的产品 / 法务工作，不是技术部署项——**留在清单里不打勾**，而不是从清单里删掉。
+      ⚠️ **截至 v2.5.0 这一项仍然未达标，但原因已经换了一个**：文本本身写完了——`apps/mobile/lib/legal-content.ts` 现在是四份成文文档（用户协议 / 隐私政策 / 敏感个人信息处理单独同意 / 儿童个人信息处理规则与监护人同意），点名了 LLM 服务商（硅基流动 SiliconFlow，`api.siliconflow.cn`，DeepSeek-V3）、列了信息清单、目的、保留期和全部接收方；接受记录由 migration 019 的 `legal_document_acceptances` + `POST /api/legal/acceptances` 落库，`(user_id, document, version, accepted_at)` 可查。**卡住这一项的是两个 `【待补】`**：`OPERATOR_LEGAL_NAME`（运营主体登记名称，PIPL 第 17 条第一项要求告知的「个人信息处理者的名称」）和 §5 里的「服务商合同主体」。填这两个要的是营业执照和合同，不是代码——**留在清单里不打勾**，而不是从清单里删掉。
+- [ ] **撤回同意的路径与文本一致**：《敏感个人信息处理单独同意》正文承诺「同意后可随时在『隐私设置』中撤回」，PIPL 第 15 条要求提供便捷的撤回方式。发布前**在真机/真浏览器上走一遍**，不要只看代码：隐私设置页能看到自己同意过的文件与版本 → 点「撤回敏感信息处理同意」→ 再去数据录入页写一条健康数据，期望被 403 `sensitive_consent_required` 挡住并重新弹同意书 → 重新同意后能写入。数据库侧确认那一行是被打了 `withdrawn_at` 而不是被删掉（`SELECT document, version, accepted_at, withdrawn_at FROM legal_document_acceptances WHERE user_id = …`）——撤回前已完成的处理是否合法，日后要靠这一行来证明。
 - [ ] 代码里的保留期与政策文本一致：`otp_verification_codes` / `auth_otps` 过期后 24 小时，`audit_logs` / `ai_prompt_audit` 180 天（见 `apps/api/src/services/audit/retention.ts`）。**改这些数字就要在同一个 commit 里改政策文本**——保留期是对外承诺，不是每次部署可调的旋钮。
 
 ## 5. 发布交付

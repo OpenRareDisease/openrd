@@ -1,4 +1,5 @@
 import { config as loadEnv } from 'dotenv';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const booleanish = () =>
@@ -30,6 +31,15 @@ export const parseOtpAllowlist = (raw: string): string[] =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/** How much of SHUTDOWN_GRACE_MS must remain after the readiness drain
+ *  for the close it precedes to be worth attempting. `server.close()`,
+ *  the pool drain and the final log line are not free, so a drain of
+ *  grace-minus-one-millisecond is the same broken shutdown as a drain of
+ *  grace-plus-ten-seconds — it just fails less obviously. 1s is a floor,
+ *  not a recommendation: the shipped pair (5s drain inside a 20s grace)
+ *  leaves 15s. */
+const SHUTDOWN_CLOSE_HEADROOM_MS = 1_000;
+
 const envSchema = z
   .object({
     // `staging` is treated as production-shaped (see `isProductionLike`
@@ -46,6 +56,18 @@ const envSchema = z
       .string()
       .min(1)
       .default('postgres://postgres:postgres@localhost:5432/fshd_openrd'),
+    // Set to `true` by docker-compose.yml on the api service, and by
+    // nothing else. It exists for exactly one check
+    // (validateContainerTopologyEnv): inside a container, `localhost` in
+    // DATABASE_URL is the container itself, never the database. That
+    // combination used to surface as an ECONNREFUSED from
+    // dist/db/migrate.js under `restart: unless-stopped` — a crash loop
+    // whose log names a port and never names the variable that is wrong,
+    // while `depends_on: postgres: service_healthy` reports the stack
+    // fine. Do NOT set it by hand for a bare-metal run: a host process
+    // reaching Postgres at localhost is the correct configuration, and
+    // this flag would reject it.
+    OPENRD_IN_CONTAINER: booleanish().default(false),
     DATABASE_SSL_ENABLED: booleanish().default(false),
     DATABASE_SSL_REJECT_UNAUTHORIZED: booleanish().default(true),
     // Explicit acknowledgement that a prod DB connection WITHOUT SSL is
@@ -66,13 +88,24 @@ const envSchema = z
     /** How long to keep serving after SIGTERM while readiness already
      *  reports NOT ready. Must exceed the load balancer's health-check
      *  interval, or the LB never observes the failing poll and keeps
-     *  routing right up to the closed listener. */
+     *  routing right up to the closed listener.
+     *
+     *  It also has a CEILING, which this docstring used to omit: the two
+     *  knobs are ordered, not additive. index.ts arms the force-exit at
+     *  SHUTDOWN_GRACE_MS from t=0 and only schedules `server.close()` at
+     *  t=SHUTDOWN_READINESS_DRAIN_MS, so a drain >= grace means the
+     *  process exits(1) with the listener still open — no `server.close`,
+     *  no `closePool()`, every in-flight request (including an SSE answer
+     *  mid-stream) severed at the socket and the pg connections
+     *  abandoned. The superRefine below enforces the ceiling at boot. */
     SHUTDOWN_READINESS_DRAIN_MS: z.coerce.number().int().min(0).default(5_000),
     /** Hard deadline for the whole shutdown. An open SSE stream never
      *  closes on its own, so without this one subscriber blocks the
      *  deploy forever. Keep it below the orchestrator's own SIGKILL
-     *  timeout (Kubernetes: terminationGracePeriodSeconds) so the exit
-     *  is ours and lands in the logs. */
+     *  timeout (Kubernetes: terminationGracePeriodSeconds, compose:
+     *  stop_grace_period) so the exit is ours and lands in the logs, and
+     *  above SHUTDOWN_READINESS_DRAIN_MS + SHUTDOWN_CLOSE_HEADROOM_MS so
+     *  the close it guards actually gets to run. */
     SHUTDOWN_GRACE_MS: z.coerce.number().int().min(1_000).default(20_000),
     // The schema minimum stays 16 on purpose. The real policy is「≥32
     // chars, high entropy」and it is enforced in validateProductionEnv
@@ -256,6 +289,38 @@ const envSchema = z
     CHROMA_API_HOST: z.string().default('localhost'),
     HEALTHCHECK_TIMEOUT_MS: z.coerce.number().int().positive().default(2500),
   })
+  .superRefine((value, ctx) => {
+    // Cross-field, and deliberately NOT inside validateProductionEnv: an
+    // inverted shutdown is just as broken on a developer's machine and
+    // under `docker compose up`, where NODE_ENV defaults to development
+    // and that gate returns immediately.
+    //
+    // The pair is ordered, not additive (index.ts: force-exit armed at
+    // t=0 for SHUTDOWN_GRACE_MS, `server.close()` scheduled at
+    // t=SHUTDOWN_READINESS_DRAIN_MS). The failure this prevents: an
+    // operator follows the DRAIN docstring's 「must exceed the load
+    // balancer's health-check interval」 for a 20s LB poll, sets
+    // SHUTDOWN_READINESS_DRAIN_MS=30000, leaves SHUTDOWN_GRACE_MS at its
+    // 20000 default, and boot accepts it. On the next SIGTERM the drain
+    // timer is still pending when force-exit fires: process.exit(1) with
+    // the listener open, no closePool(), every in-flight request severed
+    // — and the log line printed on the way out
+    // (「shutdown grace expired with connections still open」) blames slow
+    // clients rather than the configuration.
+    if (value.SHUTDOWN_READINESS_DRAIN_MS + SHUTDOWN_CLOSE_HEADROOM_MS > value.SHUTDOWN_GRACE_MS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SHUTDOWN_READINESS_DRAIN_MS'],
+        message:
+          `SHUTDOWN_READINESS_DRAIN_MS (${value.SHUTDOWN_READINESS_DRAIN_MS}) leaves less than ` +
+          `${SHUTDOWN_CLOSE_HEADROOM_MS}ms of SHUTDOWN_GRACE_MS (${value.SHUTDOWN_GRACE_MS}) for the ` +
+          'shutdown it precedes. The two are ordered, not additive: the drain runs INSIDE the ' +
+          'grace budget, and the force-exit fires at the grace deadline whether or not the ' +
+          'listener ever closed. Lower the drain, or raise the grace (and the orchestrator ' +
+          "timeout above it — compose's stop_grace_period) to match.",
+      });
+    }
+  })
   .transform((value) => ({
     ...value,
     // `isProductionLike` is the gate for `validateProductionEnv`.
@@ -370,13 +435,73 @@ const usesDefaultPostgresCredentials = (connectionString: string): boolean => {
     // the one to complain about the format.
     return false;
   }
-  // decode because a password may legitimately be percent-encoded; the
-  // shipped literal is not, but comparing the decoded form costs
-  // nothing and avoids a false negative on `postgres%3Apostgres`-style
-  // rewrites.
-  const user = decodeURIComponent(url.username);
-  const password = decodeURIComponent(url.password);
-  return user === 'postgres' && password === 'postgres';
+  // Decoding catches a `postgres%3Apostgres`-style rewrite of the very
+  // credential this exists to reject. It has to be guarded, though:
+  // decodeURIComponent throws URIError on a lone `%` — and pg accepts
+  // such a password (pg-connection-string pre-escapes invalid
+  // sequences), so a generated password containing `%` is a perfectly
+  // working production credential. Unguarded, this helper crash-looped
+  // the container before any validation output, on exactly the
+  // dedicated role the runbook tells operators to create.
+  //
+  // Falling back to the raw values rather than to `false`: an
+  // undecodable password is definitively not the shipped literal, but
+  // the USERNAME may still be, and the raw comparison still catches
+  // the plain `postgres:postgres` this guard is named for.
+  const decode = (value: string) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
+  return decode(url.username) === 'postgres' && decode(url.password) === 'postgres';
+};
+
+/**
+ * Can traffic to this host physically leave the deployment's own
+ * network? Used only by the PIPL Art. 38 cross-border gate below, which
+ * otherwise treats every hostname that does not end in `.cn` as an
+ * overseas recipient.
+ *
+ * That is wrong for the three shapes a self-hosted LLM actually takes —
+ * a compose service name (`llm`), an RFC1918 address (`10.0.0.5`) and
+ * loopback — none of which can carry a byte across a border. The gate
+ * rejecting them would be survivable if the escape hatch were harmless,
+ * but it is not: the only documented way past is
+ * AI_CROSS_BORDER_ACKNOWLEDGED=true, which makes the deploy's own
+ * configuration assert a cross-border transfer that never happens, and
+ * that flag is what a compliance reviewer reads.
+ *
+ * Deliberately conservative: a public non-`.cn` hostname still requires
+ * the acknowledgement, and a routable address that merely happens to sit
+ * in mainland China is NOT exempted here — geography is not something an
+ * IP literal can prove.
+ */
+const isNonRoutableAiHost = (host: string): boolean => {
+  // `new URL('http://[::1]:8000').hostname` keeps the brackets.
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  const ipVersion = isIP(bare);
+  if (ipVersion === 4) {
+    const octets = bare.split('.').map(Number);
+    const [a, b] = octets;
+    if (a === 10 || a === 127) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    // Link-local (169.254/16) includes the cloud metadata address; it is
+    // not routable off-link either way.
+    if (a === 169 && b === 254) return true;
+    return false;
+  }
+  if (ipVersion === 6) {
+    const normalized = bare.toLowerCase();
+    if (normalized === '::1') return true;
+    // fc00::/7 (unique local) and fe80::/10 (link local).
+    return /^f[cd]/.test(normalized) || /^fe[89ab]/.test(normalized);
+  }
+  // A dotless name — `llm`, `localhost`, a compose service, a Kubernetes
+  // in-namespace Service — has no public DNS delegation to leave through.
+  return !bare.includes('.');
 };
 
 const validateProductionEnv = (env: AppEnv) => {
@@ -425,6 +550,31 @@ const validateProductionEnv = (env: AppEnv) => {
         'remote/managed DB, OR DATABASE_ALLOW_INSECURE=true to acknowledge a ' +
         'compose-internal / private-network Postgres that needs no transport ' +
         'encryption.',
+    );
+  }
+  if (
+    env.DATABASE_SSL_ENABLED &&
+    !env.DATABASE_SSL_REJECT_UNAUTHORIZED &&
+    !env.DATABASE_ALLOW_INSECURE
+  ) {
+    // The half of the SSL story that had no gate. pool.ts passes this
+    // flag straight into `ssl: { rejectUnauthorized }`, so `true/false`
+    // is TLS with no certificate verification: encrypted, unauthenticated,
+    // and trivially machine-in-the-middled by anything on the path — while
+    // the check above is satisfied and every log line and health summary
+    // says SSL is on. The operator most likely to land here is the one
+    // whose managed provider handed them a self-signed / private-CA cert
+    // and who turned verification off to get past the handshake error;
+    // that is a legitimate topology, but it must be the same kind of
+    // written-down decision plaintext is, not a flag flipped once during a
+    // deploy at 3am. Reusing DATABASE_ALLOW_INSECURE rather than inventing
+    // a second ack: it already means 「I know this DB connection is not
+    // authenticated transport」.
+    errors.push(
+      'Production DB has SSL enabled but DATABASE_SSL_REJECT_UNAUTHORIZED=false, i.e. an ' +
+        'unverified TLS connection carrying PHI. Ship the CA (or use the provider bundle) ' +
+        'and set DATABASE_SSL_REJECT_UNAUTHORIZED=true, OR set DATABASE_ALLOW_INSECURE=true ' +
+        'to acknowledge an unauthenticated private-network connection.',
     );
   }
   if (env.OTP_PROVIDER === 'mock') {
@@ -518,7 +668,7 @@ const validateProductionEnv = (env: AppEnv) => {
     } catch {
       // unreachable: zod already validated .url() above.
     }
-    if (aiHost && !aiHost.endsWith('.cn')) {
+    if (aiHost && !aiHost.endsWith('.cn') && !isNonRoutableAiHost(aiHost)) {
       errors.push(
         `AI_API_BASE_URL points at ${aiHost}, outside mainland China. Every prompt ` +
           'carries the patient question plus consent-gated clinical fields, so this is ' +
@@ -606,6 +756,52 @@ const validateStorageEnv = (env: AppEnv) => {
   return errors;
 };
 
+/**
+ * Checks that only make sense for a process running inside the compose
+ * api container (OPENRD_IN_CONTAINER=true, set by docker-compose.yml and
+ * nowhere else). Runs in EVERY environment, not just production-like:
+ * the configuration this catches breaks a developer's first
+ * `docker compose up` exactly as thoroughly as a deploy.
+ */
+const validateContainerTopologyEnv = (env: AppEnv) => {
+  const errors: string[] = [];
+
+  if (!env.OPENRD_IN_CONTAINER) {
+    return errors;
+  }
+
+  let dbHost = '';
+  try {
+    dbHost = new URL(env.DATABASE_URL).hostname;
+  } catch {
+    // A libpq keyword/value DSN, or something else this helper cannot
+    // read. Let the pg driver be the one to complain about the format.
+    return errors;
+  }
+  const loopback = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
+  if (loopback.has(dbHost.toLowerCase())) {
+    // .env.example ships DATABASE_URL commented out precisely so this
+    // cannot happen by copying it, but the host-side tools
+    // (npm run db:backup / db:restore / kb:prune) do want the
+    // `@localhost:5432` form, so the day someone uncomments it for a
+    // backup is the day their next `docker compose up` breaks. Inside the
+    // container `localhost` is the api itself — nothing listens on 5432
+    // there — and the raw symptom is dist/db/migrate.js dying on
+    // ECONNREFUSED under `restart: unless-stopped`, in a loop, with the
+    // stack naming a port and never the variable. Name it here instead.
+    errors.push(
+      `DATABASE_URL points at ${dbHost} from inside the api container, where that is the ` +
+        'container itself and not Postgres. Under docker compose either leave DATABASE_URL ' +
+        'unset (the compose file defaults it to the internal ' +
+        '「postgres://<user>:<password>@postgres:5432/fshd_openrd」) or give it a hostname the ' +
+        'container can resolve. The 「@localhost:5432」 form in .env.example belongs to the ' +
+        'host-side tools (npm run db:backup / db:restore / kb:prune), not to this process.',
+    );
+  }
+
+  return errors;
+};
+
 export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
   if (!cachedEnv) {
     loadEnv();
@@ -626,7 +822,8 @@ export const loadAppEnv = (overrides?: NodeJS.ProcessEnv): AppEnv => {
 
     const productionErrors = validateProductionEnv(parsed.data);
     const storageErrors = validateStorageEnv(parsed.data);
-    const allErrors = [...productionErrors, ...storageErrors];
+    const topologyErrors = validateContainerTopologyEnv(parsed.data);
+    const allErrors = [...productionErrors, ...storageErrors, ...topologyErrors];
     if (allErrors.length > 0) {
       throw new Error(`Invalid environment configuration: ${allErrors.join(', ')}`);
     }

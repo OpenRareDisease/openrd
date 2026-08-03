@@ -38,10 +38,17 @@ env:
   # Node 20 is what both shipped images actually run: apps/api/Dockerfile is
   # `FROM node:20-bookworm-slim` (both stages) and apps/mobile/Dockerfile.web
   # is `FROM node:20-alpine`. The root package.json declares engines.node
-  # ">=20.12" and there is no .nvmrc, so those three lines are the entire
-  # source of truth. Do not raise this to 22 without raising the Dockerfiles in
-  # the same change: a CI that is green on a runtime production never executes
-  # is a gate that lies.
+  # ">=20.12" — the exact floor, because db:migrate:down, db:backup, db:restore
+  # and kb:prune all run `node --env-file-if-exists`, a flag that does not
+  # exist before 20.12/21.7. Do not raise this to 22 without raising the
+  # Dockerfiles in the same change: a CI that is green on a runtime production
+  # never executes is a gate that lies.
+  #
+  # Places that state the floor and must move together: the two Dockerfiles,
+  # engines.node, README.md / README.en.md's 环境要求 line, and .nvmrc if one is
+  # ever added. There is no .npmrc, so engine-strict is off and a contributor
+  # on an older Node installs cleanly and only finds out at `npm run db:backup`
+  # — with an error ("bad option: --env-file-if-exists") that names no version.
   NODE_VERSION: '20'
   # apps/api/Dockerfile.kb is `FROM python:3.11-slim`, and the python3 inside
   # the api image comes from bookworm, which is also 3.11. This pin is
@@ -99,8 +106,17 @@ jobs:
       - name: Format
         run: npm run format
 
+      # tsconfig.test.json, NOT tsconfig.json. The latter is the BUILD config
+      # and excludes src/**/*.test.ts so the runtime image does not ship ~50
+      # modules importing vitest and supertest — correct for the build, and a
+      # hole the size of the whole suite when this step pointed at it: vitest
+      # transpiles with esbuild and checks no types, so nothing in the repo
+      # typechecked API test code at all. A required field added to an
+      # orchestrator type, with run.test.ts's mocks left without it, was green
+      # here and green in Test. `npm run typecheck` is the same command a
+      # developer runs locally, so a red gate is reproducible in one line.
       - name: Typecheck
-        run: npx tsc --project tsconfig.json --noEmit
+        run: npm run typecheck
 
       # No postgres service container here, and that is a decision rather than
       # an oversight. src/db/migrate.ts used to call main() at module scope, so
@@ -115,7 +131,7 @@ jobs:
         run: npx vitest run
 
   mobile:
-    name: Mobile (lint, typecheck, test)
+    name: Mobile (lint, typecheck, test, web export)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -155,6 +171,29 @@ jobs:
       # to be red rather than green.
       - name: Test
         run: npx jest --runInBand --ci
+
+      # The artifact that actually ships. apps/mobile/Dockerfile.web builds the
+      # site with this exact command, and until now no gate ran Metro at all:
+      # a resolution or transform break — a package.json export map change, a
+      # bad import path in a screen no test renders — reached the first Docker
+      # build unchallenged, which on this project means it reaches it during a
+      # deploy window.
+      #
+      # It is more than a bundler run. app.json sets `web.output: "static"`, so
+      # `expo export` static-renders every route in Node, which means every
+      # module-scope side effect in app/_layout.tsx and everything it imports
+      # (contexts/AuthContext → lib/api, including its fail-fast on a blank
+      # EXPO_PUBLIC_API_URL) is evaluated here. EXPO_PUBLIC_API_URL is set to
+      # the same `/api` the compose build bakes in, because a blank one is a
+      # legitimate build failure and this step must fail on real breakage only.
+      #
+      # Output goes to a temp dir: apps/mobile/dist is a tracked build artifact
+      # in this repo and CI must not be what rewrites it.
+      - name: Build web export
+        run: npx expo export --platform web --output-dir "${RUNNER_TEMP}/web-export"
+        env:
+          EXPO_NO_TELEMETRY: '1'
+          EXPO_PUBLIC_API_URL: /api
 
   report-manager:
     name: Report manager (pytest)

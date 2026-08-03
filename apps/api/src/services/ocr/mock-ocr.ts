@@ -1,4 +1,4 @@
-import type { OcrProvider, OcrResult } from './ocr-provider.js';
+import { ON_PREMISE_OCR, type OcrProvider, type OcrResult } from './ocr-provider.js';
 
 const summaries: Record<string, string> = {
   mri: '检测到 MRI 影像摘要：肌肉信号轻度异常。',
@@ -8,6 +8,8 @@ const summaries: Record<string, string> = {
 };
 
 export class MockOcrProvider implements OcrProvider {
+  readonly disclosure = ON_PREMISE_OCR;
+
   async parse(input: {
     buffer: Buffer;
     mimeType: string | null;
@@ -19,6 +21,9 @@ export class MockOcrProvider implements OcrProvider {
     const summary = summaries[input.documentType] ?? summaries.other;
     return {
       provider: 'mock',
+      // Nothing is transmitted anywhere: the summary is a literal in
+      // this file.
+      disclosure: ON_PREMISE_OCR,
       extractedText: summary,
       fields: {
         documentType: input.documentType,

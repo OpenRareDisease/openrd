@@ -1,0 +1,32 @@
+// Typecheck config: everything under src, tests included, emitting nothing.
+//
+// tsconfig.json is the BUILD config and excludes src/**/*.test.ts, which is
+// correct — those modules import vitest and supertest, which the runtime image
+// deliberately does not install, so compiling them into dist would ship ~50
+// permanently-unloadable files into the container that holds PHI.
+//
+// The mistake that exclusion caused was pointing CI's Typecheck step at the
+// build config, which silently dropped all 50 test files from the ONLY gate
+// that typechecks them: vitest transpiles with esbuild and checks no types, and
+// there is no other tsc invocation in the repo. A required field added to an
+// orchestrator type, with the mock objects in run.test.ts left without it,
+// passed both `tsc --noEmit` and `vitest run`.
+//
+// So: two configs for two concerns. `npm run build` uses tsconfig.json and
+// emits the served code; `npm run typecheck` (and CI) uses this one and checks
+// the whole tree without writing anything. Whichever you change, ask whether
+// the other needs the same change — a file that is typechecked but never
+// compiled is fine; a file that is compiled but never typechecked is the
+// regression above.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Belt and braces: the CI step also passes --noEmit, but a local
+    // `tsc -p tsconfig.test.json` must not scatter .js next to the sources.
+    "noEmit": true
+  },
+  // Both keys are restated rather than inherited: "extends" replaces them
+  // wholesale, and inheriting tsconfig.json's exclude is exactly the bug.
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

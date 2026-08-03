@@ -21,6 +21,35 @@
 /** Register/edit profile form draft. */
 export const PROFILE_FORM_DRAFT_KEY = 'openrd.registerProfile.draft';
 
+/**
+ * Interrupted-registration draft: phone number + identity, written on
+ * every keystroke of the 注册 form. Passwords, the OTP code and the OTP
+ * request id are stripped before it is persisted, so no secret is in
+ * here — but a mobile number is 个人信息 on its own, and this key used
+ * to be declared privately inside p-login_register, which meant it was
+ * in neither of the two lists anything sweeps.
+ */
+export const REGISTER_FORM_DRAFT_KEY = 'openrd.register.draft';
+
+/**
+ * How long an unfinished registration may keep the phone number on the
+ * device.
+ *
+ * The draft used to be cleared in exactly one place — after a
+ * *successful* register — so an abandoned attempt kept the number for
+ * ever: nobody is logged in on that device, so logout never runs and
+ * the key sweep below never fires. On the shared browser this cohort
+ * actually uses (FSHD is autosomal dominant; several affected members
+ * of one family on one device is the ordinary case), family member A
+ * types 13800138000, never receives the SMS, gives up — and days later
+ * B taps 注册 and finds A's number pre-filled.
+ *
+ * 24h is the honest span of「I stepped away to read the SMS and came
+ * back」. Past that the restore is no longer serving the person who
+ * typed it, so the draft is discarded on read rather than shown.
+ */
+export const REGISTER_FORM_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** Data-entry drafts, one per form section. */
 export const DATA_ENTRY_DRAFT_KEYS = {
   entryMode: 'openrd.dataEntry.entryMode',
@@ -46,6 +75,13 @@ export const VISIT_PREP_NOTE_KEY = 'openrd.clinicalPassport.visitPrep';
  */
 export const PATIENT_SCOPED_SECURE_KEYS: string[] = [
   PROFILE_FORM_DRAFT_KEY,
+  // Listed even though the ordinary abandonment path never reaches
+  // logout: a registration that DID complete, followed by a logout,
+  // must not leave the number behind either, and the registry
+  // invariant this file's header states is「every draft key is in
+  // here」, not「every key logout happens to be able to reach」.
+  // The time bound above is what covers the never-logged-in case.
+  REGISTER_FORM_DRAFT_KEY,
   VISIT_PREP_NOTE_KEY,
   ...Object.values(DATA_ENTRY_DRAFT_KEYS),
 ];

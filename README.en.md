@@ -59,7 +59,7 @@ openrd/
 
 ## Prerequisites
 
-- Node.js >= 18
+- Node.js >= 20.12 (this is what the root `package.json` `engines.node` already declares; the `db:migrate:down` / `db:backup` / `db:restore` / `kb:prune` scripts all run `node --env-file-if-exists=.env`, a flag that only exists from 20.12. There is no `.npmrc`, so `npm install` on an older Node only warns and then succeeds — the failure surfaces later as `bad option` the first time you run the backup script. Both Dockerfiles and CI pin Node 20.)
 - npm >= 10
 - Python >= 3.10 for local OCR / KB runs
 - PostgreSQL >= 14 for local mode
@@ -136,7 +136,9 @@ Common local settings:
 docker compose up -d --build
 ```
 
-> ⚠️ `.env` must contain `POSTGRES_PASSWORD`; compose declares it as `${POSTGRES_PASSWORD:?…}` and refuses to render without it. For local development one line — `POSTGRES_PASSWORD=postgres` — is enough. Production must use a real password: `validateProductionEnv` independently rejects any `DATABASE_URL` still carrying the `postgres:postgres` pair.
+> ⚠️ `.env` must contain `POSTGRES_PASSWORD`; compose declares it as `${POSTGRES_PASSWORD:?…}` and refuses to render without it. `.env.example` **already ships that line** (`POSTGRES_PASSWORD=postgres`) — copy it as is for local development, do not append a second one. Production must change that line's value: `validateProductionEnv` independently rejects any `DATABASE_URL` still carrying the `postgres:postgres` pair.
+>
+> ⚠️ **Do not uncomment `DATABASE_URL` in `.env`.** The template leaves it commented on purpose: Option A needs `@localhost:5432`, Option B needs compose's internal `@postgres:5432`, and compose now interpolates the api's value so anything in `.env` wins over its default. Left commented, both paths work from an unmodified copy. Set it explicitly only for a database both contexts reach by the same name (a managed instance). If it does end up as loopback, the api exits with a boot error naming `DATABASE_URL` (compose hardcodes `OPENRD_IN_CONTAINER=true` for exactly this) instead of leaving a `migrate.js` ECONNREFUSED crash-loop.
 
 If host port `5432` is already occupied:
 
@@ -155,6 +157,8 @@ Container mode already provides these overrides:
 - API uses `OCR_PYTHON_BIN=python3`
 - KB binds to `0.0.0.0:5010`
 - API reaches KB via `KB_SERVICE_URL=http://kb-service:5010`
+
+**`DATABASE_URL` is deliberately NOT on that list.** Compose used to hardcode the internal address, which silently discarded an operator's managed-Postgres value; it is now interpolated, so `.env` wins and compose's `@postgres:5432` default applies only when `.env` says nothing — which is why the template's line stays commented out.
 
 If you need MinIO compatibility for historical `v1` report files:
 

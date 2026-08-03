@@ -6,9 +6,12 @@ import { describe, expect, it } from 'vitest';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import {
+  _decodeSqlBuffer,
   _downFilenameFor,
+  _findOrphanLedgerIds,
   _hasSelfManagedTransaction,
   _isForwardMigrationFile,
+  _laterMigrationsStillApplied,
   _resolveDownTarget,
   _rollBackMigration,
   type MigrationLedgerClient,
@@ -147,12 +150,66 @@ describe('every migration on disk leaves the transaction to the runner', () => {
   });
 
   it.each(files)('%s', (file) => {
-    // Matches readSqlFile: 003_complete_chat_system.sql is UTF-16, and
-    // reading it as UTF-8 would yield NUL-interleaved text the regex
-    // silently fails to match — a false pass, the worst kind.
-    const raw = fs.readFileSync(path.join(migrationsDir, file));
-    const sql = raw[0] === 0xff && raw[1] === 0xfe ? raw.toString('utf16le') : raw.toString('utf8');
+    // Decoded with the runner's OWN decoder, not a copy of it. This test
+    // used to carry a second one — an LE-BOM-only ternary with no BOM
+    // strip — while readSqlFile also handles the UTF-16BE BOM. A
+    // migration saved as 「Unicode big endian」 (the same Notepad route
+    // that produced 003_complete_chat_system.sql) containing BEGIN;
+    // decoded here as NUL-interleaved mojibake, the regex silently
+    // missed it, and CI went green on a file that throws inside the
+    // container CMD at deploy time. A false pass, the worst kind — which
+    // is what the old comment claimed to prevent.
+    const sql = _decodeSqlBuffer(fs.readFileSync(path.join(migrationsDir, file)));
     expect(_hasSelfManagedTransaction(sql)).toBe(false);
+  });
+});
+
+describe('_decodeSqlBuffer', () => {
+  // The corpus test above is only as good as this. Each encoding is
+  // asserted to round-trip a statement the guard must SEE, so a
+  // regression here shows up as a decoder failure rather than as a
+  // silently-passing corpus.
+  const statement = 'BEGIN;\nALTER TABLE t ADD COLUMN y INT;\nCOMMIT;\n';
+
+  /** U+FEFF written as an escape: an invisible literal in the source
+   *  is exactly the kind of thing that gets lost in a copy-paste. */
+  const BOM = '\uFEFF';
+
+  const utf16be = (text: string) => {
+    const le = Buffer.from(`${BOM}${text}`, 'utf16le');
+    const be = Buffer.from(le);
+    for (let index = 0; index + 1 < be.length; index += 2) {
+      const current = be[index];
+      be[index] = be[index + 1];
+      be[index + 1] = current;
+    }
+    return be;
+  };
+
+  it('decodes plain UTF-8', () => {
+    expect(_decodeSqlBuffer(Buffer.from(statement, 'utf8'))).toBe(statement);
+  });
+
+  it('strips a UTF-8 BOM so the leading keyword is still statement-leading', () => {
+    const withBom = Buffer.from(`${BOM}${statement}`, 'utf8');
+    expect(_decodeSqlBuffer(withBom)).toBe(statement);
+    expect(_hasSelfManagedTransaction(_decodeSqlBuffer(withBom))).toBe(true);
+  });
+
+  it('decodes UTF-16LE (the encoding 003_complete_chat_system.sql is in)', () => {
+    const le = Buffer.from(`${BOM}${statement}`, 'utf16le');
+    expect(_decodeSqlBuffer(le)).toBe(statement);
+    expect(_hasSelfManagedTransaction(_decodeSqlBuffer(le))).toBe(true);
+  });
+
+  it('decodes UTF-16BE — the branch the old test-local decoder was missing', () => {
+    const be = utf16be(statement);
+    // What the old decoder did with these bytes: mojibake, and the guard
+    // returns false on it.
+    expect(_hasSelfManagedTransaction(be.toString('utf8'))).toBe(false);
+    // What the runner does, and now what the test does.
+    expect(_decodeSqlBuffer(be)).toBe(statement);
+    expect(_hasSelfManagedTransaction(_decodeSqlBuffer(be))).toBe(true);
   });
 });
 
@@ -354,6 +411,48 @@ describe('migrate — _rollBackMigration', () => {
     expect(statements.some((s) => s.startsWith('DELETE FROM schema_migrations'))).toBe(false);
   });
 
+  it('refuses to roll back under a migration that is still applied', async () => {
+    // 016's down script does `DROP COLUMN IF EXISTS deleted_at` on
+    // patient_function_tests; 017 built a partial index on that column
+    // (`… WHERE not_applicable AND deleted_at IS NULL`). Rolling 016
+    // back with 017 applied CASCADEs 017's index away, prints success,
+    // and the roll-forward re-applies 016 only — because 017's ledger
+    // row is still there. The index never comes back while --status
+    // reports 017 as applied.
+    const { client, statements } = recordingClient([
+      { id: '016_followup_record_soft_delete.sql', checksum: null },
+      { id: '017_function_test_not_applicable.sql', checksum: null },
+      { id: '018_measurement_cohort_index.sql', checksum: null },
+    ]);
+
+    await expect(
+      _rollBackMigration(client, '016_followup_record_soft_delete.sql', false),
+    ).rejects.toThrow(/017_function_test_not_applicable\.sql, 018_measurement_cohort_index\.sql/);
+    // Nothing may have been executed: the point is that the CASCADE
+    // never happens, not that it is reported afterwards.
+    expect(statements.map((s) => s.sql)).not.toContain('BEGIN');
+  });
+
+  it('allows rolling back the highest applied migration', async () => {
+    const { client, statements } = recordingClient([
+      { id: '016_followup_record_soft_delete.sql', checksum: null },
+      { id: '018_measurement_cohort_index.sql', checksum: null },
+    ]);
+    await _rollBackMigration(client, '018_measurement_cohort_index.sql', false);
+    expect(statements.map((s) => s.sql)).toContain('COMMIT');
+  });
+
+  it('--force overrides the still-applied refusal', async () => {
+    // The operator has established that nothing above depends on it —
+    // the same escape hatch the missing-ledger-row refusal already has.
+    const { client, statements } = recordingClient([
+      { id: '018_measurement_cohort_index.sql', checksum: null },
+      { id: '019_legal_document_acceptances.sql', checksum: null },
+    ]);
+    await _rollBackMigration(client, '018_measurement_cohort_index.sql', true);
+    expect(statements.map((s) => s.sql)).toContain('COMMIT');
+  });
+
   it('refuses a migration that has no rollback script', async () => {
     const { client } = recordingClient([
       { id: '013_ai_audit_history_columns.sql', checksum: null },
@@ -363,5 +462,93 @@ describe('migrate — _rollBackMigration', () => {
     await expect(_rollBackMigration(client, '003_complete_chat_system.sql', false)).rejects.toThrow(
       /has no rollback script/,
     );
+  });
+});
+
+/*
+ * Ledger rows with no file behind them.
+ *
+ * `--status` iterated the DISK listing and looked each file up in the
+ * ledger, so a ledger id with no file was structurally invisible. On any
+ * environment deployed before PR #58 that is not hypothetical: those
+ * databases carry `011_status_check_constraints_down.sql` and
+ * `012_text_column_constraints_down.sql` as applied rows — the down
+ * scripts ran as forwards on the same boot — and the schema carries none
+ * of the v2.4.0 CHECK constraints or the same-profile trigger. `--status`
+ * printed `applied  011_…` / `applied  012_…` and never mentioned the
+ * ghosts; the drift column could not flag them either, because rows that
+ * old predate the checksum column and get no verdict at all.
+ */
+describe('migrate — _findOrphanLedgerIds', () => {
+  const files = [
+    '011_status_check_constraints.sql',
+    '012_text_column_constraints.sql',
+    '018_measurement_cohort_index.sql',
+  ];
+
+  it('finds the ghost _down rows a pre-#58 database carries', () => {
+    expect(
+      _findOrphanLedgerIds(
+        [
+          '000_init_db_bootstrap',
+          '011_status_check_constraints.sql',
+          '011_status_check_constraints_down.sql',
+          '012_text_column_constraints.sql',
+          '012_text_column_constraints_down.sql',
+        ],
+        files,
+      ),
+    ).toEqual(['011_status_check_constraints_down.sql', '012_text_column_constraints_down.sql']);
+  });
+
+  it('does not treat the bootstrap pseudo-entry as an orphan', () => {
+    // It has no single source file by design — init_db.sql is extracted,
+    // not listed — so flagging it would make every healthy database
+    // report an orphan and train the operator to ignore the column.
+    expect(_findOrphanLedgerIds(['000_init_db_bootstrap'], files)).toEqual([]);
+  });
+
+  it('reports a ledger row whose migration file was deleted', () => {
+    expect(_findOrphanLedgerIds(['013_removed_by_a_rebase.sql'], files)).toEqual([
+      '013_removed_by_a_rebase.sql',
+    ]);
+  });
+
+  it('is silent on a healthy ledger', () => {
+    expect(_findOrphanLedgerIds([...files, '000_init_db_bootstrap'], files)).toEqual([]);
+  });
+});
+
+describe('migrate — _laterMigrationsStillApplied', () => {
+  it('names every forward migration applied above the target', () => {
+    expect(
+      _laterMigrationsStillApplied('016_followup_record_soft_delete.sql', [
+        '015_function_test_unit_constraint.sql',
+        '016_followup_record_soft_delete.sql',
+        '018_measurement_cohort_index.sql',
+        '017_function_test_not_applicable.sql',
+      ]),
+    ).toEqual(['017_function_test_not_applicable.sql', '018_measurement_cohort_index.sql']);
+  });
+
+  it('ignores the bootstrap entry and ghost _down rows', () => {
+    // Neither is something an operator can roll back in order, so
+    // reporting them would force --force in the one case where the real
+    // answer is to clean the ledger instead.
+    expect(
+      _laterMigrationsStillApplied('016_followup_record_soft_delete.sql', [
+        '000_init_db_bootstrap',
+        '017_function_test_not_applicable_down.sql',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('is empty for the highest applied migration', () => {
+    expect(
+      _laterMigrationsStillApplied('018_measurement_cohort_index.sql', [
+        '015_function_test_unit_constraint.sql',
+        '018_measurement_cohort_index.sql',
+      ]),
+    ).toEqual([]);
   });
 });

@@ -129,7 +129,23 @@ REGISTER=$(curl -s -X POST http://localhost:4000/api/auth/register \
 TOKEN=$(printf '%s' "$REGISTER" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 ```
 
-### 4.3 上传报告并读取 OCR
+### 4.3 记录敏感个人信息处理单独同意
+
+**这一步不能跳。** 上传报告、写测量 / 功能测试 / 症状评分 / 随访事件的路由前面都挂着服务端闸门 `requireSensitiveDataConsent`：`legal_document_acceptances` 里没有这个用户的 `sensitive_data_consent` 行，就是 403 `sensitive_consent_required`。App 里这一步由同意弹窗完成，curl 要自己补：
+
+```bash
+curl -X POST http://localhost:4000/api/legal/acceptances \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"document":"sensitive_data_consent","version":"2026-08-02"}'
+# version 写你的客户端实际展示的那一版（见 apps/mobile/lib/legal-content.ts
+# 的 LEGAL_DOCUMENT_VERSIONS）；服务端不强制它等于自己的当前版本，
+# 因为记录的应当是用户真正读到的那一版。
+```
+
+顺带可以验一下这道闸真的在：不记同意直接跑下一节的上传，期望 403 + `code: sensitive_consent_required`，且不产生 `patient_documents` 行。
+
+### 4.4 上传报告并读取 OCR
 
 ```bash
 curl -X POST http://localhost:4000/api/profiles/me/documents/upload \
@@ -155,20 +171,22 @@ curl -X GET http://localhost:4000/api/profiles/me/documents/<documentId>/ocr \
 
 建议至少走一遍这些链路：
 
-1. 注册 / 登录
-2. 建档
-3. 录入测量、症状、活动、用药
+1. 注册 / 登录（注册页勾选用户协议与隐私政策，两条接受记录会写进 `legal_document_acceptances`）
+2. 建档。**出生日期填成未满 14 岁**至少走一次：应弹监护人同意，同意后才写得进去（服务端也会用服务器时钟复核一次，403 `guardian_consent_required`）
+3. 录入测量、症状、活动、用药。**首次写健康数据前**应弹《敏感个人信息处理单独同意》
 4. 上传报告并进入报告详情
 5. 查看护照页、风险页、时间线页
 6. 测试 AI 问答
-7. 退出登录
+7. 隐私设置页：能看到自己同意过的文件与版本；点「撤回敏感信息处理同意」后再去录入，应被重新拦下并要求重新同意
+8. 退出登录
 
 ## 6. 静态检查
 
 ```bash
 npm run lint
 npm run test --workspace @openrd/api
-npm run build --workspace @openrd/api
+npm run typecheck --workspace @openrd/api   # tsconfig.test.json：连测试文件一起类型检查
+npm run build --workspace @openrd/api       # tsconfig.json：构建配置，故意排除 *.test.ts
 npx tsc --noEmit -p apps/mobile/tsconfig.json
 python3 -m compileall \
   apps/report-manager/app/services/fshd_report_service.py \

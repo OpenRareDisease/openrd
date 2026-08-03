@@ -98,6 +98,26 @@ describe('loadAppEnv', () => {
     );
   });
 
+  it('rejects prod TLS with certificate verification turned off and no ack', () => {
+    // pool.ts passes this straight into `ssl: { rejectUnauthorized }`, so
+    // true/false is an encrypted but UNAUTHENTICATED connection carrying
+    // PHI — while the SSL-disabled check above is satisfied and every log
+    // line says SSL is on.
+    expect(() => loadAppEnv({ ...prodBase, DATABASE_SSL_REJECT_UNAUTHORIZED: 'false' })).toThrow(
+      /DATABASE_SSL_REJECT_UNAUTHORIZED=false/,
+    );
+  });
+
+  it('accepts prod TLS without verification when DATABASE_ALLOW_INSECURE acks it', () => {
+    // Private-CA / self-signed managed Postgres: allowed, but written down.
+    const env = loadAppEnv({
+      ...prodBase,
+      DATABASE_SSL_REJECT_UNAUTHORIZED: 'false',
+      DATABASE_ALLOW_INSECURE: 'true',
+    });
+    expect(env.DATABASE_SSL_REJECT_UNAUTHORIZED).toBe(false);
+  });
+
   it('accepts prod with SSL disabled when DATABASE_ALLOW_INSECURE acks it', () => {
     // compose-internal / private-network Postgres: no SSL, but an
     // explicit operator ack.
@@ -276,6 +296,46 @@ describe('loadAppEnv', () => {
     ).toThrow(/postgres:postgres credential pair/);
   });
 
+  it('accepts a rotated password containing a lone percent sign', () => {
+    // Regression: the two decodeURIComponent calls in
+    // usesDefaultPostgresCredentials used to sit outside the try/catch,
+    // so `pa%ssword` — which pg accepts, because pg-connection-string
+    // pre-escapes invalid percent sequences — threw a bare
+    // 「URIError: URI malformed」 before any validation output. The
+    // container then crash-looped under `restart: unless-stopped` with a
+    // stack naming neither DATABASE_URL nor the config error, on exactly
+    // the dedicated role the deploy runbook tells operators to create.
+    const env = loadAppEnv({
+      ...prodBase,
+      DATABASE_URL: 'postgres://openrd_app:pa%ssword@db.internal:5432/openrd',
+    });
+    expect(env.DATABASE_URL).toContain('pa%ssword');
+  });
+
+  it('accepts other undecodable percent sequences in the password', () => {
+    // The same guard, on the two other shapes decodeURIComponent rejects:
+    // a trailing `%` and a percent escape that decodes to invalid UTF-8.
+    for (const password of ['secret%', 'caf%E9pw']) {
+      resetAppEnvCache();
+      const env = loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: `postgres://openrd_app:${password}@db.internal:5432/openrd`,
+      });
+      expect(env.DATABASE_URL).toContain(password);
+    }
+  });
+
+  it('still rejects a percent-encoded rewrite of the shipped credential pair', () => {
+    // The decode is not decoration: `postgres%3Apostgres` style escaping
+    // of the very pair this guard exists to reject must not slip past it.
+    expect(() =>
+      loadAppEnv({
+        ...prodBase,
+        DATABASE_URL: 'postgres://%70ostgres:%70ostgres@postgres:5432/fshd_openrd',
+      }),
+    ).toThrow(/postgres:postgres credential pair/);
+  });
+
   it('accepts a compose-internal host with a dedicated role', () => {
     // The rule is about the credential pair, NOT the hostname: reaching
     // Postgres as `postgres:5432` over the private bridge network is a
@@ -322,6 +382,43 @@ describe('loadAppEnv', () => {
       AI_CROSS_BORDER_ACKNOWLEDGED: 'true',
     });
     expect(env.AI_CROSS_BORDER_ACKNOWLEDGED).toBe(true);
+  });
+
+  it('does not demand a cross-border ack for a self-hosted LLM that cannot leave the network', () => {
+    // A compose service name, an RFC1918 address and loopback carry no
+    // byte across a border, so requiring AI_CROSS_BORDER_ACKNOWLEDGED for
+    // them was worse than useless: the only way past the gate was to make
+    // the deploy's own configuration assert a transfer that never happens
+    // — and that flag is what a compliance reviewer reads.
+    for (const baseUrl of [
+      'http://llm:8000/v1',
+      'http://10.0.0.5:8000/v1',
+      'http://192.168.1.20:8000/v1',
+      'http://172.16.3.4:8000/v1',
+      'http://127.0.0.1:8000/v1',
+      'http://localhost:8000/v1',
+      'http://[::1]:8000/v1',
+    ]) {
+      resetAppEnvCache();
+      const env = loadAppEnv({ ...prodBase, AI_API_BASE_URL: baseUrl });
+      expect(env.AI_CROSS_BORDER_ACKNOWLEDGED).toBe(false);
+    }
+  });
+
+  it('still demands the ack for a public non-.cn host, including a routable IP literal', () => {
+    // The exemption is about reachability, not geography: a public
+    // address is an overseas recipient until someone says otherwise, and
+    // 172.32/12 is deliberately outside the private 172.16/12 block.
+    for (const baseUrl of [
+      'https://api.openai.com/v1',
+      'http://8.8.8.8:8000/v1',
+      'http://172.32.0.1:8000/v1',
+    ]) {
+      resetAppEnvCache();
+      expect(() => loadAppEnv({ ...prodBase, AI_API_BASE_URL: baseUrl })).toThrow(
+        /cross-border transfer of health data/,
+      );
+    }
   });
 
   // --- OCR provider credentials --------------------------------------
@@ -408,6 +505,109 @@ describe('loadAppEnv', () => {
         MINIO_ALLOW_INSECURE: 'true',
       }),
     ).toThrow(/MINIO_ACCESS_KEY must be replaced|MINIO_SECRET_KEY must be replaced/);
+  });
+
+  // --- shutdown budget ordering ---------------------------------------
+
+  it('rejects a readiness drain that is not inside the shutdown grace', () => {
+    // The exact misconfiguration the DRAIN docstring invited: it said
+    // 「must exceed the load balancer's health-check interval」 and named
+    // no ceiling, so a 20s LB poll produced DRAIN=30000 against the
+    // default GRACE=20000. index.ts arms the force-exit at t=0 for the
+    // grace and only schedules `server.close()` at t=DRAIN, so that pair
+    // exits(1) with the listener still open and the pg pool abandoned.
+    expect(() =>
+      loadAppEnv({
+        NODE_ENV: 'development',
+        SHUTDOWN_READINESS_DRAIN_MS: '30000',
+        SHUTDOWN_GRACE_MS: '20000',
+      }),
+    ).toThrow(/SHUTDOWN_READINESS_DRAIN_MS/);
+  });
+
+  it('rejects a drain that equals the grace, and one that leaves under a second', () => {
+    // Equal is the same broken shutdown as greater — the drain timer and
+    // the force-exit fire in the same tick — and 19_500/20_000 leaves
+    // 500ms for server.close() + closePool(), which is not a shutdown,
+    // just a less obvious kill.
+    for (const drain of ['20000', '19500']) {
+      resetAppEnvCache();
+      expect(() =>
+        loadAppEnv({
+          NODE_ENV: 'development',
+          SHUTDOWN_READINESS_DRAIN_MS: drain,
+          SHUTDOWN_GRACE_MS: '20000',
+        }),
+      ).toThrow(/ordered, not additive/);
+    }
+  });
+
+  it('accepts the shipped drain/grace pair and a widened one', () => {
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      SHUTDOWN_READINESS_DRAIN_MS: '30000',
+      SHUTDOWN_GRACE_MS: '45000',
+    });
+    expect(env.SHUTDOWN_READINESS_DRAIN_MS).toBe(30000);
+    expect(env.SHUTDOWN_GRACE_MS).toBe(45000);
+  });
+
+  it('boots on the defaults, i.e. the ceiling does not reject the shipped pair', () => {
+    // Explicit `undefined` rather than omission: loadAppEnv merges
+    // process.env underneath these overrides, so an omitted key would
+    // make the assertion depend on the machine the suite runs on.
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      SHUTDOWN_READINESS_DRAIN_MS: undefined,
+      SHUTDOWN_GRACE_MS: undefined,
+    });
+    expect(env.SHUTDOWN_READINESS_DRAIN_MS).toBe(5000);
+    expect(env.SHUTDOWN_GRACE_MS).toBe(20000);
+  });
+
+  // --- container topology ----------------------------------------------
+
+  it('rejects a loopback DATABASE_URL when running inside the api container', () => {
+    // `cp .env.example .env && docker compose up` with the host-side
+    // 「@localhost:5432」 line uncommented: inside the container that host
+    // is the api itself, and the raw symptom is dist/db/migrate.js dying
+    // on ECONNREFUSED in a restart loop whose stack never names
+    // DATABASE_URL.
+    for (const host of ['localhost', '127.0.0.1', '[::1]']) {
+      resetAppEnvCache();
+      expect(() =>
+        loadAppEnv({
+          NODE_ENV: 'development',
+          OPENRD_IN_CONTAINER: 'true',
+          DATABASE_URL: `postgres://postgres:postgres@${host}:5432/fshd_openrd`,
+        }),
+      ).toThrow(/from inside the api container/);
+    }
+  });
+
+  it('accepts the compose-internal and managed hostnames inside the container', () => {
+    for (const host of ['postgres', 'db.internal']) {
+      resetAppEnvCache();
+      const env = loadAppEnv({
+        NODE_ENV: 'development',
+        OPENRD_IN_CONTAINER: 'true',
+        DATABASE_URL: `postgres://openrd_app:pw@${host}:5432/fshd_openrd`,
+      });
+      expect(env.DATABASE_URL).toContain(host);
+    }
+  });
+
+  it('leaves a bare-metal process alone: localhost is correct off-container', () => {
+    // The flag is set by docker-compose.yml and nothing else, so the
+    // documented native flow (npm run dev:api against a host Postgres,
+    // which is also env.ts's own DATABASE_URL default) must not trip it.
+    const env = loadAppEnv({
+      NODE_ENV: 'development',
+      OPENRD_IN_CONTAINER: undefined,
+      DATABASE_URL: undefined,
+    });
+    expect(env.OPENRD_IN_CONTAINER).toBe(false);
+    expect(env.DATABASE_URL).toBe('postgres://postgres:postgres@localhost:5432/fshd_openrd');
   });
 
   // --- development stays permissive -----------------------------------

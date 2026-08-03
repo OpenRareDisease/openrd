@@ -169,6 +169,34 @@ describe('configuration problems that no probe would catch', () => {
     expect(componentStatus(summary, 'ai')).toBe('not_configured');
   });
 
+  it('names the third party when OCR is configured to send reports off our servers', async () => {
+    // 隐私政策 §3(三) promises patients that OCR happens on our own
+    // servers. OCR_PROVIDER=baidu makes that false, and this probe used
+    // to report a flat `ok` for it — a non-embedded mode has no local
+    // runtime to fail — so nothing at runtime said the deploy in front
+    // of the operator was POSTing MRIs to a vendor.
+    kbReady();
+    const summary = await getHealthSummary(makeContext({ OCR_PROVIDER: 'baidu' }));
+    expect(summary.components.ocr).toMatchObject({
+      status: 'ok',
+      provider: 'baidu',
+      dataResidency: 'third_party',
+      processorEndpointHost: 'aip.baidubce.com',
+    });
+    expect((summary.components.ocr as { processor: string }).processor).toContain('百度');
+  });
+
+  it('says on_premise for the embedded and mock parsers', async () => {
+    kbReady();
+    const summary = await getHealthSummary(context);
+    expect(summary.components.ocr).toMatchObject({
+      provider: 'mock',
+      dataResidency: 'on_premise',
+    });
+    // No recipient to name, so no key claiming there is one.
+    expect(summary.components.ocr).not.toHaveProperty('processor');
+  });
+
   it('reports object storage as unreachable instead of green', async () => {
     // validateStorageEnv only asserts the MinIO settings are present,
     // and compose always supplies a default endpoint — so a prod stack
@@ -225,6 +253,8 @@ describe('what /healthz discloses to an anonymous caller', () => {
       },
       ocr: {
         status: 'ok',
+        provider: 'embedded',
+        dataResidency: 'on_premise',
         pythonBin: 'python3',
         pythonVersion: 'Python 3.11.9',
         parserPath: '/app/apps/report-manager/embedded_parser.py',

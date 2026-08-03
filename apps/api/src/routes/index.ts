@@ -13,6 +13,7 @@ import { isShuttingDown } from '../lifecycle.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { createLegalRouter } from '../modules/legal/legal.routes.js';
 import { createPatientProfileRouter } from '../modules/patient-profile/profile.routes.js';
+import { OCR_PROCESSOR_DISCLOSURES } from '../services/ocr/ocr-provider.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
 export interface RouteContext {
@@ -158,11 +159,39 @@ const checkStorage = async (context: RouteContext) => {
   }
 };
 
-const checkEmbeddedOcr = async (context: RouteContext) => {
+/**
+ * OCR runtime, plus where the document bytes go.
+ *
+ * The residency half is not diagnostics. 隐私政策 §3(三) promises
+ * patients that OCR happens on our own servers, and `OCR_PROVIDER=baidu`
+ * silently makes that false by POSTing the MRI to aip.baidubce.com —
+ * with this probe previously reporting a flat `ok` for it, because a
+ * non-embedded mode has no local runtime to fail. So an operator had no
+ * way to see, from anywhere at runtime, that the deploy in front of
+ * them was shipping reports to a vendor. `dataResidency` / `processor` /
+ * `processorEndpointHost` come from OCR_PROCESSOR_DISCLOSURES, the same
+ * table the stored document is stamped from, so the per-deploy and
+ * per-document answers cannot disagree.
+ *
+ * Only the `embedded` mode is probed, and only it can fail readiness:
+ * it is a local process check that cannot flap. `baidu` is deliberately
+ * NOT probed — a reachability call to a third-party OCR endpoint on
+ * every 15s health poll would make our readiness follow their uptime,
+ * and would put us on their access log once every fifteen seconds.
+ */
+const checkOcr = async (context: RouteContext) => {
+  const disclosure = OCR_PROCESSOR_DISCLOSURES[context.env.OCR_PROVIDER];
+  const residency = {
+    dataResidency: disclosure.residency,
+    ...(disclosure.processor ? { processor: disclosure.processor } : {}),
+    ...(disclosure.endpointHost ? { processorEndpointHost: disclosure.endpointHost } : {}),
+  };
+
   if (context.env.OCR_PROVIDER !== 'embedded') {
     return {
       status: 'ok' as const,
       provider: context.env.OCR_PROVIDER,
+      ...residency,
     };
   }
 
@@ -177,6 +206,7 @@ const checkEmbeddedOcr = async (context: RouteContext) => {
     return {
       status: 'ok' as const,
       provider: context.env.OCR_PROVIDER,
+      ...residency,
       pythonBin: context.env.OCR_PYTHON_BIN,
       pythonVersion: (versionResult.stdout || versionResult.stderr || '').trim(),
       parserPath,
@@ -185,6 +215,7 @@ const checkEmbeddedOcr = async (context: RouteContext) => {
     return {
       status: 'error' as const,
       provider: context.env.OCR_PROVIDER,
+      ...residency,
       pythonBin: context.env.OCR_PYTHON_BIN,
       parserPath,
       detail: error instanceof Error ? error.message : String(error),
@@ -208,7 +239,7 @@ export const getHealthSummary = async (context: RouteContext): Promise<HealthSum
   const [database, kbService, ocr, storage] = await Promise.all([
     checkDatabase(context),
     checkKbService(context),
-    checkEmbeddedOcr(context),
+    checkOcr(context),
     checkStorage(context),
   ]);
 
@@ -359,6 +390,32 @@ const respondWithHealth = (
 export { respondWithHealth as _respondWithHealth };
 
 export const registerRoutes = (app: Express, context: RouteContext) => {
+  // One loud line at boot when the configured OCR mode sends patient
+  // reports off our servers.
+  //
+  // The health summary carries the same fact, but nobody reads
+  // /healthz on the deploy where they flipped the env var — they read
+  // it three months later while debugging something else. This is the
+  // moment the decision is actually being made. It is a warn and not a
+  // boot failure on purpose: refusing to start belongs in
+  // validateProductionEnv next to the AI_CROSS_BORDER_ACKNOWLEDGED
+  // gate, which is where an acknowledgement env var would live; this
+  // module cannot reject a config it only reads.
+  const ocrDisclosure = OCR_PROCESSOR_DISCLOSURES[context.env.OCR_PROVIDER];
+  if (ocrDisclosure.residency === 'third_party') {
+    context.logger.warn(
+      {
+        ocrProvider: context.env.OCR_PROVIDER,
+        processor: ocrDisclosure.processor,
+        endpointHost: ocrDisclosure.endpointHost,
+      },
+      'OCR_PROVIDER sends uploaded patient reports to a third-party processor; ' +
+        '隐私政策 §3(三) states OCR does not leave our servers and §5 does not name this ' +
+        'recipient — the policy text and a 委托处理协议 must be in place before this ' +
+        'deploy accepts an upload',
+    );
+  }
+
   const apiRouter = Router();
 
   apiRouter.get(

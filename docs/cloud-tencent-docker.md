@@ -52,11 +52,12 @@ cp .env.example .env
 必填项的**完整**清单在 [runbook §1.1](./runbooks/v2.5.0-deploy.md#11-必填-env-变量)。下面只列几条最容易漏的：
 
 - **`NODE_ENV=production`** —— 不写这一行，整个生产 fail-fast 块直接返回空错误列表，下面所有检查都不生效
-- **`POSTGRES_PASSWORD`** —— `.env.example` 里没有这一行，需要手工加。compose 用 `${POSTGRES_PASSWORD:?…}`，缺它 `docker compose config` 就失败，一个容器都不会创建
+- **`POSTGRES_PASSWORD`** —— `.env.example` 里**已经有这一行**（值是 `postgres`），要做的是改掉它的值而不是再补一行。compose 用 `${POSTGRES_PASSWORD:?…}`，缺它 `docker compose config` 就失败，一个容器都不会创建
+- **`DATABASE_URL` 保持注释** —— 模板里这一行是故意注释掉的，因为本地直跑要 `@localhost:5432` 而容器要 `@postgres:5432`，compose 现在让 `.env` 的值赢过内网默认值。单机容器部署不用填它；确实要指向托管库时才写，写成 loopback 会被启动检查点名拒绝
 - 基础：`DATABASE_URL`、`JWT_SECRET`、`OTP_HASH_SECRET`（后两个各 ≥32 字符高熵随机串）
 - AI：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`
 - 知识库：`KB_SERVICE_TOKEN`（≥32 字符随机串，API 和 KB 两边同值）
-- OCR：`OCR_PROVIDER=embedded`
+- OCR：`OCR_PROVIDER=embedded`（enum 里还有 `baidu`，**别用**：它把报告原图 POST 给百度，而隐私政策向患者承诺 OCR 不外发；详见 runbook §1.1 的 `OCR_PROVIDER` 行）
 - 存储：`STORAGE_PROVIDER`，用 MinIO 再配 `MINIO_*`；用 `local` 则必须显式 `STORAGE_ALLOW_LOCAL=true`
 - CORS：`CORS_ORIGIN` 设成实际前端域名；本地 Docker 联调用 `http://localhost:8080`
 

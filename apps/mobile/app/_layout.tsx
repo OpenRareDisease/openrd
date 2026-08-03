@@ -101,10 +101,13 @@ function AppNavigator() {
         {/* This list must match the files in app/ exactly. expo-router
             resolves it on every render (not inside a memo), so a name
             with no matching route warns on every render, and a route
-            with no entry silently loses its declared title. p-manage
-            lives under (tabs) now — its title comes from the tabs
-            layout — while p-archive and p-qna moved out of the bar and
-            into this stack. */}
+            with no entry silently loses its declared title. The four
+            bar destinations — p-home, p-manage, p-qna, p-settings —
+            live under (tabs) and take their titles from that layout, so
+            they must NOT be repeated here. p-archive is the one that
+            moved out of the bar into this stack; p-qna went the other
+            way and got its tab back (see AppTabBar), which is why it
+            has no entry below. */}
         <Stack.Screen name="p-archive" options={{ title: '我的档案页' }} />
         <Stack.Screen name="p-report_management" options={{ title: '报告管理页' }} />
         <Stack.Screen name="p-report_detail" options={{ title: '报告详情页' }} />

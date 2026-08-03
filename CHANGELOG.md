@@ -60,8 +60,29 @@ and the documentation an operator actually deploys from.
   readiness on an empty corpus, handles SIGTERM, clamps `/multi` parameters, and defaults
   to the HF mirror. PDF OCR is page-capped and streams pages to disk; the OCR engine
   actually in use (Tesseract) is now reported rather than assumed.
+- **The legal layer stopped being placeholder text.** Four drafted documents in
+  `apps/mobile/lib/legal-content.ts` (用户协议, 隐私政策, 敏感个人信息处理单独同意,
+  儿童个人信息处理规则与监护人同意) naming the LLM vendor, the information inventory, the
+  purposes, the retention periods and every recipient. Migration 019 adds
+  `legal_document_acceptances`, so `(user_id, document, version, accepted_at)` is now a
+  record rather than an assumption, and `GET`/`POST /api/legal/acceptances` read and write
+  it. Enforcement is server-side, not just in the bundle: `requireSensitiveDataConsent`
+  sits in front of report upload and every health-data write, and
+  `requireGuardianConsentForMinor` recomputes the age from the _server_ clock before a
+  profile for an under-14 patient can exist. Migration 020 adds `withdrawn_at` and
+  `POST /api/legal/acceptances/withdraw`, so the 「随时撤回」 the documents promise is a
+  capability rather than a sentence — a tombstone rather than a delete, because
+  「撤回不影响撤回前已进行的处理」 has to stay provable. Two `【待补】` placeholders remain
+  — the operator's registered name and the vendor's contracting entity — and they are why
+  the release checklist's privacy-policy gate stays unticked.
+- **CI exists.** `.github/workflows/ci.yml` runs three jobs — API (lint, format,
+  typecheck, test), Mobile (lint, typecheck, test, web export), Report manager (pytest) —
+  on Node 20 and Python 3.11, matching what the two images actually run. The mobile job
+  runs the same `expo export` the web Dockerfile does, so Metro resolution and the
+  static-render pass are gated. `docker compose build` still is not: the images are first
+  built on the deploy host.
 - **Docs rewritten against the tree, not the intent.** New `docs/runbooks/v2.5.0-deploy.md`
-  (migrations 013–018, the corrected rollback procedure, the real mobile channel), a
+  (migrations 013–020, the corrected rollback procedure, the real mobile channel), a
   release checklist with version-bump / `NODE_ENV` / backup / corpus / privacy-policy
   gates, and `docs/cloud-tencent-docker.md` marked superseded for production use.
 
