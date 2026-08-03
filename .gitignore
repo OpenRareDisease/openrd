@@ -192,3 +192,11 @@ kb-model-cache.tar.gz
 
 # Claude Code local tooling (machine-specific paths / personal settings)
 .claude/
+
+# Database dumps. db-backup.sh writes a self-ignoring .gitignore into
+# whatever BACKUP_DIR it is given, but that only protects a directory
+# the script has already created — this covers the default location
+# before the first run, and any dump written by hand.
+backups/
+*.dump
+*.dump.meta

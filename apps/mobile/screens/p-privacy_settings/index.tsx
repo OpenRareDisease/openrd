@@ -784,7 +784,7 @@ const PrivacySettingsScreen = () => {
                   {LEGAL_DOCUMENT_TITLES[item.document] ?? item.document}
                 </Text>
                 <Text style={styles.statusValue}>
-                  {item.version}　{item.acceptedAt.slice(0, 10)}
+                  {item.version} · {item.acceptedAt.slice(0, 10)}
                 </Text>
               </View>
             ))}

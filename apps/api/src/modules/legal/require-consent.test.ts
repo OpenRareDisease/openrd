@@ -44,7 +44,15 @@ const run = async (pool: unknown, user: unknown = { id: 'user-1' }) => {
   return { res, next };
 };
 
-const poolWith = (rowCount: number) => ({ query: vi.fn(async () => ({ rowCount, rows: [] })) });
+// The mock declares the parameters it actually receives, so
+// `mock.calls[0][1]` is typed. A zero-arg `vi.fn()` gives calls the
+// tuple type `[]`, and indexing it is a compile error under the
+// widened typecheck — which is the point of widening it.
+const poolWith = (rowCount: number) => ({
+  query: vi.fn<(sql: string, values?: unknown[]) => Promise<{ rowCount: number; rows: never[] }>>(
+    async () => ({ rowCount, rows: [] }),
+  ),
+});
 
 describe('requireSensitiveDataConsent', () => {
   it('lets the request through when an acceptance exists', async () => {
@@ -88,7 +96,7 @@ describe('requireSensitiveDataConsent', () => {
   it('asks about the sensitive-data document specifically', async () => {
     const pool = poolWith(1);
     await run(pool);
-    const params = pool.query.mock.calls[0][1] as unknown[];
+    const params = pool.query.mock.calls[0][1];
     expect(params).toEqual(['user-1', 'sensitive_data_consent']);
   });
 });
