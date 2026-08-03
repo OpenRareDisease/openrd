@@ -2,7 +2,7 @@
 
 All notable release-level changes for FSHD-openrd are tracked here.
 
-## v2.5.0 - unreleased
+## v2.5.0 - 2026-08-03
 
 Release line: the `v2.5.0` tag (there is no `release/v2.5.0` branch; since v2.4.0 the
 annotated tag on `master` is the release line — the v2.4.0 entry below named a branch

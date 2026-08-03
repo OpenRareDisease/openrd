@@ -26,7 +26,7 @@
 - [腾讯云 Docker 上线测试指南](./cloud-tencent-docker.md)：服务器准备与单机联调。**不适用于生产**——它给的 compose 命令不带 `--profile prod`（没有 HTTPS、没有对象存储），已在文首标注。
 - [智能问答 / AI Q&A](./ai-chat.md)：AI 问答与知识库服务链路。
 - [患者档案数据模型](./patient-profile.md)：当前患者档案及子表设计。
-- [版本历史 / Changelog](../CHANGELOG.md)：主版本入口与里程碑索引。当前工作版本 `v2.5.0`（manifest 已 bump，tag 待发布）。
+- [版本历史 / Changelog](../CHANGELOG.md)：主版本入口与里程碑索引。当前版本 `v2.5.0`。
 - [v2.4.0 发布说明](./releases/v2.4.0.md)：最近一次已发布版本的功能、验证与发布文案。
 - [v2.3.1 发布说明](./releases/v2.3.1.md)：上一版本说明。
 - [v1.0.0 发布说明](./releases/v1.0.0.md)：`master` 基线版本说明。
