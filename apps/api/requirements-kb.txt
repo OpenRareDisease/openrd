@@ -25,6 +25,20 @@
 sentence-transformers==5.2.0
 python-dotenv==1.2.1
 
+# Explicit, and load-bearing. sentence-transformers 5.2.0 still does a
+# bare `import requests` in util/file_io.py, but huggingface_hub 1.x
+# dropped requests as a dependency (it moved to httpx) — so nothing in
+# the resolved graph installs it any more, and `import
+# sentence_transformers` raises ModuleNotFoundError inside this image.
+#
+# It was invisible everywhere it could have been caught: a developer
+# machine installs the repo-root requirements.txt, where other packages
+# pull requests in; CI never builds an image; and the failure surfaces
+# only as a kb-service container that sits at `health: starting`
+# forever and never goes ready, which reads like a slow model download.
+# Found by running the built image and importing the module.
+requests>=2.32,<3
+
 # pgvector backend for the local KB store. psycopg_pool ships via the
 # [pool] extra and gives us a small connection pool with built-in
 # health-checking and reconnect.
