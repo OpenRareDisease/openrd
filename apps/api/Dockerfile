@@ -65,7 +65,30 @@ COPY apps/api/requirements-embedded-report.txt ./apps/api/requirements-embedded-
 # are meaningless in an image (.git is excluded from the build context). No
 # dependency in apps/api has a native build step, so nothing else is skipped.
 RUN npm ci --omit=dev --ignore-scripts
-RUN pip3 install --break-system-packages --no-cache-dir -r ./apps/api/requirements-embedded-report.txt
+# Same PIP_INDEX_URL treatment Dockerfile.kb has had since it was
+# written, and for the same reason — this image is built ON the
+# deployment host, and the deployment host is in mainland China.
+#
+# Without it this line goes to the default PyPI, which from the Tencent
+# Cloud box measures 20.0s to answer a simple-index request — right at
+# pip's timeout. It does not fail cleanly either: the error is
+#「Could not find a version that satisfies the requirement
+# charset_normalizer<4,>=2 (from requests) (from versions: none)」,
+# which reads like a dependency conflict and sends you off resolving
+# version pins that were never the problem. Measured on the same host,
+# the Tsinghua mirror answers in 0.13s.
+#
+# The host has /root/.pip/pip.conf pointing at a Tencent internal
+# mirror already — but that file is on the HOST, and this runs inside
+# the build container, which never sees it. That gap is why the image
+# built fine six weeks ago and stopped: nothing changed here except
+# how long the default index takes to answer.
+#
+# Override for a build outside mainland China:
+#   docker build --build-arg PIP_INDEX_URL=https://pypi.org/simple ...
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip3 install --break-system-packages --no-cache-dir \
+      -i ${PIP_INDEX_URL} -r ./apps/api/requirements-embedded-report.txt
 
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY apps/report-manager ./apps/report-manager

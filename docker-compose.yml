@@ -268,6 +268,12 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        # Same override the kb-service build takes, and it was missing
+        # here — which is why the api image stopped building on the
+        # mainland-China host while kb-service kept working. One .env
+        # value now steers both.
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     restart: unless-stopped
     logging: *default-logging
     # Node heap plus the embedded OCR subprocess, which renders PDF pages at
