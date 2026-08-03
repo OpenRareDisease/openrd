@@ -151,9 +151,22 @@ export const getAcceptanceSummary = async (
   userId: string,
 ): Promise<LegalAcceptanceSummary> => {
   const result = await pool.query<AcceptanceRow>(
+    // `withdrawn_at IS NULL` has to be here too, not only in
+    // hasAcceptedDocument. This query is what the mobile consent gate
+    // reads to decide whether to show the document at all: it sees the
+    // document listed, skips the modal, and the write then 403s on the
+    // server check — with nothing left to re-open the modal. Withdrawal
+    // became a one-way door that silently bricked health-data entry.
+    //
+    // The two queries read the same table for the same question and
+    // must agree. When migration 020 added the column, only the
+    // narrower one was updated — and its comment calls the predicate
+    //「the whole point of migration 020」, which is exactly the kind of
+    // confident note that makes the sibling easy to miss. If a third
+    // reader of this table appears, it needs this predicate as well.
     `SELECT DISTINCT ON (document) document, version, accepted_at
        FROM legal_document_acceptances
-      WHERE user_id = $1
+      WHERE user_id = $1 AND withdrawn_at IS NULL
       ORDER BY document, accepted_at DESC`,
     [userId],
   );

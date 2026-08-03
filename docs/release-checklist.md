@@ -55,7 +55,8 @@
   - `GET /api/healthz/live`
   - `GET /api/healthz/ready` → 200。`ready` 现在只看 database + embedded OCR；KB 挂了 / warming / 空语料、MinIO 不可达、AI key 未配都走 `degraded` 但 `ready: true`。
   - `GET /api/healthz`（**在宿主机上走 loopback**）→ 检查 `components` 里没有 `error`。从公网调这个端点只会拿到 status，详情进日志 + 一个 `requestId`。
-- [ ] **KB 语料非空**：`SELECT count(*) FROM kb_chunks;` 与源环境一致（当前约 12352）。全新环境按 runbook §3.5 搬表。
+- [ ] **KB 语料非空**：`SELECT count(*) FROM kb_chunks;` 与**源环境当次实测值**一致（不要对手册里的历史数字——语料随 ingest / prune 变动）。全新环境按 runbook §3.5 搬表。
+- [ ] **全新环境的首次备份**：`MIN_APP_USERS` 和 `MIN_KB_CHUNKS` 默认都是 1，空库出不了档。首次备份需 `MIN_APP_USERS=0 MIN_KB_CHUNKS=0 npm run db:backup`，之后恢复默认。
       kb-service 现在会用 503 + `status: "empty_corpus"` 挡住 readiness，但**在部署前就确认过**比让门禁替你发现要好——一个语料为空的环境在所有其它维度上都是全绿的，而它对每一个 FSHD 患者说文献里查不到。
 
 ## 3. 核心流程冒烟

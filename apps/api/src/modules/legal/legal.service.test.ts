@@ -294,3 +294,41 @@ describe('hasAcceptedDocument', () => {
     expect(query.mock.calls[0][0]).toContain('withdrawn_at IS NULL');
   });
 });
+
+describe('getAcceptanceSummary and withdrawal', () => {
+  /**
+   * These two queries answer the same question about the same table and
+   * must agree. When migration 020 added `withdrawn_at`, only
+   * hasAcceptedDocument was updated — and this one is what the mobile
+   * consent gate reads to decide whether to show the document, so a
+   * withdrawn user got no modal and a 403 with nothing to re-open it.
+   */
+  it('does not list a withdrawn acceptance', async () => {
+    const { pool, query } = scriptedPool([{ rows: [] }]);
+    const summary = await getAcceptanceSummary(pool, 'user-1');
+    expect(query.mock.calls[0][0]).toContain('withdrawn_at IS NULL');
+    expect(summary.acceptances).toEqual([]);
+  });
+
+  it('puts a withdrawn required document back into outstanding', async () => {
+    // The row exists but is withdrawn, so the query returns nothing and
+    // the document is owed again — which is what makes re-consent
+    // reachable instead of a dead end.
+    const { pool } = scriptedPool([{ rows: [] }]);
+    const summary = await getAcceptanceSummary(pool, 'user-1');
+    expect(summary.outstanding).toContain('sensitive_data_consent');
+  });
+
+  it('asks the same question as hasAcceptedDocument', async () => {
+    // Pinned as a pair: if one grows a predicate the other lacks, the
+    // client and the server disagree about whether consent exists, and
+    // that disagreement is invisible until a patient cannot save data.
+    const a = scriptedPool([{ rows: [] }]);
+    await getAcceptanceSummary(a.pool, 'user-1');
+    const b = scriptedPool([{ rows: [], rowCount: 0 }]);
+    await hasAcceptedDocument(b.pool, 'user-1', LEGAL_DOCUMENTS.sensitiveData);
+    const predicate = /withdrawn_at IS NULL/;
+    expect(a.query.mock.calls[0][0]).toMatch(predicate);
+    expect(b.query.mock.calls[0][0]).toMatch(predicate);
+  });
+});
