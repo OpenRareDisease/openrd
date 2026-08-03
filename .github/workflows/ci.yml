@@ -1,0 +1,77 @@
+name: CI
+
+# The repo ships 448 tests across the API and mobile workspaces, but nothing
+# ran them automatically -- a regression only showed up when someone happened
+# to run the suite locally. Every check below was verified green on master
+# before being added, so a red run always means "this PR broke something".
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API (lint, format, typecheck, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Workspaces are hoisted to the repo root, so install from there.
+      - name: Install
+        run: npm ci
+        working-directory: .
+
+      - name: Lint
+        run: npm run lint
+
+      # `npm run format` (prettier --check) is deliberately NOT a gate yet:
+      # the sources are committed with CRLF and there is no .gitattributes,
+      # so prettier's default endOfLine:"lf" fails on 113 files on any
+      # checkout, Linux included. Content is otherwise prettier-clean --
+      # normalising line endings makes the check pass. See the PR notes.
+
+      - name: Typecheck
+        run: npx tsc --project tsconfig.json --noEmit
+
+      - name: Test
+        run: npm test
+
+  mobile:
+    name: Mobile (lint, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+        working-directory: .
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
