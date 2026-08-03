@@ -22,6 +22,10 @@ import { RoutedStorageProvider } from '../../services/storage/routed-storage.js'
 import { AppError } from '../../utils/app-error.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 import { AuditLogger } from '../ai-agents/audit/prompt-audit.js';
+import {
+  requireGuardianConsentForMinor,
+  requireSensitiveDataConsent,
+} from '../legal/require-consent.js';
 
 const UPLOAD_MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -218,14 +222,39 @@ export const createPatientProfileRouter = (context: RouteContext) => {
 
   router.use(authMiddleware);
 
-  router.post('/', asyncHandler(controller.createProfile));
+  // PIPL Art. 29. Applied to every route that STORES or RE-PROCESSES
+  // health or genetic data.
+  //
+  // Deliberately NOT applied to four write routes, and the exclusion
+  // matters as much as the inclusion:
+  //
+  //   /me/consent, /me/sharing-preferences — these ARE the consent
+  //     controls. Gating them behind consent is circular: a user who
+  //     withdrew could never turn anything back on, or off.
+  //   /me/deletion-request, /me/deletion-request/cancel — withdrawing
+  //     consent and then being unable to delete your account is the
+  //     exact opposite of what PIPL Art. 47 requires. Erasure must stay
+  //     reachable from the least-consented state there is.
+  //
+  // Reads are ungated throughout for the same reason: 查阅 and 复制 are
+  // rights the policy grants, not rewards for consenting.
+  const sensitiveDataConsent = requireSensitiveDataConsent(getPool(), context.logger);
+  // PIPL Art. 31. Recomputed from the server clock — the mobile form
+  // has the same rule but reads the handset's, which is settable.
+  const guardianConsent = requireGuardianConsentForMinor(getPool(), context.logger);
+
+  router.post('/', guardianConsent, asyncHandler(controller.createProfile));
   router.get('/me', asyncHandler(controller.getMyProfile));
   router.get('/me/baseline', asyncHandler(controller.getMyBaseline));
   router.get('/me/passport', asyncHandler(controller.getMyPassport));
   router.get('/me/passport/export', asyncHandler(controller.exportMyPassport));
   router.get('/me/data-export', asyncHandler(controller.exportMyData));
-  router.put('/me', asyncHandler(controller.updateMyProfile));
-  router.put('/me/baseline', asyncHandler(controller.updateMyBaseline));
+  router.put('/me', guardianConsent, asyncHandler(controller.updateMyProfile));
+  // The baseline carries diagnosis type, D4Z4 repeat count, haplotype
+  // and methylation — the privacy policy names those as 敏感个人信息
+  // requiring 单独同意, and the registration form was writing them
+  // before the document had ever been rendered.
+  router.put('/me/baseline', sensitiveDataConsent, asyncHandler(controller.updateMyBaseline));
 
   router.get('/me/consent', asyncHandler(controller.getMyConsent));
   router.put('/me/consent', asyncHandler(controller.updateMyConsent));
@@ -238,12 +267,16 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/sharing-preferences', asyncHandler(controller.getMySharingPreferences));
   router.put('/me/sharing-preferences', asyncHandler(controller.updateMySharingPreferences));
 
-  router.post('/me/measurements', asyncHandler(controller.addMeasurement));
-  router.post('/me/function-tests', asyncHandler(controller.addFunctionTest));
-  router.post('/me/symptom-scores', asyncHandler(controller.addSymptomScore));
-  router.post('/me/daily-impacts', asyncHandler(controller.addDailyImpact));
-  router.post('/me/followup-events', asyncHandler(controller.addFollowupEvent));
-  router.post('/me/activity-logs', asyncHandler(controller.addActivityLog));
+  router.post('/me/measurements', sensitiveDataConsent, asyncHandler(controller.addMeasurement));
+  router.post('/me/function-tests', sensitiveDataConsent, asyncHandler(controller.addFunctionTest));
+  router.post('/me/symptom-scores', sensitiveDataConsent, asyncHandler(controller.addSymptomScore));
+  router.post('/me/daily-impacts', sensitiveDataConsent, asyncHandler(controller.addDailyImpact));
+  router.post(
+    '/me/followup-events',
+    sensitiveDataConsent,
+    asyncHandler(controller.addFollowupEvent),
+  );
+  router.post('/me/activity-logs', sensitiveDataConsent, asyncHandler(controller.addActivityLog));
   // Retract one hand-entered record (function test / symptom score /
   // followup event). Soft delete: the row stays as an audited
   // tombstone, every read path filters it out. `:kind` is parsed
@@ -259,6 +292,7 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.post(
     '/me/documents/upload',
     uploadLimiter,
+    sensitiveDataConsent,
     acceptSingleUpload,
     asyncHandler(controller.uploadDocument),
   );
@@ -268,13 +302,36 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   // Same budget as upload: reparse re-reads the whole file into memory
   // and enqueues an identical OCR job, so it's the same CPU/memory
   // spend behind a cheaper-looking request.
-  router.post('/me/documents/:id/reparse', uploadLimiter, asyncHandler(controller.reparseDocument));
-  router.patch('/me/documents/:id/ocr', asyncHandler(controller.patchDocumentOcr));
-  router.post('/me/documents/:id/summary', asyncHandler(controller.generateDocumentSummary));
-  router.post('/me/submissions', asyncHandler(controller.createSubmission));
+  router.post(
+    '/me/documents/:id/reparse',
+    uploadLimiter,
+    // Re-runs OCR over stored PHI — the same processing as the
+    // original upload, so the same consent.
+    sensitiveDataConsent,
+    asyncHandler(controller.reparseDocument),
+  );
+  // Editing extracted fields is writing medical values by hand.
+  router.patch(
+    '/me/documents/:id/ocr',
+    sensitiveDataConsent,
+    asyncHandler(controller.patchDocumentOcr),
+  );
+  // Sends report text to the LLM. The AI consent level governs WHAT
+  // is sent; this governs whether we may process it at all.
+  router.post(
+    '/me/documents/:id/summary',
+    sensitiveDataConsent,
+    asyncHandler(controller.generateDocumentSummary),
+  );
+  // A submission's `summary` carries clinical text (「睡眠评分 8/10」).
+  router.post('/me/submissions', sensitiveDataConsent, asyncHandler(controller.createSubmission));
   router.get('/me/submissions', asyncHandler(controller.listSubmissions));
-  router.patch('/me/submissions/:id/documents', asyncHandler(controller.attachSubmissionDocuments));
-  router.post('/me/medications', asyncHandler(controller.addMedication));
+  router.patch(
+    '/me/submissions/:id/documents',
+    sensitiveDataConsent,
+    asyncHandler(controller.attachSubmissionDocuments),
+  );
+  router.post('/me/medications', sensitiveDataConsent, asyncHandler(controller.addMedication));
   router.get('/me/medications', asyncHandler(controller.listMedications));
   router.get('/me/risk', asyncHandler(controller.getRiskSummary));
   router.get('/me/progression-summary', asyncHandler(controller.getProgressionSummary));

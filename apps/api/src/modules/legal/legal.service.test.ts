@@ -11,7 +11,12 @@ import {
   REGISTRATION_DOCUMENTS,
   SENSITIVE_DATA_DOCUMENT,
 } from './legal.constants.js';
-import { getAcceptanceSummary, hasAcceptedDocument, recordAcceptance } from './legal.service.js';
+import {
+  getAcceptanceSummary,
+  hasAcceptedDocument,
+  recordAcceptance,
+  withdrawAcceptance,
+} from './legal.service.js';
 
 type QueryFn = ReturnType<typeof vi.fn>;
 
@@ -251,5 +256,41 @@ describe('conditional documents', () => {
     ]);
     const summary = await getAcceptanceSummary(pool, 'child-1');
     expect(summary.outstanding).toContain('guardian_consent');
+  });
+});
+
+describe('withdrawAcceptance', () => {
+  // The consent documents promise 「同意后可随时在「隐私设置」中撤回」.
+  // Before migration 020 the ledger was append-only, so the sentence
+  // was unkeepable — and the test that "covered" it asserted the
+  // sentence rather than the capability.
+  it('marks live rows withdrawn without deleting them', async () => {
+    const { pool, query } = scriptedPool([{ rows: [], rowCount: 1 }]);
+    const count = await withdrawAcceptance(pool, 'user-1', LEGAL_DOCUMENTS.sensitiveData);
+    expect(count).toBe(1);
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toContain('UPDATE legal_document_acceptances');
+    expect(sql).toContain('withdrawn_at = NOW()');
+    // Evidence that the processing done BEFORE the withdrawal was
+    // lawful has to survive it — that is what the document promises.
+    expect(sql).not.toContain('DELETE');
+  });
+
+  it('only touches rows that are still live, so withdrawing twice is a no-op', async () => {
+    const { pool, query } = scriptedPool([{ rows: [], rowCount: 0 }]);
+    const count = await withdrawAcceptance(pool, 'user-1', LEGAL_DOCUMENTS.sensitiveData);
+    expect(count).toBe(0);
+    expect(query.mock.calls[0][0]).toContain('withdrawn_at IS NULL');
+  });
+});
+
+describe('hasAcceptedDocument', () => {
+  it('does not count a withdrawn acceptance', async () => {
+    // This is the query the Art. 29 gate runs in front of every write
+    // that stores health data. A withdrawn consent that still passed it
+    // would make the withdraw button decorative.
+    const { pool, query } = scriptedPool([{ rows: [], rowCount: 0 }]);
+    expect(await hasAcceptedDocument(pool, 'user-1', LEGAL_DOCUMENTS.sensitiveData)).toBe(false);
+    expect(query.mock.calls[0][0]).toContain('withdrawn_at IS NULL');
   });
 });

@@ -41,9 +41,19 @@
 --     we still hold; once the data is gone, so is the question.
 --  3. The thing worth being able to prove after erasure — that the
 --     product structurally could not be used without accepting — is a
---     property of the code, not of a row: registration is blocked until
---     the checkbox is ticked and the first upload is blocked until the
---     sensitive-PI consent is recorded, both covered by tests.
+--     property of the code, not of a row. That property is real, but
+--     only because it is enforced SERVER-side: requireSensitiveDataConsent
+--     (apps/api/src/modules/legal/require-consent.ts) reads this table
+--     in front of every route that stores health or genetic data, and
+--     require-consent.test.ts holds it there.
+--
+--     An earlier draft of this comment claimed the same guarantee while
+--     the only gate was a modal in the Expo bundle. It was not true:
+--     `hasAcceptedDocument` had no caller outside its own test, and a
+--     JWT-bearing request could store and OCR a genetic report against
+--     an empty ledger. If that regresses — if the middleware is
+--     unwired again — this reasoning for CASCADE collapses with it, so
+--     treat the tests naming it as load-bearing rather than incidental.
 --
 -- If counsel later decides acceptances must outlive erasure, the change
 -- is ON DELETE SET NULL plus scrubbing ip/user_agent in the purge — NOT

@@ -72,7 +72,7 @@ export class ApiError extends Error {
   /** Set for transport-level failures (no HTTP response): 'network'
    *  for fetch TypeErrors (offline, DNS, connection reset), 'timeout'
    *  when the request exceeded its deadline. */
-  code?: 'network' | 'timeout';
+  code?: 'network' | 'timeout' | 'sensitive_consent_required' | 'consent_check_unavailable';
   /** How long the server said to wait before retrying (429 rate limit,
    *  429 login lockout). Lifted out of `data` so callers don't each
    *  re-implement the "is it under `details` or top level" dig — the
@@ -333,6 +333,18 @@ export const apiRequest = async <T = unknown>(
     error.status = response.status;
     error.data = payload;
     error.retryAfterSeconds = extractRetryAfterSeconds(payload);
+    // Server-side consent codes, lifted out of `data` for the same
+    // reason retryAfterSeconds is: the caller has to tell「你还没同意，
+    // 这是同意书」apart from a generic 403, and every screen digging
+    // through the body itself is how the gate ends up honoured in one
+    // place and not another. requireSensitiveDataConsent (api) refuses
+    // every route that stores health or genetic data; a client that
+    // did not ask first lands here, and the right response is to show
+    // the document rather than an error toast.
+    const serverCode = (payload as { code?: unknown } | null)?.code;
+    if (serverCode === 'sensitive_consent_required' || serverCode === 'consent_check_unavailable') {
+      error.code = serverCode;
+    }
 
     // Centralised 401 handling. A stale token landing on any
     // authenticated endpoint must clear the local session so a
@@ -1565,4 +1577,28 @@ export const sendOtp = (payload: { phoneNumber: string; scene?: 'register' | 'lo
   apiRequest<OtpSendResponse>('/auth/otp/send', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+
+/** The agreement-acceptance ledger (PIPL evidence trail). */
+export interface LegalAcceptanceSummary {
+  acceptances: Array<{ document: string; version: string; acceptedAt: string }>;
+  current: Record<string, string>;
+  outstanding: string[];
+}
+
+export const getLegalAcceptances = () => apiRequest<LegalAcceptanceSummary>('/legal/acceptances');
+
+export const recordLegalAcceptance = (document: string, version: string) =>
+  apiRequest<{ document: string; version: string; acceptedAt: string }>('/legal/acceptances', {
+    method: 'POST',
+    body: JSON.stringify({ document, version }),
+  });
+
+/** Withdraw consent to a document. Idempotent — `withdrawn` is 0 when
+ *  there was nothing live to withdraw, which is not an error: the user's
+ *  intent is satisfied either way. */
+export const withdrawLegalAcceptance = (document: string) =>
+  apiRequest<{ document: string; withdrawn: number }>('/legal/acceptances/withdraw', {
+    method: 'POST',
+    body: JSON.stringify({ document }),
   });

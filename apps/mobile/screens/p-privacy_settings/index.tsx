@@ -4,6 +4,13 @@ import { View, Text, ScrollView, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import Icon from '../common/Icon';
+import { useCallback } from 'react';
+import {
+  getLegalAcceptances,
+  withdrawLegalAcceptance,
+  type LegalAcceptanceSummary,
+} from '../../lib/api';
+import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_TITLES } from '../../lib/legal-content';
 import styles from './styles';
 
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
@@ -60,6 +67,61 @@ const formatConsentDateLabel = (iso: string | null, granted: boolean): string =>
 const PrivacySettingsScreen = () => {
   const router = useRouter();
   const { confirm, notify } = useAppDialog();
+
+  /**
+   * The acceptance ledger, and the withdrawal the documents promise.
+   *
+   * 《敏感个人信息处理单独同意》 tells the user 「同意后可随时在「隐私
+   * 设置」中撤回」 and the privacy policy lists 撤回同意 among the
+   * rights it grants — this screen is the place both sentences name,
+   * and until now neither was reachable from it. A promise a product
+   * makes in a legal document and does not implement is the worst of
+   * both: it reads as compliance and is not.
+   */
+  const [acceptances, setAcceptances] = useState<LegalAcceptanceSummary | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
+
+  const loadAcceptances = useCallback(() => {
+    getLegalAcceptances()
+      .then(setAcceptances)
+      .catch(() => {
+        // A failed read must not blank the rest of the screen; the
+        // section simply does not render.
+        setAcceptances(null);
+      });
+  }, []);
+
+  useEffect(loadAcceptances, [loadAcceptances]);
+
+  const onWithdrawSensitive = async () => {
+    const ok = await confirm({
+      title: '撤回敏感信息处理同意',
+      message:
+        '撤回后将无法继续上传报告或记录健康数据；已上传的内容不会被删除，你可以在「报告管理」中单独删除。撤回不影响撤回前已进行的处理，需要时可以再次同意。',
+      confirmLabel: '确认撤回',
+      cancelLabel: '取消',
+      destructive: true,
+    });
+    if (!ok) return;
+
+    setWithdrawing(true);
+    try {
+      await withdrawLegalAcceptance(LEGAL_DOCUMENTS.sensitiveData);
+      // The AI surfaces cache consent state; without this the app would
+      // keep offering features the server will now refuse.
+      bumpConsentEpoch();
+      loadAcceptances();
+      notify({ title: '已撤回', message: '敏感个人信息处理同意已撤回。', tone: 'success' });
+    } catch (error) {
+      notify({
+        title: '撤回失败',
+        message: error instanceof ApiError ? error.message : '请检查网络后重试',
+        tone: 'error',
+      });
+    } finally {
+      setWithdrawing(false);
+    }
+  };
 
   // AI 同意状态（来自后端）
   const [aiConsent, setAiConsent] = useState<ConsentDetails | null>(null);
@@ -709,6 +771,38 @@ const PrivacySettingsScreen = () => {
           </View>
         </View>
 
+        {/* 授权记录 — the ledger the consent documents point at.
+            Rendered only when the read succeeded; a failed fetch leaves
+            the rest of the screen usable rather than showing an empty
+            shell that looks like「你没同意过任何东西」. */}
+        {acceptances && acceptances.acceptances.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>授权记录</Text>
+            {acceptances.acceptances.map((item) => (
+              <View key={item.document} style={styles.statusRow}>
+                <Text style={styles.statusLabel}>
+                  {LEGAL_DOCUMENT_TITLES[item.document] ?? item.document}
+                </Text>
+                <Text style={styles.statusValue}>
+                  {item.version}　{item.acceptedAt.slice(0, 10)}
+                </Text>
+              </View>
+            ))}
+            {acceptances.acceptances.some(
+              (item) => item.document === LEGAL_DOCUMENTS.sensitiveData,
+            ) ? (
+              <Button
+                label="撤回敏感信息处理同意"
+                variant="plain"
+                fullWidth
+                busy={withdrawing}
+                onPress={onWithdrawSensitive}
+                accessibilityHint="撤回后将无法继续上传报告或记录健康数据，已上传的内容不会被删除"
+              />
+            ) : null}
+          </View>
+        ) : null}
+
         {/* 隐私保护说明 */}
         <View style={styles.section}>
           <View style={styles.privacyNoticeCard}>
@@ -719,24 +813,38 @@ const PrivacySettingsScreen = () => {
               <View style={styles.privacyNoticeContent}>
                 <Text style={styles.privacyNoticeTitle}>隐私保护承诺</Text>
                 <View style={styles.privacyNoticeList}>
+                  {/* Every line here must be something the code
+                      actually does. This block used to claim
+                      「区块链存证数据操作日志」— there is no blockchain
+                      anywhere in this product — and 「严格遵守 HIPAA、
+                      GDPR 等国际隐私标准」, which is a US healthcare
+                      statute that does not apply and a compliance
+                      claim nobody has assessed. Telling patients that
+                      about their own medical records is worse than
+                      saying nothing; what replaced it is the shorter,
+                      true list. */}
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
                     <Text style={styles.privacyNoticeText}>
-                      采用医疗级数据加密技术，确保数据安全
+                      传输使用 HTTPS，密码加盐哈希存储，我们无法还原你的原始密码
                     </Text>
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>严格遵守HIPAA、GDPR等国际隐私标准</Text>
-                  </View>
-                  <View style={styles.privacyNoticeItem}>
-                    <Text style={styles.bulletPoint}>•</Text>
-                    <Text style={styles.privacyNoticeText}>区块链存证数据操作日志，确保可追溯</Text>
+                    <Text style={styles.privacyNoticeText}>
+                      报告存放在权限受限的对象存储，只能通过你本人登录后的接口取回
+                    </Text>
                   </View>
                   <View style={styles.privacyNoticeItem}>
                     <Text style={styles.bulletPoint}>•</Text>
                     <Text style={styles.privacyNoticeText}>
-                      支持“最小必要”授权原则，您可随时撤销
+                      每一次同意的开启与关闭都有带时间戳的记录，可在「授权记录」查看
+                    </Text>
+                  </View>
+                  <View style={styles.privacyNoticeItem}>
+                    <Text style={styles.bulletPoint}>•</Text>
+                    <Text style={styles.privacyNoticeText}>
+                      按《个人信息保护法》处理；我们团队规模有限，不承诺绝对安全
                     </Text>
                   </View>
                 </View>

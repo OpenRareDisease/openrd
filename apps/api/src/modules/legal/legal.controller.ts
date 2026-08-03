@@ -1,8 +1,8 @@
 import type { Response } from 'express';
 import type { Pool } from 'pg';
 
-import { recordAcceptanceSchema } from './legal.schema.js';
-import { getAcceptanceSummary, recordAcceptance } from './legal.service.js';
+import { recordAcceptanceSchema, withdrawAcceptanceSchema } from './legal.schema.js';
+import { getAcceptanceSummary, recordAcceptance, withdrawAcceptance } from './legal.service.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 
 /**
@@ -31,6 +31,25 @@ export class LegalController {
       current: summary.current,
       outstanding: summary.outstanding,
     });
+  };
+
+  /**
+   * Withdraw consent to a document.
+   *
+   * The consent documents promise this in writing 「同意后可随时在
+   * 「隐私设置」中撤回」 and PIPL Art. 15 requires a convenient way to
+   * exercise it; until migration 020 the ledger was append-only and the
+   * promise was unkeepable.
+   *
+   * 200 whether or not a row was live. The user's intent is 「I do not
+   * consent」, and that is true afterwards either way — returning 404
+   * for 「you had not consented」 would make the UI show an error for a
+   * state the user is already in.
+   */
+  withdrawMyAcceptance = async (req: AuthenticatedRequest, res: Response) => {
+    const payload = withdrawAcceptanceSchema.parse(req.body);
+    const withdrawn = await withdrawAcceptance(this.pool, req.user.id, payload.document);
+    res.status(200).json({ document: payload.document, withdrawn });
   };
 
   recordMyAcceptance = async (req: AuthenticatedRequest, res: Response) => {

@@ -18,11 +18,17 @@ import { asyncHandler } from '../../utils/async-handler.js';
  * rows are attributable.
  *
  * The client not reaching this endpoint after registering is the one
- * failure mode that leaves an account with no recorded acceptance. The
- * gate that matters legally — the Art. 29 单独同意 before the first
- * report upload — reads this table on every upload, so it self-heals:
- * a user whose registration write was lost is asked again before any
- * sensitive data is stored.
+ * failure mode that leaves an account with no recorded acceptance, and
+ * it self-heals: requireSensitiveDataConsent reads this table in front
+ * of every route that stores health or genetic data, so a user whose
+ * registration write was lost is refused — and asked — before any
+ * sensitive data lands.
+ *
+ * That sentence was written here once while the only gate was a modal
+ * in the mobile bundle, which made it false. The self-heal is a
+ * property of require-consent.ts, not of this file; if that middleware
+ * stops being wired onto the write routes, this paragraph becomes a
+ * lie again.
  */
 export const createLegalRouter = (context: RouteContext) => {
   const router = Router();
@@ -47,6 +53,13 @@ export const createLegalRouter = (context: RouteContext) => {
 
   router.get('/acceptances', asyncHandler(controller.getMyAcceptances));
   router.post('/acceptances', acceptanceLimiter, asyncHandler(controller.recordMyAcceptance));
+  // Same limiter: withdrawal is an UPDATE keyed by (user, document), so
+  // it cannot grow the table, but it can still be spammed.
+  router.post(
+    '/acceptances/withdraw',
+    acceptanceLimiter,
+    asyncHandler(controller.withdrawMyAcceptance),
+  );
 
   return router;
 };

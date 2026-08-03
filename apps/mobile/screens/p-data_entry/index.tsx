@@ -823,7 +823,30 @@ const DataEntryScreen = () => {
    *  defensive edge (gate fail-open during a network blip). The old
    *  behavior — silently creating a profile named「FSHD 患者」— put
    *  fabricated names into medical records; erroring is honest. */
+  /**
+   * Preamble to every write this screen performs.
+   *
+   * The consent ask lives HERE rather than at each of the three submit
+   * handlers because that is what makes it hold: this screen writes
+   * measurements, function tests, symptom scores, daily impacts and
+   * follow-up events, and the first version gated only the report
+   * upload — so a patient who tapped 「暂不同意」 in the gate had the
+   * rest of the form written to the server anyway, a second later. The
+   * API refuses all of them without a ledger row
+   * (requireSensitiveDataConsent), so a missed call here surfaces as a
+   * 403 rather than as silent un-consented storage — but surfacing it
+   * as a question is the point.
+   *
+   * Throws rather than returning a flag: every caller already runs
+   * inside a try/catch that renders the message, and a boolean would
+   * have to be checked at three sites, which is the shape that lets one
+   * of them forget.
+   */
   const ensureProfileReady = async () => {
+    const consented = await ensureSensitiveDataConsent();
+    if (!consented) {
+      throw new Error('未记录敏感个人信息处理同意，本次记录没有保存。你可以稍后再来。');
+    }
     if (profile) {
       return profile;
     }
@@ -1409,10 +1432,11 @@ const DataEntryScreen = () => {
 
     setFormNotice(null);
 
-    // Ask BEFORE any network write. createSubmission below already
-    // persists a row tied to this patient, so a gate placed after it
-    // would have recorded the intent to upload medical records before
-    // the consent that authorises it.
+    // The ask itself now lives in ensureProfileReady, which every write
+    // path goes through — but it has to happen BEFORE setUploadRun
+    // paints a progress row, and before createSubmission persists the
+    // intent to upload. So it stays explicit here and the call inside
+    // ensureProfileReady short-circuits on the hook's own grant flag.
     const consented = await ensureSensitiveDataConsent();
     if (!consented) {
       setFormNotice('未记录敏感信息处理同意，报告没有上传。你可以稍后再来。');

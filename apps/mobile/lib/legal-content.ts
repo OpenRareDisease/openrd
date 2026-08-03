@@ -118,6 +118,16 @@ export const PRIVACY_POLICY_TITLE = '隐私政策';
 export const SENSITIVE_DATA_CONSENT_TITLE = '敏感个人信息处理单独同意';
 export const GUARDIAN_CONSENT_TITLE = '儿童个人信息处理规则与监护人同意';
 
+/** Document id -> the title the user actually saw, for the 授权记录
+ *  list. Keyed by the persisted id rather than by the constant name so
+ *  a row written by an older build still renders as words. */
+export const LEGAL_DOCUMENT_TITLES: Record<string, string> = {
+  [LEGAL_DOCUMENTS.userAgreement]: USER_AGREEMENT_TITLE,
+  [LEGAL_DOCUMENTS.privacyPolicy]: PRIVACY_POLICY_TITLE,
+  [LEGAL_DOCUMENTS.sensitiveData]: SENSITIVE_DATA_CONSENT_TITLE,
+  [LEGAL_DOCUMENTS.guardianConsent]: GUARDIAN_CONSENT_TITLE,
+};
+
 const VERSION_LINE = (documentId: LegalDocumentId) =>
   '版本 ' +
   LEGAL_DOCUMENT_VERSIONS[documentId] +

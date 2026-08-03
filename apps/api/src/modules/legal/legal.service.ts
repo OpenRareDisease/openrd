@@ -198,11 +198,42 @@ export const hasAcceptedDocument = async (
   document: LegalDocumentId,
 ): Promise<boolean> => {
   const result = await pool.query(
+    // `withdrawn_at IS NULL` is the whole point of migration 020: a
+    // withdrawn consent is not a consent, and this is the query the
+    // Art. 29 gate runs in front of every write that stores health
+    // data. The partial index matches this predicate exactly.
     `SELECT 1
        FROM legal_document_acceptances
-      WHERE user_id = $1 AND document = $2
+      WHERE user_id = $1 AND document = $2 AND withdrawn_at IS NULL
       LIMIT 1`,
     [userId, document],
   );
   return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * Withdraw consent to a document.
+ *
+ * Marks every live acceptance of that document as withdrawn rather than
+ * deleting it — 「撤回不影响撤回前已进行的处理」 is what the document
+ * tells the user, and proving that requires the row to survive. See
+ * migration 020's header for the full reasoning.
+ *
+ * Idempotent: withdrawing twice touches nothing the second time, and
+ * returns 0. A caller can treat 0 as 「there was nothing to withdraw」
+ * rather than as a failure — the user's intent (「I do not consent」) is
+ * satisfied either way.
+ */
+export const withdrawAcceptance = async (
+  pool: Pool,
+  userId: string,
+  document: LegalDocumentId,
+): Promise<number> => {
+  const result = await pool.query(
+    `UPDATE legal_document_acceptances
+        SET withdrawn_at = NOW()
+      WHERE user_id = $1 AND document = $2 AND withdrawn_at IS NULL`,
+    [userId, document],
+  );
+  return result.rowCount ?? 0;
 };

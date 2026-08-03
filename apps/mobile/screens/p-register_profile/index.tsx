@@ -225,6 +225,15 @@ const RegisterProfileScreen: React.FC = () => {
   // phone-number registration has no age to reason about yet.
   const { ensureSensitiveDataConsent: ensureGuardianConsent, gateProps: guardianGateProps } =
     useSensitiveDataConsentGate(LEGAL_DOCUMENTS.guardianConsent);
+  // PIPL Art. 29. The baseline this form writes carries diagnosis type,
+  // D4Z4 repeat count, haplotype and methylation — the privacy policy
+  // names exactly those as 敏感个人信息 needing 单独同意, and this screen
+  // was storing them before the document had ever been rendered. The
+  // API refuses the write without a ledger row (requireSensitiveDataConsent
+  // on PUT /me/baseline), so without this the save would just fail.
+  const { ensureSensitiveDataConsent, gateProps: sensitiveGateProps } = useSensitiveDataConsentGate(
+    LEGAL_DOCUMENTS.sensitiveData,
+  );
 
   const toggleAssistiveDevice = (device: AssistiveDeviceOption) => {
     setForm((prev) => ({
@@ -270,6 +279,19 @@ const RegisterProfileScreen: React.FC = () => {
         });
         return;
       }
+    }
+
+    // Ordered after the guardian gate on purpose: for a child, the
+    // person answering both questions is the guardian, and asking them
+    // to consent to sensitive-data processing before establishing that
+    // they may consent at all is the wrong way round.
+    const sensitiveConsented = await ensureSensitiveDataConsent();
+    if (!sensitiveConsented) {
+      setFeedback({
+        type: 'error',
+        message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
+      });
+      return;
     }
 
     // Onboarding asks for the bare minimum (name/birth/gender) —
@@ -659,6 +681,7 @@ const RegisterProfileScreen: React.FC = () => {
         </ScrollView>
       </View>
       <SensitiveDataConsentGate {...guardianGateProps} />
+      <SensitiveDataConsentGate {...sensitiveGateProps} />
     </SafeAreaView>
   );
 };

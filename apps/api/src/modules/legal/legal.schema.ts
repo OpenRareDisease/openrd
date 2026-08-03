@@ -21,3 +21,12 @@ export const recordAcceptanceSchema = z.object({
 });
 
 export type RecordAcceptanceBody = z.infer<typeof recordAcceptanceSchema>;
+
+/** Withdrawal names only the document — a user withdraws consent to a
+ *  document, not to one version of it, and asking a client to echo the
+ *  version back would let a stale bundle withdraw nothing. */
+export const withdrawAcceptanceSchema = z.object({
+  document: z.enum(LEGAL_DOCUMENT_IDS),
+});
+
+export type WithdrawAcceptanceBody = z.infer<typeof withdrawAcceptanceSchema>;
