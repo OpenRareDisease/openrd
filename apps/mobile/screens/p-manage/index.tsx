@@ -369,9 +369,19 @@ export default function ManageScreen() {
                 <View key={insight.muscleGroup} style={styles.cohortRow}>
                   <View style={styles.cohortCopy}>
                     <Text style={styles.cohortLabel}>{label}</Text>
+                    {/* The API withholds `distribution` until enough
+                        distinct patients have contributed (see
+                        COHORT_MIN_PATIENTS). Rendering the null case as
+                        「群体中位 — 分 · 0 人」 still asserts a cohort,
+                        and for a while it asserted a false one: the
+                        query compared the patient against their own
+                        rows and counted measurements as people, so the
+                        first person to test both sides five times was
+                        told 「10 人」. Say what is true instead. */}
                     <Text style={styles.cohortCaption}>
-                      群体中位 {insight.distribution?.medianScore ?? '—'} 分 ·{' '}
-                      {insight.distribution?.sampleCount ?? 0} 人
+                      {insight.distribution
+                        ? `群体中位 ${insight.distribution.medianScore} 分 · ${insight.distribution.sampleCount} 人`
+                        : '病友数据还不够，暂不做对比'}
                     </Text>
                   </View>
                   {/* 「你」has to stay. Dropping it left the cohort

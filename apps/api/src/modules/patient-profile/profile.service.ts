@@ -607,6 +607,20 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
     'provider', ocr_payload -> 'provider'
   ) END AS ocr_payload`;
 
+/**
+ * Fewest distinct patients before a cohort distribution is shown.
+ *
+ * Not a statistics choice — a re-identification one. This platform's
+ * whole population is people with one rare disease who may well know
+ * each other through the same patient association, so a median drawn
+ * from three contributors is a median any one of them can invert. Ten
+ * is the smallest floor that stops that being trivial while still
+ * being reachable by this cohort.
+ *
+ * It is also an honesty floor: 「和病友群体相比」 promises a group.
+ */
+const COHORT_MIN_PATIENTS = 10;
+
 export class PatientProfileService {
   private readonly pool: Pool;
   private readonly logger: AppLogger;
@@ -2868,10 +2882,10 @@ export class PatientProfileService {
            percentile_cont(0.5) WITHIN GROUP (ORDER BY strength_score) AS median_score,
            percentile_cont(0.25) WITHIN GROUP (ORDER BY strength_score) AS quartile_25,
            percentile_cont(0.75) WITHIN GROUP (ORDER BY strength_score) AS quartile_75,
-           COUNT(*) AS sample_count
+           COUNT(DISTINCT profile_id) AS sample_count
          FROM patient_measurements
-         WHERE muscle_group = $1`,
-        [muscleGroup],
+         WHERE muscle_group = $1 AND profile_id <> $2`,
+        [muscleGroup, profileId],
       ),
       this.pool.query(
         `SELECT strength_score
@@ -2892,17 +2906,39 @@ export class PatientProfileService {
       .reverse();
 
     const distributionRow = distributionResult.rows[0];
-    const distribution = distributionRow?.sample_count
-      ? {
-          muscleGroup,
-          minScore: Number(distributionRow.min_score),
-          maxScore: Number(distributionRow.max_score),
-          medianScore: Number(distributionRow.median_score),
-          quartile25: Number(distributionRow.quartile_25),
-          quartile75: Number(distributionRow.quartile_75),
-          sampleCount: Number(distributionRow.sample_count),
-        }
-      : null;
+    /**
+     * Three defects sat on top of each other here, and together they
+     * made this screen state a falsehood to a patient about their own
+     * disease.
+     *
+     *  1. No self-exclusion. The first patient to record a muscle test
+     *     was compared against their own scores and told it was the
+     *     cohort. The query now carries `profile_id <> $2`.
+     *  2. `COUNT(*)` counted measurement ROWS while the UI rendered the
+     *     number followed by 人. One patient testing left and right
+     *     five times produces 10 rows and read as 「群体中位 4 分 ·
+     *     10 人」. Now COUNT(DISTINCT profile_id).
+     *  3. No floor at all. A median over two people is not a
+     *     distribution, and at this size it is re-identifying: with
+     *     three contributors each one can subtract themselves and read
+     *     the other two.
+     *
+     * Below the floor the block is withheld entirely rather than shown
+     * with a caveat. A caveat under a number does not stop the number
+     * being read, and the number being read here is「我比别人差多少」.
+     */
+    const distribution =
+      Number(distributionRow?.sample_count ?? 0) >= COHORT_MIN_PATIENTS
+        ? {
+            muscleGroup,
+            minScore: Number(distributionRow.min_score),
+            maxScore: Number(distributionRow.max_score),
+            medianScore: Number(distributionRow.median_score),
+            quartile25: Number(distributionRow.quartile_25),
+            quartile75: Number(distributionRow.quartile_75),
+            sampleCount: Number(distributionRow.sample_count),
+          }
+        : null;
 
     const latestRow = latestResult.rows[0];
     const userLatestScore = latestRow ? Number(latestRow.strength_score) : null;
