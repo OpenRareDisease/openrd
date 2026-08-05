@@ -611,6 +611,10 @@ export interface ClinicalPassportSummary {
   }>;
   diagnosis: {
     ready: boolean;
+    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的。
+     *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
+     *  医生手里，患者的自述不能和基因结果长得一样。 */
+    confirmation: 'genetic' | 'self_reported' | 'none';
     latestSourceDate: string | null;
     latestDocumentId: string | null;
     freshness: PassportFreshness;

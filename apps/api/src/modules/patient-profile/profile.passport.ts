@@ -63,8 +63,35 @@ export interface PassportSummaryCardDTO {
   meta: string;
 }
 
+/**
+ * How the diagnosis on this passport is backed.
+ *
+ * `genetic` — a D4Z4 repeat count, 4q haplotype or EcoRI fragment was
+ *   extracted from a report the patient uploaded. This is evidence.
+ * `self_reported` — the patient typed a diagnosis or a date into the
+ *   baseline form. This is a claim, and it is the commonest state:
+ *   the literature puts the FSHD diagnostic odyssey near a decade with
+ *   a majority misdiagnosed along the way, so the realistic holder of
+ *   an unconfirmed passport is someone carrying「可能是肌病」or an
+ *   outright wrong label.
+ * `none` — nothing yet.
+ *
+ * The distinction is the whole point. This document is designed to be
+ * handed to a neurologist who may see three FSHD patients in a career,
+ * and a confident, well-typeset page headed FSHD anchors them — which
+ * is the mechanism that produces those ten-year odysseys in the first
+ * place. A passport must never present a patient's own guess in the
+ * same visual register as a genetic result.
+ */
+export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'none';
+
 export interface PassportDiagnosisDTO {
   ready: boolean;
+  /** Carried all the way to the printed page — see
+   *  PassportDiagnosisConfirmation. The export is the artefact that
+   *  reaches a clinician, so it is the one place this state cannot be
+   *  allowed to go missing. */
+  confirmation: PassportDiagnosisConfirmation;
   latestSourceDate: string | null;
   latestDocumentId: string | null;
   freshness: PassportFreshnessDTO;
@@ -1018,10 +1045,26 @@ export const buildClinicalPassportSummary = (
     null,
   );
 
-  const diagnosisReady =
+  // Only fields OCR pulled off an uploaded report count as evidence.
+  // `geneticType` deliberately does NOT: it falls back to
+  // `profile.geneticMutation`, which is free text the patient types
+  // into the baseline form, and `diagnosisDate` is typed too.
+  const geneticallyConfirmed =
+    hasMeaningfulValue(reportInsights.d4z4Repeats) ||
+    hasMeaningfulValue(reportInsights.haplotype) ||
+    hasMeaningfulValue(reportInsights.ecoRIFragment);
+  const diagnosisClaimed =
     hasMeaningfulValue(reportInsights.geneticType) ||
-    hasMeaningfulValue(reportInsights.geneEvidence) ||
     hasMeaningfulValue(reportInsights.diagnosisDate);
+  const diagnosisConfirmation: PassportDiagnosisConfirmation = geneticallyConfirmed
+    ? 'genetic'
+    : diagnosisClaimed
+      ? 'self_reported'
+      : 'none';
+  // Completion counts confirmed diagnoses only — a progress ring that
+  // fills on a self-entered date teaches the patient the document is
+  // finished when its most load-bearing field is unverified.
+  const diagnosisReady = geneticallyConfirmed;
   const motorReady =
     measurementScores.length > 0 ||
     profile.activityLogs.length > 0 ||
@@ -1082,10 +1125,12 @@ export const buildClinicalPassportSummary = (
   const mriHighlights = summarizeBodyRegions(mriBodyMap.regions);
 
   const nextSteps: PassportNextStepDTO[] = [];
-  if (!diagnosisReady) {
+  if (!geneticallyConfirmed) {
     nextSteps.push({
-      title: '补充基因或诊断依据',
-      description: '至少补齐分型、D4Z4 或诊断日期，护照才算具备可引用的诊断身份信息。',
+      title: diagnosisClaimed ? '补充基因检测报告' : '补充基因或诊断依据',
+      description: diagnosisClaimed
+        ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
+        : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
     });
   }
   if (measurementScores.length === 0) {
@@ -1118,9 +1163,12 @@ export const buildClinicalPassportSummary = (
       key: 'diagnosis',
       title: '诊断证据',
       ready: diagnosisReady,
-      summary: diagnosisReady
-        ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
-        : '缺少可直接展示的基因或诊断证据',
+      summary:
+        diagnosisConfirmation === 'genetic'
+          ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
+          : diagnosisConfirmation === 'self_reported'
+            ? '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证'
+            : '缺少可直接展示的基因或诊断证据',
       meta: `诊断日期 ${reportInsights.diagnosisDate}`,
     },
     {
@@ -1209,6 +1257,7 @@ export const buildClinicalPassportSummary = (
       ready: diagnosisReady,
       latestSourceDate: reportInsights.latestGeneticDate,
       latestDocumentId: reportInsights.latestGeneticDocumentId,
+      confirmation: diagnosisConfirmation,
       freshness: getFreshness(reportInsights.latestGeneticDate),
       geneticType: reportInsights.geneticType,
       d4z4Repeats: reportInsights.d4z4Repeats,

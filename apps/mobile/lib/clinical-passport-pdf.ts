@@ -372,6 +372,23 @@ export const buildClinicalPassportPdfHtml = (
       }
       .metric-summary,
       .metric-meta,
+      .unconfirmed-banner {
+        /* Printed and handed to a neurologist who may see three FSHD
+           patients in a career. A patient's own guess must not share a
+           visual register with a genetic result, and grey small print
+           is exactly how it would. Border and weight survive a
+           photocopy and a 一块钱 print shop. */
+        margin: 6px 0 10px;
+        padding: 7px 10px;
+        border: 1.5px solid #8a5a00;
+        background: #fff6e5;
+        color: #6b4400;
+        font-weight: 600;
+        font-size: 11.5px;
+        line-height: 1.5;
+        border-radius: 4px;
+      }
+
       .section-copy,
       .monitor-card p,
       .timeline-desc,
@@ -462,6 +479,15 @@ export const buildClinicalPassportPdfHtml = (
           <div>
             <h2>诊断证据</h2>
             <p class="section-copy">集中查看基因结果、诊断日期和证据摘要。</p>
+            ${
+              summary.diagnosis.confirmation === 'genetic'
+                ? ''
+                : `<p class="unconfirmed-banner">${
+                    summary.diagnosis.confirmation === 'self_reported'
+                      ? '⚠ 未经基因确诊：本节内容由患者本人填写，尚无基因检测报告佐证，请勿据此确认诊断。'
+                      : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
+                  }</p>`
+            }
           </div>
           <span class="freshness">${escapeHtml(summary.diagnosis.freshness.label)}</span>
         </div>

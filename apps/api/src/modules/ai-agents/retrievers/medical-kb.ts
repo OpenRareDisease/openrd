@@ -60,15 +60,14 @@ export interface MedicalKbRetrieverOptions {
  * `apparatusScore` and `DAMAGED_RATIO` below are: a paragraph that
  * mentions 目录 is a paragraph. This filter used to test presence
  * anywhere in the chunk and it cost real content — measured against
- * the 9,594-chunk corpus, it silently dropped 72 chunks across 39
- * files and emptied three files completely:
+ * the 9,594-chunk corpus, presence-testing dropped 112 chunks across
+ * 40 files and emptied four completely (see stripIngestLabel above for
+ * the other half of that story). Switching to density recovers 72 of
+ * them; the label strip recovers the rest.
  *
- *   FSHD康复医师网络.docx            — the referral list for doctors
- *   FSHD青年路社区简介.docx           — who this community is
- *   《中国康复辅助器具目录（2023年版）》修订说明.docx
- *
- * and took 4 of 6 chunks out of each part of the patient autobiography
- *《不管如何，你得长大》连载1-4. Three of the patterns were not
+ * It also took 4 of 6 chunks out of each part of the patient
+ * autobiography《不管如何，你得长大》连载1-4. Three of the patterns
+ * were not
  * boilerplate at all — 连载, 社区简介 and 康复医师网络 are the TITLES
  * of documents someone curated on purpose. They are gone from this
  * list; a filter must never be able to name a document out of the
