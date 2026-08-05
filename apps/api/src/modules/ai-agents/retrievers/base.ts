@@ -96,6 +96,15 @@ export interface RetrievedChunk {
   sourceFile?: string | null;
   /** Order within the source file when applicable. Optional. */
   chunkIndex?: number | null;
+  /** How authoritative the source is, derived from its position in the
+   *  corpus (`guideline` | `literature` | `reference` | `community` |
+   *  `unknown`). Vector retrievers over the medical KB set it; `null`
+   *  everywhere the concept doesn't apply (a patient's own report is
+   *  not more or less "authoritative", it is simply theirs). */
+  authorityTier?: string | null;
+  /** Patient-facing rendering of `authorityTier` —「指南/共识」/「文献」/
+   *  「资料」/「病友经验」. Chinese because it is shown to the reader. */
+  authorityLabel?: string | null;
 }
 
 /**
@@ -111,6 +120,12 @@ export interface Citation {
   /** Short snippet shown in the UI. Retrievers should keep this under
    *  ~200 chars and stripped of newlines for compact display. */
   snippet: string;
+  /** Patient-facing authority label for this citation —「指南/共识」,
+   *  「文献」,「资料」,「病友经验」— or `null` when the source has no
+   *  authority ranking. A citation chip that says 病友经验 and one that
+   *  says 指南/共识 are claims of very different strength, and until now
+   *  the UI could only show a filename, so they looked identical. */
+  authorityLabel?: string | null;
 }
 
 export interface RetrieveResult {
@@ -152,6 +167,16 @@ export interface IRetriever {
 export const RETRIEVAL_FAILURE_REASONS: ReadonlySet<string> = new Set([
   'kb_service_unreachable',
   'kb_service_error',
+  // An empty corpus belongs here, not in the "searched and found
+  // nothing" bucket. The KB service already refuses readiness on a
+  // confirmed-zero `kb_chunks` (knowledge_service._readiness), but
+  // `/multi` itself answers 200 with zero chunks, so a stack that is up
+  // with an un-ingested corpus — a fresh environment, a restore that
+  // half-finished — answered every question about the disease with
+  // 「（无内容）」 and let the model fill the gap from its priors. There
+  // is nothing to be found in an empty corpus; saying「知识库里没有」
+  // would be a statement about a corpus that does not exist yet.
+  'kb_empty_corpus',
   'not_implemented',
 ]);
 

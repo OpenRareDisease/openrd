@@ -14,13 +14,45 @@ LogBox.ignoreLogs([
   // 添加其它想暂时忽略的错误或警告信息
 ]);
 
-const GUEST_ROUTES = new Set(['p-login_register']);
+/**
+ * Routes a signed-out visitor may open. Everything else redirects to
+ * the login screen.
+ *
+ * p-genetics_family is here because「会遗传给孩子吗」is the question
+ * that brings people to this app before they have decided to trust it
+ * with a phone number, and that page answers it completely, with the
+ * source named on every section (lib/genetics-family-content.ts). It
+ * reads no API and needs no token. Making someone register to read a
+ * cited reference page is a toll on the one thing we can give away.
+ */
+const GUEST_ROUTES = new Set(['p-login_register', 'p-genetics_family']);
+
+/**
+ * The subset of GUEST_ROUTES a *signed-in* user must be bounced off.
+ *
+ * This used to be the same set, which is the trap in adding anything
+ * to GUEST_ROUTES: the gate below reads `token && isGuestRoute` and
+ * replaces with /p-home, so a second guest route would have become
+ * unreachable for every logged-in patient — the tap on「遗传与生育」
+ * from 我的 would have bounced straight back to 今天. Only the login
+ * form itself belongs here: it is the sign-in screen, and showing it to
+ * someone who already has a session is a dead end.
+ */
+const SIGNED_OUT_ONLY_ROUTES = new Set(['p-login_register']);
 
 // Routes reachable while the profile is still missing. The onboarding
 // destination itself must be exempt (or the gate would loop), and
 // about-us carries the legal texts a user may want before filling in
-// medical data.
-const ONBOARDING_EXEMPT_ROUTES = new Set(['p-login_register', 'p-register_profile', 'p-about_us']);
+// medical data. p-genetics_family is exempt for the same reason it is
+// a guest route: a signed-out visitor and a fully onboarded patient can
+// both read it, and bouncing only the person in between — who is
+// deciding whether to build a profile at all — would be arbitrary.
+const ONBOARDING_EXEMPT_ROUTES = new Set([
+  'p-login_register',
+  'p-register_profile',
+  'p-about_us',
+  'p-genetics_family',
+]);
 
 function AppNavigator() {
   const navigationState = useRootNavigationState();
@@ -30,6 +62,7 @@ function AppNavigator() {
   const { profileStatus } = useProfileContext();
   const currentRoute = segments[0] ?? '';
   const isGuestRoute = GUEST_ROUTES.has(currentRoute);
+  const isSignedOutOnlyRoute = SIGNED_OUT_ONLY_ROUTES.has(currentRoute);
   const isOnboardingExempt = ONBOARDING_EXEMPT_ROUTES.has(currentRoute);
   // The gate fires ONLY on a confirmed 404 ('missing'). 'error' is
   // fail-open by design — see ProfileContext's status semantics.
@@ -57,7 +90,7 @@ function AppNavigator() {
       return;
     }
 
-    if (token && isGuestRoute) {
+    if (token && isSignedOutOnlyRoute) {
       router.replace('/p-home');
       return;
     }
@@ -74,7 +107,7 @@ function AppNavigator() {
   const shouldBlockRender =
     isHydrated &&
     Boolean(navigationState?.key) &&
-    ((!token && !isGuestRoute) || (token && isGuestRoute) || needsOnboarding);
+    ((!token && !isGuestRoute) || (token && isSignedOutOnlyRoute) || needsOnboarding);
 
   if (shouldBlockRender) {
     return null;
@@ -122,6 +155,10 @@ function AppNavigator() {
         <Stack.Screen name="p-clinical_passport" options={{ title: 'FSHD临床护照页' }} />
         <Stack.Screen name="p-data_donation" options={{ title: '数据捐赠页' }} />
         <Stack.Screen name="p-resource_map" options={{ title: '医疗资源地图页' }} />
+        {/* app/p-genetics_family.tsx existed with no entry here, which
+            by this list's own rule means it was silently losing its
+            declared title. */}
+        <Stack.Screen name="p-genetics_family" options={{ title: '遗传与生育页' }} />
       </Stack>
     </AppDialogProvider>
   );

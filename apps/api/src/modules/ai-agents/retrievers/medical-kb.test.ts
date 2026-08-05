@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
+import { RETRIEVAL_FAILURE_REASONS, retrievalFailureReason } from './base.js';
 import {
   MedicalKbRetriever,
+  NO_RELEVANT_RESULTS,
   apparatusScore,
   isDamagedExtraction,
   stripIngestLabel,
@@ -147,6 +149,255 @@ describe('MedicalKbRetriever', () => {
     const [, init] = fetchMock.mock.calls[0];
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
+  });
+});
+
+describe('relevance floor — 「知识库里没找到」 vs 「检索失败」', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it('relays the service verdict when every candidate was below the floor', async () => {
+    // The service floored all of them, so `chunks` is already empty —
+    // what matters is that the retriever names WHY, instead of handing
+    // the answer layer a bare empty result it renders as 「（无内容）」.
+    globalThis.fetch = mockFetchOk({
+      chunks: [],
+      metadata: {
+        below_relevance_floor: true,
+        relevance_floor: 0.4,
+        best_distance: 0.4831,
+        candidates_considered: 40,
+      },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: '明天北京天气怎么样？' }, ctx);
+
+    expect(result.chunks).toHaveLength(0);
+    expect(result.metadata.reason).toBe(NO_RELEVANT_RESULTS);
+    expect(result.metadata.relevanceFloor).toBe(0.4);
+    expect(result.metadata.bestDistance).toBe(0.4831);
+  });
+
+  it('does not report a below-floor result as a retrieval FAILURE', () => {
+    // 「我们查了知识库，里面没有」 and 「我们没能查成知识库」 are
+    // different facts and the answer layer says different things for
+    // them. Putting this reason in the failure set would make the model
+    // announce an outage every time a patient asked something the
+    // corpus simply does not cover.
+    expect(RETRIEVAL_FAILURE_REASONS.has(NO_RELEVANT_RESULTS)).toBe(false);
+    expect(
+      retrievalFailureReason({
+        retrieverId: 'medical_kb',
+        chunks: [],
+        citations: [],
+        metadata: { reason: NO_RELEVANT_RESULTS },
+      }),
+    ).toBeNull();
+  });
+
+  it('leaves a normal result alone when the service did not flag the floor', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        {
+          content: 'FSHD 是一种以面部、肩胛带和上臂无力为首发表现的遗传性肌肉疾病。',
+          metadata: { source_file: '指南共识/Dutch-FSHD-Guideline.pdf' },
+          distance: 0.24,
+        },
+      ],
+      metadata: { below_relevance_floor: false, relevance_floor: 0.4 },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 是什么病' }, ctx);
+
+    expect(result.chunks).toHaveLength(1);
+    expect(result.metadata.reason).toBeUndefined();
+  });
+
+  it('stays quiet when talking to a KB service that has no floor yet', async () => {
+    // A service predating the floor sends no such key. Treating a
+    // missing flag as「below floor」would blank every answer during a
+    // rolling deploy.
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        {
+          content: 'FSHD 患者在全身麻醉前应告知麻醉医师既往的呼吸功能与心脏评估结果。',
+          metadata: { source_file: '指南共识/Dutch-FSHD-Guideline.pdf' },
+          distance: 0.29,
+        },
+      ],
+      metadata: { total_results: 1 },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 麻醉' }, ctx);
+    expect(result.chunks).toHaveLength(1);
+    expect(result.metadata.reason).toBeUndefined();
+  });
+});
+
+describe('empty corpus must be loud, not 「（无内容）」', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it('reports kb_empty_corpus when the store returned zero candidates', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [],
+      metadata: { backend_hits: 0, candidates_considered: 0, below_relevance_floor: false },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 是什么病' }, ctx);
+
+    expect(result.metadata.reason).toBe('kb_empty_corpus');
+    // Must reach the answer layer as a FAILURE — an empty corpus is an
+    // outage, not a fact about FSHD.
+    expect(retrievalFailureReason(result)).toBe('kb_empty_corpus');
+  });
+
+  it('does not blame the corpus when a metadata filter was applied', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [],
+      metadata: { backend_hits: 0, below_relevance_floor: false },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: 'FSHD 是什么病', filter: { category: '指南共识' } },
+      ctx,
+    );
+
+    expect(result.metadata.reason).not.toBe('kb_empty_corpus');
+  });
+
+  it('stays silent when the service reports hits that were all filtered out', async () => {
+    // 40 hits came back and every one was a bibliography page. That is
+    // a real (if useless) search result, not an outage.
+    globalThis.fetch = mockFetchOk({
+      chunks: [],
+      metadata: { backend_hits: 40, candidates_considered: 0, below_relevance_floor: false },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 是什么病' }, ctx);
+    expect(result.metadata.reason).toBeUndefined();
+  });
+
+  it('stays silent against a KB service too old to report backend_hits', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [],
+      metadata: { total_results: 0 },
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 是什么病' }, ctx);
+    expect(result.metadata.reason).toBeUndefined();
+  });
+});
+
+describe('authority labelling on chunks and citations', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const anaesthesiaBody = {
+    chunks: [
+      {
+        content:
+          'AANA Journal：合并脊柱侧弯的 FSHD 产妇在椎管内麻醉前应完成呼吸功能评估与气道计划。',
+        metadata: {
+          source_file: 'Balancing Risks in Obstetrics AANA Journal October 2025.pdf',
+        },
+        distance: 0.28,
+        authority_tier: 'literature',
+        authority_label: '文献',
+      },
+      {
+        content:
+          '我做手术那次的经历是这样的，麻醉医生问了我很多问题，我把病历都带上了，术后恢复还算顺利。',
+        metadata: { source_file: '我们的故事丨我的一次手术.pdf' },
+        distance: 0.31,
+        authority_tier: 'community',
+        authority_label: '病友经验',
+      },
+    ],
+    metadata: { below_relevance_floor: false },
+  };
+
+  it('carries the tier and label onto chunks and citations', async () => {
+    globalThis.fetch = mockFetchOk(anaesthesiaBody) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 麻醉要注意什么' }, ctx);
+
+    expect(result.chunks.map((c) => c.authorityTier)).toEqual(['literature', 'community']);
+    expect(result.citations.map((c) => c.authorityLabel)).toEqual(['文献', '病友经验']);
+  });
+
+  it('falls back to the tier stored in chunk metadata by the backfill', async () => {
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        {
+          content: '荷兰 FSHD 指南建议在确诊后建立基线的肺功能与心脏评估记录，并定期复查。',
+          metadata: {
+            source_file: 'Dutch-FSHD-Guideline.pdf',
+            authority_tier: 'guideline',
+            authority_label: '指南/共识',
+          },
+          distance: 0.22,
+        },
+      ],
+      metadata: {},
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: 'FSHD 指南' }, ctx);
+    expect(result.chunks[0].authorityTier).toBe('guideline');
+    expect(result.citations[0].authorityLabel).toBe('指南/共识');
+  });
+
+  it('leaves the label null rather than guessing when the service sends none', async () => {
+    // A citation chip that claims 指南 for something we could not
+    // classify is worse than a chip with no claim on it at all.
+    globalThis.fetch = mockFetchOk({
+      chunks: [
+        {
+          content: '这一段来自一个没有被分级的来源，正文本身足够长，可以通过所有的垃圾过滤。',
+          metadata: { source_file: 'mystery.pdf' },
+          distance: 0.3,
+        },
+      ],
+      metadata: {},
+    }) as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: '?' }, ctx);
+    expect(result.chunks[0].authorityTier).toBeNull();
+    expect(result.citations[0].authorityLabel).toBeNull();
   });
 });
 

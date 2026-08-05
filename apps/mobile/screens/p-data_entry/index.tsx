@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Platform,
-  ScrollView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+// Every control on this screen answers a press with geometry, not just
+// a fade. See lib/press-scale.tsx: on the screen a patient uses daily,
+// a press that produces no visible movement is the reason the next
+// press happens.
+import PressableScale from '../../lib/press-scale';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { plainAnswerText } from '../common/answer-format';
@@ -30,7 +27,7 @@ import {
   type PatientProfile,
   uploadPatientDocumentsSerially,
 } from '../../lib/api';
-import { COLOR, INTERACTION } from '../../lib/design';
+import { COLOR } from '../../lib/design';
 import { DATA_ENTRY_DRAFT_KEYS } from '../../lib/draft-keys';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { buildFollowupFeedback } from './followup-feedback';
@@ -544,10 +541,9 @@ const renderSingleChoice = <T extends string>(
     <Text style={styles.fieldLabel}>{label}</Text>
     <View style={styles.choiceRow}>
       {options.map((option) => (
-        <TouchableOpacity
+        <PressableScale
           key={option.key}
           style={[styles.choiceChip, value === option.key && styles.choiceChipActive]}
-          activeOpacity={INTERACTION.pressOpacity}
           // The accessibility pass over choiceChip landed on three of
           // the five call sites in this file. This is the generic
           // helper, so it was the most-used one left announcing its
@@ -563,7 +559,7 @@ const renderSingleChoice = <T extends string>(
           >
             {option.label}
           </Text>
-        </TouchableOpacity>
+        </PressableScale>
       ))}
     </View>
   </View>
@@ -583,9 +579,8 @@ const renderSleepScorePicker = (opts: {
     <Text style={styles.sectionSubtitle}>0 表示几乎没睡好，10 表示睡得很好且醒后比较恢复。</Text>
 
     <View style={styles.choiceRow}>
-      <TouchableOpacity
+      <PressableScale
         style={[styles.choiceChip, opts.notApplicable && styles.choiceChipActive]}
-        activeOpacity={INTERACTION.pressOpacity}
         accessibilityRole="button"
         accessibilityState={{ selected: opts.notApplicable }}
         aria-selected={opts.notApplicable}
@@ -595,7 +590,7 @@ const renderSleepScorePicker = (opts: {
         <Text style={[styles.choiceChipText, opts.notApplicable && styles.choiceChipTextActive]}>
           这次不评价
         </Text>
-      </TouchableOpacity>
+      </PressableScale>
     </View>
 
     {opts.notApplicable ? (
@@ -610,10 +605,9 @@ const renderSleepScorePicker = (opts: {
             const score = Number(opts.value);
             const active = !Number.isNaN(score) && score >= bucket.min && score <= bucket.max;
             return (
-              <TouchableOpacity
+              <PressableScale
                 key={bucket.label}
                 style={[styles.sleepBucket, active && styles.sleepBucketActive]}
-                activeOpacity={INTERACTION.pressOpacity}
                 accessibilityRole="button"
                 accessibilityState={active ? { selected: true } : {}}
                 aria-selected={active}
@@ -631,21 +625,20 @@ const renderSleepScorePicker = (opts: {
                 <Text style={[styles.sleepBucketText, active && styles.sleepBucketTextActive]}>
                   {bucket.label}
                 </Text>
-              </TouchableOpacity>
+              </PressableScale>
             );
           })}
         </View>
 
         <View style={styles.sleepStepper}>
-          <TouchableOpacity
+          <PressableScale
             style={styles.sleepStepButton}
-            activeOpacity={INTERACTION.pressOpacity}
             accessibilityRole="button"
             accessibilityLabel="睡眠评分减 1 分"
             onPress={() => opts.onChange(stepSleepScore(opts.value, -1))}
           >
             <Icon name="minus" size={16} color={COLOR.accent} />
-          </TouchableOpacity>
+          </PressableScale>
 
           <View style={styles.sleepValueWrap}>
             <Text style={styles.sleepValue}>{opts.value}</Text>
@@ -654,15 +647,14 @@ const renderSleepScorePicker = (opts: {
             </Text>
           </View>
 
-          <TouchableOpacity
+          <PressableScale
             style={styles.sleepStepButton}
-            activeOpacity={INTERACTION.pressOpacity}
             accessibilityRole="button"
             accessibilityLabel="睡眠评分加 1 分"
             onPress={() => opts.onChange(stepSleepScore(opts.value, 1))}
           >
             <Icon name="plus" size={16} color={COLOR.accent} />
-          </TouchableOpacity>
+          </PressableScale>
         </View>
       </>
     )}
@@ -1676,9 +1668,8 @@ const DataEntryScreen = () => {
             {/* Retry is per row, not per batch: re-uploading the six
                 that already went through would duplicate them. */}
             {item.status === 'failed' ? (
-              <TouchableOpacity
+              <PressableScale
                 style={styles.uploadItemAction}
-                activeOpacity={INTERACTION.pressOpacity}
                 disabled={uploadBusy}
                 accessibilityRole="button"
                 accessibilityLabel={`重新上传 ${item.name}`}
@@ -1689,20 +1680,19 @@ const DataEntryScreen = () => {
                   size={15}
                   color={uploadBusy ? COLOR.inkFaint : COLOR.accent}
                 />
-              </TouchableOpacity>
+              </PressableScale>
             ) : null}
 
             {item.status !== 'uploading' && item.status !== 'success' ? (
-              <TouchableOpacity
+              <PressableScale
                 style={styles.uploadItemAction}
-                activeOpacity={INTERACTION.pressOpacity}
                 disabled={uploadBusy}
                 accessibilityRole="button"
                 accessibilityLabel={`移除 ${item.name}`}
                 onPress={() => removeUploadItem(item.key)}
               >
                 <Icon name="xmark" size={15} color={uploadBusy ? COLOR.inkFaint : COLOR.inkMuted} />
-              </TouchableOpacity>
+              </PressableScale>
             ) : null}
           </View>
         ))}
@@ -1812,12 +1802,11 @@ const DataEntryScreen = () => {
               that answer, and it saves a record (see
               notApplicable) rather than a blank. */}
           <View style={styles.choiceRow}>
-            <TouchableOpacity
+            <PressableScale
               style={[
                 styles.choiceChip,
                 followupForm.stairNotApplicable && styles.choiceChipActive,
               ]}
-              activeOpacity={INTERACTION.pressOpacity}
               accessibilityRole="button"
               accessibilityState={{ selected: followupForm.stairNotApplicable }}
               aria-selected={followupForm.stairNotApplicable}
@@ -1838,7 +1827,7 @@ const DataEntryScreen = () => {
               >
                 今天做不了 / 不适用
               </Text>
-            </TouchableOpacity>
+            </PressableScale>
           </View>
 
           {followupForm.stairNotApplicable ? (
@@ -2013,13 +2002,12 @@ const DataEntryScreen = () => {
         </Text>
         <View style={styles.choiceRow}>
           {eventOptions.map((option) => (
-            <TouchableOpacity
+            <PressableScale
               key={option.key}
               style={[
                 styles.choiceChip,
                 eventForm.eventType === option.key && styles.choiceChipActive,
               ]}
-              activeOpacity={INTERACTION.pressOpacity}
               accessibilityRole="radio"
               accessibilityState={{ selected: eventForm.eventType === option.key }}
               aria-checked={eventForm.eventType === option.key}
@@ -2034,7 +2022,7 @@ const DataEntryScreen = () => {
               >
                 {option.label}
               </Text>
-            </TouchableOpacity>
+            </PressableScale>
           ))}
         </View>
 
@@ -2146,6 +2134,27 @@ const DataEntryScreen = () => {
               editable={!speakBusy}
             />
 
+            {/* One line, and only a line.
+                This card's whole argument is that typing is the most
+                expensive thing this screen asks for — and then it asks
+                for up to 500 characters of it. Most Chinese keyboards
+                already carry a 语音 key (搜狗 / 讯飞 / 微信键盘, and
+                iOS 听写), so the cheaper path exists on the patient's
+                own phone and simply goes unmentioned. Saying so costs
+                one sentence and no dependency, and nothing here fetches
+                from an external host.
+
+                Phrased as an alternative on purpose, never as the
+                recommended path: FSHD weakens the face, so speech is
+                harder for some of the people reading this, not easier.
+                An app that told them to「说」would be telling them to
+                use the thing the disease took. So the sentence names
+                both directions and ends on typing still being fine. */}
+            <Text style={styles.speakVoiceHint}>
+              不方便打字的话，可以用手机键盘上的语音键说出来（搜狗、讯飞、微信键盘和 iOS
+              听写都有）；说话费劲就直接打字，或者用下面的表单一项项填，都一样。
+            </Text>
+
             <Button
               label="整理成记录"
               icon="wand-magic-sparkles"
@@ -2178,10 +2187,9 @@ const DataEntryScreen = () => {
               {modeCards.map((item) => {
                 const active = entryMode === item.key;
                 return (
-                  <TouchableOpacity
+                  <PressableScale
                     key={item.key}
                     style={styles.modeRow}
-                    activeOpacity={INTERACTION.pressOpacity}
                     accessibilityRole="button"
                     accessibilityState={{ selected: active }}
                     aria-selected={active}
@@ -2205,7 +2213,7 @@ const DataEntryScreen = () => {
                       </Text>
                       <Text style={styles.modeDescription}>{item.description}</Text>
                     </View>
-                  </TouchableOpacity>
+                  </PressableScale>
                 );
               })}
             </View>

@@ -15,6 +15,7 @@ import SensitiveDataConsentGate, {
 import { LEGAL_DOCUMENTS } from '../../lib/legal-content';
 import { requiresGuardianConsent } from '../../lib/guardian-consent';
 import styles from './styles';
+import { baselineCarriesHealthData } from './baseline-payload';
 import { PROFILE_FORM_DRAFT_KEY } from '../../lib/draft-keys';
 import Button from '../common/Button';
 import {
@@ -281,17 +282,60 @@ const RegisterProfileScreen: React.FC = () => {
       }
     }
 
+    // The baseline is assembled here rather than at the call site so
+    // the Art. 29 question below can be asked about what we are
+    // actually about to store.
+    const baselinePayload: BaselineProfilePayload = {
+      ...(existingBaseline ?? {}),
+      foundation: {
+        ...(existingBaseline?.foundation ?? {}),
+        fullName: form.fullName.trim(),
+        birthYear: Number(form.dateOfBirth.slice(0, 4)),
+        diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
+        regionLabel:
+          buildRegionLabel({
+            regionProvince: form.regionProvince.trim(),
+            regionCity: form.regionCity.trim(),
+            regionDistrict: form.regionDistrict.trim(),
+          }) || null,
+      },
+      diseaseBackground: {
+        ...(existingBaseline?.diseaseBackground ?? {}),
+        diagnosisType: form.diagnosisType.trim() || null,
+        d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
+        onsetRegion: form.onsetRegion.trim() || null,
+        familyHistory: form.familyHistory.trim() || null,
+      },
+      currentStatus: {
+        ...(existingBaseline?.currentStatus ?? {}),
+        independentlyAmbulatory: fromAmbulationChoice(form.independentlyAmbulatory),
+        assistiveDevices: mergeAssistiveDevices(form.assistiveDevices, form.customAssistiveDevices),
+      },
+    };
+    // Onboarding renders name/birth/gender only, so the baseline it
+    // builds is identity fields plus a row of nulls — and PUT
+    // /me/baseline is consent-gated because of the clinical fields that
+    // are not there. Asking a first-run user to accept the genetic-data
+    // document to store nothing is not a consent, it is a toll: the
+    // root layout's onboarding gate keeps sending a profile-less user
+    // back to this form, so 「暂不同意」 locked them out of the app
+    // entirely. Ask when there is something to ask about; the FSHD
+    // background section and the first report upload both still do.
+    const writesHealthData = baselineCarriesHealthData(baselinePayload);
+
     // Ordered after the guardian gate on purpose: for a child, the
     // person answering both questions is the guardian, and asking them
     // to consent to sensitive-data processing before establishing that
     // they may consent at all is the wrong way round.
-    const sensitiveConsented = await ensureSensitiveDataConsent();
-    if (!sensitiveConsented) {
-      setFeedback({
-        type: 'error',
-        message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
-      });
-      return;
+    if (writesHealthData) {
+      const sensitiveConsented = await ensureSensitiveDataConsent();
+      if (!sensitiveConsented) {
+        setFeedback({
+          type: 'error',
+          message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
+        });
+        return;
+      }
     }
 
     // Onboarding asks for the bare minimum (name/birth/gender) —
@@ -334,36 +378,15 @@ const RegisterProfileScreen: React.FC = () => {
         regionCity: form.regionCity.trim(),
         regionDistrict: form.regionDistrict.trim(),
       });
-      await updateMyBaseline({
-        ...(existingBaseline ?? {}),
-        foundation: {
-          ...(existingBaseline?.foundation ?? {}),
-          fullName: form.fullName.trim(),
-          birthYear: Number(form.dateOfBirth.slice(0, 4)),
-          diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
-          regionLabel:
-            buildRegionLabel({
-              regionProvince: form.regionProvince.trim(),
-              regionCity: form.regionCity.trim(),
-              regionDistrict: form.regionDistrict.trim(),
-            }) || null,
-        },
-        diseaseBackground: {
-          ...(existingBaseline?.diseaseBackground ?? {}),
-          diagnosisType: form.diagnosisType.trim() || null,
-          d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
-          onsetRegion: form.onsetRegion.trim() || null,
-          familyHistory: form.familyHistory.trim() || null,
-        },
-        currentStatus: {
-          ...(existingBaseline?.currentStatus ?? {}),
-          independentlyAmbulatory: fromAmbulationChoice(form.independentlyAmbulatory),
-          assistiveDevices: mergeAssistiveDevices(
-            form.assistiveDevices,
-            form.customAssistiveDevices,
-          ),
-        },
-      });
+      // Skipped when the payload carries no health data: every field
+      // it would have written is either null or already stored by
+      // `upsertPatientProfile` above (fullName, dateOfBirth, region),
+      // and every reader of `baseline.foundation` falls back to those
+      // profile columns. Writing it anyway is what forced the consent
+      // ask onto first-run users.
+      if (writesHealthData) {
+        await updateMyBaseline(baselinePayload);
+      }
       // The saved state is now canonical on the server — drop the
       // unsaved-edit draft so it doesn't shadow future loads.
       await setSessionValue(PROFILE_FORM_DRAFT_KEY, null);

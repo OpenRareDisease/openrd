@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -279,9 +279,30 @@ export default function ManageScreen() {
     }
   };
 
-  useEffect(() => {
-    loadData().catch(() => undefined);
-  }, []);
+  // 病程 is a tab and stays mounted for the whole session, so a
+  // mount-only fetch pinned this page to the payload that existed when
+  // the app opened: record a followup, come back here, and 最近记录 /
+  // 变化摘要 / the trend curves are all still the previous state.
+  //
+  // Pull-to-refresh cannot cover for it on the platform patients use.
+  // react-native-web ships RefreshControl as an empty shell (it
+  // destructures `onRefresh`/`refreshing` away and renders a plain
+  // View), so the gesture below is inert on web, and WeChat's in-app
+  // browser has no address bar to reload from.
+  //
+  // Copied from p-report_management: `refresh` mode keeps a focus
+  // regain on the small spinner, and there is deliberately no separate
+  // mount effect — expo-router fires this on the initial mount too, and
+  // running both fired two concurrent fetches on every entry. The first
+  // render's full-screen overlay still comes from `isLoading`'s
+  // initial `true`.
+  useFocusEffect(
+    // loadData is recreated per render; an empty dep list runs the
+    // refetch exactly once per focus gain.
+    useCallback(() => {
+      loadData(true).catch(() => undefined);
+    }, []),
+  );
 
   /** Reset to the first tab when the screen loses focus, so coming back
    *  always lands on 近况 rather than wherever the patient happened to

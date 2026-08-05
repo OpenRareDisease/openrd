@@ -15,8 +15,12 @@ const all = GENETICS_SECTIONS.flatMap((section) => [
 ]).join('\n');
 
 describe('每一节都带出处', () => {
-  it('除了「该找谁」，其余每节都有引文', () => {
-    GENETICS_SECTIONS.filter((section) => section.id !== 'counseling').forEach((section) => {
+  it('每一节都有引文，没有例外', () => {
+    // No exemption. p-qna tells patients to open this page instead of
+    // asking, on the grounds that 「每段都写了出处」. One unsourced
+    // section made that sentence false — on the page whose whole
+    // argument is that an unsourced claim is worth less.
+    GENETICS_SECTIONS.forEach((section) => {
       expect(section.source.length).toBeGreaterThan(10);
     });
   });

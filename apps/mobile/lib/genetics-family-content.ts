@@ -111,7 +111,14 @@ export const GENETICS_SECTIONS: GeneticsSection[] = [
       '如果在考虑 PGT，还需要生殖医学科；孕期管理需要产科，最好是能和神经科沟通的那种。',
       '把你的临床护照 PDF 带上，可以省掉重新讲一遍病史的时间。',
     ],
-    source: '',
+    // Not blank. The Q&A tab now tells patients this page is more
+    // reliable than a generated answer 「因为每段都写了出处」, and a
+    // section with no source made that sentence false — on the page
+    // whose entire argument is that a claim without a source is worth
+    // less. The referral itself is sourced: Giardina makes pre-test
+    // counseling mandatory for PGT and prenatal testing and requires
+    // post-test counseling in every case, whatever the result.
+    source: 'Giardina 等, Clinical Genetics 2024;106:13-26（术前与检测后遗传咨询均为必需）',
   },
 ];
 

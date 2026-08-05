@@ -55,9 +55,10 @@ const formatDate = (value: string | null | undefined): string | null => {
   return `${date.getFullYear()}-${month}-${day}`;
 };
 
-/** One line per monitoring slot, saying either the finding or, plainly,
- *  that there is nothing on file. 「未做过或未上传」 is information an
- *  anesthetist can act on; a missing line is not. */
+/** One line per monitoring slot: the finding, or「上传了但读不出」, or
+ *  「未做过或未上传」. All three are information an anesthetist can act
+ *  on; a missing line is not, and the wrong one of the two negatives is
+ *  worse than either. */
 const monitoringLine = (
   summary: ClinicalPassportSummary,
   key: 'respiratory' | 'cardiac',
@@ -65,6 +66,19 @@ const monitoringLine = (
 ): string => {
   const item = summary.monitoring.items.find((entry) => entry.key === key);
   if (!item || !item.available || !hasValue(item.summary)) {
+    // Three states, not two. 「未做过或未上传」 about a patient who DID
+    // upload a pulmonary function report is a false statement about
+    // their own care, made to the one reader who is not them — and made
+    // on the line that exists to stop an unassessed patient reaching
+    // general anesthesia. An anesthetist who is told the test was never
+    // done orders one; an anesthetist who is told a report exists but
+    // could not be read automatically asks the patient to show it.
+    const date = formatDate(item?.latestDate);
+    if (item?.state === 'unreadable') {
+      return date
+        ? `${label}：已上传报告（${date}），但系统未能自动读出数值 —— 请向患者本人索取原件`
+        : `${label}：已上传报告，但系统未能自动读出数值 —— 请向患者本人索取原件`;
+    }
     return `${label}：未做过或未上传`;
   }
   const date = formatDate(item.latestDate);

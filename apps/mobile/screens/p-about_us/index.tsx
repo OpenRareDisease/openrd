@@ -1,13 +1,41 @@
 import { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Pressable, Modal, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import Icon from '../common/Icon';
 import ListGroup, { Row } from '../common/ListGroup';
 import { COLOR } from '../../lib/design';
+import { isFeatureEnabled } from '../../lib/feature-flags';
 import styles from './styles';
 import { PRIVACY_POLICY_SECTIONS, USER_AGREEMENT_SECTIONS } from '../../lib/legal-content';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
+
+/**
+ * The product's name to a patient. 「FSHD青年社区患者平台」was the old
+ * working name and 「FSHD-openrd」is the repository — neither is what
+ * this is called. Both used to appear on this page, in the app's
+ * largest type, on the screen a patient opens to find out what they
+ * are actually using.
+ */
+export const APP_NAME = '肌愈通';
+
+/**
+ * The version to show, read from the Expo config rather than typed in
+ * again. The hardcoded 「版本 1.0.0」on this page had drifted four
+ * minor versions behind app.json's 2.5.0, which makes it useless for
+ * the one thing a version string is for: a patient reading it back to
+ * us when something is wrong.
+ *
+ * Returns undefined when the config is unreadable, and the caller then
+ * renders nothing at all rather than a placeholder. A version we
+ * cannot read is not a version we are allowed to guess at on a page a
+ * patient may be quoting to us over the phone.
+ *
+ * Read per render, not once at module load, so a test can exercise
+ * both branches without juggling module registries.
+ */
+export const readAppVersion = (): string | undefined => Constants.expoConfig?.version ?? undefined;
 
 /**
  * 用户协议 / 隐私政策 in a sheet.
@@ -81,6 +109,7 @@ const AboutUsScreen = () => {
   const [isAgreementModalVisible, setIsAgreementModalVisible] = useState(false);
   const [isPrivacyModalVisible, setIsPrivacyModalVisible] = useState(false);
   const { notify } = useAppDialog();
+  const appVersion = readAppVersion();
 
   // `canOpenURL` false is the only branch the patient ever sees here,
   // and on web it is the common one: a desktop browser with no mail or
@@ -180,10 +209,10 @@ const AboutUsScreen = () => {
             <View style={styles.appLogo}>
               <Icon name="heartbeat" size={32} color={COLOR.accent} />
             </View>
-            <Text style={styles.appName}>FSHD青年社区患者平台</Text>
-            <Text style={styles.appVersion}>版本 1.0.0</Text>
+            <Text style={styles.appName}>{APP_NAME}</Text>
+            {appVersion ? <Text style={styles.appVersion}>版本 {appVersion}</Text> : null}
             <View style={styles.appTaglineContainer}>
-              <Text style={styles.appTagline}>面向FSHD患者的移动智能互助平台</Text>
+              <Text style={styles.appTagline}>面向FSHD患者的自我管理平台</Text>
             </View>
           </View>
 
@@ -191,8 +220,19 @@ const AboutUsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>产品介绍</Text>
             <View style={styles.introContent}>
+              {/* The 「社区互助」half of this paragraph was describing
+                  features that are behind FEATURE_FLAGS.explore and do
+                  not exist in a default build — the same placeholders
+                  Settings already stopped advertising. Prose counts:
+                  a patient who reads「社区互助」here and then cannot
+                  find a community has been told something untrue by
+                  the page whose job is to say what this app is. The
+                  clause is now tied to the same flag as the feature. */}
               <Text style={styles.introText}>
-                FSHD青年社区患者平台是专为面肩肱型肌营养不良症（FSHD）患者打造的移动智能互助平台。我们以数据驱动为核心，融合智能分析与社区互助能力，助力患者实现疾病自我管理、优化医疗资源对接效率，同时为FSHD科研进展提供真实数据支撑。
+                {APP_NAME}
+                是专为面肩肱型肌营养不良症（FSHD）患者打造的自我管理平台。你可以在这里记录症状与肌力变化、整理化验单和检查报告、查阅带出处的疾病知识
+                {isFeatureEnabled('explore') ? '，也可以和其他病友交流经验' : ''}
+                ；在你同意的前提下，这些数据还能为FSHD科研提供真实世界的记录。
               </Text>
             </View>
           </View>
@@ -213,12 +253,20 @@ const AboutUsScreen = () => {
                 '标准化肌力评估与趋势分析，辅助医患沟通决策',
                 COLOR.accentWash,
               )}
-              {renderFeatureItem(
-                'users',
-                '患者社区',
-                '症状经验分享、康复方法探讨与心理互助陪伴',
-                COLOR.goodWash,
-              )}
+              {/* 患者社区 is one of the five pre-launch 探索
+                  destinations. Settings stopped listing it in PR-30
+                  (see FEATURE_FLAGS.explore) but this page kept
+                  advertising it as a 核心功能 — so the app both hid the
+                  feature and promised it, on two screens one tap apart.
+                  Same flag, so the next launch flips one switch. */}
+              {isFeatureEnabled('explore')
+                ? renderFeatureItem(
+                    'users',
+                    '患者社区',
+                    '症状经验分享、康复方法探讨与心理互助陪伴',
+                    COLOR.goodWash,
+                  )
+                : null}
             </View>
           </View>
 
@@ -252,9 +300,16 @@ const AboutUsScreen = () => {
           </View>
 
           {/* Copyright */}
+          {/* The year was typed in as 2024 and had been wrong for two
+              calendar years. Derived, not hardcoded, so it cannot go
+              stale again — the alternative is remembering to edit a
+              string every January, which is exactly what did not
+              happen. */}
           <View style={styles.copyrightSection}>
-            <Text style={styles.copyrightText}>© 2024 FSHD青年社区患者平台. 保留所有权利。</Text>
-            <Text style={styles.copyrightSubText}>致力于为FSHD患者提供更好的互助与数据服务</Text>
+            <Text style={styles.copyrightText}>
+              © {new Date().getFullYear()} {APP_NAME}. 保留所有权利。
+            </Text>
+            <Text style={styles.copyrightSubText}>致力于为FSHD患者提供更好的记录与数据服务</Text>
           </View>
         </ScrollView>
 

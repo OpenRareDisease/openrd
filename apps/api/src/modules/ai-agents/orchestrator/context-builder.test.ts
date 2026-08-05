@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildContext } from './context-builder.js';
+import { buildContext, CitationIndex } from './context-builder.js';
 import type { ExecutedToolCall } from './executor.js';
 import type { RetrieveContext, RetrievedChunk } from '../retrievers/base.js';
 
@@ -162,6 +162,231 @@ describe('buildContext', () => {
   });
 });
 
+describe('citation numbering is global, not per-retriever', () => {
+  const reportChunk = (id: string): RetrievedChunk => ({
+    id,
+    source: 'patient_reports',
+    content: 'placeholder',
+    metadata: { fields: { classifiedType: '基因检测报告', status: 'parsed' } },
+    distance: null,
+    sourceFile: `patient_reports/${id}`,
+  });
+
+  /**
+   * The defect: the prompt header used the chunk's index WITHIN one
+   * tool call while the client indexes `citations` globally. A model
+   * citing its second report as [2] sent the patient to a knowledge-base
+   * chunk about something else — and the snippet card opened and
+   * confirmed it.
+   */
+  it('numbers the second retriever continuing from the first', () => {
+    const built = buildContext(
+      [
+        ok('tc1', 'search_medical_kb', [
+          kbChunk('kb-a', 'DUX4 是位于 4q35 的双同源框基因，正常成人组织表达受抑制。'),
+          kbChunk('kb-b', 'D4Z4 重复序列拷贝数减少与 DUX4 失抑制相关。'),
+        ]),
+        ok('tc2', 'get_my_reports', [reportChunk('rep-a'), reportChunk('rep-b')]),
+      ],
+      { mode: 'precise', logger: silentLogger },
+    );
+
+    const kbMessage = built.toolMessages[0].content;
+    const reportMessage = built.toolMessages[1].content;
+    expect(kbMessage).toMatch(/【片段1】/);
+    expect(kbMessage).toMatch(/【片段2】/);
+    // Continues at 3 rather than restarting at 1.
+    expect(reportMessage).toMatch(/【片段3】/);
+    expect(reportMessage).toMatch(/【片段4】/);
+    expect(reportMessage).not.toMatch(/【片段1】/);
+
+    // And the number is an index into the array the client receives.
+    expect(built.citations.map((c) => c.chunkId)).toEqual(['kb-a', 'kb-b', 'rep-a', 'rep-b']);
+    expect(built.citations[2].chunkId).toBe('rep-a');
+  });
+
+  it('keeps numbering across gather rounds when the index is shared', () => {
+    const citationIndex = new CitationIndex();
+    const round1 = buildContext([ok('tc1', 'get_my_reports', [reportChunk('rep-a')])], {
+      mode: 'precise',
+      logger: silentLogger,
+      citationIndex,
+    });
+    const round2 = buildContext(
+      [ok('tc2', 'search_medical_kb', [kbChunk('kb-a', 'DUX4 表达受抑制，长度足够通过过滤器。')])],
+      { mode: 'precise', logger: silentLogger, citationIndex },
+    );
+
+    expect(round1.toolMessages[0].content).toMatch(/【片段1】/);
+    // Round 2 used to restart at 1, so 【片段1】 meant two different
+    // documents inside one conversation.
+    expect(round2.toolMessages[0].content).toMatch(/【片段2】/);
+    // Cumulative and deduped — the index owns the list.
+    expect(round2.citations.map((c) => c.chunkId)).toEqual(['rep-a', 'kb-a']);
+  });
+
+  it('gives a chunk with no citation no number at all', () => {
+    // Nothing for the patient to open, so nothing the model should be
+    // invited to cite. Handing it a number would point at somebody
+    // else's source.
+    const built = buildContext(
+      [
+        ok('tc1', 'search_medical_kb', [kbChunk('kb-a', 'DUX4 表达受抑制，长度足够通过过滤器。')], {
+          citationsCount: 0,
+        }),
+      ],
+      { mode: 'precise', logger: silentLogger },
+    );
+    expect(built.toolMessages[0].content).toContain('【参考资料·无法引用】');
+    expect(built.toolMessages[0].content).not.toMatch(/【片段\d+】/);
+    expect(built.citations).toEqual([]);
+  });
+});
+
+describe('authority label (degrades when the retrieval lane has not landed it)', () => {
+  /** `on` picks which side of the result carries the label, mirroring
+   *  the shapes the retriever lane produces (citation + chunk) and the
+   *  chunk-only shape a passthrough retriever would leave. */
+  const withAuthority = (value: unknown, on: 'citation' | 'chunk'): ExecutedToolCall =>
+    ({
+      toolCallId: 'tc1',
+      toolName: 'search_medical_kb',
+      display: 'medical_kb: 1',
+      latencyMs: 3,
+      retrieval: {
+        retrieverId: 'medical_kb',
+        chunks: [
+          {
+            id: 'kb-a',
+            source: 'medical_kb',
+            content: 'DUX4 表达受抑制，这段内容长度足够通过渲染器。',
+            metadata: {},
+            distance: 0.1,
+            sourceFile: 'fshd/x.md',
+            ...(on === 'chunk' ? { authorityLabel: value } : {}),
+          },
+        ],
+        citations: [
+          {
+            chunkId: 'kb-a',
+            source: 'medical_kb',
+            sourceFile: 'fshd/x.md',
+            chunkIndex: 0,
+            snippet: 'DUX4',
+            ...(on === 'citation' ? { authorityLabel: value } : {}),
+          },
+        ],
+        metadata: {},
+      },
+    }) as unknown as ExecutedToolCall;
+
+  it('renders the citation label in the prompt header', () => {
+    const built = buildContext([withAuthority('指南/共识', 'citation')], {
+      mode: 'precise',
+      logger: silentLogger,
+    });
+    // The model needs to know a claim came from a guideline rather than
+    // a forum post; the patient sees the same grade on the chip.
+    expect(built.toolMessages[0].content).toContain('来源等级：指南/共识');
+    expect(built.citations[0]).toMatchObject({ chunkId: 'kb-a', authorityLabel: '指南/共识' });
+  });
+
+  it('copies a chunk-only label onto the citation the patient opens', () => {
+    const built = buildContext([withAuthority('病友经验', 'chunk')], {
+      mode: 'precise',
+      logger: silentLogger,
+    });
+    expect(built.toolMessages[0].content).toContain('来源等级：病友经验');
+    expect(built.citations[0]).toMatchObject({ authorityLabel: '病友经验' });
+  });
+
+  it('changes nothing when the field is absent, null, empty, mistyped or oversized', () => {
+    for (const value of [undefined, null, '', '   ', 42, { nope: true }, 'x'.repeat(200)]) {
+      // Nothing goes into the prompt header either way.
+      for (const on of ['citation', 'chunk'] as const) {
+        const built = buildContext([withAuthority(value, on)], {
+          mode: 'precise',
+          logger: silentLogger,
+        });
+        expect(built.toolMessages[0].content).not.toContain('来源等级');
+      }
+      // And the citation the patient's chip is built from carries no
+      // label at all — not `42`, not three spaces. Whichever side the
+      // unusable value came in on.
+      for (const on of ['citation', 'chunk'] as const) {
+        const citation = buildContext([withAuthority(value, on)], {
+          mode: 'precise',
+          logger: silentLogger,
+        }).citations[0];
+        expect(citation).not.toHaveProperty('authorityLabel');
+      }
+    }
+  });
+});
+
+describe('retrieval failure is a refusal, not a licence to improvise', () => {
+  const failing = (
+    toolCallId: string,
+    toolName: string,
+    retrieverId: string,
+    reason: string,
+  ): ExecutedToolCall =>
+    ({
+      toolCallId,
+      toolName,
+      display: `${retrieverId}: 0 chunks`,
+      latencyMs: 1,
+      retrieval: { retrieverId, chunks: [], citations: [], metadata: { reason } },
+    }) as unknown as ExecutedToolCall;
+
+  // The instruction this replaced told the model to「基于常识继续作答」.
+  // For a rare disease that means model priors delivered in the exact
+  // voice used for sourced answers, to a reader who cannot tell them
+  // apart.
+  it('never tells the model to answer from its own knowledge', () => {
+    const built = buildContext(
+      [failing('tc1', 'search_medical_kb', 'medical_kb', 'kb_service_unreachable')],
+      { mode: 'precise', logger: silentLogger },
+    );
+    const content = built.toolMessages[0].content;
+    expect(content).not.toContain('基于常识');
+    expect(content).toContain('不要用你自己记忆里的 FSHD 知识');
+    expect(content).toContain('[error_code:retrieval_failed]');
+    expect(built.failures).toEqual({ corpus: true, personal: false });
+  });
+
+  it('reads differently for a personal-data failure than for a corpus failure', () => {
+    const corpus = buildContext(
+      [failing('tc1', 'search_medical_kb', 'medical_kb', 'kb_service_unreachable')],
+      { mode: 'precise', logger: silentLogger },
+    ).toolMessages[0].content;
+    const personal = buildContext(
+      [
+        {
+          toolCallId: 'tc2',
+          toolName: 'get_my_records',
+          display: 'get_my_records: error',
+          error: 'pg error 22P02: invalid input syntax for integer: "13800001234"',
+          latencyMs: 2,
+        },
+      ],
+      { mode: 'precise', logger: silentLogger },
+    );
+
+    const personalContent = personal.toolMessages[0].content;
+    expect(personalContent).not.toBe(corpus);
+    expect(personalContent).toContain('[error_code:personal_data_unavailable]');
+    expect(personalContent).toContain('读取用户本人资料失败');
+    // "we could not read it" is not "you have no records" — the second
+    // is a claim about the patient and it would be false.
+    expect(personalContent).toContain('不是"用户没有这条记录"');
+    expect(personalContent).not.toContain('基于常识');
+    expect(personal.failures).toEqual({ corpus: false, personal: true });
+    // And the thrown error still never reaches the prompt.
+    expect(personalContent).not.toContain('13800001234');
+  });
+});
+
 describe('personal-data flagging', () => {
   it('counts followup trends as personal data', () => {
     // The audit row and the UI hint both key off this. An answer built
@@ -195,5 +420,72 @@ describe('personal-data flagging', () => {
     );
 
     expect(result.usedPersonalData).toBe(true);
+  });
+});
+
+/**
+ * The relevance floor's other half.
+ *
+ * The floor stops an out-of-corpus question (DMD, 针灸, 「某某医院能不能
+ * 做基因检测」) from retrieving the nearest FSHD chunks. But zero chunks
+ * rendered as 「（无内容）」 reads to the model exactly like a corpus with
+ * no opinion, and it fills the gap from its priors — which is the same
+ * failure the floor was built to prevent, one layer up.
+ *
+ * These three outcomes must each name themselves:
+ *   - the search could not run       → failure instruction, retry ok
+ *   - the corpus is not ingested     → failure instruction, retry useless
+ *   - the search ran, nothing close  → not a failure at all
+ */
+const emptyWithReason = (toolCallId: string, retrieverId: string, reason: string) =>
+  ({
+    toolCallId,
+    toolName: 'search_medical_kb',
+    retrieval: { retrieverId, chunks: [], citations: [], metadata: { reason } },
+    display: 'search_medical_kb: 0',
+    latencyMs: 5,
+  }) as unknown as ExecutedToolCall;
+
+const contentOf = (call: ExecutedToolCall) =>
+  buildContext([call], { mode: 'full', logger: silentLogger, citationIndex: new CitationIndex() })
+    .toolMessages[0].content;
+
+describe('零结果的三种成因必须各自说清楚', () => {
+  it('查过了、没有足够相关的 → 不是故障，也不叫用户重试', () => {
+    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'));
+    expect(text).not.toContain('（无内容）');
+    expect(text).toContain('no_relevant_results');
+    expect(text).toContain('资料库查过了');
+    // Assert the absent CLAIM, not the absent word: the instruction
+    // itself contains 「不要说成"查询失败"」.
+    expect(text).not.toContain('资料库检索没有跑成功');
+    expect(text).not.toContain('过一会儿再问一次');
+    expect(text).toContain('不是系统故障');
+  });
+
+  it('查过了、没有相关的 → 仍然禁止用模型自己的印象补上', () => {
+    // The whole point. This is the branch a patient hits when they ask
+    // about another disease, and model priors on someone else's disease
+    // read exactly like sourced FSHD content to them.
+    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'));
+    expect(text).toContain('不要用你自己记忆里的知识');
+  });
+
+  it('语料库是空的 → 不说「过一会儿再问一次」，因为它不会自己好', () => {
+    const text = contentOf(emptyWithReason('t2', 'medical_kb', 'kb_empty_corpus'));
+    expect(text).toContain('retrieval_failed');
+    expect(text).not.toContain('过一会儿再问一次');
+    expect(text).toContain('重试');
+    expect(text).toContain('不要用你自己记忆里的 FSHD 知识');
+  });
+
+  it('检索确实挂了 → 保留重试话术', () => {
+    const text = contentOf(emptyWithReason('t3', 'medical_kb', 'kb_service_unreachable'));
+    expect(text).toContain('过一会儿再问一次');
+  });
+
+  it('没有任何 reason 的空结果仍然是「（无内容）」', () => {
+    const text = contentOf(emptyWithReason('t4', 'medical_kb', ''));
+    expect(text).toContain('（无内容）');
   });
 });

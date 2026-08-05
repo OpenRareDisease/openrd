@@ -25,6 +25,10 @@ interface KbServiceChunk {
   content?: string;
   metadata?: Record<string, unknown>;
   distance?: number | null;
+  /** Authority tier + label derived from the chunk's corpus path.
+   *  Emitted by knowledge.py's `resolve_authority`. */
+  authority_tier?: string | null;
+  authority_label?: string | null;
 }
 
 interface KbServiceResponse {
@@ -32,6 +36,25 @@ interface KbServiceResponse {
   chunks?: Array<KbServiceChunk | string>;
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * Reason reported when the KB was searched successfully and every
+ * candidate was further away than the relevance floor.
+ *
+ * Deliberately NOT in `RETRIEVAL_FAILURE_REASONS`. That set means "the
+ * retrieval could not run", and the answer layer turns it into 「检索
+ * 失败…资料暂时取不到」. This is the opposite fact: the corpus WAS
+ * consulted and genuinely has nothing on the subject. Telling a patient
+ * the system is broken when the honest answer is 「我在知识库里没找到」
+ * is its own kind of untrue.
+ *
+ * The floor itself lives on the Python side (knowledge.py,
+ * `DEFAULT_RELEVANCE_FLOOR`, configurable via KB_RELEVANCE_FLOOR) — one
+ * place, one measured number. This retriever only relays the verdict.
+ * Re-applying a floor here against a second copy of the env var would
+ * give two processes two different opinions about the same threshold.
+ */
+export const NO_RELEVANT_RESULTS = 'no_relevant_results';
 
 export interface MedicalKbRetrieverOptions {
   /** Base URL for the Python KB service, e.g. `http://kb-service:5010`. */
@@ -350,6 +373,46 @@ export class MedicalKbRetriever implements IRetriever {
       });
     }
 
+    // The vector store returned nothing at all. Over a populated table a
+    // nearest-neighbour search cannot do that, so this is an empty (or
+    // fully filtered-out) corpus rather than an answer about it. Only
+    // claim it when we sent no `where` filter — with a filter, zero hits
+    // just means the filter matched nothing.
+    const backendHits = parsed.metadata?.backend_hits;
+    if (typeof backendHits === 'number' && backendHits === 0 && !payload.where) {
+      ctx.logger.error(
+        { kbServiceMetadata: parsed.metadata ?? null },
+        'medical_kb retriever: KB service returned zero candidates for an unfiltered ' +
+          'search — the corpus is empty. Run `npm run kb:ingest` or restore it.',
+      );
+      return emptyResult(this.id, 'kb_empty_corpus', {
+        kbServiceMetadata: parsed.metadata ?? null,
+        queriesUsed: payload.queries,
+      });
+    }
+
+    // The service applied its relevance floor and nothing survived.
+    // Surface that as its own reason rather than as a bare empty
+    // result: `chunks: []` with no reason renders as 「（无内容）」,
+    // which reads to the model exactly like a corpus that has no
+    // opinion, and it improvises from priors instead of saying so.
+    if (parsed.metadata?.below_relevance_floor === true) {
+      ctx.logger.info(
+        {
+          relevanceFloor: parsed.metadata?.relevance_floor ?? null,
+          bestDistance: parsed.metadata?.best_distance ?? null,
+          candidatesConsidered: parsed.metadata?.candidates_considered ?? null,
+        },
+        'medical_kb retriever: every candidate was below the relevance floor',
+      );
+      return emptyResult(this.id, NO_RELEVANT_RESULTS, {
+        kbServiceMetadata: parsed.metadata ?? null,
+        queriesUsed: payload.queries,
+        relevanceFloor: parsed.metadata?.relevance_floor ?? null,
+        bestDistance: parsed.metadata?.best_distance ?? null,
+      });
+    }
+
     const rawChunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
     const chunks: RetrievedChunk[] = [];
     const citations: Citation[] = [];
@@ -386,6 +449,16 @@ export class MedicalKbRetriever implements IRetriever {
       const sourceFile = extractSourceFile(metadata);
       const chunkIndex = extractChunkIndex(metadata);
       const distance = coerceDistance(typeof raw === 'string' ? null : raw?.distance);
+      // Top-level on the service payload, with the chunk's own metadata
+      // as the fallback: the backfill writes it into metadata, and
+      // knowledge.py lifts it to the top level for every hit including
+      // rows the backfill hasn't reached.
+      const authorityTier =
+        pickString(typeof raw === 'string' ? null : raw?.authority_tier) ??
+        pickString(metadata.authority_tier);
+      const authorityLabel =
+        pickString(typeof raw === 'string' ? null : raw?.authority_label) ??
+        pickString(metadata.authority_label);
 
       chunks.push({
         id: chunkId,
@@ -395,6 +468,8 @@ export class MedicalKbRetriever implements IRetriever {
         distance,
         sourceFile,
         chunkIndex,
+        authorityTier,
+        authorityLabel,
       });
       citations.push({
         chunkId,
@@ -402,6 +477,7 @@ export class MedicalKbRetriever implements IRetriever {
         sourceFile,
         chunkIndex,
         snippet: buildSnippet(content),
+        authorityLabel,
       });
 
       // idx referenced so we don't drop position info if we later

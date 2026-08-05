@@ -225,6 +225,21 @@ const buildAskResponseData = (
 ) => ({
   question,
   answer: result.answer,
+  // Honesty flags about the answer itself. None of them is the only
+  // channel: `answerCutOff` and `retrievalFailure` are also written into
+  // `answer` as a Chinese notice by the orchestrator, and
+  // `answerTruncated` means `answer` is already the apology string — so
+  // a client that ignores all three still tells the patient the truth.
+  // These exist so a client can render a banner, hide the 「依据」 chips,
+  // or offer a 「接着说」 button by reading state instead of
+  // pattern-matching prose it does not control.
+  //
+  // Defaulted rather than spread-when-present: an SSE consumer reading
+  // `data.answerCutOff` should get `false`, not `undefined`, on the
+  // healthy path.
+  answerTruncated: result.answerTruncated ?? false,
+  answerCutOff: result.answerCutOff ?? false,
+  retrievalFailure: result.retrievalFailure ?? null,
   citations: result.citations,
   // Renamed alongside PR #44 (ToolCallTrace): `string[]` → richer
   // `ToolCallSummary[]`. Mobile mirrors the field name.

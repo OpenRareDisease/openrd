@@ -132,6 +132,24 @@ export interface PassportMonitoringItemDTO {
   latestDocumentId: string | null;
   freshness: PassportFreshnessDTO;
   /**
+   * Three states, because `available: false` collapsed two facts that
+   * are not the same fact:
+   *
+   *   `present`    — structured values were read and are in `summary`.
+   *   `unreadable` — a report of this class IS on file, but nothing
+   *                  structured came out of it (bad scan, unknown
+   *                  layout, OCR miss).
+   *   `absent`     — nothing of this class has been uploaded.
+   *
+   * The distinction is load-bearing exactly once, and it is the highest
+   * stakes surface in the product: the anesthesia card. Collapsing
+   * `unreadable` into `absent` makes that card tell an anesthetist the
+   * patient never had a pulmonary function test, about a patient who
+   * uploaded one — and the pre-op PFT line is the only thing on that
+   * card standing between an unassessed patient and general anesthesia.
+   */
+  state: 'present' | 'unreadable' | 'absent';
+  /**
    * When a guideline says something about *whether* this test is
    * indicated, it goes here. The panel previously implied all three
    * slots were equally expected of everyone, which is how it ended up
@@ -455,6 +473,34 @@ const buildStrengthSummary = (fields?: Record<string, unknown>) => {
   };
 };
 
+/**
+ * What a monitoring slot says when OCR produced no structured field.
+ *
+ * These three slots used to fall back to `compactText(extractedText)` —
+ * the first 88 characters of whatever OCR read off the page. On a failed
+ * parse that is the hospital letterhead, and it does not stay inert:
+ * `hasMeaningfulValue` sees a non-empty string, `buildMonitoringItem`
+ * marks the slot `available`, and 「最近肺功能」 on the anesthesia card
+ * handed to an anesthetist reads 「××市第一人民医院 检验科 报告单 …」.
+ * That line is the only thing on that card standing between an
+ * unassessed patient and general anesthesia, and letterhead in it is
+ * indistinguishable from a result at a glance.
+ *
+ * Every string here starts with 暂无 on purpose: `hasMeaningfulValue`
+ * treats that prefix as「nothing here」, which is what holds the slot at
+ * `available: false` and the anesthesia card at 未做过或未上传. Changing
+ * the prefix silently re-opens the hole — see the tests in
+ * profile.passport.monitoring.test.ts.
+ *
+ * The wording says 「无法自动读取」 rather than 「没做过」 because the
+ * document may well exist; what is missing is a machine-readable value.
+ */
+const NO_STRUCTURED_RESULT = {
+  blood: '暂无可自动读取的血检结果',
+  respiratory: '暂无可自动读取的肺功能结果',
+  cardiac: '暂无可自动读取的心脏检查结果',
+} as const;
+
 const MRI_TEXT_PATTERNS = ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前'];
 
 const collectMriDocuments = (documents: PatientDocumentDTO[]) => {
@@ -581,16 +627,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   if (ckmb) bloodParts.push(`CKMB ${ckmb}`);
   if (creatinine) bloodParts.push(`Cr ${creatinine}`);
   if (uricAcid) bloodParts.push(`UA ${uricAcid}`);
-  const bloodSummary =
-    bloodParts.join('，') ||
-    compactText(
-      typeof bloodPayload?.extractedText === 'string'
-        ? bloodPayload.extractedText
-        : typeof bloodPayload?.extracted_text === 'string'
-          ? bloodPayload.extracted_text
-          : '',
-      '暂无血检摘要',
-    );
+  const bloodSummary = bloodParts.join('，') || NO_STRUCTURED_RESULT.blood;
 
   const respiratoryDoc =
     latestDocByTypes(documents, ['pulmonary_function', 'diaphragm_ultrasound']) ||
@@ -608,14 +645,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   const respiratorySummary =
     respiratoryMetrics.length > 0
       ? respiratoryMetrics.join(' / ')
-      : compactText(
-          typeof respiratoryPayload?.extractedText === 'string'
-            ? respiratoryPayload.extractedText
-            : typeof respiratoryPayload?.extracted_text === 'string'
-              ? respiratoryPayload.extracted_text
-              : '',
-          '暂无肺功能数据',
-        );
+      : NO_STRUCTURED_RESULT.respiratory;
 
   const cardiacDoc =
     latestDocByTypes(documents, ['ecg', 'echocardiography']) ||
@@ -630,16 +660,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     pickField(cardiacFields, ['QTc', 'qtc', 'qtcMs', 'qtc_ms']),
   ].filter(Boolean) as string[];
   const cardiacSummary =
-    cardiacMetrics.length > 0
-      ? cardiacMetrics.join(' / ')
-      : compactText(
-          typeof cardiacPayload?.extractedText === 'string'
-            ? cardiacPayload.extractedText
-            : typeof cardiacPayload?.extracted_text === 'string'
-              ? cardiacPayload.extracted_text
-              : '',
-          '暂无心脏检查数据',
-        );
+    cardiacMetrics.length > 0 ? cardiacMetrics.join(' / ') : NO_STRUCTURED_RESULT.cardiac;
 
   const strengthDoc =
     latestPhysicalExam ||
@@ -939,16 +960,30 @@ const buildMonitoringItem = (input: {
   latestDate: string | null;
   latestDocumentId: string | null;
   note?: string;
-}): PassportMonitoringItemDTO => ({
-  key: input.key,
-  title: input.title,
-  available: hasMeaningfulValue(input.summary),
-  summary: input.summary,
-  latestDate: input.latestDate,
-  latestDocumentId: input.latestDocumentId,
-  freshness: getFreshness(input.latestDate),
-  ...(input.note ? { note: input.note } : {}),
-});
+}): PassportMonitoringItemDTO => {
+  const available = hasMeaningfulValue(input.summary);
+  // A document id is set whenever a report of this class was found,
+  // whether or not the parser got anything structured out of it — so
+  //「有 id、没有值」 is precisely「上传了，读不出来」. Derived here rather
+  // than left for each consumer to infer, because the one consumer that
+  // gets it wrong prints the answer on a card handed to an anesthetist.
+  const state: PassportMonitoringItemDTO['state'] = available
+    ? 'present'
+    : input.latestDocumentId
+      ? 'unreadable'
+      : 'absent';
+  return {
+    key: input.key,
+    title: input.title,
+    available,
+    summary: input.summary,
+    latestDate: input.latestDate,
+    latestDocumentId: input.latestDocumentId,
+    freshness: getFreshness(input.latestDate),
+    state,
+    ...(input.note ? { note: input.note } : {}),
+  };
+};
 
 const buildTimeline = (
   profile: PatientProfileDTO,

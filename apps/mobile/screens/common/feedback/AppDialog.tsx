@@ -57,8 +57,27 @@ interface ConfirmOptions {
   /** Label for the affirmative button. */
   confirmLabel?: string;
   cancelLabel?: string;
-  /** Renders the affirmative button in the alert colour and puts it
-   *  second, so a destructive action is never the default position. */
+  /**
+   * Marks the affirmative button as the dangerous one: alert fill, and
+   * the action row becomes a full-width stack with the dangerous
+   * action on top and cancel below it, `SPACE.lg` apart.
+   *
+   * This used to claim it "puts it second so a destructive action is
+   * never the default position" while the code only changed the fill
+   * colour — both buttons still sat in the same flex-end row, roughly
+   * 62–80pt wide and `SPACE.sm` (8pt) apart. That is precisely the
+   * "never shrink a target to fit a row" rule in lib/a11y.ts, on the
+   * seven call sites where a mis-tap costs the most: logout, delete
+   * report, withdraw consent. For a population losing grip and fine
+   * motor control, 8pt of separation between 退出 and 取消 is not a
+   * choice, it is a coin flip.
+   *
+   * Stacking is what actually buys the separation — full-width targets
+   * mean the horizontal axis stops mattering at all, and 16pt of
+   * vertical gap is a deliberate reach rather than a slip. See
+   * `dialogActionsStacked` below and the tests in
+   * __tests__/AppDialog.test.tsx.
+   */
   destructive?: boolean;
 }
 
@@ -151,6 +170,40 @@ export const AppDialogProvider = ({ children }: { children: ReactNode }) => {
   const toneColor =
     notice?.tone === 'error' ? COLOR.alert : notice?.tone === 'success' ? COLOR.good : COLOR.accent;
 
+  // Destructive confirmations stack; everything else keeps the compact
+  // trailing row. See the `destructive` doc comment for why.
+  const isDestructive = confirmState?.destructive === true;
+
+  const cancelButton = (
+    <TouchableOpacity
+      key="cancel"
+      style={[
+        styles.dialogButton,
+        styles.dialogButtonGhost,
+        isDestructive && styles.dialogButtonBlock,
+      ]}
+      accessibilityRole="button"
+      onPress={() => settle(false)}
+    >
+      <Text style={styles.dialogButtonGhostText}>{confirmState?.cancelLabel ?? '取消'}</Text>
+    </TouchableOpacity>
+  );
+
+  const affirmButton = (
+    <TouchableOpacity
+      key="affirm"
+      style={[
+        styles.dialogButton,
+        isDestructive ? styles.dialogButtonDanger : styles.dialogButtonPrimary,
+        isDestructive && styles.dialogButtonBlock,
+      ]}
+      accessibilityRole="button"
+      onPress={() => settle(true)}
+    >
+      <Text style={styles.dialogButtonPrimaryText}>{confirmState?.confirmLabel ?? '确定'}</Text>
+    </TouchableOpacity>
+  );
+
   return (
     <DialogContext.Provider value={api}>
       {children}
@@ -171,30 +224,12 @@ export const AppDialogProvider = ({ children }: { children: ReactNode }) => {
                 <Text style={styles.dialogMessage}>{confirmState.message}</Text>
               </ScrollView>
             ) : null}
-            <View style={styles.dialogActions}>
-              <TouchableOpacity
-                style={[styles.dialogButton, styles.dialogButtonGhost]}
-                accessibilityRole="button"
-                onPress={() => settle(false)}
-              >
-                <Text style={styles.dialogButtonGhostText}>
-                  {confirmState?.cancelLabel ?? '取消'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.dialogButton,
-                  confirmState?.destructive
-                    ? styles.dialogButtonDanger
-                    : styles.dialogButtonPrimary,
-                ]}
-                accessibilityRole="button"
-                onPress={() => settle(true)}
-              >
-                <Text style={styles.dialogButtonPrimaryText}>
-                  {confirmState?.confirmLabel ?? '确定'}
-                </Text>
-              </TouchableOpacity>
+            {/* Dangerous action first in the stack, so it is also first
+                in reading and focus order — the patient meets what the
+                dialog is asking before the way out of it, instead of
+                tabbing past 取消 into 删除. */}
+            <View style={isDestructive ? styles.dialogActionsStacked : styles.dialogActions}>
+              {isDestructive ? [affirmButton, cancelButton] : [cancelButton, affirmButton]}
             </View>
           </PresentedCard>
         </View>
@@ -287,11 +322,27 @@ const styles = StyleSheet.create({
     gap: SPACE.sm,
     paddingTop: SPACE.xs,
   },
+  /** Destructive layout. `stretch` is what makes each button the full
+   *  width of the card, and the gap is `lg` rather than `sm` so the
+   *  two targets are a deliberate reach apart. Both are asserted in
+   *  __tests__/AppDialog.test.tsx — this is the whole fix, so it does
+   *  not get to regress quietly into a row again. */
+  dialogActionsStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: SPACE.lg,
+    paddingTop: SPACE.sm,
+  },
   dialogButton: {
     minHeight: MIN_TOUCH_TARGET,
     justifyContent: 'center',
     paddingHorizontal: SPACE.lg,
     borderRadius: RADIUS.control,
+  },
+  /** Full-width variant: the label has to be centred by hand once the
+   *  button stops being sized by its own content. */
+  dialogButtonBlock: {
+    alignItems: 'center',
   },
   dialogButtonGhost: {
     borderWidth: HAIRLINE,

@@ -49,6 +49,10 @@ sys.path.insert(0, str(HERE))
 from kb_backends import create_backend  # noqa: E402
 from kb_backends.base import BackendChunk, VectorBackend  # noqa: E402
 from embed_models import Embedder, create_embedder  # noqa: E402
+# Single source of truth for「how authoritative is this path」, shared
+# with retrieval. Deriving it twice is how the ingested tier and the
+# retrieval-time fallback would drift apart without anyone noticing.
+from knowledge import authority_for_path  # noqa: E402
 from kb_parsers import (  # noqa: E402
     ALL_PARSERS,
     ParseResult,
@@ -448,6 +452,30 @@ def _prune_orphans(
             stats.actions.append(f"prune    error {source_key}: {exc}")
 
 
+def authority_key_for(
+    file_path: Path, content_root: Path, authority_root: Path | None
+) -> str:
+    """Path used to derive the authority tier.
+
+    Normally the same as the chunk's source_key. It differs when the
+    operator scopes a run with `--source`, and that difference matters:
+    `--source .../FSHD_知识库/11.病友经验` makes every source_key a bare
+    filename, so the tier would come out `literature` and the citation
+    would be labelled 「文献」 — patient stories re-badged as papers,
+    from a flag whose only intent was "re-ingest this folder". The
+    authority root pins the derivation to the corpus root regardless of
+    how the run was scoped.
+    """
+    if authority_root is not None:
+        try:
+            return relative_source_key(file_path, authority_root)
+        except ValueError:
+            # Not under the corpus root (an operator ingesting from
+            # somewhere else entirely) — fall back to the scoped key.
+            pass
+    return relative_source_key(file_path, content_root)
+
+
 def ingest(
     *,
     content_root: Path,
@@ -457,6 +485,7 @@ def ingest(
     dry_run: bool = False,
     only: Sequence[str] | None = None,
     prune: bool = False,
+    authority_root: Path | None = None,
 ) -> IngestStats:
     stats = IngestStats()
 
@@ -571,10 +600,19 @@ def ingest(
 
         chunks_per_source[source_key] = len(raw_chunks)
         path_metadata = _derive_metadata_from_path(source_key)
+        # Authority tier + display label, derived from the corpus path.
+        # Stored on every chunk so retrieval can rank and cite by it
+        # without re-deriving, and so `where` filters / SQL reports can
+        # see it. Existing rows get it from --backfill-authority.
+        authority = authority_for_path(
+            authority_key_for(file_path, content_root, authority_root)
+        )
         file_metadata: Dict[str, Any] = {
             **path_metadata,
             **parse_result.metadata,
             "file_type": file_path.suffix.lower().lstrip("."),
+            "authority_tier": authority["tier"],
+            "authority_label": authority["label"],
         }
 
         for raw in raw_chunks:
@@ -676,6 +714,121 @@ def ingest(
     return stats
 
 
+# ------------------------------------------------------- authority backfill
+
+#: Same identifier shape PgVectorBackend validates `table_name` against.
+#: Re-checked here because the UPDATE below has to f-string the table
+#: name into SQL (psycopg cannot bind identifiers) and a second file
+#: interpolating a value must not inherit trust from the first one's
+#: validation. Same reasoning as knowledge_service._SQL_IDENTIFIER_RE.
+_SQL_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}")
+
+
+def backfill_authority(*, backend: VectorBackend, dry_run: bool) -> Dict[str, int]:
+    """Stamp `authority_tier` / `authority_label` onto existing chunks.
+
+    Why this exists rather than "just re-ingest": the per-file
+    fingerprint covers the file bytes, the parser and PIPELINE_VERSION —
+    none of which change when we start writing a new *metadata* key. So
+    every one of the 9,594 already-ingested chunks is reported unchanged
+    and would never pick the tier up. Bumping PIPELINE_VERSION would
+    work but re-embeds the whole corpus for a value derived purely from
+    the path.
+
+    Idempotent by construction, and deliberately fill-only: the UPDATE's
+    WHERE clause touches only rows that have NO stored tier, so a second
+    run reports 0 updated and issues no writes — and, more importantly,
+    a value ingest already stored is never overwritten.
+
+    That last part is not a nicety. A row written by a scoped run
+    (`--source .../11.病友经验`) carries a bare filename in
+    `source_file`; deriving from it here yields `literature`, and an
+    overwriting backfill would re-badge patient stories as 「文献」 —
+    exactly the footgun `authority_key_for` exists to prevent on the
+    ingest side. Ingest owns the value; this fills gaps. Embeddings are
+    never read or written.
+
+    Talks to the pool directly because `VectorBackend` has no
+    metadata-update operation and adding one to the backend interface is
+    a much wider change than a one-shot maintenance task justifies. The
+    same escape hatch, with the same identifier re-validation, is
+    already used by knowledge_service._corpus_chunk_count.
+    """
+    pool = getattr(backend, "pool", None)
+    table = getattr(backend, "table_name", None)
+    if pool is None or not isinstance(table, str) or not _SQL_IDENTIFIER_RE.fullmatch(table):
+        raise SystemExit(
+            f"--backfill-authority needs a SQL-backed backend (got "
+            f"'{getattr(backend, 'id', '?')}'). Set KB_BACKEND=pgvector."
+        )
+
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT source_file FROM {table} "  # noqa: S608 — identifier re-validated above
+                f"WHERE source_file IS NOT NULL"
+            )
+            source_files = [row[0] for row in cur.fetchall() if row[0]]
+
+    # Group by tier so the whole corpus is at most one UPDATE per tier
+    # rather than one per file.
+    by_tier: Dict[str, tuple[Dict[str, str], List[str]]] = {}
+    for source_key in source_files:
+        # NOTE the WHERE clause below only touches rows with NO stored
+        # tier. That is what keeps this derivation safe: a row written
+        # by a scoped run (`--source .../11.病友经验`) has a bare
+        # filename in source_file and would derive as `literature`
+        # here, and this function has no way to recover the corpus-root
+        # path from it. Ingest pins that correctly via
+        # `authority_key_for` and already stored the right value; the
+        # backfill's job is to fill gaps, never to second-guess it.
+        authority = authority_for_path(source_key)
+        payload = {
+            "authority_tier": authority["tier"],
+            "authority_label": authority["label"],
+        }
+        by_tier.setdefault(authority["tier"], (payload, []))[1].append(source_key)
+
+    counts: Dict[str, int] = {}
+    for tier in sorted(by_tier):
+        payload, keys = by_tier[tier]
+        if dry_run:
+            # Count the rows the UPDATE would touch, without writing.
+            sql = (
+                f"SELECT count(*) FROM {table} "  # noqa: S608 — identifier re-validated above
+                f"WHERE source_file = ANY(%s) "
+                f"AND (metadata ->> 'authority_tier' IS NULL "
+                f"     OR metadata ->> 'authority_label' IS NULL)"
+            )
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (keys,))
+                    row = cur.fetchone()
+            counts[tier] = int(row[0]) if row else 0
+            continue
+
+        sql = (
+            f"UPDATE {table} SET metadata = metadata || %s::jsonb "  # noqa: S608 — identifier re-validated above
+            f"WHERE source_file = ANY(%s) "
+            f"AND (metadata ->> 'authority_tier' IS NULL "
+            f"     OR metadata ->> 'authority_label' IS NULL)"
+        )
+        with pool.connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql,
+                        (json.dumps(payload, ensure_ascii=False), keys),
+                    )
+                    counts[tier] = cur.rowcount or 0
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    return counts
+
+
 # ---------------------------------------------------------------------- main
 
 def main() -> int:
@@ -719,13 +872,53 @@ def main() -> int:
             "preview what would be deleted."
         ),
     )
+    parser.add_argument(
+        "--backfill-authority",
+        action="store_true",
+        help=(
+            "Maintenance mode: stamp authority_tier / authority_label onto "
+            "chunks already in the backend, derived from their source path, "
+            "then exit without walking any files. Idempotent — rerunning "
+            "updates 0 rows. Combine with --dry-run to count first. "
+            "Nothing is re-parsed and nothing is re-embedded."
+        ),
+    )
     args = parser.parse_args()
 
     only_list = [s for s in (args.only or "").split(",") if s.strip()] or None
     backend_name = os.getenv("KB_BACKEND") or DEFAULT_BACKEND
 
+    if args.backfill_authority:
+        print("KB authority backfill")
+        print(f"  backend      : {backend_name}")
+        if args.dry_run:
+            print("  DRY RUN (counting only, no backend writes)")
+        print()
+        backend = create_backend(backend_name)
+        try:
+            counts = backfill_authority(backend=backend, dry_run=args.dry_run)
+        finally:
+            backend.close()
+        verb = "would update" if args.dry_run else "updated"
+        for tier in sorted(counts):
+            print(f"  {tier:<12} {verb} {counts[tier]} chunks")
+        print(f"  {'total':<12} {verb} {sum(counts.values())} chunks")
+        return 0
+
     raw_source = Path(args.source)
     effective_source = resolve_effective_root(raw_source)
+
+    # Pin authority derivation to the corpus root even when --source
+    # scopes the run to a subfolder. See `authority_key_for`.
+    canonical_root = resolve_effective_root(DEFAULT_CONTENT_ROOT)
+    try:
+        authority_root = (
+            canonical_root
+            if effective_source.resolve().is_relative_to(canonical_root.resolve())
+            else None
+        )
+    except (OSError, ValueError):
+        authority_root = None
 
     print("KB ingest")
     print(f"  source       : {raw_source}")
@@ -752,6 +945,7 @@ def main() -> int:
         dry_run=args.dry_run,
         only=only_list,
         prune=args.prune,
+        authority_root=authority_root,
     )
 
     if args.verbose:

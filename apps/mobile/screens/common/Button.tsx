@@ -1,8 +1,9 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated from 'react-native-reanimated';
 import Icon from './Icon';
 import { MIN_TOUCH_TARGET } from '../../lib/a11y';
-import { COLOR, INTERACTION, MOTION, RADIUS, SPACE, TYPE } from '../../lib/design';
+import { COLOR, RADIUS, SPACE, TYPE } from '../../lib/design';
+import { usePressScale } from '../../lib/press-scale';
 
 /**
  * The app's buttons.
@@ -39,6 +40,10 @@ import { COLOR, INTERACTION, MOTION, RADIUS, SPACE, TYPE } from '../../lib/desig
  * Every variant scales to `INTERACTION.pressScale` on a spring. On iOS
  * a control answers a finger with geometry, and opacity alone
  * disappears under the thumb that caused it.
+ *
+ * The spring itself now lives in `lib/press-scale.tsx` so the ordinary
+ * touchables on the form screens can answer a finger the same way —
+ * this component was the only thing in the app that did.
  */
 
 export type ButtonVariant = 'prominent' | 'tinted' | 'plain' | 'destructive';
@@ -59,10 +64,25 @@ interface ButtonProps {
   fullWidth?: boolean;
   /** A visually smaller control for a header or a toolbar slot.
    *
-   *  It shrinks to 34pt of *drawn* height and keeps the 48pt target
-   *  with hitSlop. Before this, `compact` changed only padding and
-   *  type, so a header action was drawn exactly as tall as a form's
-   *  submit — the reason the top of every screen looked heavy. */
+   *  It shrinks to 34pt of *drawn* height. Before this, `compact`
+   *  changed only padding and type, so a header action was drawn
+   *  exactly as tall as a form's submit — the reason the top of every
+   *  screen looked heavy.
+   *
+   *  **The hitSlop below does not restore the 48pt target on web.**
+   *  react-native-web 0.20 implements `hitSlop` only in the legacy
+   *  `Touchable` mixin; neither `Pressable` nor `TouchableOpacity`
+   *  reads it (grep the package — it appears in `exports/Touchable`
+   *  and nowhere else). This product ships as an Expo *web* export, so
+   *  a `compact` button is a 34pt target for the patients who actually
+   *  use it, and the earlier version of this comment — "keeps the 48pt
+   *  target with hitSlop" — asserted a guarantee the code only
+   *  provides on device.
+   *
+   *  So: `compact` is for a header/toolbar affordance sitting beside
+   *  other full-size chrome, never for a control on a path a patient
+   *  must complete. The three text links on 登录/注册 dropped it for
+   *  exactly that reason — see that screen. */
   compact?: boolean;
   style?: ViewStyle;
   /** Overrides the spoken name. Needed where the visible label is a
@@ -75,9 +95,8 @@ interface ButtonProps {
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-/** Drawn height of a compact button. The finger still gets
- *  MIN_TOUCH_TARGET via hitSlop — smaller visually, never smaller to
- *  the touch. */
+/** Drawn height of a compact button. The hitSlop below buys back the
+ *  difference on device only — see the `compact` prop's note. */
 const COMPACT_HEIGHT = 34;
 const COMPACT_SLOP = Math.round((MIN_TOUCH_TARGET - COMPACT_HEIGHT) / 2);
 
@@ -95,10 +114,8 @@ const Button = ({
   accessibilityLabel,
   accessibilityHint,
 }: ButtonProps) => {
-  const scale = useSharedValue(1);
-  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-
   const blocked = Boolean(disabled || busy);
+  const press = usePressScale(blocked);
   const tone = TONE[variant];
 
   return (
@@ -109,17 +126,17 @@ const Button = ({
         tone.container,
         fullWidth ? styles.fullWidth : null,
         blocked ? styles.blocked : null,
-        animatedStyle,
+        press.animatedStyle,
         style,
       ]}
-      onPressIn={() => {
-        if (!blocked) scale.value = withSpring(INTERACTION.pressScale, MOTION.press);
-      }}
-      onPressOut={() => {
-        scale.value = withSpring(1, MOTION.press);
-      }}
+      onPressIn={press.onPressIn}
+      onPressOut={press.onPressOut}
       onPress={onPress}
-      // The visual shrink must not shrink the target.
+      // Native only. react-native-web's Pressable does not read
+      // hitSlop at all (nothing under its exports/ imports the module),
+      // so on the platform patients actually use, COMPACT_HEIGHT is the
+      // whole target — which is why it is what it is. Kept for the
+      // native shells, where it does buy the extra area.
       hitSlop={compact ? { top: COMPACT_SLOP, bottom: COMPACT_SLOP } : undefined}
       disabled={blocked}
       accessibilityRole="button"
@@ -161,6 +178,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'flex-start',
+    /**
+     * The button's label is a control, not prose.
+     *
+     * react-native-web renders `Text` with the browser's default
+     * `user-select`, so a press that is held for even a moment and
+     * released a pixel or two away is a text *selection*, not a tap:
+     * clicking 登录 highlighted the word 登录 and did not log anyone
+     * in. A slow, drifting release is exactly what a weakened hand
+     * produces, so this turned every primary action in the product
+     * into an intermittent no-op for the people the product is for.
+     *
+     * `user-select` inherits in CSS, so setting it on the container is
+     * enough to cover the label and any icon inside it. It has no
+     * effect on native, where nothing selectable is being rendered.
+     */
+    userSelect: 'none',
   },
   compact: {
     minHeight: COMPACT_HEIGHT,

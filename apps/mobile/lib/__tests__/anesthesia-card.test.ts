@@ -147,3 +147,50 @@ describe('换行不能把术语拆开', () => {
     expect(wrapText('', 100, measure)).toEqual(['']);
   });
 });
+
+describe('「上传了但读不出」不能塌成「没上传」', () => {
+  /**
+   * The passport and the PDF say 「暂无可自动读取的肺功能结果」. The card
+   * said 「未做过或未上传」 for the same patient — a false statement about
+   * their own care, made to the one reader who is not them, on the line
+   * that exists to stop an unassessed patient reaching general
+   * anesthesia. An anesthetist told the test was never done orders one;
+   * an anesthetist told a report exists but could not be parsed asks the
+   * patient to show it.
+   */
+  const withState = (state: 'unreadable' | 'absent', latestDate: string | null) =>
+    summary({
+      monitoring: {
+        items: [
+          {
+            key: 'respiratory',
+            available: false,
+            summary: '暂无可自动读取的肺功能结果',
+            latestDate,
+            state,
+          },
+        ],
+      },
+    });
+
+  const respiratoryLine = (s: ClinicalPassportSummary) =>
+    buildAnesthesiaCard(s, TODAY).patientLines.find((l) => l.startsWith('最近肺功能')) ?? '';
+
+  it('有报告但没解析出字段时，不说患者没上传', () => {
+    const line = respiratoryLine(withState('unreadable', '2026-03-02T12:00:00.000Z'));
+    expect(line).not.toContain('未做过或未上传');
+    expect(line).toContain('已上传报告');
+    expect(line).toContain('索取原件');
+    expect(line).toContain('2026-03-02');
+  });
+
+  it('确实没有报告时仍然说未做过或未上传', () => {
+    expect(respiratoryLine(withState('absent', null))).toContain('未做过或未上传');
+  });
+
+  it('槽位整个缺失时按「没有」处理，不假装有报告', () => {
+    expect(
+      buildAnesthesiaCard(summary({ monitoring: { items: [] } }), TODAY).patientLines.join('\n'),
+    ).toContain('未做过或未上传');
+  });
+});

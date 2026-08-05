@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Modal, ScrollView } from 'react-native';
 import styles from './styles';
-import { apiRequest, ApiError } from '../../../../lib/api';
+import { apiRequest, ApiError, recordLegalAcceptance } from '../../../../lib/api';
 import {
   GUARDIAN_CONSENT_SECTIONS,
   GUARDIAN_CONSENT_TITLE,
@@ -242,13 +242,11 @@ export const useSensitiveDataConsentGate = (
     setError(null);
     void (async () => {
       try {
-        await apiRequest('/legal/acceptances', {
-          method: 'POST',
-          body: JSON.stringify({
-            document,
-            version: LEGAL_DOCUMENT_VERSIONS[document],
-          }),
-        });
+        // lib/api's recordLegalAcceptance, not a hand-rolled POST: the
+        // consent ledger is PIPL evidence and needs exactly one writer,
+        // so the request shape cannot drift between the two places that
+        // record an acceptance.
+        await recordLegalAcceptance(document, LEGAL_DOCUMENT_VERSIONS[document]);
         grantedRef.current = true;
         settle(true);
       } catch (err) {

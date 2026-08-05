@@ -373,6 +373,47 @@ export default StyleSheet.create({
     fontSize: 16.5,
     lineHeight: 22,
   },
+  /**
+   * The same cells when `diagnosis.confirmation !== 'genetic'`.
+   *
+   * Metric type — 16.5pt, 700, tabular figures — is what this screen
+   * uses for a measured value, and the four diagnosis cells were set in
+   * it whether the number came off a genetics report or out of the
+   * free-text box on the baseline form. Body-strong instead, and the
+   * tabular figures dropped with it: aligned digits are a table of
+   * readings, and 「FSHD1」 typed by a patient who has been guessing for
+   * eight years is not one.
+   *
+   * Built from TYPE.bodyStrong rather than overriding `infoValue`, so
+   * there is no `fontVariant` left to cancel — the screen swaps the
+   * whole style rather than layering.
+   */
+  infoValueSelfReported: {
+    ...TYPE.bodyStrong,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  /**
+   * The notice above those cells. Deliberately NOT amber: in this
+   * product amber means exactly one thing — not genetically confirmed —
+   * and it is already spent on the banner of the PDF this screen
+   * exports. Spending it twice makes it a decoration in both places.
+   *
+   * What makes it register instead is position (between the heading and
+   * the values it is about) and an ink-weight left rule, which is a
+   * step up from the `noteCard` rule used for ordinary prose.
+   */
+  diagnosisNotice: {
+    marginTop: SPACE.lg,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.ink,
+  },
+  diagnosisNoticeText: {
+    ...TYPE.bodyStrong,
+    fontSize: 14,
+    lineHeight: 21,
+  },
 
   /* Prose notes — a rule in the margin, not another box ------------ */
   noteCard: {
@@ -456,5 +497,64 @@ export default StyleSheet.create({
     borderWidth: HAIRLINE,
     borderColor: COLOR.line,
     marginBottom: 10,
+  },
+
+  /* Anesthesia card, text carrier ---------------------------------- */
+  /**
+   * The same model the PNG is drawn from, set as real text.
+   *
+   * No fixed heights anywhere in this block, and no line clamping: the
+   * point of it is that it reflows — at 200% text size, at a phone
+   * held in one hand, and in whatever app the patient pastes it into.
+   * The image cannot do any of those, and it is also the carrier a
+   * screen reader cannot enter.
+   */
+  anesthesiaTextBlock: {
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  anesthesiaTextHint: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
+  },
+  anesthesiaTextTitle: {
+    ...TYPE.heading,
+    color: COLOR.accent,
+  },
+  anesthesiaTextName: {
+    ...TYPE.bodyStrong,
+    marginTop: SPACE.xs,
+  },
+  /** The patient's own facts — diagnosis basis, last PFT, last cardiac
+   *  study. Set a step above the literature lines below them: this is
+   *  the half of the card that is about this person. */
+  anesthesiaTextPatient: {
+    ...TYPE.bodyStrong,
+    marginTop: SPACE.xs,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  anesthesiaTextSection: {
+    marginTop: SPACE.md,
+  },
+  anesthesiaTextHeading: {
+    ...TYPE.label,
+    color: COLOR.accent,
+    marginBottom: SPACE.xs,
+  },
+  anesthesiaTextLine: {
+    ...TYPE.body,
+    marginTop: SPACE.xs,
+    fontSize: 13.5,
+    lineHeight: 20,
+  },
+  anesthesiaTextFine: {
+    ...TYPE.caption,
+    marginTop: SPACE.sm,
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLOR.inkFaint,
   },
 });

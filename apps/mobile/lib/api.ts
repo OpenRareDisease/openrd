@@ -653,6 +653,10 @@ export interface ClinicalPassportSummary {
       latestDate: string | null;
       latestDocumentId: string | null;
       freshness: PassportFreshness;
+      /** `unreadable` means a report IS on file but nothing structured
+       *  came out of it — see the API's PassportMonitoringItemDTO. The
+       *  anesthesia card must not collapse it into `absent`. */
+      state: 'present' | 'unreadable' | 'absent';
       /** Whether this test is indicated at all — see the API's
        *  PassportMonitoringItemDTO. Not every slot is expected of every
        *  patient, and the panel used to imply otherwise. */
@@ -1508,6 +1512,25 @@ export const patchPatientDocumentOcr = (documentId: string, fields: Record<strin
     { method: 'PATCH', body: JSON.stringify({ fields }) },
   );
 
+/**
+ * Delete one report.
+ *
+ * A 200 means the database row is gone. It does NOT mean the stored
+ * file is: the API deletes the row first and then tries the blob, and
+ * reports the outcome separately as `storageCleanupStatus` —
+ * 'removed' (gone), 'missing' (was already absent), or 'failed' (the
+ * scan is still sitting in storage). See
+ * profile.controller.ts#deleteDocument.
+ *
+ * KNOWN DEFECT, not fixed here: both call sites — p-report_management's
+ * `runDeleteReport` and p-report_detail's `runDelete` — `await` this
+ * and throw the result away, so a 'failed' cleanup is announced to the
+ * patient as「已删除…这份报告已移除」. For a genetic or MRI scan that is
+ * the app telling them their document is gone when the server just
+ * said it could not remove it. Those two screens are outside this
+ * change's scope; the field is documented here so the next person to
+ * open either one has the contract in front of them.
+ */
 export const deletePatientDocument = (documentId: string) =>
   apiRequest<{
     documentId: string;

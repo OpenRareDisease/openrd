@@ -4,13 +4,12 @@ import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
-  Pressable,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
   type LayoutChangeEvent,
 } from 'react-native';
+import PressableScale from '../../lib/press-scale';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import Icon from '../common/Icon';
@@ -26,9 +25,9 @@ import Animated, {
 import styles from './styles';
 import {
   ApiError,
-  apiRequest,
   login,
   loginWithOtp,
+  recordLegalAcceptance,
   register,
   resetPassword,
   sendOtp,
@@ -60,6 +59,71 @@ import {
 import ScreenBackButton from '../common/ScreenBackButton';
 import { REGISTER_FORM_DRAFT_KEY, REGISTER_FORM_DRAFT_MAX_AGE_MS } from '../../lib/draft-keys';
 import { parseRegisterDraft } from '../../lib/register-draft';
+
+/**
+ * Autofill hints for the four kinds of field on this screen.
+ *
+ * Why they are worth the four constants
+ * -------------------------------------
+ * Nothing in this app set `autoComplete`, `textContentType` or
+ * `inputMode` anywhere — the 12 inputs below only set `keyboardType`.
+ * react-native-web then falls back to `autoComplete="on"`, which tells
+ * a browser to offer *something* and nothing about what.
+ *
+ * The OTP round trip is the single most expensive interaction this
+ * product asks of an FSHD patient: leave the browser, open 信息, hold
+ * six digits in your head, come back, and type them into a field
+ * before they expire — with hands that lose grip and aim. It is also
+ * the only step here that a platform can do for you.
+ *
+ * What each of these actually buys, honestly
+ * ------------------------------------------
+ *  - `one-time-code` is the standard HTML token for SMS autofill. In
+ *    iOS WKWebView — which is what WeChat embeds on iOS, and a large
+ *    share of these patients — it turns the whole trip into one tap on
+ *    a QuickType suggestion.
+ *  - On Android the picture is partial and we should not pretend
+ *    otherwise: WeChat renders in Tencent's X5 shell, whose support
+ *    for OTP autofill varies by X5 build and by keyboard, and Chinese
+ *    OEM SMS-reading is a per-vendor feature rather than a web one.
+ *    `sms-otp` is the Android-flavoured RN token, but RN maps
+ *    `autoComplete` straight through to the DOM attribute on web, so
+ *    only one string can be sent — `one-time-code` is the one that is
+ *    a real standard. Android users who get nothing are exactly where
+ *    they already were; nobody is worse off.
+ *  - `tel` / `current-password` / `new-password` are ordinary,
+ *    long-standing tokens: they let a password manager fill the login
+ *    and stop it offering the saved password as the *new* one during
+ *    registration and reset.
+ *
+ * `textContentType` is the iOS-native spelling of the same intent (a
+ * no-op on web, where RNW drops it); `inputMode` sets the on-screen
+ * keyboard on web the way `keyboardType` does on device. All three are
+ * kept because this codebase runs in all three places.
+ */
+const PHONE_FIELD_PROPS = {
+  keyboardType: 'phone-pad',
+  inputMode: 'tel',
+  autoComplete: 'tel',
+  textContentType: 'telephoneNumber',
+} as const;
+
+const OTP_FIELD_PROPS = {
+  keyboardType: 'number-pad',
+  inputMode: 'numeric',
+  autoComplete: 'one-time-code',
+  textContentType: 'oneTimeCode',
+} as const;
+
+const CURRENT_PASSWORD_FIELD_PROPS = {
+  autoComplete: 'current-password',
+  textContentType: 'password',
+} as const;
+
+const NEW_PASSWORD_FIELD_PROPS = {
+  autoComplete: 'new-password',
+  textContentType: 'newPassword',
+} as const;
 
 interface LoginFormData {
   phone: string;
@@ -224,6 +288,33 @@ const LoginRegisterScreen: React.FC = () => {
   const [isConfirmPasswordVisible, setIsConfirmPasswordVisible] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  /**
+   * A 获取验证码 request is in the air.
+   *
+   * The countdown alone did not cover this: it only starts once the
+   * gateway has *answered*, so the whole round trip — a second or two
+   * on a phone network, longer on a bad one — left the button live and
+   * looking untouched. Press it again there and the second request is
+   * a second REAL text message: it costs money, it burns one of the
+   * day's per-number quota slots, and (worst of the three) it moves
+   * `requestId`, so the code the patient is reading off their lock
+   * screen now belongs to a superseded request and comes back
+   * 「已过期」. That is a dead end reached by doing nothing wrong.
+   *
+   * One flag for all three flows because only one of them is ever on
+   * screen — register, OTP login and reset never share a moment.
+   */
+  const [isSendingCode, setIsSendingCode] = useState(false);
+  /**
+   * The same fact, readable synchronously.
+   *
+   * `busy`/`disabled` only stop the second press after React has
+   * re-rendered, and the press this exists for lands before that: a
+   * hand that shakes produces two events milliseconds apart, both
+   * inside the same tick. State would still be `false` for the second
+   * one. The ref is what actually makes the second SMS impossible.
+   */
+  const isSendingCodeRef = useRef(false);
   const [modalState, setModalState] = useState<ModalState>({
     isVisible: false,
     title: '',
@@ -471,11 +562,11 @@ const LoginRegisterScreen: React.FC = () => {
   const recordRegistrationAcceptances = async () => {
     const documents = [LEGAL_DOCUMENTS.userAgreement, LEGAL_DOCUMENTS.privacyPolicy] as const;
     const results = await Promise.allSettled(
+      // lib/api's recordLegalAcceptance, not a hand-rolled POST: the
+      // consent ledger is PIPL evidence, and it should have exactly one
+      // writer so the request shape cannot drift per call site.
       documents.map((document) =>
-        apiRequest('/legal/acceptances', {
-          method: 'POST',
-          body: JSON.stringify({ document, version: LEGAL_DOCUMENT_VERSIONS[document] }),
-        }),
+        recordLegalAcceptance(document, LEGAL_DOCUMENT_VERSIONS[document]),
       ),
     );
     for (const result of results) {
@@ -560,6 +651,15 @@ const LoginRegisterScreen: React.FC = () => {
     phone: string,
     onRequestId: (requestId: string) => void,
   ): Promise<boolean> => {
+    // See isSendingCodeRef: the duplicate press this drops is the one
+    // that would have sent a second real SMS and invalidated the code
+    // the patient is already holding.
+    if (isSendingCodeRef.current) {
+      return false;
+    }
+    isSendingCodeRef.current = true;
+    setIsSendingCode(true);
+
     try {
       const response = await sendOtp({
         phoneNumber: formatPhoneNumber(phone),
@@ -583,6 +683,9 @@ const LoginRegisterScreen: React.FC = () => {
       const message = error instanceof ApiError ? error.message : '验证码发送失败，请稍后重试';
       showModal('error', '错误', message);
       return false;
+    } finally {
+      isSendingCodeRef.current = false;
+      setIsSendingCode(false);
     }
   };
 
@@ -767,7 +870,7 @@ const LoginRegisterScreen: React.FC = () => {
                           onChangeText={(text) =>
                             setLoginForm((prev) => ({ ...prev, phone: text }))
                           }
-                          keyboardType="phone-pad"
+                          {...PHONE_FIELD_PROPS}
                           maxLength={11}
                         />
                         {renderLoginError('phone')}
@@ -784,10 +887,11 @@ const LoginRegisterScreen: React.FC = () => {
                             onChangeText={(text) =>
                               setLoginForm((prev) => ({ ...prev, password: text }))
                             }
+                            {...CURRENT_PASSWORD_FIELD_PROPS}
                             secureTextEntry={!isLoginPasswordVisible}
                             maxLength={PASSWORD_MAX_LENGTH}
                           />
-                          <TouchableOpacity
+                          <PressableScale
                             style={styles.passwordToggleButton}
                             accessibilityRole="button"
                             accessibilityLabel={isLoginPasswordVisible ? '隐藏密码' : '显示密码'}
@@ -798,7 +902,7 @@ const LoginRegisterScreen: React.FC = () => {
                               size={16}
                               color={COLOR.inkMuted}
                             />
-                          </TouchableOpacity>
+                          </PressableScale>
                         </View>
                         {renderLoginError('password')}
                       </View>
@@ -824,7 +928,7 @@ const LoginRegisterScreen: React.FC = () => {
                             setOtpLoginForm((prev) => ({ ...prev, phone: text }));
                             setOtpLoginErrors((prev) => ({ ...prev, phone: '' }));
                           }}
-                          keyboardType="phone-pad"
+                          {...PHONE_FIELD_PROPS}
                           maxLength={11}
                         />
                         {otpLoginErrors.phone ? (
@@ -844,13 +948,14 @@ const LoginRegisterScreen: React.FC = () => {
                               setOtpLoginForm((prev) => ({ ...prev, code: text }));
                               setOtpLoginErrors((prev) => ({ ...prev, code: '' }));
                             }}
-                            keyboardType="number-pad"
+                            {...OTP_FIELD_PROPS}
                             maxLength={6}
                           />
                           <Button
                             label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
                             variant="tinted"
                             compact
+                            busy={isSendingCode}
                             disabled={countdown > 0}
                             accessibilityLabel="获取短信验证码"
                             style={styles.getCodeButton}
@@ -900,7 +1005,7 @@ const LoginRegisterScreen: React.FC = () => {
                         setResetForm((prev) => ({ ...prev, phone: text }));
                         setResetErrors((prev) => ({ ...prev, phone: '' }));
                       }}
-                      keyboardType="phone-pad"
+                      {...PHONE_FIELD_PROPS}
                       maxLength={11}
                     />
                     {resetErrors.phone ? (
@@ -920,13 +1025,14 @@ const LoginRegisterScreen: React.FC = () => {
                           setResetForm((prev) => ({ ...prev, code: text }));
                           setResetErrors((prev) => ({ ...prev, code: '' }));
                         }}
-                        keyboardType="number-pad"
+                        {...OTP_FIELD_PROPS}
                         maxLength={6}
                       />
                       <Button
                         label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
                         variant="tinted"
                         compact
+                        busy={isSendingCode}
                         disabled={countdown > 0}
                         accessibilityLabel="获取短信验证码"
                         style={styles.getCodeButton}
@@ -960,6 +1066,7 @@ const LoginRegisterScreen: React.FC = () => {
                         setResetForm((prev) => ({ ...prev, newPassword: text }));
                         setResetErrors((prev) => ({ ...prev, newPassword: '' }));
                       }}
+                      {...NEW_PASSWORD_FIELD_PROPS}
                       secureTextEntry
                       maxLength={PASSWORD_MAX_LENGTH}
                     />
@@ -979,6 +1086,7 @@ const LoginRegisterScreen: React.FC = () => {
                         setResetForm((prev) => ({ ...prev, confirmPassword: text }));
                         setResetErrors((prev) => ({ ...prev, confirmPassword: '' }));
                       }}
+                      {...NEW_PASSWORD_FIELD_PROPS}
                       secureTextEntry
                       maxLength={PASSWORD_MAX_LENGTH}
                     />
@@ -996,10 +1104,10 @@ const LoginRegisterScreen: React.FC = () => {
                   />
 
                   <View style={styles.forgotPasswordContainer}>
+                    {/* Not `compact` — see the note on 忘记密码？below. */}
                     <Button
                       label="返回登录"
                       variant="plain"
-                      compact
                       onPress={() => setIsResetMode(false)}
                     />
                   </View>
@@ -1043,7 +1151,7 @@ const LoginRegisterScreen: React.FC = () => {
                       placeholderTextColor={COLOR.inkMuted}
                       value={registerForm.phone}
                       onChangeText={(text) => setRegisterForm((prev) => ({ ...prev, phone: text }))}
-                      keyboardType="phone-pad"
+                      {...PHONE_FIELD_PROPS}
                       maxLength={11}
                     />
                     {renderRegisterError('phone')}
@@ -1060,13 +1168,14 @@ const LoginRegisterScreen: React.FC = () => {
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, code: text }))
                         }
-                        keyboardType="number-pad"
+                        {...OTP_FIELD_PROPS}
                         maxLength={6}
                       />
                       <Button
                         label={countdown > 0 ? `${countdown}s 后重发` : '获取验证码'}
                         variant="tinted"
                         compact
+                        busy={isSendingCode}
                         disabled={countdown > 0}
                         accessibilityLabel="获取短信验证码"
                         style={styles.getCodeButton}
@@ -1087,10 +1196,11 @@ const LoginRegisterScreen: React.FC = () => {
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, password: text }))
                         }
+                        {...NEW_PASSWORD_FIELD_PROPS}
                         secureTextEntry={!isRegisterPasswordVisible}
                         maxLength={PASSWORD_MAX_LENGTH}
                       />
-                      <TouchableOpacity
+                      <PressableScale
                         style={styles.passwordToggleButton}
                         accessibilityRole="button"
                         accessibilityLabel={isRegisterPasswordVisible ? '隐藏密码' : '显示密码'}
@@ -1101,7 +1211,7 @@ const LoginRegisterScreen: React.FC = () => {
                           size={16}
                           color={COLOR.inkMuted}
                         />
-                      </TouchableOpacity>
+                      </PressableScale>
                     </View>
                     {renderRegisterError('password')}
                   </View>
@@ -1120,10 +1230,11 @@ const LoginRegisterScreen: React.FC = () => {
                         onChangeText={(text) =>
                           setRegisterForm((prev) => ({ ...prev, confirmPassword: text }))
                         }
+                        {...NEW_PASSWORD_FIELD_PROPS}
                         secureTextEntry={!isConfirmPasswordVisible}
                         maxLength={PASSWORD_MAX_LENGTH}
                       />
-                      <TouchableOpacity
+                      <PressableScale
                         style={styles.passwordToggleButton}
                         accessibilityRole="button"
                         accessibilityLabel={
@@ -1136,7 +1247,7 @@ const LoginRegisterScreen: React.FC = () => {
                           size={16}
                           color={COLOR.inkMuted}
                         />
-                      </TouchableOpacity>
+                      </PressableScale>
                     </View>
                     {renderRegisterError('confirmPassword')}
                   </View>
@@ -1151,15 +1262,30 @@ const LoginRegisterScreen: React.FC = () => {
                 </View>
               )}
 
-              {/* 忘记密码 → 自助重置流 */}
+              {/* 忘记密码 → 自助重置流
+
+                  Deliberately NOT `compact`.
+
+                  Measured live at 375×812, this and the two document
+                  links below drew 34pt tall against this repo's own
+                  MIN_TOUCH_TARGET of 48. `compact` pairs its 34pt with
+                  a `hitSlop` that buys the difference back — but only
+                  on device: react-native-web 0.20 reads `hitSlop` in
+                  the legacy `Touchable` mixin and nowhere else, and
+                  this product ships as a web export opened in WeChat's
+                  browser. So the slop bought nothing for any real
+                  patient, and this is the one screen every one of them
+                  has to get through.
+
+                  Full height rather than `expandHitSlop`, for the same
+                  reason: lib/a11y.ts prefers slop for「text links and
+                  small glyphs whose visual size is deliberately
+                  modest」, and its own rule 1 is size beats precision.
+                  A hit area the platform silently drops is not a hit
+                  area, so the only honest fix here is drawn height. */}
               {activeTab === 'login' && !isResetMode && (
                 <View style={styles.forgotPasswordContainer}>
-                  <Button
-                    label="忘记密码？"
-                    variant="plain"
-                    compact
-                    onPress={() => setIsResetMode(true)}
-                  />
+                  <Button label="忘记密码？" variant="plain" onPress={() => setIsResetMode(true)} />
                 </View>
               )}
 
@@ -1196,7 +1322,12 @@ const LoginRegisterScreen: React.FC = () => {
                         minimum applies to the text too rather than to a
                         20pt square a patient with reduced grip has to
                         hit. */}
-                    <Pressable
+                    {/* PressableScale, not a bare Pressable: this is the
+                        one control that gates registration, and it was
+                        the only control on the screen that answered a
+                        press with nothing at all — no opacity, no
+                        movement. */}
+                    <PressableScale
                       style={styles.consentRow}
                       onPress={() => {
                         setHasAcceptedTerms((previous) => {
@@ -1231,23 +1362,26 @@ const LoginRegisterScreen: React.FC = () => {
                       <Text style={styles.consentLabel}>
                         我已阅读并同意《用户协议》和《隐私政策》
                       </Text>
-                    </Pressable>
+                    </PressableScale>
                     {termsError ? <Text style={styles.consentErrorText}>{termsError}</Text> : null}
                   </>
                 ) : (
                   <Text style={styles.agreementText}>使用前请阅读以下条款</Text>
                 )}
+                {/* Also not `compact` — same 34pt measurement, same
+                    reason. These two are what the consent checkbox
+                    above is asking the patient to have read, so a
+                    target they keep missing is a consent problem and
+                    not only a comfort one. */}
                 <View style={styles.agreementLinkRow}>
                   <Button
                     label="《用户协议》"
                     variant="plain"
-                    compact
                     onPress={() => handleShowAgreement('user')}
                   />
                   <Button
                     label="《隐私政策》"
                     variant="plain"
-                    compact
                     onPress={() => handleShowAgreement('privacy')}
                   />
                 </View>
@@ -1300,14 +1434,14 @@ const LoginRegisterScreen: React.FC = () => {
             <View style={styles.agreementModalContent}>
               <View style={styles.agreementModalHeader}>
                 <Text style={styles.agreementModalTitle}>{modalState.title}</Text>
-                <TouchableOpacity
+                <PressableScale
                   style={styles.agreementModalClose}
                   accessibilityRole="button"
                   accessibilityLabel="关闭"
                   onPress={closeModal}
                 >
                   <Icon name="xmark" size={16} color={COLOR.inkMuted} />
-                </TouchableOpacity>
+                </PressableScale>
               </View>
               <ScrollView style={styles.agreementModalScrollView}>
                 <Text style={styles.agreementModalText}>{modalState.content}</Text>

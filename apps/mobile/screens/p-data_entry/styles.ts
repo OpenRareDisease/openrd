@@ -126,6 +126,16 @@ export default StyleSheet.create({
     lineHeight: 22,
     color: COLOR.ink,
   },
+  /** The「可以用键盘的语音键」line, under the composer rather than
+   *  above it: it is an alternative route for someone who has already
+   *  looked at the box and decided typing is too much, not part of the
+   *  card's opening pitch. Set at caption weight for the same reason —
+   *  it must not read as the recommended path (see the comment at the
+   *  call site). */
+  speakVoiceHint: {
+    ...TYPE.caption,
+    marginTop: -SPACE.xs,
+  },
   speakNoticeWrap: {
     marginTop: -SPACE.xs,
   },

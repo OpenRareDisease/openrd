@@ -378,14 +378,20 @@ export const buildClinicalPassportPdfHtml = (
         background: #f0e7dc;
         color: #7d5c41;
       }
-      .metric-summary,
-      .metric-meta,
       .unconfirmed-banner {
         /* Printed and handed to a neurologist who may see three FSHD
            patients in a career. A patient's own guess must not share a
            visual register with a genetic result, and grey small print
            is exactly how it would. Border and weight survive a
-           photocopy and a 一块钱 print shop. */
+           photocopy and a 一块钱 print shop.
+
+           This selector used to also carry 「.metric-summary」 and
+           「.metric-meta」 — the body and footer of every summary card on
+           the hero. So all four cards wore the amber "this is not
+           evidence" frame, on a page whose one genuinely unconfirmed
+           block is this banner. Amber that appears five times says
+           nothing the fifth time, and the one place it had to be read
+           was the fifth. It is the only amber on the page again. */
         margin: 6px 0 10px;
         padding: 7px 10px;
         border: 1.5px solid #8a5a00;
@@ -395,6 +401,21 @@ export const buildClinicalPassportPdfHtml = (
         font-size: 11.5px;
         line-height: 1.5;
         border-radius: 4px;
+      }
+      /* Ordinary card text, which is what these two always were. They
+         are not matched by the 「.section-copy, …」 block below, so they
+         carry their own size and rhythm rather than inheriting body
+         defaults from the browser. */
+      .metric-summary {
+        margin: 8px 0 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #4c5b68;
+      }
+      .metric-meta {
+        margin: 4px 0 0;
+        font-size: 11.5px;
+        line-height: 1.5;
       }
 
       .section-copy,

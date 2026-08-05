@@ -368,6 +368,20 @@ export default function ReportManagementScreen() {
       {/* Plain paper. The page gradient was decorative and cost every
           surface above it contrast. */}
       <View style={styles.backgroundGradient}>
+        {/* The REPORT MANAGEMENT eyebrow is gone: it translated the
+            title sitting directly beneath it. Title + back + home now
+            come from ScreenHeader so every stack screen exits the same
+            way; 添加报告 and the patient name keep the row below.
+
+            Outside the ScrollView, matching p-data_entry: this is a
+            list screen with no upper bound on its length — a patient
+            who has been uploading for a year scrolls a long way — and
+            inside the scroller the only navigation surface on the
+            screen scrolled away with the content, leaving no back and
+            no home until they flung back to the top. A sticky header
+            is the other way to do it, but hoisting keeps the
+            ScrollView's refreshControl and content indices alone. */}
+        <ScreenHeader title="报告管理" fallbackHref="/p-home" />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -380,14 +394,7 @@ export default function ReportManagementScreen() {
             />
           }
         >
-          {/* The REPORT MANAGEMENT eyebrow is gone: it translated the
-              title sitting directly beneath it. Title + back + home now
-              come from ScreenHeader so every stack screen exits the
-              same way; 添加报告 and the patient name keep the row
-              below, which is still one row rather than the two the
-              original layout spent. */}
           <View style={styles.header}>
-            <ScreenHeader title="报告管理" fallbackHref="/p-home" style={styles.screenHeaderRow} />
             <View style={styles.headerTopRow}>
               <View style={styles.headerLead}>
                 {patientName ? <Text style={styles.pageSubtitle}>{patientName}</Text> : null}

@@ -1303,6 +1303,11 @@ describe('buildAskResponseData (response narrowing)', () => {
     expect(Object.keys(out).sort()).toEqual(
       [
         'answer',
+        // Answer-honesty state. Always present so a client can read
+        // them without an `in` check; see buildAskResponseData.
+        'answerTruncated',
+        'answerCutOff',
+        'retrievalFailure',
         'auditId',
         'citations',
         'consentLevel',

@@ -124,6 +124,229 @@ DEFAULT_FETCH_K = int(os.getenv("KB_FETCH_K", "80"))
 DEFAULT_MAX_PER_SOURCE = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
 
 
+# ----------------------------------------------------------- relevance floor
+
+#: Cosine-distance ceiling above which a hit is treated as「语料里没有」
+#: rather than「这是最接近的」.
+#:
+#: There was no floor at all. A nearest-neighbour search over 9,594
+#: chunks ALWAYS returns something, so 「明天北京天气怎么样」came back
+#: with the Dutch FSHD genetic-diagnostics guideline and 「杜氏肌营养不良
+#: DMD 的激素治疗方案」came back with an FSHD history paper — and the
+#: answer layer, which could not tell those apart from a real hit, wrote
+#: an answer out of them. For a patient population where a majority
+#: arrive misdiagnosed and asking about adjacent neuromuscular diseases,
+#: that is the worst possible failure mode.
+#:
+#: MEASURED, not guessed. `python3 scripts/kb-verify.py --floor-probe`
+#: reproduces it: 15 in-corpus probes (the kb-verify probe set plus five
+#: covering anaesthesia / pregnancy / AFO / prognosis / coping) and 22
+#: out-of-corpus probes (vaccines, 中药, 针灸, DMD, ALS, 重症肌无力, SMA,
+#: 「某某医院能不能做基因检测」, weather, recipes, crypto, ...). Against
+#: the live corpus (9,594 chunks, bge-m3, 2026-08) the two distributions
+#: do not overlap at all on best-hit distance:
+#:
+#:            best-hit cosine distance      min      p50      max
+#:   in-corpus  (15 probes)               0.2119   0.3023   0.3782
+#:   out-of-corpus (22 probes)            0.4054   0.4708   0.5825
+#:
+#: 0.40 sits inside that empty band [0.3782, 0.4054]. At 0.40 every one
+#: of the 22 out-of-corpus probes loses its entire candidate set, and 14
+#: of the 15 in-corpus probes still keep 8+ chunks (「D4Z4 重复减少是什么
+#: 意思」is the one that thins out — its 8th hit is at 0.4137 — but it
+#: keeps its top hits and still answers).
+#:
+#: One notch higher is already too high: at 0.42 the DMD steroid-regimen
+#: probe keeps 5 chunks of FSHD literature and the 针灸 probe keeps 5,
+#: which is exactly enough for the model to write a confident answer to
+#: a question this corpus cannot answer.
+#:
+#: The band is only ~0.027 wide, so err LOW on purpose. Too low costs a
+#: real question some of its chunks and, at worst, an honest 「知识库里
+#: 没找到」. Too high hands the model FSHD literature to answer a DMD
+#: question with. Those are not symmetric.
+#:
+#: Re-measure when the embedding model or the corpus changes materially
+#: — the number is a property of both, not a universal constant.
+DEFAULT_RELEVANCE_FLOOR = 0.40
+
+#: Values of KB_RELEVANCE_FLOOR that turn the floor off entirely.
+_FLOOR_DISABLED_VALUES = frozenset({"off", "none", "disabled", "false", "0"})
+
+
+def _resolve_relevance_floor(raw: Optional[str]) -> Optional[float]:
+    """Parse KB_RELEVANCE_FLOOR. `None` means the floor is disabled.
+
+    Unset falls back to the measured default. An explicit `off` (or a
+    non-positive number) disables it, which is the escape hatch for an
+    operator running a corpus this number was never measured against.
+    """
+    s = (raw or "").strip().lower()
+    if not s:
+        return DEFAULT_RELEVANCE_FLOOR
+    if s in _FLOOR_DISABLED_VALUES:
+        return None
+    try:
+        value = float(s)
+    except ValueError:
+        logger.warning(
+            "invalid KB_RELEVANCE_FLOOR=%r, falling back to %s",
+            raw,
+            DEFAULT_RELEVANCE_FLOOR,
+        )
+        return DEFAULT_RELEVANCE_FLOOR
+    return value if value > 0 else None
+
+
+DEFAULT_RELEVANCE_FLOOR_RESOLVED = _resolve_relevance_floor(os.getenv("KB_RELEVANCE_FLOOR"))
+
+#: Sentinel so `search_multi(relevance_floor=None)` can mean "floor off"
+#: and an omitted argument can mean "use the configured default".
+_FLOOR_UNSET = object()
+
+
+# ---------------------------------------------------------- authority tiers
+
+# The corpus directory structure already encodes how much weight a chunk
+# deserves, and nothing read it: an AAN / Dutch-guideline chunk and a
+# 病友 forum post were retrieved with exactly equal weight, ranked only
+# by cosine distance. A patient asking about anaesthesia could get an
+# anecdote above the AANA obstetric-anaesthesia paper.
+#
+# The tier is derived from the corpus-relative source path (the same
+# `source_key` the ingester stores in `kb_chunks.source_file`, e.g.
+# "11.病友经验/第二批：2025年5月15日/我们的故事丨....pdf"). Measured over
+# the live corpus (9,594 chunks / 206 files, 2026-08):
+#
+#   指南共识/                                             51 chunks
+#   文献/                                              4,818
+#   (corpus root — papers, preprints, abstract books)   1,751
+#   AFO/                                                 546
+#   05.相关研究/                                          494
+#   11.病友经验/ (including the 连载 subdirectory)          150
+#   everything else (01/02/03/04/06/07/08/09/10/12/孕期) 1,784
+#
+# `penalty` is added to the cosine distance for RANKING ONLY — never for
+# the relevance floor, which must keep judging raw distance or the tier
+# would quietly move the floor around. The whole spread is 0.03 against
+# an in-corpus top-8 distance band of roughly 0.21-0.41, i.e. small
+# enough to break near-ties and too small to overturn a clear relevance
+# win. Two measured checks fixed that size:
+#
+#   「FSHD 麻醉 恶性高热 风险」— AANA paper (literature) 0.3323 -> 0.3423
+#     vs the MDA patient-experience piece (reference) 0.3912 -> 0.4112.
+#     The paper's lead widens. This is the case the tiering exists for.
+#
+#   「确诊 FSHD 后心理上怎么调整？」— top 病友经验 chunk 0.3023 -> 0.3323,
+#     still ahead of the 指南共识 chunk at 0.3695. For a question about
+#     coping, lived experience IS the right source; a larger penalty
+#     would have demoted it wrongly. 0.03 is the largest spread that
+#     leaves this ordering intact.
+
+#: Tier key -> ranking rank, patient-facing label, ranking penalty.
+#: `unknown` deliberately mirrors `reference`: a path we cannot classify
+#: must not be promoted above the literature and must not be labelled as
+#: something it may not be.
+AUTHORITY_TIERS: Dict[str, Dict[str, Any]] = {
+    "guideline": {"rank": 0, "label": "指南/共识", "penalty": 0.00},
+    "literature": {"rank": 1, "label": "文献", "penalty": 0.01},
+    "reference": {"rank": 2, "label": "资料", "penalty": 0.02},
+    "community": {"rank": 3, "label": "病友经验", "penalty": 0.03},
+    "unknown": {"rank": 2, "label": "资料", "penalty": 0.02},
+}
+
+#: Top-level corpus folder -> tier. Anything not listed falls to
+#: `reference`; a file sitting directly at the corpus root falls to
+#: `literature` because every root file today is a paper, preprint or
+#: conference abstract book (measured: 29 files, 1,751 chunks).
+_FOLDER_TIERS: Dict[str, str] = {
+    "指南共识": "guideline",
+    "文献": "literature",
+    "05.相关研究": "literature",
+    # Orthotics research papers, not a product catalogue.
+    "AFO": "literature",
+    "11.病友经验": "community",
+}
+_ROOT_TIER = "literature"
+_DEFAULT_TIER = "reference"
+
+#: The librarian filed the actual practice guidelines by topic, not into
+#: 指南共识/ — that folder holds a single document while the Dutch
+#: guideline, the AAN evidence-based summary, the 2024 molecular
+#: diagnostics best-practice paper and the 中华医学会 consensus all live
+#: under 01./02./03. Folder alone would therefore tier 51 of 9,594 chunks
+#: as guidance and miss every guideline a patient actually asks about.
+#:
+#: Matching the filename recovers them. Measured over all 206 corpus
+#: files this hits exactly 14, and 13 are unambiguous clinical practice
+#: guidelines or expert consensus statements. The 14th,
+#:《FSHD女性的怀孕指南》, is a community-written patient guide that the
+#: rule over-promotes — accepted knowingly because the consequence is a
+#: 0.02 ranking nudge and a label the document applies to itself, not a
+#: claim about evidence grade. Renaming that one file is the real fix.
+#:
+#: The promotion never applies to the community tier, so a future patient
+#: story titled「求医指南」cannot be labelled as guidance.
+_GUIDELINE_FILENAME_RE = re.compile(
+    r"指南|共识|guideline|consensus|best practice", re.IGNORECASE
+)
+
+
+def authority_tier_for_path(source_key: Optional[str]) -> str:
+    """Tier key for a corpus-relative source path."""
+    key = (source_key or "").replace("\\", "/").strip("/")
+    parts = [p for p in key.split("/") if p]
+    if not parts:
+        return "unknown"
+
+    tier = _ROOT_TIER if len(parts) == 1 else _FOLDER_TIERS.get(parts[0], _DEFAULT_TIER)
+    if tier != "community" and _GUIDELINE_FILENAME_RE.search(parts[-1]):
+        tier = "guideline"
+    return tier
+
+
+def authority_for_path(source_key: Optional[str]) -> Dict[str, Any]:
+    """`{'tier', 'label', 'rank', 'penalty'}` for a source path.
+
+    Shared by the ingester (which stores tier + label on every chunk)
+    and by retrieval (which falls back to it, see `resolve_authority`),
+    so the two can never disagree about what a path means.
+    """
+    tier = authority_tier_for_path(source_key)
+    meta = AUTHORITY_TIERS[tier]
+    return {
+        "tier": tier,
+        "label": meta["label"],
+        "rank": meta["rank"],
+        "penalty": meta["penalty"],
+    }
+
+
+def resolve_authority(
+    metadata: Optional[Dict[str, Any]], source_key: Optional[str]
+) -> Dict[str, Any]:
+    """Authority for a retrieved hit: stored value first, path second.
+
+    The path fallback is what makes the ranking preference work on the
+    9,594 rows that predate the backfill. Without it this feature would
+    do nothing at all until an operator remembered to run
+    `scripts/kb-ingest.py --backfill-authority`, and「a patient asking
+    about anaesthesia gets an anecdote」would still be live in
+    production. The backfill is what makes the tier queryable in SQL and
+    removes the per-hit derivation; it is not what makes ranking correct.
+    """
+    stored = (metadata or {}).get("authority_tier")
+    if isinstance(stored, str) and stored in AUTHORITY_TIERS:
+        meta = AUTHORITY_TIERS[stored]
+        return {
+            "tier": stored,
+            "label": meta["label"],
+            "rank": meta["rank"],
+            "penalty": meta["penalty"],
+        }
+    return authority_for_path(source_key)
+
+
 def _get_source(metadata: Optional[Dict[str, Any]], fallback: Optional[str] = None) -> str:
     md = metadata or {}
     source = (
@@ -145,14 +368,21 @@ class FSHDKnowledgeBase:
         self,
         backend: Optional[VectorBackend] = None,
         embedder: Optional[Embedder] = None,
+        relevance_floor: Any = _FLOOR_UNSET,
     ) -> None:
         self.backend = backend or create_backend()
         self.embedder = embedder or create_embedder()
+        self.relevance_floor: Optional[float] = (
+            DEFAULT_RELEVANCE_FLOOR_RESOLVED
+            if relevance_floor is _FLOOR_UNSET
+            else relevance_floor
+        )
         logger.info(
-            "KB ready: backend=%s embedder=%s dim=%s",
+            "KB ready: backend=%s embedder=%s dim=%s relevance_floor=%s",
             self.backend.id,
             self.embedder.model_name,
             self.embedder.dimension,
+            "off" if self.relevance_floor is None else self.relevance_floor,
         )
 
     # --------------------------------------------------------------- search
@@ -166,9 +396,13 @@ class FSHDKnowledgeBase:
         max_per_source: int = 4,
         where: Optional[Dict[str, Any]] = None,
         keep_debug_fields: bool = False,
+        relevance_floor: Any = _FLOOR_UNSET,
     ) -> Dict[str, Any]:
         question = (question or "").strip()
         queries = [q.strip() for q in (queries or []) if q and q.strip()]
+        floor: Optional[float] = (
+            self.relevance_floor if relevance_floor is _FLOOR_UNSET else relevance_floor
+        )
 
         if not question:
             return {
@@ -220,6 +454,17 @@ class FSHDKnowledgeBase:
         )
 
         # 3) Merge, dedup, junk-filter.
+        #
+        # `backend_hits` counts what the vector store actually returned,
+        # before dedup and before the junk filters. It is the only thing
+        # that can tell「the corpus is empty」apart from「everything that
+        # came back was a bibliography page」, and those two need
+        # different answers: the first is an outage the operator must
+        # see, the second is a genuine (if unhelpful) search result.
+        # A nearest-neighbour search over a non-empty table always
+        # returns rows, so zero here means zero rows to search — an
+        # empty corpus, or a `where` filter that matched nothing.
+        backend_hits = sum(len(hits) for hits in per_query_hits)
         merged: List[Dict[str, Any]] = []
         seen_fp: set[str] = set()
         for qi, (q, hits) in enumerate(zip(queries, per_query_hits)):
@@ -231,23 +476,65 @@ class FSHDKnowledgeBase:
                 if fp in seen_fp:
                     continue
                 seen_fp.add(fp)
+                authority = resolve_authority(hit.metadata, hit.source_file)
                 merged.append(
                     {
                         "content": text_norm,
                         "metadata": hit.metadata or {},
                         "distance": hit.distance,
+                        "authority_tier": authority["tier"],
+                        "authority_label": authority["label"],
+                        "_authority_penalty": authority["penalty"],
                         "_source_file": hit.source_file,
                         "_hit_query": q,
                         "_hit_query_i": qi,
                     }
                 )
 
-        # 4) Rank by distance (closer first; missing distances sink).
-        def _dist_key(item: Dict[str, Any]) -> float:
-            d = item.get("distance")
-            return float(d) if d is not None else 1e9
+        # 3b) Relevance floor, applied to the RAW distance before any
+        # authority adjustment. A nearest-neighbour search cannot return
+        # nothing, so without this every question the corpus has no
+        # answer for still handed the model its 8 closest chunks. See
+        # DEFAULT_RELEVANCE_FLOOR for the measured numbers.
+        #
+        # A hit with no distance is kept rather than dropped: `None`
+        # means the backend did not report one (the interface allows it),
+        # which is "cannot judge", not "far away". Dropping those would
+        # silently empty every result on such a backend.
+        candidates_considered = len(merged)
+        distances = [
+            float(item["distance"]) for item in merged if item.get("distance") is not None
+        ]
+        best_distance = min(distances) if distances else None
 
-        merged.sort(key=_dist_key)
+        dropped_below_floor = 0
+        if floor is not None:
+            above_floor: List[Dict[str, Any]] = []
+            for item in merged:
+                d = item.get("distance")
+                if d is not None and float(d) > floor:
+                    dropped_below_floor += 1
+                    continue
+                above_floor.append(item)
+            merged = above_floor
+
+        # True only when there WERE candidates and the floor took every
+        # one of them — i.e. the corpus was consulted and genuinely has
+        # nothing relevant. That is a different fact from "the search
+        # could not run", and the answer layer has to be able to tell
+        # them apart or it will either improvise or claim an outage.
+        below_relevance_floor = candidates_considered > 0 and not merged
+
+        # 4) Rank by distance (closer first; missing distances sink),
+        # nudged by source authority so a guideline outranks a forum post
+        # at comparable relevance.
+        def _rank_key(item: Dict[str, Any]) -> float:
+            d = item.get("distance")
+            if d is None:
+                return 1e9
+            return float(d) + float(item.get("_authority_penalty") or 0.0)
+
+        merged.sort(key=_rank_key)
 
         # 5) Per-source diversification.
         chosen: List[Dict[str, Any]] = []
@@ -267,6 +554,7 @@ class FSHDKnowledgeBase:
         # 7) Strip debug fields unless requested.
         for c in chosen:
             c.pop("_source_file", None)
+            c.pop("_authority_penalty", None)
             if not keep_debug_fields:
                 c.pop("_hit_query", None)
                 c.pop("_hit_query_i", None)
@@ -284,6 +572,17 @@ class FSHDKnowledgeBase:
                 "where": where or None,
                 "backend": self.backend.id,
                 "embed_model": self.embedder.model_name,
+                # Retrieval-quality signals. `below_relevance_floor` is
+                # the one a caller must branch on: chunks==[] with it
+                # true means「知识库里没有」, chunks==[] with it false
+                # means the search returned nothing for some other
+                # reason and says nothing about the corpus.
+                "relevance_floor": floor,
+                "below_relevance_floor": below_relevance_floor,
+                "dropped_below_floor": dropped_below_floor,
+                "backend_hits": backend_hits,
+                "candidates_considered": candidates_considered,
+                "best_distance": best_distance,
             },
         }
 

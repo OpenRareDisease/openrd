@@ -63,6 +63,37 @@ const createProgressId = () =>
 const createMessageId = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * What 问答 opens with instead of an empty input.
+ *
+ * Typing is the single most expensive thing this app can ask for:
+ * FSHD takes the face, shoulders and upper arms first, so holding a
+ * phone up and tapping out a sentence is the exact motion that is
+ * going. And the people who most need a 9594-chunk FSHD corpus — a
+ * decade of being told it was a rotator cuff, no reports to upload,
+ * only symptoms — are the ones least likely to know the words that
+ * retrieve well. AskAboutDrawer already solved this for the in-place
+ * drawer, and its prop doc says why:「so the patient never faces an
+ * empty input」. Same pattern, the tab that needed it most.
+ *
+ * Every starter is answerable with nothing on file: no upload, no
+ * follow-up history, no diagnosis. A starter like「我的报告说明什么」
+ * would be an empty input with extra steps for the person this list
+ * exists for.
+ *
+ *「会遗传给孩子吗」does NOT go to the model. /p-genetics_family is a
+ * finished page whose every section carries its source, and reading a
+ * cited page beats generating a fresh answer to the question people
+ * ask before they tell their partner.
+ */
+const STARTER_QUESTIONS: ReadonlyArray<{ text: string; route?: '/p-genetics_family' }> = [
+  { text: 'FSHD 是一种什么病' },
+  { text: '面部和肩膀最先没力气，是 FSHD 吗' },
+  { text: '确诊需要做哪些检查' },
+  { text: '会遗传给孩子吗', route: '/p-genetics_family' },
+  { text: '目前有哪些治疗和康复办法' },
+];
+
 const createWelcomeMessage = (): ChatMessage => ({
   id: 'welcome',
   role: 'assistant',
@@ -733,19 +764,35 @@ const P_QNA = () => {
     });
   };
 
+  /** The composer and the starter list are two doors into the same
+   *  send, so they share one gate rather than each carrying a copy. */
+  const ensureSignedIn = (): boolean => {
+    if (token) return true;
+    notify({
+      title: '请先登录',
+      message: '登录后才能使用智能问答功能。',
+      tone: 'info',
+      // The old Alert only named the problem. The route is one tap
+      // away, so offer it rather than making the patient find it.
+      action: { label: '去登录', onPress: () => router.push('/p-login_register') },
+    });
+    return false;
+  };
+
+  /** A starter is a question the patient chose, so it goes straight
+   *  out — dropping it into the composer for them to press send on
+   *  would reintroduce the tap the list exists to remove. */
+  const handleStarterPress = (question: string) => {
+    if (isSending) return;
+    if (!ensureSignedIn()) return;
+    void sendQuestion(question);
+  };
+
   const handleSendPress = () => {
     const question = draft.trim();
     if (!question || isSending) return;
 
-    if (!token) {
-      notify({
-        title: '请先登录',
-        message: '登录后才能使用智能问答功能。',
-        tone: 'info',
-        // The old Alert only named the problem. The route is one tap
-        // away, so offer it rather than making the patient find it.
-        action: { label: '去登录', onPress: () => router.push('/p-login_register') },
-      });
+    if (!ensureSignedIn()) {
       return;
     }
 
@@ -1142,6 +1189,15 @@ const P_QNA = () => {
     );
   };
 
+  /** Starters belong to a conversation that hasn't started. Gated on
+   *  `isHydrated` so a restored transcript never flashes them, and on
+   *  the absence of any user turn rather than on message count — the
+   *  welcome bubble and an epoch divider are both things the app said,
+   *  not things the patient asked. 清空对话 brings them back, which is
+   *  right: that is a fresh conversation. */
+  const showStarters =
+    isHydrated && !isSending && messages.every((message) => message.role !== 'user');
+
   const renderProgressCard = () => {
     if (!askProgress) return null;
 
@@ -1359,6 +1415,33 @@ const P_QNA = () => {
               </Animated.View>
             );
           })}
+
+          {showStarters ? (
+            <View style={styles.starterBlock}>
+              <Text style={styles.starterTitle}>不知道从哪问起，可以先点一个</Text>
+              <View style={styles.starterStack}>
+                {STARTER_QUESTIONS.map((item) => (
+                  <Button
+                    key={item.text}
+                    label={item.text}
+                    variant="tinted"
+                    fullWidth
+                    icon={item.route ? 'dna' : undefined}
+                    trailingIcon="arrow-right"
+                    accessibilityHint={
+                      item.route ? '打开《遗传与生育》页面' : '直接把这个问题发给 AI'
+                    }
+                    onPress={() =>
+                      item.route ? router.push(item.route) : handleStarterPress(item.text)
+                    }
+                  />
+                ))}
+              </View>
+              <Text style={styles.starterNote}>
+                「会遗传给孩子吗」会打开《遗传与生育》——那一页每段都写了出处，比现场生成的回答更可靠。
+              </Text>
+            </View>
+          ) : null}
 
           {renderProgressCard()}
         </ScrollView>

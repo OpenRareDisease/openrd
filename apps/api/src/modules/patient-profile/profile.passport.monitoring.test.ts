@@ -222,6 +222,89 @@ describe('听力：只给学龄前儿童 [AAN Level B]', () => {
   });
 });
 
+/**
+ * The three monitoring summaries used to fall back to the first 88
+ * characters of `extractedText` when OCR pulled no structured field out
+ * of the report. That is the hospital letterhead on any failed parse,
+ * and it is not a display-only problem: a non-empty summary passes
+ * `hasMeaningfulValue`, so the slot goes `available: true` and the
+ * anesthesia card prints it under 「最近肺功能」 — the one line on that
+ * card meant to stop an unassessed patient reaching general anesthesia.
+ * An anesthetist reading a hospital name in that position has no way to
+ * tell it apart from a reading.
+ */
+describe('OCR 没读出结构化字段时，槽位不能拿报告信头顶上 [麻醉卡]', () => {
+  const LETTERHEAD =
+    '××市第一人民医院 检验科 报告单 门诊号 0001234 送检医师 张×× 采样时间 2026-03-02 打印时间 2026-03-03';
+
+  const unparsedDoc = (documentType: string) => ({
+    id: `d-${documentType}`,
+    documentType,
+    title: null,
+    fileName: 'scan.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 1,
+    storageUri: 'local://scan',
+    status: 'parsed',
+    uploadedAt: '2026-03-03T00:00:00.000Z',
+    checksum: null,
+    submissionId: null,
+    // Exactly the shape a failed parse leaves behind: text came out of
+    // OCR, no field did.
+    ocrPayload: { extractedText: LETTERHEAD },
+  });
+
+  const slots = [
+    ['respiratory', 'pulmonary_function'],
+    ['cardiac', 'ecg'],
+    ['blood', 'biochemistry'],
+  ] as const;
+
+  it.each(slots)('%s：摘要里不出现信头原文', (key, documentType) => {
+    const item = itemFor(base({ documents: [unparsedDoc(documentType)] } as never), key);
+    expect(item?.summary).not.toContain('医院');
+    expect(item?.summary).not.toContain('门诊号');
+    expect(item?.summary).toContain('暂无');
+  });
+
+  it.each(slots)('%s：槽位保持 available=false —— 麻醉卡据此说「未做过或未上传」', (key, type) => {
+    // buildAnesthesiaCard falls back to 未做过或未上传 on exactly this
+    // flag. If a sentinel ever stops starting with 暂无,
+    // hasMeaningfulValue flips it back to true and the card starts
+    // printing the sentinel as if it were a finding.
+    expect(itemFor(base({ documents: [unparsedDoc(type)] } as never), key)?.available).toBe(false);
+  });
+
+  it('信头也不能从 markdown 导出的系统监测一节漏出去', () => {
+    const { markdown } = buildClinicalPassportExport(
+      buildClinicalPassportSummary(
+        base({
+          documents: slots.map(([, documentType]) => unparsedDoc(documentType)),
+        } as never),
+      ),
+    );
+    // Scoped to 系统监测 on purpose. The 最近来源 timeline still quotes
+    // `extractedText` — there it is captioned as「你上传的这份报告长这样」
+    // under a 报告 tag, not offered as a reading, and it is not what the
+    // anesthesia card reads.
+    const monitoringSection = markdown.split('## 系统监测')[1]?.split('\n## ')[0] ?? '';
+    expect(monitoringSection).not.toBe('');
+    expect(monitoringSection).not.toContain('××市第一人民医院');
+  });
+
+  it('真读出结构化字段时照常显示', () => {
+    // The guard is 「no structured field」, not 「no document」 —
+    // a parsed report still has to reach the card.
+    const parsed = {
+      ...unparsedDoc('pulmonary_function'),
+      ocrPayload: { extractedText: LETTERHEAD, fields: { fvcPredPct: 'FVC 78%' } },
+    };
+    const item = itemFor(base({ documents: [parsed] } as never), 'respiratory');
+    expect(item?.available).toBe(true);
+    expect(item?.summary).toContain('FVC 78%');
+  });
+});
+
 describe('空面板的措辞', () => {
   it('不说「仍缺核心监测」', () => {
     // Of the three slots only the pulmonary baseline is expected of

@@ -37,7 +37,7 @@ import { VISIT_PREP_NOTE_KEY } from '../../lib/draft-keys';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import type { BodyRegionMap } from '../../lib/clinical-visuals';
 import { buildClinicalPassportPdfHtml } from '../../lib/clinical-passport-pdf';
-import { buildAnesthesiaCard } from '../../lib/anesthesia-card';
+import { buildAnesthesiaCard, type AnesthesiaCardModel } from '../../lib/anesthesia-card';
 import { renderAnesthesiaCardPng, type RenderedCard } from '../../lib/anesthesia-card-image';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import { formatDateLabel } from '../../lib/clinical-visuals';
@@ -128,7 +128,10 @@ const ClinicalPassportScreen = () => {
       // The card embeds the patient's latest FVC and diagnosis state.
       // Keeping a previously rendered one after a reload would hand an
       // anesthetist a stale reading with a current-looking date on it.
+      // Both carriers, or the text layer keeps saying what the image no
+      // longer does.
       setAnesthesiaCard(null);
+      setAnesthesiaModel(null);
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '无法获取临床护照数据';
       setErrorMessage(message);
@@ -377,6 +380,32 @@ const ClinicalPassportScreen = () => {
     [passport?.diagnosis.freshness.tone],
   );
 
+  /**
+   * Whether the diagnosis block below is showing evidence or a claim.
+   *
+   * The API has carried `confirmation` for a while and the PDF honours
+   * it; this screen did not read it at all, so 基因类型 and 诊断日期 were
+   * set in the same 16.5pt/700/tabular-nums metric type whether they
+   * came out of a genetics report or out of a free-text box on the
+   * baseline form — under a heading that said 证据摘要. Typography is
+   * not decoration here: a well-set number reads as a measurement.
+   */
+  const diagnosisConfirmed = passport?.diagnosis.confirmation === 'genetic';
+  /**
+   * The one sentence saying so, taken from the summary card rather than
+   * written again. `summaryCards` already computes the wording for all
+   * three states from the same `confirmation` value, and a second
+   * sentence for the same fact is a second thing to keep in step.
+   */
+  const diagnosisNotice = useMemo(() => {
+    if (!passport || passport.diagnosis.confirmation === 'genetic') return null;
+    return passport.summaryCards.find((card) => card.key === 'diagnosis')?.summary ?? null;
+  }, [passport]);
+  // Not amber, and not a fourth block of it. Amber in this product means
+  // exactly one thing — not genetically confirmed — and it is already
+  // spent on the banner of the PDF this screen exports.
+  const diagnosisValueStyle = diagnosisConfirmed ? styles.infoValue : styles.infoValueSelfReported;
+
   const heroMetrics = useMemo(() => {
     if (!passport) return [];
     const metrics = passport.metrics.filter((item) => item.label !== '肌力组数');
@@ -403,17 +432,38 @@ const ClinicalPassportScreen = () => {
     [passport],
   );
   const [anesthesiaCard, setAnesthesiaCard] = useState<RenderedCard | null>(null);
+  /**
+   * The same model the PNG is drawn from, kept so it can also be
+   * rendered as text.
+   *
+   * Until this existed the card's clinical content lived in the app as
+   * pixels only: a screen reader reached the image and got the card's
+   * *name*, not 「避免琥珀胆碱」; the text did not reflow at 200%; and
+   * nothing on it could be copied into WeChat to send the surgical team
+   * before the day of the operation. The image is the convenience — you
+   * hold up a phone, or long-press to save it — not the only path to
+   * the content.
+   */
+  const [anesthesiaModel, setAnesthesiaModel] = useState<AnesthesiaCardModel | null>(null);
   const [anesthesiaCardError, setAnesthesiaCardError] = useState<string | null>(null);
 
   const handleGenerateAnesthesiaCard = () => {
     if (!passport) return;
     setAnesthesiaCardError(null);
+    const model = buildAnesthesiaCard(passport, new Date());
+    // Text first, and independent of the canvas: one model, two
+    // carriers, and the carrier that can fail is the picture.
+    setAnesthesiaModel(model);
     // Canvas only exists on web, and this app reaches patients as a
-    // web export. Say so plainly rather than leaving a button that
-    // does nothing when it is opened in the native shell.
-    const rendered = renderAnesthesiaCardPng(buildAnesthesiaCard(passport, new Date()));
+    // web export. On the native shell there is no image — but the
+    // clinical content is on screen either way now, so this says what
+    // is missing instead of reading as a dead button.
+    const rendered = renderAnesthesiaCardPng(model);
     if (!rendered) {
-      setAnesthesiaCardError('这台设备上暂时无法生成图片，请在浏览器里打开本页面后重试。');
+      setAnesthesiaCard(null);
+      setAnesthesiaCardError(
+        '这台设备上生成不了图片，下面的文字版内容完全一样，可以直接给麻醉医师看，或者复制发给手术团队。',
+      );
       return;
     }
     setAnesthesiaCard(rendered);
@@ -691,31 +741,45 @@ const ClinicalPassportScreen = () => {
                     </View>
                   </View>
 
+                  {/* Above the values, because it is about them and a
+                      reader who meets it afterwards has already read
+                      them as results. */}
+                  {diagnosisNotice ? (
+                    <View style={styles.diagnosisNotice}>
+                      <Text style={styles.diagnosisNoticeText}>{diagnosisNotice}</Text>
+                    </View>
+                  ) : null}
+
                   <View style={styles.infoGrid}>
+                    {/* The passport ID keeps metric type in every state:
+                        it is generated by this system, not claimed by
+                        anyone. */}
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>临床护照 ID</Text>
                       <Text style={styles.infoValue}>{passport.passportId}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>基因类型</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.geneticType}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.geneticType}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>D4Z4 重复数</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.d4z4Repeats}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.d4z4Repeats}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>甲基化值</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.methylationValue}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.methylationValue}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>诊断日期</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.diagnosisDate}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.diagnosisDate}</Text>
                     </View>
                   </View>
 
                   <View style={styles.noteCard}>
-                    <Text style={styles.noteTitle}>证据摘要</Text>
+                    <Text style={styles.noteTitle}>
+                      {diagnosisConfirmed ? '证据摘要' : '本人填写的诊断信息'}
+                    </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
                   </View>
                 </View>
@@ -949,22 +1013,87 @@ const ClinicalPassportScreen = () => {
                         { aspectRatio: anesthesiaCard.width / anesthesiaCard.height },
                       ]}
                       resizeMode="contain"
-                      accessibilityLabel="FSHD 麻醉注意事项卡"
+                      // The text below carries the same content, so the
+                      // label says which of the two this is rather than
+                      // standing in for content a screen reader can now
+                      // actually read.
+                      accessibilityLabel="FSHD 麻醉注意事项卡图片，内容与下方文字相同"
                     />
                     <Text style={styles.cardSubtitle}>长按图片即可保存到手机相册。</Text>
                   </>
-                ) : (
+                ) : null}
+
+                {/* Reappears when the text landed but the picture did
+                    not: setting the model unconditionally (correctly —
+                    the clinical content must not depend on canvas)
+                    otherwise took the button away with it, leaving no
+                    second attempt short of reloading the page. */}
+                {anesthesiaModel && anesthesiaCard ? null : (
                   <Button
-                    label="生成麻醉卡"
+                    label={anesthesiaModel ? '再试一次生成图片' : '生成麻醉卡'}
                     icon="image"
                     variant="tinted"
                     fullWidth
-                    accessibilityHint="生成一张可保存的图片，供手术前给麻醉医师查看"
+                    accessibilityHint="生成一张可保存的图片和一份可复制的文字版，供手术前给麻醉医师查看"
                     onPress={handleGenerateAnesthesiaCard}
                   />
                 )}
                 {anesthesiaCardError ? (
                   <Text style={styles.cardSubtitle}>{anesthesiaCardError}</Text>
+                ) : null}
+
+                {/* Same model as the PNG, as text. Not a caption for the
+                    picture and not a summary of it — the whole card, so
+                    that a screen reader, a 200% text size and a copy into
+                    WeChat all reach the same clinical content the image
+                    carries. Every Text here is `selectable` for exactly
+                    the last of those: sending it to the surgical team in
+                    advance is the one use an image cannot serve. */}
+                {anesthesiaModel ? (
+                  <View style={styles.anesthesiaTextBlock}>
+                    <Text style={styles.anesthesiaTextHint}>
+                      下面是同一张卡的文字版，内容与图片一致，可长按选中复制，发给手术或麻醉团队。
+                    </Text>
+                    <Text style={styles.anesthesiaTextTitle} selectable>
+                      {anesthesiaModel.title}
+                    </Text>
+                    <Text style={styles.anesthesiaTextName} selectable>
+                      {anesthesiaModel.patientName}
+                    </Text>
+                    {anesthesiaModel.patientLines.map((line, index) => (
+                      <Text
+                        key={`patient-${index}`}
+                        style={styles.anesthesiaTextPatient}
+                        selectable
+                      >
+                        {line}
+                      </Text>
+                    ))}
+                    {anesthesiaModel.sections.map((section, sectionIndex) => (
+                      <View key={`section-${sectionIndex}`} style={styles.anesthesiaTextSection}>
+                        <Text style={styles.anesthesiaTextHeading} selectable>
+                          {section.title}
+                        </Text>
+                        {section.lines.map((line, lineIndex) => (
+                          <Text
+                            key={`line-${sectionIndex}-${lineIndex}`}
+                            style={styles.anesthesiaTextLine}
+                            selectable
+                          >
+                            {`· ${line}`}
+                          </Text>
+                        ))}
+                      </View>
+                    ))}
+                    <Text style={styles.anesthesiaTextFine} selectable>
+                      {anesthesiaModel.disclaimer}
+                    </Text>
+                    {anesthesiaModel.sources.map((source, index) => (
+                      <Text key={`source-${index}`} style={styles.anesthesiaTextFine} selectable>
+                        {source}
+                      </Text>
+                    ))}
+                  </View>
                 ) : null}
               </View>
             </>
