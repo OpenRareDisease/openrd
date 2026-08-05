@@ -282,6 +282,20 @@ const SettingsScreen = () => {
           />
         </ListGroup>
 
+        {/* Its own group, above 探索 · 即将上线 and visually unlike it.
+            This page is finished and sourced; putting it next to the
+            placeholders would teach patients to read a chevron here as
+            「大概又是个空页面」, which is what those rows have already
+            trained them to expect. */}
+        <ListGroup title="了解 FSHD">
+          <Row
+            icon="dna"
+            label="遗传与生育"
+            detail="遗传概率、三代试管的限制、怀孕会发生什么"
+            onPress={() => router.push('/p-genetics_family')}
+          />
+        </ListGroup>
+
         <ListGroup title="应用设置">
           <Row
             icon="shield-halved"
