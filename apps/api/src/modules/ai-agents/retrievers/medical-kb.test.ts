@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
-import { MedicalKbRetriever, apparatusScore, isDamagedExtraction } from './medical-kb.js';
+import {
+  MedicalKbRetriever,
+  apparatusScore,
+  isDamagedExtraction,
+  stripIngestLabel,
+  isNavigationBoilerplate,
+} from './medical-kb.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -298,5 +304,50 @@ describe('over-fetch, trim and dedup arithmetic', () => {
     const texts = result.chunks.map((c) => c.content);
     expect(new Set(texts).size).toBe(texts.length);
     expect(texts).toHaveLength(3);
+  });
+});
+
+describe('过滤器不得凭入库标注删掉文档', () => {
+  /**
+   * 这一组守的是一整类 bug，不是一个 bug。
+   *
+   * 入库时每块前面会加 `[section.label]`（kb-ingest.py:328），9594 块
+   * 里有 7448 块带着它。过滤器原本连这一行一起判，于是一个不走运的
+   * 标题就能把整份文档从语料里抹掉——实测 112 块、40 个文件，其中
+   * 三份被清零：给医生的转诊名单、社区简介、辅具目录修订说明。
+   * 《全球范围内FSHD药物研究进展汇总》丢掉全部 39 块，因为抓取横幅被
+   * 加在了每一块前面——连同里面真实的 NCT 编号和招募状态。
+   *
+   * 剥掉标注之后只剩 1 块被丢。
+   */
+  it('剥掉 [page N] 之后正文照常留下', () => {
+    expect(stripIngestLabel('[page 92]\n患者应在确诊后接受基线肺功能评估。')).toBe(
+      '患者应在确诊后接受基线肺功能评估。',
+    );
+  });
+
+  it('标题里带「目录」不该让正文陪葬', () => {
+    // 《中国康复辅助器具目录（2023年版）》——文件名里的词，不是版式垃圾
+    const chunk =
+      '[《中国康复辅助器具目录（2023年版）》修订说明]\n本次修订新增了上肢辅具类目，并调整了申领流程。';
+    expect(stripIngestLabel(chunk)).not.toContain('目录（2023');
+    expect(isNavigationBoilerplate(stripIngestLabel(chunk))).toBe(false);
+  });
+
+  it('抓取横幅被前置时，真实试验数据要留下', () => {
+    const chunk =
+      '[Search for: FSHD, Recruiting studies | List Results | ClinicalTrials.gov]\n' +
+      'NCT05902884 招聘 面肩肱型肌营养不良症 尼斯大学中心医院 介入性研究';
+    expect(isNavigationBoilerplate(stripIngestLabel(chunk))).toBe(false);
+  });
+
+  it('整段真的是导航块时仍然丢弃', () => {
+    expect(isNavigationBoilerplate('上一篇\n下一篇\n责任编辑：某某\n点击阅读')).toBe(true);
+  });
+
+  it('一句话里提到一次版式词不算导航块', () => {
+    expect(
+      isNavigationBoilerplate('我们在这一篇里整理了辅具申领的目录和流程，供病友参考使用。'),
+    ).toBe(false);
   });
 });

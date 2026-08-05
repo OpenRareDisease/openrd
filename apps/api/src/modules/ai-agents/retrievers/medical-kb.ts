@@ -52,12 +52,52 @@ export interface MedicalKbRetrieverOptions {
   };
 }
 
-/** Patterns the legacy retrieval flow used to drop boilerplate
- *  chunks coming from public-channel scrapes. We keep an extra
- *  defence here so any chunks the KB service does forward stay out
- *  of the orchestrator's context. */
-const JUNK_PATTERN =
-  /目录|上一篇|下一篇|连载|排版|撰文|责任编辑|点击阅读|更多内容|病友故事\s*·\s*目录|社区简介|康复医师网络|List Results \| ClinicalTrials|Search for:.*Recruiting studies/;
+/**
+ * WeChat article furniture — the navigation and credits around a piece
+ * rather than the piece.
+ *
+ * Judged by DENSITY, not by presence, for the same reason
+ * `apparatusScore` and `DAMAGED_RATIO` below are: a paragraph that
+ * mentions 目录 is a paragraph. This filter used to test presence
+ * anywhere in the chunk and it cost real content — measured against
+ * the 9,594-chunk corpus, it silently dropped 72 chunks across 39
+ * files and emptied three files completely:
+ *
+ *   FSHD康复医师网络.docx            — the referral list for doctors
+ *   FSHD青年路社区简介.docx           — who this community is
+ *   《中国康复辅助器具目录（2023年版）》修订说明.docx
+ *
+ * and took 4 of 6 chunks out of each part of the patient autobiography
+ *《不管如何，你得长大》连载1-4. Three of the patterns were not
+ * boilerplate at all — 连载, 社区简介 and 康复医师网络 are the TITLES
+ * of documents someone curated on purpose. They are gone from this
+ * list; a filter must never be able to name a document out of the
+ * corpus.
+ *
+ * What remains is genuine furniture, and it only wins when it
+ * dominates: these markers appear on their own short lines, so a chunk
+ * that is mostly them is a navigation block, and a chunk that mentions
+ * one in a sentence is prose.
+ */
+const FURNITURE_PATTERN =
+  /^\s*(目录|上一篇|下一篇|排版|撰文|责任编辑|点击阅读|更多内容|阅读原文|扫码关注)\s*[:：]?\s*.{0,24}$/;
+
+/** Scraped ClinicalTrials.gov result pages — list chrome, never prose,
+ *  so presence is the right test for these two. */
+const SCRAPE_PATTERN = /List Results \| ClinicalTrials|Search for:.*Recruiting studies/;
+
+/** Majority of non-empty lines being furniture. A navigation block is
+ *  almost entirely furniture; an article that ends with one credit
+ *  line is not. */
+const FURNITURE_RATIO = 0.5;
+
+export const isNavigationBoilerplate = (text: string): boolean => {
+  if (SCRAPE_PATTERN.test(text)) return true;
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return true;
+  const furniture = lines.filter((line) => FURNITURE_PATTERN.test(line)).length;
+  return furniture / lines.length > FURNITURE_RATIO;
+};
 
 /**
  * Citation apparatus — the machinery *around* a paper rather than what
@@ -162,13 +202,39 @@ export const isDamagedExtraction = (text: string): boolean => {
   return artifactChars / text.length >= DAMAGED_RATIO;
 };
 
-const isJunk = (text: string): boolean =>
-  !text ||
-  text.trim().length < 30 ||
-  JUNK_PATTERN.test(text) ||
-  isTitleFragment(text) ||
-  isDamagedExtraction(text) ||
-  apparatusScore(text) >= APPARATUS_LIMIT;
+/**
+ * Remove the `[label]` line the ingest pipeline prepends to every chunk
+ * (scripts/kb-ingest.py:328 — `tagged = f"[{section.label}]\n{...}"`).
+ *
+ * 7,448 of the corpus's 9,594 chunks carry one. It is the pipeline's own
+ * annotation — usually `[page 92]`, sometimes the source page's title —
+ * and nothing downstream should judge content by it. Every filter below
+ * was reading it as though the document itself said it, which is how a
+ * single unlucky section label could empty a whole file out of the
+ * corpus:《中国康复辅助器具目录》lost every chunk to the word 目录 in
+ * its own heading, and the ClinicalTrials listing lost all 40 to the
+ * scrape banner prepended to each one — including the chunks carrying
+ * real NCT numbers, sponsors and recruiting status.
+ *
+ * Strip it once, here, before any judgement. A filter that can name a
+ * document out of the corpus by its label is not a filter, it is a
+ * delete button with bad aim.
+ */
+const INGEST_LABEL = /^\s*\[[^\]\n]{0,120}\]\s*\n?/;
+
+export const stripIngestLabel = (text: string): string => (text ?? '').replace(INGEST_LABEL, '');
+
+const isJunk = (raw: string): boolean => {
+  const text = stripIngestLabel(raw);
+  return (
+    !text ||
+    text.trim().length < 30 ||
+    isNavigationBoilerplate(text) ||
+    isTitleFragment(text) ||
+    isDamagedExtraction(text) ||
+    apparatusScore(text) >= APPARATUS_LIMIT
+  );
+};
 
 const coerceDistance = (raw: unknown): number | null => {
   if (raw === null || raw === undefined) return null;

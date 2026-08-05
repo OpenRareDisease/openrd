@@ -33,23 +33,59 @@ logger = logging.getLogger("fshd_kb")
 # -----------------------------
 # Junk filters (tune as needed)
 # -----------------------------
-JUNK_PATTERNS = [
-    r"目录",
-    r"上一篇",
-    r"下一篇",
-    r"连载",
-    r"撰文",
-    r"排版",
-    r"责任编辑",
-    r"点击阅读",
-    r"更多内容",
-    r"病友故事\s*·\s*目录",
-    r"社区简介",
-    r"我们在路上",
-    r"不是一个人",
-    r"康复医师网络",
-]
-JUNK_RE = re.compile("|".join(JUNK_PATTERNS))
+# 去掉入库时加在每一块前面的 [label] 行
+# （scripts/kb-ingest.py: tagged = f"[{section.label}]\n{raw.content}"）。
+#
+# 9594 块语料里有 7448 块带着它。那是流水线自己的标注 —— 多数是
+# [page 92]，有时是来源页标题 —— 下游任何过滤都不该拿它当正文判。
+# 下面每一条过滤原本都在读它，于是一个不走运的 section label 就能把
+# 整份文档从语料里抹掉：《中国康复辅助器具目录》因为自己标题里的
+# 「目录」丢光，ClinicalTrials 列表页因为每块前缀里的抓取横幅丢掉全部
+# 40 块 —— 连带里面真实的 NCT 编号、申办方和招募状态。
+#
+# 判之前先剥一次。一个能凭标注把整份文档删掉的过滤器不是过滤器，
+# 是一个瞄不准的删除键。
+INGEST_LABEL_RE = re.compile(r"^\s*\[[^\]\n]{0,120}\]\s*\n?")
+
+
+def _strip_ingest_label(text: str) -> str:
+    return INGEST_LABEL_RE.sub("", text or "")
+
+
+# 微信公众号版式家具 —— 文章周围的导航和署名，不是文章本身。
+#
+# 按密度判，不按出现判。旧版本对整段正文做子串匹配，代价是实测在
+# 9594 块语料上静默删掉 72 块、波及 39 个文件，其中三个文件被整份清零：
+#
+#   FSHD康复医师网络.docx              给医生的转诊名单
+#   FSHD青年路社区简介.docx             这个社区是谁
+#   《中国康复辅助器具目录（2023年版）》修订说明.docx
+#
+# 并且从患友自传《不管如何，你得长大》连载1-4 每一集里拿走 4/6 到 4/8。
+#
+# 其中三条根本不是版式家具 —— 连载、社区简介、康复医师网络 是有人特意
+# 策展进来的文档标题。它们已从列表移除：过滤器不该有能力按名字把一份
+# 文档从语料里删掉。
+#
+# 留下的是真家具，而且只在它占多数时才生效：这些标记单独成短行，一段
+# 几乎全是它们的是导航块，一句话里提到一次的是正文。
+FURNITURE_RE = re.compile(
+    r"^\s*(目录|上一篇|下一篇|排版|撰文|责任编辑|点击阅读|更多内容|阅读原文|扫码关注)\s*[:：]?\s*.{0,24}$"
+)
+# 抓取下来的 ClinicalTrials.gov 结果页 —— 永远是列表外壳不是正文，
+# 这两条用出现判是对的。
+SCRAPE_RE = re.compile(r"List Results \| ClinicalTrials|Search for:.*Recruiting studies")
+FURNITURE_RATIO = 0.5
+
+
+def _is_navigation_boilerplate(text: str) -> bool:
+    if SCRAPE_RE.search(text or ""):
+        return True
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return True
+    furniture = sum(1 for ln in lines if FURNITURE_RE.match(ln))
+    return furniture / len(lines) > FURNITURE_RATIO
 
 
 def _norm_text(t: str) -> str:
@@ -66,10 +102,12 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(_norm_text(text).encode("utf-8")).hexdigest()[:32]
 
 
-def _is_junk(text: str) -> bool:
+def _is_junk(raw: str) -> bool:
+    # 先剥掉入库标注再判 —— 见 _strip_ingest_label 的说明。
+    text = _strip_ingest_label(raw)
     if not text or len(text.strip()) < 30:
         return True
-    return bool(JUNK_RE.search(text))
+    return bool(_is_navigation_boilerplate(text))
 
 
 def _safe_int(x: Any, default: int) -> int:
