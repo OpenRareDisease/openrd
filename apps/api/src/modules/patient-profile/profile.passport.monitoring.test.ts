@@ -111,6 +111,17 @@ describe('心脏：不向无症状患者索要检查 [AAN Level C]', () => {
     expect(note).toContain('胸痛');
   });
 
+  it('必须写明术前是例外', () => {
+    // Routine surveillance and preoperative evaluation are separate
+    // questions. Mani et al. (AANA J, Oct 2025) call ECG and echo
+    // essential parts of the preoperative workup in FSHD — incomplete
+    // RBBB in ~30%, mitral valve prolapse in ~25%. A note that says
+    // only 「不需要常规」 is something a patient can hand to a pre-op
+    // clinic as grounds to skip the ECG.
+    const note = itemFor(base(), 'cardiac')?.note ?? '';
+    expect(note).toContain('手术前');
+  });
+
   it('说明跟着 markdown 导出走', () => {
     // 「心脏检查：暂无数据，缺失」 on its own reads as an overdue test.
     const { markdown } = buildClinicalPassportExport(buildClinicalPassportSummary(base()));

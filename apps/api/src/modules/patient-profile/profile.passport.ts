@@ -1161,7 +1161,16 @@ export const buildClinicalPassportSummary = (
       // A patient who does have palpitations needs to know to act; a
       // patient who doesn't needs to know they can stop worrying about
       // an annual echo. The old panel gave both of them the same nudge.
-      note: '没有症状的 FSHD 患者不需要常规做心电图或心脏超声 —— 这一点和 DMD 等其他肌营养不良不同。但如果出现胸痛、心悸或不寻常的气短，应该去做心脏评估。',
+      //
+      // The surgical clause is not a hedge. Routine surveillance and
+      // preoperative evaluation are different questions with different
+      // answers, and only the first one is 「not essential」: Mani et al.
+      // (AANA J, Oct 2025) call ECG and echo essential components of
+      // the preoperative workup in FSHD, on a background of incomplete
+      // RBBB in ~30% and mitral valve prolapse in ~25%. Without this
+      // sentence the note is something a patient could hand to a
+      // pre-op clinic as grounds to skip the ECG.
+      note: '没有症状的 FSHD 患者不需要常规做心电图或心脏超声 —— 这一点和 DMD 等其他肌营养不良不同。两种情况例外：出现胸痛、心悸或不寻常的气短时应该去做心脏评估；以及手术前 —— FSHD 的术前评估应当包括心电图和心脏超声。',
     }),
   ];
   const monitoringReady = monitoringItems.some((item) => item.available);

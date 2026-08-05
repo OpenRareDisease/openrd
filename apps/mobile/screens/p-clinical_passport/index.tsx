@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  Image,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -36,6 +37,8 @@ import { VISIT_PREP_NOTE_KEY } from '../../lib/draft-keys';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import type { BodyRegionMap } from '../../lib/clinical-visuals';
 import { buildClinicalPassportPdfHtml } from '../../lib/clinical-passport-pdf';
+import { buildAnesthesiaCard } from '../../lib/anesthesia-card';
+import { renderAnesthesiaCardPng, type RenderedCard } from '../../lib/anesthesia-card-image';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import { formatDateLabel } from '../../lib/clinical-visuals';
 
@@ -122,6 +125,10 @@ const ClinicalPassportScreen = () => {
       ]);
       setPassport(passportData);
       setProfile(profileData);
+      // The card embeds the patient's latest FVC and diagnosis state.
+      // Keeping a previously rendered one after a reload would hand an
+      // anesthetist a stale reading with a current-looking date on it.
+      setAnesthesiaCard(null);
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '无法获取临床护照数据';
       setErrorMessage(message);
@@ -395,6 +402,23 @@ const ClinicalPassportScreen = () => {
     () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'record'),
     [passport],
   );
+  const [anesthesiaCard, setAnesthesiaCard] = useState<RenderedCard | null>(null);
+  const [anesthesiaCardError, setAnesthesiaCardError] = useState<string | null>(null);
+
+  const handleGenerateAnesthesiaCard = () => {
+    if (!passport) return;
+    setAnesthesiaCardError(null);
+    // Canvas only exists on web, and this app reaches patients as a
+    // web export. Say so plainly rather than leaving a button that
+    // does nothing when it is opened in the native shell.
+    const rendered = renderAnesthesiaCardPng(buildAnesthesiaCard(passport, new Date()));
+    if (!rendered) {
+      setAnesthesiaCardError('这台设备上暂时无法生成图片，请在浏览器里打开本页面后重试。');
+      return;
+    }
+    setAnesthesiaCard(rendered);
+  };
+
   const clinicalSteps = useMemo(
     () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'clinical'),
     [passport],
@@ -896,6 +920,52 @@ const ClinicalPassportScreen = () => {
                   accessibilityHint="导出临床护照 PDF，可保存、打印或发送给医生"
                   onPress={handleExport}
                 />
+              </View>
+
+              {/* A picture, not a PDF and not a print dialog. This gets
+                  used by showing a phone to an anesthetist, or by
+                  having it in the photo roll where no network is
+                  needed. A lot of these patients open the site inside
+                  WeChat's browser, which has no print dialog and turns
+                  a PDF into a viewer they then have to escape. */}
+              <View style={styles.exportCard}>
+                <View style={styles.cardHeadingRow}>
+                  <View>
+                    <Text style={styles.cardTitle}>麻醉注意事项卡</Text>
+                    <Text style={styles.cardSubtitle}>
+                      要做手术或胃肠镜时给麻醉医师看。生成一张图片，长按可保存到相册。
+                    </Text>
+                  </View>
+                </View>
+
+                {anesthesiaCard ? (
+                  <>
+                    <Image
+                      source={{ uri: anesthesiaCard.uri }}
+                      // From the render, not a guess: the height falls
+                      // out of how the clinical text wraps.
+                      style={[
+                        styles.anesthesiaCardImage,
+                        { aspectRatio: anesthesiaCard.width / anesthesiaCard.height },
+                      ]}
+                      resizeMode="contain"
+                      accessibilityLabel="FSHD 麻醉注意事项卡"
+                    />
+                    <Text style={styles.cardSubtitle}>长按图片即可保存到手机相册。</Text>
+                  </>
+                ) : (
+                  <Button
+                    label="生成麻醉卡"
+                    icon="image"
+                    variant="tinted"
+                    fullWidth
+                    accessibilityHint="生成一张可保存的图片，供手术前给麻醉医师查看"
+                    onPress={handleGenerateAnesthesiaCard}
+                  />
+                )}
+                {anesthesiaCardError ? (
+                  <Text style={styles.cardSubtitle}>{anesthesiaCardError}</Text>
+                ) : null}
               </View>
             </>
           ) : null}

@@ -446,4 +446,15 @@ export default StyleSheet.create({
   exportCard: {
     ...sectionRule,
   },
+  anesthesiaCardImage: {
+    width: '100%',
+    // aspectRatio comes from the render at the call site — the card's
+    // height depends on how the clinical text wraps, and a fixed guess
+    // letterboxes it and shrinks type meant to be read across a
+    // pre-op desk.
+    borderRadius: 10,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    marginBottom: 10,
+  },
 });
