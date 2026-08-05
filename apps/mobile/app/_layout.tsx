@@ -1,7 +1,8 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { APP_TITLE } from '../lib/app-identity';
 import { StatusBar } from 'expo-status-bar';
-import { LogBox } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 import { useEffect } from 'react';
 import { AuthProvider } from '../contexts/AuthContext';
 import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
@@ -79,6 +80,25 @@ function AppNavigator() {
   // there was no "only our own host" about it. Do not reintroduce a
   // parent-frame channel: nothing in this app is embedded, and route
   // params here are medical identifiers.
+
+  // Keep the document title the product's name.
+  //
+  // +html.tsx serves the right <title>, and og:title (what a link
+  // forwarded into a patient group renders from) comes from that static
+  // HTML and is correct regardless. But react-navigation syncs
+  // document.title from the focused screen's `options.title` after
+  // hydration, and those options carry developer labels
+  // ('底部导航栏', '登录注册页'). Measured in a browser: the result is an
+  // empty title bar. WeChat's in-app browser renders that bar, and an
+  // empty one reads as a page that failed to load — on the one screen a
+  // patient reaches by tapping a link someone sent them.
+  //
+  // Keyed on `segments` so it re-applies after each navigation rather
+  // than racing the first one.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    if (document.title !== APP_TITLE) document.title = APP_TITLE;
+  }, [segments]);
 
   useEffect(() => {
     if (!isHydrated || !navigationState?.key) {

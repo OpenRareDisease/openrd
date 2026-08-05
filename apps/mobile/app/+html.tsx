@@ -1,6 +1,14 @@
 import { ScrollViewStyleReset } from 'expo-router/html';
 import type { PropsWithChildren } from 'react';
 
+import {
+  APP_DESCRIPTION,
+  APP_LANG,
+  APP_NAME,
+  APP_THEME_COLOR,
+  APP_TITLE,
+} from '../lib/app-identity';
+
 /**
  * The document shell every web route is rendered into.
  *
@@ -34,26 +42,19 @@ import type { PropsWithChildren } from 'react';
  * they drift apart.
  */
 
-/** The product's name to a patient. NOT the repository name. */
-export const APP_NAME = '肌愈通';
-
-/** Document title. Name first, because WeChat's title bar truncates
- *  hard and the name is the part that has to survive. */
-export const APP_TITLE = '肌愈通 — FSHD 患者自我管理';
-
-/** What a forwarded link says about itself in a group chat. Describes
- *  only what the app actually does; no claim about outcomes. */
-export const APP_DESCRIPTION =
-  '面向面肩肱型肌营养不良（FSHD）患者的自我管理平台：记录症状与肌力变化，整理化验单和检查报告，查阅带出处的疾病知识。';
-
-/** BCP 47: Simplified Chinese, mainland. */
-export const APP_LANG = 'zh-Hans-CN';
-
-/** Matches COLOR.paper in lib/design.ts. Not imported from there: this
- *  module is rendered by the static-export step and pulling in the
- *  design system (and its react-native-web dependencies) to read one
- *  hex string would drag the whole token file into the HTML build. */
-export const APP_THEME_COLOR = '#FBF8F3';
+/**
+ * Identity constants live in `lib/app-identity.ts`, not here: this file
+ * is only evaluated by the export/SSR step, so anything defined here is
+ * `undefined` to the client bundle. Re-exported so the shell and the
+ * runtime cannot drift.
+ */
+export {
+  APP_NAME,
+  APP_TITLE,
+  APP_DESCRIPTION,
+  APP_LANG,
+  APP_THEME_COLOR,
+} from '../lib/app-identity';
 
 export default function Root({ children }: PropsWithChildren) {
   return (

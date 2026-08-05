@@ -138,3 +138,44 @@ describe('scroll behaviour', () => {
     expect(render().root.findAllByType(ScrollViewStyleReset)).toHaveLength(1);
   });
 });
+
+/**
+ * The identity constants must live in a module the CLIENT bundle can
+ * reach.
+ *
+ * `app/+html.tsx` is evaluated only by the export / SSR step. A first
+ * attempt defined APP_TITLE there and imported it into the root layout
+ * to re-apply the document title after each navigation; it typechecked,
+ * every test passed, and the browser tab said the literal string
+ * "undefined" — because at runtime the import resolved to nothing.
+ *
+ * This is the platform-shaped hole that no amount of reading catches,
+ * so it gets a test instead of a comment.
+ */
+describe('身份常量必须在客户端 bundle 里拿得到', () => {
+  const read = (p: string) =>
+    require('fs').readFileSync(require('path').join(__dirname, '..', p), 'utf8');
+
+  it('常量定义在 lib/app-identity.ts，不在 +html.tsx', () => {
+    expect(read('lib/app-identity.ts')).toContain('export const APP_TITLE');
+    // +html.tsx may re-export them, but must not be the definition.
+    expect(read('app/+html.tsx')).not.toMatch(/export const APP_TITLE\s*=/);
+  });
+
+  it('根布局不从 +html 引常量', () => {
+    // Importing from an export-only module is the exact failure above,
+    // and it fails silently: undefined, not a crash.
+    expect(read('app/_layout.tsx')).not.toMatch(/from ['"]\.\/\+html['"]/);
+    expect(read('app/_layout.tsx')).toContain('app-identity');
+  });
+
+  it('根布局在导航之后把标题写回来', () => {
+    // react-navigation syncs document.title from each screen's
+    // `options.title`, and those carry developer labels
+    // ('底部导航栏', '登录注册页'). Without this the WeChat title bar
+    // ends up empty on the one screen reached by tapping a shared link.
+    const layout = read('app/_layout.tsx');
+    expect(layout).toContain('document.title = APP_TITLE');
+    expect(layout).toMatch(/\[segments\]/);
+  });
+});
