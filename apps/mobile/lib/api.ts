@@ -653,11 +653,19 @@ export interface ClinicalPassportSummary {
       latestDate: string | null;
       latestDocumentId: string | null;
       freshness: PassportFreshness;
+      /** Whether this test is indicated at all — see the API's
+       *  PassportMonitoringItemDTO. Not every slot is expected of every
+       *  patient, and the panel used to imply otherwise. */
+      note?: string;
     }>;
   };
   nextSteps: Array<{
     title: string;
     description: string;
+    /** `record` completes the passport; `clinical` is something to
+     *  raise at a visit. They render in separate cards — see the API's
+     *  PassportNextStepDTO for why they must not be merged. */
+    kind: 'record' | 'clinical';
   }>;
   timeline: Array<{
     id: string;

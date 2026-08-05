@@ -131,6 +131,13 @@ export interface PassportMonitoringItemDTO {
   latestDate: string | null;
   latestDocumentId: string | null;
   freshness: PassportFreshnessDTO;
+  /**
+   * When a guideline says something about *whether* this test is
+   * indicated, it goes here. The panel previously implied all three
+   * slots were equally expected of everyone, which is how it ended up
+   * asking asymptomatic patients for echocardiograms.
+   */
+  note?: string;
 }
 
 export interface PassportMonitoringDTO {
@@ -141,6 +148,18 @@ export interface PassportMonitoringDTO {
 export interface PassportNextStepDTO {
   title: string;
   description: string;
+  /**
+   * `record` — something to upload or type in. Completes the passport.
+   * `clinical` — something to raise with a doctor. Does not.
+   *
+   * These were one undifferentiated list rendered under 「如果想让临床
+   * 护照更完整，可以优先补这些记录」, each with a warning triangle and a
+   * 「去数据录入补齐」 button at the bottom. Adding a guideline
+   * recommendation to that list turns 「问一次眼底检查」 into a
+   * data-entry chore pointing at an upload form — the recommendation
+   * survives the trip and its meaning does not.
+   */
+  kind: 'record' | 'clinical';
 }
 
 export interface PassportTimelineItemDTO {
@@ -595,7 +614,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
             : typeof respiratoryPayload?.extracted_text === 'string'
               ? respiratoryPayload.extracted_text
               : '',
-          '暂无呼吸监测数据',
+          '暂无肺功能数据',
         );
 
   const cardiacDoc =
@@ -619,7 +638,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
             : typeof cardiacPayload?.extracted_text === 'string'
               ? cardiacPayload.extracted_text
               : '',
-          '暂无心脏监测数据',
+          '暂无心脏检查数据',
         );
 
   const strengthDoc =
@@ -919,6 +938,7 @@ const buildMonitoringItem = (input: {
   summary: string;
   latestDate: string | null;
   latestDocumentId: string | null;
+  note?: string;
 }): PassportMonitoringItemDTO => ({
   key: input.key,
   title: input.title,
@@ -927,6 +947,7 @@ const buildMonitoringItem = (input: {
   latestDate: input.latestDate,
   latestDocumentId: input.latestDocumentId,
   freshness: getFreshness(input.latestDate),
+  ...(input.note ? { note: input.note } : {}),
 });
 
 const buildTimeline = (
@@ -996,6 +1017,44 @@ const buildTimeline = (
     .sort((a, b) => b.sortKey - a.sortKey)
     .slice(0, 6)
     .map((item) => item.value);
+};
+
+/**
+ * True only when the D4Z4 repeat count is unambiguously in the range the
+ * AAN/AANEM guideline calls a large deletion.
+ *
+ * The guideline supplies both the size and its repeat equivalent in one
+ * sentence — 「contracted D4Z4 allele of 10–20 kb or 1–4 repeats」 — so
+ * the threshold here is quoted, not converted by us.
+ *
+ * The input is OCR'd off a genetics report, so it arrives as free text:
+ *「3」,「3个」,「1-10」,「≤10」. A range or a comparison operator means we
+ * do not know the number, and this gates a recommendation to go see an
+ * ophthalmologist — so anything short of a single plain integer is
+ * treated as unknown rather than guessed at.
+ */
+export const isLargeD4Z4Deletion = (raw: string): boolean => {
+  const text = (raw ?? '').trim();
+  if (!text || text === '—') return false;
+  if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
+  const numbers = text.match(/\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length !== 1) return false;
+  const repeats = Number(numbers[0]);
+  // 0 repeats is not a viable FSHD1 allele; reading one means the
+  // extraction is wrong, not that the deletion is enormous.
+  return Number.isInteger(repeats) && repeats >= 1 && repeats <= 4;
+};
+
+/** Whole years old on the server clock, or null when no birth date is on file. */
+const ageInYears = (dateOfBirth: string | null): number | null => {
+  if (!dateOfBirth) return null;
+  const born = new Date(dateOfBirth);
+  if (Number.isNaN(born.getTime())) return null;
+  const now = new Date();
+  let age = now.getUTCFullYear() - born.getUTCFullYear();
+  const monthDelta = now.getUTCMonth() - born.getUTCMonth();
+  if (monthDelta < 0 || (monthDelta === 0 && now.getUTCDate() < born.getUTCDate())) age -= 1;
+  return age >= 0 && age < 130 ? age : null;
 };
 
 export const buildClinicalPassportSummary = (
@@ -1077,20 +1136,32 @@ export const buildClinicalPassportSummary = (
       summary: reportInsights.bloodSummary,
       latestDate: reportInsights.latestBloodDate,
       latestDocumentId: reportInsights.latestBloodDocumentId,
+      // No guideline in the corpus asks for serial CK in FSHD. It shows
+      // what you uploaded; it is not a progression measure.
+      note: 'CK 等指标常用于诊断阶段。目前没有指南建议靠定期抽血来追踪 FSHD 的进展 —— 这一栏展示的是你已上传的结果。',
     }),
     buildMonitoringItem({
       key: 'respiratory',
-      title: '呼吸监测',
+      title: '肺功能',
       summary: reportInsights.respiratorySummary,
       latestDate: reportInsights.latestRespiratoryDate,
       latestDocumentId: reportInsights.latestRespiratoryDocumentId,
+      // The one slot here that every FSHD patient is meant to have.
+      // Second sentence is the anesthesia case, which is the reason a
+      // patient with no symptoms might still need this on file.
+      note: '指南建议每位 FSHD 患者都做一次肺功能基线。另外，如果要做全身麻醉的手术，术前应先查一次 —— 呼吸肌受累可能没有任何症状。',
     }),
     buildMonitoringItem({
       key: 'cardiac',
-      title: '心脏监测',
+      title: '心脏检查',
       summary: reportInsights.cardiacSummary,
       latestDate: reportInsights.latestCardiacDate,
       latestDocumentId: reportInsights.latestCardiacDocumentId,
+      // AAN Level C, stated as a condition rather than a schedule.
+      // A patient who does have palpitations needs to know to act; a
+      // patient who doesn't needs to know they can stop worrying about
+      // an annual echo. The old panel gave both of them the same nudge.
+      note: '没有症状的 FSHD 患者不需要常规做心电图或心脏超声 —— 这一点和 DMD 等其他肌营养不良不同。但如果出现胸痛、心悸或不寻常的气短，应该去做心脏评估。',
     }),
   ];
   const monitoringReady = monitoringItems.some((item) => item.available);
@@ -1128,6 +1199,7 @@ export const buildClinicalPassportSummary = (
   if (!geneticallyConfirmed) {
     nextSteps.push({
       title: diagnosisClaimed ? '补充基因检测报告' : '补充基因或诊断依据',
+      kind: 'record',
       description: diagnosisClaimed
         ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
         : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
@@ -1136,25 +1208,74 @@ export const buildClinicalPassportSummary = (
   if (measurementScores.length === 0) {
     nextSteps.push({
       title: '补录结构化肌力',
+      kind: 'record',
       description: '当前运动功能主要依赖 OCR 摘要，建议直接录入肌群评分。',
     });
   }
   if (!imagingReady) {
     nextSteps.push({
       title: '上传 MRI 报告',
+      kind: 'record',
       description: '补齐 MRI 后，护照才能展示人体受累分布。',
     });
   }
+  // What follows is keyed to the AAN/AANEM 2015 evidence-based guideline
+  // (Evaluation, Diagnosis, and Management of FSHD) and cross-checked
+  // against the Dutch FSHD guideline (Spierziekten Nederland, 2018).
+  // Both are in the corpus under 02.临床管理与治疗. Changing any of these
+  // means reading them again — not reasoning from other dystrophies,
+  // where the answers are different.
   if (!hasMeaningfulValue(reportInsights.respiratorySummary)) {
     nextSteps.push({
-      title: '补充呼吸监测',
-      description: '建议纳入 FVC、FEV1 或肺功能摘要，形成长期随访闭环。',
+      title: '补充肺功能基线',
+      kind: 'clinical',
+      // Level B: baseline PFT on ALL patients. Repeat testing is where
+      // the condition lives — abnormal baseline, or severe proximal
+      // weakness / kyphoscoliosis / wheelchair dependence / comorbid
+      // lung or cardiac disease. The old copy promised「长期随访闭环」to
+      // everyone, which is the follow-up schedule of the risk group.
+      description:
+        '指南建议所有 FSHD 患者做一次肺功能基线（FVC / FEV1）。是否需要定期复查，取决于基线是否异常，以及有没有明显的近端无力、脊柱侧弯、轮椅依赖或其他肺部疾病 —— 由医生判断，不是每个人都要长期反复做。',
     });
   }
-  if (!hasMeaningfulValue(reportInsights.cardiacSummary)) {
+  // Cardiac is deliberately NOT requested. AAN Level C: 「routine cardiac
+  // screening is not essential in the absence of cardiac signs or
+  // symptoms」, and its clinical context calls routine ECG/echo
+  // 「unnecessary in patients with FSHD who are asymptomatic」. The 44-page
+  // Dutch guideline does not contain the word cardiac at all.
+  //
+  // This block used to tell every patient 「补齐 ECG、LVEF、QTc，避免系统
+  // 监测维度缺口」 and counted the absence as incomplete. These are
+  // out-of-pocket tests here, and the passport was manufacturing the
+  // gap it then asked them to close. FSHD is not DMD or myotonic
+  // dystrophy; carrying their surveillance schedule over is the error.
+  //
+  // Removing the nudge is only half of it — a patient who does have
+  // palpitations still has to be told to act. That version of the
+  // recommendation lives on the cardiac monitoring item's `note`, as a
+  // condition instead of a schedule.
+  if (isLargeD4Z4Deletion(reportInsights.d4z4Repeats)) {
     nextSteps.push({
-      title: '补充心脏监测',
-      description: '建议补齐 ECG、LVEF、QTc 等结果，避免系统监测维度缺口。',
+      title: '问一次眼底检查',
+      kind: 'clinical',
+      // Level B, and gated on exactly the group it applies to: large
+      // deletions. Exudative retinopathy (Coats disease) is rare in FSHD
+      // but concentrated in this group, and untreated it can cost
+      // vision that early treatment would have kept.
+      description: `你的 D4Z4 重复数为 ${reportInsights.d4z4Repeats}，属于指南所说的大片段缺失。这一组患者的视网膜血管病变风险高于其他患者，指南建议由有经验的眼科医生做一次散瞳间接检眼镜检查，之后的复查频率按第一次的结果定。这不是急事，但值得在下次就诊时主动提出来。`,
+    });
+  }
+  const age = ageInYears(profile.dateOfBirth);
+  if (age !== null && age <= 6) {
+    nextSteps.push({
+      title: '每年做一次听力筛查',
+      kind: 'clinical',
+      // Level B: screen all young children at diagnosis and yearly
+      // until they start school. The reason it is age-gated rather than
+      // universal: an adult notices their own hearing loss, an infant
+      // cannot, and undetected loss at this age delays language.
+      description:
+        '指南建议儿童患者在确诊时以及之后每年做一次听力筛查，直到上学。年幼的孩子不会主动说自己听不清，而这个年龄段漏掉的听力损失会影响语言发育。',
     });
   }
 
@@ -1207,9 +1328,14 @@ export const buildClinicalPassportSummary = (
       summary: monitoringReady
         ? monitoringItems
             .filter((item) => item.available)
-            .map((item) => item.title.replace('监测', ''))
+            .map((item) => item.title)
             .join(' / ')
-        : '呼吸、心脏和血检仍缺核心监测',
+        : // Not「仍缺核心监测」. Of the three slots below, only the
+          // pulmonary baseline is recommended for every FSHD patient;
+          // cardiac testing is explicitly not, and no guideline in the
+          // corpus asks for serial CK. An empty panel here means nothing
+          // has been uploaded yet — it does not mean tests are overdue.
+          '还没有上传过肺功能、心脏或血检报告',
       meta: `最近监测 ${formatDateLabel(
         [
           reportInsights.latestBloodDate,
@@ -1337,10 +1463,13 @@ export const buildClinicalPassportExport = (
     '',
     '## 系统监测',
     '',
-    ...summary.monitoring.items.map(
-      (item) =>
-        `- ${item.title}：${item.summary}（${item.latestDate ?? '无日期'}，${item.freshness.label}）`,
-    ),
+    // The note carries whether the test is indicated at all. Dropping it
+    // here would leave the markdown export saying「心脏检查：暂无数据，
+    // 缺失」with nothing to distinguish 'not done' from 'not needed'.
+    ...summary.monitoring.items.flatMap((item) => [
+      `- ${item.title}：${item.summary}（${item.latestDate ?? '无日期'}，${item.freshness.label}）`,
+      ...(item.note ? [`  - ${item.note}`] : []),
+    ]),
     '',
     '## 待补项',
     '',

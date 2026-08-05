@@ -388,6 +388,17 @@ const ClinicalPassportScreen = () => {
     () => buildLatestMriVisualization(profile?.documents ?? []),
     [profile],
   );
+  // Two lists, not one. 「补上传一份 MRI」 and 「问一次眼底检查」 are
+  // different kinds of instruction and the second one stops meaning
+  // what it says the moment it sits under a data-completeness heading.
+  const recordSteps = useMemo(
+    () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'record'),
+    [passport],
+  );
+  const clinicalSteps = useMemo(
+    () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'clinical'),
+    [passport],
+  );
   const passportMriRegions =
     Object.keys(passport?.imaging.bodyRegions ?? {}).length > 0
       ? ((passport?.imaging.bodyRegions ?? {}) as BodyRegionMap)
@@ -804,7 +815,7 @@ const ClinicalPassportScreen = () => {
                 </View>
 
                 <View style={styles.gapList}>
-                  {passport.nextSteps.length === 0 ? (
+                  {recordSteps.length === 0 ? (
                     <View style={styles.gapCard}>
                       <Text style={styles.gapTitle}>当前没有明显缺口</Text>
                       <Text style={styles.gapDescription}>
@@ -812,7 +823,7 @@ const ClinicalPassportScreen = () => {
                       </Text>
                     </View>
                   ) : (
-                    passport.nextSteps.map((step) => (
+                    recordSteps.map((step) => (
                       <View key={step.title} style={styles.gapCard}>
                         <View style={styles.gapTopRow}>
                           <Icon name="triangle-exclamation" size={13} color={COLOR.warn} />
@@ -834,6 +845,38 @@ const ClinicalPassportScreen = () => {
                   onPress={() => router.push('/p-data_entry')}
                 />
               </View>
+
+              {/* Guideline recommendations, kept out of the card above.
+                  Nothing here is a hole in your records and none of it
+                  is fixed by uploading a file, so it gets neither the
+                  warning triangle nor the 「去数据录入补齐」 button —
+                  both of which would send a patient to an upload form
+                  to resolve 「问一次眼底检查」. */}
+              {clinicalSteps.length > 0 ? (
+                <View style={styles.supportCard}>
+                  <View style={styles.cardHeadingRow}>
+                    <View>
+                      <Text style={styles.cardTitle}>值得和医生提一句</Text>
+                      <Text style={styles.cardSubtitle}>
+                        根据 FSHD 诊疗指南，结合你已录入的信息给出。不是急事，也不用现在做什么 ——
+                        下次就诊时问一下就好。
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.gapList}>
+                    {clinicalSteps.map((step) => (
+                      <View key={step.title} style={styles.gapCard}>
+                        <View style={styles.gapTopRow}>
+                          <Icon name="user-doctor" size={13} color={COLOR.accent} />
+                          <Text style={styles.gapTitle}>{step.title}</Text>
+                        </View>
+                        <Text style={styles.gapDescription}>{step.description}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
 
               <View style={styles.exportCard}>
                 <View style={styles.cardHeadingRow}>

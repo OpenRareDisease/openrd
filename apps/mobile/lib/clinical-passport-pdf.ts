@@ -173,6 +173,14 @@ export const buildClinicalPassportPdfHtml = (
           </div>
           <p>${escapeHtml(item.summary)}</p>
           <p class="monitor-meta">最近日期：${safeDate(item.latestDate)}</p>
+          ${
+            // The cardiac note is the one that has to survive printing:
+            // this page gets handed to clinicians who mostly meet FSHD
+            // through other dystrophies, where an annual echo is
+            // correct. An empty 心脏检查 box with no explanation reads
+            // as an overdue test to exactly that reader.
+            item.note ? `<p class="monitor-note">${escapeHtml(item.note)}</p>` : ''
+          }
         </article>
       `,
     )
@@ -400,6 +408,18 @@ export const buildClinicalPassportPdfHtml = (
         line-height: 1.7;
         color: #4c5b68;
       }
+      /* Sits under the reading of a test that may be absent, and has to
+         explain why it is absent. Ruled off and set apart so it does not
+         get skimmed as more of the same measurement text. */
+      .monitor-card p.monitor-note {
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid #d8dee5;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: #3d4a56;
+      }
+
       .metric-meta,
       .timeline-date {
         color: #7d8891;
