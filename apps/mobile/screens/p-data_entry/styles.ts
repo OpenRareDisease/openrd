@@ -243,6 +243,21 @@ export default StyleSheet.create({
     ...TYPE.caption,
     color: COLOR.alert,
   },
+  /** Why a question is being asked, with its source — the habit
+   *  lib/genetics-family-content.ts set. Set apart from the surrounding
+   *  captions by a rule and a wash, because it is provenance rather
+   *  than instruction: a patient skimming for what to tap should be
+   *  able to skip it, and a patient wondering why the app keeps asking
+   *  about pain should be able to find it. */
+  guidelineNote: {
+    ...TYPE.caption,
+    marginTop: SPACE.lg,
+    padding: SPACE.md,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.well,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+  },
 
   input: {
     minHeight: MIN_TOUCH_TARGET,

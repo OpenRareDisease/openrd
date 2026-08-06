@@ -1,8 +1,34 @@
-import { StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
+import { COLOR, HAIRLINE, RADIUS, SPACE, TYPE } from '../../lib/design';
 
+/**
+ * Replaces the previous stylesheet wholesale.
+ *
+ * That one was written for a forum this app does not have: post cards,
+ * avatars, reply threads, an online-count dot, a publish modal with a
+ * floating compose button. None of it was reachable — the screen it
+ * belonged to rendered `UnavailableScreen` — and all of it was in the
+ * pre-`lib/design` vocabulary (white-on-#969FFF, 24pt shadowed cards)
+ * that the rest of the app has already left behind.
+ *
+ * The typographic rule this shelf runs on
+ * ---------------------------------------
+ * A patient must never have to work out which sentences are ours and
+ * which are the author's. So the two never share a treatment:
+ *
+ *   - **Their words** — the excerpt — are ink, with a teal rule down
+ *     the left margin. That rule appears nowhere else on the page.
+ *   - **Our words** — blurbs, theme copy, hook ledes — are inkSoft or
+ *     inkMuted running text with no rule.
+ *
+ * It is the same separation the clinical pages use for evidence versus
+ * framing, applied to authorship instead.
+ */
 export default StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLOR.paper,
   },
   safeArea: {
     flex: 1,
@@ -10,477 +36,250 @@ export default StyleSheet.create({
   scrollView: {
     flex: 1,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+  scrollContent: {
+    paddingHorizontal: SPACE.gutter,
+    paddingBottom: 48,
   },
-  pageTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
+
+  /* Intro ---------------------------------------------------------- */
+  intro: {
+    ...TYPE.body,
+    marginBottom: SPACE.md,
   },
-  publishButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+  caveat: {
+    ...TYPE.caption,
+    backgroundColor: COLOR.surfaceAccent,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.accentLine,
+    padding: SPACE.md,
+    marginBottom: SPACE.lg,
   },
-  section: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+
+  /* Theme picker --------------------------------------------------- */
+  themeControl: {
+    marginBottom: SPACE.md,
   },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 12,
+  themeBlurb: {
+    ...TYPE.caption,
+    marginBottom: SPACE.lg,
   },
-  sectionsContainer: {
-    gap: 12,
+  countLine: {
+    ...TYPE.micro,
+    marginBottom: SPACE.sm,
   },
-  forumCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+
+  /* Story card ----------------------------------------------------- */
+  card: {
+    backgroundColor: COLOR.surface,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    padding: SPACE.lg,
+    marginBottom: SPACE.md,
   },
-  forumCardContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  // A serial instalment is visually tied to the one above it: the
+  // memoir is one thing in four pieces and must not read as four
+  // unrelated cards that happen to share an author.
+  cardSerialContinuation: {
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    marginTop: -SPACE.md,
+    borderTopWidth: 0,
   },
-  forumCardLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  forumIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  forumTextContainer: {
-    flex: 1,
-  },
-  forumTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  forumDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+  serialBadge: {
+    ...TYPE.micro,
+    color: COLOR.accent,
     marginBottom: 4,
   },
-  forumStatsContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  onlineIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  onlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#4ADE80',
-    marginRight: 4,
-  },
-  onlineText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  statsSeparator: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginHorizontal: 8,
-  },
-  postCountText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  quickAccessGrid: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  quickAccessCard: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 8,
-    alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  quickAccessIconContainer: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(251, 191, 36, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  cardTitle: {
+    ...TYPE.heading,
     marginBottom: 4,
   },
-  quickAccessTitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
+  cardByline: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
   },
-  quickAccessDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    textAlign: 'center',
+  cardBlurb: {
+    ...TYPE.body,
+    marginBottom: SPACE.md,
   },
-  postsHeader: {
+
+  /* The author's own words ----------------------------------------- */
+  quote: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: SPACE.md,
   },
-  viewAllText: {
-    fontSize: 12,
-    color: '#969FFF',
+  quoteRule: {
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: COLOR.accentSoft,
+    marginRight: SPACE.md,
   },
-  postsContainer: {
-    gap: 12,
-  },
-  postCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  postContent: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  postAvatar: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    marginRight: 8,
-  },
-  postTextContainer: {
+  quoteText: {
+    ...TYPE.bodyStrong,
     flex: 1,
   },
-  postHeader: {
+  quoteAttribution: {
+    ...TYPE.caption,
+    color: COLOR.inkFaint,
+    marginTop: SPACE.xs,
+  },
+
+  caution: {
+    ...TYPE.caption,
+    color: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+    borderRadius: RADIUS.control,
+    padding: SPACE.md,
+    marginBottom: SPACE.md,
+  },
+
+  cardActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    marginBottom: 4,
-    gap: 4,
+    justifyContent: 'flex-start',
   },
-  postAuthor: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  postTime: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  postCategoryTag: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  postCategoryText: {
-    fontSize: 12,
-  },
-  postSpecialTag: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 12,
-    backgroundColor: 'rgba(251, 191, 36, 0.2)',
-  },
-  postSpecialTagText: {
-    fontSize: 12,
-    color: '#FBBF24',
-  },
-  postContentText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 6,
-    lineHeight: 16,
-  },
-  postStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  postStatItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  postStatText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  modalOverlay: {
+
+  /* Read-the-original sheet ---------------------------------------- */
+  sheetOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 16,
-  },
-  publishModalContainer: {
-    width: '100%',
-    maxWidth: 400,
-  },
-  publishModalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 24,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  publishModalTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 12,
-  },
-  publishOptionsContainer: {
-    gap: 12,
-    marginBottom: 16,
-  },
-  publishOption: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 12,
-  },
-  publishOptionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  publishOptionIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(96, 165, 250, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  publishOptionTextContainer: {
-    flex: 1,
-  },
-  publishOptionTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  publishOptionDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  cancelButton: {
-    width: '100%',
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  postDetailModalContainer: {
-    flex: 1,
+    backgroundColor: COLOR.scrim,
     justifyContent: 'flex-end',
-    width: '100%',
   },
-  postDetailModalContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 24,
-    maxHeight: '80%',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+  sheet: {
+    backgroundColor: COLOR.paper,
+    borderTopLeftRadius: RADIUS.group,
+    borderTopRightRadius: RADIUS.group,
+    paddingHorizontal: SPACE.gutter,
+    paddingTop: SPACE.xl,
+    paddingBottom: SPACE.xxl,
+    maxHeight: '85%',
   },
-  postDetailModalHeader: {
+  sheetTitle: {
+    ...TYPE.title,
+    marginBottom: SPACE.sm,
+  },
+  sheetNote: {
+    ...TYPE.body,
+    marginBottom: SPACE.lg,
+  },
+  locator: {
+    backgroundColor: COLOR.surface,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    padding: SPACE.lg,
+    marginBottom: SPACE.lg,
+  },
+  locatorRow: {
+    marginBottom: SPACE.md,
+  },
+  locatorLabel: {
+    ...TYPE.micro,
+    marginBottom: 2,
+  },
+  // Rendered `selectable` so the title can be long-pressed and pasted
+  // into WeChat's search field. The app has no clipboard dependency
+  // and is not adding one.
+  locatorValue: {
+    ...TYPE.bodyStrong,
+  },
+  locatorValueFaint: {
+    ...TYPE.caption,
+    color: COLOR.inkFaint,
+  },
+  sheetActions: {
+    gap: SPACE.md,
+  },
+
+  /* Contextual hooks: the settings block on this screen ------------- */
+  settingsBlock: {
+    marginTop: SPACE.section,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    paddingTop: SPACE.lg,
+  },
+  settingsTitle: {
+    ...TYPE.heading,
+    marginBottom: SPACE.xs,
+  },
+  settingsBody: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
+  },
+  settingsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    gap: SPACE.md,
+    paddingVertical: SPACE.sm,
   },
-  postDetailModalTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  postDetailContent: {
-    gap: 16,
-  },
-  postDetailHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  postDetailAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-  postDetailHeaderText: {
+  settingsRowLabel: {
+    ...TYPE.label,
+    color: COLOR.ink,
     flex: 1,
   },
-  postDetailHeaderTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginBottom: 8,
-    gap: 8,
+  triggerList: {
+    marginTop: SPACE.sm,
+    gap: SPACE.sm,
   },
-  postDetailAuthor: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  postDetailTime: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  postDetailCategoryTag: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  postDetailCategoryText: {
-    fontSize: 12,
-  },
-  postDetailContentText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
-    lineHeight: 20,
-  },
-  postDetailReplies: {
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
-    paddingTop: 16,
-    gap: 12,
-  },
-  postDetailRepliesTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  postDetailReply: {
+  triggerItem: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    gap: SPACE.sm,
   },
-  postDetailReplyAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    marginRight: 8,
-  },
-  postDetailReplyContent: {
+  triggerText: {
+    ...TYPE.caption,
     flex: 1,
   },
-  postDetailReplyHeader: {
+
+  /* Contextual hook card (mounted by other screens) ----------------- */
+  hookCard: {
+    backgroundColor: COLOR.surface,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    padding: SPACE.lg,
+  },
+  hookHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: SPACE.md,
+  },
+  hookHeaderText: {
+    flex: 1,
+  },
+  hookTitle: {
+    ...TYPE.heading,
+    marginBottom: 2,
+  },
+  hookLede: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
+  },
+  // Not a 20pt glyph in a corner. Dismissing is the action this card
+  // most expects to receive, from someone whose grip is the first
+  // thing this disease takes, so it gets a full-size target.
+  hookDismiss: {
+    width: MIN_TOUCH_TARGET,
+    height: MIN_TOUCH_TARGET,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: RADIUS.control,
+  },
+  hookFooter: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 4,
-    gap: 8,
+    justifyContent: 'flex-start',
+    marginTop: SPACE.sm,
   },
-  postDetailReplyAuthor: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-  },
-  postDetailReplyTime: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  postDetailReplyText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
-    lineHeight: 18,
+
+  /* Empty state ----------------------------------------------------- */
+  empty: {
+    ...TYPE.body,
+    color: COLOR.inkMuted,
+    paddingVertical: SPACE.xxl,
+    textAlign: 'center',
   },
 });

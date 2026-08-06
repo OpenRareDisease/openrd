@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   ACTIVITY_SOURCES,
+  AMBULATION_STATES,
   BODY_REGIONS,
   DAILY_IMPACT_KEYS,
   DOCUMENT_TYPES,
@@ -60,6 +61,41 @@ export type CreateProfileInput = z.infer<typeof createProfileSchema>;
 export const updateProfileSchema = baseProfileSchema.partial();
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
+/**
+ * 「当前行走」 on the baseline form: three states, plus a compatibility
+ * shim for the boolean the field used to be.
+ *
+ * The three states and why two were not enough are documented on
+ * AMBULATION_STATES in profile.constants.ts. This is the write-side
+ * half of a TWO-PLACE edit — the other half is the CHECK constraint on
+ * `patient_profiles.baseline_payload` in migration 022, which is what
+ * defends the column against the paths Zod never sees. Widening the
+ * state set means editing both.
+ *
+ * WHY THE BOOLEAN BRANCH IS STILL HERE. The app ships as a web export
+ * that patients open in WeChat's in-app browser, which caches
+ * aggressively; the handset that submits a baseline an hour after this
+ * deploy may still be running the build that sends `true` / `false`.
+ * Rejecting those would 400 the registration form — the one screen a
+ * new patient cannot get past. So the boolean is accepted and
+ * normalised, exactly the way the DB back-fill in 022 normalises the
+ * rows already on disk:
+ *
+ *   true  → 'independent'   (「可独立行走」)
+ *   false → 'assisted'      (「需要辅助」)
+ *
+ * `false → assisted` reproduces the label the patient tapped and
+ * nothing more. It does not assert they can walk with aid; an old
+ * client has no way to say 'unable'. Remove this branch only once the
+ * mobile build that sends the string is the oldest one in the wild.
+ */
+const ambulationStateSchema = z
+  .union([z.enum(AMBULATION_STATES), z.boolean()])
+  .transform((value) => {
+    if (typeof value !== 'boolean') return value;
+    return value ? 'independent' : 'assisted';
+  });
+
 export const baselineProfileSchema = z.object({
   foundation: z
     .object({
@@ -86,7 +122,7 @@ export const baselineProfileSchema = z.object({
     .optional(),
   currentStatus: z
     .object({
-      independentlyAmbulatory: z.boolean().optional().nullable(),
+      independentlyAmbulatory: ambulationStateSchema.optional().nullable(),
       armRaiseDifficulty: z.boolean().optional().nullable(),
       facialWeakness: z.boolean().optional().nullable(),
       footDrop: z.boolean().optional().nullable(),

@@ -433,6 +433,41 @@ export default StyleSheet.create({
     lineHeight: 21,
   },
 
+  /* 功能分级 (Brooke / Vignos) ------------------------------------- */
+  /** Same left-rule vocabulary as noteCard — this is a note about the
+   *  patient's function, not a metric tile. It is deliberately NOT a
+   *  big number: the number is the least useful half of the reading. */
+  instrumentBlock: {
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+    gap: SPACE.sm,
+  },
+  instrumentRow: {
+    gap: 2,
+  },
+  instrumentHeadline: {
+    ...TYPE.bodyStrong,
+    fontSize: 14,
+    color: COLOR.ink,
+    fontVariant: ['tabular-nums'],
+  },
+  /** The behavioural anchor. Never smaller than caption size and never
+   *  truncated: it is the part a clinician actually reads the level
+   *  against. */
+  instrumentAnchor: {
+    ...TYPE.body,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  instrumentPrevious: {
+    ...TYPE.caption,
+    marginTop: 2,
+  },
+  instrumentSource: {
+    ...TYPE.micro,
+  },
+
   /* 正面 / 背面 ---------------------------------------------------- */
   /** SegmentedControl owns its own shape; this only keeps the place in
    *  the page the old two-pill row had. */

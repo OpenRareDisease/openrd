@@ -19,7 +19,7 @@ import type {
   RetrieveResult,
   RetrievedChunk,
 } from './base.js';
-import { buildSnippet, emptyResult } from './base.js';
+import { buildSnippet, emptyResult, retrievalFailureReason } from './base.js';
 
 interface KbServiceChunk {
   content?: string;
@@ -281,12 +281,66 @@ const extractChunkIndex = (metadata: Record<string, unknown>): number | null => 
   return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * A metadata filter with nothing in it is not a filter.
+ *
+ * `{}` is truthy in JavaScript, and the empty-corpus guard below asks
+ * exactly「was a filter sent?」 to decide whether zero hits means the
+ * corpus is gone. A caller that builds `{ category: undefined }` from an
+ * absent argument would therefore have silenced the outage alarm for
+ * every request it made. Collapse those to `null` once, here.
+ *
+ * `null`/`undefined` VALUES are dropped; an empty string is not, because
+ * `category: ''` is a real filter over this corpus (the 1,751 chunks
+ * whose files sit at the corpus root carry exactly that).
+ */
+const normalizeFilter = (filter?: Record<string, unknown>): Record<string, unknown> | null => {
+  if (!filter) return null;
+  const entries = Object.entries(filter).filter(([, v]) => v !== undefined && v !== null);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+};
+
 export class MedicalKbRetriever implements IRetriever {
   readonly id = 'medical_kb';
   readonly kind = 'vector' as const;
 
   constructor(private readonly opts: MedicalKbRetrieverOptions) {}
 
+  /**
+   * Run the search, and when a metadata filter found nothing, run it
+   * again over the whole corpus.
+   *
+   * Why widening rather than reporting an empty category
+   * ----------------------------------------------------
+   * A filtered search that comes back empty has three possible honest
+   * readings —「this category has no chunks」,「nothing in it was within
+   * the relevance floor」,「everything in it was junk」— and the answer
+   * layer has vocabulary for none of them. It branches on exactly two
+   * things: `RETRIEVAL_FAILURE_REASONS` (which renders「资料库检索没有跑
+   * 成功」 — a malfunction the search did not have) and
+   * `NO_RELEVANT_RESULTS` (which renders「这个问题在平台的资料库里没有
+   * 找到相关资料」 — a claim about the WHOLE corpus that a
+   * category-scoped miss does not support). Anything else renders as
+   *「（无内容）」, which base.ts documents as the shape that makes the
+   * model fill the gap from its own priors.
+   *
+   * And it is not a hypothetical. Measured against the live service
+   * (9,594 chunks, 2026-08),「确诊 FSHD 之后心理上怎么调整」returns 8
+   * chunks unfiltered (best distance 0.310) but ZERO under
+   * `category: 10.心理支持` — that folder's closest chunk is 0.413, just
+   * past the 0.40 floor. Reporting that as「资料库里没有」would be a flat
+   * untruth about a question the corpus answers well.
+   *
+   * So the filter is treated as what it actually is: a ranking
+   * preference, not a promise about coverage. If the category has the
+   * answer the patient gets it without competing against 4,818 chunks of
+   * molecular biology; if it does not, they get the corpus-wide answer
+   * they would have got before this parameter existed. Nothing is
+   * hidden, and every downstream claim stays true. `filterFellBack` in
+   * the metadata says which of the two happened, and the tool wrapper
+   * puts it in front of the model so it cannot present a widened result
+   * as material from the category it asked for.
+   */
   async search(input: RetrieveInput, ctx: RetrieveContext): Promise<RetrieveResult> {
     const queries = (input.queries ?? [input.question])
       .map((q) => (q ?? '').trim())
@@ -295,6 +349,58 @@ export class MedicalKbRetriever implements IRetriever {
     if (queries.length === 0 && !input.question.trim()) {
       return emptyResult(this.id, 'empty_question');
     }
+
+    const filter = normalizeFilter(input.filter);
+    const filtered = await this.searchOnce(input, ctx, filter);
+    if (!filter) return filtered;
+
+    const stayFiltered = (): RetrieveResult => ({
+      ...filtered,
+      metadata: { ...filtered.metadata, filterApplied: filter, filterFellBack: false },
+    });
+
+    if (filtered.chunks.length > 0) return stayFiltered();
+    // The search could not RUN (service down, 5xx). A second request
+    // without the filter cannot fix that and would double the wait a
+    // patient sits through before being told so.
+    if (retrievalFailureReason(filtered)) return stayFiltered();
+    // The caller hung up (dropped SSE client). Retrying would only
+    // abort again.
+    if (ctx.signal?.aborted) return stayFiltered();
+
+    ctx.logger.info(
+      { filter, filteredReason: filtered.metadata?.reason ?? null },
+      'medical_kb retriever: category-filtered search returned nothing — widening to the whole corpus',
+    );
+
+    const widened = await this.searchOnce(input, ctx, null);
+    return {
+      ...widened,
+      metadata: {
+        ...widened.metadata,
+        filterApplied: filter,
+        filterFellBack: true,
+        filteredAttempt: {
+          reason: filtered.metadata?.reason ?? null,
+          kbServiceMetadata: filtered.metadata?.kbServiceMetadata ?? null,
+        },
+      },
+    };
+  }
+
+  /**
+   * One round trip to the KB service. `filter` is already normalised —
+   * `null` means no filter was sent, and the empty-corpus guard below
+   * depends on that being exact.
+   */
+  private async searchOnce(
+    input: RetrieveInput,
+    ctx: RetrieveContext,
+    filter: Record<string, unknown> | null,
+  ): Promise<RetrieveResult> {
+    const queries = (input.queries ?? [input.question])
+      .map((q) => (q ?? '').trim())
+      .filter(Boolean);
 
     const wanted = input.limit ?? this.opts.defaults?.finalN ?? 8;
     const payload = {
@@ -310,7 +416,7 @@ export class MedicalKbRetriever implements IRetriever {
       top_k: Math.ceil(wanted * OVER_FETCH),
       fetch_k: this.opts.defaults?.fetchK ?? 80,
       max_per_source: this.opts.defaults?.maxPerSource ?? 4,
-      where: input.filter ?? null,
+      where: filter,
       keep_debug_fields: false,
     };
 
@@ -377,9 +483,12 @@ export class MedicalKbRetriever implements IRetriever {
     // nearest-neighbour search cannot do that, so this is an empty (or
     // fully filtered-out) corpus rather than an answer about it. Only
     // claim it when we sent no `where` filter — with a filter, zero hits
-    // just means the filter matched nothing.
+    // just means the filter matched nothing, and「资料库尚未装载」routes
+    // to a hard-failure instruction that tells the patient the platform
+    // is broken. `filter` is the normalised value, so an empty object
+    // can never masquerade as a real filter and suppress this.
     const backendHits = parsed.metadata?.backend_hits;
-    if (typeof backendHits === 'number' && backendHits === 0 && !payload.where) {
+    if (typeof backendHits === 'number' && backendHits === 0 && !filter) {
       ctx.logger.error(
         { kbServiceMetadata: parsed.metadata ?? null },
         'medical_kb retriever: KB service returned zero candidates for an unfiltered ' +

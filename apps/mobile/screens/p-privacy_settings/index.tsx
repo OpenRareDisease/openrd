@@ -14,6 +14,17 @@ import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_TITLES } from '../../lib/legal-content'
 import styles from './styles';
 
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
+import {
+  createPassportShare,
+  listPassportShares,
+  revokePassportShare,
+} from '../../lib/passport-share-api';
+import {
+  buildShareUrl,
+  describeShareLife,
+  isShareLive,
+  type PassportShare,
+} from '../../lib/passport-share';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import Button from '../common/Button';
@@ -134,6 +145,102 @@ const PrivacySettingsScreen = () => {
   const [sharingLoading, setSharingLoading] = useState(true);
   const [sharingError, setSharingError] = useState<string | null>(null);
   const [sharingSaving, setSharingSaving] = useState(false);
+
+  /**
+   * 「谁现在能读我的记录」.
+   *
+   * The share links live here rather than beside the export button
+   * because that is the question they answer. Exporting is something
+   * you do once; a live link is a standing permission, and the only
+   * place a patient looks for standing permissions is 隐私设置.
+   */
+  const [shares, setShares] = useState<PassportShare[] | null>(null);
+  const [sharesError, setSharesError] = useState<string | null>(null);
+  const [creatingShare, setCreatingShare] = useState(false);
+  const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
+  // Held in component state and nowhere else. See passport-share-api.ts:
+  // the server keeps only a digest and cannot reissue this.
+  const [freshLink, setFreshLink] = useState<{ url: string | null; token: string } | null>(null);
+
+  const loadShares = useCallback(async () => {
+    try {
+      setSharesError(null);
+      setShares(await listPassportShares());
+    } catch (error) {
+      setShares(null);
+      setSharesError(error instanceof ApiError ? error.message : '无法读取分享链接，请稍后重试');
+    }
+  }, []);
+
+  // The list has to load on open, not only after a create or a revoke.
+  // Without this the section renders empty for a patient who made a
+  // link last week — which reads as「我没分享过任何东西」, the exact
+  // opposite of the truth, on the screen whose job is to tell them who
+  // can currently read their record.
+  useEffect(() => {
+    void loadShares();
+  }, [loadShares]);
+
+  const onCreateShare = async () => {
+    setCreatingShare(true);
+    try {
+      // createPassportShare throws rather than resolving without a
+      // token: by that point the server has already issued a live
+      // credential, and a silent success is what let a patient press
+      // this five times and mint five invisible links.
+      const link = await createPassportShare();
+      {
+        setFreshLink({
+          // window.location only exists on the web export, which is how
+          // essentially every patient reaches this app. On native the
+          // token is shown with an explanation instead of a URL that
+          // would carry the wrong host.
+          url: buildShareUrl(
+            link.token,
+            typeof window !== 'undefined' ? window.location?.origin : null,
+          ),
+          token: link.token,
+        });
+      }
+      await loadShares();
+    } catch (error) {
+      notify({
+        // Any Error's message, not just ApiError's — the shape check in
+        // passport-share-api throws a plain Error whose text tells the
+        // patient to go look at this very list, and swallowing it into
+        //「请稍后重试」would send them back to press the button again.
+        message: error instanceof Error ? error.message : '请稍后重试',
+        title: '没能生成链接',
+      });
+    } finally {
+      setCreatingShare(false);
+    }
+  };
+
+  const onRevokeShare = async (share: PassportShare) => {
+    const ok = await confirm({
+      title: '撤销这个链接？',
+      message: '撤销之后，拿到这个链接的人就再也打不开了。他们已经看过的内容我们收不回来。',
+      confirmLabel: '撤销',
+      destructive: true,
+    });
+    if (!ok) return;
+    setRevokingShareId(share.id);
+    try {
+      await revokePassportShare(share.id);
+      // The link on screen may be the one just revoked; clearing it
+      // stops the patient copying a dead URL to someone.
+      setFreshLink(null);
+      await loadShares();
+    } catch (error) {
+      notify({
+        title: '撤销失败',
+        message: error instanceof ApiError ? error.message : '请稍后重试',
+      });
+    } finally {
+      setRevokingShareId(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -769,6 +876,86 @@ const PrivacySettingsScreen = () => {
               </View>
             </View>
           </View>
+        </View>
+
+        {/* 谁现在能读我的记录 —— the standing permissions.
+            Placed above 授权记录 on purpose: a consent ledger is a
+            history, and a live share link is a door that is open right
+            now. The urgent one goes first. */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>谁现在能看我的记录</Text>
+          <Text style={styles.settingDescription}>
+            你可以生成一个只读链接，在微信里发给医生。对方不需要注册、不需要装 App，
+            打开就能看到你的临床护照。链接会自动失效，你也可以随时撤销。
+          </Text>
+
+          {freshLink ? (
+            <View style={styles.shareFresh}>
+              <Text style={styles.shareFreshTitle}>链接已生成</Text>
+              {/* selectable, because copying it out is the entire point,
+                  and 「复制」 needs a clipboard permission this web
+                  export does not reliably have inside WeChat. */}
+              <Text style={styles.shareFreshValue} selectable>
+                {freshLink.url ?? freshLink.token}
+              </Text>
+              <Text style={styles.shareHint}>
+                {freshLink.url
+                  ? '长按上面这行复制，然后发给医生。这串地址只显示这一次，关掉就看不到了 —— 丢了就再生成一个。'
+                  : '这台设备上拼不出完整网址，上面是链接的口令部分。请在浏览器里打开本页面再生成一次。'}
+              </Text>
+            </View>
+          ) : null}
+
+          <Button
+            label="生成一个给医生看的链接"
+            icon="arrow-up-right-from-square"
+            variant="tinted"
+            fullWidth
+            busy={creatingShare}
+            accessibilityHint="生成一个有效期有限的只读链接，医生打开后可以看到你的临床护照"
+            onPress={onCreateShare}
+          />
+
+          {sharesError ? <Text style={styles.shareHint}>{sharesError}</Text> : null}
+
+          {shares && shares.length > 0
+            ? shares.map((share) => {
+                const live = isShareLive(share);
+                return (
+                  <View key={share.id} style={styles.shareRow}>
+                    <View style={styles.shareRowCopy}>
+                      <Text style={styles.shareRowTitle}>
+                        {share.label ?? `${share.createdAt.slice(0, 10)} 生成`}
+                      </Text>
+                      <Text style={styles.shareRowMeta}>
+                        {describeShareLife(share)}
+                        {/* 「还没有人打开过」 is worth saying explicitly:
+                            a patient checking whether their doctor
+                            looked at it should not have to infer it
+                            from a missing number. */}
+                        {share.openedCount > 0
+                          ? ` · 被打开过 ${share.openedCount} 次`
+                          : ' · 还没有人打开过'}
+                      </Text>
+                    </View>
+                    {live ? (
+                      <Button
+                        label="撤销"
+                        variant="plain"
+                        compact
+                        busy={revokingShareId === share.id}
+                        accessibilityHint={`撤销这个链接，撤销后任何人都无法再打开`}
+                        onPress={() => onRevokeShare(share)}
+                      />
+                    ) : null}
+                  </View>
+                );
+              })
+            : null}
+
+          {shares && shares.length === 0 ? (
+            <Text style={styles.shareHint}>你还没有生成过任何链接。</Text>
+          ) : null}
         </View>
 
         {/* 授权记录 — the ledger the consent documents point at.

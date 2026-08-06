@@ -39,7 +39,14 @@ export interface RetrieveInput {
   queries?: string[];
   /** Backend-specific metadata filter. Currently passed through to the
    *  Python KB service; SQL retrievers may translate keys they
-   *  recognise (e.g. `documentType` for patient_reports). */
+   *  recognise (e.g. `documentType` for patient_reports).
+   *
+   *  Scalar equality only, and only on keys the service allowlists
+   *  (`knowledge_service._WHERE_ALLOWED_KEYS`: source_file,
+   *  source_fingerprint, folder_path, category, file_type, language).
+   *  Anything else is dropped there without an error, so a retriever
+   *  must not treat「I sent a filter」as「the filter was honoured」.
+   *  `search_medical_kb`'s `category` is the only caller today. */
   filter?: Record<string, unknown>;
   /** Maximum chunks to return. Retrievers may cap below this for
    *  cost / token reasons. */

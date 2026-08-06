@@ -40,8 +40,18 @@ import SensitiveDataConsentGate, {
 } from '../p-privacy_settings/components/SensitiveDataConsentGate';
 import styles from './styles';
 import MuscleSelfTestForm from './MuscleSelfTestForm';
+import InstrumentForm from './InstrumentForm';
+import {
+  FATIGUE_SCALE,
+  PAIN_SCALE,
+  SYMPTOM_GUIDELINE_NOTE,
+  bucketForScoreIn,
+  normalizeSymptomScore,
+  stepSymptomScore,
+  type SymptomScaleDefinition,
+} from './symptom-scales';
 
-type EntryMode = 'followup' | 'event' | 'report' | 'muscle';
+type EntryMode = 'followup' | 'event' | 'report' | 'muscle' | 'instrument';
 type EventType =
   | 'fall'
   | 'new_foot_drop'
@@ -111,6 +121,22 @@ type FollowupFormState = {
    *  never touched it still shipped a "6/10" that reads downstream as
    *  a self-report; this records the abstention instead. */
   sleepNotApplicable: boolean;
+  /** 疼痛 / 疲劳, 0-10, `''` while unanswered.
+   *
+   *  Unanswered on purpose — no default, and no「这次不评价」toggle to
+   *  go with it. Sleep needed that toggle because it ships a 6 nobody
+   *  chose; these two ship nothing until the patient taps a band, so
+   *  the empty string IS the abstention and there is no second control
+   *  to keep in sync with it. Nothing is written for an empty field;
+   *  the submission summary records「未评价」so a blank does not read
+   *  later as「不疼」.
+   *
+   *  Also never pre-filled from the last visit, unlike sleep and the
+   *  stair time: last month's pain is not today's pain, and a
+   *  pre-filled number that the patient leaves alone becomes a report
+   *  they never made. */
+  painScore: string;
+  fatigueScore: string;
 };
 
 type EventFormState = {
@@ -133,6 +159,8 @@ const DEFAULT_FOLLOWUP_FORM: FollowupFormState = {
   // the hint next to the toggle (see renderFollowupForm).
   stairNotApplicable: false,
   sleepNotApplicable: false,
+  painScore: '',
+  fatigueScore: '',
 };
 
 const DEFAULT_EVENT_FORM: EventFormState = {
@@ -320,7 +348,7 @@ const modeCards: Array<{
     key: 'followup',
     icon: 'bolt',
     title: '日常记录',
-    description: '记录睡眠评分、10 级台阶用时和最近跌倒次数。',
+    description: '记录睡眠、疼痛、疲劳、10 级台阶用时和最近跌倒次数。',
   },
   {
     key: 'event',
@@ -339,6 +367,15 @@ const modeCards: Array<{
     icon: 'hand-fist',
     title: '肌力自测',
     description: '5 个动作按 0-5 打分，自动汇入受累可视化。',
+  },
+  {
+    key: 'instrument',
+    // clipboard-list, not a new glyph: Icon.tsx warns loudly in dev for
+    // an unmapped name and falls back to a bare circle in production,
+    // and adding to that map is outside this change's files.
+    icon: 'clipboard-list',
+    title: '功能分级自评',
+    description: '上肢 Brooke、下肢 Vignos 各选一句话，一分钟填完，会印在临床护照上。',
   },
 ];
 
@@ -381,7 +418,11 @@ const persistDraft = async (key: string, value: unknown) => {
 };
 
 const normalizeEntryMode = (value: string | null | undefined): EntryMode =>
-  value === 'followup' || value === 'event' || value === 'report' || value === 'muscle'
+  value === 'followup' ||
+  value === 'event' ||
+  value === 'report' ||
+  value === 'muscle' ||
+  value === 'instrument'
     ? value
     : 'followup';
 
@@ -463,6 +504,10 @@ const normalizeSavedFollowup = (
     activityNote: typeof raw.activityNote === 'string' ? raw.activityNote.slice(0, 200) : '',
     stairNotApplicable: raw.stairNotApplicable === true,
     sleepNotApplicable: raw.sleepNotApplicable === true,
+    // normalizeSymptomScore returns '' for anything unusable, so a
+    // corrupted draft comes back as「还没回答」rather than as a score.
+    painScore: normalizeSymptomScore(raw.painScore),
+    fatigueScore: normalizeSymptomScore(raw.fatigueScore),
   };
 };
 
@@ -660,6 +705,103 @@ const renderSleepScorePicker = (opts: {
     )}
   </View>
 );
+
+/**
+ * 疼痛 / 疲劳 — the same bands-then-stepper control as sleep, with two
+ * differences that matter.
+ *
+ *  - **It starts empty.** There is no default and no「这次不评价」chip.
+ *    An untouched field saves nothing, and the confirmation says
+ *   「未评价」rather than a number. Sleep needs its chip because its
+ *    field ships a 6 nobody chose; this one has nothing to abstain from.
+ *  - **The direction is printed.** Sleep runs 0=很差→10=很好 and these
+ *    run 0=没有→10=最重. Two directions on one screen is how「今天不疼」
+ *    gets recorded as a 10, so the direction sits above the control and
+ *    the band label is repeated under the number.
+ */
+const renderSymptomScorePicker = (opts: {
+  scale: SymptomScaleDefinition;
+  value: string;
+  onChange: (next: string) => void;
+}) => {
+  const hasValue = opts.value !== '';
+  const numeric = Number(opts.value);
+  const bucket =
+    hasValue && Number.isFinite(numeric) ? bucketForScoreIn(opts.scale.buckets, numeric) : null;
+
+  return (
+    <View style={styles.scoreBlock}>
+      <View style={styles.fieldHeaderRow}>
+        <Text style={styles.fieldLabel}>{opts.scale.label}</Text>
+        <Text style={styles.fieldHint}>0 到 10 分</Text>
+      </View>
+      <Text style={styles.sectionSubtitle}>{opts.scale.directionNote}</Text>
+
+      <View style={styles.sleepBucketRow}>
+        {opts.scale.buckets.map((candidate) => {
+          const active =
+            hasValue &&
+            Number.isFinite(numeric) &&
+            numeric >= candidate.min &&
+            numeric <= candidate.max;
+          return (
+            <PressableScale
+              key={candidate.label}
+              style={[styles.sleepBucket, active && styles.sleepBucketActive]}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: active }}
+              aria-checked={active}
+              accessibilityLabel={`${opts.scale.label}${candidate.label}，${candidate.min} 到 ${candidate.max} 分`}
+              // Re-tapping the band you are already in is a no-op, as on
+              // the sleep picker: it would otherwise snap a value the
+              // patient had just nudged back to `pick`.
+              onPress={() => {
+                if (!active) {
+                  opts.onChange(String(candidate.pick));
+                }
+              }}
+            >
+              <Text style={[styles.sleepBucketText, active && styles.sleepBucketTextActive]}>
+                {candidate.label}
+              </Text>
+            </PressableScale>
+          );
+        })}
+      </View>
+
+      <View style={styles.sleepStepper}>
+        <PressableScale
+          style={styles.sleepStepButton}
+          accessibilityRole="button"
+          accessibilityLabel={`${opts.scale.label}减 1 分`}
+          onPress={() => opts.onChange(stepSymptomScore(opts.value, -1))}
+        >
+          <Icon name="minus" size={16} color={COLOR.accent} />
+        </PressableScale>
+
+        <View style={styles.sleepValueWrap}>
+          {/* An em dash, not a 0: an unanswered field showing 0 would
+              read as「一点都不疼」, which is a claim the patient has not
+              made and the most consequential wrong answer this control
+              can produce. */}
+          <Text style={styles.sleepValue}>{hasValue ? opts.value : '—'}</Text>
+          <Text style={styles.sleepValueLabel}>
+            {bucket ? `分 · ${bucket.label}` : '还没评价，可以跳过'}
+          </Text>
+        </View>
+
+        <PressableScale
+          style={styles.sleepStepButton}
+          accessibilityRole="button"
+          accessibilityLabel={`${opts.scale.label}加 1 分`}
+          onPress={() => opts.onChange(stepSymptomScore(opts.value, 1))}
+        >
+          <Icon name="plus" size={16} color={COLOR.accent} />
+        </PressableScale>
+      </View>
+    </View>
+  );
+};
 
 const DataEntryScreen = () => {
   const router = useRouter();
@@ -1023,6 +1165,21 @@ const DataEntryScreen = () => {
     const stairClimbSeconds = Number(followupForm.stairClimbSeconds);
     const sleepScore = Number(followupForm.sleepScore);
     const fallCount = Number(followupForm.fallCount || '0');
+    // '' means「还没回答」. Not validated and never blocking: the
+    // guideline says to ASK at every followup, not to make the rest of
+    // the record unsubmittable until you answer.
+    const painScore = Number(followupForm.painScore);
+    const fatigueScore = Number(followupForm.fatigueScore);
+    const painAnswered =
+      followupForm.painScore !== '' &&
+      Number.isFinite(painScore) &&
+      painScore >= 0 &&
+      painScore <= 10;
+    const fatigueAnswered =
+      followupForm.fatigueScore !== '' &&
+      Number.isFinite(fatigueScore) &&
+      fatigueScore >= 0 &&
+      fatigueScore <= 10;
 
     const fieldErrors: typeof followupFieldErrors = {};
     // A field marked「今天做不了」has been answered, not skipped.
@@ -1054,8 +1211,22 @@ const DataEntryScreen = () => {
         'stair_climb',
       );
       const previousSleepScore = getLatestSymptomValue(profile ?? ensuredProfile, 'sleep_quality');
+      const previousPainScore = getLatestSymptomValue(profile ?? ensuredProfile, PAIN_SCALE.key);
+      const previousFatigueScore = getLatestSymptomValue(
+        profile ?? ensuredProfile,
+        FATIGUE_SCALE.key,
+      );
       const hasChanges =
         fallCount > 0 ||
+        // 2 points on a 0-10 NRS, not 1: pain and fatigue are noisier
+        // day to day than sleep, and flagging every 1-point wobble as
+        //「有变化」would make the flag mean nothing.
+        (painAnswered &&
+          typeof previousPainScore === 'number' &&
+          Math.abs(previousPainScore - painScore) >= 2) ||
+        (fatigueAnswered &&
+          typeof previousFatigueScore === 'number' &&
+          Math.abs(previousFatigueScore - fatigueScore) >= 2) ||
         // 能做 → 做不了 is the largest change this form can carry, and
         // the only one with no numeric delta to threshold.
         (stairNotApplicable && typeof previousStairClimbSeconds === 'number') ||
@@ -1068,6 +1239,12 @@ const DataEntryScreen = () => {
 
       const summaryParts = [
         sleepNotApplicable ? '睡眠评分：本次未评价' : `睡眠评分 ${sleepScore}/10`,
+        // Always in the summary, answered or not. A followup that says
+        // nothing about pain reads later as「没问」— which is exactly
+        // the state the 2010 ENMC consensus asks this form to leave
+        // behind (see symptom-scales.ts).
+        painAnswered ? `疼痛 ${painScore}/10` : '疼痛：本次未评价',
+        fatigueAnswered ? `疲劳 ${fatigueScore}/10` : '疲劳：本次未评价',
         stairNotApplicable
           ? '10 级台阶：本次无法完成'
           : `10 级台阶用时 ${stairClimbSeconds.toFixed(1)} 秒`,
@@ -1102,6 +1279,36 @@ const DataEntryScreen = () => {
             scaleMin: 0,
             scaleMax: 10,
             notes: '0=很差，10=很好',
+          }),
+        );
+      }
+
+      // Same contract as sleep: a row only exists when the patient gave
+      // a number. `patient_symptom_scores` has no「未评价」value, and
+      // posting a 0 for an untouched pain field would write「一点都不疼」
+      // into a trend a clinician reads.
+      if (painAnswered) {
+        requests.push(
+          addSymptomScore({
+            submissionId: submission.id,
+            symptomKey: PAIN_SCALE.key,
+            score: painScore,
+            scaleMin: 0,
+            scaleMax: 10,
+            notes: PAIN_SCALE.storedNote,
+          }),
+        );
+      }
+
+      if (fatigueAnswered) {
+        requests.push(
+          addSymptomScore({
+            submissionId: submission.id,
+            symptomKey: FATIGUE_SCALE.key,
+            score: fatigueScore,
+            scaleMin: 0,
+            scaleMax: 10,
+            notes: FATIGUE_SCALE.storedNote,
           }),
         );
       }
@@ -1764,6 +1971,10 @@ const DataEntryScreen = () => {
   // user edits them the previous number would otherwise be gone.
   const previousStairClimb = profile ? getLatestFunctionTestValue(profile, 'stair_climb') : null;
   const previousSleepScore = profile ? getLatestSymptomValue(profile, 'sleep_quality') : null;
+  // Reference only. Unlike sleep, these two are NOT pre-filled into the
+  // form — see FollowupFormState.painScore.
+  const previousPainScore = profile ? getLatestSymptomValue(profile, PAIN_SCALE.key) : null;
+  const previousFatigueScore = profile ? getLatestSymptomValue(profile, FATIGUE_SCALE.key) : null;
 
   // The baseline profile already says whether stairs are plausible:
   // 「独立行走」answered no, or a device that rules them out. Used ONLY
@@ -1889,6 +2100,33 @@ const DataEntryScreen = () => {
         {typeof previousSleepScore === 'number' ? (
           <Text style={styles.previousValueText}>上次记录：{previousSleepScore}/10</Text>
         ) : null}
+
+        {/* 疼痛 and 疲劳. Both keys have been in the API's SYMPTOM_KEYS
+            from the start; this form simply never wrote them, which is
+            why production holds sleep rows and almost no pain rows for
+            a disease where pain and fatigue are among the most common
+            complaints. The note carries the guideline that says to ask
+            every time. */}
+        <Text style={styles.guidelineNote}>{SYMPTOM_GUIDELINE_NOTE}</Text>
+
+        {renderSymptomScorePicker({
+          scale: PAIN_SCALE,
+          value: followupForm.painScore,
+          onChange: (value) => setFollowupForm((prev) => ({ ...prev, painScore: value })),
+        })}
+        {typeof previousPainScore === 'number' ? (
+          <Text style={styles.previousValueText}>上次记录：{previousPainScore}/10</Text>
+        ) : null}
+
+        {renderSymptomScorePicker({
+          scale: FATIGUE_SCALE,
+          value: followupForm.fatigueScore,
+          onChange: (value) => setFollowupForm((prev) => ({ ...prev, fatigueScore: value })),
+        })}
+        {typeof previousFatigueScore === 'number' ? (
+          <Text style={styles.previousValueText}>上次记录：{previousFatigueScore}/10</Text>
+        ) : null}
+
         <View style={styles.fieldBlock}>
           <Text style={styles.fieldLabel}>最近跌倒次数</Text>
           <Text style={styles.sectionSubtitle}>
@@ -2223,6 +2461,13 @@ const DataEntryScreen = () => {
           {entryMode === 'event' ? renderEventForm() : null}
           {entryMode === 'report' ? renderReportForm() : null}
           {entryMode === 'muscle' ? <MuscleSelfTestForm /> : null}
+          {entryMode === 'instrument' ? (
+            // The consent gate is the screen's, not the child's: an
+            // administration stores health data, and the POST is behind
+            // the same `sensitiveDataConsent` middleware as every other
+            // write here.
+            <InstrumentForm ensureConsent={ensureSensitiveDataConsent} />
+          ) : null}
         </ScrollView>
 
         {(isLoading || isSubmitting) && (

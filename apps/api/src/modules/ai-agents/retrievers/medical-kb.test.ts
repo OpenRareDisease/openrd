@@ -38,6 +38,30 @@ const mockFetchOk = (body: unknown) =>
     }),
   );
 
+/** One canned 200 per call, in order. Needed by every category-filter
+ *  test: the retriever may issue a second, unfiltered request and the
+ *  point of the test is usually that the two answers differ. */
+const mockFetchSequence = (bodies: unknown[]) => {
+  let call = 0;
+  return vi.fn().mockImplementation(() => {
+    const body = bodies[Math.min(call, bodies.length - 1)];
+    call += 1;
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  });
+};
+
+/** The `/multi` payload of the nth fetch (0-indexed). */
+const bodyOf = (fetchMock: ReturnType<typeof vi.fn>, index: number) =>
+  JSON.parse((fetchMock.mock.calls[index][1] as RequestInit).body as string);
+
+/** Long enough and punctuated enough to survive every junk filter. */
+const PROSE = 'FSHD 的肩胛带无力通常最先被注意到，抬臂困难是最常见的首发主诉之一。';
+
 describe('MedicalKbRetriever', () => {
   let originalFetch: typeof globalThis.fetch;
 
@@ -273,10 +297,17 @@ describe('empty corpus must be loud, not 「（无内容）」', () => {
   });
 
   it('does not blame the corpus when a metadata filter was applied', async () => {
-    globalThis.fetch = mockFetchOk({
-      chunks: [],
-      metadata: { backend_hits: 0, below_relevance_floor: false },
-    }) as unknown as typeof globalThis.fetch;
+    // Zero hits inside 指南共识 (51 chunks) says nothing about the other
+    // 9,543. Claiming kb_empty_corpus here would route the patient to
+    //「平台的资料库现在不可用」over a category that simply had no match.
+    const fetchMock = mockFetchSequence([
+      { chunks: [], metadata: { backend_hits: 0, below_relevance_floor: false } },
+      {
+        chunks: [{ content: PROSE, metadata: { source_file: 'a.pdf' }, distance: 0.3 }],
+        metadata: { backend_hits: 12, below_relevance_floor: false },
+      },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
     const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
 
     const result = await retriever.search(
@@ -285,6 +316,52 @@ describe('empty corpus must be loud, not 「（无内容）」', () => {
     );
 
     expect(result.metadata.reason).not.toBe('kb_empty_corpus');
+    expect(result.chunks).toHaveLength(1);
+  });
+
+  it('may still report an empty corpus, but only off the unfiltered attempt', async () => {
+    // Both attempts come back with zero candidates. The second one sent
+    // no `where`, so this really is an empty store and the operator
+    // needs to hear about it.
+    const fetchMock = mockFetchSequence([
+      { chunks: [], metadata: { backend_hits: 0, below_relevance_floor: false } },
+      { chunks: [], metadata: { backend_hits: 0, below_relevance_floor: false } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: 'FSHD 是什么病', filter: { category: '指南共识' } },
+      ctx,
+    );
+
+    expect(result.metadata.reason).toBe('kb_empty_corpus');
+    expect(retrievalFailureReason(result)).toBe('kb_empty_corpus');
+    expect(bodyOf(fetchMock, 1).where).toBeNull();
+  });
+
+  it('an empty-valued filter object must not silence the empty-corpus alarm', async () => {
+    // `{ category: undefined }` is what a caller building a filter from
+    // an absent argument produces. `{}` is truthy, so before
+    // normalisation this suppressed the outage report on every request.
+    const fetchMock = mockFetchOk({
+      chunks: [],
+      metadata: { backend_hits: 0, below_relevance_floor: false },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: 'FSHD 是什么病', filter: { category: undefined } },
+      ctx,
+    );
+
+    expect(result.metadata.reason).toBe('kb_empty_corpus');
+    // And it must be reported off the FIRST attempt: nothing was
+    // filtered, so there is nothing to widen to.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(bodyOf(fetchMock, 0).where).toBeNull();
+    expect(result.metadata.filterFellBack).toBeUndefined();
   });
 
   it('stays silent when the service reports hits that were all filtered out', async () => {
@@ -309,6 +386,187 @@ describe('empty corpus must be loud, not 「（无内容）」', () => {
 
     const result = await retriever.search({ question: 'FSHD 是什么病' }, ctx);
     expect(result.metadata.reason).toBeUndefined();
+  });
+});
+
+describe('category filter — narrows when it helps, widens rather than lie', () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const hit = (content = PROSE, distance = 0.3) => ({
+    content,
+    metadata: { source_file: 'x.pdf' },
+    distance,
+  });
+
+  it('sends the filter to the service as `where`', async () => {
+    const fetchMock = mockFetchSequence([
+      { chunks: [hit()], metadata: { backend_hits: 9, below_relevance_floor: false } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: '确诊后怎么调整心态', filter: { category: '10.心理支持' } },
+      ctx,
+    );
+
+    expect(bodyOf(fetchMock, 0).where).toEqual({ category: '10.心理支持' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.metadata.filterApplied).toEqual({ category: '10.心理支持' });
+    expect(result.metadata.filterFellBack).toBe(false);
+  });
+
+  it('does not touch the relevance floor when it narrows the pool', async () => {
+    // The 0.40 floor was measured on the raw distance over this corpus.
+    // A smaller candidate pool does not change what「close enough」
+    // means, so the retriever must neither send an override nor re-judge
+    // the distances the service already accepted.
+    const fetchMock = mockFetchSequence([
+      {
+        chunks: [hit(PROSE, 0.39)],
+        metadata: { backend_hits: 9, relevance_floor: 0.4, below_relevance_floor: false },
+      },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: '心态', filter: { category: '10.心理支持' } },
+      ctx,
+    );
+
+    expect(bodyOf(fetchMock, 0)).not.toHaveProperty('relevance_floor');
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0].distance).toBe(0.39);
+  });
+
+  it('widens to the whole corpus when the category had nothing close enough', async () => {
+    // 11.病友经验 is 150 of 9,594 chunks. A question it cannot answer is
+    // not a question the corpus cannot answer.
+    const fetchMock = mockFetchSequence([
+      {
+        chunks: [],
+        metadata: { backend_hits: 6, below_relevance_floor: true, relevance_floor: 0.4 },
+      },
+      { chunks: [hit()], metadata: { backend_hits: 40, below_relevance_floor: false } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: 'FSHD 麻醉风险', filter: { category: '11.病友经验' } },
+      ctx,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bodyOf(fetchMock, 1).where).toBeNull();
+    expect(result.chunks).toHaveLength(1);
+    expect(result.metadata.reason).toBeUndefined();
+    expect(result.metadata.filterFellBack).toBe(true);
+    expect(result.metadata.filterApplied).toEqual({ category: '11.病友经验' });
+    expect((result.metadata.filteredAttempt as { reason: string }).reason).toBe(
+      NO_RELEVANT_RESULTS,
+    );
+  });
+
+  it('reports 「查过了，没有」 only after the whole corpus came up short', async () => {
+    const fetchMock = mockFetchSequence([
+      { chunks: [], metadata: { backend_hits: 6, below_relevance_floor: true } },
+      { chunks: [], metadata: { backend_hits: 80, below_relevance_floor: true } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: '针灸能治好吗', filter: { category: '10.心理支持' } },
+      ctx,
+    );
+
+    // The reason the answer layer branches on has to describe the
+    // unfiltered search, because that is the one the sentence
+    //「本平台资料库里没有相关资料」is about.
+    expect(result.metadata.reason).toBe(NO_RELEVANT_RESULTS);
+    expect(retrievalFailureReason(result)).toBeNull();
+    expect(result.metadata.filterFellBack).toBe(true);
+  });
+
+  it('does not retry when the service itself is down', async () => {
+    // Widening cannot reach a service that is not answering; a second
+    // 30s timeout is 30 more seconds a patient waits to be told so.
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: 'FSHD 是什么病', filter: { category: '文献' } },
+      ctx,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.metadata.reason).toBe('kb_service_unreachable');
+    expect(retrievalFailureReason(result)).toBe('kb_service_unreachable');
+  });
+
+  it('does not retry after the caller hung up', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockImplementation(() => {
+      controller.abort();
+      return Promise.resolve(
+        new Response(JSON.stringify({ chunks: [], metadata: { backend_hits: 5 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    await retriever.search(
+      { question: 'FSHD 是什么病', filter: { category: '文献' } },
+      { ...ctx, signal: controller.signal },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the filtered result when the category answered', async () => {
+    const fetchMock = mockFetchSequence([
+      { chunks: [hit(), hit(`${PROSE}另一段。`)], metadata: { backend_hits: 20 } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search(
+      { question: '轮椅怎么申请', filter: { category: '08.无障碍生活' } },
+      ctx,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.chunks).toHaveLength(2);
+    expect(result.metadata.filterFellBack).toBe(false);
+  });
+
+  it('does not widen a search that was never filtered', async () => {
+    const fetchMock = mockFetchSequence([
+      { chunks: [], metadata: { backend_hits: 80, below_relevance_floor: true } },
+    ]);
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const retriever = new MedicalKbRetriever({ kbServiceUrl: 'http://kb' });
+
+    const result = await retriever.search({ question: '针灸能治好吗' }, ctx);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.metadata.filterFellBack).toBeUndefined();
+    expect(result.metadata.reason).toBe(NO_RELEVANT_RESULTS);
   });
 });
 

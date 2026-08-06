@@ -2,6 +2,8 @@ import { Router, type RequestHandler } from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
 import { DELETION_PURGE_INTERVAL_MS } from './account-deletion.js';
+import { InstrumentsController } from './instruments/instruments.controller.js';
+import { InstrumentsService } from './instruments/instruments.service.js';
 import {
   OCR_STUCK_AFTER_MINUTES,
   OCR_SWEEP_INTERVAL_MS,
@@ -57,6 +59,11 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     pool: getPool(),
     logger: context.logger,
   });
+  const instrumentsService = new InstrumentsService({
+    pool: getPool(),
+    logger: context.logger,
+  });
+  const instrumentsController = new InstrumentsController(instrumentsService);
   const localStorage = new LocalStorageProvider();
   const minioStorage =
     context.env.MINIO_ENDPOINT && context.env.MINIO_ACCESS_KEY && context.env.MINIO_SECRET_KEY
@@ -277,6 +284,34 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     asyncHandler(controller.addFollowupEvent),
   );
   router.post('/me/activity-logs', sensitiveDataConsent, asyncHandler(controller.addActivityLog));
+
+  // ------------------------------------------------------------ instruments
+  //
+  // Published measurement scales (Brooke, Vignos), administered as
+  // patient self-assessment. See db/migrations/022_patient_instruments.sql
+  // for the immutability decision these endpoints are built around: a
+  // recorded administration is never updated, and there is deliberately
+  // no PUT or PATCH below. A correction is a POST carrying
+  // `supersedesId`.
+  //
+  // The catalogue is ungated, like every other read here: it contains
+  // no patient data at all, only the anchors, the citation and the
+  // documented limitations of each scale.
+  router.get('/me/instruments', asyncHandler(instrumentsController.listCatalogue));
+  router.get(
+    '/me/instruments/administrations',
+    asyncHandler(instrumentsController.listAdministrations),
+  );
+  router.get('/me/instruments/summary', asyncHandler(instrumentsController.getSummary));
+  // Stores a clinical score, and — when the patient asks for it with
+  // `applyToBaseline` — writes their ambulation state and a
+  // started_wheelchair followup event. Same consent as every other
+  // path that stores health data.
+  router.post(
+    '/me/instruments/administrations',
+    sensitiveDataConsent,
+    asyncHandler(instrumentsController.recordAdministration),
+  );
   // Retract one hand-entered record (function test / symptom score /
   // followup event). Soft delete: the row stays as an audited
   // tombstone, every read path filters it out. `:kind` is parsed

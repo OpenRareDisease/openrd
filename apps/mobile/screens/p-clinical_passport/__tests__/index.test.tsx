@@ -32,6 +32,8 @@ jest.mock('../../../lib/api', () => {
     isConsentRequiredError: () => false,
     getClinicalPassportSummary: jest.fn(),
     getMyPatientProfile: jest.fn(),
+    getInstrumentAdministrations: jest.fn(),
+    getInstrumentCatalogue: jest.fn(),
   };
 });
 
@@ -114,7 +116,12 @@ jest.mock('../../common/Button', () => {
 
 import ClinicalPassportScreen from '../index';
 import styles from '../styles';
-import { getClinicalPassportSummary, getMyPatientProfile } from '../../../lib/api';
+import {
+  getClinicalPassportSummary,
+  getInstrumentAdministrations,
+  getInstrumentCatalogue,
+  getMyPatientProfile,
+} from '../../../lib/api';
 import { renderAnesthesiaCardPng } from '../../../lib/anesthesia-card-image';
 import type { ClinicalPassportSummary } from '../../../lib/api';
 
@@ -265,6 +272,13 @@ const press = (renderer: TestRenderer.ReactTestRenderer, label: string) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // clearAllMocks leaves implementations in place, so this has to be a
+  // reset — otherwise one test's instrument fixture is still answering
+  // in the next one.
+  asMock(getInstrumentAdministrations).mockReset();
+  asMock(getInstrumentAdministrations).mockResolvedValue([]);
+  asMock(getInstrumentCatalogue).mockReset();
+  asMock(getInstrumentCatalogue).mockResolvedValue([]);
 });
 
 describe('麻醉卡：同一份内容，两种载体', () => {
@@ -424,5 +438,135 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
     expect(notice.borderLeftColor).not.toBe(COLOR.warn);
     expect(notice.borderLeftColor).not.toBe(COLOR.warnWash);
     expect(noticeText.color).not.toBe(COLOR.warn);
+  });
+});
+
+/**
+ * 功能分级 on the passport.
+ *
+ * The requirement is exact and it is not cosmetic: 「上肢 Brooke 3 级
+ * （去年同期 2 级）」 must appear WITH the behavioural anchor, and a bare
+ * number must never appear at all. This page gets printed and handed to
+ * a neurologist who may see three FSHD patients a year, and this app
+ * carries three scales at once — Brooke 1-6 and Vignos 1-10 both count
+ * upward toward worse, while the MRC strength score on the same record
+ * counts upward toward better. 「3」 alone is three different patients.
+ *
+ * Note what the fixtures do NOT do: they never state an anchor this
+ * bundle authored. `levelLabelZh` comes off the wire, resolved by the
+ * server against the version the patient answered, and the screen has
+ * no fallback wording of its own to reach for.
+ */
+describe('功能分级：一个数字必须带着它的那句话', () => {
+  const BROOKE_KEY = 'brooke_upper_extremity';
+  const BROOKE_L3 = '手举不到头顶上方，但能把一杯约 240 毫升（8 盎司）的水端到嘴边。';
+  const BROOKE_L2 = '只有先把手肘弯起来，才能把手举过头顶。';
+
+  const administration = (over: Record<string, unknown> = {}) => ({
+    id: 'a1',
+    instrumentKey: BROOKE_KEY,
+    instrumentVersion: 'v1',
+    instrumentNameZh: 'Brooke 上肢功能分级',
+    scoredValue: 3,
+    levelLabelZh: BROOKE_L3,
+    source: 'self',
+    assistedBy: 'none',
+    supersededById: null,
+    administeredAt: '2026-08-01T00:00:00.000Z',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    responses: [
+      { itemCode: 'brooke_grade', responseValue: 3, skipped: false, notApplicable: false },
+    ],
+    ...over,
+  });
+
+  const catalogue = () => [
+    {
+      key: BROOKE_KEY,
+      version: 'v1',
+      nameZh: 'Brooke 上肢功能分级',
+      descriptionZh: '',
+      licenceStatus: 'free_with_attribution',
+      sourceCitation: 'Brooke MH, et al. Muscle Nerve. 1981;4(3):186-97.',
+      scoreMin: 1,
+      scoreMax: 6,
+      higherIsWorse: true,
+      recallPeriod: 'current',
+      adminMinutes: 2,
+      limitationsZh: [],
+      selfReportEvidenceZh: '',
+      items: [{ code: 'brooke_grade', version: 'v1', promptZh: 'p', levels: [] }],
+    },
+  ];
+
+  it('印出「上肢 Brooke 3 级（去年同期 2 级）」，并带上两级的描述', async () => {
+    asMock(getInstrumentAdministrations).mockResolvedValue([
+      administration({ id: 'now', administeredAt: '2026-08-01T00:00:00.000Z' }),
+      administration({
+        id: 'then',
+        scoredValue: 2,
+        levelLabelZh: BROOKE_L2,
+        administeredAt: '2025-08-05T00:00:00.000Z',
+      }),
+    ]);
+    const renderer = await render(summary());
+    const text = allText(renderer).join('\n');
+
+    expect(text).toContain('上肢 Brooke 3 级（去年同期 2 级）');
+    expect(text).toContain(BROOKE_L3);
+    // And last year's, so「变差了」says what the patient could do then.
+    expect(text).toContain(BROOKE_L2);
+  });
+
+  it('标明是本人自评，并在目录可用时写出量表出处', async () => {
+    asMock(getInstrumentAdministrations).mockResolvedValue([administration()]);
+    asMock(getInstrumentCatalogue).mockResolvedValue(catalogue());
+    const renderer = await render(summary());
+    const text = allText(renderer).join('\n');
+    expect(text).toContain('功能分级（本人自评）');
+    expect(text).toContain('Muscle Nerve. 1981');
+  });
+
+  it('服务端说不出这一级是什么意思时，整块不出现', async () => {
+    // levelLabelZh is null when the stored version is not in the
+    // server's registry. Printing the number alone is the one outcome
+    // worse than printing nothing.
+    asMock(getInstrumentAdministrations).mockResolvedValue([
+      administration({ levelLabelZh: null }),
+    ]);
+    const renderer = await render(summary());
+    const text = allText(renderer).join('\n');
+    expect(text).not.toContain('功能分级（本人自评）');
+    expect(text).not.toContain('上肢 Brooke');
+  });
+
+  it('目录读不到时仍然渲染 —— 每一行自己带着那句话', async () => {
+    asMock(getInstrumentAdministrations).mockResolvedValue([administration()]);
+    asMock(getInstrumentCatalogue).mockRejectedValue(new Error('offline'));
+    const renderer = await render(summary());
+    const text = allText(renderer).join('\n');
+    expect(text).toContain('上肢 Brooke 3 级');
+    expect(text).toContain(BROOKE_L3);
+    // No citation is printed rather than a remembered one.
+    expect(text).not.toContain('Muscle Nerve');
+  });
+
+  it('接口还没上线时，护照其余部分照常渲染', async () => {
+    asMock(getInstrumentAdministrations).mockRejectedValue(new Error('404 not found'));
+    asMock(getInstrumentCatalogue).mockRejectedValue(new Error('404 not found'));
+    const renderer = await render(geneticSummary());
+    const text = allText(renderer).join('\n');
+    expect(text).not.toContain('功能分级（本人自评）');
+    // The page the patient actually came for is untouched.
+    expect(text).toContain('FSHD-A1B2C3D4E5');
+    expect(text).toContain('证据摘要');
+  });
+
+  it('一次记录时不编造对比', async () => {
+    asMock(getInstrumentAdministrations).mockResolvedValue([administration()]);
+    const renderer = await render(summary());
+    const text = allText(renderer).join('\n');
+    expect(text).toContain('上肢 Brooke 3 级');
+    expect(text).not.toContain('去年同期');
   });
 });

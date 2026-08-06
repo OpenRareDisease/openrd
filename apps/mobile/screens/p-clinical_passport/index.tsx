@@ -26,12 +26,19 @@ import TimelineSectionCard from '../common/TimelineSectionCard';
 import {
   ApiError,
   getClinicalPassportSummary,
+  getInstrumentAdministrations,
+  getInstrumentCatalogue,
   getMyPatientProfile,
   isConsentRequiredError,
   type ClinicalPassportSummary,
   type PatientProfile,
   type StreamAiQuestionHandle,
 } from '../../lib/api';
+// The summary logic lives with the form that writes these records, so
+// there is one implementation of「a level only exists with its anchor」
+// rather than two. Importing across screens is already how
+// SensitiveDataConsentGate is shared.
+import { summarizeInstruments, type InstrumentSummary } from '../p-data_entry/instruments';
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { VISIT_PREP_NOTE_KEY } from '../../lib/draft-keys';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
@@ -99,6 +106,10 @@ const ClinicalPassportScreen = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
+  /** Brooke / Vignos, one entry per instrument that has a usable
+   *  reading. Empty until the instruments endpoint answers, and empty
+   *  forever if it never does. */
+  const [instrumentSummaries, setInstrumentSummaries] = useState<InstrumentSummary[]>([]);
   // 门诊准备: generated on demand, not on load. It costs an LLM round
   // trip and it's only wanted when a visit is actually coming up —
   // auto-generating on every open would spend tokens on the many
@@ -114,6 +125,31 @@ const ClinicalPassportScreen = () => {
   // would mean calling setState from inside another setState updater,
   // which React may replay.
   const visitPrepStreamRef = useRef('');
+
+  /**
+   * 功能分级. Never throws: both reads swallow their own failure, and an
+   * empty result renders nothing at all.
+   *
+   * That second half is the enforcement behind「NEVER a bare number」on
+   * this screen. `summarizeInstruments` constructs no reading for a
+   * grade whose behavioural anchor it cannot produce — and the anchor
+   * it uses is the server's `levelLabelZh`, resolved against the
+   * version the patient answered, which the server itself leaves null
+   * rather than fabricating. There is therefore no code path from an
+   * unnamed grade to this page: the value being rendered does not exist
+   * without its sentence.
+   */
+  const loadInstruments = async () => {
+    // Two independent reads. The administrations are the record; the
+    // catalogue only supplies display names and the citation, and each
+    // stored row already carries its own resolved anchor — so a
+    // catalogue that fails still leaves a renderable, honest line.
+    const [administrations, catalogue] = await Promise.all([
+      getInstrumentAdministrations({ limit: 200 }).catch(() => []),
+      getInstrumentCatalogue().catch(() => []),
+    ]);
+    setInstrumentSummaries(summarizeInstruments(administrations, catalogue));
+  };
 
   const loadPassport = async () => {
     try {
@@ -132,6 +168,14 @@ const ClinicalPassportScreen = () => {
       // longer does.
       setAnesthesiaCard(null);
       setAnesthesiaModel(null);
+
+      // Instruments load SEPARATELY and never inside the Promise.all
+      // above. The endpoint is new; if it 404s, errors, or has not
+      // shipped, the passport must still render everything else. A
+      // rejection here would otherwise take the whole page to the error
+      // state — trading the diagnosis, the reports and the timeline for
+      // a functional grade that is nice to have.
+      void loadInstruments();
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '无法获取临床护照数据';
       setErrorMessage(message);
@@ -811,6 +855,53 @@ const ClinicalPassportScreen = () => {
 
                 <View style={styles.figureStack}>
                   <View style={styles.figureShell}>
+                    {/* 功能分级. Rendered only when there is a reading
+                        whose level this build can name — an unnamed
+                        level produces no summary at all, so there is no
+                        path from a number to this page without the
+                        sentence that says what it means. A clinician
+                        who sees「3」 with nothing beside it will read it
+                        against whichever scale they used last, and this
+                        app runs three scales with three ranges and two
+                        directions (Brooke 1-6, Vignos 1-10, MRC 0-5). */}
+                    {instrumentSummaries.length > 0 ? (
+                      <View style={styles.instrumentBlock}>
+                        <Text style={styles.noteTitle}>功能分级（本人自评）</Text>
+                        {instrumentSummaries.map((summary) => (
+                          <View key={summary.instrumentKey} style={styles.instrumentRow}>
+                            <Text style={styles.instrumentHeadline}>{summary.headline}</Text>
+                            <Text style={styles.instrumentAnchor}>{summary.latest.anchor}</Text>
+                            {summary.comparison ? (
+                              // The earlier level gets its sentence too.
+                              // 「去年同期 2 级」 alone tells a reader
+                              // that something moved but not what the
+                              // patient could do then.
+                              <Text style={styles.instrumentPrevious}>
+                                {summary.comparison.label}（{summary.comparison.reading.level}{' '}
+                                级）：
+                                {summary.comparison.reading.anchor}
+                              </Text>
+                            ) : null}
+                          </View>
+                        ))}
+                        {/* Which published scale, straight from the
+                            catalogue. It changes how a reader weighs
+                            the number, and the licence on both of these
+                            scales requires the attribution to travel
+                            with the wording. Absent when the catalogue
+                            was unreachable — an empty line rather than
+                            a remembered citation. */}
+                        {instrumentSummaries.some((summary) => summary.entry?.sourceCitation) ? (
+                          <Text style={styles.instrumentSource}>
+                            {instrumentSummaries
+                              .map((summary) => summary.entry?.sourceCitation)
+                              .filter(Boolean)
+                              .join(' ')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+
                     <View style={styles.noteCard}>
                       <Text style={styles.noteTitle}>最近功能变化</Text>
                       <Text style={styles.noteText}>
