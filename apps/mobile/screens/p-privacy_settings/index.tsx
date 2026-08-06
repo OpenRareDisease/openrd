@@ -15,16 +15,20 @@ import styles from './styles';
 
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
 import {
+  createPassportPickup,
   createPassportShare,
   listPassportShares,
   revokePassportShare,
 } from '../../lib/passport-share-api';
 import {
+  buildPickupUrl,
   buildShareUrl,
+  describePickupState,
   describeShareLife,
   isShareLive,
   type PassportShare,
 } from '../../lib/passport-share';
+import PickupCodeCard from './components/PickupCodeCard';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import Button from '../common/Button';
@@ -161,6 +165,23 @@ const PrivacySettingsScreen = () => {
   // Held in component state and nowhere else. See passport-share-api.ts:
   // the server keeps only a digest and cannot reissue this.
   const [freshLink, setFreshLink] = useState<{ url: string | null; token: string } | null>(null);
+  /**
+   * The pickup code, held in component state and nowhere else, exactly
+   * like `freshLink`. The server stores a digest of it and cannot
+   * reissue it — see db/migrations/024.
+   *
+   * `minutesLeft` is captured at creation rather than ticked down. A
+   * live countdown would need a timer on a screen that already re-renders
+   * on four other subscriptions, and the card is looked at for about
+   * thirty seconds before the code is either used or abandoned. The
+   * revoke list below carries the real remaining time on every reload.
+   */
+  const [creatingPickup, setCreatingPickup] = useState(false);
+  const [freshPickup, setFreshPickup] = useState<{
+    code: string;
+    qrUrl: string | null;
+    minutesLeft: number;
+  } | null>(null);
 
   const loadShares = useCallback(async () => {
     try {
@@ -202,6 +223,9 @@ const PrivacySettingsScreen = () => {
           token: link.token,
         });
       }
+      // One credential on screen at a time. Two of them under one
+      // heading is how a patient reads out the wrong one.
+      setFreshPickup(null);
       await loadShares();
     } catch (error) {
       notify({
@@ -217,6 +241,42 @@ const PrivacySettingsScreen = () => {
     }
   };
 
+  const onCreatePickup = async () => {
+    setCreatingPickup(true);
+    try {
+      // Throws rather than resolving without a code, for the same
+      // reason createPassportShare does: the server has already opened
+      // a door by the time this returns.
+      const created = await createPassportPickup();
+      const ms = new Date(created.pickup.expiresAt).getTime() - Date.now();
+      setFreshPickup({
+        code: created.code,
+        // window.location exists only on the web export, which is how
+        // essentially every patient reaches this app. On native there
+        // is no origin, so no QR — the card says the code alone, and
+        // the doctor types the address once. A QR built from a guessed
+        // host would send them to a page that does not exist.
+        qrUrl: buildPickupUrl(typeof window !== 'undefined' ? window.location?.origin : null),
+        minutesLeft: Number.isFinite(ms) && ms > 0 ? Math.max(1, Math.round(ms / 60_000)) : 15,
+      });
+      // Showing a pickup code and an old link at once is two doors on
+      // one screen with one heading; the list below still lists both.
+      setFreshLink(null);
+      await loadShares();
+    } catch (error) {
+      notify({
+        // Any Error, not just ApiError: the server's 「请先填写出生日期」
+        // and the client's shape-check message both tell the patient
+        // what to actually do, and 「请稍后重试」 would send them back
+        // to press the button again.
+        message: error instanceof Error ? error.message : '请稍后重试',
+        title: '没能生成取件码',
+      });
+    } finally {
+      setCreatingPickup(false);
+    }
+  };
+
   const onRevokeShare = async (share: PassportShare) => {
     const ok = await confirm({
       title: '撤销这个链接？',
@@ -228,9 +288,11 @@ const PrivacySettingsScreen = () => {
     setRevokingShareId(share.id);
     try {
       await revokePassportShare(share.id);
-      // The link on screen may be the one just revoked; clearing it
-      // stops the patient copying a dead URL to someone.
+      // The credential on screen may be the one just revoked; clearing
+      // both stops the patient handing a dead URL — or reading out a
+      // dead code — to someone standing in front of them.
       setFreshLink(null);
+      setFreshPickup(null);
       await loadShares();
     } catch (error) {
       notify({
@@ -888,6 +950,23 @@ const PrivacySettingsScreen = () => {
             你可以生成一个只读链接，在微信里发给医生。对方不需要注册、不需要装 App，
             打开就能看到你的临床护照。链接会自动失效，你也可以随时撤销。
           </Text>
+          {/* 当面交 vs 微信发 —— two different rooms.
+              A URL is right when the doctor is not in front of you.
+              When they are, there is no chat window between you, and
+              「把手机举起来给对方看」 is exactly the ask this disease
+              makes hardest. See db/migrations/024. */}
+          <Text style={styles.settingDescription}>
+            如果医生就在你面前，用取件码更省事：你念 8 位码，他在自己的电脑或手机上输入，
+            再输一次你的出生日期就能打开。取件码 15 分钟有效、只能用一次。
+          </Text>
+
+          {freshPickup ? (
+            <PickupCodeCard
+              code={freshPickup.code}
+              qrUrl={freshPickup.qrUrl}
+              minutesLeft={freshPickup.minutesLeft}
+            />
+          ) : null}
 
           {freshLink ? (
             <View style={styles.shareFresh}>
@@ -906,6 +985,19 @@ const PrivacySettingsScreen = () => {
             </View>
           ) : null}
 
+          {/* The in-person action first: it is the one that happens
+              while the patient is standing in front of someone, and
+              the one whose credential dies in fifteen minutes. */}
+          <Button
+            label="当面给医生：生成取件码"
+            icon="qrcode"
+            variant="tinted"
+            fullWidth
+            busy={creatingPickup}
+            accessibilityHint="生成一个 8 位取件码和二维码，医生在自己的设备上输入取件码和你的出生日期就能打开你的临床护照。15 分钟有效，只能用一次"
+            onPress={onCreatePickup}
+          />
+
           <Button
             label="生成一个给医生看的链接"
             icon="arrow-up-right-from-square"
@@ -921,14 +1013,20 @@ const PrivacySettingsScreen = () => {
           {shares && shares.length > 0
             ? shares.map((share) => {
                 const live = isShareLive(share);
+                // A pickup row and a link row are both doors and belong
+                // in the same list — but they are not interchangeable:
+                // one was forwarded in WeChat and one was read out
+                // loud, and「已被取走一次」 has no meaning for a link.
+                const pickupState = describePickupState(share);
                 return (
                   <View key={share.id} style={styles.shareRow}>
                     <View style={styles.shareRowCopy}>
                       <Text style={styles.shareRowTitle}>
-                        {share.label ?? `${share.createdAt.slice(0, 10)} 生成`}
+                        {share.label ??
+                          `${share.createdAt.slice(0, 10)} ${share.pickup ? '生成的取件码' : '生成'}`}
                       </Text>
                       <Text style={styles.shareRowMeta}>
-                        {describeShareLife(share)}
+                        {pickupState ?? describeShareLife(share)}
                         {/* 「还没有人打开过」 is worth saying explicitly:
                             a patient checking whether their doctor
                             looked at it should not have to infer it

@@ -67,6 +67,18 @@ export default StyleSheet.create({
     ...TYPE.caption,
     color: COLOR.inkMuted,
   },
+  // Sits between two sections rather than inside one: the timeline is
+  // a different page, not another claim in the 「怀孕本身会怎么样」 card,
+  // and putting it inside that card's border would have made a
+  // navigation control look like a sourced statement.
+  crossLink: {
+    marginBottom: SPACE.md,
+  },
+  crossLinkHint: {
+    ...TYPE.caption,
+    color: COLOR.inkMuted,
+    marginTop: SPACE.sm,
+  },
   disclaimer: {
     ...TYPE.caption,
     color: COLOR.inkMuted,

@@ -1,0 +1,795 @@
+{
+  "format": "HL7 FHIR R4 document Bundle",
+  "conformanceZh": "按 FHIR R4 的资源结构序列化为 type=document 的 Bundle（首个条目为 Composition），未经官方校验器校验。所有临床概念使用 CodeableConcept.text，不附带外部术语编码。",
+  "generatedAt": "2026-01-15T08:00:00.000Z",
+  "document": {
+    "resourceType": "Bundle",
+    "id": "4eb5207d-02e6-81a7-83b9-ae9f750357c7",
+    "type": "document",
+    "timestamp": "2026-01-15T08:00:00.000Z",
+    "entry": [
+      {
+        "fullUrl": "urn:uuid:69bd8582-f91b-82a4-81d0-0d0598938f43",
+        "resource": {
+          "resourceType": "Composition",
+          "id": "69bd8582-f91b-82a4-81d0-0d0598938f43",
+          "status": "final",
+          "type": {
+            "text": "患者自持的疾病记录摘要（面肩肱型肌营养不良）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "date": "2026-01-15T08:00:00.000Z",
+          "author": [
+            {
+              "reference": "urn:uuid:11111111-1111-4111-8111-111111111111",
+              "display": "患者本人（本记录由患者自行采集与自述）"
+            }
+          ],
+          "title": "肌愈通 患者自持记录导出",
+          "section": [
+            {
+              "title": "诊断",
+              "entry": [
+                {
+                  "reference": "urn:uuid:0b1426f8-f86d-8a57-9812-28e3c1a525a2"
+                }
+              ]
+            },
+            {
+              "title": "观察与自评记录",
+              "entry": [
+                {
+                  "reference": "urn:uuid:66666666-6666-4666-8666-666666666661"
+                },
+                {
+                  "reference": "urn:uuid:55555555-5555-4555-8555-555555555551"
+                },
+                {
+                  "reference": "urn:uuid:44444444-4444-4444-8444-444444444442"
+                },
+                {
+                  "reference": "urn:uuid:44444444-4444-4444-8444-444444444441"
+                },
+                {
+                  "reference": "urn:uuid:33333333-3333-4333-8333-333333333331"
+                },
+                {
+                  "reference": "urn:uuid:77777777-7777-4777-8777-777777777773"
+                },
+                {
+                  "reference": "urn:uuid:fa447449-9648-8c3e-989b-17f5950a5e08"
+                },
+                {
+                  "reference": "urn:uuid:6cad87ef-6579-8e97-8e8b-336c6f80b0d0"
+                },
+                {
+                  "reference": "urn:uuid:33333333-3333-4333-8333-333333333332"
+                },
+                {
+                  "reference": "urn:uuid:55555555-5555-4555-8555-555555555552"
+                },
+                {
+                  "reference": "urn:uuid:f518aa61-e86d-89ed-9423-c381d8f93bf4"
+                },
+                {
+                  "reference": "urn:uuid:aa301cfb-381d-81e1-b8c0-021715c7aaea"
+                },
+                {
+                  "reference": "urn:uuid:77777777-7777-4777-8777-777777777772"
+                },
+                {
+                  "reference": "urn:uuid:77777777-7777-4777-8777-777777777771"
+                }
+              ]
+            },
+            {
+              "title": "报告自动解析结果",
+              "entry": [
+                {
+                  "reference": "urn:uuid:36a00f89-a914-8fe7-97d4-8d383c0ac45b"
+                },
+                {
+                  "reference": "urn:uuid:957afebb-3b66-899d-84ab-5afabada91a9"
+                }
+              ]
+            },
+            {
+              "title": "已上传的报告文件",
+              "entry": [
+                {
+                  "reference": "urn:uuid:88888888-8888-4888-8888-888888888881"
+                },
+                {
+                  "reference": "urn:uuid:88888888-8888-4888-8888-888888888882"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:11111111-1111-4111-8111-111111111111",
+        "resource": {
+          "resourceType": "Patient",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "gender": "female",
+          "birthDate": "1988"
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:0b1426f8-f86d-8a57-9812-28e3c1a525a2",
+        "resource": {
+          "resourceType": "Condition",
+          "id": "0b1426f8-f86d-8a57-9812-28e3c1a525a2",
+          "clinicalStatus": {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+                "code": "active"
+              }
+            ],
+            "text": "现症"
+          },
+          "verificationStatus": {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+                "code": "confirmed"
+              }
+            ],
+            "text": "患者已上传基因检测报告（报告内容未经本平台人工复核）"
+          },
+          "code": {
+            "text": "面肩肱型肌营养不良 1 型（FSHD1）（OMIM 158900）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "recordedDate": "2014"
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:88888888-8888-4888-8888-888888888881",
+        "resource": {
+          "resourceType": "DocumentReference",
+          "id": "88888888-8888-4888-8888-888888888881",
+          "status": "current",
+          "type": {
+            "text": "基因检测报告"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "date": "2024-02-01T06:00:00.000Z",
+          "content": [
+            {
+              "attachment": {
+                "contentType": "application/pdf",
+                "title": "D4Z4 检测报告",
+                "size": 204800,
+                "url": "/patient-profiles/me/documents/88888888-8888-4888-8888-888888888881"
+              }
+            }
+          ],
+          "description": "原件需要患者本人的凭据方可取得；本导出不包含文件内容。"
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:88888888-8888-4888-8888-888888888882",
+        "resource": {
+          "resourceType": "DocumentReference",
+          "id": "88888888-8888-4888-8888-888888888882",
+          "status": "current",
+          "type": {
+            "text": "血液检验报告"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "date": "2025-05-10T06:00:00.000Z",
+          "content": [
+            {
+              "attachment": {
+                "contentType": "application/pdf",
+                "title": "生化检验",
+                "size": 102400,
+                "url": "/patient-profiles/me/documents/88888888-8888-4888-8888-888888888882"
+              }
+            }
+          ],
+          "description": "原件需要患者本人的凭据方可取得；本导出不包含文件内容。"
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:66666666-6666-4666-8666-666666666661",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "66666666-6666-4666-8666-666666666661",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "洗头困难程度"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-06-02T01:10:00.000Z",
+          "valueInteger": 3,
+          "note": [
+            {
+              "text": "需要他人协助。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:55555555-5555-4555-8555-555555555551",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "55555555-5555-4555-8555-555555555551",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "疲劳"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-06-02T01:00:00.000Z",
+          "valueQuantity": {
+            "value": 7,
+            "unit": "分（量表范围 0–10）"
+          },
+          "note": [
+            {
+              "text": "患者自评。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:44444444-4444-4444-8444-444444444442",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "44444444-4444-4444-8444-444444444442",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "activity"
+                }
+              ],
+              "text": "活动能力"
+            }
+          ],
+          "code": {
+            "text": "爬楼梯计时"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-06-01T03:10:00.000Z",
+          "dataAbsentReason": {
+            "text": "患者当天尝试后无法完成该测试（不是未测）"
+          }
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:44444444-4444-4444-8444-444444444441",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "44444444-4444-4444-8444-444444444441",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "activity"
+                }
+              ],
+              "text": "活动能力"
+            }
+          ],
+          "code": {
+            "text": "10 米步行计时"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-06-01T03:00:00.000Z",
+          "valueQuantity": {
+            "value": 14.2,
+            "unit": "sec"
+          },
+          "note": [
+            {
+              "text": "完成时需要他人或器具协助。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:33333333-3333-4333-8333-333333333331",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "33333333-3333-4333-8333-333333333331",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "exam"
+                }
+              ],
+              "text": "体格检查"
+            }
+          ],
+          "code": {
+            "text": "三角肌肌力（左侧）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-06-01T02:00:00.000Z",
+          "valueQuantity": {
+            "value": 3,
+            "unit": "MRC 分级（0–5，5 为正常）"
+          },
+          "note": [
+            {
+              "text": "患者自评或在应用引导下自测，非临床环境下的标准化徒手肌力测试。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:77777777-7777-4777-8777-777777777773",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "77777777-7777-4777-8777-777777777773",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "跌倒"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-05-20T09:00:00.000Z",
+          "valueBoolean": true,
+          "note": [
+            {
+              "text": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+            },
+            {
+              "text": "严重程度：轻（患者自评）。"
+            },
+            {
+              "text": "在浴室滑倒"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:fa447449-9648-8c3e-989b-17f5950a5e08",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "fa447449-9648-8c3e-989b-17f5950a5e08",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "laboratory"
+                }
+              ],
+              "text": "检验"
+            }
+          ],
+          "code": {
+            "text": "肌酸激酶（CK）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-05-09",
+          "valueString": "1245 U/L",
+          "derivedFrom": [
+            {
+              "reference": "urn:uuid:88888888-8888-4888-8888-888888888882"
+            }
+          ],
+          "note": [
+            {
+              "text": "由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:6cad87ef-6579-8e97-8e8b-336c6f80b0d0",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "6cad87ef-6579-8e97-8e8b-336c6f80b0d0",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "laboratory"
+                }
+              ],
+              "text": "检验"
+            }
+          ],
+          "code": {
+            "text": "用力肺活量占预计值百分比（FVC%pred）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-05-09",
+          "valueString": "78%",
+          "derivedFrom": [
+            {
+              "reference": "urn:uuid:88888888-8888-4888-8888-888888888882"
+            }
+          ],
+          "note": [
+            {
+              "text": "由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:33333333-3333-4333-8333-333333333332",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "33333333-3333-4333-8333-333333333332",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "exam"
+                }
+              ],
+              "text": "体格检查"
+            }
+          ],
+          "code": {
+            "text": "胫骨前肌肌力（双侧）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-05-02T02:00:00.000Z",
+          "valueQuantity": {
+            "value": 4,
+            "unit": "MRC 分级（0–5，5 为正常）"
+          },
+          "note": [
+            {
+              "text": "由临床人员录入。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:55555555-5555-4555-8555-555555555552",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "55555555-5555-4555-8555-555555555552",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "疲劳"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-04-02T01:00:00.000Z",
+          "valueQuantity": {
+            "value": 5,
+            "unit": "分（量表范围 0–10）"
+          },
+          "note": [
+            {
+              "text": "患者自评。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:f518aa61-e86d-89ed-9423-c381d8f93bf4",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "f518aa61-e86d-89ed-9423-c381d8f93bf4",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "laboratory"
+                }
+              ],
+              "text": "检验"
+            }
+          ],
+          "code": {
+            "text": "D4Z4 重复单元数"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2024-01-28",
+          "valueString": "5",
+          "derivedFrom": [
+            {
+              "reference": "urn:uuid:88888888-8888-4888-8888-888888888881"
+            }
+          ],
+          "note": [
+            {
+              "text": "由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:aa301cfb-381d-81e1-b8c0-021715c7aaea",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "aa301cfb-381d-81e1-b8c0-021715c7aaea",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "laboratory"
+                }
+              ],
+              "text": "检验"
+            }
+          ],
+          "code": {
+            "text": "4q 单倍型"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2024-01-28",
+          "valueString": "4qA",
+          "derivedFrom": [
+            {
+              "reference": "urn:uuid:88888888-8888-4888-8888-888888888881"
+            }
+          ],
+          "note": [
+            {
+              "text": "由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:77777777-7777-4777-8777-777777777772",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "77777777-7777-4777-8777-777777777772",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "开始使用无创通气（NIV）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2023-08-14T13:30:00.000Z",
+          "valueBoolean": true,
+          "note": [
+            {
+              "text": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:77777777-7777-4777-8777-777777777771",
+        "resource": {
+          "resourceType": "Observation",
+          "id": "77777777-7777-4777-8777-777777777771",
+          "status": "final",
+          "category": [
+            {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                  "code": "survey"
+                }
+              ],
+              "text": "自评问卷"
+            }
+          ],
+          "code": {
+            "text": "开始使用轮椅"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2019",
+          "valueBoolean": true,
+          "note": [
+            {
+              "text": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+            },
+            {
+              "text": "外出较远时开始用轮椅"
+            }
+          ]
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:36a00f89-a914-8fe7-97d4-8d383c0ac45b",
+        "resource": {
+          "resourceType": "DiagnosticReport",
+          "id": "36a00f89-a914-8fe7-97d4-8d383c0ac45b",
+          "status": "final",
+          "code": {
+            "text": "血液检验报告（自动解析结果）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2025-05-09",
+          "result": [
+            {
+              "reference": "urn:uuid:fa447449-9648-8c3e-989b-17f5950a5e08"
+            },
+            {
+              "reference": "urn:uuid:6cad87ef-6579-8e97-8e8b-336c6f80b0d0"
+            }
+          ],
+          "conclusion": "本条目由自动识别结果汇总生成，不含医师结论；请以原始报告与主诊医师意见为准。"
+        }
+      },
+      {
+        "fullUrl": "urn:uuid:957afebb-3b66-899d-84ab-5afabada91a9",
+        "resource": {
+          "resourceType": "DiagnosticReport",
+          "id": "957afebb-3b66-899d-84ab-5afabada91a9",
+          "status": "final",
+          "code": {
+            "text": "基因检测报告（自动解析结果）"
+          },
+          "subject": {
+            "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
+          },
+          "effectiveDateTime": "2024-01-28",
+          "result": [
+            {
+              "reference": "urn:uuid:f518aa61-e86d-89ed-9423-c381d8f93bf4"
+            },
+            {
+              "reference": "urn:uuid:aa301cfb-381d-81e1-b8c0-021715c7aaea"
+            }
+          ],
+          "conclusion": "本条目由自动识别结果汇总生成，不含医师结论；请以原始报告与主诊医师意见为准。"
+        }
+      }
+    ]
+  },
+  "omissions": [
+    {
+      "field": "Patient.name / Patient.telecom / Patient.address",
+      "reasonZh": "直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。姓名等只出现在 TREAT-NMD 对齐导出的 localOnly 节。"
+    },
+    {
+      "field": "CodeableConcept.coding (LOINC)",
+      "reasonZh": "所有临床概念都以 text + 显示名给出，不附带 LOINC 等外部编码。本仓库内没有可核对的 LOINC 来源，写入未经核对的编码会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。具体见 codingProvenance.withheld。"
+    }
+  ],
+  "notes": {
+    "编码": "本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。",
+    "文件": "DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。",
+    "日期": "里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。"
+  },
+  "codingProvenance": {
+    "emitted": [],
+    "withheld": [
+      {
+        "system": "LOINC",
+        "code": "2157-6",
+        "wouldMean": "Creatine kinase [Enzymatic activity/volume] in Serum or Plasma",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "19870-5",
+        "wouldMean": "Forced vital capacity [Volume] Respiratory system",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "19872-1",
+        "wouldMean": "FVC percent predicted",
+        "whyNotVerified": "No LOINC release in this repository, and the %-predicted spirometry codes are a family that is easy to confuse with the plain-volume ones — the highest-risk entry in this list."
+      },
+      {
+        "system": "LOINC",
+        "code": "19911-7",
+        "wouldMean": "Diffusing capacity of the lung for carbon monoxide (DLCO)",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "64098-7",
+        "wouldMean": "6 minute walk test distance",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      }
+    ],
+    "noteZh": "本导出只使用可在本仓库内核对来源的编码。无法核对的编码一律不写入，相关项目改为「有显示名、无编码」的纯文本形式——这在 FHIR 与 Phenopacket 中都是合法的，且不会让接收系统误信一个未经核对的代码。withheld 列出的是本应编码、但因缺少可核对来源而留空的项目。"
+  }
+}

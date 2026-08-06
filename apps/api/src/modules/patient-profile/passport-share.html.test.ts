@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPassportSharePage } from './passport-share.html.js';
+import {
+  buildPassportSharePage,
+  buildPickupFormPage,
+  buildPickupUnavailablePage,
+} from './passport-share.html.js';
 import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
 
 /**
@@ -185,5 +189,98 @@ describe('给医生的部分', () => {
 
   it('监测槽位带上「是否需要做」的说明', () => {
     expect(page()).toContain('不需要常规做心电图');
+  });
+});
+
+/* ================================================================
+ * The pickup pages.
+ *
+ * Read for about eight seconds by someone standing up in a consulting
+ * room, in WeChat's X5 webview or a hospital Android that may be older
+ * than the patient's diagnosis. Two hard rules:
+ *
+ *   - NO SCRIPT. A plain form POST or nothing.
+ *   - The failure page names no reason. Which failure it was is the
+ *     one fact that would tell a guesser they guessed a real patient.
+ * ================================================================ */
+
+describe('取件码表单页', () => {
+  const page = buildPickupFormPage('/s/passport/pickup');
+
+  it('是个不带脚本的普通表单 —— X5 里必须能用', () => {
+    expect(page).not.toMatch(/<script/i);
+    expect(page).not.toMatch(/\son[a-z]+=/i);
+    expect(page).toContain('<form method="post" action="/s/passport/pickup"');
+  });
+
+  it('两个输入框都在，且都是 required', () => {
+    expect(page).toMatch(/id="code"[^>]*required/);
+    expect(page).toMatch(/id="dob"[^>]*required/);
+  });
+
+  it('把 Crockford 的折叠规则直接写给医生看', () => {
+    // Otherwise a doctor who reads「0」as「O」types it, fails, and
+    // spends one of three attempts on a rule nobody told them.
+    expect(page).toContain('I、L 按 1 输，O 按 0 输也可以');
+  });
+
+  it('说清楚 15 分钟、一次性、错 3 次作废', () => {
+    expect(page).toContain('15 分钟内有效，只能用一次');
+    expect(page).toContain('输错 3 次');
+  });
+
+  it('说清楚出生日期那一栏是干什么的', () => {
+    // A doctor asked for a patient's birthdate with no explanation
+    // reasonably wonders whether we are collecting it.
+    expect(page).toContain('确认你打开的是眼前这位患者的记录');
+  });
+
+  it('不进索引、不带 Referer 出去', () => {
+    expect(page).toContain('name="robots" content="noindex, nofollow, noarchive"');
+    expect(page).toContain('name="referrer" content="no-referrer"');
+  });
+
+  it('action 是转义过的，不能被挂载路径注入', () => {
+    const injected = buildPickupFormPage('/s/"><script>alert(1)</script>');
+    expect(injected).not.toContain('<script>alert(1)</script>');
+    expect(injected).toContain('&quot;&gt;&lt;script&gt;');
+  });
+});
+
+describe('取件码失败页 —— 一种页面回答所有失败', () => {
+  const page = buildPickupUnavailablePage('/s/passport/pickup');
+
+  it('列出可能性，但不说是哪一种', () => {
+    expect(page).toContain('可能是取件码输错了');
+    expect(page).toContain('不会告诉你上面哪一种情况才是真的');
+    // The words that would identify a specific failure must not appear
+    // as an assertion about THIS attempt.
+    expect(page).not.toContain('取件码不存在');
+    expect(page).not.toContain('出生日期错误');
+  });
+
+  it('给出下一步，而不是让人对着死页面站着', () => {
+    expect(page).toContain('再生成一个取件码');
+    expect(page).toContain('再输一次');
+  });
+
+  it('也不带脚本', () => {
+    expect(page).not.toMatch(/<script/i);
+  });
+});
+
+describe('取件码打开的临床记录页', () => {
+  it('不印一个失效日期 —— 这个凭证已经花在这次打开上了', () => {
+    const viaPickup = buildPassportSharePage(summary(), { viaPickup: true });
+    expect(viaPickup).toContain('取件码是一次性的');
+    expect(viaPickup).not.toContain('本链接将于');
+  });
+
+  it('链接打开的那一版仍然印失效日期', () => {
+    const viaLink = buildPassportSharePage(summary(), {
+      expiresAt: '2026-08-12T12:00:00.000Z',
+    });
+    expect(viaLink).toContain('本链接将于 2026-08-12 失效');
+    expect(viaLink).not.toContain('取件码是一次性的');
   });
 });

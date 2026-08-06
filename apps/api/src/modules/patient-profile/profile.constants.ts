@@ -145,6 +145,59 @@ export const FOLLOWUP_EVENT_TYPES = [
 
 export const FOLLOWUP_EVENT_SEVERITIES = ['mild', 'moderate', 'severe'] as const;
 
+/**
+ * What the patient was doing when they fell.
+ *
+ * A closed set rather than the free-text box a fall used to land in.
+ * That is the entire reason the falls diary is a table
+ * (migration 023): the AI retriever's field allowlist refuses every
+ * patient-typed column, so a fall described in prose was invisible to
+ * the one feature meant to help the patient reason about it. A value
+ * chosen from this list is a value THIS FILE chose, which is why it
+ * can reach a prompt at all.
+ *
+ * The members are picked so the two mechanisms that actually drop
+ * people with FSHD stay separable rather than collapsing into
+ * 「走路的时候」:
+ *   - catching a foot, which is what ankle dorsiflexor weakness does:
+ *     `walking`, `uneven_or_slippery`
+ *   - a proximal give-way under load, which is what hip and knee
+ *     extensor weakness does: `stairs`, `standing_up`, `turning`,
+ *     `reaching`
+ * `dressing_or_washing` is its own member because it is done standing,
+ * often one-handed, usually with nothing to hold on to.
+ *
+ * `unknown` is 「不记得当时在干什么」 and is NOT the same as leaving
+ * the column NULL, which means 「还没填」. Migration 017 had to add a
+ * whole column to recover that distinction after NULL was made to
+ * carry both facts; here it costs one enum member.
+ *
+ * Adding a value is a TWO-PLACE edit, the same discipline
+ * MUSCLE_GROUPS documents: this array is what rejects a bad write
+ * through Zod, and the CHECK constraint in migration 023 is the guard
+ * rail for the paths Zod never sees. falls/migration-023.test.ts fails
+ * if the two disagree.
+ *
+ * APPEND, never reorder — the mobile picker is built from this list.
+ */
+export const FALL_ACTIVITIES = [
+  'walking',
+  'stairs',
+  'standing_up',
+  'turning',
+  'reaching',
+  'dressing_or_washing',
+  'uneven_or_slippery',
+  'other',
+  'unknown',
+] as const;
+
+/**
+ * Indoor or outdoor. Same two-place edit and the same
+ * 'unknown' ≠ NULL rule as FALL_ACTIVITIES above.
+ */
+export const FALL_LOCATIONS = ['indoor', 'outdoor', 'unknown'] as const;
+
 export type GenderOption = (typeof GENDER_OPTIONS)[number];
 export type MuscleGroup = (typeof MUSCLE_GROUPS)[number];
 export type AmbulationState = (typeof AMBULATION_STATES)[number];
@@ -160,3 +213,5 @@ export type SymptomKey = (typeof SYMPTOM_KEYS)[number];
 export type DailyImpactKey = (typeof DAILY_IMPACT_KEYS)[number];
 export type FollowupEventType = (typeof FOLLOWUP_EVENT_TYPES)[number];
 export type FollowupEventSeverity = (typeof FOLLOWUP_EVENT_SEVERITIES)[number];
+export type FallActivity = (typeof FALL_ACTIVITIES)[number];
+export type FallLocation = (typeof FALL_LOCATIONS)[number];

@@ -85,3 +85,21 @@ export const PATIENT_SCOPED_SECURE_KEYS: string[] = [
   VISIT_PREP_NOTE_KEY,
   ...Object.values(DATA_ENTRY_DRAFT_KEYS),
 ];
+
+/**
+ * 孕期时间线's due date.
+ *
+ * Device-local by design and never sent to the server — but that is an
+ * argument for not uploading it, not for leaving it behind on logout.
+ * FSHD is autosomal dominant, so several affected members of one family
+ * sharing one phone is the ordinary case here (the same reasoning
+ * already written above for the registration draft). A due date that
+ * survives logout means the next family member to open 孕期时间线 sees a
+ * live week number computed from someone else's pregnancy.
+ *
+ * It lives here rather than beside its writer because that is exactly
+ * how it came to be swept by nothing: a key declared next to the screen
+ * that sets it is a key nobody reviewing the sweep list ever sees.
+ * lib/api.ts folds this into PATIENT_SCOPED_CACHE_KEYS.
+ */
+export const PREGNANCY_DUE_DATE_KEY = 'openrd.pregnancy.dueDate';

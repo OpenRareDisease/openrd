@@ -30,6 +30,10 @@ import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
  * the banner above the fold, and it is the first thing rendered.
  */
 
+/* The two pages the pickup flow adds live at the bottom of this file:
+ * `buildPickupFormPage` (where the doctor types the code) and
+ * `buildPickupUnavailablePage` (the ONE answer every failure gets). */
+
 const esc = (value: unknown): string =>
   String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -75,7 +79,11 @@ const CONFIRMATION_BANNER: Record<
 
 export const buildPassportSharePage = (
   summary: ClinicalPassportSummaryDTO,
-  meta: { expiresAt: string },
+  /* A union, not an optional flag beside a required date. A pickup
+   * redemption has no meaningful expiry to print — the credential was
+   * spent rendering this page — and the previous shape would have made
+   * the caller invent one. */
+  meta: { viaPickup: true } | { viaPickup?: false; expiresAt: string },
 ): string => {
   const banner = CONFIRMATION_BANNER[summary.diagnosis.confirmation];
 
@@ -269,12 +277,136 @@ ${
 <footer>
   <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录，
      未经医疗机构核验，不构成诊断或诊疗意见。运动功能一栏为患者自测，不是查体所得。</p>
-  <p>生成时间 ${day(summary.generatedAt)} · 本链接将于 ${day(
-    meta.expiresAt,
-  )} 失效，患者也可随时撤销。</p>
+  <p>生成时间 ${day(summary.generatedAt)} · ${
+    // A pickup code lives fifteen minutes, so printing its expiry as a
+    // DAY would tell the clinician the page is good until midnight. It
+    // is good until they close it: the code was spent opening this.
+    meta.viaPickup
+      ? '本页由患者当场用取件码打开。取件码是一次性的，刚才那一个已经用掉了 ——' +
+        '需要再看一次，请让患者再生成一个；需要留存，请现在打印或保存。'
+      : `本链接将于 ${day(meta.expiresAt)} 失效，患者也可随时撤销。`
+  }</p>
 </footer>
 
 </div>
 </body>
 </html>`;
 };
+
+/* ================================================================
+ * The pickup flow's two pages.
+ *
+ * Same constraints as the passport page above and one more: this one
+ * takes input, and it takes it with NO JAVASCRIPT. A plain form POST
+ * works in WeChat's X5 webview, in a hospital's locked-down IE-mode
+ * shell, and with a screen reader, and it keeps the code out of the
+ * URL — a GET would put a live credential in the doctor's history, in
+ * the proxy log, and in the Referer of whatever they open next.
+ * ================================================================ */
+
+/** Shared chrome. Both pages are read for about eight seconds by
+ *  someone standing up, so they get one column, large type and no
+ *  decoration. */
+const PICKUP_STYLE = `
+  *{box-sizing:border-box}
+  body{margin:0;background:#FBF8F3;color:#17272E;line-height:1.7;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
+      "Microsoft YaHei","Noto Sans CJK SC",sans-serif;-webkit-text-size-adjust:100%}
+  .wrap{max-width:26rem;margin:0 auto;padding:34px 20px 56px}
+  h1{font-size:21px;margin:0 0 8px}
+  .lede{color:#42565F;font-size:14.5px;margin:0 0 22px}
+  label{display:block;font-size:14px;font-weight:600;margin:16px 0 5px}
+  .hint{font-size:12.5px;color:#5F7078;font-weight:400;margin:3px 0 7px}
+  /* 17px minimum: anything smaller and iOS Safari zooms the page on
+     focus, which on a doctor's phone throws the second field off
+     screen mid-form. */
+  input{width:100%;padding:13px 12px;font-size:19px;line-height:1.3;
+    border:1px solid rgba(23,39,46,.28);border-radius:6px;background:#fff;
+    color:#17272E;font-variant-numeric:tabular-nums}
+  input#code{letter-spacing:.16em;text-transform:uppercase;font-weight:700}
+  button{width:100%;margin-top:22px;padding:15px;font-size:16px;font-weight:600;
+    color:#fff;background:#26695C;border:0;border-radius:6px;cursor:pointer}
+  .note{margin:22px 0 0;padding-top:14px;border-top:1px solid rgba(23,39,46,.13);
+    font-size:12.5px;color:#5F7078}
+  .warn{margin:0 0 20px;padding:12px 14px;border-radius:6px;
+    background:rgba(143,87,20,.09);border-left:4px solid #8F5714;
+    font-size:13.5px;color:#42565F}
+`;
+
+/**
+ * Where the clinician types the code.
+ *
+ * `formAction` comes from the router's own mount point rather than
+ * being hardcoded, so a deployment that mounts /s under a path prefix
+ * does not get a form that posts into the void.
+ */
+export const buildPickupFormPage = (formAction: string): string =>
+  `<!DOCTYPE html>
+<html lang="zh-Hans-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>用取件码打开患者记录</title>
+<style>${PICKUP_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+<h1>用取件码打开患者记录</h1>
+<p class="lede">请患者在「肌愈通」App 里生成一个取件码，读给你。取件码 15 分钟内有效，只能用一次。</p>
+<form method="post" action="${esc(formAction)}" autocomplete="off">
+  <label for="code">取件码
+    <span class="hint">8 位，中间的短横可有可无。字母不分大小写；I、L 按 1 输，O 按 0 输也可以。</span>
+  </label>
+  <input id="code" name="code" type="text" inputmode="latin" autocapitalize="characters"
+         autocorrect="off" spellcheck="false" maxlength="16" placeholder="K7F3-9QTM" required>
+
+  <label for="dob">患者出生日期
+    <span class="hint">8 位数字，例如 19850312。这一栏是为了确认你打开的是眼前这位患者的记录。</span>
+  </label>
+  <input id="dob" name="dob" type="text" inputmode="numeric" autocorrect="off"
+         spellcheck="false" maxlength="10" placeholder="19850312" required>
+
+  <button type="submit">打开记录</button>
+</form>
+<p class="note">这份记录由患者本人主动交给你，内容未经医疗机构核验。输错 3 次，这个取件码会作废，
+   患者可以当场再生成一个。</p>
+</div>
+</body>
+</html>`;
+
+/**
+ * The ONE page every failure gets.
+ *
+ * Wrong code, right code with the wrong birthdate, expired, burned,
+ * already redeemed, revoked by the patient, never existed — all of them
+ * land here, with the same words and the same status. Telling them
+ * apart would tell whoever is guessing that they guessed a real code,
+ * and a real code identifies a real patient. The copy therefore lists
+ * the possibilities instead of naming one, which is both safe and, for
+ * an honest clinician who mistyped, exactly as useful.
+ */
+export const buildPickupUnavailablePage = (formAction: string): string =>
+  `<!DOCTYPE html>
+<html lang="zh-Hans-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>取件码打不开</title>
+<style>${PICKUP_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+<h1>这个取件码打不开</h1>
+<p class="lede">可能是取件码输错了，也可能它已经过期、已经用过一次，或者出生日期和这份记录对不上。</p>
+<p class="lede">最省事的做法：请患者在「肌愈通」里当场再生成一个取件码，念给你，15 分钟内输进来。</p>
+<p class="note">为了保护患者，这个页面不会告诉你上面哪一种情况才是真的。</p>
+<form method="get" action="${esc(formAction)}">
+  <button type="submit">再输一次</button>
+</form>
+</div>
+</body>
+</html>`;

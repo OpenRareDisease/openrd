@@ -41,6 +41,7 @@ import SensitiveDataConsentGate, {
 import styles from './styles';
 import MuscleSelfTestForm from './MuscleSelfTestForm';
 import InstrumentForm from './InstrumentForm';
+import TimedTestForm from './TimedTestForm';
 import {
   FATIGUE_SCALE,
   PAIN_SCALE,
@@ -51,7 +52,7 @@ import {
   type SymptomScaleDefinition,
 } from './symptom-scales';
 
-type EntryMode = 'followup' | 'event' | 'report' | 'muscle' | 'instrument';
+type EntryMode = 'followup' | 'event' | 'report' | 'muscle' | 'instrument' | 'timed';
 type EventType =
   | 'fall'
   | 'new_foot_drop'
@@ -377,6 +378,16 @@ const modeCards: Array<{
     title: '功能分级自评',
     description: '上肢 Brooke、下肢 Vignos 各选一句话，一分钟填完，会印在临床护照上。',
   },
+  {
+    key: 'timed',
+    // `clock`, not a new glyph: Icon.tsx warns loudly in dev for an
+    // unmapped name and falls back to a bare circle in production, and
+    // that map is not in this change's files.
+    icon: 'clock',
+    title: '在家计时测试',
+    description:
+      '30 秒坐站、5 次起坐、10 米步行、TUG、四级台阶、四项抗重力。每项都有卡片写清场地和口令，做完记一档质量。',
+  },
 ];
 
 const eventOptions: Array<{ key: EventType; label: string }> = [
@@ -422,7 +433,8 @@ const normalizeEntryMode = (value: string | null | undefined): EntryMode =>
   value === 'event' ||
   value === 'report' ||
   value === 'muscle' ||
-  value === 'instrument'
+  value === 'instrument' ||
+  value === 'timed'
     ? value
     : 'followup';
 
@@ -2467,6 +2479,24 @@ const DataEntryScreen = () => {
             // the same `sensitiveDataConsent` middleware as every other
             // write here.
             <InstrumentForm ensureConsent={ensureSensitiveDataConsent} />
+          ) : null}
+          {entryMode === 'timed' ? (
+            // Same consent argument as 功能分级自评 above: a timed test
+            // writes a function_test row, which is health data, so the
+            // gate is asked here rather than being met as a 403.
+            //
+            // `profile` is passed down rather than re-fetched: this
+            // component needs the fall history for its safety gate and
+            // the previous readings for its 上次 lines, and a second
+            // GET would double the cold-start cost of a screen that is
+            // already the heaviest in the app.
+            <TimedTestForm
+              profile={profile}
+              ensureConsent={ensureSensitiveDataConsent}
+              onSaved={() => {
+                loadContext().catch(() => undefined);
+              }}
+            />
           ) : null}
         </ScrollView>
 

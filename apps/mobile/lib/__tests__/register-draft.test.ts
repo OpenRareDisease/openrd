@@ -1,5 +1,6 @@
 import {
   PATIENT_SCOPED_SECURE_KEYS,
+  PREGNANCY_DUE_DATE_KEY,
   REGISTER_FORM_DRAFT_KEY,
   REGISTER_FORM_DRAFT_MAX_AGE_MS,
 } from '../draft-keys';
@@ -109,5 +110,21 @@ describe('REGISTER_FORM_DRAFT_KEY', () => {
 
   it('bounds an abandoned registration to a day', () => {
     expect(REGISTER_FORM_DRAFT_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+describe('孕期预产期必须跟着登出一起清掉', () => {
+  /**
+   * FSHD is autosomal dominant, so several affected members of one
+   * family sharing one phone is the ordinary case, not an edge one.
+   * A due date that survives logout means the next family member to
+   * open 孕期时间线 sees a live week number computed from someone
+   * else's pregnancy.
+   *
+   * Device-local by design is an argument for not uploading it, not
+   * for leaving it behind.
+   */
+  it('key 住在扫得到的地方，而不是它的写入方旁边', () => {
+    expect(PREGNANCY_DUE_DATE_KEY).toBe('openrd.pregnancy.dueDate');
   });
 });

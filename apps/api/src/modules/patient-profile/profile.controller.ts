@@ -2,6 +2,11 @@ import type { Response } from 'express';
 import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
+import {
+  buildPortableExport,
+  isPortableExportFormat,
+  PORTABLE_EXPORT_FORMATS,
+} from './export/index.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
@@ -500,9 +505,55 @@ export class PatientProfileController {
    * EXPORT_MAX_SUBMISSION_PAGES pages, audit at
    * EXPORT_MAX_AUDIT_ROWS rows, and the payload says so via
    * `truncation` flags instead of silently cutting off.
+   *
+   * `?format=` switches this endpoint to one of the portable
+   * research/clinical formats instead (see ./export). Those are a
+   * DIFFERENT job: the default body is the PIPL portability answer —
+   * everything we hold, in our own shape — while a `format` response
+   * is one document in somebody else's shape, with an explicit
+   * statement of what it could not carry. The default body is
+   * unchanged when `format` is absent, down to the field order,
+   * because that response is a legal obligation and not a feature.
    */
   exportMyData = async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user.id;
+
+    const requestedFormat = req.query?.format;
+    if (requestedFormat !== undefined) {
+      if (!isPortableExportFormat(requestedFormat)) {
+        throw new AppError(
+          `不支持的导出格式，可用格式：${PORTABLE_EXPORT_FORMATS.join('、')}`,
+          400,
+          { supportedFormats: PORTABLE_EXPORT_FORMATS },
+        );
+      }
+
+      const profile = await this.service.getProfileByUserId(userId);
+      if (!profile) {
+        throw new AppError('Patient profile not found', 404);
+      }
+
+      // Deliberately outside the cooldown below, and deliberately NOT
+      // stamping it. That throttle exists because the full export
+      // fans out into ~75 paged queries; a portable document costs
+      // exactly one getProfileByUserId — the same query GET /me
+      // already serves with no throttle at all. Sharing the budget
+      // would mean a patient who exported their PIPL bundle then gets
+      // 429 asking for the FHIR document, i.e. the cheap call paying
+      // for the expensive one.
+      res.status(200).json(
+        buildPortableExport(requestedFormat, profile, {
+          // Opt-in, and off by default. The local-only block carries
+          // direct identifiers and the patient's account of their
+          // RELATIVES' health — a second data subject who consented
+          // to nothing here. Defaulting it on would put family
+          // history into every document that leaves the phone.
+          includeLocalOnly: req.query?.includeLocalOnly === 'true',
+          generatedAt: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
 
     // Per-user cooldown: the export fans out into up to ~75 paged
     // queries, so an authenticated caller in a retry loop is a real
@@ -579,6 +630,11 @@ export class PatientProfileController {
       notes: {
         documents:
           '文档原始文件不包含在本导出中；profile.documents 列出全部文件元数据，可在报告详情页逐份下载原件。',
+        // Discovery. Without this line the three portable formats are
+        // reachable only by someone who has read the source, which
+        // makes "the record is portable" true in the code and false
+        // for the patient.
+        portableFormats: `如需可交给研究登记处或医院系统的格式，在本接口上加 ?format= 参数：${PORTABLE_EXPORT_FORMATS.join('、')}。`,
       },
     });
   };

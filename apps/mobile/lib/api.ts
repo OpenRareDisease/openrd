@@ -1,3 +1,4 @@
+import { PREGNANCY_DUE_DATE_KEY } from './draft-keys';
 import { getSessionValue, removeSessionValue, setSessionValue } from './session-storage';
 
 export const AUTH_TOKEN_STORAGE_KEY = 'openrd.authToken';
@@ -20,6 +21,9 @@ export const QNA_HISTORY_EPOCH_STORAGE_KEY = 'openrd.qna.historyEpoch';
 export const PATIENT_SCOPED_CACHE_KEYS: string[] = [
   QNA_CHAT_STORAGE_KEY,
   QNA_HISTORY_EPOCH_STORAGE_KEY,
+  // See lib/draft-keys.ts for why this one is declared there and not
+  // beside the screen that writes it.
+  PREGNANCY_DUE_DATE_KEY,
 ];
 
 // Single source of truth for the API base URL. ai-streaming.ts and

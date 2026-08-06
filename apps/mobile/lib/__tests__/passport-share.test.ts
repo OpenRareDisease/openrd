@@ -20,6 +20,7 @@ const share = (over: Partial<PassportShare> = {}): PassportShare => ({
   revokedAt: null,
   openedCount: 0,
   lastOpenedAt: null,
+  pickup: null,
   ...over,
 });
 
@@ -52,10 +53,26 @@ describe('剩余时间说人话', () => {
     expect(describeShareLife(share(), NOW)).toBe('7 天后过期');
   });
 
-  it('不足一天时不说「0 天」', () => {
+  it('不足一天时给小时，不足一小时给分钟 —— 且永远不说「0 天」', () => {
+    // This started as「不到 1 天后过期」, which was fine for a seven-day
+    // link in its last hours and is a lie about a fifteen-minute pickup
+    // code: someone standing in a consulting room reading it has no way
+    // to know they have four minutes left.
     expect(describeShareLife(share({ expiresAt: '2026-08-05T20:00:00.000Z' }), NOW)).toBe(
-      '不到 1 天后过期',
+      '约 8 小时后过期',
     );
+    expect(describeShareLife(share({ expiresAt: '2026-08-05T12:04:00.000Z' }), NOW)).toBe(
+      '约 4 分钟后过期',
+    );
+    // The property that must hold whatever the wording becomes.
+    for (const ms of [30_000, 90_000, 3_600_000, 7_200_000, 86_000_000]) {
+      const text = describeShareLife(
+        share({ expiresAt: new Date(NOW.getTime() + ms).toISOString() }),
+        NOW,
+      );
+      expect(text).not.toContain('0 天');
+      expect(text).not.toBe('已过期');
+    }
   });
 
   it('撤销和过期分开说', () => {

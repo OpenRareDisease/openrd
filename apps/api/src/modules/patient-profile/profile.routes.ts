@@ -2,6 +2,8 @@ import { Router, type RequestHandler } from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
 import { DELETION_PURGE_INTERVAL_MS } from './account-deletion.js';
+import { FallsController } from './falls/falls.controller.js';
+import { FallsService } from './falls/falls.service.js';
 import { InstrumentsController } from './instruments/instruments.controller.js';
 import { InstrumentsService } from './instruments/instruments.service.js';
 import {
@@ -64,6 +66,11 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     logger: context.logger,
   });
   const instrumentsController = new InstrumentsController(instrumentsService);
+  const fallsService = new FallsService({
+    pool: getPool(),
+    logger: context.logger,
+  });
+  const fallsController = new FallsController(fallsService);
   const localStorage = new LocalStorageProvider();
   const minioStorage =
     context.env.MINIO_ENDPOINT && context.env.MINIO_ACCESS_KEY && context.env.MINIO_SECRET_KEY
@@ -284,6 +291,25 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     asyncHandler(controller.addFollowupEvent),
   );
   router.post('/me/activity-logs', sensitiveDataConsent, asyncHandler(controller.addActivityLog));
+
+  // ------------------------------------------------------------ falls diary
+  //
+  // A fall used to be one followup event with the interesting half
+  // typed into a free-text box the AI retriever is required to refuse.
+  // See db/migrations/023_patient_falls.sql. POST here writes the
+  // structured entry AND the followup event together, so the 病程时间线
+  // keeps showing falls exactly as it did.
+  //
+  // The reads are ungated like every other read on this router; the
+  // write carries the same consent gate as every other path that stores
+  // health data.
+  router.get('/me/falls', asyncHandler(fallsController.listFalls));
+  router.get('/me/falls/summary', asyncHandler(fallsController.getSummary));
+  router.post('/me/falls', sensitiveDataConsent, asyncHandler(fallsController.recordFall));
+  // Soft delete, and it retracts the timeline twin in the same
+  // transaction — otherwise the entry vanishes from the diary and the
+  // fall stays in the count.
+  router.delete('/me/falls/:id', asyncHandler(fallsController.deleteFall));
 
   // ------------------------------------------------------------ instruments
   //

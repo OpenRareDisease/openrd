@@ -37,6 +37,26 @@ const unwrap = (payload: unknown): unknown => {
   return payload;
 };
 
+/**
+ * The pickup half, shape-checked the same way and for the same reason.
+ *
+ * `expiresAt` is the gate: without a usable expiry there is no way to
+ * tell the patient how long the code has left, and a pickup row shown
+ * without its clock is worse than not showing it — fifteen minutes is
+ * short enough that 「还能用」 with no number is just wrong.
+ */
+const asPickup = (raw: unknown): PassportShare['pickup'] => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.expiresAt !== 'string') return null;
+  return {
+    expiresAt: record.expiresAt,
+    attempts: Number.isFinite(record.attempts) ? Number(record.attempts) : 0,
+    redeemedAt: typeof record.redeemedAt === 'string' ? record.redeemedAt : null,
+    burnedAt: typeof record.burnedAt === 'string' ? record.burnedAt : null,
+  };
+};
+
 const asShare = (raw: unknown): PassportShare | null => {
   if (!raw || typeof raw !== 'object') return null;
   const record = raw as Record<string, unknown>;
@@ -49,7 +69,9 @@ const asShare = (raw: unknown): PassportShare | null => {
     revokedAt: typeof record.revokedAt === 'string' ? record.revokedAt : null,
     openedCount: Number.isFinite(record.openedCount) ? Number(record.openedCount) : 0,
     lastOpenedAt: typeof record.lastOpenedAt === 'string' ? record.lastOpenedAt : null,
+    pickup: asPickup(record.pickup),
     ...(typeof record.token === 'string' ? { token: record.token } : {}),
+    ...(typeof record.code === 'string' ? { code: record.code } : {}),
   };
 };
 
@@ -81,6 +103,36 @@ export const createPassportShare = async (
     );
   }
   return share as PassportShare & { token: string };
+};
+
+/**
+ * Mint a pickup code. Throws when the response carries no code, for
+ * exactly the reason `createPassportShare` does: by the time this
+ * resolves the server has already opened a door, and a silent success
+ * is what let a patient press a button five times and mint five live
+ * credentials they could not see.
+ *
+ * The `pickup` block is required too, not just the code. A code with
+ * no expiry on screen is a code the patient cannot tell is dead, and
+ * fifteen minutes is short enough that they will find out in front of
+ * the doctor.
+ */
+export const createPassportPickup = async (
+  input: { label?: string } = {},
+): Promise<PassportShare & { code: string; pickup: NonNullable<PassportShare['pickup']> }> => {
+  const data = unwrap(
+    await apiRequest<unknown>('/passport-shares/pickup', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  );
+  const share = asShare(data);
+  if (!share?.code || !share.pickup) {
+    throw new Error(
+      '服务器没有返回取件码，请重试；如果反复失败，请到「隐私设置」查看是否已经生成过。',
+    );
+  }
+  return share as PassportShare & { code: string; pickup: NonNullable<PassportShare['pickup']> };
 };
 
 export const revokePassportShare = async (id: string): Promise<void> => {

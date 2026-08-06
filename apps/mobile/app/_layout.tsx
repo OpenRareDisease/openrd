@@ -26,7 +26,13 @@ LogBox.ignoreLogs([
  * reads no API and needs no token. Making someone register to read a
  * cited reference page is a toll on the one thing we can give away.
  */
-const GUEST_ROUTES = new Set(['p-login_register', 'p-genetics_family']);
+// p-pregnancy qualifies on identical grounds to p-genetics_family: it
+// reads no API, needs no token, and its reader is very often the person
+// who has not registered — someone who found this app because they are
+// pregnant or deciding whether to be. It was linked from the guest page
+// before it was allowed to be one, so the button landed and the gate
+// immediately replaced it with the login screen.
+const GUEST_ROUTES = new Set(['p-login_register', 'p-genetics_family', 'p-pregnancy']);
 
 /**
  * The subset of GUEST_ROUTES a *signed-in* user must be bounced off.
@@ -53,6 +59,7 @@ const ONBOARDING_EXEMPT_ROUTES = new Set([
   'p-register_profile',
   'p-about_us',
   'p-genetics_family',
+  'p-pregnancy',
 ]);
 
 function AppNavigator() {
@@ -179,6 +186,10 @@ function AppNavigator() {
             by this list's own rule means it was silently losing its
             declared title. */}
         <Stack.Screen name="p-genetics_family" options={{ title: '遗传与生育页' }} />
+        {/* Without this the route loses its title after hydration in
+            WeChat's browser — the defect commit 1e82bc6 fixed for
+            p-genetics_family, which this page would otherwise repeat. */}
+        <Stack.Screen name="p-pregnancy" options={{ title: '孕期时间线页' }} />
       </Stack>
     </AppDialogProvider>
   );

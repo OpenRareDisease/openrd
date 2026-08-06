@@ -1,9 +1,16 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, urlencoded, type Request, type Response } from 'express';
 
-import { buildPassportSharePage } from './passport-share.html.js';
 import {
+  buildPassportSharePage,
+  buildPickupFormPage,
+  buildPickupUnavailablePage,
+} from './passport-share.html.js';
+import {
+  MAX_PICKUP_ATTEMPTS,
   MAX_SHARE_DAYS,
   PassportShareService,
+  PICKUP_TTL_MINUTES,
+  PickupNeedsBirthDateError,
   ShareLimitReachedError,
 } from './passport-share.service.js';
 import { PatientProfileService } from './profile.service.js';
@@ -107,6 +114,41 @@ export const createPassportShareRouter = (context: RouteContext) => {
     }),
   );
 
+  // Same limiter as minting a link, because it is the same act: a
+  // pickup code is a door, it counts against MAX_LIVE_SHARES, and it
+  // appears in the same revoke list.
+  router.post(
+    '/pickup',
+    mintLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      const userId = (req as AuthenticatedRequest).user!.id;
+      const body = (req.body ?? {}) as { label?: unknown };
+      try {
+        const link = await shares.createPickup(userId, {
+          label: typeof body.label === 'string' ? body.label : null,
+        });
+        res.status(201).json({
+          data: link,
+          ttlMinutes: PICKUP_TTL_MINUTES,
+          maxAttempts: MAX_PICKUP_ATTEMPTS,
+        });
+      } catch (error) {
+        if (error instanceof ShareLimitReachedError) {
+          res.status(409).json({ error: error.message, code: 'share_limit_reached' });
+          return;
+        }
+        // 409 rather than 400: nothing about the request is malformed.
+        // The account is not in a state where a two-factor handover can
+        // exist yet, and the message says which field fixes that.
+        if (error instanceof PickupNeedsBirthDateError) {
+          res.status(409).json({ error: error.message, code: 'pickup_needs_birth_date' });
+          return;
+        }
+        throw error;
+      }
+    }),
+  );
+
   router.delete(
     '/:id',
     asyncHandler(async (req: Request, res: Response) => {
@@ -142,6 +184,108 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     keyResolver: (req) => `${req.ip ?? 'unknown'}`,
   });
 
+  /**
+   * A flood guard, and explicitly NOT the security bound.
+   *
+   * Guessing is bounded by the three attempts counted on the row
+   * (db/migrations/024) and by the size of the code space — not by
+   * this. The number is deliberately far looser than the 60/min above
+   * because a hospital outpatient department is one NAT address, and a
+   * limiter tight enough to matter here would lock out an entire floor
+   * of clinicians the moment two of them used the feature in an hour.
+   * If you ever find yourself tightening this to stop an attack, the
+   * thing to change is MAX_PICKUP_ATTEMPTS or PICKUP_CODE_LENGTH.
+   */
+  const pickupLimiter = createRateLimitMiddleware({
+    keyPrefix: 'passport:pickup',
+    windowMs: 60_000,
+    maxRequests: 300,
+    message: '请求过于频繁，请稍后再试',
+    keyResolver: (req) => `${req.ip ?? 'unknown'}`,
+  });
+
+  /** Applied to every response in this router: the pages are private
+   *  publications and a proxy, a history entry or a Referer carrying
+   *  one onward is the leak. */
+  const setPrivateHeaders = (res: Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+  };
+
+  /* ------------------------------------------------------------ *
+   * Pickup. REGISTERED BEFORE `/:token` AND IT HAS TO STAY THERE —
+   * Express matches in registration order, so moving these below the
+   * token route would hand the literal string 「pickup」 to
+   * `shares.resolve` and answer the form with a 404 page.
+   * ------------------------------------------------------------ */
+
+  /** `req.baseUrl` rather than a hardcoded '/s/passport/pickup': the
+   *  form has to post back to wherever this router was actually
+   *  mounted, including under a proxy path prefix. */
+  const pickupAction = (req: Request) => `${req.baseUrl}/pickup`;
+
+  router.get(
+    '/pickup',
+    pickupLimiter,
+    asyncHandler(async (req: Request, res: Response) => {
+      setPrivateHeaders(res);
+      res
+        .status(200)
+        .type('html')
+        .send(buildPickupFormPage(pickupAction(req)));
+    }),
+  );
+
+  router.post(
+    '/pickup',
+    pickupLimiter,
+    // Parsed here and nowhere else. The app-level parser is
+    // express.json (server.ts), so without this `req.body` is
+    // undefined and every submission silently fails as a wrong code —
+    // burning the patient's attempts on our own missing middleware.
+    // 2kb because the payload is a code and a date.
+    urlencoded({ extended: false, limit: '2kb' }),
+    asyncHandler(async (req: Request, res: Response) => {
+      setPrivateHeaders(res);
+      const body = (req.body ?? {}) as { code?: unknown; dob?: unknown };
+
+      const resolved = await shares.redeemPickup(body.code, body.dob);
+      if (!resolved) {
+        // One answer for all of: wrong code, wrong birthdate, expired,
+        // burned, already used, revoked, never existed. The service
+        // returns a bare null so there is nothing here to leak with.
+        res
+          .status(404)
+          .type('html')
+          .send(buildPickupUnavailablePage(pickupAction(req)));
+        return;
+      }
+
+      const summary = await profiles.getClinicalPassportByUserId(resolved.userId);
+      if (!summary) {
+        // The code was right and the profile is gone — a deletion that
+        // raced the redemption. Same page, for the same reason as the
+        // token route: saying more would confirm the code was real.
+        res
+          .status(404)
+          .type('html')
+          .send(buildPickupUnavailablePage(pickupAction(req)));
+        return;
+      }
+
+      // Deliberately NOT { shareId, code } — the log line is here so an
+      // operator can see the feature is being used, not so it becomes a
+      // second place a working credential lives.
+      context.logger.info({ shareId: resolved.shareId }, 'passport pickup redeemed');
+
+      res
+        .status(200)
+        .type('html')
+        .send(buildPassportSharePage(summary, { viaPickup: true }));
+    }),
+  );
+
   router.get(
     '/:token',
     openLimiter,
@@ -150,9 +294,7 @@ export const createPublicPassportRouter = (context: RouteContext) => {
       // clinician and us should hold a copy, and the URL itself is the
       // credential — so it must not travel onward in a Referer header
       // or sit in a shared proxy.
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
-      res.setHeader('Referrer-Policy', 'no-referrer');
+      setPrivateHeaders(res);
 
       const resolved = await shares.resolve(String(req.params.token ?? ''));
       if (!resolved) {
