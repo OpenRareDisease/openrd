@@ -171,11 +171,20 @@ export const createPublicPassportRouter = (context: RouteContext) => {
   const shares = new PassportShareService(pool, context.logger);
   const profiles = new PatientProfileService({ pool, logger: context.logger });
 
-  // By token, not by user: an unauthenticated caller has no identity to
-  // key on, and keying by IP would throttle a hospital behind one NAT
-  // for everyone in it. This bounds guessing at the token, which is the
-  // only thing worth bounding — 32 bytes of CSPRNG is not guessable
-  // anyway, and this keeps a flood from becoming a database load.
+  /**
+   * A flood guard, keyed by IP. NOT a bound on guessing.
+   *
+   * An unauthenticated caller has no identity to key on, so IP is what
+   * there is. That is fine here because there is nothing to guess: the
+   * token is 32 bytes of CSPRNG, and no rate limit meaningfully narrows
+   * 2^256. What this actually buys is that a scripted flood of /s
+   * requests does not turn into a database query per request.
+   *
+   * The number is loose on purpose for the same reason as the pickup
+   * limiter below — a hospital outpatient department is one NAT
+   * address, and 60/min is already generous for humans opening links
+   * one at a time.
+   */
   const openLimiter = createRateLimitMiddleware({
     keyPrefix: 'passport:open',
     windowMs: 60_000,

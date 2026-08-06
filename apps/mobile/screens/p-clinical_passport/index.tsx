@@ -30,7 +30,9 @@ import {
   getInstrumentCatalogue,
   getMyPatientProfile,
   isConsentRequiredError,
+  readPassportGeneticEvidence,
   type ClinicalPassportSummary,
+  type GeneticTestRequest,
   type PatientProfile,
   type StreamAiQuestionHandle,
 } from '../../lib/api';
@@ -97,6 +99,41 @@ const formatVisitPrepTimestamp = (value: string | null) => {
   return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * 《检查申请说明》 as one printable page.
+ *
+ * Built from `testRequest.printable`, not re-composed from `sections`:
+ * the server already flattened the document once, and a second layout
+ * here is a second place for the wording — and the citations under each
+ * claim — to drift away from what the screen shows.
+ *
+ * No web fonts, no stylesheet link, no image. This app is used inside
+ * WeChat's in-app browser in mainland China, where an external host at
+ * print time is a blank page, and the whole point of this document is
+ * that it survives being carried into a clinic.
+ */
+const buildTestRequestHtml = (testRequest: GeneticTestRequest) =>
+  [
+    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<title>${escapeHtml(testRequest.title)}</title>`,
+    '<style>',
+    'body{margin:0;padding:24px;font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:#17272E;}',
+    // pre-wrap keeps the server's line structure without this file
+    // deciding what a heading looks like. `printable` already opens
+    // with 【title】, so there is no <h1> above it — a second copy of
+    // the title is the kind of thing a clinician reads as two
+    // documents stapled together.
+    'pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;line-height:1.85;margin:0;}',
+    '@page{margin:16mm;}',
+    '</style></head><body>',
+    `<pre>${escapeHtml(testRequest.printable)}</pre>`,
+    '</body></html>',
+  ].join('');
+
 const ClinicalPassportScreen = () => {
   const router = useRouter();
   const { notify } = useAppDialog();
@@ -105,6 +142,7 @@ const ClinicalPassportScreen = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingTestRequest, setIsExportingTestRequest] = useState(false);
   const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
   /** Brooke / Vignos, one entry per instrument that has a usable
    *  reading. Empty until the instruments endpoint answers, and empty
@@ -449,6 +487,83 @@ const ClinicalPassportScreen = () => {
   // exactly one thing — not genetically confirmed — and it is already
   // spent on the banner of the PDF this screen exports.
   const diagnosisValueStyle = diagnosisConfirmed ? styles.infoValue : styles.infoValueSelfReported;
+
+  /**
+   * The graded read of the genetic evidence, or null.
+   *
+   * Shape-checked rather than asserted — see
+   * `readPassportGeneticEvidence` in lib/api.ts. Null means either an
+   * API build that predates the field or a payload this bundle cannot
+   * render whole, and in both cases the block below simply does not
+   * appear. Nothing else on the passport depends on it.
+   */
+  const geneticEvidence = useMemo(
+    () => readPassportGeneticEvidence(passport?.diagnosis.geneticEvidence),
+    [passport],
+  );
+  const testRequest = geneticEvidence?.testRequest ?? null;
+  /** The ladder rung, as the API worded it. Checked rather than
+   *  asserted for the same reason as the block above: `ladderLabel` is
+   *  new on the wire and the type parameter proves nothing about it. */
+  const ladderLabel =
+    typeof passport?.diagnosis.ladderLabel === 'string' && passport.diagnosis.ladderLabel
+      ? passport.diagnosis.ladderLabel
+      : null;
+
+  /**
+   * Get the 《检查申请说明》 out of the app.
+   *
+   * Same shape as the anesthesia card: one model, two carriers, and the
+   * carrier that can fail is the generated one. The full text is
+   * already on screen and every line of it is `selectable`, so a
+   * blocked popup, a native shell with no share sheet or a WeChat
+   * browser with no print dialog costs the patient a nicer page — not
+   * the document. The whole reason this exists is that it has to reach
+   * a doctor who will not be holding this phone.
+   */
+  const handleExportTestRequest = async () => {
+    if (!testRequest) return;
+    try {
+      setIsExportingTestRequest(true);
+      const html = buildTestRequestHtml(testRequest);
+
+      if (Platform.OS === 'web') {
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+          throw new Error(
+            '浏览器拦截了打印窗口。上面的文字和这份说明内容完全一样，可以长按选中后复制发给医生。',
+          );
+        }
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.focus();
+        printWindow.onload = () => {
+          printWindow.print();
+        };
+        return;
+      }
+
+      const exported = await Print.printToFileAsync({ html, base64: false });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(exported.uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: testRequest.title,
+        });
+        return;
+      }
+      await Print.printAsync({ html });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : '这份说明没能生成文件。上面的文字内容完全一样，可以长按选中后复制发给医生。';
+      notify({ title: '导出《检查申请说明》失败', message, tone: 'error' });
+    } finally {
+      setIsExportingTestRequest(false);
+    }
+  };
 
   const heroMetrics = useMemo(() => {
     if (!passport) return [];
@@ -818,6 +933,21 @@ const ClinicalPassportScreen = () => {
                       <Text style={styles.infoLabel}>诊断日期</Text>
                       <Text style={diagnosisValueStyle}>{passport.diagnosis.diagnosisDate}</Text>
                     </View>
+                    {/* The rung the patient answered on the baseline
+                        form. It answers a different question from
+                        `confirmation` — 「what did you tell us」 vs
+                        「what does the evidence show」 — and the passport
+                        shows both rather than reconciling them, which
+                        is also why this cell never takes metric type:
+                        it is a self-report by construction, whatever
+                        the uploaded reports say. Absent, not 「—」, when
+                        the question was never answered. */}
+                    {ladderLabel ? (
+                      <View style={styles.infoCell}>
+                        <Text style={styles.infoLabel}>本人填写的诊断进度</Text>
+                        <Text style={styles.infoValueSelfReported}>{ladderLabel}</Text>
+                      </View>
+                    ) : null}
                   </View>
 
                   <View style={styles.noteCard}>
@@ -826,6 +956,117 @@ const ClinicalPassportScreen = () => {
                     </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
                   </View>
+
+                  {/* The graded read of the genetic evidence.
+                      Deliberately below the values it is about, and
+                      deliberately not styled as a verdict: it grades a
+                      REPORT — whether the method could see the locus
+                      and whether both required results are on it — and
+                      says nothing about whether this person has FSHD.
+                      「方法对但结果不全」 is where most Chinese reports
+                      legitimately land, because 4qA permissiveness is
+                      routinely missing even from a proper Southern
+                      blot, so the copy the server writes for it
+                      encourages rather than scolds and this block must
+                      not re-frame it. */}
+                  {geneticEvidence ? (
+                    <View style={styles.geneticEvidenceBlock}>
+                      <View style={styles.geneticGradeRow}>
+                        <View style={styles.geneticGradePill}>
+                          <Text style={styles.geneticGradePillText}>
+                            {geneticEvidence.gradeLabel}
+                          </Text>
+                        </View>
+                        <Text style={styles.geneticScopeTag}>关于报告，不是关于你</Text>
+                      </View>
+                      <Text style={styles.geneticHeadline} selectable>
+                        {geneticEvidence.headline}
+                      </Text>
+                      <Text style={styles.geneticBody} selectable>
+                        {geneticEvidence.reason}
+                      </Text>
+                      <Text style={styles.geneticBody} selectable>
+                        {geneticEvidence.action}
+                      </Text>
+
+                      {geneticEvidence.greyZoneNote ? (
+                        <View style={styles.geneticGreyZone}>
+                          <Text style={styles.noteTitle}>8–10 单元灰区</Text>
+                          <Text style={styles.geneticBody} selectable>
+                            {geneticEvidence.greyZoneNote}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {geneticEvidence.sources.map((source, index) => (
+                        <Text key={`grade-source-${index}`} style={styles.geneticSource} selectable>
+                          {`出处：${source}`}
+                        </Text>
+                      ))}
+
+                      {/* 《检查申请说明》 — the half of this block that
+                          has to leave the phone. Same pattern as the
+                          anesthesia card: the text is the carrier that
+                          always works (selectable, reflows at 200%,
+                          reachable by a screen reader), the printable
+                          page is the convenience. */}
+                      {testRequest ? (
+                        <View style={styles.testRequestBlock}>
+                          <Text style={styles.testRequestTitle} selectable>
+                            {testRequest.title}
+                          </Text>
+                          <Text style={styles.testRequestHint}>
+                            这一份是写给医生看的。可以长按选中复制发到微信，或者用下面的按钮生成一页打印出来带去门诊。
+                          </Text>
+                          {testRequest.intro ? (
+                            <Text style={styles.testRequestIntro} selectable>
+                              {testRequest.intro}
+                            </Text>
+                          ) : null}
+                          {testRequest.sections.map((section, sectionIndex) => (
+                            <View
+                              key={`test-request-${sectionIndex}`}
+                              style={styles.testRequestSection}
+                            >
+                              <Text style={styles.testRequestHeading} selectable>
+                                {section.heading}
+                              </Text>
+                              {section.body.map((line, lineIndex) => (
+                                <Text
+                                  key={`test-request-${sectionIndex}-${lineIndex}`}
+                                  style={styles.testRequestLine}
+                                  selectable
+                                >
+                                  {line}
+                                </Text>
+                              ))}
+                              {/* Absent rather than empty when the
+                                  server sent no citation: a clinical
+                                  claim printed under 「出处：」 with
+                                  nothing after it reads as a source
+                                  that failed to load. */}
+                              {section.source ? (
+                                <Text style={styles.testRequestSource} selectable>
+                                  {`出处：${section.source}`}
+                                </Text>
+                              ) : null}
+                            </View>
+                          ))}
+                          <View style={styles.testRequestAction}>
+                            <Button
+                              label="打印 / 导出这份说明"
+                              icon="file-pdf"
+                              variant="tinted"
+                              fullWidth
+                              busy={isExportingTestRequest}
+                              accessibilityHint="生成一页《检查申请说明》，可打印或分享给医生"
+                              onPress={handleExportTestRequest}
+                            />
+                          </View>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
               </View>
 

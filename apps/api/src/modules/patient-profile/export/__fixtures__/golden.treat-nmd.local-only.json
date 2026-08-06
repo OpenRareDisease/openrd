@@ -138,7 +138,10 @@
           {
             "key": "motor.assistiveDevices",
             "labelZh": "正在使用的辅助器具",
-            "value": ["手杖", "踝足矫形器"],
+            "value": [
+              "手杖",
+              "踝足矫形器"
+            ],
             "provenanceZh": "患者自述"
           },
           {

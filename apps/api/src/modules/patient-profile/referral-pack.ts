@@ -326,9 +326,24 @@ const getTimestamp = (value?: string | null): number => {
  * Fixing it properly means giving the whole module one timezone (the
  * patient's, or an explicitly configured one) in a single place. That
  * is a change to profile.passport.ts, which this lane does not own.
+ *
+ * AN ALREADY-FORMATTED DATE IS RETURNED UNTOUCHED
+ * -----------------------------------------------
+ * Some inputs have been through this once already: the passport hands
+ * `PassportMonitoringItemDTO.latestDate` over as a bare `YYYY-MM-DD`.
+ * Re-parsing that string is not a no-op — `new Date('2026-02-10')` is
+ * UTC midnight, and every accessor below then reads it in local time,
+ * so on any host west of Greenwich it comes back a day earlier. That
+ * put 「已上传该类报告（2026-02-09）」 in a slot whose own `latestDate`
+ * field said 2026-02-10: one document, one report, two dates, in front
+ * of the reader least able to check which is right. Nothing here can
+ * improve a date that carries no time, so nothing here touches it.
  */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 const formatDate = (value?: string | null): string | null => {
   if (!value) return null;
+  if (DATE_ONLY.test(value)) return value;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const month = String(date.getMonth() + 1).padStart(2, '0');

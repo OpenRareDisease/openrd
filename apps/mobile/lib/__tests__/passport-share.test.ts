@@ -1,7 +1,11 @@
 import {
   buildShareUrl,
+  describePickupState,
   describeShareLife,
+  isPickupLive,
   isShareLive,
+  isShareRowLive,
+  PICKUP_MAX_ATTEMPTS,
   type PassportShare,
 } from '../passport-share';
 
@@ -78,6 +82,124 @@ describe('剩余时间说人话', () => {
   it('撤销和过期分开说', () => {
     expect(describeShareLife(share({ revokedAt: '2026-08-02T12:00:00.000Z' }), NOW)).toBe('已撤销');
     expect(describeShareLife(share({ expiresAt: '2026-08-01T12:00:00.000Z' }), NOW)).toBe('已过期');
+  });
+});
+
+/* ================================================================
+ * Pickup rows in 「谁现在能看我的记录」.
+ *
+ * A pickup code dies in four different ways and a link dies in two, so
+ * the two predicates are not interchangeable — which is exactly the bug
+ * these pin: the screen used isShareLive for every row, so a code that
+ * had already been redeemed still offered 撤销.
+ * ================================================================ */
+
+const pickupShare = (
+  pickup: Partial<NonNullable<PassportShare['pickup']>> = {},
+  over: Partial<PassportShare> = {},
+): PassportShare =>
+  share({
+    pickup: {
+      expiresAt: '2026-08-05T12:15:00.000Z',
+      attempts: 0,
+      redeemedAt: null,
+      burnedAt: null,
+      ...pickup,
+    },
+    ...over,
+  });
+
+describe('取件码「还活着吗」和链接不是同一个问题', () => {
+  it('没用过、没烧掉、没撤销、没过期 = 活的', () => {
+    expect(isPickupLive(pickupShare(), NOW)).toBe(true);
+  });
+
+  it('已被取走的码是死的 —— 哪怕父链接还没到期', () => {
+    // This is the case the screen got wrong: isShareLive says true here
+    // (the parent link is unrevoked and unexpired), so a spent code was
+    // still offering a 撤销 button that does nothing.
+    const spent = pickupShare({ redeemedAt: '2026-08-05T12:05:00.000Z' });
+    expect(isShareLive(spent, NOW)).toBe(true);
+    expect(isPickupLive(spent, NOW)).toBe(false);
+  });
+
+  it('烧掉的、撤销的、过期的，都不算活的', () => {
+    expect(isPickupLive(pickupShare({ burnedAt: '2026-08-05T12:05:00.000Z' }), NOW)).toBe(false);
+    expect(isPickupLive(pickupShare({}, { revokedAt: '2026-08-05T12:05:00.000Z' }), NOW)).toBe(
+      false,
+    );
+    expect(isPickupLive(pickupShare({ expiresAt: '2026-08-05T11:00:00.000Z' }), NOW)).toBe(false);
+  });
+
+  it('日期读不出来时按「不是活的」处理', () => {
+    expect(isPickupLive(pickupShare({ expiresAt: 'not a date' }), NOW)).toBe(false);
+  });
+
+  it('根本不是取件码的行返回 false，而不是假装它是', () => {
+    expect(isPickupLive(share(), NOW)).toBe(false);
+  });
+});
+
+describe('清单上哪一行还配有「撤销」按钮', () => {
+  it('取件码行问 isPickupLive，链接行问 isShareLive', () => {
+    // The screen asked isShareLive of every row. For a code the doctor
+    // already used, that answers true — so the row kept offering 撤销,
+    // a button that does nothing, on the one screen whose job is
+    // telling the patient which doors are open.
+    const spent = pickupShare({ redeemedAt: '2026-08-05T12:05:00.000Z' });
+    expect(isShareRowLive(spent, NOW)).toBe(false);
+    expect(isShareRowLive(pickupShare(), NOW)).toBe(true);
+    expect(isShareRowLive(share(), NOW)).toBe(true);
+    expect(isShareRowLive(share({ revokedAt: '2026-08-03T12:00:00.000Z' }), NOW)).toBe(false);
+  });
+
+  it('对每一种死法都同意 isPickupLive 的判断', () => {
+    for (const dead of [
+      pickupShare({ redeemedAt: '2026-08-05T12:05:00.000Z' }),
+      pickupShare({ burnedAt: '2026-08-05T12:05:00.000Z' }),
+      pickupShare({}, { revokedAt: '2026-08-05T12:05:00.000Z' }),
+      pickupShare({ expiresAt: '2026-08-05T11:00:00.000Z' }),
+    ]) {
+      expect(isShareRowLive(dead, NOW)).toBe(isPickupLive(dead, NOW));
+      expect(isShareRowLive(dead, NOW)).toBe(false);
+    }
+  });
+});
+
+describe('取件码那一行说的话', () => {
+  it('还能用的时候给分钟数', () => {
+    expect(describePickupState(pickupShare(), NOW)).toBe('还能用约 15 分钟');
+  });
+
+  it('输错过就说还剩几次', () => {
+    expect(describePickupState(pickupShare({ attempts: 1 }), NOW)).toBe(
+      `还能用约 15 分钟 · 有人输错过 1 次，再错 ${PICKUP_MAX_ATTEMPTS - 1} 次就作废`,
+    );
+  });
+
+  it('作废的行不说「已撤销」—— 患者可能根本没点过撤销', () => {
+    // Minting a new pickup code revokes the account's previous live one
+    // inside the same statement (passport-share.service.ts). The row
+    // cannot tell a patient-initiated revoke from a supersede, so it
+    // names both possibilities instead of asserting the one they did
+    // not do and sending them hunting for a tap they never made.
+    const revoked = describePickupState(pickupShare({}, { revokedAt: '2026-08-05T12:05:00.000Z' }));
+    expect(revoked).toContain('已作废');
+    expect(revoked).toContain('被后一个取件码顶替');
+    expect(revoked).not.toBe('已撤销');
+  });
+
+  it('被取走和被烧掉分开说，且烧掉那条说清楚是出生日期错', () => {
+    expect(describePickupState(pickupShare({ redeemedAt: '2026-08-05T12:05:00.000Z' }), NOW)).toBe(
+      '已被医生取走一次 · 取件码是一次性的，已失效',
+    );
+    expect(describePickupState(pickupShare({ burnedAt: '2026-08-05T12:05:00.000Z' }), NOW)).toBe(
+      `出生日期输错 ${PICKUP_MAX_ATTEMPTS} 次，取件码已作废`,
+    );
+  });
+
+  it('不是取件码的行返回 null，让调用方回落到链接的说法', () => {
+    expect(describePickupState(share(), NOW)).toBeNull();
   });
 });
 

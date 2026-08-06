@@ -301,6 +301,16 @@ const SettingsScreen = () => {
             detail="遗传概率、三代试管的限制、怀孕会发生什么"
             onPress={() => router.push('/p-genetics_family')}
           />
+          {/* Built in an earlier batch with no way in at all. It reads
+              the patient's own record against the AAN/AANEM table, so
+              it belongs with the pages that answer 「这个病要注意什么」
+              rather than buried in the passport. */}
+          <Row
+            icon="calendar"
+            label="我的随访计划"
+            detail="按指南，结合你已录入的信息，哪些检查值得和医生确认"
+            onPress={() => router.push('/p-surveillance')}
+          />
           <Row
             icon="clipboard-list"
             label="残疾评定准备"
@@ -312,6 +322,17 @@ const SettingsScreen = () => {
             label="罕见病身份与权益"
             detail="目录第 25 项、协作网欠你什么、以及它现在给不了什么"
             onPress={() => router.push('/p-rare_disease_status')}
+          />
+          {/* The referral pack shipped with a route, a client and a
+              screen, and no way in — 730 lines a patient could not
+              reach. It sits with 罕见病身份与权益 because that page is
+              where someone learns the 协作网 exists at all, and this is
+              what they hand over when they get there. */}
+          <Row
+            icon="user-doctor"
+            label="协作网转诊包"
+            detail="把你的记录整理成神经科医生要看的那份，带去协作网医院"
+            onPress={() => router.push('/p-referral')}
           />
         </ListGroup>
 

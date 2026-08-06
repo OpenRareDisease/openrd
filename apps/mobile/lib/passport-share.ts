@@ -23,7 +23,7 @@
  * birthdate against their code twice, and `burnedAt` is here because
  * otherwise a code that stopped working has no explanation.
  */
-export type PassportSharePickup = {
+type PassportSharePickup = {
   expiresAt: string;
   attempts: number;
   redeemedAt: string | null;
@@ -49,10 +49,24 @@ export type PassportShare = {
   code?: string;
 };
 
-/** How many wrong birthdates burn a code. Mirrors MAX_PICKUP_ATTEMPTS
- *  in the API service — stated here so the screen can say the number
- *  out loud rather than leaving the patient to find out. */
+/**
+ * How many wrong BIRTHDATES burn a code. Mirrors MAX_PICKUP_ATTEMPTS in
+ * the API service — stated here so the screen can say the number out
+ * loud rather than leaving the patient to find out.
+ *
+ * Wrong birthdates, not wrong codes: a wrong code matches no row, so
+ * there is nothing to count on (db/migrations/024).
+ *
+ * These two are the client's best guess and nothing more. The mint
+ * response carries the server's actual numbers, and everything shown
+ * AFTER a mint should prefer those — see `createPassportPickup`. These
+ * exist for the copy that has to be on screen BEFORE the patient has
+ * pressed anything, where there is no response to read.
+ */
 export const PICKUP_MAX_ATTEMPTS = 3;
+/** How long a freshly minted code lives. Mirrors PICKUP_TTL_MINUTES in
+ *  the API service; same caveat as PICKUP_MAX_ATTEMPTS above. */
+export const PICKUP_TTL_MINUTES = 15;
 
 /**
  * The URL a patient forwards.
@@ -120,7 +134,14 @@ export const describePickupState = (share: PassportShare, now = new Date()): str
   if (!pickup) return null;
   if (pickup.redeemedAt) return '已被医生取走一次 · 取件码是一次性的，已失效';
   if (pickup.burnedAt) return `出生日期输错 ${PICKUP_MAX_ATTEMPTS} 次，取件码已作废`;
-  if (share.revokedAt) return '已撤销';
+  // Not 「已撤销」, because the patient may not have revoked it.
+  // Generating a new pickup code now revokes the account's previous
+  // live one inside the same statement (passport-share.service.ts), so
+  // a revoked_at on a pickup row means one of two things and the row
+  // cannot tell which. Naming both is the honest version; naming the
+  // one they did not do would have them hunting for a tap they never
+  // made.
+  if (share.revokedAt) return '已作废 · 撤销过，或被后一个取件码顶替';
   const expires = new Date(pickup.expiresAt);
   if (Number.isNaN(expires.getTime())) return '有效期未知';
   const ms = expires.getTime() - now.getTime();
@@ -143,6 +164,25 @@ export const isPickupLive = (share: PassportShare, now = new Date()): boolean =>
   if (Number.isNaN(expires.getTime())) return false;
   return expires.getTime() > now.getTime();
 };
+
+/**
+ * Whether this row is a door that is still open — whichever kind of
+ * door it is. This is the predicate 「谁现在能看我的记录」 asks of every
+ * row, and the one that decides whether the row gets a 撤销 button.
+ *
+ * It exists because the screen used to call `isShareLive` on every row
+ * and `isPickupLive` on none, and the two do not agree: a pickup code
+ * that has already been redeemed or burned is dead while its parent
+ * link is still unrevoked and unexpired. The screen was therefore
+ * offering 撤销 on spent codes — a button that does nothing, on the one
+ * screen whose whole job is telling a patient which doors are open.
+ *
+ * Kept here rather than inline in the screen for the reason in this
+ * module's header: a predicate in a 1000-line component is a predicate
+ * with no test.
+ */
+export const isShareRowLive = (share: PassportShare, now = new Date()): boolean =>
+  share.pickup ? isPickupLive(share, now) : isShareLive(share, now);
 
 /**
  * The page the doctor lands on after scanning. NOT a URL carrying the

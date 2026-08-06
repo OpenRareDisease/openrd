@@ -1,3 +1,4 @@
+import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
 import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
 
 /**
@@ -328,9 +329,6 @@ const PICKUP_STYLE = `
     color:#fff;background:#26695C;border:0;border-radius:6px;cursor:pointer}
   .note{margin:22px 0 0;padding-top:14px;border-top:1px solid rgba(23,39,46,.13);
     font-size:12.5px;color:#5F7078}
-  .warn{margin:0 0 20px;padding:12px 14px;border-radius:6px;
-    background:rgba(143,87,20,.09);border-left:4px solid #8F5714;
-    font-size:13.5px;color:#42565F}
 `;
 
 /**
@@ -339,6 +337,12 @@ const PICKUP_STYLE = `
  * `formAction` comes from the router's own mount point rather than
  * being hardcoded, so a deployment that mounts /s under a path prefix
  * does not get a form that posts into the void.
+ *
+ * The two numbers on this page are interpolated from the constants that
+ * enforce them, never typed out. They were literals, and a literal here
+ * is a page that keeps saying 「15 分钟」 after someone changes
+ * PICKUP_TTL_MINUTES to 10 — with the whole suite still green, because
+ * the tests asserted the literal too.
  */
 export const buildPickupFormPage = (formAction: string): string =>
   `<!DOCTYPE html>
@@ -354,7 +358,7 @@ export const buildPickupFormPage = (formAction: string): string =>
 <body>
 <div class="wrap">
 <h1>用取件码打开患者记录</h1>
-<p class="lede">请患者在「肌愈通」App 里生成一个取件码，读给你。取件码 15 分钟内有效，只能用一次。</p>
+<p class="lede">请患者在「肌愈通」App 里生成一个取件码，读给你。取件码 ${PICKUP_TTL_MINUTES} 分钟内有效，只能用一次。</p>
 <form method="post" action="${esc(formAction)}" autocomplete="off">
   <label for="code">取件码
     <span class="hint">8 位，中间的短横可有可无。字母不分大小写；I、L 按 1 输，O 按 0 输也可以。</span>
@@ -370,8 +374,12 @@ export const buildPickupFormPage = (formAction: string): string =>
 
   <button type="submit">打开记录</button>
 </form>
-<p class="note">这份记录由患者本人主动交给你，内容未经医疗机构核验。输错 3 次，这个取件码会作废，
-   患者可以当场再生成一个。</p>
+<!-- 「出生日期输错」, not 「输错」. Only a wrong BIRTHDATE increments the
+     counter — a wrong code matches no row, so there is nothing to
+     count on (db/migrations/024). The in-app card said this correctly
+     and this page did not, which is the version a doctor reads. -->
+<p class="note">这份记录由患者本人主动交给你，内容未经医疗机构核验。出生日期输错 ${MAX_PICKUP_ATTEMPTS} 次，
+   这个取件码会作废（取件码本身打错不计入这 ${MAX_PICKUP_ATTEMPTS} 次）。患者可以当场再生成一个。</p>
 </div>
 </body>
 </html>`;
@@ -402,7 +410,7 @@ export const buildPickupUnavailablePage = (formAction: string): string =>
 <div class="wrap">
 <h1>这个取件码打不开</h1>
 <p class="lede">可能是取件码输错了，也可能它已经过期、已经用过一次，或者出生日期和这份记录对不上。</p>
-<p class="lede">最省事的做法：请患者在「肌愈通」里当场再生成一个取件码，念给你，15 分钟内输进来。</p>
+<p class="lede">最省事的做法：请患者在「肌愈通」里当场再生成一个取件码，念给你，${PICKUP_TTL_MINUTES} 分钟内输进来。</p>
 <p class="note">为了保护患者，这个页面不会告诉你上面哪一种情况才是真的。</p>
 <form method="get" action="${esc(formAction)}">
   <button type="submit">再输一次</button>

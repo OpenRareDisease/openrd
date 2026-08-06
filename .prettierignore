@@ -1,0 +1,14 @@
+# Golden files are generator OUTPUT, not source. Formatting them is
+# wrong by definition: the test renders with JSON.stringify(x, null, 2)
+# and compares byte-for-byte, and Prettier's printWidth:100 collapses
+# short arrays onto one line — a shape JSON.stringify can never emit.
+#
+# So the pre-commit hook (lint-staged runs `prettier --write` over
+# **/*.json) reformatted these under the commit that added them, and the
+# suite went red the moment it landed. Regenerating would have been
+# green until exactly the next commit.
+#
+# The whole directory, not the two files that happened to fail:
+# golden.phenopacket.json and golden.fhir-r4.json pass today only
+# because neither currently holds an array short enough to collapse.
+apps/api/src/modules/patient-profile/export/__fixtures__/golden.*.json

@@ -506,3 +506,43 @@ describe('方法对但结果不全：不能凭空说患者已有某一项', () =
     expect(reason).toContain('D4Z4 重复单元数');
   });
 });
+
+describe('灰区说明只把指南说过的话算在指南头上', () => {
+  /**
+   * Giardina 2024 states the 「likely pathogenic」 reporting category for
+   * 8 U only, and there as an ethnicity-dependent example. The 1%–2%
+   * asymptomatic-carrier figure IS stated for the whole 8–10 range.
+   * The note used to attribute the reporting category to the whole
+   * range, which put it at odds with buildGreyZoneSection in the same
+   * file — and both are patient-facing.
+   */
+  const noteFor = (repeats: string) =>
+    buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: repeats })] } as never),
+    ).diagnosis.geneticEvidence.greyZoneNote ?? '';
+
+  it('8 单元时，报告口径归给 8 单元', () => {
+    const note = noteFor('8');
+    expect(note).toContain('对 8 个单元');
+    expect(note).toContain('可能致病');
+  });
+
+  it('9 和 10 单元时，明说指南没有单独说明', () => {
+    for (const n of ['9', '10']) {
+      const note = noteFor(n);
+      expect(note).toContain('没有单独说明');
+      expect(note).not.toMatch(/指南对这一区间给出的报告口径/);
+    }
+  });
+
+  it('1%–2% 这一句对整个区间都成立，所以每一档都在', () => {
+    for (const n of ['8', '9', '10']) {
+      expect(noteFor(n)).toContain('1%–2%');
+    }
+  });
+
+  it('灰区之外没有这条说明', () => {
+    expect(noteFor('4')).toBe('');
+    expect(noteFor('15')).toBe('');
+  });
+});

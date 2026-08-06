@@ -391,6 +391,59 @@ describe('生成取件码：明文只存在于那一次响应里', () => {
   });
 });
 
+describe('新码作废旧码 —— 一个账号同时只有一个活的取件码', () => {
+  /**
+   * The failure this closes is mundane and it is the likely one: the
+   * patient reads out K7F3-9QTM, the doctor mishears a character, the
+   * patient taps again. Before this, the code that was actually spoken
+   * into the room stayed redeemable for the rest of its window with
+   * nobody watching it.
+   */
+  const supersedeSql = async () => {
+    const { pool, calls } = makePool(pickupResponses());
+    await new PassportShareService(pool, logger).createPickup('u1');
+    return calls.find((c) => c.sql.includes('INSERT INTO passport_pickup_codes'))!.sql;
+  };
+
+  it('铸码那条语句里就把旧的活取件码撤掉了', async () => {
+    const sql = await supersedeSql();
+    expect(sql).toContain('UPDATE passport_share_links prev');
+    expect(sql).toContain('SET revoked_at = NOW()');
+    // Same statement as the mint, not a second round trip: a supersede
+    // that ran alone could burn the code the patient already read out
+    // and then fail to mint a replacement.
+    expect(sql).toContain('INSERT INTO passport_share_links');
+    expect(sql).toContain('INSERT INTO passport_pickup_codes');
+  });
+
+  it('只作废这个账号的、还活着的取件码 —— 不碰链接、不碰别人', async () => {
+    const sql = await supersedeSql();
+    expect(sql).toContain('prev.user_id = $1');
+    // Joined through the pickup table, so a plain URL share the patient
+    // sent their doctor last week is untouched.
+    expect(sql).toContain('pc.share_id = prev.id');
+    expect(sql).toContain('prev.revoked_at IS NULL');
+    expect(sql).toContain('pc.redeemed_at IS NULL');
+    expect(sql).toContain('pc.burned_at IS NULL');
+    expect(sql).toContain('pc.expires_at > NOW()');
+  });
+
+  it('作废走的是父链接的 revoked_at，不是 burned_at', async () => {
+    // burned_at means one specific thing on the patient's screen —
+    // 「出生日期输错三次」 — and that is not what happened here. The
+    // parent's revoked_at is what redeemPickup already refuses on.
+    const sql = await supersedeSql();
+    expect(sql).not.toMatch(/SET[\s\S]*burned_at\s*=\s*NOW\(\)/);
+  });
+
+  it('审计行记下这次铸码顶掉了几个旧码', async () => {
+    const { pool, calls } = makePool(pickupResponses({ superseded_count: 1 }));
+    await new PassportShareService(pool, logger).createPickup('u1');
+    const audit = calls.find((c) => c.sql.includes('audit_logs'));
+    expect(JSON.parse(String(audit?.params[0])).supersededCount).toBe(1);
+  });
+});
+
 describe('没有出生日期就不发码', () => {
   it('抛 PickupNeedsBirthDateError，而不是发一个第二因子永远对不上的码', async () => {
     const { pool } = makePool([{ rows: [{ n: 0 }] }, { rows: [{ date_of_birth: null }] }]);
@@ -425,7 +478,10 @@ describe('码撞了要重试，不能 500', () => {
     const pool = {
       query: vi.fn(async (sql: string, params: unknown[] = []) => {
         calls.push({ sql, params });
-        if (sql.includes('count(*)')) return { rows: [{ n: 0 }], rowCount: 1 };
+        // 「count(*)::int AS n」, not 「count(*)」: the mint statement
+        // counts its own superseded rows, and the looser match sent the
+        // insert down this branch and quietly broke the retry.
+        if (sql.includes('count(*)::int AS n')) return { rows: [{ n: 0 }], rowCount: 1 };
         if (sql.includes('date_of_birth')) {
           return { rows: [{ date_of_birth: '1985-03-12' }], rowCount: 1 };
         }
@@ -564,5 +620,35 @@ describe('列表把取件码和链接放在同一张清单上', () => {
     expect(listed[0].pickup?.attempts).toBe(2);
     // A plain link has no pickup half, and must not be shown as one.
     expect(listed[1].pickup).toBeNull();
+  });
+});
+
+describe('容量上限不把自己马上要作废的那一行算进去', () => {
+  /**
+   * The scenario supersede-on-mint exists for: the patient reads the
+   * code out, the doctor mishears a character, they tap again. If the
+   * cap counted the live pickup this very call is about to burn, a
+   * patient at MAX_LIVE_SHARES would get a 409 in the consulting room
+   * for a call that frees a slot before it takes one.
+   */
+  it('生成取件码时，查询排除掉还活着的取件码行', async () => {
+    const { pool, calls } = makePool([
+      { rows: [{ n: 0 }] },
+      { rows: [{ date_of_birth: '1990-01-01' }] },
+      { rows: [row()] },
+      { rows: [] },
+    ]);
+    await new PassportShareService(pool, logger).createPickup('u1').catch(() => undefined);
+    const capacity = calls.find((c) => c.sql.includes('count(*)::int'));
+    expect(capacity?.sql).toContain('passport_pickup_codes');
+    expect(capacity?.sql).toContain('redeemed_at IS NULL');
+    expect(capacity?.params[1]).toBe(true);
+  });
+
+  it('生成普通分享链接时不排除 —— 那条路径没有要作废的东西', async () => {
+    const { pool, calls } = makePool([{ rows: [{ n: 0 }] }, { rows: [row()] }, { rows: [] }]);
+    await new PassportShareService(pool, logger).create('u1');
+    const capacity = calls.find((c) => c.sql.includes('count(*)::int'));
+    expect(capacity?.params[1]).toBe(false);
   });
 });

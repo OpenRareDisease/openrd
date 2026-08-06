@@ -393,6 +393,40 @@ export const upsertPatientProfile = async (payload: Record<string, unknown>) => 
   }
 };
 
+/**
+ * 「你的诊断走到哪一步了」 — the five rungs the baseline form writes.
+ *
+ * MIRRORED, NOT INVENTED. The wire values and the Chinese wording are
+ * both owned by the API: apps/api/src/modules/patient-profile/
+ * profile.schema.ts, `DIAGNOSIS_LADDER_STATES` and
+ * `DIAGNOSIS_LADDER_LABELS`. There is no shared package between the two
+ * apps, so this is a copy — keep it byte-identical to that file. The
+ * server validates the value against its own enum (`z.enum`), so a
+ * drifted string here is rejected at the write, not silently stored;
+ * drifted *labels* are worse, because they would put a different
+ * question in front of the patient than the one the passport answers.
+ *
+ * ORDER IS MEANINGFUL — index 0 is the most complete evidence, index 4
+ * the least, and the form renders them in that order.
+ */
+export const DIAGNOSIS_LADDER_STATES = [
+  'confirmed_with_report',
+  'confirmed_report_unavailable',
+  'clinical_only',
+  'untested_wants_test',
+  'untested_no_plan',
+] as const;
+
+export type DiagnosisLadderState = (typeof DIAGNOSIS_LADDER_STATES)[number];
+
+export const DIAGNOSIS_LADDER_LABELS: Record<DiagnosisLadderState, string> = {
+  confirmed_with_report: '已确诊，基因报告在手上',
+  confirmed_report_unavailable: '已确诊，但报告不在手上',
+  clinical_only: '临床诊断，还没做过基因检测',
+  untested_wants_test: '还没测过，想测',
+  untested_no_plan: '还没测过，暂时不打算测',
+};
+
 export interface BaselineProfilePayload {
   foundation?: {
     fullName?: string | null;
@@ -403,6 +437,14 @@ export interface BaselineProfilePayload {
     diagnosisYear?: number | null;
   };
   diseaseBackground?: {
+    /** See DIAGNOSIS_LADDER_STATES. Optional on the wire: the API's
+     *  schema marks it `.optional().nullable()` so a handset still
+     *  running an older web export — WeChat's in-app browser caches for
+     *  days — keeps saving successfully with only `diagnosedFshd`. */
+    diagnosisLadder?: DiagnosisLadderState | null;
+    /** Derived server-side from `diagnosisLadder` whenever that is
+     *  present (profile.schema.ts transforms the object), so the two
+     *  halves cannot disagree on disk. Still sent by older clients. */
     diagnosedFshd?: boolean | null;
     diagnosisType?: string | null;
     d4z4?: string | null;
@@ -591,6 +633,138 @@ export interface PassportFreshness {
   daysSince: number | null;
 }
 
+/** The four grades plus 未知 — the API's `GeneticEvidenceGrade`. It
+ *  grades the EVIDENCE, never the person. */
+/** The five the API can send. Kept as a value so the reader below can
+ *  actually check against it — a type alone validates nothing at
+ *  runtime, which is how the bare `as` got in. */
+export const GENETIC_EVIDENCE_GRADES = [
+  'not_tested',
+  'method_not_applicable',
+  'method_right_incomplete',
+  'trial_ready',
+  'unknown',
+] as const;
+
+export type GeneticEvidenceGrade = (typeof GENETIC_EVIDENCE_GRADES)[number];
+
+export interface GeneticTestRequestSection {
+  heading: string;
+  body: string[];
+  source: string;
+}
+
+/** 《检查申请说明》 — the page a patient hands across a clinic desk. */
+export interface GeneticTestRequest {
+  title: string;
+  intro: string;
+  sections: GeneticTestRequestSection[];
+  /** The same content flattened, for print / copy. */
+  printable: string;
+}
+
+export interface PassportGeneticEvidence {
+  grade: GeneticEvidenceGrade;
+  gradeLabel: string;
+  headline: string;
+  reason: string;
+  action: string;
+  /** Non-null only when the repeat count is in the 8–10 gray zone. */
+  greyZoneNote: string | null;
+  /** Null once the report already carries size AND haplotype — at that
+   *  point there is nothing left to ask a clinic for. */
+  testRequest: GeneticTestRequest | null;
+  sources: string[];
+}
+
+// `asStringArray` is declared further down this file, next to the
+// document/report readers. Used here rather than copied: two spellings
+// of「keep only the strings」is two things to keep in step.
+
+const asTestRequest = (raw: unknown): GeneticTestRequest | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  // `printable` is the carrier that leaves the app (print / copy), and
+  // `title` names the document a patient is handing over. Without
+  // either, the block would render a heading with nothing under it.
+  if (typeof record.printable !== 'string' || typeof record.title !== 'string') return null;
+  const sections = Array.isArray(record.sections)
+    ? record.sections.flatMap((entry): GeneticTestRequestSection[] => {
+        if (!entry || typeof entry !== 'object') return [];
+        const section = entry as Record<string, unknown>;
+        if (typeof section.heading !== 'string') return [];
+        return [
+          {
+            heading: section.heading,
+            body: asStringArray(section.body),
+            // A clinical claim without its source is not shown as a
+            // claim with a missing source — the empty string renders
+            // nothing at all. See the reader in p-clinical_passport.
+            source: typeof section.source === 'string' ? section.source : '',
+          },
+        ];
+      })
+    : [];
+  return {
+    title: record.title,
+    intro: typeof record.intro === 'string' ? record.intro : '',
+    sections,
+    printable: record.printable,
+  };
+};
+
+/**
+ * `diagnosis.geneticEvidence`, unwrapped and shape-checked.
+ *
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call, and that type
+ * parameter is an UNCHECKED ASSERTION over whatever the server sent —
+ * see lib/passport-share-api.ts's header for what that cost the share
+ * screen. This block is new on the wire, and this app ships as a web
+ * export that WeChat's in-app browser caches for days: a handset can
+ * therefore be running today's bundle against an API build that has no
+ * `geneticEvidence` at all. Reaching straight for `.gradeLabel` there
+ * throws inside render and takes the whole passport — diagnosis,
+ * reports, timeline — down with it.
+ *
+ * Returns null instead, and the screen renders nothing rather than a
+ * half-built 《检查申请说明》. Every field a patient reads is required
+ * here for the same reason: a grade with no headline, or a headline
+ * with no next step, is not a shorter answer, it is a misleading one.
+ */
+export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEvidence | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  if (
+    typeof record.grade !== 'string' ||
+    typeof record.gradeLabel !== 'string' ||
+    typeof record.headline !== 'string' ||
+    typeof record.reason !== 'string' ||
+    typeof record.action !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    // Validated, not asserted. Every sibling field in this reader is
+    // checked; `grade` was the one bare `as`, so any string the server
+    // sent would have typed as one of five enum members. It happens to
+    // be unread today (the screen renders `gradeLabel`), which is
+    // exactly why it was worth fixing now: the next person to branch on
+    // `grade === 'not_tested'` would reasonably assume it had been
+    // checked. Unrecognised falls to 'unknown', which is a real member
+    // and the one that promises nothing.
+    grade: GENETIC_EVIDENCE_GRADES.includes(record.grade as GeneticEvidenceGrade)
+      ? (record.grade as GeneticEvidenceGrade)
+      : 'unknown',
+    gradeLabel: record.gradeLabel,
+    headline: record.headline,
+    reason: record.reason,
+    action: record.action,
+    greyZoneNote: typeof record.greyZoneNote === 'string' ? record.greyZoneNote : null,
+    testRequest: asTestRequest(record.testRequest),
+    sources: asStringArray(record.sources),
+  };
+};
+
 export interface ClinicalPassportSummary {
   generatedAt: string;
   passportId: string;
@@ -619,6 +793,11 @@ export interface ClinicalPassportSummary {
      *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
      *  医生手里，患者的自述不能和基因结果长得一样。 */
     confirmation: 'genetic' | 'self_reported' | 'none';
+    /** 患者自己在建档表上答的那一级，没答过就是 null。和 `confirmation`
+     *  回答的不是同一个问题（「你怎么说」 vs 「报告怎么写」），护照两个
+     *  都显示，不做调和。 */
+    ladder?: DiagnosisLadderState | null;
+    ladderLabel?: string | null;
     latestSourceDate: string | null;
     latestDocumentId: string | null;
     freshness: PassportFreshness;
@@ -627,6 +806,18 @@ export interface ClinicalPassportSummary {
     methylationValue: string;
     diagnosisDate: string;
     geneEvidence: string;
+    /**
+     * 对基因证据的分级读法，外加可以递给医生的《检查申请说明》。
+     *
+     * Typed as `unknown` on purpose. The server always sends this
+     * object, but the type parameter on `getClinicalPassportSummary` is
+     * an unchecked assertion and a cached WeChat bundle can be talking
+     * to an API build that predates the field. `unknown` makes the
+     * compiler refuse `.gradeLabel` until it has gone through
+     * `readPassportGeneticEvidence`, which is the only thing that has
+     * actually looked at the bytes.
+     */
+    geneticEvidence?: unknown;
   };
   motor: {
     ready: boolean;

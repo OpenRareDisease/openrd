@@ -234,6 +234,31 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     keyResolver: (req) => (req as AuthenticatedRequest).user?.id ?? req.ip ?? 'unknown',
   });
 
+  /** Per-user throttle on the referral pack.
+   *
+   *  It sits between the two throttling regimes already in this file
+   *  and is deliberately neither of them. `/me/data-export` takes a
+   *  60-second cooldown because it fans out into ~75 paged queries;
+   *  `/me/passport` and `/me/passport/export` take nothing because
+   *  they are a single profile read. The pack is one
+   *  `getProfileByUserId` too, but it then runs the whole passport
+   *  summariser over every document the patient has ever uploaded and
+   *  builds the markdown document on top of that — CPU on the event
+   *  loop, in a process that also serves everyone else. A cooldown
+   *  would be wrong (a patient who mis-typed and pressed again in a
+   *  waiting room must not be told to wait a minute); 20/min per
+   *  account is far above pressing a button and still stops a
+   *  scripted loop from pinning a core. Keyed by user id —
+   *  authMiddleware runs first — so a whole clinic behind one NAT
+   *  does not share a budget. */
+  const referralPackLimiter = createRateLimitMiddleware({
+    keyPrefix: 'profile:referral-pack',
+    windowMs: 60_000,
+    maxRequests: 20,
+    message: '生成转诊资料过于频繁，请稍后再试',
+    keyResolver: (req) => (req as AuthenticatedRequest).user?.id ?? req.ip ?? 'unknown',
+  });
+
   router.use(authMiddleware);
 
   // PIPL Art. 29. Applied to every route that STORES or RE-PROCESSES
@@ -263,6 +288,13 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/passport', asyncHandler(controller.getMyPassport));
   router.get('/me/passport/export', asyncHandler(controller.exportMyPassport));
   router.get('/me/data-export', asyncHandler(controller.exportMyData));
+  // 转诊资料. Same class of data as /me/data-export above — the whole
+  // clinical record, serialised to leave the phone — so it takes the
+  // same auth (router-level, above) and the same consent treatment
+  // (none: it is a read, see the block comment on sensitiveDataConsent
+  // above). It gets its own throttle rather than the export cooldown;
+  // referralPackLimiter says why.
+  router.get('/me/referral-pack', referralPackLimiter, asyncHandler(controller.getMyReferralPack));
   router.put('/me', guardianConsent, asyncHandler(controller.updateMyProfile));
   // The baseline carries diagnosis type, D4Z4 repeat count, haplotype
   // and methylation — the privacy policy names those as 敏感个人信息

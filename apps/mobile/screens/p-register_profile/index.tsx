@@ -21,6 +21,9 @@ import Button from '../common/Button';
 import {
   ApiError,
   type BaselineProfilePayload,
+  DIAGNOSIS_LADDER_LABELS,
+  DIAGNOSIS_LADDER_STATES,
+  type DiagnosisLadderState,
   getMyPatientProfile,
   updateMyBaseline,
   upsertPatientProfile,
@@ -49,6 +52,25 @@ import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import { useProfileContext } from '../../contexts/ProfileContext';
+
+/**
+ * The stored ladder value, or '' — never a string this build cannot
+ * render.
+ *
+ * `baseline` is an untyped JSONB column on the server and reaches the
+ * client through `apiRequest`'s unchecked type assertion, so the value
+ * on the wire is whatever some client wrote there. An unrecognised
+ * string would select none of the five options while still sitting in
+ * `form.diagnosisLadder`, and the save below would post it straight
+ * back — where the API's `z.enum` rejects the whole baseline. The
+ * patient would see 「保存失败」 on a form where every visible field is
+ * fine. Falling back to unanswered puts the question back in front of
+ * them instead, which is the only thing that can actually fix it.
+ */
+const readStoredLadder = (raw: unknown): DiagnosisLadderState | '' =>
+  typeof raw === 'string' && (DIAGNOSIS_LADDER_STATES as readonly string[]).includes(raw)
+    ? (raw as DiagnosisLadderState)
+    : '';
 
 const isValidDate = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -88,6 +110,10 @@ const RegisterProfileScreen: React.FC = () => {
     fullName: '',
     dateOfBirth: '',
     diagnosisYear: '',
+    // '' means「还没答」. Distinct from every one of the five rungs,
+    // including 「还没测过，暂时不打算测」 — that one is an answer, and
+    // the passport says something different to a person who gave it.
+    diagnosisLadder: '' as DiagnosisLadderState | '',
     diagnosisType: '',
     d4z4: '',
     onsetRegion: '',
@@ -125,6 +151,24 @@ const RegisterProfileScreen: React.FC = () => {
       try {
         const rawDraft = await getSessionValue(PROFILE_FORM_DRAFT_KEY);
         draft = rawDraft ? (JSON.parse(rawDraft) as Partial<typeof form>) : null;
+        // The draft is JSON this build did not necessarily write — an
+        // older bundle, a hand-edited store — and it is layered ON TOP
+        // of the server value below, so an unrecognised ladder string
+        // here would win over a good stored one and then be posted
+        // back, where the API's z.enum rejects the whole baseline.
+        //
+        // The key is DROPPED rather than blanked, so the stored answer
+        // survives an unreadable draft. '' is left alone on purpose: it
+        // is what deselecting writes, and a patient who cleared the
+        // question and walked away meant to clear it.
+        if (draft && 'diagnosisLadder' in draft) {
+          const drafted = draft.diagnosisLadder;
+          if (drafted !== '' && !readStoredLadder(drafted)) {
+            const sanitized: Partial<typeof form> = { ...draft };
+            delete sanitized.diagnosisLadder;
+            draft = sanitized;
+          }
+        }
       } catch {
         draft = null;
       }
@@ -147,6 +191,7 @@ const RegisterProfileScreen: React.FC = () => {
             baseline?.foundation?.diagnosisYear !== null
               ? String(baseline.foundation.diagnosisYear)
               : '',
+          diagnosisLadder: readStoredLadder(diseaseBackground?.diagnosisLadder),
           diagnosisType: diseaseBackground?.diagnosisType ?? '',
           d4z4: diseaseBackground?.d4z4 != null ? String(diseaseBackground.d4z4) : '',
           onsetRegion: diseaseBackground?.onsetRegion ?? '',
@@ -301,6 +346,17 @@ const RegisterProfileScreen: React.FC = () => {
       },
       diseaseBackground: {
         ...(existingBaseline?.diseaseBackground ?? {}),
+        // `null` when unanswered, and never a guess: there is no
+        // inverse of `diagnosedFshdFromLadder` on the server, because
+        // `true` could be any of the first three rungs and `false`
+        // either of the last two. A profile written by an older client
+        // simply has no ladder until its owner answers this question.
+        //
+        // Sending it also makes the server DERIVE `diagnosedFshd` from
+        // it (profile.schema.ts), overwriting whatever the spread above
+        // carried forward — which is what keeps the two halves from
+        // saying opposite things on disk.
+        diagnosisLadder: form.diagnosisLadder || null,
         diagnosisType: form.diagnosisType.trim() || null,
         d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
         onsetRegion: form.onsetRegion.trim() || null,
@@ -508,6 +564,61 @@ const RegisterProfileScreen: React.FC = () => {
                   <Text style={styles.sectionTitle}>FSHD 背景</Text>
                   <Text style={styles.sectionSubtitle}>补充不会从报告自动识别出来的关键信息</Text>
                   <View style={styles.card}>
+                    {/* The first question in this section, because it
+                        frames every field under it. 「我被诊断为 FSHD」
+                        used to be one boolean, and it collapsed five
+                        situations that call for five different next
+                        moves — most damagingly 「医生说是，但我没有基因
+                        报告」 and 「测过，报告丢了」, both of which
+                        answered `true` and were then read downstream as
+                        a molecular diagnosis. The labels come from
+                        lib/api.ts, mirrored from the API's
+                        DIAGNOSIS_LADDER_LABELS; do not reword them
+                        here. */}
+                    <Text style={styles.inputLabel}>诊断进度</Text>
+                    <Text style={styles.fieldHint}>
+                      临床诊断和基因确诊不是一回事，这一项分开问。临床护照会据此说明下一步该做什么、
+                      以及该向医院要哪一项检查；不填也可以，其余内容照常保存。
+                    </Text>
+                    <View style={styles.ladderColumn}>
+                      {DIAGNOSIS_LADDER_STATES.map((state) => {
+                        const isActive = form.diagnosisLadder === state;
+                        return (
+                          <TouchableOpacity
+                            key={state}
+                            style={[
+                              styles.optionButton,
+                              styles.ladderOption,
+                              isActive && styles.optionButtonActive,
+                            ]}
+                            accessibilityRole="radio"
+                            accessibilityLabel={DIAGNOSIS_LADDER_LABELS[state]}
+                            accessibilityState={{ selected: isActive }}
+                            aria-checked={isActive}
+                            onPress={() =>
+                              setForm((prev) => ({
+                                ...prev,
+                                // Tapping the selected rung clears it,
+                                // same as 当前行走 above — the five
+                                // options have no 「不想说」 among them,
+                                // and answering is not compulsory.
+                                diagnosisLadder: prev.diagnosisLadder === state ? '' : state,
+                              }))
+                            }
+                          >
+                            {/* Deliberately not numberOfLines={1}: the
+                                longest label is 12 characters and the
+                                difference between 「已确诊，基因报告在
+                                手上」 and 「已确诊，但报告不在手上」 is
+                                the tail of the sentence. */}
+                            <Text style={[styles.optionText, isActive && styles.optionTextActive]}>
+                              {DIAGNOSIS_LADDER_LABELS[state]}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
                     <Text style={styles.inputLabel}>确诊年份</Text>
                     <TextInput
                       style={styles.input}

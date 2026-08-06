@@ -282,12 +282,19 @@ export class PassportShareService {
    * the cap is a comprehension limit on the revoke screen — a screen
    * that shows both.
    */
-  private async assertLiveShareCapacity(userId: string): Promise<void> {
+  private async assertLiveShareCapacity(
+    userId: string,
+    options: { excludeLivePickups?: boolean } = {},
+  ): Promise<void> {
     const live = await this.pool.query(
       `SELECT count(*)::int AS n
-         FROM passport_share_links
-        WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()`,
-      [userId],
+         FROM passport_share_links s
+        WHERE s.user_id = $1 AND s.revoked_at IS NULL AND s.expires_at > NOW()
+          AND ($2::boolean IS NOT TRUE OR NOT EXISTS (
+                SELECT 1 FROM passport_pickup_codes p
+                 WHERE p.share_id = s.id
+                   AND p.redeemed_at IS NULL AND p.burned_at IS NULL))`,
+      [userId, options.excludeLivePickups ?? false],
     );
     if (Number(live.rows[0]?.n ?? 0) >= MAX_LIVE_SHARES) throw new ShareLimitReachedError();
   }
@@ -357,17 +364,29 @@ export class PassportShareService {
    * Mint a pickup code. Returns the row WITH the plaintext code — the
    * only time it exists outside the patient's screen.
    *
-   * One statement, two inserts. Not for speed: a share row that got
-   * created while the pickup insert failed would be a live 021 link
-   * with a token nobody holds, counting against the patient's cap for
-   * fifteen minutes and appearing in the revoke list as a share they
-   * never made. A CTE makes both rows land or neither.
+   * One statement, two inserts and one supersede. Not for speed:
+   *
+   *  - A share row that got created while the pickup insert failed
+   *    would be a live 021 link with a token nobody holds, counting
+   *    against the patient's cap for fifteen minutes and appearing in
+   *    the revoke list as a share they never made.
+   *  - A supersede that ran as its own statement could burn the code
+   *    the patient already read out and then fail to mint a
+   *    replacement, leaving them mid-appointment with nothing.
+   *
+   * A CTE makes all three land or none.
    */
   async createPickup(
     userId: string,
     input: { label?: string | null } = {},
   ): Promise<PassportShareLink & { code: string }> {
-    await this.assertLiveShareCapacity(userId);
+    // Counts the rows this call is about to supersede as though they
+    // were competing for the slot. A patient at MAX_LIVE_SHARES who
+    // regenerates because the doctor misheard a character would get a
+    // 409 in the consulting room — for a call that frees a slot before
+    // it takes one. So the live pickups are excluded here, and the
+    // mint statement burns them in the same breath.
+    await this.assertLiveShareCapacity(userId, { excludeLivePickups: true });
 
     // Checked before minting, not at redemption. A code whose second
     // factor can never match is a code the patient reads out in the
@@ -396,7 +415,38 @@ export class PassportShareService {
       let inserted: QueryResult;
       try {
         inserted = await this.pool.query(
-          `WITH s AS (
+          // `superseded` is first because it is the whole point of the
+          // statement, not a tidy-up. The failure it closes is mundane:
+          // the patient reads out K7F3-9QTM, the doctor mishears a
+          // character, the patient taps again. Without this the code
+          // that was actually spoken into the room stays redeemable for
+          // the rest of its fifteen minutes with nobody watching it.
+          //
+          // It revokes the PARENT link rather than writing burned_at on
+          // the pickup row: redeemPickup already refuses on
+          // `s.revoked_at IS NULL`, and burned_at means one specific
+          // thing to the patient — 「出生日期输错三次」 — which is not
+          // what happened here.
+          //
+          // Safe inside the same statement because Postgres runs the
+          // sub-statements of a WITH against one snapshot and they
+          // cannot see one another's writes: the row `s` is inserting
+          // does not exist for this UPDATE, so a fresh code cannot burn
+          // itself.
+          `WITH superseded AS (
+             UPDATE passport_share_links prev
+                SET revoked_at = NOW()
+               FROM passport_pickup_codes pc
+              WHERE pc.share_id = prev.id
+                AND prev.user_id = $1
+                AND prev.revoked_at IS NULL
+                AND prev.expires_at > NOW()
+                AND pc.redeemed_at IS NULL
+                AND pc.burned_at IS NULL
+                AND pc.expires_at > NOW()
+              RETURNING prev.id
+           ),
+           s AS (
              INSERT INTO passport_share_links (user_id, token_hash, label, expires_at)
              VALUES ($1, $2, $3, NOW() + ($5 || ' minutes')::interval)
              RETURNING id, label, created_at, expires_at, revoked_at,
@@ -412,7 +462,8 @@ export class PassportShareService {
                   p.expires_at  AS pickup_expires_at,
                   p.attempts    AS pickup_attempts,
                   p.redeemed_at AS pickup_redeemed_at,
-                  p.burned_at   AS pickup_burned_at
+                  p.burned_at   AS pickup_burned_at,
+                  (SELECT count(*)::int FROM superseded) AS superseded_count
              FROM s JOIN p ON p.share_id = s.id`,
           [userId, orphanTokenHash, label, hashToken(code), String(PICKUP_TTL_MINUTES)],
         );
@@ -423,6 +474,10 @@ export class PassportShareService {
 
       // Same rule as a share link: the audit row records that a code
       // was minted and how long it lives. It does NOT record the code.
+      //
+      // `supersededCount` is here because minting now closes doors as
+      // well as opening one, and a patient asking later 「我那个码怎么
+      // 不能用了」 deserves an answer that exists somewhere.
       await this.pool.query(
         `INSERT INTO audit_logs (event_type, event_payload)
          VALUES ('passport_pickup_created', $1::jsonb)`,
@@ -431,6 +486,7 @@ export class PassportShareService {
             userId,
             shareId: inserted.rows[0].id,
             ttlMinutes: PICKUP_TTL_MINUTES,
+            supersededCount: Number(inserted.rows[0].superseded_count ?? 0),
           }),
         ],
       );

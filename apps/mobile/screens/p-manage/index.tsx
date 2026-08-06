@@ -28,6 +28,8 @@ import {
   type PatientProfile,
   type ProgressionSummary,
 } from '../../lib/api';
+import { getFallsSummary } from '../../lib/falls-api';
+import { FALLS_WINDOW_DAYS, summarizeFallsForCourse, type FallsSummary } from '../../lib/falls';
 import { formatDateLabel, getRiskMeta } from '../../lib/clinical-visuals';
 import { COLOR, INTERACTION, MOTION } from '../../lib/design';
 import {
@@ -199,6 +201,14 @@ export default function ManageScreen() {
   const [muscleInsights, setMuscleInsights] = useState<
     Array<{ label: string; insight: MuscleInsight }>
   >([]);
+  // The falls count. Three states, and they are NOT interchangeable:
+  // a summary (a real count), `null` while nothing has been read, and
+  // `fallsUnreadable` when the fetch or the parse failed. Collapsing
+  // the last two into a zeroed summary would print 「还没有跌倒记录」
+  // to a patient whose falls simply did not load — the app telling
+  // someone they have not fallen.
+  const [fallsSummary, setFallsSummary] = useState<FallsSummary | null>(null);
+  const [fallsUnreadable, setFallsUnreadable] = useState(false);
 
   const submitMedication = async () => {
     const name = medDraft.name.trim();
@@ -268,10 +278,28 @@ export default function ManageScreen() {
           )
           .map((result) => result.value),
       );
+
+      // Falls, best-effort and in its own catch. It is one more
+      // endpoint on a page that already makes seven calls, and a falls
+      // outage must not blank 病程 — but it also must not be allowed to
+      // silently render as「还没有跌倒记录」, which is why the failure
+      // has its own flag rather than a zeroed summary. The window is
+      // sent explicitly so the sentence's number and the server's
+      // arithmetic cannot drift apart.
+      try {
+        const falls = await getFallsSummary(FALLS_WINDOW_DAYS);
+        setFallsSummary(falls);
+        setFallsUnreadable(falls === null);
+      } catch {
+        setFallsSummary(null);
+        setFallsUnreadable(true);
+      }
     } catch (error) {
       setProfile(null);
       setSummary(null);
       setRiskSummary(null);
+      setFallsSummary(null);
+      setFallsUnreadable(false);
       setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载病程管理页。');
     } finally {
       setIsLoading(false);
@@ -332,6 +360,11 @@ export default function ManageScreen() {
     [profile, summary],
   );
   const medicationHighlights = useMemo(() => buildMedicationHighlights(profile), [profile]);
+  const fallsCourseNote = useMemo(
+    () => (fallsSummary ? summarizeFallsForCourse(fallsSummary, FALLS_WINDOW_DAYS) : null),
+    [fallsSummary],
+  );
+  const fallsHasRecords = (fallsSummary?.total ?? 0) > 0;
   const assistiveDevices =
     profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];
   const evidencePanels = [reportInsights.diagnosisPanel, reportInsights.imagingPanel];
@@ -379,6 +412,44 @@ export default function ManageScreen() {
                 再记一次日常数据，这里就会对比出和上次相比的变化。
               </Text>
             )}
+
+            <View style={styles.rule} />
+            {/* 跌倒记录 lives here — beside 最近记录的变化 — because
+                「我最近怎么样」 is the question this tab answers and a
+                fall is part of that answer. It is ONE number and its
+                caveat, never a trend: the API can compose a
+                quarter-by-quarter comparison and deliberately keeps it
+                for the assistant, because a running total with an arrow
+                on it is a progression alert, not a status line.
+
+                The entry point matters as much as the number. Before
+                the diary existed there was nowhere to record a fall
+                except a free-text followup event the AI retriever is
+                required to refuse, so this button is the whole
+                feature's front door. */}
+            <Text style={styles.blockHeading}>跌倒记录</Text>
+            {fallsUnreadable ? (
+              // Never 「0 次」 here. A failed read is a failed read.
+              <Text style={styles.emptyText}>这会儿读不到跌倒记录。</Text>
+            ) : fallsCourseNote ? (
+              <>
+                <Text style={styles.fallsLine}>{fallsCourseNote.headline}</Text>
+                {fallsCourseNote.caveat ? (
+                  <Text style={styles.cohortCaption}>{fallsCourseNote.caveat}</Text>
+                ) : null}
+              </>
+            ) : null}
+            {/* Full-size rather than `compact`: on the web export a
+                compact button is a 34pt target (see Button.tsx), and
+                this leads to the form a patient opens right after
+                falling. */}
+            <View style={styles.fallsAction}>
+              <Button
+                label={fallsHasRecords ? '打开跌倒记录' : '记一次跌倒'}
+                variant="tinted"
+                onPress={() => router.push('/p-falls')}
+              />
+            </View>
 
             <View style={styles.rule} />
             <Text style={styles.blockHeading}>和病友群体相比</Text>

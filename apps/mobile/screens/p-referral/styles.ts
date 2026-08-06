@@ -153,6 +153,128 @@ export default StyleSheet.create({
     color: COLOR.inkSoft,
   },
 
+  /* ---- 转诊资料 ---- */
+  packBlock: {
+    backgroundColor: COLOR.surface,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    padding: SPACE.lg,
+    marginBottom: SPACE.section,
+    gap: SPACE.md,
+  },
+  packLede: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
+  /* A full-width bar, not a right-aligned pill. Reaching across a phone
+     with a thumb is the movement this disease takes away first, so the
+     one control on this block is as wide as the block and taller than
+     the platform minimum. */
+  packButton: {
+    minHeight: MIN_TOUCH_TARGET,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACE.lg,
+    paddingVertical: SPACE.md,
+  },
+  packButtonDisabled: {
+    backgroundColor: COLOR.accentSoft,
+  },
+  packButtonText: {
+    ...TYPE.bodyStrong,
+    color: COLOR.onAccent,
+  },
+  packError: {
+    ...TYPE.body,
+    color: COLOR.alert,
+    backgroundColor: COLOR.alertWash,
+    borderRadius: RADIUS.control,
+    padding: SPACE.md,
+  },
+  packTitle: {
+    ...TYPE.heading,
+    color: COLOR.ink,
+  },
+  packMeta: {
+    ...TYPE.caption,
+    color: COLOR.inkMuted,
+  },
+  /* The diagnosis sentence. Neutral when a genetic report backs it,
+     warn-toned when nothing does — the sentence itself already says
+     「请勿按已确诊处理」, and this is only so the reader sees which of
+     the two it is before they have read it. */
+  packDiagnosis: {
+    ...TYPE.body,
+    color: COLOR.ink,
+    backgroundColor: COLOR.well,
+    borderRadius: RADIUS.control,
+    padding: SPACE.md,
+  },
+  packDiagnosisUnconfirmed: {
+    color: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+  },
+  packSlot: {
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    paddingTop: SPACE.md,
+  },
+  packSlotTopRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: SPACE.sm,
+    marginBottom: 4,
+  },
+  packSlotTitle: {
+    ...TYPE.bodyStrong,
+    color: COLOR.ink,
+  },
+  packSlotStatement: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
+  packSlotNote: {
+    ...TYPE.caption,
+    color: COLOR.inkMuted,
+    marginTop: 4,
+  },
+  /* Three states, three looks. `absent` deliberately does NOT get the
+     alert treatment — 「本平台没有记录」 is a fact about this app, not
+     about the patient, and colouring it red is how a missing upload
+     starts reading as a missing test. */
+  packStateChip: {
+    borderRadius: RADIUS.pill,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    backgroundColor: COLOR.well,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  packStateChipUnreadable: {
+    borderColor: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+  },
+  packStateChipText: {
+    ...TYPE.caption,
+    color: COLOR.inkSoft,
+  },
+  packStateChipTextUnreadable: {
+    ...TYPE.caption,
+    color: COLOR.warn,
+    fontWeight: '600',
+  },
+  packDocument: {
+    ...TYPE.body,
+    color: COLOR.ink,
+    backgroundColor: COLOR.well,
+    borderRadius: RADIUS.control,
+    padding: SPACE.md,
+  },
+
   /* ---- 我想问的问题 ---- */
   questionBlock: {
     backgroundColor: COLOR.surfaceAccent,

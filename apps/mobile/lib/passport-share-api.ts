@@ -106,6 +106,31 @@ export const createPassportShare = async (
 };
 
 /**
+ * A whole positive count from the response envelope, or null.
+ *
+ * Same discipline as `asPickup`: the value crosses the wire, so its
+ * type is a claim until something checks it. null rather than a
+ * fallback number, because the caller's job is to say 「不知道」 rather
+ * than to state a duration nothing told it — a screen that asserts
+ * fifteen minutes it has no evidence for is the exact failure this
+ * repo keeps shipping.
+ */
+const asCount = (raw: unknown): number | null =>
+  typeof raw === 'number' && Number.isFinite(raw) && raw > 0 && Number.isInteger(raw) ? raw : null;
+
+/** What the server said about the code it just minted. `ttlMinutes` and
+ *  `maxAttempts` ride OUTSIDE the `data` envelope, so they survive only
+ *  if they are read before it is unwrapped. */
+export type CreatedPickup = {
+  share: PassportShare & { code: string; pickup: NonNullable<PassportShare['pickup']> };
+  /** The server's own PICKUP_TTL_MINUTES, or null when the response did
+   *  not carry a usable one. Never substituted with a guess. */
+  ttlMinutes: number | null;
+  /** The server's own MAX_PICKUP_ATTEMPTS, or null. Same rule. */
+  maxAttempts: number | null;
+};
+
+/**
  * Mint a pickup code. Throws when the response carries no code, for
  * exactly the reason `createPassportShare` does: by the time this
  * resolves the server has already opened a door, and a silent success
@@ -119,20 +144,29 @@ export const createPassportShare = async (
  */
 export const createPassportPickup = async (
   input: { label?: string } = {},
-): Promise<PassportShare & { code: string; pickup: NonNullable<PassportShare['pickup']> }> => {
-  const data = unwrap(
-    await apiRequest<unknown>('/passport-shares/pickup', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  );
-  const share = asShare(data);
+): Promise<CreatedPickup> => {
+  const payload = await apiRequest<unknown>('/passport-shares/pickup', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  const envelope = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+  const share = asShare(unwrap(payload));
   if (!share?.code || !share.pickup) {
     throw new Error(
       '服务器没有返回取件码，请重试；如果反复失败，请到「隐私设置」查看是否已经生成过。',
     );
   }
-  return share as PassportShare & { code: string; pickup: NonNullable<PassportShare['pickup']> };
+  return {
+    share: share as PassportShare & {
+      code: string;
+      pickup: NonNullable<PassportShare['pickup']>;
+    },
+    ttlMinutes: asCount(envelope.ttlMinutes),
+    maxAttempts: asCount(envelope.maxAttempts),
+  };
 };
 
 export const revokePassportShare = async (id: string): Promise<void> => {

@@ -190,6 +190,11 @@ function AppNavigator() {
             WeChat's browser — the defect commit 1e82bc6 fixed for
             p-genetics_family, which this page would otherwise repeat. */}
         <Stack.Screen name="p-pregnancy" options={{ title: '孕期时间线页' }} />
+        <Stack.Screen name="p-surveillance" options={{ title: '随访计划页' }} />
+        <Stack.Screen name="p-disability_assessment" options={{ title: '残疾评定准备页' }} />
+        <Stack.Screen name="p-rare_disease_status" options={{ title: '罕见病身份与权益页' }} />
+        <Stack.Screen name="p-referral" options={{ title: '协作网转诊包页' }} />
+        <Stack.Screen name="p-falls" options={{ title: '跌倒记录页' }} />
       </Stack>
     </AppDialogProvider>
   );

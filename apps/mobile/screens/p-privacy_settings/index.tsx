@@ -25,7 +25,8 @@ import {
   buildShareUrl,
   describePickupState,
   describeShareLife,
-  isShareLive,
+  isShareRowLive,
+  PICKUP_TTL_MINUTES,
   type PassportShare,
 } from '../../lib/passport-share';
 import PickupCodeCard from './components/PickupCodeCard';
@@ -170,17 +171,20 @@ const PrivacySettingsScreen = () => {
    * like `freshLink`. The server stores a digest of it and cannot
    * reissue it — see db/migrations/024.
    *
-   * `minutesLeft` is captured at creation rather than ticked down. A
-   * live countdown would need a timer on a screen that already re-renders
-   * on four other subscriptions, and the card is looked at for about
-   * thirty seconds before the code is either used or abandoned. The
-   * revoke list below carries the real remaining time on every reload.
+   * What is stored here is the SERVER'S numbers, not a rendered
+   * countdown. This used to hold a `minutesLeft` computed once at mint,
+   * on the argument that the card is looked at for thirty seconds — but
+   * the card stays mounted, so a code minted in the waiting room and
+   * shown twelve minutes later still claimed fifteen minutes. The card
+   * owns the clock now; this owns the facts it counts from.
    */
   const [creatingPickup, setCreatingPickup] = useState(false);
   const [freshPickup, setFreshPickup] = useState<{
     code: string;
     qrUrl: string | null;
-    minutesLeft: number;
+    expiresAt: string;
+    ttlMinutes: number | null;
+    maxAttempts: number | null;
   } | null>(null);
 
   const loadShares = useCallback(async () => {
@@ -248,16 +252,20 @@ const PrivacySettingsScreen = () => {
       // reason createPassportShare does: the server has already opened
       // a door by the time this returns.
       const created = await createPassportPickup();
-      const ms = new Date(created.pickup.expiresAt).getTime() - Date.now();
       setFreshPickup({
-        code: created.code,
+        code: created.share.code,
         // window.location exists only on the web export, which is how
         // essentially every patient reaches this app. On native there
         // is no origin, so no QR — the card says the code alone, and
         // the doctor types the address once. A QR built from a guessed
         // host would send them to a page that does not exist.
         qrUrl: buildPickupUrl(typeof window !== 'undefined' ? window.location?.origin : null),
-        minutesLeft: Number.isFinite(ms) && ms > 0 ? Math.max(1, Math.round(ms / 60_000)) : 15,
+        expiresAt: created.share.pickup.expiresAt,
+        // Straight through, nulls and all. The old code turned an
+        // unusable expiry into the literal 15, which put a number the
+        // device had no evidence for on a live credential.
+        ttlMinutes: created.ttlMinutes,
+        maxAttempts: created.maxAttempts,
       });
       // Showing a pickup code and an old link at once is two doors on
       // one screen with one heading; the list below still lists both.
@@ -278,10 +286,15 @@ const PrivacySettingsScreen = () => {
   };
 
   const onRevokeShare = async (share: PassportShare) => {
+    // A pickup code is not a link and the dialog must not call it one:
+    // 「拿到这个链接的人」 means nothing to a patient who read eight
+    // characters out loud across a desk.
     const ok = await confirm({
-      title: '撤销这个链接？',
-      message: '撤销之后，拿到这个链接的人就再也打不开了。他们已经看过的内容我们收不回来。',
-      confirmLabel: '撤销',
+      title: share.pickup ? '作废这个取件码？' : '撤销这个链接？',
+      message: share.pickup
+        ? '作废之后，你刚才念出去的那个取件码就打不开了。医生已经看过的内容我们收不回来。'
+        : '撤销之后，拿到这个链接的人就再也打不开了。他们已经看过的内容我们收不回来。',
+      confirmLabel: share.pickup ? '作废' : '撤销',
       destructive: true,
     });
     if (!ok) return;
@@ -955,16 +968,37 @@ const PrivacySettingsScreen = () => {
               When they are, there is no chat window between you, and
               「把手机举起来给对方看」 is exactly the ask this disease
               makes hardest. See db/migrations/024. */}
+          {/* PICKUP_TTL_MINUTES, not a typed-out 15. This sentence is on
+              screen before anything has been minted, so there is no
+              server response to read — the constant mirrors the API's
+              and is the closest thing to a source we have here. */}
           <Text style={styles.settingDescription}>
             如果医生就在你面前，用取件码更省事：你念 8 位码，他在自己的电脑或手机上输入，
-            再输一次你的出生日期就能打开。取件码 15 分钟有效、只能用一次。
+            再输一次你的出生日期就能打开。取件码 {PICKUP_TTL_MINUTES} 分钟有效、只能用一次；
+            重新生成一个，上一个就立刻作废。
           </Text>
 
           {freshPickup ? (
+            /* `key` on the code, so a second mint REMOUNTS the card.
+               Without it React updates props on the same instance and
+               the countdown's mount timestamp stays pinned to the FIRST
+               mint — a code minted fourteen minutes later rendered
+               「约 1 分钟内有效」 and then 「已过期，请重新生成」 while the
+               server had given it a full fifteen.
+
+               That is the exact path the supersede-on-mint change exists
+               to serve: the patient reads the code out, the doctor
+               mishears a character, they tap again. The card would then
+               tell them to regenerate, and regenerating supersedes the
+               code that was still good. Two correct fixes composed into
+               a loop. */
             <PickupCodeCard
+              key={freshPickup.code}
               code={freshPickup.code}
               qrUrl={freshPickup.qrUrl}
-              minutesLeft={freshPickup.minutesLeft}
+              expiresAt={freshPickup.expiresAt}
+              ttlMinutes={freshPickup.ttlMinutes}
+              maxAttempts={freshPickup.maxAttempts}
             />
           ) : null}
 
@@ -994,7 +1028,7 @@ const PrivacySettingsScreen = () => {
             variant="tinted"
             fullWidth
             busy={creatingPickup}
-            accessibilityHint="生成一个 8 位取件码和二维码，医生在自己的设备上输入取件码和你的出生日期就能打开你的临床护照。15 分钟有效，只能用一次"
+            accessibilityHint={`生成一个 8 位取件码和二维码，医生在自己的设备上输入取件码和你的出生日期就能打开你的临床护照。${PICKUP_TTL_MINUTES} 分钟有效，只能用一次；你上一个还没用掉的取件码会立刻作废`}
             onPress={onCreatePickup}
           />
 
@@ -1012,11 +1046,18 @@ const PrivacySettingsScreen = () => {
 
           {shares && shares.length > 0
             ? shares.map((share) => {
-                const live = isShareLive(share);
                 // A pickup row and a link row are both doors and belong
                 // in the same list — but they are not interchangeable:
                 // one was forwarded in WeChat and one was read out
                 // loud, and「已被取走一次」 has no meaning for a link.
+                //
+                // isShareRowLive, not isShareLive: a code that has been
+                // redeemed or burned is dead while its parent link is
+                // still unrevoked and unexpired, and isShareLive was
+                // offering 撤销 on it — a button that does nothing, on
+                // the one screen whose job is telling the patient which
+                // doors are open.
+                const live = isShareRowLive(share);
                 const pickupState = describePickupState(share);
                 return (
                   <View key={share.id} style={styles.shareRow}>
@@ -1038,11 +1079,15 @@ const PrivacySettingsScreen = () => {
                     </View>
                     {live ? (
                       <Button
-                        label="撤销"
+                        label={share.pickup ? '作废' : '撤销'}
                         variant="plain"
                         compact
                         busy={revokingShareId === share.id}
-                        accessibilityHint={`撤销这个链接，撤销后任何人都无法再打开`}
+                        accessibilityHint={
+                          share.pickup
+                            ? '作废这个取件码，作废后医生再输入它也打不开你的记录'
+                            : '撤销这个链接，撤销后任何人都无法再打开'
+                        }
                         onPress={() => onRevokeShare(share)}
                       />
                     ) : null}

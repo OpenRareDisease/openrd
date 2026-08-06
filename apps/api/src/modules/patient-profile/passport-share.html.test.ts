@@ -5,6 +5,7 @@ import {
   buildPickupFormPage,
   buildPickupUnavailablePage,
 } from './passport-share.html.js';
+import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
 import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
 
 /**
@@ -224,9 +225,27 @@ describe('取件码表单页', () => {
     expect(page).toContain('I、L 按 1 输，O 按 0 输也可以');
   });
 
-  it('说清楚 15 分钟、一次性、错 3 次作废', () => {
-    expect(page).toContain('15 分钟内有效，只能用一次');
-    expect(page).toContain('输错 3 次');
+  it('页面上的分钟数和次数来自常量，不是打字打上去的', () => {
+    // These were literals, and so were the assertions — so changing
+    // PICKUP_TTL_MINUTES to 10 left this page telling a clinician 15
+    // with the whole suite green. Read the number back OUT of the page
+    // and compare it to the constant that enforces it.
+    expect(page).toContain(`${PICKUP_TTL_MINUTES} 分钟内有效，只能用一次`);
+    const ttlOnPage = page.match(/取件码 (\d+) 分钟内有效/)?.[1];
+    expect(ttlOnPage).toBe(String(PICKUP_TTL_MINUTES));
+    const attemptsOnPage = page.match(/出生日期输错 (\d+) 次/)?.[1];
+    expect(attemptsOnPage).toBe(String(MAX_PICKUP_ATTEMPTS));
+  });
+
+  it('说的是「出生日期输错 3 次」，不是「输错 3 次」', () => {
+    // Only a wrong BIRTHDATE increments the counter. A wrong code
+    // matches no row, so there is nothing to count on — see
+    // db/migrations/024. The in-app card had this right and this page,
+    // the one a doctor actually reads, did not.
+    expect(page).toContain(`出生日期输错 ${MAX_PICKUP_ATTEMPTS} 次`);
+    expect(page).toContain(`取件码本身打错不计入这 ${MAX_PICKUP_ATTEMPTS} 次`);
+    // The old sentence, which claimed any wrong entry burned the code.
+    expect(page).not.toMatch(/[。，、]输错 \d+ 次/);
   });
 
   it('说清楚出生日期那一栏是干什么的', () => {

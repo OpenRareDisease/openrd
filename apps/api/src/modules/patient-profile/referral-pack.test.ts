@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import request from 'supertest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PatientProfileDTO } from './profile.service.js';
 import {
@@ -6,6 +9,39 @@ import {
   REFERRAL_PROVENANCE_NOTE,
   buildReferralPack,
 } from './referral-pack.js';
+import type { AppEnv } from '../../config/env.js';
+import type { AppLogger } from '../../config/logger.js';
+import { errorHandler } from '../../middleware/error-handler.js';
+
+/**
+ * The module doubles exist for the second half of this file — the
+ * end-to-end tests that put GET /me/referral-pack through Express.
+ *
+ * They are hoisted, so they apply to the whole file. That is safe:
+ * everything above imports `./profile.service.js` for its TYPES only,
+ * which TypeScript erases, and `buildReferralPack` never touches a
+ * pool.
+ */
+const queryMock = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+vi.mock('../../db/pool.js', () => ({
+  getPool: () => ({ query: (...args: unknown[]) => queryMock(...args) }),
+}));
+
+const getProfileByUserId = vi.fn();
+vi.mock('./profile.service.js', () => ({
+  PatientProfileService: class {
+    getProfileByUserId = (...args: unknown[]) => getProfileByUserId(...args);
+    // Called once at router construction by the stuck-OCR sweep and
+    // the deletion purge. They must resolve or the router logs an
+    // unhandled rejection and the real assertions get buried.
+    sweepStuckProcessingDocuments = async () => 0;
+    purgeDueAccountDeletions = async () => 0;
+  },
+}));
+
+vi.mock('../../services/audit/retention.js', () => ({
+  startRetentionSweep: () => ({ unref: () => undefined }) as unknown as NodeJS.Timeout,
+}));
 
 /**
  * What these tests are actually guarding.
@@ -471,6 +507,18 @@ describe('系统监测三项 — present / unreadable / absent survive to the pa
     expect(cardiac?.statement).toContain('不等于没有做过');
   });
 
+  it('never disagrees with itself about the date of one report', () => {
+    // The passport hands `latestDate` over as a bare YYYY-MM-DD. Feeding
+    // that back through a Date parser reads it as UTC midnight and then
+    // prints it in local time, so the slot's statement lost a day while
+    // its own `latestDate` field kept it — one report, two dates, on the
+    // page a neurologist reads.
+    const result = pack(base({ documents: [unreadablePulmonaryReport()] } as never));
+    const respiratory = result.monitoring.find((slot) => slot.key === 'respiratory');
+    expect(respiratory?.latestDate).toBeTruthy();
+    expect(respiratory?.statement).toContain(respiratory!.latestDate!);
+  });
+
   it('keeps the passport note that says whether a test is indicated', () => {
     const result = pack(base());
     const cardiac = result.monitoring.find((slot) => slot.key === 'cardiac');
@@ -503,5 +551,216 @@ describe('我想问的问题', () => {
     const result = pack(base());
     const blanks = result.markdown.split('我的情况 / 想问的：').length - 1;
     expect(blanks).toBe(result.questions.length);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The wiring                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHY THESE LIVE HERE AND NOT IN profile.controller.test.ts
+ * ---------------------------------------------------------
+ * Everything above proves the serialiser is right. None of it proved a
+ * patient could reach it: `referral-pack.ts` shipped with 730 green
+ * lines, no route, no controller and no client, and「测试是绿的」read
+ * as「功能可用」for a module that had never met a request.
+ *
+ * So these go through Express, not through the controller method
+ * directly, because the three ways this feature can be unreachable are
+ * all outside the handler:
+ *
+ *   1. the route is never registered (the actual failure this lane
+ *      exists to fix);
+ *   2. the route is registered ABOVE `router.use(authMiddleware)` and
+ *      serves one patient's clinical record to anybody who asks;
+ *   3. the pack survives `buildReferralPack` and then loses its
+ *      three-state monitoring fields to JSON serialisation — the one
+ *      step between the tested function and the reader.
+ */
+
+const logger = {
+  fatal: vi.fn(),
+  error: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+  trace: vi.fn(),
+  child: () => logger,
+} as unknown as AppLogger;
+
+const JWT_SECRET = 'referral-pack-test-secret-value';
+
+const env = {
+  JWT_SECRET,
+  // Keeps the router off the Python OCR path and off MinIO; neither is
+  // reachable from this endpoint, but both are constructed eagerly.
+  OCR_PROVIDER: 'mock',
+  STORAGE_PROVIDER: 'local',
+} as unknown as AppEnv;
+
+const { createPatientProfileRouter } = await import('./profile.routes.js');
+
+const makeApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/patients', createPatientProfileRouter({ env, logger }));
+  app.use(errorHandler({ logger }));
+  return app;
+};
+
+const tokenFor = (userId: string) => jwt.sign({ sub: userId, role: 'patient' }, JWT_SECRET);
+
+/** A fresh user id per test: the rate limiter's store is module-level
+ *  and keyed by user, so reusing one id would leak a budget between
+ *  tests and make failures depend on execution order. */
+let userSeq = 0;
+const nextUser = () => `u-referral-${(userSeq += 1)}`;
+
+beforeEach(() => {
+  getProfileByUserId.mockReset();
+  queryMock.mockClear();
+});
+
+describe('GET /me/referral-pack — the route exists at all', () => {
+  it('answers 200 with the built pack, provenance note first', async () => {
+    const userId = nextUser();
+    getProfileByUserId.mockResolvedValue(
+      base({ documents: [geneticReport({ d4z4Repeats: '6' })] }),
+    );
+
+    const res = await request(makeApp())
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', `Bearer ${tokenFor(userId)}`);
+
+    expect(res.status).toBe(200);
+    expect(getProfileByUserId).toHaveBeenCalledWith(userId);
+    expect(res.body.markdown).toContain(REFERRAL_PROVENANCE_NOTE);
+    expect(res.body.catalogue.documentNumber).toBe('国卫医政发〔2023〕26号');
+    expect(res.body.contentType).toBe('text/markdown');
+  });
+
+  it('reads the caller from the token, never from the query string', async () => {
+    getProfileByUserId.mockResolvedValue(base());
+    const userId = nextUser();
+
+    await request(makeApp())
+      .get(`/api/patients/me/referral-pack?userId=someone-else`)
+      .set('Authorization', `Bearer ${tokenFor(userId)}`);
+
+    expect(getProfileByUserId).toHaveBeenCalledTimes(1);
+    expect(getProfileByUserId).toHaveBeenCalledWith(userId);
+  });
+
+  it('refuses an unauthenticated request without touching the profile', async () => {
+    const res = await request(makeApp()).get('/api/patients/me/referral-pack');
+    expect(res.status).toBe(401);
+    expect(getProfileByUserId).not.toHaveBeenCalled();
+  });
+
+  it('404s when there is no profile yet, instead of an empty pack', async () => {
+    // An empty pack would be a document asserting「本平台没有记录」about
+    // every section for someone who has not registered — printed under
+    // a real patient name the serialiser would take from nothing.
+    getProfileByUserId.mockResolvedValue(null);
+
+    const res = await request(makeApp())
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', `Bearer ${tokenFor(nextUser())}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body.markdown).toBeUndefined();
+  });
+});
+
+describe('GET /me/referral-pack — what survives JSON', () => {
+  it('carries present / unreadable / absent through the wire, all three', async () => {
+    getProfileByUserId.mockResolvedValue(
+      base({ documents: [unreadablePulmonaryReport()] } as never),
+    );
+
+    const res = await request(makeApp())
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', `Bearer ${tokenFor(nextUser())}`);
+
+    const slots = res.body.monitoring as Array<{ key: string; state: string; statement: string }>;
+    const respiratory = slots.find((slot) => slot.key === 'respiratory');
+    const cardiac = slots.find((slot) => slot.key === 'cardiac');
+
+    // The distinction profile.passport.ts spends a page defending, one
+    // reader further along: 「上传了但读不出」 must not arrive as
+    // 「没上传」, and neither may arrive as an absence of the field.
+    expect(respiratory?.state).toBe('unreadable');
+    expect(respiratory?.statement).toContain('请向患者索取原件');
+    expect(cardiac?.state).toBe('absent');
+    expect(cardiac?.statement).toContain('不等于没有做过');
+  });
+
+  it('keeps 「当天做不了」 rows as rows, with a null value rather than no row', async () => {
+    getProfileByUserId.mockResolvedValue(
+      base({
+        functionTests: [
+          functionTest({ performedAt: '2026-05-01T12:00:00.000Z' }),
+          functionTest({
+            performedAt: '2026-06-01T12:00:00.000Z',
+            measuredValue: null,
+            notApplicable: true,
+          }),
+        ],
+      } as never),
+    );
+
+    const res = await request(makeApp())
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', `Bearer ${tokenFor(nextUser())}`);
+
+    const series = res.body.functionTests[0] as {
+      hasUnableEntries: boolean;
+      points: Array<{ outcome: string; measuredValue: number | null }>;
+    };
+    expect(series.points).toHaveLength(2);
+    expect(series.hasUnableEntries).toBe(true);
+    // JSON keeps an explicit null; it is `undefined` that would vanish
+    // and turn 「做不了」 into a row with no reading at all.
+    expect(series.points[1]).toMatchObject({ outcome: 'unable', measuredValue: null });
+  });
+});
+
+describe('GET /me/referral-pack — the throttle', () => {
+  it('lets a patient press the button twenty times and stops the twenty-first', async () => {
+    // Not a cooldown: someone in a waiting room who pressed twice must
+    // not be told to wait a minute. See referralPackLimiter.
+    getProfileByUserId.mockResolvedValue(base());
+    const app = makeApp();
+    const auth = `Bearer ${tokenFor(nextUser())}`;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const ok = await request(app)
+        .get('/api/patients/me/referral-pack')
+        .set('Authorization', auth);
+      expect(ok.status).toBe(200);
+    }
+
+    const blocked = await request(app)
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', auth);
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toContain('过于频繁');
+  });
+
+  it('is keyed per account, so one busy patient cannot lock out another', async () => {
+    getProfileByUserId.mockResolvedValue(base());
+    const app = makeApp();
+    const busy = `Bearer ${tokenFor(nextUser())}`;
+    const bystander = `Bearer ${tokenFor(nextUser())}`;
+
+    for (let attempt = 0; attempt < 21; attempt += 1) {
+      await request(app).get('/api/patients/me/referral-pack').set('Authorization', busy);
+    }
+
+    const res = await request(app)
+      .get('/api/patients/me/referral-pack')
+      .set('Authorization', bystander);
+    expect(res.status).toBe(200);
   });
 });

@@ -433,6 +433,125 @@ export default StyleSheet.create({
     lineHeight: 21,
   },
 
+  /* 基因证据分级 + 《检查申请说明》 --------------------------------- */
+  /**
+   * The graded read of the genetic evidence.
+   *
+   * Same left-rule vocabulary as `noteCard`, one rule further in tone:
+   * this is prose about a document, not a reading off one. It is
+   * deliberately NOT amber and NOT a filled alert box — amber in this
+   * product means exactly one thing (not genetically confirmed) and it
+   * is already spent on the PDF banner. The grade here is frequently
+   * 「方法对，但结果不全」, which is where a correct Southern blot with
+   * a missing 4qA line lands, and dressing that as a warning tells a
+   * patient their report is bad when what it needs is one more line
+   * from the lab that already has their sample.
+   */
+  geneticEvidenceBlock: {
+    marginTop: SPACE.lg,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+  },
+  geneticGradeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  geneticGradePill: {
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLOR.accentWash,
+  },
+  geneticGradePillText: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: COLOR.accent,
+  },
+  /** Rides next to the grade, not under the paragraphs. A reader who
+   *  meets 「关于报告，不是关于你」 after the grade has already read the
+   *  grade as a verdict about themselves. */
+  geneticScopeTag: {
+    ...TYPE.micro,
+  },
+  geneticHeadline: {
+    ...TYPE.bodyStrong,
+    fontSize: 14.5,
+    lineHeight: 21,
+    color: COLOR.ink,
+  },
+  geneticBody: {
+    ...TYPE.body,
+    marginTop: SPACE.sm,
+    fontSize: 13.5,
+    lineHeight: 21,
+  },
+  geneticGreyZone: {
+    marginTop: SPACE.md,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.lineStrong,
+  },
+  geneticSource: {
+    ...TYPE.micro,
+    marginTop: SPACE.sm,
+  },
+
+  /**
+   * 《检查申请说明》 as text — the carrier that cannot fail.
+   *
+   * No fixed heights and no line clamping anywhere in this block, for
+   * the same reason as the anesthesia card's text layer: this content
+   * has to survive 200% text size, a screen reader, and being pasted
+   * into WeChat. The printable page beside it is the convenience, not
+   * the document.
+   */
+  testRequestBlock: {
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  testRequestTitle: {
+    ...TYPE.heading,
+    fontSize: 14.5,
+    color: COLOR.accent,
+  },
+  testRequestHint: {
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
+  },
+  testRequestIntro: {
+    ...TYPE.body,
+    marginTop: SPACE.md,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  testRequestSection: {
+    marginTop: SPACE.md,
+  },
+  testRequestHeading: {
+    ...TYPE.label,
+    color: COLOR.ink,
+    marginBottom: SPACE.xs,
+  },
+  testRequestLine: {
+    ...TYPE.body,
+    marginTop: SPACE.xs,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  testRequestSource: {
+    ...TYPE.micro,
+    marginTop: SPACE.sm,
+  },
+  testRequestAction: {
+    marginTop: SPACE.lg,
+  },
+
   /* 功能分级 (Brooke / Vignos) ------------------------------------- */
   /** Same left-rule vocabulary as noteCard — this is a note about the
    *  patient's function, not a metric tile. It is deliberately NOT a

@@ -32,6 +32,7 @@ import {
   updateProfileSchema,
 } from './profile.schema.js';
 import type { PatientProfileService } from './profile.service.js';
+import { buildReferralPack } from './referral-pack.js';
 import type { AppLogger } from '../../config/logger.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
@@ -489,6 +490,48 @@ export class PatientProfileController {
     }
 
     res.status(200).json(exported);
+  };
+
+  /**
+   * 罕见病诊疗协作网转诊资料 — the referral pack (./referral-pack.ts),
+   * built on demand and never stored.
+   *
+   * WHY IT IS BUILT PER REQUEST AND NOT CACHED
+   * ------------------------------------------
+   * The pack is a snapshot of the profile at the moment it is asked
+   * for, and the patient asks for it on the way to a clinic. A cached
+   * copy would hand a neurologist a document that omits the report the
+   * patient uploaded this morning — while carrying a 生成时间 that says
+   * otherwise. One `getProfileByUserId` is the same query GET /me
+   * already serves, so there is nothing to save by caching and a real
+   * way to be wrong.
+   *
+   * WHY THE BODY IS BARE AND NOT `{ data: ... }`
+   * --------------------------------------------
+   * Every other route in this router answers with the object itself
+   * (`getMyProfile`, `exportMyPassport`, `exportMyData`), while
+   * passport-share.routes.ts wraps in `{ data }`. Both conventions are
+   * live in this codebase and a client cannot tell which it is talking
+   * to by looking. That is exactly how apps/mobile/lib/api.ts's
+   * `apiRequest<T>` — an unchecked assertion that does NOT unwrap —
+   * shipped a blank share list to patients. So this route matches its
+   * siblings, and lib/referral-pack-api.ts unwraps tolerantly and
+   * shape-checks rather than trusting either.
+   *
+   * NOT gated on `requireSensitiveDataConsent`, deliberately, and for
+   * the reason profile.routes.ts already records: this is a read, and
+   * 查阅 / 复制 are rights PIPL grants rather than rewards for
+   * consenting. Nothing here leaves the caller's own account — the
+   * pack is theirs, and it is `req.user.id` that selects it.
+   */
+  getMyReferralPack = async (req: AuthenticatedRequest, res: Response) => {
+    const profile = await this.service.getProfileByUserId(req.user.id);
+
+    if (!profile) {
+      throw new AppError('Patient profile not found', 404);
+    }
+
+    res.status(200).json(buildReferralPack(profile));
   };
 
   /**

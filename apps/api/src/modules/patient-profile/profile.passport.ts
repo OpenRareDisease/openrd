@@ -1595,8 +1595,18 @@ const buildGeneticEvidence = (
     reason,
     action,
     record,
+    // The 1%–2% carrier figure is stated for the whole 8–10 range, but
+    // the 「likely pathogenic」 reporting category is stated by Giardina
+    // 2024 for 8 U only — and there as an ethnicity-dependent example.
+    // Attributing it to the whole range put this note at odds with
+    // buildGreyZoneSection ~140 lines up, which states it correctly,
+    // and both surfaces are patient-facing.
     greyZoneNote: record.greyZone
-      ? `你的 D4Z4 重复单元数是 ${record.d4z4?.value}，落在指南所说的 8–10 单元灰区。指南对这一区间给出的报告口径是「可能致病」而不是「致病」：8–10 个单元的 4qA 等位基因在欧洲对照人群中约有 1%–2% 的人携带且无症状。这不推翻你的诊断，只是说这一项结果本身带着不确定性，值得和医生确认一次。`
+      ? `你的 D4Z4 重复单元数是 ${record.d4z4?.value}，落在指南所说的 8–10 单元灰区：这个区间的 4qA 等位基因在欧洲对照人群中约有 1%–2% 的人携带且无症状。${
+          record.d4z4?.value === 8
+            ? '对 8 个单元，指南给出的报告口径是「可能致病」而不是「致病」。'
+            : '指南只对 8 个单元给出了报告口径（「可能致病」而非「致病」），对 9–10 单元没有单独说明。'
+        }这不推翻你的诊断，只是说这一项结果本身带着不确定性，值得和医生确认一次。`
       : null,
     testRequest: buildTestRequest(record, grade),
     sources,

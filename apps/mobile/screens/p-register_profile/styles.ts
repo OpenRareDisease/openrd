@@ -146,6 +146,35 @@ export default StyleSheet.create({
     minHeight: 88,
     paddingTop: SPACE.md,
   },
+  /** A sentence under a field label, before the control. The ladder is
+   *  the one question on this form whose *point* needs a sentence: five
+   *  rungs that look like degrees of the same thing are actually five
+   *  different next steps. */
+  fieldHint: {
+    ...TYPE.caption,
+    marginTop: -SPACE.xs,
+    marginBottom: SPACE.md,
+  },
+  /**
+   * The diagnosis ladder — one full-width row per rung, stacked.
+   *
+   * NOT `optionRow`. That wraps chips horizontally, which works for
+   * 「能」/「不能」 but puts four of these five labels on their own line
+   * anyway at 12 characters each — and on a mid-range Android at 200%
+   * text size the wrapped chips interleave, so the tap target for
+   * 「已确诊，但报告不在手上」 stops being obviously one row. Stacked
+   * rows also give this cohort a single vertical scan and a target the
+   * full width of the screen, which matters when the hand doing the
+   * tapping cannot be held steady.
+   */
+  ladderColumn: {
+    gap: SPACE.sm,
+    marginBottom: SPACE.lg,
+  },
+  ladderOption: {
+    width: '100%',
+    alignItems: 'flex-start',
+  },
   optionRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

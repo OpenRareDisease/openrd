@@ -1,4 +1,5 @@
 import {
+  createPassportPickup,
   createPassportShare,
   listPassportShares,
   revokePassportShare,
@@ -80,6 +81,73 @@ describe('形状不对的东西不进 UI', () => {
   it('openedCount 不是数字时归零，界面不会印出 NaN', async () => {
     apiRequest.mockResolvedValue({ data: [{ ...SHARE_BODY, openedCount: 'many' }] });
     expect((await listPassportShares())[0].openedCount).toBe(0);
+  });
+});
+
+/**
+ * The pickup mint response, copied from what passport-share.routes.ts
+ * actually sends:
+ *
+ *   res.status(201).json({ data: link, ttlMinutes, maxAttempts })
+ *
+ * `ttlMinutes` and `maxAttempts` are SIBLINGS of `data`, not fields
+ * inside it. Anything that unwraps first and reads them second gets
+ * undefined — which is how they came to be sent by the server and used
+ * by nobody, while the screens typed 「15」 and 「3」 out by hand.
+ */
+const PICKUP_BODY = {
+  data: {
+    ...SHARE_BODY,
+    id: 'p1',
+    expiresAt: '2026-08-05T12:15:00.000Z',
+    code: 'K7F39QTM',
+    pickup: {
+      expiresAt: '2026-08-05T12:15:00.000Z',
+      attempts: 0,
+      redeemedAt: null,
+      burnedAt: null,
+    },
+  },
+  ttlMinutes: 15,
+  maxAttempts: 3,
+};
+
+describe('取件码：信封外面那两个数字也要拿到', () => {
+  it('拿到 code、pickup，以及信封外的 ttlMinutes / maxAttempts', async () => {
+    apiRequest.mockResolvedValue(PICKUP_BODY);
+    const created = await createPassportPickup();
+    expect(created.share.code).toBe('K7F39QTM');
+    expect(created.share.pickup.expiresAt).toBe('2026-08-05T12:15:00.000Z');
+    expect(created.ttlMinutes).toBe(15);
+    expect(created.maxAttempts).toBe(3);
+  });
+
+  it('服务器没给这两个数字时是 null，不是替换成一个猜的数', async () => {
+    // The whole point. A screen that renders 15 because the response
+    // did not say is a screen asserting a duration about a live
+    // credential that nothing told it.
+    apiRequest.mockResolvedValue({ data: PICKUP_BODY.data });
+    const created = await createPassportPickup();
+    expect(created.ttlMinutes).toBeNull();
+    expect(created.maxAttempts).toBeNull();
+  });
+
+  it('这两个数字形状不对时也是 null', async () => {
+    apiRequest.mockResolvedValue({ ...PICKUP_BODY, ttlMinutes: '15', maxAttempts: 0 });
+    const created = await createPassportPickup();
+    expect(created.ttlMinutes).toBeNull();
+    expect(created.maxAttempts).toBeNull();
+  });
+
+  it('没有 code 或没有 pickup 就抛错，而不是静默成功', async () => {
+    // Same reason as createPassportShare: by the time this resolves the
+    // server has already opened a door, and a card with no expiry is a
+    // code the patient cannot tell is dead — in front of the doctor.
+    apiRequest.mockResolvedValue({ data: { ...PICKUP_BODY.data, code: undefined } });
+    await expect(createPassportPickup()).rejects.toThrow(/没有返回取件码/);
+
+    apiRequest.mockResolvedValue({ data: { ...PICKUP_BODY.data, pickup: { attempts: 0 } } });
+    await expect(createPassportPickup()).rejects.toThrow(/没有返回取件码/);
   });
 });
 

@@ -75,6 +75,11 @@ const mockUpsertPatientProfile = jest.fn().mockResolvedValue({});
 const mockUpdateMyBaseline = jest.fn().mockResolvedValue({});
 const mockGetMyPatientProfile = jest.fn();
 jest.mock('../../../lib/api', () => {
+  // The diagnosis-ladder enum and its Chinese labels are mirrored from
+  // the API (see lib/api.ts) and the form renders them directly, so
+  // they come from the real module — a stubbed copy here would be a
+  // second place for the wording to drift.
+  const actual = jest.requireActual('../../../lib/api');
   class ApiError extends Error {
     status?: number;
     constructor(message: string, status?: number) {
@@ -83,6 +88,8 @@ jest.mock('../../../lib/api', () => {
     }
   }
   return {
+    DIAGNOSIS_LADDER_STATES: actual.DIAGNOSIS_LADDER_STATES,
+    DIAGNOSIS_LADDER_LABELS: actual.DIAGNOSIS_LADDER_LABELS,
     ApiError,
     getMyPatientProfile: (...args: unknown[]) => mockGetMyPatientProfile(...args),
     upsertPatientProfile: (...args: unknown[]) => mockUpsertPatientProfile(...args),
