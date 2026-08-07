@@ -31,6 +31,18 @@ describe('每一节都带出处', () => {
     expect(sources).toContain('Neurology 2006');
     expect(sources).toContain('中华妇产科杂志');
   });
+
+  it('Ciafaloni 队列的页码能翻到那篇文章', () => {
+    // Neurology 2006;67:1887-1889, per the reference list in the FSHD
+    // Society document this section is sourced to. The page shipped
+    // 887-889 — a different article in the same volume — copied from
+    // the AANA 2025 paper's reference list, which carries the typo. A
+    // citation a clinician cannot resolve is the failure this whole
+    // page is built to avoid, so pin the digits.
+    const pregnancy = GENETICS_SECTIONS.find((s) => s.id === 'pregnancy');
+    expect(pregnancy?.source).toContain('Neurology 2006;67:1887-1889');
+    expect(pregnancy?.source).not.toMatch(/67:887-889/);
+  });
 });
 
 describe('50% 不能单独出现', () => {

@@ -242,7 +242,11 @@ const TONE: Record<ButtonVariant, { container: ViewStyle; text: { color: string 
     // No fill: the label *is* the control. It keeps the touch-target
     // minimum from `styles.base` but loses the horizontal padding,
     // which would otherwise make the tap area lie about where the text
-    // ends.
+    // ends. The minimum survives `plain` ALONE — combined with
+    // `compact` it does not, because compact's own minHeight (34) wins
+    // over base's. That combination drew the 撤销 button on 隐私设置 at
+    // roughly 35x34pt, and it is the reason to read `compact`'s note
+    // before reaching for it.
     container: { backgroundColor: 'transparent', paddingHorizontal: SPACE.xs },
     text: { color: COLOR.accent },
   },

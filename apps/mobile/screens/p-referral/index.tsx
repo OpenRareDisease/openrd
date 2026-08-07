@@ -332,6 +332,14 @@ const ReferralScreen = () => {
                   onPress={() => toggle(question.id)}
                   accessibilityRole="checkbox"
                   accessibilityState={{ checked: selected }}
+                  // react-native-web 0.20 drops accessibilityState on
+                  // Pressable; aria-checked is the only spelling that
+                  // reaches the DOM, and the web export is the channel
+                  // that ships. Without it every row announces as
+                  // unchecked no matter how many are ticked, and the ✓
+                  // glyph is no fallback — accessibilityLabel becomes
+                  // aria-label, which overrides the subtree text.
+                  aria-checked={selected}
                   accessibilityLabel={question.prompt}
                   accessibilityHint="选中后会加进下面可复制的清单"
                 >

@@ -207,11 +207,22 @@ def _split_code_table(
             piece = f"{prefix}\n{window}" if prefix else window
             if len(piece) >= min_chars:
                 out.append(piece)
-            elif out:
+            elif out and len(out[-1]) + 1 + len(piece) <= max_chars:
                 # Too short to stand alone, but dropping it would lose
                 # text. Trail it onto the previous record instead —
                 # `min_chars` exists to keep meaningless fragments out
                 # of the index, not to delete content.
+                #
+                # Only while it still fits. An annex table of code +
+                # short name and no description column produces nothing
+                # but sub-`min_chars` pieces, and an unbounded trail
+                # merged 120 of them into one 3,392-character chunk
+                # carrying 120 unrelated device classes — the exact
+                # chunk-about-everything this whole path was written to
+                # remove, and past the cap the `budget` above is
+                # computed to respect. When it no longer fits, start a
+                # new chunk: it is under `min_chars` for now and the
+                # next short piece trails onto it.
                 out[-1] = f"{out[-1]}\n{piece}"
             else:
                 out.append(piece)

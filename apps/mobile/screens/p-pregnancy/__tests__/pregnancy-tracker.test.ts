@@ -83,14 +83,14 @@ describe('过期的日期在读的时候就作废', () => {
 describe('写入只发生在一处，且只写一个键', () => {
   it('合法日期写进唯一的那个键', async () => {
     const due = isoOffsetFromToday(100);
-    await expect(saveDueDate(due, TODAY)).resolves.toBe(true);
+    await expect(saveDueDate(due, TODAY)).resolves.toBe('saved');
     expect(mockSetItem).toHaveBeenCalledTimes(1);
     expect(mockSetItem).toHaveBeenCalledWith(PREGNANCY_DUE_DATE_KEY, due);
   });
 
   it('不合法的日期一个字节都不写', async () => {
     for (const bad of ['', 'abc', isoOffsetFromToday(-1), isoOffsetFromToday(TERM_DAYS + 1)]) {
-      await expect(saveDueDate(bad, TODAY)).resolves.toBe(false);
+      await expect(saveDueDate(bad, TODAY)).resolves.toBe('invalid');
     }
     expect(mockSetItem).not.toHaveBeenCalled();
   });
@@ -105,9 +105,15 @@ describe('写入只发生在一处，且只写一个键', () => {
     expect(mockRemoveItem).not.toHaveBeenCalled();
   });
 
-  it('写存储失败时返回 false，不假装成功', async () => {
+  it('写存储失败和日期不合法是两种结果，不是同一个 false', async () => {
+    // The screen attaches a sentence to each of these, and the two
+    // sentences are not interchangeable: telling someone whose browser
+    // refused the write that her date looks wrong sends her round a
+    // loop that no amount of retyping can end.
     mockSetItem.mockRejectedValue(new Error('storage full'));
-    await expect(saveDueDate(isoOffsetFromToday(100), TODAY)).resolves.toBe(false);
+    const good = isoOffsetFromToday(100);
+    await expect(saveDueDate(good, TODAY)).resolves.toBe('storage-error');
+    await expect(saveDueDate('1999-01-01', TODAY)).resolves.toBe('invalid');
   });
 });
 

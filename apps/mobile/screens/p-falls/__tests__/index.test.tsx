@@ -258,6 +258,34 @@ describe('the future, and the consent that has to be asked first', () => {
   });
 });
 
+describe('a fall answered 记不清 twice', () => {
+  it('renders both answers, and not as two siblings sharing one key', async () => {
+    // 「记不清」 is a real option on both 在哪里 and 跌倒发生在, and the
+    // two labels are the same five characters. Keyed by their text,
+    // these were two children with one key: React warns, and its
+    // reconciler keeps one fiber per key — so the moment this list
+    // reorders, one of the patient's two answers is a remount waiting
+    // to happen.
+    const warn = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      mockListFalls.mockResolvedValue({
+        ...emptyResult,
+        falls: [savedFall({ id: 'f5', location: 'unknown', activity: 'unknown' })],
+        summary: { total: 1, atCap: false, quarters: [], oldestDaysAgo: 0 },
+      });
+      const tree = await render();
+
+      expect(texts(tree).filter((text) => text === '记不清')).toHaveLength(2);
+      const duplicateKey = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((message) => message.includes('same key'));
+      expect(duplicateKey).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('a failed read never becomes a zero', () => {
   it('says it could not read, and does not claim there are no falls', async () => {
     mockListFalls.mockRejectedValue(new Error('读不到'));

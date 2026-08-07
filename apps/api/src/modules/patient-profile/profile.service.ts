@@ -670,9 +670,15 @@ export class PatientProfileService {
         // query feeds the whole app — mobile timeline, passport,
         // progression summary, data export — so a missing filter here
         // would resurrect a retracted record everywhere at once.
+        // `not_applicable` is not optional decoration: it is the only
+        // thing that separates 「当天尝试后做不了」 from 「没测」, and
+        // this query is the sole feed for the referral pack and all
+        // three portable exports. Dropping the column made every
+        // 做不了 row read as a never-attempted test — the referral pack
+        // filtered it out entirely and FHIR labelled it 「未记录测量值」.
         client.query(
           `SELECT id, profile_id, submission_id, test_type, measured_value, side, protocol, unit,
-                  device_used, assistance_required, notes, performed_at, created_at
+                  device_used, assistance_required, notes, not_applicable, performed_at, created_at
            FROM patient_function_tests
            WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY performed_at DESC`,
@@ -800,6 +806,7 @@ export class PatientProfileService {
           assistanceRequired:
             row.assistance_required === null ? null : Boolean(row.assistance_required),
           notes: row.notes,
+          notApplicable: row.not_applicable === true,
           performedAt: toTimestampString(row.performed_at),
           createdAt: toTimestampString(row.created_at),
           submissionId: row.submission_id ?? null,
@@ -2167,7 +2174,7 @@ export class PatientProfileService {
       // valid) and simply lists one fewer item.
       this.pool.query(
         `SELECT id, submission_id, test_type, measured_value, side, protocol, unit, device_used,
-                  assistance_required, notes, performed_at, created_at
+                  assistance_required, notes, not_applicable, performed_at, created_at
            FROM patient_function_tests
            WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY performed_at ASC`,
@@ -2273,6 +2280,7 @@ export class PatientProfileService {
         assistanceRequired:
           row.assistance_required === null ? null : Boolean(row.assistance_required),
         notes: row.notes,
+        notApplicable: row.not_applicable === true,
         performedAt: toTimestampString(row.performed_at),
         createdAt: toTimestampString(row.created_at),
         submissionId,
@@ -2875,16 +2883,48 @@ export class PatientProfileService {
          LIMIT $3`,
         [profileId, muscleGroup, limit],
       ),
+      // One row per OTHER patient, then aggregate. The row picked is
+      // that patient's latest score for this muscle group — deliberately
+      // the same statistic as `userLatestScore` below, because the two
+      // numbers are rendered side by side (「群体中位 X 分」 next to
+      // 「你 Y 分」) and a comparison between a median-of-all-history and
+      // a latest-value is not a comparison of anything.
+      //
+      // Aggregating the raw rows instead is what this used to do, and it
+      // let one person be the cohort: 11 patients who tested deltoid once
+      // at 5, plus one who tests daily at 1, is 211 rows whose median is
+      // 1 and whose COUNT(DISTINCT profile_id) is 12 — 「群体中位 1 分 ·
+      // 12 人」, when 11 of those 12 people score above it. Verified on
+      // Postgres: same data, row-weighted median 1, person-weighted 5.
+      // The skew is not confined to that extreme — it is present at every
+      // ratio of testing frequency, and testing frequency is not a
+      // property of the disease.
+      //
+      // Ties on recorded_at are real: a left/right pair inserted in one
+      // transaction shares NOW(). Without a tiebreak DISTINCT ON picks
+      // arbitrarily and two identical requests can return two different
+      // medians, so break on strength_score DESC — which also keeps every
+      // column this reads inside idx_patient_measurements_cohort (see
+      // migration 025) and the plan an Index Only Scan. The latest-score
+      // query below has no such tiebreak, so on a tie it can show the
+      // other side of the pair; that decides one patient's own row rather
+      // than a whole cohort's median, and giving it this ORDER BY would
+      // cost it its own index-ordered LIMIT 1.
       this.pool.query(
-        `SELECT
+        `WITH per_patient AS (
+           SELECT DISTINCT ON (profile_id) profile_id, strength_score
+           FROM patient_measurements
+           WHERE muscle_group = $1 AND profile_id <> $2
+           ORDER BY profile_id, recorded_at DESC, strength_score DESC
+         )
+         SELECT
            MIN(strength_score) AS min_score,
            MAX(strength_score) AS max_score,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY strength_score) AS median_score,
            percentile_cont(0.25) WITHIN GROUP (ORDER BY strength_score) AS quartile_25,
            percentile_cont(0.75) WITHIN GROUP (ORDER BY strength_score) AS quartile_75,
-           COUNT(DISTINCT profile_id) AS sample_count
-         FROM patient_measurements
-         WHERE muscle_group = $1 AND profile_id <> $2`,
+           COUNT(*) AS sample_count
+         FROM per_patient`,
         [muscleGroup, profileId],
       ),
       this.pool.query(
@@ -2914,10 +2954,13 @@ export class PatientProfileService {
      *  1. No self-exclusion. The first patient to record a muscle test
      *     was compared against their own scores and told it was the
      *     cohort. The query now carries `profile_id <> $2`.
-     *  2. `COUNT(*)` counted measurement ROWS while the UI rendered the
-     *     number followed by 人. One patient testing left and right
-     *     five times produces 10 rows and read as 「群体中位 4 分 ·
-     *     10 人」. Now COUNT(DISTINCT profile_id).
+     *  2. The whole row was row-weighted while the caption said 人. The
+     *     first pass at this fixed only the count — COUNT(*) → COUNT(
+     *     DISTINCT profile_id) — and left MIN/MAX and the three
+     *     percentiles aggregating raw rows, so the number of PEOPLE was
+     *     printed beside a median of MEASUREMENTS and the two were not
+     *     about the same population. The query now collapses to one row
+     *     per patient first; see its comment for which row and why.
      *  3. No floor at all. A median over two people is not a
      *     distribution, and at this size it is re-identifying: with
      *     three contributors each one can subtract themselves and read

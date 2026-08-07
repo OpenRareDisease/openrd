@@ -1,4 +1,5 @@
 import type { PatientProfile, ProgressionSummary } from './api';
+import { ambulationLabel } from './profile-baseline-options';
 
 export type DomainTrendKey = 'upper_limb' | 'lower_limb' | 'face' | 'breathing' | 'symptoms';
 
@@ -622,12 +623,7 @@ export const buildDiseaseBackgroundFacts = (
     { label: '首发部位', value: diseaseBackground?.onsetRegion ?? '未填写' },
     {
       label: '当前行走',
-      value:
-        currentStatus?.independentlyAmbulatory === true
-          ? '可独立行走'
-          : currentStatus?.independentlyAmbulatory === false
-            ? '需要辅助'
-            : '未填写',
+      value: ambulationLabel(currentStatus?.independentlyAmbulatory) ?? '未填写',
     },
     {
       label: '呼吸状态',

@@ -1,5 +1,10 @@
 -- Index for the cohort distribution behind「和其他患者比」.
 --
+-- SUPERSEDED BY 025. The query described below has changed shape, and
+-- the Index Only Scan this file reports no longer holds for it. Read
+-- 025 for the current index and the reason; everything here is left as
+-- the record of what was applied, not as a description of today's plan.
+--
 -- getMuscleInsight runs three queries per muscle group, and the manage
 -- screen opens four at once. Two of the three are per-patient and
 -- already served by idx_patient_measurements_latest. The third is not

@@ -192,6 +192,25 @@ describe('TREAT-NMD alignment — milestones carry their precision limit', () =>
   });
 });
 
+describe('TREAT-NMD alignment — held-but-unemitted instruments are declared', () => {
+  it('lists Brooke and Vignos in omissions, not just nowhere', () => {
+    // 运动功能 is one of the six mandatory areas, and Brooke / Vignos
+    // are the only cross-patient-comparable measures in the record.
+    // Shipping without them AND without saying so is what envelope.ts
+    // says `omissions` exists to prevent.
+    const omission = build().omissions.find(
+      (entry) => entry.field === 'sections.motorFunction.instruments',
+    );
+    expect(omission?.reasonZh).toContain('Brooke');
+    expect(omission?.reasonZh).toContain('Vignos');
+    expect(omission?.reasonZh).toContain('不表示患者没有做过分级');
+  });
+
+  it('points at it from the section a reader is actually looking at', () => {
+    expect(sectionOf(build(), 'motorFunction').noteZh).toContain('Vignos');
+  });
+});
+
 describe('classifyDiagnosisType', () => {
   it('reads both types out of the shapes patients and reports actually use', () => {
     expect(classifyDiagnosisType('FSHD1')).toBe('FSHD1');

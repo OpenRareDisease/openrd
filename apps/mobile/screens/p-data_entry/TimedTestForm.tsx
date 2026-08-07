@@ -193,6 +193,14 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  // What a half-finished 四项抗重力 save left behind. `addFunctionTest`
+  // is a bare INSERT with no unique constraint and no idempotency key, so
+  // an item that reached the server is stored for good — pressing 保存
+  // again must not send it a second time. The submission id is kept with
+  // it so the retry's rows join the same visit rather than inventing a
+  // second one minutes later.
+  const [antiGravitySavedKeys, setAntiGravitySavedKeys] = useState<string[]>([]);
+  const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
 
   const openTest = useMemo(() => TIMED_TESTS.find((test) => test.id === openId) ?? null, [openId]);
   const isRunning = run !== null && run.stoppedAt === null;
@@ -251,6 +259,8 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
     setAntiGravity({});
     setSide('right');
     setError(null);
+    setAntiGravitySavedKeys([]);
+    setPendingSubmissionId(null);
   };
 
   const toggleOpen = (id: TimedTestId) => {
@@ -395,17 +405,26 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
         }
       }
 
-      const submission = await createSubmission({
-        submissionKind: 'followup',
-        summary: `在家计时测试：${openTest.nameZh}`,
-        changedSinceLast: null,
-      });
-      // apiRequest's type parameter is an unchecked assertion, so the
-      // id is verified rather than trusted. Posting a function test with
-      // `submissionId: undefined` would silently orphan the row from the
-      // visit it belongs to.
-      if (!submission || typeof submission.id !== 'string' || submission.id.length === 0) {
-        throw new Error('保存失败：服务器没有返回这次记录的编号，请稍后重试。');
+      // A retry reuses the visit the first attempt already opened. Making
+      // a second one would split one test session across two visits — and
+      // for 四项抗重力, would hang the re-sent items off a different visit
+      // from the ones that already landed.
+      let submissionId = pendingSubmissionId;
+      if (!submissionId) {
+        const submission = await createSubmission({
+          submissionKind: 'followup',
+          summary: `在家计时测试：${openTest.nameZh}`,
+          changedSinceLast: null,
+        });
+        // apiRequest's type parameter is an unchecked assertion, so the
+        // id is verified rather than trusted. Posting a function test with
+        // `submissionId: undefined` would silently orphan the row from the
+        // visit it belongs to.
+        if (!submission || typeof submission.id !== 'string' || submission.id.length === 0) {
+          throw new Error('保存失败：服务器没有返回这次记录的编号，请稍后重试。');
+        }
+        submissionId = submission.id;
+        setPendingSubmissionId(submissionId);
       }
 
       const base = {
@@ -413,18 +432,26 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
         grade: grade as QualityGrade,
         aidKeys,
         venueNote,
-        submissionId: submission.id,
+        submissionId,
       };
 
       if (openTest.measure === 'three_state') {
         // One row per item. A single summed score would be a scale we
         // invented; four ordinal observations are what was actually
         // seen. See ANTI_GRAVITY_ITEMS.
-        const answered = ANTI_GRAVITY_ITEMS.filter(
-          (item) => typeof antiGravity[item.key] === 'number',
+        //
+        // allSettled rather than all: Promise.all rejects on the first
+        // failure while its siblings keep going and commit, so one dropped
+        // request on a weak connection would report a total failure over
+        // rows that are already stored — and the retry would store them
+        // twice. Each item's outcome is tracked so a retry sends only what
+        // did not land.
+        const pending = ANTI_GRAVITY_ITEMS.filter(
+          (item) =>
+            typeof antiGravity[item.key] === 'number' && !antiGravitySavedKeys.includes(item.key),
         );
-        await Promise.all(
-          answered.map((item) =>
+        const results = await Promise.allSettled(
+          pending.map((item) =>
             addFunctionTest(
               buildFunctionTestPayload({
                 ...base,
@@ -435,6 +462,33 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
             ),
           ),
         );
+
+        const landed = pending.filter((_, index) => results[index].status === 'fulfilled');
+        const failed = pending.filter((_, index) => results[index].status === 'rejected');
+
+        if (failed.length > 0) {
+          const storedCount = antiGravitySavedKeys.length + landed.length;
+          setAntiGravitySavedKeys((current) => [...current, ...landed.map((item) => item.key)]);
+          const firstRejection = results.find(
+            (result): result is PromiseRejectedResult => result.status === 'rejected',
+          );
+          const reason =
+            firstRejection?.reason instanceof Error
+              ? firstRejection.reason.message
+              : '保存失败，请稍后重试。';
+          const failedNames = failed.map((item) => item.nameZh).join('、');
+          // Says which items are already in the record, because the
+          // patient's next move is to press 保存 again and they deserve
+          // to know that doing so is safe. The promise is only about the
+          // items this app watched land — a request that failed after the
+          // server committed is not something the client can see.
+          setError(
+            storedCount > 0
+              ? `${reason}\n${failedNames} 没存上，其余 ${storedCount} 项已经存上了 —— 再按一次保存只会重发没存上的那几项。`
+              : reason,
+          );
+          return;
+        }
       } else {
         await addFunctionTest(
           buildFunctionTestPayload({
@@ -672,6 +726,13 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
             accessibilityState={{ selected, disabled }}
             aria-checked={selected}
             aria-disabled={disabled}
+            // `disabled` as well as `aria-disabled`: react-native-web's
+            // TouchableOpacity reads only `props.disabled`, so on the
+            // platform this ships on (web export, WeChat X5) the aria
+            // attribute alone still lets the row scale and brighten under
+            // the thumb — feedback promising a press that the handler is
+            // about to drop.
+            disabled={disabled}
             accessibilityLabel={`${option.labelZh}：${option.meaningZh}`}
             onPress={() => {
               if (disabled) return;
@@ -693,32 +754,49 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
 
   const renderAntiGravity = () => (
     <View style={styles.fieldBlock}>
-      {ANTI_GRAVITY_ITEMS.map((item) => (
-        <View key={item.key} style={styles.agItem}>
-          <Text style={styles.fieldLabel}>{item.nameZh}</Text>
-          <Text style={styles.fieldHint}>{item.howZh}</Text>
-          {ANTI_GRAVITY_STATES.map((state) => {
-            const selected = antiGravity[item.key] === state.value;
-            return (
-              <PressableScale
-                key={state.value}
-                style={[styles.agChoice, selected && styles.agChoiceActive]}
-                accessibilityRole="radio"
-                accessibilityState={{ selected }}
-                aria-checked={selected}
-                accessibilityLabel={`${item.nameZh}：${state.labelZh}`}
-                onPress={() =>
-                  setAntiGravity((current) => ({ ...current, [item.key]: state.value }))
-                }
-              >
-                <Text style={[styles.agChoiceText, selected && styles.agChoiceTextActive]}>
-                  {state.labelZh}
-                </Text>
-              </PressableScale>
-            );
-          })}
-        </View>
-      ))}
+      {ANTI_GRAVITY_ITEMS.map((item) => {
+        // An item that reached the server during a half-finished save is
+        // already a stored row. Leaving it editable would make the answer
+        // on screen disagree with the answer in the record, since the
+        // retry deliberately will not send it again.
+        const stored = antiGravitySavedKeys.includes(item.key);
+        return (
+          <View key={item.key} style={styles.agItem}>
+            <Text style={styles.fieldLabel}>{item.nameZh}</Text>
+            <Text style={styles.fieldHint}>{item.howZh}</Text>
+            {stored ? (
+              <Text style={styles.agStoredLine}>这一项刚才已经存上了，再保存不会重复记一条。</Text>
+            ) : null}
+            {ANTI_GRAVITY_STATES.map((state) => {
+              const selected = antiGravity[item.key] === state.value;
+              return (
+                <PressableScale
+                  key={state.value}
+                  style={[
+                    styles.agChoice,
+                    selected && styles.agChoiceActive,
+                    stored && styles.agChoiceStored,
+                  ]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected, disabled: stored }}
+                  aria-checked={selected}
+                  aria-disabled={stored}
+                  disabled={stored}
+                  accessibilityLabel={`${item.nameZh}：${state.labelZh}`}
+                  onPress={() => {
+                    if (stored) return;
+                    setAntiGravity((current) => ({ ...current, [item.key]: state.value }));
+                  }}
+                >
+                  <Text style={[styles.agChoiceText, selected && styles.agChoiceTextActive]}>
+                    {state.labelZh}
+                  </Text>
+                </PressableScale>
+              );
+            })}
+          </View>
+        );
+      })}
     </View>
   );
 
@@ -898,6 +976,10 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
               }}
               aria-expanded={isOpen}
               aria-disabled={gate.state === 'needs_companion'}
+              // Same reason as the grade rows: without `disabled`, the
+              // gated header springs under the finger and then refuses to
+              // open, which reads as a mis-tap rather than as a gate.
+              disabled={gate.state === 'needs_companion'}
               accessibilityLabel={test.nameZh}
               onPress={() => {
                 if (gate.state === 'needs_companion') return;
@@ -1241,6 +1323,14 @@ const styles = StyleSheet.create({
   agChoiceActive: {
     borderColor: COLOR.accent,
     backgroundColor: COLOR.accent,
+  },
+  agChoiceStored: {
+    opacity: 0.45,
+  },
+  agStoredLine: {
+    color: COLOR.inkMuted,
+    fontSize: 12,
+    lineHeight: 18,
   },
   agChoiceText: {
     color: COLOR.inkSoft,

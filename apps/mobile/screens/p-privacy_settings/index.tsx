@@ -25,6 +25,7 @@ import {
   buildShareUrl,
   describePickupState,
   describeShareLife,
+  isPickupLive,
   isShareRowLive,
   PICKUP_TTL_MINUTES,
   type PassportShare,
@@ -196,6 +197,50 @@ const PrivacySettingsScreen = () => {
       setSharesError(error instanceof ApiError ? error.message : '无法读取分享链接，请稍后重试');
     }
   }, []);
+
+  /**
+   * The clock the share list is read against.
+   *
+   * `describePickupState` and `isShareRowLive` default to `new Date()`,
+   * which samples RENDER time — and this screen has no reason to
+   * re-render on its own. So a pickup row minted in a waiting room kept
+   * saying 「还能用约 15 分钟」 and kept offering 作废 for as long as the
+   * screen stayed open, while PickupCodeCard three centimetres above it
+   * — which does tick — had already moved on to 「已过期，请重新生成」.
+   * Two answers about the same credential on one screen, and a live
+   * button on a door that is shut: the thing `isShareRowLive` exists to
+   * prevent, reached through staleness instead of a wrong predicate.
+   */
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    // Pickup codes are what makes this urgent: they live fifteen
+    // minutes, so a frozen row is wrong within one visit. Link rows are
+    // measured in days and are not worth a permanent interval, so once
+    // every pickup row is spent the clock stops and the rows keep their
+    // last (terminal) reading.
+    const pickups = (shares ?? []).filter((share) => share.pickup);
+    if (pickups.length === 0) return;
+    const handle: { id?: ReturnType<typeof setInterval> } = {};
+    const stop = () => {
+      if (handle.id !== undefined) clearInterval(handle.id);
+    };
+    const tick = () => {
+      const at = new Date();
+      setNow(at);
+      if (!pickups.some((share) => isPickupLive(share, at))) stop();
+    };
+    // Ten seconds, not one: the line is minute-granular (「还能用约 N
+    // 分钟」), and a per-second interval would re-render this whole
+    // screen 900 times over one code's life to move a number 15 times.
+    // Not a minute either — that is how long a dead code would keep
+    // offering 作废.
+    handle.id = setInterval(tick, 10_000);
+    // Once immediately: a list that arrives from loadShares() is read
+    // against whatever `now` was last set, which may be minutes old.
+    tick();
+    return stop;
+  }, [shares]);
 
   // The list has to load on open, not only after a create or a revoke.
   // Without this the section renders empty for a patient who made a
@@ -1057,8 +1102,11 @@ const PrivacySettingsScreen = () => {
                 // offering 撤销 on it — a button that does nothing, on
                 // the one screen whose job is telling the patient which
                 // doors are open.
-                const live = isShareRowLive(share);
-                const pickupState = describePickupState(share);
+                // `now` from the ticking state above, never the implicit
+                // default: the default samples render time, and this
+                // screen does not re-render on its own.
+                const live = isShareRowLive(share, now);
+                const pickupState = describePickupState(share, now);
                 return (
                   <View key={share.id} style={styles.shareRow}>
                     <View style={styles.shareRowCopy}>
@@ -1067,7 +1115,7 @@ const PrivacySettingsScreen = () => {
                           `${share.createdAt.slice(0, 10)} ${share.pickup ? '生成的取件码' : '生成'}`}
                       </Text>
                       <Text style={styles.shareRowMeta}>
-                        {pickupState ?? describeShareLife(share)}
+                        {pickupState ?? describeShareLife(share, now)}
                         {/* 「还没有人打开过」 is worth saying explicitly:
                             a patient checking whether their doctor
                             looked at it should not have to infer it
@@ -1078,10 +1126,18 @@ const PrivacySettingsScreen = () => {
                       </Text>
                     </View>
                     {live ? (
+                      // `plain` but NOT `compact`. Compact draws 34pt,
+                      // and the hitSlop that would buy the rest back is
+                      // not read by Pressable on react-native-web — so
+                      // on the only channel that ships, this was a 34pt
+                      // target on the control that takes back access to
+                      // a medical record, aimed at by people whose grip
+                      // and reach this disease has already taken. See
+                      // Button.tsx's note on `compact`, and the sibling
+                      // list rows in p-falls.
                       <Button
                         label={share.pickup ? '作废' : '撤销'}
                         variant="plain"
-                        compact
                         busy={revokingShareId === share.id}
                         accessibilityHint={
                           share.pickup

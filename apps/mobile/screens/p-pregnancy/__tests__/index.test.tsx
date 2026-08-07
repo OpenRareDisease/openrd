@@ -9,6 +9,10 @@
  *    All six stages must be readable before anything is entered.
  * 3. Saving a due date without 单独同意, or writing anything at all
  *    just because the screen was opened.
+ * 4. Sending the one reader this page was opened up for — not
+ *    registered, pregnant or deciding — into a login form she did not
+ *    ask for, by offering her a button to a route the gate bounces.
+ * 5. Answering a storage failure with 「你的日期填错了」.
  */
 
 import React from 'react';
@@ -29,6 +33,19 @@ jest.mock('../pregnancy-tracker', () => ({
 
 const mockPush = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
+
+// The signed-out reader is the default here, because she is the reader
+// this route was made a guest route for.
+let mockToken: string | null = null;
+let mockProfileStatus = 'loading';
+jest.mock('../../../contexts/AuthContext', () => ({
+  __esModule: true,
+  useAuth: () => ({ token: mockToken }),
+}));
+jest.mock('../../../contexts/ProfileContext', () => ({
+  __esModule: true,
+  useProfileContext: () => ({ profileStatus: mockProfileStatus }),
+}));
 
 jest.mock('react-native-safe-area-context', () => {
   const ReactLocal = require('react');
@@ -152,9 +169,11 @@ const futureDue = (): string => {
 
 beforeEach(() => {
   mockReadDueDate.mockReset().mockResolvedValue(null);
-  mockSaveDueDate.mockReset().mockResolvedValue(true);
+  mockSaveDueDate.mockReset().mockResolvedValue('saved');
   mockClearDueDate.mockReset().mockResolvedValue(true);
   mockPush.mockReset();
+  mockToken = null;
+  mockProfileStatus = 'loading';
 });
 
 describe('没有填过日期时', () => {
@@ -228,7 +247,7 @@ describe('单独同意是保存的前提', () => {
   });
 
   it('日期被拒绝时给出可读的错误，且不显示孕周', async () => {
-    mockSaveDueDate.mockResolvedValue(false);
+    mockSaveDueDate.mockResolvedValue('invalid');
     const tree = await render();
     await act(async () => {
       pressableWithText(tree, 'CONSENT:OFF')!.props.onPress();
@@ -243,6 +262,100 @@ describe('单独同意是保存的前提', () => {
     const text = textOf(tree);
     expect(text).toMatch(/看起来不像预产期/);
     expect(text).not.toMatch(/孕 \d+ 周/);
+  });
+});
+
+describe('存不下的时候', () => {
+  const save = async (tree: TestRenderer.ReactTestRenderer) => {
+    await act(async () => {
+      pressableWithText(tree, 'CONSENT:OFF')!.props.onPress();
+    });
+    const input = tree.root.findByProps({ accessibilityLabel: '预产期，格式为年-月-日' });
+    await act(async () => {
+      input.props.onChangeText(futureDue());
+    });
+    await act(async () => {
+      pressableWithText(tree, '保存到这台设备')!.props.onPress();
+    });
+  };
+
+  it('说的是这台设备存不下，而不是「你的日期填错了」', async () => {
+    // Private-mode localStorage, a full phone, storage blocked in the
+    // WeChat webview. The date is right; no amount of retyping can
+    // make the write succeed, so a message telling her to reformat it
+    // is a loop with no exit.
+    mockSaveDueDate.mockResolvedValue('storage-error');
+    const tree = await render();
+    await save(tree);
+    const text = textOf(tree);
+    expect(text).toContain('存不下');
+    expect(text).not.toMatch(/看起来不像预产期/);
+    expect(text).not.toMatch(/孕 \d+ 周/);
+  });
+
+  it('saveDueDate 抛异常时也读作「没存上」', async () => {
+    mockSaveDueDate.mockRejectedValue(new Error('storage gone'));
+    const tree = await render();
+    await save(tree);
+    const text = textOf(tree);
+    expect(text).toContain('存不下');
+    expect(text).not.toMatch(/看起来不像预产期/);
+  });
+});
+
+describe('相关的页面：不给没登录的读者一个通向登录墙的按钮', () => {
+  const buttonLabels = (tree: TestRenderer.ReactTestRenderer): string[] =>
+    tree.root
+      .findAllByType(TouchableOpacity)
+      .flatMap((node) => node.findAllByType(Text))
+      .map((label) => String(label.props.children ?? ''));
+
+  it('没登录时，两个要登录的页面只留说明，不留按钮', async () => {
+    const tree = await render();
+    const labels = buttonLabels(tree);
+    expect(labels).not.toContain('打开「麻醉注意事项卡」');
+    expect(labels).not.toContain('打开「我的随访计划」');
+    // 遗传与生育 is itself a guest route: that one stays a button.
+    expect(labels).toContain('打开「遗传与生育」');
+
+    const text = textOf(tree);
+    // The fact survives even though the page behind it does not.
+    expect(text).toContain('得先注册登录');
+    expect(text).toContain('孕晚期见麻醉科时带上它');
+  });
+
+  it('登录了、档案也在时，三个按钮都在，点了就跳', async () => {
+    mockToken = 'tok';
+    mockProfileStatus = 'ready';
+    const tree = await render();
+    for (const label of ['打开「遗传与生育」', '打开「麻醉注意事项卡」', '打开「我的随访计划」']) {
+      const button = pressableWithText(tree, label);
+      expect(button).not.toBeNull();
+      await act(async () => {
+        button!.props.onPress();
+      });
+    }
+    expect(mockPush.mock.calls.map((call) => call[0])).toEqual([
+      '/p-genetics_family',
+      '/p-clinical_passport',
+      '/p-surveillance',
+    ]);
+  });
+
+  it('登录了但档案还没建时同样不给按钮 —— 那个跳转会被引导页拦下', async () => {
+    mockToken = 'tok';
+    mockProfileStatus = 'missing';
+    const tree = await render();
+    const labels = buttonLabels(tree);
+    expect(labels).not.toContain('打开「麻醉注意事项卡」');
+    expect(labels).not.toContain('打开「我的随访计划」');
+  });
+
+  it('档案探测失败时不收走按钮 —— 路由闸门自己也是放行的', async () => {
+    mockToken = 'tok';
+    mockProfileStatus = 'error';
+    const tree = await render();
+    expect(buttonLabels(tree)).toContain('打开「麻醉注意事项卡」');
   });
 });
 

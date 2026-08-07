@@ -62,6 +62,10 @@
       "reasonZh": "PhenotypicFeature.type 必须是 HPO 本体项。本仓库内没有可核对的 HPO 术语来源，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。"
     },
     {
+      "field": "measurements（Brooke 上肢分级 / Vignos 下肢分级）",
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。"
+    },
+    {
       "field": "interpretations",
       "reasonZh": "FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。D4Z4 重复数与单倍型在 TREAT-NMD 对齐导出中按其本来面目呈现。"
     }

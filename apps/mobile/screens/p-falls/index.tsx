@@ -437,9 +437,13 @@ const FallsScreen = () => {
                     </View>
                     {chips.length > 0 ? (
                       <View style={styles.chipWrap}>
+                        {/* Keyed by the question the chip answers, not
+                            by its text: 「记不清」 is a real answer to
+                            both 在哪里 and 跌倒发生在, so a fall answered
+                            记不清 twice gave two siblings one key. */}
                         {chips.map((chip) => (
-                          <View key={chip} style={styles.chip}>
-                            <Text style={styles.chipText}>{chip}</Text>
+                          <View key={chip.field} style={styles.chip}>
+                            <Text style={styles.chipText}>{chip.label}</Text>
                           </View>
                         ))}
                       </View>

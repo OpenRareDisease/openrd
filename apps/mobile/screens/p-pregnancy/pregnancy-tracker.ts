@@ -90,20 +90,34 @@ export const readDueDate = async (today: Date): Promise<string | null> => {
 };
 
 /**
- * Store a due date. Returns false if it was refused.
+ * Why this is three states and not a boolean.
+ *
+ * The two ways a save fails need two different sentences. A single
+ * `false` made the screen answer 「这个日期看起来不像预产期」 to a
+ * browser whose storage was full or blocked — private-mode
+ * localStorage and the WeChat webview both do this — so a reader who
+ * had typed a perfectly good date was told to reformat it, retried,
+ * and got the identical sentence every time with nothing on screen
+ * saying the device had stored nothing.
+ */
+export type SaveDueDateResult = 'saved' | 'invalid' | 'storage-error';
+
+/**
+ * Store a due date.
  *
  * Refuses anything that is not a plausible due date rather than
  * storing it and letting the reader see an empty page — an implausible
  * value is almost always a typo in the year, and the honest response
- * is to say so at the input.
+ * is to say so at the input. A storage failure is NOT that, and says
+ * so: see SaveDueDateResult.
  */
-export const saveDueDate = async (value: string, today: Date): Promise<boolean> => {
-  if (!isPlausibleDueDate(value, today)) return false;
+export const saveDueDate = async (value: string, today: Date): Promise<SaveDueDateResult> => {
+  if (!isPlausibleDueDate(value, today)) return 'invalid';
   try {
     await AsyncStorage.setItem(PREGNANCY_DUE_DATE_KEY, value.trim());
-    return true;
+    return 'saved';
   } catch {
-    return false;
+    return 'storage-error';
   }
 };
 

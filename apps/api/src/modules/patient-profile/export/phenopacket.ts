@@ -5,7 +5,7 @@ import {
   type CodingProvenance,
 } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
-import { resourceUuid, type NormalisedSource } from './export-source.js';
+import { instrumentOmission, resourceUuid, type NormalisedSource } from './export-source.js';
 
 /**
  * GA4GH Phenopacket v2.
@@ -142,6 +142,7 @@ export const buildPhenopacketExport = (
         'PhenotypicFeature.type 必须是 HPO 本体项。本仓库内没有可核对的 HPO 术语来源，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。',
     });
   }
+  omissions.push(instrumentOmission('measurements（Brooke 上肢分级 / Vignos 下肢分级）'));
   omissions.push({
     field: 'interpretations',
     reasonZh:

@@ -17,6 +17,31 @@ interface CreateServerOptions {
 
 const REDACTED = '[Redacted]';
 
+/**
+ * A passport share token is a bearer credential that travels in the URL
+ * path (/s/passport/:token), so an unscrubbed access log is a second,
+ * replayable copy of a patient's whole clinical record — diagnosis,
+ * D4Z4 repeats, MRI summary — sitting in stdout and in whatever
+ * collects it, for that sink's retention window. The feature is built
+ * around that copy not existing: passport-share.service.ts opens by
+ * stating the plaintext token is never stored or logged, `create()`
+ * keeps it out of the audit row, and the pickup success line logs
+ * { shareId } and not the code. pino-http was reinstating it at level
+ * info on every open.
+ *
+ * The scrub runs on the SERIALIZED value rather than on the request:
+ * pino.stdSerializers.req reads req.originalUrl in preference to
+ * req.url, so rewriting req.url would miss it under Express. The route
+ * prefix is kept so an operator can still see that a share was opened.
+ *
+ * /s/passport/pickup is left readable — it is a route, not a credential,
+ * and the pickup code itself only ever arrives in a POST body.
+ */
+const SHARE_TOKEN_IN_PATH = /(\/s\/passport\/)(?!pickup(?:[/?#]|$))[^/?#]+/g;
+
+const redactShareToken = (url: unknown): unknown =>
+  typeof url === 'string' ? url.replace(SHARE_TOKEN_IN_PATH, `$1${REDACTED}`) : url;
+
 const sanitizeHeaders = (headers: Record<string, unknown> | undefined) => {
   if (!headers) {
     return headers;
@@ -72,10 +97,17 @@ export const createServer = ({ env, logger }: CreateServerOptions) => {
       serializers: {
         req: (req) => {
           const serialized = pino.stdSerializers.req(req);
-          if (serialized && typeof serialized === 'object' && 'headers' in serialized) {
+          if (serialized && typeof serialized === 'object') {
             return {
               ...serialized,
-              headers: sanitizeHeaders(serialized.headers as Record<string, unknown> | undefined),
+              url: redactShareToken(serialized.url),
+              ...('headers' in serialized
+                ? {
+                    headers: sanitizeHeaders(
+                      serialized.headers as Record<string, unknown> | undefined,
+                    ),
+                  }
+                : {}),
             };
           }
           return serialized;

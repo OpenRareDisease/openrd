@@ -10,7 +10,11 @@
  *             Clin Genet. 2024;106:13-26.
  *  [Ciafaloni] Ciafaloni E. FSHD and Pregnancy. (FSHD Society patient
  *             document; the underlying cohort is Ciafaloni et al.,
- *             Neurology 2006;67:887-889.)
+ *             Neurology 2006;67:1887-1889. Take the page range from
+ *             that document's own reference list — the AANA 2025 paper
+ *             in the corpus reprints it as 887-889, which is a
+ *             different article in volume 67 and does not resolve to
+ *             the cohort a clinician would be asked to look up.)
  *  [中华] 中国遗传学会遗传咨询分会等. 胚胎植入前遗传学检测的遗传咨询
  *             专家共识. 中华妇产科杂志. 2024;59(12):899-909.
  *
@@ -89,7 +93,7 @@ export const GENETICS_SECTIONS: GeneticsSection[] = [
       '子痫前期、羊水过多、胎膜早破、妊娠糖尿病、出生缺陷：风险都没有增加。',
       '分娩用麻醉：没有数据提示 FSHD 会增加全身麻醉的风险。（具体的麻醉安排见「麻醉注意事项卡」。）',
     ],
-    source: 'Ciafaloni, FSHD and Pregnancy；原始队列见 Neurology 2006;67:887-889',
+    source: 'Ciafaloni, FSHD and Pregnancy；原始队列见 Neurology 2006;67:1887-1889',
   },
   {
     id: 'after',

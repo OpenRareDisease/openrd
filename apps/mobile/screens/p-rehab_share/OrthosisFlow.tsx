@@ -140,7 +140,7 @@ const OrthosisFlow = () => {
             {question.selfTestHint ? (
               <Text style={styles.questionHint}>{question.selfTestHint}</Text>
             ) : null}
-            <View style={styles.choices}>
+            <View style={styles.choices} accessibilityRole="radiogroup" aria-label={question.title}>
               {question.choices.map((choice) => {
                 const selected = answers[question.id] === choice.id;
                 return (
@@ -149,7 +149,13 @@ const OrthosisFlow = () => {
                     style={[styles.choice, selected ? styles.choiceSelected : null]}
                     onPress={() => choose(question.id, choice.id)}
                     accessibilityRole="radio"
-                    accessibilityState={{ selected }}
+                    accessibilityState={{ selected, checked: selected }}
+                    // react-native-web 0.20 drops accessibilityState on
+                    // Pressable; aria-checked is the only spelling that
+                    // reaches the DOM, and the web export is the channel
+                    // that ships. Without it every choice announces the
+                    // same while the section below says 「已经答完」.
+                    aria-checked={selected}
                     accessibilityLabel={`${question.title}：${choice.label}`}
                   >
                     <Text

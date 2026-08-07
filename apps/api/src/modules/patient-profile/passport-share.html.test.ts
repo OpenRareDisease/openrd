@@ -96,6 +96,98 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
 const page = (over: Record<string, unknown> = {}) =>
   buildPassportSharePage(summary(over), { expiresAt: '2026-08-12T12:00:00.000Z' });
 
+/* ----------------------------------------------------------------
+ * Reading the page the way the phone reads it.
+ *
+ * The self-reported marking is a CSS rule, and a CSS rule that selects
+ * nothing is invisible to `expect(html).toContain('class="reported"')`
+ * — which is exactly how `dd.reported` shipped against a class the code
+ * only ever puts on a <span> INSIDE the <dd>. So these helpers resolve
+ * a value's effective `color` / `font-variant-numeric` through the
+ * page's own <style> block instead of asserting on the markup.
+ *
+ * Only what this page uses is supported: type and class compounds,
+ * descendant combinators, specificity then source order. Anything with
+ * a child/attribute/pseudo combinator is skipped rather than guessed
+ * at, and @media blocks are dropped (nothing in them touches a value).
+ * ---------------------------------------------------------------- */
+
+type El = { tag: string; classes: string[] };
+
+const styleRules = (html: string) => {
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  const flat = css
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+  return [...flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) =>
+    selectors.split(',').map((selector) => ({ selector: selector.trim(), body })),
+  );
+};
+
+const matchesCompound = (compound: string, el: El): boolean => {
+  const tag = compound.match(/^[a-z][a-z0-9]*/i)?.[0];
+  if (tag && tag !== el.tag) return false;
+  return [...compound.matchAll(/\.([\w-]+)/g)].every(([, name]) => el.classes.includes(name));
+};
+
+const specificity = (selector: string) =>
+  (selector.match(/\.[\w-]+/g)?.length ?? 0) * 10 + (selector.match(/(^|\s)[a-z]/gi)?.length ?? 0);
+
+const matchesSelector = (selector: string, chain: El[], index: number): boolean => {
+  if (/[>+~:[]/.test(selector)) return false;
+  const parts = selector.split(/\s+/).filter(Boolean);
+  if (!matchesCompound(parts[parts.length - 1], chain[index])) return false;
+  let cursor = index - 1;
+  for (let part = parts.length - 2; part >= 0; part -= 1) {
+    while (cursor >= 0 && !matchesCompound(parts[part], chain[cursor])) cursor -= 1;
+    if (cursor < 0) return false;
+    cursor -= 1;
+  }
+  return true;
+};
+
+/** The value of an INHERITED property as the browser would resolve it:
+ *  the innermost element in the chain that declares it wins. */
+const effective = (html: string, chain: El[], property: string): string | null => {
+  const rules = styleRules(html);
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const matched = rules
+      .filter((rule) => matchesSelector(rule.selector, chain, index))
+      .sort((a, b) => specificity(a.selector) - specificity(b.selector));
+    let found: string | null = null;
+    for (const rule of matched) {
+      for (const declaration of rule.body.split(';')) {
+        const [name, ...value] = declaration.split(':');
+        if (value.length && name.trim() === property) found = value.join(':').trim();
+      }
+    }
+    if (found) return found;
+  }
+  return null;
+};
+
+/** The chain down to the element that actually carries a row's value.
+ *  Everything above the <dd> is fixed page chrome; the <dd> and whatever
+ *  it wraps the value in are read back out of the rendered HTML, because
+ *  the wrapper is the thing under test. */
+const valueChain = (html: string, label: string): El[] => {
+  const row = html.match(new RegExp(`<dt>${label}</dt><dd([^>]*)>([\\s\\S]*?)</dd>`));
+  if (!row) throw new Error(`no row rendered for ${label}`);
+  const classesOf = (attributes: string) => [
+    ...(attributes.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/).filter(Boolean),
+  ];
+  const chain: El[] = [
+    { tag: 'body', classes: [] },
+    { tag: 'div', classes: ['wrap'] },
+    { tag: 'dl', classes: [] },
+    { tag: 'div', classes: ['row'] },
+    { tag: 'dd', classes: classesOf(row[1]) },
+  ];
+  const inner = row[2].match(/^<(\w+)([^>]*)>/);
+  if (inner) chain.push({ tag: inner[1], classes: classesOf(inner[2]) });
+  return chain;
+};
+
 describe('确诊状态必须在数值之前出现', () => {
   it('自填诊断时，警示横幅排在第一个数值前面', () => {
     const html = page({
@@ -114,7 +206,36 @@ describe('确诊状态必须在数值之前出现', () => {
       diagnosis: { ...summary().diagnosis, confirmation: 'self_reported' },
     });
     expect(html).toContain('（本人填写）');
-    expect(html).toContain('class="reported"');
+  });
+
+  it('自填的值渲染出来就和化验读出来的不一样 —— 不是「带了个 class」', () => {
+    // `expect(html).toContain('class="reported"')` was the assertion
+    // here, and it stayed green while the only rule for that class was
+    // `dd.reported` — a selector that matches a <dd> carrying the class,
+    // never the <span> inside one. So 分型 rendered in the same weight,
+    // colour and tabular numerals as the D4Z4 repeat count directly
+    // under it, which comes off a lab report. Resolve both through the
+    // page's own stylesheet and compare.
+    const html = page({
+      diagnosis: { ...summary().diagnosis, confirmation: 'self_reported' },
+    });
+    const typed = valueChain(html, '分型');
+    const extracted = valueChain(html, 'D4Z4 重复数');
+
+    expect(effective(html, extracted, 'color')).toBe('var(--ink)');
+    expect(effective(html, typed, 'color')).toBe('var(--soft)');
+    expect(effective(html, extracted, 'font-variant-numeric')).toBe('tabular-nums');
+    expect(effective(html, typed, 'font-variant-numeric')).toBe('normal');
+  });
+
+  it('运动功能那两行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
+    // 概况 and 受累部位 are patient self-measurement wrapped in the same
+    // class with no inline text marker, so if the rule does not bite,
+    // they read with the typographic authority of the MRI summary two
+    // sections below.
+    const html = page();
+    expect(effective(html, valueChain(html, '概况'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, 'MRI 摘要'), 'color')).toBe('var(--ink)');
   });
 
   it('基因确诊时不加「本人填写」', () => {

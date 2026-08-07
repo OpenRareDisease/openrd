@@ -216,6 +216,69 @@ describe('FHIR R4 — Observations', () => {
   });
 });
 
+describe('FHIR R4 — a report with no readable date is not dated to the upload', () => {
+  // A pulmonary function report printed in 2019, photographed and
+  // uploaded years later. OCR reads the numbers but no report date.
+  const undatedDocument = {
+    ...EXPORT_FIXTURE_PROFILE.documents[1],
+    id: '88888888-8888-4888-8888-888888888883',
+    documentType: 'pulmonary_function',
+    title: '肺功能报告',
+    uploadedAt: '2026-03-11T02:00:00.000Z',
+    ocrPayload: { fields: { fvcPredPct: '78%' } },
+  };
+  const undated = () => build({ documents: [undatedDocument] });
+
+  it('leaves effectiveDateTime off rather than asserting the upload date', () => {
+    const fvc = resourcesOf(undated(), 'Observation').find((resource) =>
+      (resource.code as { text: string }).text.includes('FVC%pred'),
+    );
+    expect(fvc?.valueString).toBe('78%');
+    // The failure this guards: a seven-year-old FVC%pred exported as
+    // a measurement taken the week it was photographed, on which a
+    // clinician defers a respiratory reassessment.
+    expect(fvc?.effectiveDateTime).toBeUndefined();
+    expect(JSON.stringify(fvc)).not.toContain('2026-03-11');
+  });
+
+  it('says on the Observation itself that the test date is unknown', () => {
+    const fvc = resourcesOf(undated(), 'Observation').find((resource) =>
+      (resource.code as { text: string }).text.includes('FVC%pred'),
+    );
+    const notes = (fvc?.note as Array<{ text: string }>).map((note) => note.text).join('\n');
+    expect(notes).toContain('没有识别到检查或报告日期');
+  });
+
+  it('does not put the upload date back on through the DiagnosticReport', () => {
+    const report = resourcesOf(undated(), 'DiagnosticReport')[0];
+    expect(report.effectiveDateTime).toBeUndefined();
+    expect(report.conclusion).toContain('没有识别到日期');
+  });
+
+  it('records the missing date as an omission', () => {
+    expect(undated().omissions.map((entry) => entry.field)).toContain(
+      'Observation.effectiveDateTime（报告自动解析项）',
+    );
+    // Not raised when every report stated its own date.
+    expect(build().omissions.map((entry) => entry.field)).not.toContain(
+      'Observation.effectiveDateTime（报告自动解析项）',
+    );
+  });
+
+  it('still keeps the upload time discoverable, labelled as an upload', () => {
+    const documentReference = resourcesOf(undated(), 'DocumentReference')[0];
+    expect(documentReference.date).toBe('2026-03-11T02:00:00.000Z');
+  });
+});
+
+describe('FHIR R4 — instruments are declared as withheld', () => {
+  it('says Brooke and Vignos are collected and not in this bundle', () => {
+    const omission = build().omissions.find((entry) => entry.field.includes('Brooke'));
+    expect(omission?.reasonZh).toContain('Vignos');
+    expect(omission?.reasonZh).toContain('不表示患者没有做过分级');
+  });
+});
+
 describe('FHIR R4 — bounded, and honest about the bound', () => {
   const manyMeasurements = Array.from({ length: 600 }, (_, index) => ({
     ...EXPORT_FIXTURE_PROFILE.measurements[0],

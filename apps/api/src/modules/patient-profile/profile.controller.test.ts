@@ -1,7 +1,10 @@
-import type { Response } from 'express';
+import express, { type Response } from 'express';
+import jwt from 'jsonwebtoken';
 import { Readable } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import request from 'supertest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { EXPORT_FIXTURE_PROFILE } from './export/__fixtures__/profile.fixture.js';
 import { DOCUMENT_TYPES } from './profile.constants.js';
 import {
   PatientProfileController,
@@ -10,10 +13,42 @@ import {
   _SAFE_INLINE_MIME_ALLOWLIST,
 } from './profile.controller.js';
 import type { PatientProfileService } from './profile.service.js';
+import type { AppEnv } from '../../config/env.js';
+import type { AppLogger } from '../../config/logger.js';
+import { errorHandler } from '../../middleware/error-handler.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
+
+/**
+ * Module doubles for the last describe in this file — the end-to-end
+ * tests that put GET /me/data-export?format=… through Express, because
+ * the thing under test there is a query string, and a query string only
+ * exists once a real request has been parsed.
+ *
+ * Hoisted, so they apply to the whole file. That is safe: every other
+ * test here constructs the controller with its own hand-built service
+ * double, and profile.controller.ts imports `PatientProfileService` for
+ * its TYPE only, which TypeScript erases.
+ */
+const routeGetProfileByUserId = vi.fn();
+vi.mock('./profile.service.js', () => ({
+  PatientProfileService: class {
+    getProfileByUserId = (...args: unknown[]) => routeGetProfileByUserId(...args);
+    // Both are called once at router construction by the OCR sweep and
+    // the deletion purge. They must resolve, or the router logs an
+    // unhandled rejection over the assertions below.
+    sweepStuckProcessingDocuments = async () => 0;
+    purgeDueAccountDeletions = async () => 0;
+  },
+}));
+vi.mock('../../db/pool.js', () => ({
+  getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+}));
+vi.mock('../../services/audit/retention.js', () => ({
+  startRetentionSweep: () => ({ unref: () => undefined }) as unknown as NodeJS.Timeout,
+}));
 
 const fakeRes = () =>
   ({
@@ -1055,5 +1090,162 @@ describe('PatientProfileController.patchDocumentOcr — hand-correction whitelis
       reportName: '基因检测报告',
     });
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+/**
+ * GET /me/data-export?format=… through Express.
+ *
+ * These go through the route rather than calling the controller with a
+ * hand-made `req`, and through the real `buildPortableExport` rather
+ * than a spy, because the whole subject is the one-line derivation
+ * `includeLocalOnly: req.query?.includeLocalOnly === 'true'`. Every
+ * other test of that flag (export/treat-nmd.test.ts and the goldens)
+ * hands the builder a literal, so nothing connected a query string to
+ * the gate: loosening the comparison to `!== undefined` — the natural
+ * 「also accept 1/on」 edit — would have put the patient's name, their
+ * physician's name and their account of their RELATIVES' health into
+ * every export, with the whole suite green.
+ */
+const logger = {
+  fatal: vi.fn(),
+  error: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+  trace: vi.fn(),
+  child: () => logger,
+} as unknown as AppLogger;
+
+const EXPORT_JWT_SECRET = 'data-export-test-secret-value';
+
+const exportEnv = {
+  JWT_SECRET: EXPORT_JWT_SECRET,
+  // Keeps the router off the Python OCR path and off MinIO. Neither is
+  // reachable from this endpoint; both are constructed eagerly.
+  OCR_PROVIDER: 'mock',
+  STORAGE_PROVIDER: 'local',
+} as unknown as AppEnv;
+
+const { createPatientProfileRouter } = await import('./profile.routes.js');
+
+const makeExportApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/patients', createPatientProfileRouter({ env: exportEnv, logger }));
+  app.use(errorHandler({ logger }));
+  return app;
+};
+
+/** A fresh user id per test: the export cooldown is keyed by user and
+ *  lives on the controller instance, so a shared id would leak a 429
+ *  between tests and make failures depend on execution order. */
+let exportUserSeq = 0;
+const nextExportUser = () => `u-export-${(exportUserSeq += 1)}`;
+
+const exportTokenFor = (userId: string) =>
+  jwt.sign({ sub: userId, role: 'patient' }, EXPORT_JWT_SECRET);
+
+const getExport = (query: string, userId = nextExportUser()) =>
+  request(makeExportApp())
+    .get(`/api/patients/me/data-export${query}`)
+    .set('Authorization', `Bearer ${exportTokenFor(userId)}`);
+
+/** The two strings that must not leave with the block closed: the
+ *  physician is a third person's name, and the statement is the
+ *  patient's account of RELATIVES who consented to nothing here. Read
+ *  off the fixture rather than retyped, so a fixture edit cannot leave
+ *  these assertions passing against text nobody exports any more. */
+const PHYSICIAN_NAME = EXPORT_FIXTURE_PROFILE.primaryPhysician ?? '';
+const FAMILY_HISTORY_STATEMENT = (
+  EXPORT_FIXTURE_PROFILE.baseline as { diseaseBackground?: { familyHistory?: string } } | null
+)?.diseaseBackground?.familyHistory;
+
+describe('GET /me/data-export?format= — the local-only gate, over HTTP', () => {
+  beforeEach(() => {
+    routeGetProfileByUserId.mockReset();
+    routeGetProfileByUserId.mockResolvedValue(EXPORT_FIXTURE_PROFILE);
+  });
+
+  it('has the two identifiers under test, so a silent fixture edit cannot pass this file', () => {
+    expect(PHYSICIAN_NAME).toBeTruthy();
+    expect(FAMILY_HISTORY_STATEMENT).toBeTruthy();
+  });
+
+  it('400s an unknown format, naming the ones that exist, before reading the profile', async () => {
+    const res = await getExport('?format=treat_nmd');
+    expect(res.status).toBe(400);
+    // The message is the whole answer the caller gets: the AppError
+    // also carries `details.supportedFormats`, but that key is not on
+    // the error handler's client-safe allowlist, so the handler drops
+    // `details` entirely. Asserting the array here would pin a field
+    // that never reaches a client.
+    expect(res.body.error).toContain('treat-nmd、phenopacket、fhir-r4');
+    expect(res.body.details).toBeUndefined();
+    expect(routeGetProfileByUserId).not.toHaveBeenCalled();
+  });
+
+  it('404s inside the format branch instead of emitting a document about nobody', async () => {
+    routeGetProfileByUserId.mockResolvedValue(null);
+    const res = await getExport('?format=treat-nmd');
+    expect(res.status).toBe(404);
+    expect(res.body.format).toBeUndefined();
+  });
+
+  it('withholds the local-only block when the query string does not ask for it', async () => {
+    const res = await getExport('?format=treat-nmd');
+
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly).toBeNull();
+    // Not merely absent — the receiver is told it was held back, which
+    // is what lets 「按规则未发送」 be told apart from 「没有家族史」.
+    const omitted = res.body.omissions.map((o: { field: string }) => o.field);
+    expect(omitted).toContain('localOnly');
+    expect(omitted).toContain('sections.familyHistory');
+    // Not anywhere in the bytes, whatever shape the document takes.
+    expect(JSON.stringify(res.body)).not.toContain(FAMILY_HISTORY_STATEMENT);
+    expect(JSON.stringify(res.body)).not.toContain(PHYSICIAN_NAME);
+  });
+
+  it('emits it only for the literal string 「true」', async () => {
+    const res = await getExport('?format=treat-nmd&includeLocalOnly=true');
+
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly?.key).toBe('localOnly');
+    expect(JSON.stringify(res.body)).toContain(PHYSICIAN_NAME);
+    expect(JSON.stringify(res.body)).toContain(FAMILY_HISTORY_STATEMENT);
+  });
+
+  it.each(['1', 'on', 'yes', 'TRUE', '0', 'false', ''])(
+    'keeps the block closed for includeLocalOnly=%s',
+    async (value) => {
+      // A gate over somebody else's data fails closed. `=0` is the one
+      // that matters most: a loosening to `!== undefined` reads an
+      // explicit refusal as consent.
+      const res = await getExport(`?format=treat-nmd&includeLocalOnly=${value}`);
+      expect(res.status).toBe(200);
+      expect(res.body.document.localOnly).toBeNull();
+      expect(JSON.stringify(res.body)).not.toContain(FAMILY_HISTORY_STATEMENT);
+    },
+  );
+
+  it('keeps the block closed when the parameter arrives twice', async () => {
+    // Express parses a repeated key as an array, which is not the
+    // string 'true'. Ambiguous input is not consent.
+    const res = await getExport('?format=treat-nmd&includeLocalOnly=true&includeLocalOnly=true');
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly).toBeNull();
+  });
+
+  it('does not spend the PIPL export cooldown, in either direction', async () => {
+    // The branch's own comment says so: a portable document costs one
+    // getProfileByUserId, and sharing the 60s budget would mean the
+    // cheap call paying for the expensive one.
+    const app = makeExportApp();
+    const token = `Bearer ${exportTokenFor(nextExportUser())}`;
+    const url = '/api/patients/me/data-export?format=fhir-r4';
+
+    expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
+    expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
   });
 });

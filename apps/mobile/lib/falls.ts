@@ -329,6 +329,22 @@ export const describeFallDay = (occurredOn: string, now: Date = new Date()): str
 /* ------------------------------------------------------------------ */
 
 /**
+ * One chip: which question it answers, and the answer.
+ *
+ * `field` exists because the answers are not unique. 「记不清」 is a
+ * real option on BOTH 在哪里 and 跌倒发生在 (the two `unknown` labels
+ * above are the same five characters, deliberately — they mirror the
+ * API's), so a fall answered 记不清 twice produced two chips carrying
+ * the identical string. Keyed by that string in the list, they were two
+ * React siblings with one key; keyed by the question they answer, they
+ * are two of whatever they always were.
+ */
+export interface FallDetailChip {
+  field: 'location' | 'activity' | 'handsFull' | 'gotUpUnaided' | 'injured';
+  label: string;
+}
+
+/**
  * The chips under one diary entry.
  *
  * A null field produces NOTHING. Not 「未受伤」, not 「双手空着」, not a
@@ -338,15 +354,26 @@ export const describeFallDay = (occurredOn: string, now: Date = new Date()): str
  * here — every one of these is a boolean, and rendering `false` and
  * `null` through the same ternary is how a blank becomes a 「否」.
  */
-export const describeFallDetails = (fall: FallRecord): string[] => {
-  const chips: string[] = [];
-  if (fall.location !== null) chips.push(FALL_LOCATION_LABELS_ZH[fall.location]);
-  if (fall.activity !== null) chips.push(FALL_ACTIVITY_LABELS_ZH[fall.activity]);
-  if (fall.handsFull !== null) chips.push(fall.handsFull ? '双手拿着东西' : '双手是空的');
-  if (fall.gotUpUnaided !== null) {
-    chips.push(fall.gotUpUnaided ? '自己起来的' : '需要人扶才起来');
+export const describeFallDetails = (fall: FallRecord): FallDetailChip[] => {
+  const chips: FallDetailChip[] = [];
+  if (fall.location !== null) {
+    chips.push({ field: 'location', label: FALL_LOCATION_LABELS_ZH[fall.location] });
   }
-  if (fall.injured !== null) chips.push(fall.injured ? '受了伤' : '没受伤');
+  if (fall.activity !== null) {
+    chips.push({ field: 'activity', label: FALL_ACTIVITY_LABELS_ZH[fall.activity] });
+  }
+  if (fall.handsFull !== null) {
+    chips.push({ field: 'handsFull', label: fall.handsFull ? '双手拿着东西' : '双手是空的' });
+  }
+  if (fall.gotUpUnaided !== null) {
+    chips.push({
+      field: 'gotUpUnaided',
+      label: fall.gotUpUnaided ? '自己起来的' : '需要人扶才起来',
+    });
+  }
+  if (fall.injured !== null) {
+    chips.push({ field: 'injured', label: fall.injured ? '受了伤' : '没受伤' });
+  }
   return chips;
 };
 

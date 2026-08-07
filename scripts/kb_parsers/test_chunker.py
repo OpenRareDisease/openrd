@@ -292,3 +292,30 @@ def test_short_record_trails_onto_the_previous_one() -> None:
     )
     assert records is not None
     assert any("01 12 99短" in r for r in records)
+
+
+def test_a_run_of_short_records_still_respects_max_chars() -> None:
+    """The trail-onto-previous fallback must not become an unbounded
+    accumulator.
+
+    An annex table of code + short name and no description column
+    produces nothing but sub-`min_chars` pieces. Trailing each one onto
+    its predecessor with no cap merged 120 of them into a single
+    3,392-character chunk carrying 120 unrelated device classes — both
+    past `max_chars` (which nothing downstream re-measures, so the
+    embedder silently truncates the tail) and back to the
+    chunk-about-everything the code-table path exists to remove.
+    """
+    from kb_parsers.chunker import _split_code_table
+
+    lines = ["01 12 下肢矫形器"]
+    for i in range(120):
+        lines.append(f"01 12 {i % 100:02d}下肢矫形器变体{i}")
+    source = "\n".join(lines)
+
+    records = _split_code_table(source, max_chars=1200, min_chars=30)
+    assert records is not None
+    assert max(len(r) for r in records) <= 1200
+    # Bounding the merge must not start dropping entries.
+    joined = "\n".join(records) + "\n"
+    assert all(f"下肢矫形器变体{i}\n" in joined for i in range(120))

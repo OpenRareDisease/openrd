@@ -103,9 +103,16 @@ def _fingerprint(text: str) -> str:
 
 
 def _is_junk(raw: str) -> bool:
+    """判一块原文是不是垃圾。传原文，不要传折叠过空白的文本。
+
+    长度按折叠空白后算 —— 一块「两行标题 + 一堆缩进」不该靠空白撑过 30 字。
+    版式判断则必须拿到原文：_is_navigation_boilerplate 数的是「几行里有几行
+    是版式家具」，折叠之后整块只剩一行，那个比值永远是 0/1，过滤器一次也
+    不会响。
+    """
     # 先剥掉入库标注再判 —— 见 _strip_ingest_label 的说明。
     text = _strip_ingest_label(raw)
-    if not text or len(text.strip()) < 30:
+    if not text or len(_norm_text(text)) < 30:
         return True
     return bool(_is_navigation_boilerplate(text))
 
@@ -469,9 +476,14 @@ class FSHDKnowledgeBase:
         seen_fp: set[str] = set()
         for qi, (q, hits) in enumerate(zip(queries, per_query_hits)):
             for hit in hits:
-                text_norm = _norm_text(hit.content)
-                if _is_junk(text_norm):
+                # 判 junk 用原文，折叠只用于指纹和下游 payload。
+                # 反过来写过一版：先 _norm_text 再判，于是按行密度判的
+                # 版式过滤器从来没生效过 —— 折叠后整块只剩一行，比值恒为
+                # 0/1。后果是微信文章的导航与署名块带着引用角标进了患者
+                # 看到的答案里，而且比 master 上那版子串匹配更差。
+                if _is_junk(hit.content):
                     continue
+                text_norm = _norm_text(hit.content)
                 fp = hit.fingerprint or _fingerprint(text_norm)
                 if fp in seen_fp:
                     continue

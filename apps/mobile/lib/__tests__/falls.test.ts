@@ -36,6 +36,10 @@ const fall = (overrides: Partial<FallRecord> = {}): FallRecord => ({
   ...overrides,
 });
 
+/** Just the words, for the assertions that are about the words. */
+const labelsOf = (record: FallRecord): string[] =>
+  describeFallDetails(record).map((chip) => chip.label);
+
 const summary = (overrides: Partial<FallsSummary> = {}): FallsSummary => ({
   total: 0,
   atCap: false,
@@ -60,15 +64,15 @@ describe('「没填」 never renders as 「没有」', () => {
   });
 
   it('false and null are different words, not the same ternary', () => {
-    expect(describeFallDetails(fall({ injured: false }))).toEqual(['没受伤']);
-    expect(describeFallDetails(fall({ injured: null }))).toEqual([]);
-    expect(describeFallDetails(fall({ handsFull: false }))).toEqual(['双手是空的']);
-    expect(describeFallDetails(fall({ gotUpUnaided: false }))).toEqual(['需要人扶才起来']);
+    expect(labelsOf(fall({ injured: false }))).toEqual(['没受伤']);
+    expect(labelsOf(fall({ injured: null }))).toEqual([]);
+    expect(labelsOf(fall({ handsFull: false }))).toEqual(['双手是空的']);
+    expect(labelsOf(fall({ gotUpUnaided: false }))).toEqual(['需要人扶才起来']);
   });
 
   it('answered fields read in the order the entry is scanned', () => {
     expect(
-      describeFallDetails(
+      labelsOf(
         fall({
           location: 'outdoor',
           activity: 'stairs',
@@ -82,7 +86,18 @@ describe('「没填」 never renders as 「没有」', () => {
 
   it('「记不清」 is an answer and shows up as one', () => {
     // Distinct from a blank: the patient told us something.
-    expect(describeFallDetails(fall({ activity: 'unknown' }))).toEqual(['记不清']);
+    expect(labelsOf(fall({ activity: 'unknown' }))).toEqual(['记不清']);
+  });
+
+  it('两个问题都答「记不清」时，两块牌子分得清是哪一个问题', () => {
+    // 「记不清」 is a real answer to both 在哪里 and 跌倒发生在, and the
+    // two labels are the same five characters on purpose (they mirror
+    // the API's). The screen renders one View per chip, so if the only
+    // thing distinguishing them is that string, the two are React
+    // siblings with one key.
+    const chips = describeFallDetails(fall({ location: 'unknown', activity: 'unknown' }));
+    expect(chips.map((chip) => chip.label)).toEqual(['记不清', '记不清']);
+    expect(new Set(chips.map((chip) => chip.field)).size).toBe(chips.length);
   });
 });
 

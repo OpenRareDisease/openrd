@@ -29,6 +29,7 @@ import {
 } from '../../lib/api';
 import { COLOR } from '../../lib/design';
 import { DATA_ENTRY_DRAFT_KEYS } from '../../lib/draft-keys';
+import { isAmbulationLimited } from '../../lib/profile-baseline-options';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { buildFollowupFeedback } from './followup-feedback';
 import { SLEEP_BUCKETS, bucketForScore, stepSleepScore } from './sleep-score';
@@ -1989,13 +1990,13 @@ const DataEntryScreen = () => {
   const previousFatigueScore = profile ? getLatestSymptomValue(profile, FATIGUE_SCALE.key) : null;
 
   // The baseline profile already says whether stairs are plausible:
-  // 「独立行走」answered no, or a device that rules them out. Used ONLY
-  // to word the hint beside the toggle so the patient doesn't have to
-  // re-explain what they already told us — never to pre-select it,
-  // because the toggle is itself a record of today, and a record the
-  // patient didn't make is a fabricated one.
+  // 「当前行走」answered anything but 「可独立行走」, or a device that
+  // rules them out. Used ONLY to word the hint beside the toggle so the
+  // patient doesn't have to re-explain what they already told us —
+  // never to pre-select it, because the toggle is itself a record of
+  // today, and a record the patient didn't make is a fabricated one.
   const stairsLikelyOutOfReach =
-    profile?.baseline?.currentStatus?.independentlyAmbulatory === false ||
+    isAmbulationLimited(profile?.baseline?.currentStatus?.independentlyAmbulatory) ||
     (profile?.baseline?.currentStatus?.assistiveDevices ?? []).some(
       (device) => device === '轮椅' || device === '助行器',
     );

@@ -1,6 +1,6 @@
 import { buildCodingProvenance, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
-import type { MilestoneEvent, NormalisedSource } from './export-source.js';
+import { instrumentOmission, type MilestoneEvent, type NormalisedSource } from './export-source.js';
 import {
   AMBULATION_LABELS,
   FOLLOWUP_EVENT_LABELS,
@@ -311,8 +311,16 @@ export const buildTreatNmdExport = (
               '患者自行完成并记录，非临床环境下的标准化测试；notApplicable 表示「尝试后当天做不了」，与「未测」不同',
           },
     ]),
-    noteZh: null,
+    // 运动功能 is one of the six mandatory areas, and it is the section
+    // a reader would use to decide whether this record has anything
+    // comparable in it. Saying nothing here while Brooke and Vignos
+    // sit un-exported is the whole defect; the full reason is in
+    // `omissions`, and this line makes sure the reader gets to it.
+    noteZh:
+      '本节不含 Brooke 上肢分级与 Vignos 下肢分级——本平台采集这两项，但它们尚未接入本导出。详见 omissions 中的 sections.motorFunction.instruments。',
   };
+
+  omissions.push(instrumentOmission('sections.motorFunction.instruments'));
 
   // ----------------------------------------------------- 轮椅使用
   const wheelchairMilestones = source.milestones.filter(

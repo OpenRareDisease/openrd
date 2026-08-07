@@ -127,3 +127,11 @@ describe('Phenopacket v2 — files', () => {
     expect(build({ documents: [] }).document.files).toBeUndefined();
   });
 });
+
+describe('Phenopacket v2 — held-but-unemitted instruments are declared', () => {
+  it('names Brooke and Vignos among the omissions', () => {
+    const omission = build().omissions.find((entry) => entry.field.includes('Brooke'));
+    expect(omission?.reasonZh).toContain('Vignos');
+    expect(omission?.reasonZh).toContain('不表示患者没有做过分级');
+  });
+});

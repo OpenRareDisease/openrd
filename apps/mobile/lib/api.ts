@@ -1,4 +1,5 @@
 import { PREGNANCY_DUE_DATE_KEY } from './draft-keys';
+import type { AmbulationState } from './profile-baseline-options';
 import { getSessionValue, removeSessionValue, setSessionValue } from './session-storage';
 
 export const AUTH_TOKEN_STORAGE_KEY = 'openrd.authToken';
@@ -454,7 +455,11 @@ export interface BaselineProfilePayload {
     onsetRegion?: string | null;
   };
   currentStatus?: {
-    independentlyAmbulatory?: boolean | null;
+    /** Three states since migration 022, which back-filled the old
+     *  booleans and put a CHECK on the column. `boolean` stays in the
+     *  union only for a server that has not run 022 yet — see
+     *  toAmbulationChoice in profile-baseline-options.ts. */
+    independentlyAmbulatory?: AmbulationState | boolean | null;
     armRaiseDifficulty?: boolean | null;
     facialWeakness?: boolean | null;
     footDrop?: boolean | null;

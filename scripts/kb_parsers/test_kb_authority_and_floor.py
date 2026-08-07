@@ -318,6 +318,72 @@ def test_backend_hits_reports_what_the_store_returned(kb):
     assert result["metadata"]["backend_hits"] == 0
 
 
+# ------------------------------------------------------- the junk filter's input
+
+#: A 微信公众号 footer: navigation and credits, no article. Every line
+#: is furniture, so the density test should take the whole block — but
+#: only if it is handed the lines.
+_WECHAT_FOOTER = "\n".join(
+    [
+        "目录",
+        "上一篇：FSHD 康复入门，从关节活动度开始",
+        "下一篇：辅具申领流程与各地补贴口径",
+        "撰文：小王",
+        "排版：小李",
+        "责任编辑：某某",
+        "点击阅读原文查看往期推送",
+    ]
+)
+
+
+def test_search_multi_judges_junk_on_the_raw_hit_not_the_collapsed_copy(kb):
+    """The line-density filter has to be given the lines.
+
+    `_is_navigation_boilerplate` asks 「几行里有几行是版式家具」.
+    search_multi ran `_norm_text` first and judged the result, which is
+    one line by construction, so the ratio was pinned at 0/1 and the
+    filter never fired — worse than the substring match it replaced.
+    The block below then reached the model as retrieved evidence and
+    got a citation chip in front of a patient. Collapsing belongs on
+    the fingerprint and the outgoing payload, not on the input to the
+    judgement.
+    """
+    assert kb._is_junk(_WECHAT_FOOTER) is True
+
+    instance = _kb_with(
+        kb,
+        [
+            _hit(
+                kb,
+                distance=0.10,
+                source_file="10.科普/公众号推送.docx",
+                content=_WECHAT_FOOTER,
+            ),
+            _hit(kb, distance=0.12, source_file="指南共识/a.pdf"),
+        ],
+        relevance_floor=0.40,
+    )
+    result = instance.search_multi("辅具怎么申领？", ["辅具 申领"])
+
+    assert result["metadata"]["backend_hits"] == 2
+    assert result["metadata"]["candidates_considered"] == 1
+    assert len(result["chunks"]) == 1
+    assert "责任编辑" not in result["chunks"][0]["content"]
+
+
+def test_the_minimum_length_is_measured_after_collapsing_whitespace(kb):
+    """30 characters of text, not 30 characters of layout.
+
+    The density test needs the raw chunk, but the length floor still
+    has to read the collapsed one, or a two-line heading padded with
+    indentation clears 30 on whitespace alone and enters the index as a
+    chunk with a dozen real characters in it.
+    """
+    padded = "FSHD 康复\n\n" + " " * 30 + "\n肩胛带"
+    assert len(padded.strip()) >= 30
+    assert kb._is_junk(padded) is True
+
+
 def test_floor_can_be_disabled(kb):
     instance = _kb_with(
         kb, [_hit(kb, distance=0.93, source_file="文献/a.docx")], relevance_floor=None

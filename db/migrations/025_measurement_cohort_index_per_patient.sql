@@ -1,0 +1,85 @@
+-- 025_measurement_cohort_index_per_patient.sql
+--
+-- Rebuilds idx_patient_measurements_cohort for the query the cohort
+-- distribution actually runs now.
+--
+-- WHY
+--
+-- 018 built (muscle_group, strength_score) for
+--
+--   SELECT MIN(...), MAX(...), percentile_cont(...), COUNT(*)
+--   FROM patient_measurements
+--   WHERE muscle_group = $1
+--
+-- and its note that "the query never has to touch the heap" was true of
+-- that query. The query has since changed twice, and both changes are
+-- corrections that have to stay:
+--
+--   * `profile_id <> $2`, because without it a patient was being
+--     compared against their own measurements and told it was the group.
+--   * a DISTINCT ON (profile_id) collapse to one row per patient, because
+--     percentiles over raw rows let whoever tests most often be the
+--     median while the caption beside it counts people. See the comment
+--     on the query in profile.service.ts.
+--
+-- The query is now
+--
+--   WITH per_patient AS (
+--     SELECT DISTINCT ON (profile_id) profile_id, strength_score
+--     FROM patient_measurements
+--     WHERE muscle_group = $1 AND profile_id <> $2
+--     ORDER BY profile_id, recorded_at DESC, strength_score DESC)
+--   SELECT MIN(...), MAX(...), percentile_cont(...), COUNT(*) FROM per_patient
+--
+-- and 018's index carries neither profile_id nor recorded_at, so it can
+-- neither cover the scan nor supply the DISTINCT ON ordering. It still
+-- narrows on muscle_group — 018's primary purpose, avoiding a sequential
+-- scan, survives — but the plan degrades to a heap scan plus a full sort.
+--
+-- MEASURED
+--
+-- PG18, a table with this exact column set holding 212,400 rows / 5,000
+-- profiles / 9 muscle groups (23,600 rows for 'deltoid'), VACUUM ANALYZEd,
+-- EXPLAIN (ANALYZE, BUFFERS), warm:
+--
+--   the current query on 018's index
+--     Sort (quicksort 2243kB) <- Bitmap Heap Scan, Heap Blocks: exact=338
+--     361 buffers, 4.4 ms
+--
+--   the same query on the index below
+--     Index Only Scan using idx_patient_measurements_cohort
+--     Heap Fetches: 0, no Sort node at all
+--     172 buffers, 1.7 ms
+--
+-- The sort is the part that matters more than the milliseconds. It is
+-- 2.2 MB of quicksort at 5,000 patients, it grows with the user base
+-- rather than with one patient's history, and p-manage opens four muscle
+-- groups at once — so four of them run concurrently and start spilling to
+-- disk together. That is the same failure shape 018 was written against.
+--
+-- ON THE COLUMN ORDER
+--
+-- (muscle_group, profile_id, recorded_at DESC, strength_score DESC).
+-- With muscle_group pinned by equality the remaining three are exactly
+-- the DISTINCT ON ordering, so Postgres reads the rows already grouped
+-- and already newest-first per patient. strength_score is last as a key
+-- rather than in an INCLUDE list because it is the deterministic
+-- tiebreak: a left/right pair written in one transaction shares
+-- recorded_at = NOW(), and without a tiebreak two identical requests can
+-- return two different medians. Keeping it a key column costs 2 bytes an
+-- entry and buys both the ordering and the covering property (13 MB here
+-- against 018's narrower index; an INCLUDE (id) variant measured 16 MB
+-- and 224 buffers for the same plan).
+--
+-- Still deliberately NOT narrowed to a recency window, for 018's reason:
+-- what the cohort MEANS is a clinical decision, not an indexing one.
+--
+-- Not CONCURRENTLY, and the same SHARE lock as 018 — see 018 for the
+-- by-hand escape hatch if this table ever grows enough for the write
+-- lock to matter. The DROP below takes ACCESS EXCLUSIVE, briefly, on a
+-- table that at present holds a few hundred rows.
+
+DROP INDEX IF EXISTS idx_patient_measurements_cohort;
+
+CREATE INDEX IF NOT EXISTS idx_patient_measurements_cohort
+  ON patient_measurements (muscle_group, profile_id, recorded_at DESC, strength_score DESC);

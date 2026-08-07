@@ -54,7 +54,11 @@ const POPULATED_ROW = {
       familyHistory: '母亲疑似',
     },
     currentStatus: {
-      independentlyAmbulatory: true,
+      // Post-022 shape. The boolean the old fixture carried is one the
+      // CHECK constraint added by that migration no longer allows on
+      // disk, which is why a boolean-only guard in the retriever could
+      // drop the field for every real profile and stay green here.
+      independentlyAmbulatory: 'independent',
       assistiveDevices: ['AFO'],
     },
   },
@@ -116,8 +120,47 @@ describe('PatientProfileRetriever', () => {
     expect(fields.methylation).toBe('12%');
     expect(fields.diagnosisType).toBe('FSHD1');
     expect(fields.onsetRegion).toBe('肩胛带');
-    expect(fields.independentlyAmbulatory).toBe(true);
+    expect(fields.independentlyAmbulatory).toBe('independent');
     expect(fields.assistiveDevices).toEqual(['AFO']);
+  });
+
+  // The state the boolean could not express, and the one whose absence
+  // costs the most: without it the model answers 「我适合做哪些家庭
+  // 训练」 for a wheelchair user with standing exercises.
+  it.each(['independent', 'assisted', 'unable'])(
+    'forwards ambulation state %s to metadata.fields',
+    async (state) => {
+      const pool = fakePool([
+        {
+          ...POPULATED_ROW,
+          baseline_payload: {
+            ...POPULATED_ROW.baseline_payload,
+            currentStatus: { independentlyAmbulatory: state },
+          },
+        },
+      ]);
+      const result = await new PatientProfileRetriever(pool).search(
+        { question: '我适合做哪些家庭训练' },
+        makeCtx(),
+      );
+      const fields = (result.chunks[0].metadata.fields as Record<string, unknown>) ?? {};
+      expect(fields.independentlyAmbulatory).toBe(state);
+    },
+  );
+
+  it('drops an ambulation value that is not one of the states', async () => {
+    const pool = fakePool([
+      {
+        ...POPULATED_ROW,
+        baseline_payload: {
+          ...POPULATED_ROW.baseline_payload,
+          currentStatus: { independentlyAmbulatory: true },
+        },
+      },
+    ]);
+    const result = await new PatientProfileRetriever(pool).search({ question: 'x' }, makeCtx());
+    const fields = (result.chunks[0].metadata.fields as Record<string, unknown>) ?? {};
+    expect(fields).not.toHaveProperty('independentlyAmbulatory');
   });
 
   it('still emits a chunk when baseline_payload is missing', async () => {

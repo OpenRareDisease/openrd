@@ -1,6 +1,11 @@
 import { buildCodingProvenance, verifiedCoding, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
-import { deterministicUuid, resourceUuid, type NormalisedSource } from './export-source.js';
+import {
+  deterministicUuid,
+  instrumentOmission,
+  resourceUuid,
+  type NormalisedSource,
+} from './export-source.js';
 import {
   DAILY_IMPACT_LABELS,
   DOCUMENT_TYPE_LABELS,
@@ -424,8 +429,21 @@ export const buildFhirExport = (
     });
   });
 
+  // Ledger keys this bundle actually emitted, so `codingProvenance`
+  // reports what was coded rather than a hardcoded empty list.
+  const emittedCodingKeys = new Set<string>();
+
   source.reportFields.forEach((field) => {
     const documentRef = documentRefById.get(field.documentId);
+    // The one place an OCR-derived value can acquire an external code.
+    // `fhirSystem === null` means the ledger holds the code but has
+    // decided it must not travel as a machine-resolvable Coding (the
+    // OMIM entries), so it degrades to text like an unledgered key.
+    const ledgered = field.codingKey ? verifiedCoding(field.codingKey) : null;
+    const coding = ledgered?.fhirSystem
+      ? { system: ledgered.fhirSystem, code: ledgered.code, display: ledgered.label }
+      : null;
+    if (coding && ledgered) emittedCodingKeys.add(ledgered.key);
     candidates.push({
       sortAt: sortKey(field.observedAt),
       documentId: field.documentId,
@@ -444,9 +462,19 @@ export const buildFhirExport = (
             text: field.category === 'imaging' ? '影像' : '检验',
           },
         ],
-        code: codeableText(field.labelZh),
+        code: coding ? { coding: [coding], text: field.labelZh } : codeableText(field.labelZh),
         subject: { reference: patientRef },
-        effectiveDateTime: field.observedAt,
+        // `effectiveDateTime` is written ONLY when the report stated
+        // its own date. When OCR read none, `field.observedAt` is the
+        // upload time, and putting that here would date a report
+        // printed in 2019 to the week it was photographed — a
+        // receiver has no way to recover the difference afterwards,
+        // and a current-looking FVC%pred is exactly what makes a
+        // clinician defer a respiratory reassessment. Leaving the
+        // element out says 「不知道是什么时候测的」, which is true;
+        // the upload time is still readable, correctly labelled, on
+        // the DocumentReference this Observation derives from.
+        ...(field.observedAtIsUploadTime ? {} : { effectiveDateTime: field.observedAt }),
         // valueString, not valueQuantity: what OCR extracted is a
         // rendered string («1245 U/L», «45%»), and splitting it into a
         // number and a unit would be this exporter guessing at the
@@ -457,6 +485,13 @@ export const buildFhirExport = (
           {
             text: '由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。',
           },
+          ...(field.observedAtIsUploadTime
+            ? [
+                {
+                  text: '报告上没有识别到检查或报告日期，因此本条不给出 effectiveDateTime——测量时间未知，不是「等于上传时间」。derivedFrom 指向的 DocumentReference.date 是患者上传该文件的时间。',
+                },
+              ]
+            : []),
         ],
       },
     });
@@ -495,6 +530,12 @@ export const buildFhirExport = (
     const fieldsForDocument = source.reportFields.filter(
       (field) => field.documentId === documentId,
     );
+    // Same rule as the Observations above: the report's own stated
+    // date or nothing. Falling back to `document.uploadedAt` here
+    // would put the wrong date back on the record through the parent
+    // resource after the children had correctly refused it.
+    const statedAt =
+      fieldsForDocument.find((field) => !field.observedAtIsUploadTime)?.observedAt ?? null;
     reportRefs.push(
       push({
         resourceType: 'DiagnosticReport',
@@ -504,9 +545,11 @@ export const buildFhirExport = (
           `${labelFor(DOCUMENT_TYPE_LABELS, document?.documentType ?? 'other')}（自动解析结果）`,
         ),
         subject: { reference: patientRef },
-        effectiveDateTime: fieldsForDocument[0]?.observedAt ?? document?.uploadedAt,
+        ...(statedAt ? { effectiveDateTime: statedAt } : {}),
         result: resultRefs.map((reference) => ({ reference })),
-        conclusion: '本条目由自动识别结果汇总生成，不含医师结论；请以原始报告与主诊医师意见为准。',
+        conclusion: statedAt
+          ? '本条目由自动识别结果汇总生成，不含医师结论；请以原始报告与主诊医师意见为准。'
+          : '本条目由自动识别结果汇总生成，不含医师结论；请以原始报告与主诊医师意见为准。原始报告上没有识别到日期，因此本条不给出 effectiveDateTime。',
       }),
     );
   });
@@ -550,11 +593,21 @@ export const buildFhirExport = (
     entry: [{ fullUrl: `urn:uuid:${composition.id}`, resource: composition }, ...entries],
   };
 
+  if (source.reportFields.some((field) => field.observedAtIsUploadTime)) {
+    omissions.push({
+      field: 'Observation.effectiveDateTime（报告自动解析项）',
+      reasonZh:
+        '有报告没有被识别出检查或报告日期。这类条目不写 effectiveDateTime，也不用上传时间代替——一份 2019 年打印、上周才拍照上传的报告，若标成上周，接收方读到的就是一个「当前」的结果。上传时间见对应 DocumentReference.date，它是上传时间而不是检查时间。',
+    });
+  }
+
   omissions.push({
     field: 'CodeableConcept.coding (LOINC)',
     reasonZh:
       '所有临床概念都以 text + 显示名给出，不附带 LOINC 等外部编码。本仓库内没有可核对的 LOINC 来源，写入未经核对的编码会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。具体见 codingProvenance.withheld。',
   });
+
+  omissions.push(instrumentOmission('Observation（Brooke 上肢分级 / Vignos 下肢分级）'));
 
   return {
     format: 'HL7 FHIR R4 document Bundle',
@@ -566,9 +619,9 @@ export const buildFhirExport = (
     notes: {
       编码: '本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。',
       文件: 'DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。',
-      日期: '里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。',
+      日期: '里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。报告自动解析出的项目只在报告本身写明日期时才带 effectiveDateTime；没写明的一律不给日期，也不用上传时间顶替。',
     },
-    codingProvenance: buildCodingProvenance([]),
+    codingProvenance: buildCodingProvenance([...emittedCodingKeys]),
   };
 };
 

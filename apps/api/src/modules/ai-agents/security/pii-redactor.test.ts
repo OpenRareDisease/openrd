@@ -36,7 +36,7 @@ const profileSample = {
   diagnosisType: 'FSHD1',
   onsetRegion: '肩胛带',
   familyHistory: '母亲疑似',
-  independentlyAmbulatory: true,
+  independentlyAmbulatory: 'unable',
   assistiveDevices: ['AFO'],
   // A made-up rogue key not in any allowlist
   privateScratchpad: 'should be dropped with a warning',
@@ -116,7 +116,7 @@ describe('redactFields (profile, strict mode)', () => {
     expect(fields.gender).toBe('female');
     expect(fields.diagnosisType).toBe('FSHD1');
     expect(fields.onsetRegion).toBe('肩胛带');
-    expect(fields.independentlyAmbulatory).toBe(true);
+    expect(fields.independentlyAmbulatory).toBe('unable');
     expect(fields.assistiveDevices).toEqual(['AFO']);
   });
 });

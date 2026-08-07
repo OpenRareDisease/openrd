@@ -170,7 +170,7 @@
             "provenanceZh": "患者自行完成并记录，非临床环境下的标准化测试；notApplicable 表示「尝试后当天做不了」，与「未测」不同"
           }
         ],
-        "noteZh": null
+        "noteZh": "本节不含 Brooke 上肢分级与 Vignos 下肢分级——本平台采集这两项，但它们尚未接入本导出。详见 omissions 中的 sections.motorFunction.instruments。"
       },
       {
         "key": "wheelchairUse",
@@ -326,6 +326,10 @@
     }
   },
   "omissions": [
+    {
+      "field": "sections.motorFunction.instruments",
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。"
+    },
     {
       "field": "sections.pregnancyHistory",
       "reasonZh": "该核心数据集的强制性内容之一，但本平台目前没有采集妊娠史的表单。"

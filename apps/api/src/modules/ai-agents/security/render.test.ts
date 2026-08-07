@@ -92,7 +92,7 @@ const PROFILE_ROW = {
       familyHistory: '母亲疑似',
     },
     currentStatus: {
-      independentlyAmbulatory: true,
+      independentlyAmbulatory: 'unable',
       assistiveDevices: ['AFO'],
     },
   },
@@ -183,6 +183,21 @@ describe('renderChunkForPrompt — patient profile, strict mode (regression fenc
     expect(rendered.fieldsUsed).not.toContain('notes');
     expect(rendered.fieldsUsed).not.toContain('d4z4');
     expect(rendered.fieldsUsed).toContain('d4z4_clinical');
+  });
+
+  // End to end from the row on disk to the prompt line, because the
+  // gap this covers opened between the two: migration 022 made the
+  // stored value a string and the retriever's guard still tested for a
+  // boolean, so the field left the prompt with nothing failing.
+  it('carries the ambulation state through to the prompt in readable Chinese', async () => {
+    const retriever = new PatientProfileRetriever(fakePool([PROFILE_ROW]));
+    const result = await retriever.search({ question: '我适合做哪些家庭训练' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    expect(rendered.fieldsUsed).toContain('independentlyAmbulatory');
+    expect(rendered.content).toContain('无法行走');
+    // The enum itself is not something to make the model interpret.
+    expect(rendered.content).not.toContain('unable');
   });
 
   it('keeps raw values when the user has opted into precise mode', async () => {

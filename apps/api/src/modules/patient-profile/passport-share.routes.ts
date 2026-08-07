@@ -1,9 +1,10 @@
-import { Router, urlencoded, type Request, type Response } from 'express';
+import { Router, urlencoded, type ErrorRequestHandler, type Request, type Response } from 'express';
 
 import {
   buildPassportSharePage,
   buildPickupFormPage,
   buildPickupUnavailablePage,
+  buildPublicErrorPage,
 } from './passport-share.html.js';
 import {
   MAX_PICKUP_ATTEMPTS,
@@ -18,6 +19,7 @@ import { getPool } from '../../db/pool.js';
 import { createRateLimitMiddleware } from '../../middleware/rate-limit.js';
 import { requireAuth, type AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { RouteContext } from '../../routes/index.js';
+import { AppError } from '../../utils/app-error.js';
 import { asyncHandler } from '../../utils/async-handler.js';
 
 /**
@@ -32,11 +34,20 @@ import { asyncHandler } from '../../utils/async-handler.js';
  *                                point is that a clinician opens it
  *                                without an account.
  *
- * Mounting the public one outside /api is deliberate: /api carries
- * auth, CORS and JSON error handling meant for the app's own client,
- * and this is a page a stranger's browser loads. It also gives the
- * deployment a path prefix it can treat differently at the proxy (no
- * caching, its own rate limit) without pattern-matching inside /api.
+ * Mounting the public one outside /api is deliberate: /api carries the
+ * auth middleware meant for the app's own client, and this is a page a
+ * stranger's browser loads. It also gives the deployment a path prefix
+ * it can treat differently at the proxy (no caching, its own rate
+ * limit) without pattern-matching inside /api.
+ *
+ * What the mount point does NOT buy: `cors` and the JSON `errorHandler`
+ * are registered on the app (server.ts), not on the /api router, so
+ * they still see these requests. This comment used to claim otherwise,
+ * and the claim was load-bearing — it is why every failure that never
+ * reached a handler (a 429, an over-long form body) was answered with a
+ * JSON envelope rendered as page text in a clinician's browser. The
+ * terminal error handler at the bottom of `createPublicPassportRouter`
+ * is what actually keeps this surface HTML.
  */
 
 const RESOLVE_FAILED_PAGE = `<!DOCTYPE html>
@@ -189,9 +200,14 @@ export const createPublicPassportRouter = (context: RouteContext) => {
   // req.socket.remoteAddress || 'unknown'`, and these two limiters had
   // been overriding it with `req.ip ?? 'unknown'` — which drops the
   // socket fallback and, because `??` passes an empty string through,
-  // can key an entire flood into one bucket. These are the only
-  // unauthenticated routes in the app, so they are the last place to
-  // hold a weaker version of the shared rule.
+  // can key an entire flood into one bucket. These were the only
+  // overrides of the shared resolver on a route with no authenticated
+  // user to key on: every other override (profile.routes.ts,
+  // legal.routes.ts, the mint limiter above) sits behind requireAuth
+  // and keys on user.id. Not the only unauthenticated routes in the app
+  // — /api/auth/* and /api/healthz are unauthenticated too — but those
+  // already take the shared default, so this was the last weaker copy
+  // of the rule.
   const openLimiter = createRateLimitMiddleware({
     keyPrefix: 'passport:open',
     windowMs: 60_000,
@@ -342,6 +358,78 @@ export const createPublicPassportRouter = (context: RouteContext) => {
         );
     }),
   );
+
+  /**
+   * The last layer of this router, and the reason it has to exist:
+   * a failure in MIDDLEWARE never reaches a handler, so it never
+   * reaches any of the pages above it either.
+   *
+   * `openLimiter` rejecting the 61st open in a minute — one NAT'd
+   * outpatient department is all it takes — and the urlencoded
+   * parser rejecting a >2kb pickup body both call `next(err)` before
+   * a handler runs. Without this layer they fall through to the
+   * app-level `errorHandler` (server.ts), which answers JSON with no
+   * Accept negotiation: the clinician holding the patient's phone
+   * reads 「{"error":"请求过于频繁，请稍后再试"}」 as the page. The
+   * PayloadTooLargeError is worse — it is neither AppError nor
+   * ZodError, so it came back as a 500 「Internal server error」.
+   *
+   * Those paths also short-circuit `setPrivateHeaders`, so the
+   * responses we did not hand-build were also the only ones without
+   * no-store / noindex / no-referrer — which is why this handler sets
+   * them before it decides anything else.
+   */
+  const statusOf = (error: unknown): number => {
+    if (error instanceof AppError) return error.statusCode;
+    // body-parser tags its own rejections (`entity.too.large` → 413)
+    // on `status`; keep them rather than flattening to 500.
+    const raw = (error as { status?: unknown; statusCode?: unknown } | null | undefined) ?? {};
+    const candidate = typeof raw.status === 'number' ? raw.status : raw.statusCode;
+    return typeof candidate === 'number' && candidate >= 400 && candidate < 600 ? candidate : 500;
+  };
+
+  const retryAfterOf = (error: unknown, res: Response): number | null => {
+    const detail = error instanceof AppError ? error.details : undefined;
+    const fromError = (detail as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
+    if (typeof fromError === 'number') return fromError;
+    // The limiter sets Retry-After before it calls next(), so the
+    // header is the fallback source rather than a number invented here.
+    const header = Number(res.getHeader('Retry-After'));
+    return Number.isFinite(header) && header > 0 ? header : null;
+  };
+
+  const publicErrorHandler: ErrorRequestHandler = (error, req, res, next) => {
+    if (res.headersSent) {
+      // A page already started going out; Express's default handler is
+      // the only thing that can still close the socket sensibly.
+      next(error);
+      return;
+    }
+
+    setPrivateHeaders(res);
+    const status = statusOf(error);
+
+    if (status >= 500) {
+      // The app-level handler used to log these. It no longer sees
+      // them, so an unexplained page in a consulting room would
+      // otherwise leave no trace at all.
+      context.logger.error({ err: error }, 'public passport surface failed');
+    }
+
+    const page =
+      status === 429
+        ? buildPublicErrorPage({
+            kind: 'rate_limited',
+            retryAfterSeconds: retryAfterOf(error, res),
+          })
+        : status === 413
+          ? buildPublicErrorPage({ kind: 'too_large', formAction: pickupAction(req) })
+          : buildPublicErrorPage({ kind: 'failed' });
+
+    res.status(status).type('html').send(page);
+  };
+
+  router.use(publicErrorHandler);
 
   return router;
 };

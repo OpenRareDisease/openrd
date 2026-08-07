@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type { ExportOmission } from './envelope.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import { decodeFirstYear, type YearAnswer } from './year-value.js';
 import type { PatientDocumentDTO, PatientProfileDTO } from '../profile.service.js';
@@ -74,7 +75,25 @@ export interface ReportField {
   readonly value: string;
   readonly documentId: string;
   readonly documentType: string;
+  /**
+   * The best timestamp available for this reading — the report's own
+   * stated time when OCR read one, otherwise the upload time. Safe to
+   * ORDER BY; not safe to publish as the observation time without
+   * checking `observedAtIsUploadTime` first.
+   */
   readonly observedAt: string;
+  /**
+   * True when OCR found no date on the report and `observedAt` is
+   * therefore only the moment the patient photographed it.
+   *
+   * `reportTime` is genuinely often absent, so this is not an edge
+   * case: a pulmonary function report printed in 2019 and uploaded
+   * this week would otherwise be exported as an FVC%pred measured
+   * this week, and a clinician reading a current-looking number
+   * defers the reassessment that number was supposed to trigger.
+   * Serialisers must either label the date or leave it out.
+   */
+  readonly observedAtIsUploadTime: boolean;
   readonly category: 'laboratory' | 'exam' | 'imaging';
   /**
    * The ledger key a coding WOULD be looked up under. Null where no
@@ -309,9 +328,11 @@ const collectReportFields = (documents: readonly PatientDocumentDTO[]): ReportFi
         documentId: document.id,
         documentType: document.documentType,
         // The report's own stated time when OCR read one, else the
-        // upload time. Upload time is NOT when the test was done and
-        // is labelled as such wherever it surfaces.
+        // upload time — with the substitution recorded, not silent.
+        // Every consumer of `observedAt` has to decide what to do
+        // with the second case, and the flag is what lets it.
         observedAt: reportTime ?? document.uploadedAt,
+        observedAtIsUploadTime: reportTime === null,
         category: spec.category,
         codingKey: spec.codingKey,
       });
@@ -399,6 +420,30 @@ export const normaliseSource = (
     reportFields: collectReportFields(profile.documents),
   };
 };
+
+/**
+ * Brooke and Vignos are collected and are not exported.
+ *
+ * The instruments module writes graded ordinal motor scales to
+ * `instrument_administrations` and serves them at /me/instruments/*,
+ * but they are not on `PatientProfileDTO`, which is the only thing
+ * this normaliser reads — so no serialiser downstream can see them.
+ * Of everything in a patient's record, these two are the measures a
+ * registry can actually compare across patients, and the export was
+ * shipping without them AND without saying so, which is the exact
+ * state envelope.ts says `omissions` exists to prevent.
+ *
+ * Until the normaliser is given the administrations, every format
+ * declares the gap. The wording is shared so the three cannot drift
+ * into describing the same hole differently.
+ */
+export const INSTRUMENT_OMISSION_REASON_ZH =
+  '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。';
+
+export const instrumentOmission = (field: string): ExportOmission => ({
+  field,
+  reasonZh: INSTRUMENT_OMISSION_REASON_ZH,
+});
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -33,7 +33,9 @@ import type { ClinicalPassportSummaryDTO } from './profile.passport.js';
 
 /* The two pages the pickup flow adds live at the bottom of this file:
  * `buildPickupFormPage` (where the doctor types the code) and
- * `buildPickupUnavailablePage` (the ONE answer every failure gets). */
+ * `buildPickupUnavailablePage` (the ONE answer every failure gets),
+ * followed by `buildPublicErrorPage` — the answer for the failures that
+ * happen before any handler runs. */
 
 const esc = (value: unknown): string =>
   String(value ?? '')
@@ -171,8 +173,13 @@ export const buildPassportSharePage = (
   dd{margin:0;flex:1;font-size:14.5px;font-variant-numeric:tabular-nums;word-break:break-word}
   /* Self-reported values do not get the tabular, weighted treatment a
      lab value gets — the difference has to be visible, not just stated
-     in the banner. */
-  dd.reported{font-variant-numeric:normal;color:var(--soft)}
+     in the banner.
+     「.reported」, NOT 「dd.reported」: the class goes on a <span> inside
+     the <dd>, so the compound selector matched nothing and a typed
+     value rendered exactly like a lab-extracted one. 运动功能's two rows
+     carry no inline 本人填写 marker either — this rule is their only
+     signal. */
+  .reported{font-variant-numeric:normal;color:var(--soft)}
   .slots{display:grid;gap:10px}
   @media(min-width:620px){.slots{grid-template-columns:1fr 1fr 1fr}}
   .slot{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:11px 13px}
@@ -418,3 +425,78 @@ export const buildPickupUnavailablePage = (formAction: string): string =>
 </div>
 </body>
 </html>`;
+
+/**
+ * The failures that happen BEFORE any handler runs.
+ *
+ * A rate-limit rejection, an over-long form body, or a throw on the way
+ * to the passport all used to be answered by the app-level JSON error
+ * handler, so a clinician standing in a consulting room read
+ * `{"error":"请求过于频繁，请稍后再试"}` as the page. Everything else
+ * this router sends is a page for exactly the same reason — the reader
+ * has no account, no app, and no way to tell our outage from a link the
+ * patient revoked. So each of these says which of the two it is.
+ *
+ * The 429 is the one a hospital actually hits: an outpatient department
+ * is one NAT address, so the wording blames the network rather than the
+ * person holding the phone, and says the link is still good.
+ */
+export const buildPublicErrorPage = (
+  detail:
+    | { kind: 'rate_limited'; retryAfterSeconds: number | null }
+    | { kind: 'too_large'; formAction: string }
+    | { kind: 'failed' },
+): string => {
+  const copy =
+    detail.kind === 'rate_limited'
+      ? {
+          title: '这个链接暂时打不开',
+          lede: `刚才从这个网络打开得太频繁了${
+            detail.retryAfterSeconds ? `，请等 ${detail.retryAfterSeconds} 秒` : '，请稍等一会儿'
+          }再刷新一次。`,
+          note: '链接本身没有失效，也没有被撤销 —— 医院整层门诊往往共用一个网络出口，所以计数会比你以为的快。',
+          action: null,
+        }
+      : detail.kind === 'too_large'
+        ? {
+            title: '提交的内容太长了',
+            lede: '这个表单只收 8 位取件码和 8 位出生日期。请回到上一步，只填这两栏。',
+            note: '如果你是从别的地方粘贴进来的，先清空输入框再手输一次。',
+            action: detail.formAction,
+          }
+        : {
+            // Deliberately says what it is NOT. This page is also what a
+            // revoked or expired link shows, and a clinician who cannot
+            // tell those apart stops trusting the whole handover.
+            title: '这一页现在打不开',
+            lede: '这次打开没有成功 —— 不是链接失效，也不是患者撤销了它。',
+            note: '请过一会儿再打开同一个链接。如果一直这样，请让患者在「肌愈通」里重新生成一个。',
+            action: null,
+          };
+
+  return `<!DOCTYPE html>
+<html lang="zh-Hans-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>${esc(copy.title)}</title>
+<style>${PICKUP_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+<h1>${esc(copy.title)}</h1>
+<p class="lede">${esc(copy.lede)}</p>
+${
+  copy.action
+    ? `<form method="get" action="${esc(copy.action)}">
+  <button type="submit">回到取件码页面</button>
+</form>`
+    : ''
+}
+<p class="note">${esc(copy.note)}</p>
+</div>
+</body>
+</html>`;
+};

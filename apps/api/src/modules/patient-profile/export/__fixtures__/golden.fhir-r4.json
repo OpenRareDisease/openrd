@@ -749,12 +749,16 @@
     {
       "field": "CodeableConcept.coding (LOINC)",
       "reasonZh": "所有临床概念都以 text + 显示名给出，不附带 LOINC 等外部编码。本仓库内没有可核对的 LOINC 来源，写入未经核对的编码会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。具体见 codingProvenance.withheld。"
+    },
+    {
+      "field": "Observation（Brooke 上肢分级 / Vignos 下肢分级）",
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。"
     }
   ],
   "notes": {
     "编码": "本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。",
     "文件": "DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。",
-    "日期": "里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。"
+    "日期": "里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。报告自动解析出的项目只在报告本身写明日期时才带 effectiveDateTime；没写明的一律不给日期，也不用上传时间顶替。"
   },
   "codingProvenance": {
     "emitted": [],

@@ -6,18 +6,35 @@
  * The same list exists on the server as `REFERRAL_QUESTION_PROMPTS` in
  * `apps/api/src/modules/patient-profile/referral-pack.ts`, where it is
  * rendered into the printable 转诊包 alongside the patient's own
- * records. It is duplicated here, not shared, for two reasons that are
- * both temporary:
+ * records. Both copies now reach a patient, and on the same screen:
+ * `GET /profiles/me/referral-pack` ships, and p-referral renders the
+ * server's list inside `pack.markdown` directly above this one.
+ *
+ * It is still duplicated, not shared, for two reasons that are not
+ * temporary:
  *
  *  1. The mobile package cannot import from the API package.
- *  2. There is no endpoint serving the pack yet, so the server's copy
- *     cannot reach a patient at all today. Shipping this screen without
- *     the questions would mean shipping the half nobody can use yet.
+ *  2. The server's copy only reaches someone who is signed in, has a
+ *     profile, has signal, and has tapped 生成. This list is the half
+ *     that works without any of that — see 「WHY THE 转诊资料 IS NOT
+ *     FETCHED ON MOUNT」 in the screen: a hospital's dead wifi and a
+ *     patient with no account are the ordinary case here, and the
+ *     questions are why most people open the page.
  *
- * When the endpoint lands, delete this file and render the server's
- * list. Until then the honest statement is: **editing one means editing
- * the other**, and the drift is a real risk this comment exists to keep
- * visible rather than to pretend away.
+ * So the two must be kept in step by hand, and
+ * `__tests__/question-sheet-parity.test.ts` reads the API source and
+ * fails if a shared `id` grows a different `prompt` or `source` —
+ * because the drift is not a comment's job to prevent.
+ *
+ * Two divergences are deliberate and are excluded from that check:
+ *
+ *  - `hint`. The server's hints cross-reference the pack document
+ *    (「本资料第五节列了本平台掌握的三项监测记录」), which does not
+ *    exist on this screen; the hints here say what to have ready
+ *    instead. Same question, different thing to say beside it.
+ *  - `confirm-diagnosis`. The server emits it only when the diagnosis
+ *    is not genetically confirmed, which it can check. This screen
+ *    cannot — it runs with no profile — so it always offers it.
  *
  * WHAT A PROMPT MAY AND MAY NOT SAY
  * ---------------------------------

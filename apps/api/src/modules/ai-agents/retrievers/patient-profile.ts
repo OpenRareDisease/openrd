@@ -32,6 +32,8 @@ import type {
   RetrievedChunk,
 } from './base.js';
 import { emptyResult } from './base.js';
+import { AMBULATION_STATES } from '../../patient-profile/profile.constants.js';
+import type { AmbulationState } from '../../patient-profile/profile.constants.js';
 
 interface ProfileRow {
   id: string;
@@ -60,6 +62,9 @@ const formatDate = (value: string | Date | null | undefined): string | null => {
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const isAmbulationState = (v: unknown): v is AmbulationState =>
+  typeof v === 'string' && (AMBULATION_STATES as readonly string[]).includes(v);
 
 const baselineSection = (
   payload: Record<string, unknown> | null,
@@ -137,7 +142,15 @@ const buildProfileFields = (row: ProfileRow): Record<string, unknown> => {
   }
 
   if (current) {
-    if (typeof current.independentlyAmbulatory === 'boolean') {
+    // Migration 022 back-filled this column to AMBULATION_STATES and
+    // added a CHECK that rejects booleans, so the `typeof ===
+    // 'boolean'` guard that used to be here stopped matching anything
+    // the day it ran: the field silently left every prompt, including
+    // the 'unable' of a wheelchair user asking which home exercises
+    // suit them. baseline_payload is read as raw JSONB with no Zod
+    // parse, so the value is checked against the state list here
+    // rather than trusted.
+    if (isAmbulationState(current.independentlyAmbulatory)) {
       fields.independentlyAmbulatory = current.independentlyAmbulatory;
     }
     if (Array.isArray(current.assistiveDevices) && current.assistiveDevices.length > 0) {

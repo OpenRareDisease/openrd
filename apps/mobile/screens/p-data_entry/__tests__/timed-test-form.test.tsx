@@ -483,6 +483,124 @@ describe('the 10 metre measuring card', () => {
   });
 });
 
+describe('a half-finished 四项抗重力 save', () => {
+  const PER_PROTOCOL = '按方案完成：场地、姿势、辅具、口令都和卡片上一样。只有这一档会画进趋势线。';
+
+  const answerAllFour = (tree: TestRenderer.ReactTestRenderer) => {
+    press(control(tree, '有人在旁边'));
+    press(control(tree, '四项抗重力'));
+    press(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成'));
+    press(control(tree, '站 → 坐：不用手撑、不用扶，一次就完成'));
+    press(control(tree, '上一级台阶：要用手撑腿、扶扶手或者借一下惯性才能完成'));
+    press(control(tree, '下一级台阶：今天做不了'));
+    press(control(tree, PER_PROTOCOL));
+  };
+
+  /** One item's POST drops on the way out; the other three commit. */
+  const dropOneItem = () => {
+    addFunctionTest.mockImplementation((payload: { notes?: unknown }) =>
+      typeof payload?.notes === 'string' && payload.notes.includes('下一级台阶')
+        ? Promise.reject(new Error('网络不稳定，这次没有传上去。'))
+        : Promise.resolve({ id: 'ft' }),
+    );
+  };
+
+  afterEach(() => {
+    // clearAllMocks keeps implementations, so a rejection installed here
+    // would follow the suite into every test after it.
+    addFunctionTest.mockReset().mockResolvedValue({ id: 'ft-1' });
+    createSubmission.mockReset().mockResolvedValue({ id: 'sub-1' });
+  });
+
+  it('says which items landed, and re-sends only the one that did not', async () => {
+    // Four separate POSTs on a weak connection. Promise.all would reject
+    // on the first failure while its siblings kept going and committed,
+    // so the patient would be told the whole save failed over rows that
+    // are already stored — and addFunctionTest is a bare INSERT with no
+    // unique constraint, so pressing 保存 again would store them twice.
+    dropOneItem();
+
+    const tree = await render();
+    answerAllFour(tree);
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    expect(addFunctionTest).toHaveBeenCalledTimes(4);
+    expect(allText(tree.root)).toContain('下一级台阶 没存上，其余 3 项已经存上了');
+
+    addFunctionTest.mockResolvedValue({ id: 'ft-4' });
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    // One more POST, not four.
+    expect(addFunctionTest).toHaveBeenCalledTimes(5);
+    const resent = addFunctionTest.mock.calls[4][0];
+    expect(resent.notes).toContain('下一级台阶');
+    // And it joins the visit the first attempt opened, rather than
+    // hanging off a second one created minutes later.
+    expect(createSubmission).toHaveBeenCalledTimes(1);
+    expect(resent.submissionId).toBe('sub-1');
+    expect(allText(tree.root)).toContain('已保存四项抗重力');
+  });
+
+  it('locks the items already stored, so the screen agrees with the record', async () => {
+    dropOneItem();
+
+    const tree = await render();
+    answerAllFour(tree);
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    // Editable answers for rows the retry will never send again would be
+    // a screen that disagrees with what is stored.
+    expect(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成').props.disabled).toBe(true);
+    expect(control(tree, '下一级台阶：今天做不了').props.disabled).toBe(false);
+    expect(allText(tree.root)).toContain('这一项刚才已经存上了');
+  });
+});
+
+describe('a control that is going to ignore the press does not answer it', () => {
+  // react-native-web's TouchableOpacity reads `props.disabled` and
+  // ignores `aria-disabled`, and the web export is the shipping
+  // platform. With the aria attribute alone the control still scales and
+  // brightens under the thumb — feedback the patient reads as「按上了」
+  // for a press the handler is about to drop.
+  it('marks the blocked 按方案完成 row disabled, not merely aria-disabled', async () => {
+    const nowSpy = jest.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(4_000_000);
+
+    const tree = await render();
+    press(control(tree, '有人在旁边'));
+    press(control(tree, '5 次起坐'));
+    press(control(tree, '开始5 次起坐计时'));
+    nowSpy.mockReturnValue(4_000_000 + 45 * 60 * 1000);
+    press(control(tree, '停止计时'));
+
+    const blocked = control(
+      tree,
+      '按方案完成：场地、姿势、辅具、口令都和卡片上一样。只有这一档会画进趋势线。',
+    );
+    expect(blocked.props.disabled).toBe(true);
+    expect(blocked.props['aria-disabled']).toBe(true);
+    // The grades that do work are untouched.
+    expect(
+      control(tree, '自由记录：没照卡片做，随手记一个。同样是你的数据，同样不进趋势线。').props
+        .disabled,
+    ).toBe(false);
+    nowSpy.mockRestore();
+  });
+
+  it('marks a test still waiting on the companion answer disabled', async () => {
+    const tree = await render();
+    expect(control(tree, '30 秒坐站').props.disabled).toBe(true);
+    press(control(tree, '有人在旁边'));
+    expect(control(tree, '30 秒坐站').props.disabled).toBe(false);
+  });
+});
+
 // Type-only usage, so the import earns its place and a rename of the
 // exported shape breaks here rather than silently at a call site.
 const _previousReadingShape: PreviousReading | null = null;

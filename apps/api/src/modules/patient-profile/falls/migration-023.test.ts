@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createFallSchema } from './falls.schema.js';
 import { FALL_ACTIVITIES, FALL_LOCATIONS } from '../profile.constants.js';
@@ -173,9 +173,43 @@ describe('createFallSchema', () => {
     expect(() => createFallSchema.parse({ occurredOn: '2088-01-01' })).toThrow();
   });
 
+  /**
+   * The clock is pinned for the two assertions below, and the dates are
+   * literals rather than arithmetic on `Date.now()`.
+   *
+   * The version this replaces derived its 「tomorrow」 from
+   * `Date.now() + 12h` rendered as a UTC date, so between 00:00 and
+   * 11:59 UTC that string was TODAY: for half of every day the test
+   * named 「tolerates one day ahead」 asserted nothing about the
+   * tolerance, and a refine tightened to `<= Date.now()` passed. Both
+   * instants below are on opposite sides of noon UTC for that reason —
+   * the bound has to hold at every hour, not at the convenient ones.
+   */
+  const HOURS_EITHER_SIDE_OF_NOON_UTC = ['2026-08-06T03:00:00Z', '2026-08-06T23:00:00Z'];
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('tolerates one day ahead, because the server clock is not the patient’s', () => {
-    const tomorrow = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    expect(() => createFallSchema.parse({ occurredOn: tomorrow })).not.toThrow();
+    vi.useFakeTimers();
+    for (const instant of HOURS_EITHER_SIDE_OF_NOON_UTC) {
+      vi.setSystemTime(new Date(instant));
+      expect(() => createFallSchema.parse({ occurredOn: '2026-08-07' })).not.toThrow();
+    }
+  });
+
+  it('refuses the day after that, so the tolerance stays one day wide', () => {
+    // The upper edge was unpinned in either direction: 2088-01-01 is 62
+    // years out, so a refine widened to +72h — a date-picker bug filing
+    // a fall three days from now — shipped green.
+    vi.useFakeTimers();
+    for (const instant of HOURS_EITHER_SIDE_OF_NOON_UTC) {
+      vi.setSystemTime(new Date(instant));
+      expect(() => createFallSchema.parse({ occurredOn: '2026-08-08' })).toThrow(
+        '跌倒日期不能晚于今天',
+      );
+    }
   });
 
   it('has no free-text field, and must not grow one', () => {

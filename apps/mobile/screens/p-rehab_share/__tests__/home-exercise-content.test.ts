@@ -59,6 +59,28 @@ describe('原研究的数字', () => {
     expect(safety?.detail).toContain('基线就高于 1000');
   });
 
+  it('6 分钟步行给的是正文里的数字，不是一个「上升」', () => {
+    // §3.3: 「mean difference in change at T24, 14%, P = 0.013」. Only
+    // the abstract is silent. This shipped as value「上升」with the
+    // percentage declared unpublished — leaving the one outcome the
+    // plan tells patients to re-measure at weeks 0/12/24 as the only
+    // trial fact on the page with nothing to compare against.
+    const walk = TRIAL_FACTS.find((fact) => fact.id === 'walk');
+    expect(walk?.value).toBe('+14%');
+    expect(walk?.detail).toContain('P = 0.013');
+    // §3.3 correlates 6MWD with VO2peak, MAP and MVC. Muscle endurance
+    // belongs to the fatigue correlations in §3.4, not to this one.
+    expect(walk?.detail).not.toContain('肌肉耐力');
+  });
+
+  it('第 24 周那一段把 6 分钟步行和其他结局一起列出来', () => {
+    // phase-4 is where the patient reads their own re-measure back
+    // against the trial, so omitting 6MWD there is the same defect in
+    // the place it costs the most.
+    const phase4 = EXERCISE_PHASES.find((phase) => phase.id === 'phase-4');
+    expect(phase4?.trialNote).toContain('6 分钟步行距离 +14%');
+  });
+
   it('样本量没有被四舍五入成「16 人的研究」而丢掉入组数', () => {
     const design = TRIAL_FACTS.find((fact) => fact.id === 'design');
     expect(design?.value).toContain('19 人入组');
@@ -101,6 +123,18 @@ describe('论文里没有的东西，这一页不补', () => {
   it('明说间歇的时长和组数只在 Figure 3 里', () => {
     expect(TRIAL_UNKNOWNS.join('')).toContain('Figure 3');
     expect(TRIAL_UNKNOWNS.join('')).toContain('本页也读不出来');
+  });
+
+  it('列出来的「查不到」都是论文正文真的没写的东西', () => {
+    // A declared unknown is as much a claim about the paper as a
+    // number is, and it is the one nobody re-checks. An entry here
+    // once said the paper never gave a 6-minute-walk percentage;
+    // §3.3 gives 14% (P = 0.013). Everything left must be Figure 3.
+    expect(TRIAL_UNKNOWNS).toHaveLength(2);
+    TRIAL_UNKNOWNS.forEach((unknown) => {
+      expect(unknown).toContain('Figure 3');
+    });
+    expect(TRIAL_UNKNOWNS.join('')).not.toContain('6 分钟步行');
   });
 
   it('课程描述里没有出现编造的秒数或组数', () => {
@@ -174,6 +208,23 @@ describe('复测项复用已有的功能测试类型', () => {
     const sitToStand = REMEASURE_ITEMS.find((item) => item.id === 'sit-to-stand');
     expect(sitToStand?.source).not.toContain('Bankolé');
     expect(sitToStand?.why).toContain('不是 Bankolé 的指标');
+  });
+
+  it('10 米步行的理由指向蹬地（小腿），不是踝背屈', () => {
+    // Dutch 5.4: 「Weakness of push-off power will also lead to reduced
+    // walking speed, particularly if there is additional weakness of
+    // the trunk muscles (Rijken 2015)」. Dorsiflexor paresis gets the
+    // other consequence set in the same paragraph — first rocker, foot
+    // drag, stumbling. The corpus's Chinese translation inverts this
+    // and the page copied it. It matters beyond one line: the AFO
+    // ladder in orthosis-decision-content.ts branches on whether
+    // push-off is preserved, so a patient aimed at the wrong muscle
+    // arrives at that question having watched the wrong thing.
+    const tenMetre = REMEASURE_ITEMS.find((item) => item.id === 'ten-meter-walk');
+    expect(tenMetre?.why).toContain('蹬地');
+    expect(tenMetre?.why).toContain('躯干');
+    expect(tenMetre?.why).not.toMatch(/踝背屈无力和躯干无力都会让步速下降/);
+    expect(tenMetre?.source).toContain('5.4');
   });
 
   it('自评肌力那一项承认它比原研究粗', () => {

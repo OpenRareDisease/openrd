@@ -29,6 +29,8 @@ import {
   type PregnancyStageKey,
 } from '../../lib/pregnancy-timeline-content';
 import { clearDueDate, readDueDate, saveDueDate } from './pregnancy-tracker';
+import { useAuth } from '../../contexts/AuthContext';
+import { useProfileContext } from '../../contexts/ProfileContext';
 
 /**
  * 孕期时间线.
@@ -78,6 +80,23 @@ interface CrossLink {
   label: string;
   href: string;
   hint: string;
+  /**
+   * What to say instead of offering the button, to a reader the gate in
+   * app/_layout.tsx would bounce.
+   *
+   * Null for a target that is itself a guest route. Non-null for the
+   * two that are not: p-clinical_passport and p-surveillance are in
+   * neither GUEST_ROUTES nor ONBOARDING_EXEMPT_ROUTES, so a signed-out
+   * reader — the reader this whole page was opened up for — tapped
+   * 「打开「麻醉注意事项卡」」 and had the timeline she was reading
+   * replaced by a login form that did not say why. That is verbatim the
+   * regression app/_layout.tsx:29-34 records having already happened to
+   * p-pregnancy itself; it was fixed for the route and left standing in
+   * the two buttons pointing out of it. The sentence stays because the
+   * fact is worth having (a card for the anaesthetist exists, bring it)
+   * even when the page behind it is not reachable yet.
+   */
+  lockedNote: string | null;
 }
 
 const CROSS_LINKS: CrossLink[] = [
@@ -85,21 +104,38 @@ const CROSS_LINKS: CrossLink[] = [
     label: '打开「遗传与生育」',
     href: GENETICS_HREF,
     hint: '50% 的遗传概率、PGT 的 5% 误判风险、产前诊断怎么选 —— 都在那一页，本页不重复，两边不会说成两个版本。',
+    lockedNote: null,
   },
   {
     label: '打开「麻醉注意事项卡」',
     href: ANESTHESIA_CARD_HREF,
     hint: '在临床护照里生成，是给麻醉医师看的那一张。孕晚期见麻醉科时带上它。',
+    lockedNote: '「麻醉注意事项卡」要用你自己的记录生成，得先注册登录。这一页不用。',
   },
   {
     label: '打开「我的随访计划」',
     href: SURVEILLANCE_HREF,
     hint: '肺功能、心脏、疼痛这几条在孕期之外一样适用，那一页会对照你自己的记录。',
+    lockedNote: '「我的随访计划」要对照你自己的记录，得先注册登录。这一页不用。',
   },
 ];
 
 const PregnancyScreen = () => {
   const router = useRouter();
+  const { token } = useAuth();
+  const { profileStatus } = useProfileContext();
+
+  /**
+   * Whether the gate in app/_layout.tsx would let this reader through
+   * to a route that is neither a guest route nor onboarding-exempt.
+   *
+   * Mirrors that gate exactly, both halves: no token is a bounce to the
+   * login form, and a confirmed-missing profile is a bounce to
+   * onboarding. 'error' is deliberately not included — the gate itself
+   * fails open on it (see ProfileContext's status semantics), so a
+   * reader whose profile probe merely failed keeps her buttons.
+   */
+  const canOpenAccountRoutes = Boolean(token) && profileStatus !== 'missing';
 
   /** null = no stored date (the default, and every failure's answer). */
   const [dueDate, setDueDate] = useState<string | null>(null);
@@ -152,14 +188,29 @@ const PregnancyScreen = () => {
   const handleSave = useCallback(() => {
     const value = draft.trim();
     const today = new Date();
-    const refuse = () =>
+    /** The date is wrong. Fixable by the reader, so it says how. */
+    const refuseDate = () =>
       setError(
         '这个日期看起来不像预产期。请按 2026-03-15 的格式填写一个今天之后、40 周以内的日期。',
       );
+    /**
+     * The device is what failed. Telling this reader to reformat a date
+     * she got right sends her round a loop no retyping can end — and on
+     * the web export this is the common failure, not the exotic one
+     * (private-mode localStorage, a full phone, storage blocked in the
+     * WeChat webview). The page below still reads in full; only the
+     * optional field is unavailable, and that is what the sentence says.
+     */
+    const refuseStorage = () =>
+      setError('这台设备存不下这个日期（浏览器不让本页保存东西）。下面的内容不受影响，照样能看。');
     void saveDueDate(value, today)
-      .then((ok) => {
-        if (!ok) {
-          refuse();
+      .then((result) => {
+        if (result === 'invalid') {
+          refuseDate();
+          return;
+        }
+        if (result === 'storage-error') {
+          refuseStorage();
           return;
         }
         setError(null);
@@ -169,10 +220,13 @@ const PregnancyScreen = () => {
         // reader has already picked one themselves.
         setChosenStage(null);
       })
-      // A throw here must read as 「not saved」. Showing the week from a
-      // value that never reached storage would be a page asserting a
-      // pregnancy it did not record and cannot delete.
-      .catch(refuse);
+      // A throw here must read as 「not saved」, and 「not saved」 is the
+      // storage sentence, not the date one: saveDueDate answers a bad
+      // date with 'invalid' and never by rejecting, so anything that
+      // gets here is the device. Showing the week from a value that
+      // never reached storage would be a page asserting a pregnancy it
+      // did not record and cannot delete.
+      .catch(refuseStorage);
   }, [draft]);
 
   /**
@@ -351,16 +405,22 @@ const PregnancyScreen = () => {
             <Text style={styles.linksTitle}>相关的页面</Text>
             {CROSS_LINKS.map((link) => (
               <View key={link.href}>
-                {/* Full-size, not compact: on the web export a compact
-                    button is a 34pt target (see Button.tsx on hitSlop
-                    under react-native-web). */}
-                <Button
-                  label={link.label}
-                  variant="tinted"
-                  trailingIcon="chevron-right"
-                  accessibilityHint={link.hint}
-                  onPress={() => router.push(link.href as Href)}
-                />
+                {link.lockedNote && !canOpenAccountRoutes ? (
+                  // No button at all, rather than a button that leads
+                  // to a login form. See `lockedNote`.
+                  <Text style={styles.linkLocked}>{link.lockedNote}</Text>
+                ) : (
+                  /* Full-size, not compact: on the web export a compact
+                     button is a 34pt target (see Button.tsx on hitSlop
+                     under react-native-web). */
+                  <Button
+                    label={link.label}
+                    variant="tinted"
+                    trailingIcon="chevron-right"
+                    accessibilityHint={link.hint}
+                    onPress={() => router.push(link.href as Href)}
+                  />
+                )}
                 <Text style={styles.linkHint}>{link.hint}</Text>
               </View>
             ))}

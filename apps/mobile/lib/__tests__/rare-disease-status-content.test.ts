@@ -133,6 +133,33 @@ describe('诚实的那一节 —— 目录目前给不了什么', () => {
     expect(text).toContain('七十日');
   });
 
+  it('报得出的是《药品注册管理办法》里真正的那两条条号', () => {
+    // The 条号 is the feature: this page exists so a patient can quote
+    // an article number across a counter. 第六十八条 is the scope
+    // (「防治重大传染病和罕见病等疾病的创新药和改良型新药」) and
+    // 第七十条 is the 130/70-day timing. The page shipped 第六十七条 /
+    // 第六十八条, one off on both — and 第六十七条 is the 注销 clause for
+    // conditionally-approved drugs, so a clerk who looks it up finds
+    // nothing about rare disease and the citation is discredited.
+    expect(text).toContain('第六十八条');
+    expect(text).toContain('第七十条');
+    expect(text).not.toContain('第六十七条');
+    expect(section?.source).toContain('第六十八条');
+    expect(section?.source).toContain('第七十条');
+    expect(section?.source).not.toContain('第六十七条');
+  });
+
+  it('条号和它所指的内容绑在同一句里，不会各自漂移', () => {
+    // Renumbering one of the two without the other is the likely next
+    // edit, so pin which article carries which claim rather than just
+    // that both numbers appear somewhere on the page.
+    const scope = text.split('\n').find((line) => line.includes('第六十八条'));
+    expect(scope).toContain('罕见病');
+    expect(scope).toContain('优先审评审批');
+    expect(scope).toContain('第七十条');
+    expect(scope).toContain('一百三十日');
+  });
+
   it('说明 FSHD 目前没有能改变病程的药，并说出是哪一次试验', () => {
     expect(text).toContain('没有能改变病程的药');
     expect(text).toContain('losmapimod');

@@ -39,9 +39,18 @@
  * TO PROMOTE A PENDING CODE: open it in the LOINC browser (or any
  * offline LOINC release), confirm the LONG_COMMON_NAME matches the
  * concept, then move the entry into VERIFIED_CODINGS with
- * `verifiedAgainst` naming the release version you checked. The
- * serialisers pick it up with no other change — codings.test.ts pins
- * that wiring so the promotion cannot silently no-op.
+ * `verifiedAgainst` naming the release version you checked and
+ * `fhirSystem` set to the canonical system URI the FHIR release you
+ * are targeting gives that code system. The serialisers pick it up
+ * with no other change: the report-field loop in fhir-r4.ts asks
+ * `verifiedCoding(field.codingKey)` for every OCR-derived value and
+ * feeds whatever it emitted into `buildCodingProvenance`, so the code
+ * appears on the Observation AND moves from `withheld` to `emitted`
+ * in the same edit. coding-promotion.test.ts pins both halves — it
+ * was written after a review found `codingKey` was read by nothing at
+ * all, which made this paragraph false and would have let a promotion
+ * ship as a no-op whose only visible effect was CK quietly dropping
+ * out of the withheld list.
  *
  * FORMAT-INTERNAL CODES ARE NOT LEDGERED. `Observation.status =
  * 'final'`, `Bundle.type = 'document'`,
@@ -59,6 +68,17 @@ export interface VerifiedCoding {
   readonly key: string;
   /** CURIE prefix, for Phenopacket OntologyClass.id (`OMIM:158900`). */
   readonly curiePrefix: string;
+  /**
+   * The canonical system URI for a FHIR `Coding`, or null to say 「本
+   * 条目不作为 FHIR Coding 输出」.
+   *
+   * Null is not "not filled in yet". A CURIE prefix and a FHIR system
+   * URI are different assertions — the prefix identifies the
+   * vocabulary, the URI identifies it to a machine that will resolve
+   * it — and the two OMIM entries below deliberately carry the first
+   * and not the second, for the reason given above them.
+   */
+  readonly fhirSystem: string | null;
   /** The bare code. */
   readonly code: string;
   /** English label, as the source states it. */
@@ -95,6 +115,7 @@ export const VERIFIED_CODINGS: readonly VerifiedCoding[] = [
   {
     key: 'disease.fshd1',
     curiePrefix: 'OMIM',
+    fhirSystem: null,
     code: '158900',
     label: 'Facioscapulohumeral muscular dystrophy 1 (FSHD1)',
     labelZh: '面肩肱型肌营养不良 1 型（FSHD1）',
@@ -107,6 +128,7 @@ export const VERIFIED_CODINGS: readonly VerifiedCoding[] = [
   {
     key: 'disease.fshd2',
     curiePrefix: 'OMIM',
+    fhirSystem: null,
     code: '158901',
     label: 'Facioscapulohumeral muscular dystrophy 2 (FSHD2)',
     labelZh: '面肩肱型肌营养不良 2 型（FSHD2）',

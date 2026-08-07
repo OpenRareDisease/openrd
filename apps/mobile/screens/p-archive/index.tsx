@@ -15,6 +15,7 @@ import { formatDateLabel } from '../../lib/clinical-visuals';
 import { COLOR } from '../../lib/design';
 import { buildDataAssetOverview } from '../../lib/data-asset';
 import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
+import { ambulationLabel } from '../../lib/profile-baseline-options';
 import { buildReportInsights } from '../../lib/report-insights';
 import ScreenHeader from '../common/ScreenHeader';
 import styles from './styles';
@@ -104,12 +105,8 @@ const formatRegionLabel = (profile: PatientProfile | null) => {
   );
 };
 
-const formatAmbulationLabel = (profile: PatientProfile | null) => {
-  const independentlyAmbulatory = profile?.baseline?.currentStatus?.independentlyAmbulatory;
-  if (independentlyAmbulatory === true) return '可独立行走';
-  if (independentlyAmbulatory === false) return '需要辅助';
-  return '未填写';
-};
+const formatAmbulationLabel = (profile: PatientProfile | null) =>
+  ambulationLabel(profile?.baseline?.currentStatus?.independentlyAmbulatory) ?? '未填写';
 
 const formatAssistiveDevicesLabel = (profile: PatientProfile | null) => {
   const devices = profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];

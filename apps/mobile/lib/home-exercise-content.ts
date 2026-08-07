@@ -19,7 +19,13 @@
  *  [荷兰5.2] Spierziekten Nederland. Dutch FSHD Guideline, 24-01-2019,
  *            module 5, question 5.2「体能训练对提高 FSHD 患者活动能力的
  *            价值是什么？」— 结论 (all graded 低等级), 考虑因素 and 建议.
- *            Verified full Chinese translation, corpus 指南共识/.
+ *            Corpus holds both the English original
+ *            (02.临床管理与治疗/…Dutch-FSHD-Guideline-English-24012019.pdf)
+ *            and a Chinese translation (指南共识/…_translate.pdf). Read
+ *            the English one for anything load-bearing: the translation
+ *            has at least one page-break defect that inverts a muscle
+ *            attribution in 5.4 — see the 10 米步行 note below, which
+ *            this page once got wrong by trusting it.
  *
  * The one thing this file exists to keep straight
  * -----------------------------------------------
@@ -172,9 +178,9 @@ export const TRIAL_FACTS: TrialFact[] = [
   {
     id: 'walk',
     label: '6 分钟步行距离',
-    value: '上升',
+    value: '+14%',
     detail:
-      '论文报告 6 分钟步行距离在训练组增加，并与 VO2peak、MVC、肌肉耐力的变化正相关。摘要没有给这一项的百分比。',
+      'P = 0.013，第 24 周。摘要只写了「增加」没有给百分比，数字在正文 3.3 节和 Table 2 里。距离的变化与 VO2peak（r = 0.62）、最大有氧功率（r = 0.72）、MVC（r = 0.68）的变化都正相关。',
     evidence: 'trial',
     source: TRIAL_SOURCE,
   },
@@ -252,11 +258,19 @@ export const TRIAL_CONDITIONS: TrialConditionItem[] = [
  *
  * Someone will ask 「间歇是几分钟」. The answer has to be 「论文正文没写」
  * rather than a plausible number.
+ *
+ * Both entries are Figure 3, and that is the whole list. A third one
+ * used to say the paper never gave a percentage for the 6-minute walk;
+ * §3.3 gives it (14%, P = 0.013, Table 2, Fig. 5C) and only the
+ * abstract is silent. An invented unknown fails this page the same way
+ * an invented number does — the patient re-measures their 6-minute walk
+ * at weeks 0/12/24 and is told there is nothing to compare against —
+ * so an entry belongs here only after the paper's running text has been
+ * checked and found silent.
  */
 export const TRIAL_UNKNOWNS: string[] = [
   '每节课的具体分段——间歇的时长、组数、休息比例——画在论文的 Figure 3 里，正文没有写出来，本页也读不出来。所以这一页不给你秒数和组数，请让康复师按你的情况定。',
   '接近最大转速的「组」是几组、每组多久，同样只在 Figure 3 里。',
-  '论文没有报告 6 分钟步行距离提高了百分之多少，只说它上升了并与其他指标相关。',
 ];
 
 /* ------------------------------------------------------------------ */
@@ -424,7 +438,7 @@ export const EXERCISE_PHASES: ExercisePhase[] = [
     focus:
       '把第 24 周的复测和第 0 周的记录并排看。这一页的价值在这一次对比里，不在中间任何一天的感觉里。',
     trialNote:
-      '原研究到第 24 周时：VO2peak +19%、MVC +15%、肌肉耐力 +23%、疲劳 −38%、肌纤维横截面积 +34%。',
+      '原研究到第 24 周时：VO2peak +19%、MVC +15%、肌肉耐力 +23%、6 分钟步行距离 +14%、疲劳 −38%、肌纤维横截面积 +34%。',
   },
 ];
 
@@ -464,7 +478,7 @@ export const REMEASURE_ITEMS: RemeasureItem[] = [
     id: 'six-minute-walk',
     label: '6 分钟步行',
     functionTestType: 'six_minute_walk',
-    why: '原研究每 12 周测一次，训练组的距离上升，并且和 VO2peak、肌力、肌肉耐力的变化正相关。这是这套方案里最接近「日常有没有变好」的一项。',
+    why: '原研究每 12 周测一次，训练组第 24 周的距离比基线多 14%（P = 0.013），并且和 VO2peak、最大有氧功率、MVC 的变化正相关。这是这套方案里最接近「日常有没有变好」的一项。注意 14% 是原研究那套方案（功率车、实验室定强度、有人上门监督）跑出来的，不是这一页的替代方案的预期值。',
     every: '第 0、12、24 周',
     source: TRIAL_SOURCE,
   },
@@ -480,9 +494,21 @@ export const REMEASURE_ITEMS: RemeasureItem[] = [
     id: 'ten-meter-walk',
     label: '10 米步行',
     functionTestType: 'ten_meter_walk',
-    why: '踝背屈无力和躯干无力都会让步速下降（荷兰指南 5.4 引 Rijken 2015）。步速是这两件事的共同出口，测起来只要一段走廊。',
+    // 5.4 splits the ankle two ways and the split is load-bearing:
+    // dorsiflexor paresis gets the first-rocker / foot-drag / stumble
+    // consequences, and it is *push-off* (calf) weakness that 「will
+    // also lead to reduced walking speed, particularly if there is
+    // additional weakness of the trunk muscles (Rijken 2015)」. The
+    // Chinese translation in the corpus loses this — a page break
+    // orphaned「蹬地力量丧失」and the next sentence came out as
+    //「踝背屈肌无力还会导致步行速度减慢」— so take this line from the
+    // English guideline, not from that PDF. Naming the wrong muscle
+    // here also mis-aims the patient at the AFO ladder in
+    // orthosis-decision-content.ts, which branches on exactly whether
+    // push-off is preserved.
+    why: '蹬地力量（小腿）无力和躯干无力都会让步速下降（荷兰指南 5.4 引 Rijken 2015）。踝背屈无力在 5.4 里对应的是另一组后果——落地控制不住、脚尖拖地、绊倒。步速是前两件事的共同出口，测起来只要一段走廊。',
     every: '每 6 周',
-    source: '荷兰 FSHD 指南（2019-01-24，中译全文）5.4',
+    source: '荷兰 FSHD 指南（2019-01-24）5.4（以英文原文为准）',
   },
   {
     id: 'knee-extension',

@@ -185,6 +185,14 @@ export default StyleSheet.create({
     ...TYPE.caption,
     marginTop: SPACE.xs,
   },
+  /** What stands in for the button on a page the reader cannot open
+   *  yet. Body weight, not a disabled control: there is nothing here
+   *  to press, and a greyed-out button would invite the tap this is
+   *  here to stop. */
+  linkLocked: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
   disclaimer: {
     ...TYPE.caption,
     color: COLOR.inkMuted,

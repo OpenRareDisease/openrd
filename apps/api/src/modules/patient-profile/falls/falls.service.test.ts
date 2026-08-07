@@ -173,6 +173,27 @@ describe('FallsService.recordFall', () => {
     expect(released.count).toBe(1);
   });
 
+  it('refuses to write a diary row when the event INSERT returns no id', async () => {
+    // The guard this pins is unreachable from any live input — a
+    // successful single-row `INSERT ... RETURNING` always yields a row,
+    // and a failing one throws (covered above). It is here for the
+    // refactor that replaces `rows[0]?.id ?? null` with a non-null
+    // assertion, or drops the check: that ships a fall with
+    // origin_event_id = null, which the down migration calls
+    // unrecoverable, and which makes deleteFall leave the event
+    // standing on the 病程时间线 after the patient watches the entry
+    // disappear.
+    const { pool, calls, released } = fakePool({ eventRows: [] });
+    await expect(
+      new FallsService({ pool, logger }).recordFall('user-1', { occurredOn: '2026-08-03' }),
+    ).rejects.toMatchObject({ statusCode: 500 });
+
+    expect(sqlMatching(calls, /INSERT INTO patient_falls/)).toHaveLength(0);
+    expect(sqlMatching(calls, /^\s*ROLLBACK/)).toHaveLength(1);
+    expect(sqlMatching(calls, /^\s*COMMIT/)).toHaveLength(0);
+    expect(released.count).toBe(1);
+  });
+
   it('404s a user with no profile instead of inventing one', async () => {
     const { pool, released } = fakePool({ profileRows: [] });
     await expect(

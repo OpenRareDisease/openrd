@@ -74,6 +74,23 @@ const formatScalar = (value: unknown): string => {
   return value === null || value === undefined ? '' : String(value);
 };
 
+/** AMBULATION_STATES as the model should read them. The stored value
+ *  is an English enum; a prompt that carries it verbatim asks the model
+ *  to guess, and 「unable」 is the one this population cannot afford it
+ *  to guess wrong about. */
+const AMBULATION_VALUE_LABELS: Record<string, string> = {
+  independent: '可独立行走',
+  assisted: '需要辅助（拐杖、支具、扶人）才能行走',
+  unable: '无法行走（含长期使用轮椅、卧床）',
+};
+
+const formatFieldValue = (key: string, value: unknown): string => {
+  if (key === 'independentlyAmbulatory' && typeof value === 'string') {
+    return AMBULATION_VALUE_LABELS[value] ?? formatScalar(value);
+  }
+  return formatScalar(value);
+};
+
 const PROFILE_FIELD_LABELS: Record<string, string> = {
   ageGroup: '年龄段',
   gender: '性别',
@@ -88,7 +105,10 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   methylation_clinical: '甲基化临床分级',
   onsetRegion: '首发部位',
   familyHistory: '家族史',
-  independentlyAmbulatory: '独立行走',
+  // Was 「独立行走」 while the value was a yes/no. It is one of three
+  // states since migration 022, and 「独立行走: assisted」 reads as a
+  // contradiction rather than an answer.
+  independentlyAmbulatory: '行走能力',
   assistiveDevices: '辅具',
   symptomCategories: '症状分类',
 };
@@ -163,7 +183,7 @@ const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionSc
       continue;
     }
     const label = labels[key] ?? key;
-    lines.push(`${label}: ${formatScalar(value)}`);
+    lines.push(`${label}: ${formatFieldValue(key, value)}`);
   }
 
   return lines.join('\n');
