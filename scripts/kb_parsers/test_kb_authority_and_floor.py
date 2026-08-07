@@ -443,6 +443,15 @@ class _CapturingBackend:
     def list_source_fingerprints(self, source_files):
         return {}
 
+    def reusable_embeddings(self, fingerprints, embed_model):
+        # This stand-in stores no vectors, so nothing is reusable and
+        # every chunk is embedded — which is what these tests assert
+        # about. Present rather than inherited because the fake is
+        # duck-typed: `ingest` calls the method directly, deliberately,
+        # so that renaming it breaks loudly instead of silently turning
+        # the optimisation off while every test still passes.
+        return {}
+
     def upsert(self, chunks):
         self.upserted.extend(chunks)
 

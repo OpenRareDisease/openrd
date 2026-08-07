@@ -224,6 +224,14 @@ const ClinicalPassportScreen = () => {
     }
   };
 
+  // Mount-only, and `loadPassport` is deliberately not a dependency: it
+  // captures nothing that can go stale. Every binding it reads is either
+  // a setState setter (stable identity) or a module import, and
+  // `loadInstruments` — whose introduction is what made this line start
+  // warning, since it costs `loadPassport` the "no unstable references"
+  // shape the rule was previously satisfied by — is the same shape.
+  // Adding the dependency would refetch the whole passport on every
+  // render, because `loadPassport` is rebuilt each time.
   useEffect(() => {
     loadPassport();
   }, []);

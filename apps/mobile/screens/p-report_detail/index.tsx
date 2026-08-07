@@ -557,9 +557,12 @@ export default function ReportDetailScreen() {
     if (!fire) return;
     autoSummaryTriggeredRef.current = true;
     void onGenerateSummary();
-    // onGenerateSummary is recreated per render but idempotent; the
-    // decision function holds the real dependency story (this config
-    // has no react-hooks lint plugin to appease).
+    // onGenerateSummary is recreated per render but idempotent, and the
+    // ref guard above already caps it at one firing per document; the
+    // decision function holds the real dependency story. Nothing in the
+    // handler can go stale either — it reads stable setters, module
+    // imports, and `documentId`, which is a dependency already. Adding
+    // the function itself would re-run this on every render.
   }, [aiConsent, payload, docStatus, summary, summaryLoading, documentId]);
 
   /** Unlock card: grant both required flags in one tap, then let the

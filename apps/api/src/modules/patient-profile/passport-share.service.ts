@@ -170,9 +170,14 @@ export const formatPickupCode = (code: string): string =>
  *
  * The redemption page has no JavaScript (see passport-share.html.ts),
  * so this cannot lean on `<input type="date">` being honoured by an
- * ageing hospital Android or WeChat's X5 webview. It takes the digits
- * and ignores everything else, so 「1985-03-12」, 「1985/3/12」 and
- * 「19850312」 are all the same input.
+ * ageing hospital Android or WeChat's X5 webview. 「1985-03-12」,
+ * 「1985/3/12」, 「1985年3月12日」 and 「19850312」 all reach the same day.
+ *
+ * It does NOT simply take the digits and ignore everything else —
+ * that was the previous implementation, and it is why 「1985/3/12」 was
+ * rejected. See the shapes documented in the body: the separators
+ * carry the information that lets a single-digit month be padded, so
+ * they cannot be discarded before the padding decision.
  *
  * The round-trip through Date is not decoration: 「19850231」 parses as
  * eight digits and is not a day, and accepting it would spend one of

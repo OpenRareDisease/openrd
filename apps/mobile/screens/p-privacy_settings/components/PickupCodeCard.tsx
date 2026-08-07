@@ -147,10 +147,20 @@ const PickupCodeCard = ({
     countingFor.current = code;
     mountedAt.current = Date.now();
   }
-  const budgetMs = useMemo(
-    () => budgetFor(ttlMinutes, expiresAt, mountedAt.current),
-    [ttlMinutes, expiresAt],
-  );
+  // Deliberately not a useMemo. It reads `mountedAt.current`, which the
+  // block above rebases on a new code, so a correct dependency list has
+  // to include `code` — and exhaustive-deps cannot see through a ref, so
+  // it calls that dependency unnecessary and the warning pushes the next
+  // person to delete it. Deleted, a re-mint carrying the same `expiresAt`
+  // would keep the previous code's budget while the elapsed clock
+  // restarted at zero: the fallback branch's version of the very bug the
+  // rebase exists to fix.
+  //
+  // `budgetFor` is arithmetic over three values, so the memo bought
+  // nothing except somewhere for the dependency list to be wrong. The
+  // result is a number (or null), so the tick effect below still sees a
+  // stable dependency across renders.
+  const budgetMs = budgetFor(ttlMinutes, expiresAt, mountedAt.current);
   const [life, setLife] = useState<PickupLife>(() => lifeOf(budgetMs, 0));
 
   useEffect(() => {

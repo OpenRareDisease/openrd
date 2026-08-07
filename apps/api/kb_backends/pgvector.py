@@ -302,6 +302,46 @@ class PgVectorBackend(VectorBackend):
                 conn.rollback()
                 raise
 
+    def reusable_embeddings(
+        self, fingerprints: List[str], embed_model: str
+    ) -> Dict[str, List[float]]:
+        """See `VectorBackend.reusable_embeddings`.
+
+        `embed_model` is matched exactly and is not optional: reusing a
+        vector produced by a different model would put two incompatible
+        geometries in one index, and every distance computed across
+        them would be meaningless in a way nothing downstream could
+        detect.
+
+        Rows whose embedding is NULL are skipped rather than returned
+        as an empty vector — the caller must re-embed those, and a
+        `[]` would sail through as a valid-looking result and be
+        rejected much later by the dimension check on upsert.
+        """
+        if not fingerprints or not embed_model:
+            return {}
+        out: Dict[str, List[float]] = {}
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT fingerprint, embedding "
+                    f"FROM {self.table_name} "
+                    f"WHERE fingerprint = ANY(%s) "
+                    f"  AND embed_model = %s "
+                    f"  AND embedding IS NOT NULL",
+                    (fingerprints, embed_model),
+                )
+                for fingerprint, embedding in cur.fetchall():
+                    # register_vector (see _configure_conn) hands these
+                    # back as numpy arrays. Materialise to a plain list
+                    # so the value round-trips through the same upsert
+                    # path as a freshly embedded one, rather than
+                    # depending on the adapter accepting both shapes.
+                    vector = [float(x) for x in embedding]
+                    if vector:
+                        out[fingerprint] = vector
+        return out
+
     # --------------------------------------------------------------- introspection
 
     def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, Set[str]]:

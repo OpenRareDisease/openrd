@@ -80,7 +80,16 @@ DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 #: a way that would invalidate previously stored chunks. The
 #: per-file fingerprint includes this so a refactor invalidates the
 #: whole KB without needing a manual wipe.
-PIPELINE_VERSION = "v2.multi-format"
+#:
+#: v3 — the chunker learned to split a classification catalogue on its
+#: own entry codes (see `_CODE_TABLE_RECORD`). Only one document in
+#: the corpus changes shape, and re-embedding the other 234 to get it
+#: is real cost on whatever box runs the ingest. It is still the right
+#: lever: the alternative is a hand-written DELETE against one
+#: source_file, which leaves the backend holding chunks whose stored
+#: fingerprint claims a pipeline that no longer exists — and the next
+#: person to wonder why a document chunked oddly has nothing to read.
+PIPELINE_VERSION = "v3.code-table-aware"
 
 
 # --------------------------------------------------------- injection scanner
@@ -346,6 +355,12 @@ class IngestStats:
     files_empty: int = 0
     files_errored: int = 0
     chunks_upserted: int = 0
+    #: Chunks that kept their stored vector instead of being
+    #: re-embedded. Printed because it is the difference between a
+    #: PIPELINE_VERSION bump costing minutes and costing hours, and
+    #: an operator watching a re-ingest deserves to see which one
+    #: they are in for.
+    chunks_reused: int = 0
     #: Number of (source_file, chunks) deletions issued by --prune.
     files_pruned: int = 0
     chunks_pruned: int = 0
@@ -651,20 +666,51 @@ def ingest(
 
     stats.chunks_upserted = len(pending)
     if pending and not dry_run:
+        # Chunks whose text is already in the backend, embedded by this
+        # same model, keep their stored vector. The chunk fingerprint is
+        # (source_key, chunk_index, whitespace-normalised content) and
+        # excludes PIPELINE_VERSION, so a hit means the embedder would
+        # be handed identical input and return identical numbers.
+        #
+        # This is what makes bumping PIPELINE_VERSION affordable. The
+        # bump exists so a chunker change reaches corpora that are
+        # already ingested — without it, the deployments that have the
+        # bug keep it. But it invalidates every SOURCE fingerprint, and
+        # before this the ingest answered that by re-embedding all
+        # ~11,800 chunks to change the 64 that a one-document chunker
+        # fix actually touched. On a 16 GB laptop that put the machine
+        # into 12 GB of swap and took a batch from 3.8 seconds to 50
+        # minutes. Re-parsing and re-chunking every file is cheap and
+        # stays; re-embedding text that did not change was the waste.
+        reused = backend.reusable_embeddings(
+            [chunk.fingerprint for chunk in pending], embedder.model_name
+        )
+        if reused:
+            stats.actions.append(
+                f"reuse    {len(reused)} of {len(pending)} chunks kept their "
+                f"stored embedding (content unchanged, same embed model)"
+            )
+        stats.chunks_reused = len(reused)
+
         for start in range(0, len(pending), batch_size):
             batch = pending[start : start + batch_size]
-            texts = [chunk.content for chunk in batch]
-            embeddings = embedder.embed_texts(texts)
-            if len(embeddings) != len(batch):
-                raise RuntimeError(
-                    f"Embedder returned {len(embeddings)} vectors for "
-                    f"{len(batch)} chunks"
-                )
-            for chunk, emb in zip(batch, embeddings):
-                chunk.embedding = emb
+            fresh = [chunk for chunk in batch if chunk.fingerprint not in reused]
+            for chunk in batch:
+                if chunk.fingerprint in reused:
+                    chunk.embedding = reused[chunk.fingerprint]
+            if fresh:
+                embeddings = embedder.embed_texts([chunk.content for chunk in fresh])
+                if len(embeddings) != len(fresh):
+                    raise RuntimeError(
+                        f"Embedder returned {len(embeddings)} vectors for "
+                        f"{len(fresh)} chunks"
+                    )
+                for chunk, emb in zip(fresh, embeddings):
+                    chunk.embedding = emb
             backend.upsert(batch)
             stats.actions.append(
-                f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks"
+                f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks "
+                f"({len(fresh)} embedded)"
             )
 
         # All new chunks landed safely → drop the stale ones whose
@@ -963,6 +1009,11 @@ def main() -> int:
     print(f"  empty              : {stats.files_empty}")
     print(f"  errored            : {stats.files_errored}")
     print(f"  chunks upserted    : {stats.chunks_upserted}")
+    if stats.chunks_reused:
+        print(
+            f"  embeddings reused  : {stats.chunks_reused} "
+            f"({stats.chunks_upserted - stats.chunks_reused} newly embedded)"
+        )
     if args.prune:
         print(f"  pruned files       : {stats.files_pruned}")
         print(f"  pruned chunks      : {stats.chunks_pruned}")

@@ -83,6 +83,33 @@ class VectorBackend(ABC):
         in the backend are omitted from the result rather than mapped
         to an empty set."""
 
+    def reusable_embeddings(
+        self, fingerprints: List[str], embed_model: str
+    ) -> Dict[str, List[float]]:
+        """Return stored vectors for chunks that are about to be
+        re-upserted with unchanged content.
+
+        The chunk fingerprint is `sha256(source_key, chunk_index,
+        whitespace-normalised content)` and deliberately does NOT
+        include PIPELINE_VERSION — so a fingerprint hit means this
+        exact chunk text was already embedded by this exact model, and
+        recomputing the vector would spend GPU/CPU time to arrive at
+        the same numbers.
+
+        This is what makes a PIPELINE_VERSION bump affordable. The
+        version string invalidates every file's SOURCE fingerprint, so
+        every file is re-parsed and re-chunked — which is correct and
+        cheap. Without this method it also re-embedded every chunk,
+        which is neither: bumping the version to re-chunk one
+        110-page catalogue meant re-embedding all ~11,800 chunks, and
+        on a 16 GB laptop that drove the machine into 12 GB of swap
+        and took batches from 3.8 seconds to 50 minutes.
+
+        Default returns nothing, so a backend that does not implement
+        it simply pays the old cost — never a wrong answer.
+        """
+        return {}
+
     @abstractmethod
     def delete_by_source(self, source_file: str) -> int:
         """Remove every chunk associated with the given source file."""

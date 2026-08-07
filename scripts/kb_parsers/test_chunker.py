@@ -161,3 +161,134 @@ def test_split_markdown_strips_nul_via_sanitize() -> None:
     )
     assert len(chunks) == 1
     assert "\x00" not in chunks[0].content
+
+
+# ---------------------------------------------------------- code tables
+
+def _catalogue(entries: int = 20) -> str:
+    """A miniature 《中国康复辅助器具目录》: a title page, a category
+    header carrying the table's column headings, then numbered
+    entries. Shaped like the real extraction — no blank lines
+    anywhere, which is what sent the real one down the sentence
+    windower."""
+    lines = [
+        "中国康复辅助器具目录（2023年版）",
+        "中华人民共和国民政部 2023年11月",
+        "01 12 下肢矫形器",
+        "代  码名  称产品描述预期用途品名举例 类  别",
+    ]
+    for i in range(entries):
+        lines.append(
+            f"01 12 {i * 3:02d}第{i}号矫形器 围绕某关节的矫形器。"
+            f"主材质为高弹性复合材料等。适用于第{i}类损伤的外部固定。"
+        )
+    return "\n".join(lines)
+
+
+def test_code_table_gives_each_entry_its_own_chunk() -> None:
+    chunks = split_paragraphs(_catalogue(20), max_chars=1200, min_chars=30)
+    # 20 entries + the category record + the title page.
+    assert len(chunks) == 22
+    bodies = [c.content for c in chunks]
+    assert sum("01 12 18第6号矫形器" in b for b in bodies) == 1
+    # ...and only that entry. Before this split the same chunk carried
+    # three or four unrelated device classes, so it embedded as none.
+    only = next(b for b in bodies if "01 12 18第6号矫形器" in b)
+    assert "第5号矫形器" not in only
+    assert "第7号矫形器" not in only
+
+
+def test_code_table_entry_carries_its_category() -> None:
+    """「踝足矫形器在国家目录里是哪一类」 asks for the category, which
+    lives on a header line the entry itself does not repeat."""
+    chunks = split_paragraphs(_catalogue(20), max_chars=1200, min_chars=30)
+    entry = next(c.content for c in chunks if "01 12 18第6号矫形器" in c.content)
+    assert entry.startswith("01 12 下肢矫形器\n")
+
+
+def test_code_table_loses_no_text() -> None:
+    """Asserted against `_split_code_table` rather than through
+    `split_paragraphs`: routed through the public function this passes
+    whether or not the code-table path exists, because the sentence
+    windower conserves text too. Only the direct call proves the new
+    path does."""
+    import re
+
+    from kb_parsers.chunker import _split_code_table
+
+    source = _catalogue(20)
+    records = _split_code_table(source, max_chars=1200, min_chars=30)
+    assert records is not None
+    # Strip the injected category prefix before comparing; it is the
+    # only thing this path adds.
+    stripped = []
+    for record in records:
+        lines = record.split("\n")
+        if len(lines) > 1 and re.fullmatch(r"\d{2} \d{2}\D.*", lines[0]):
+            if re.match(r"\d{2} \d{2} \d{2}", lines[1]):
+                lines = lines[1:]
+        stripped.append("\n".join(lines))
+    squash = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
+    assert squash("".join(stripped)) == squash(source)
+
+
+def test_prose_with_a_few_codes_is_not_treated_as_a_table() -> None:
+    """The guard is a plain count, so the thing it must never do is
+    fire on prose. Measured against the corpus the runner-up document
+    scores 2 against a threshold of 12."""
+    text = "\n".join(
+        [
+            "患者于 2024 年确诊，随访见下表。",
+            "01 12 首次评估结果正常。",
+            "02 03 第二次评估。",
+            "此后每年复查一次，具体安排由主诊医师决定。" * 40,
+        ]
+    )
+    chunks = split_paragraphs(text, max_chars=300, min_chars=30)
+    # Sentence windows, not record splits: the last paragraph is one
+    # long run and gets cut on 。 rather than at a line start.
+    assert len(chunks) > 1
+    assert not any(c.content.startswith("01 12 首次评估") for c in chunks)
+
+
+def test_code_table_needs_the_full_threshold() -> None:
+    from kb_parsers.chunker import _MIN_CODE_TABLE_RECORDS, _split_code_table
+
+    just_under = _catalogue(_MIN_CODE_TABLE_RECORDS - 2)  # + 1 category record
+    assert _split_code_table(just_under, max_chars=1200, min_chars=30) is None
+    just_over = _catalogue(_MIN_CODE_TABLE_RECORDS)
+    assert _split_code_table(just_over, max_chars=1200, min_chars=30) is not None
+
+
+def test_code_table_windows_an_oversized_entry() -> None:
+    """One entry longer than the cap must still be cut, and the cap is
+    on the whole chunk — the category prefix counts toward it, or a
+    document with long category names would silently blow past what
+    the embedder reads."""
+    from kb_parsers.chunker import _split_code_table
+
+    long_entry = "适用于某种损伤的外部固定和保护。" * 30
+    text = _catalogue(20).replace(
+        "01 12 18第6号矫形器 围绕某关节的矫形器。",
+        f"01 12 18第6号矫形器 {long_entry}围绕某关节的矫形器。",
+    )
+    records = _split_code_table(text, max_chars=300, min_chars=30)
+    assert records is not None
+    # The entry was cut into several windows, each still labelled with
+    # its category.
+    windows = [r for r in records if "适用于某种损伤的外部固定和保护。" in r]
+    assert len(windows) > 1
+    assert all(r.startswith("01 12 下肢矫形器\n") for r in windows)
+    assert max(len(r) for r in records) <= 300
+
+
+def test_short_record_trails_onto_the_previous_one() -> None:
+    """min_chars keeps meaningless fragments out of the index; it must
+    not delete a catalogue entry that is simply terse."""
+    from kb_parsers.chunker import _split_code_table
+
+    records = _split_code_table(
+        _catalogue(20) + "\n01 12 99短", max_chars=1200, min_chars=30
+    )
+    assert records is not None
+    assert any("01 12 99短" in r for r in records)

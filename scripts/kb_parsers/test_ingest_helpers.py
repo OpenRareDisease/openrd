@@ -415,6 +415,15 @@ class _StatefulBackend:
     def list_source_fingerprints(self, source_files):
         return {k: set(v) for k, v in self._fingerprints.items() if k in source_files}
 
+    def reusable_embeddings(self, fingerprints, embed_model):
+        # This stand-in stores no vectors, so nothing is reusable and
+        # every chunk is embedded — which is what these tests assert
+        # about. Present rather than inherited because the fake is
+        # duck-typed: `ingest` calls the method directly, deliberately,
+        # so that renaming it breaks loudly instead of silently turning
+        # the optimisation off while every test still passes.
+        return {}
+
     def list_all_source_files(self):  # pragma: no cover - prune not exercised here
         return list(self._fingerprints)
 

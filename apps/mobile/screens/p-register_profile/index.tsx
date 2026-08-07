@@ -140,6 +140,14 @@ const RegisterProfileScreen: React.FC = () => {
     return '请输入手机号或邮箱';
   }, [form.contactPhone, form.contactEmail]);
 
+  // Runs once on mount. `isOnboarding` is read in the catch below but
+  // deliberately left out of the dependency list: it derives from the
+  // route params, and the only writer of `?mode=onboarding` is the
+  // root-layout gate, which `router.replace`s BEFORE this screen mounts.
+  // There is no path that flips it while the fetch below is in flight,
+  // and keying the effect on it would re-run the whole draft-restore
+  // sequence — re-layering a stale draft over the form — on a param
+  // change this screen never actually sees.
   useEffect(() => {
     let isMounted = true;
     const loadProfile = async () => {

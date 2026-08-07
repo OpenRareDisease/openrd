@@ -185,12 +185,18 @@ export const createPublicPassportRouter = (context: RouteContext) => {
    * address, and 60/min is already generous for humans opening links
    * one at a time.
    */
+  // No keyResolver: the shared default is `req.ip ||
+  // req.socket.remoteAddress || 'unknown'`, and these two limiters had
+  // been overriding it with `req.ip ?? 'unknown'` — which drops the
+  // socket fallback and, because `??` passes an empty string through,
+  // can key an entire flood into one bucket. These are the only
+  // unauthenticated routes in the app, so they are the last place to
+  // hold a weaker version of the shared rule.
   const openLimiter = createRateLimitMiddleware({
     keyPrefix: 'passport:open',
     windowMs: 60_000,
     maxRequests: 60,
     message: '请求过于频繁，请稍后再试',
-    keyResolver: (req) => `${req.ip ?? 'unknown'}`,
   });
 
   /**
@@ -210,7 +216,6 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     windowMs: 60_000,
     maxRequests: 300,
     message: '请求过于频繁，请稍后再试',
-    keyResolver: (req) => `${req.ip ?? 'unknown'}`,
   });
 
   /** Applied to every response in this router: the pages are private

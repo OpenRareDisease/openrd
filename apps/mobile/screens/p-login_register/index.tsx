@@ -378,6 +378,13 @@ const LoginRegisterScreen: React.FC = () => {
   };
 
   // 启动logo浮动动画
+  //
+  // `logoTranslateY` is omitted on purpose. `useSharedValue` hands back
+  // the same reference for the life of the component, so there is no
+  // render at which this effect could see a different one — the stale
+  // closure the rule is warning about cannot exist here. The animation
+  // is also meant to start once and repeat forever (`withRepeat(..., -1)`),
+  // so re-running the effect would restart the cycle mid-float.
   React.useEffect(() => {
     logoTranslateY.value = withRepeat(
       withTiming(-10, {

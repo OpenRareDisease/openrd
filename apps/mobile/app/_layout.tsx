@@ -129,6 +129,13 @@ function AppNavigator() {
     if (needsOnboarding) {
       router.replace('/p-register_profile?mode=onboarding');
     }
+    // `isGuestRoute` and `isSignedOutOnlyRoute` are omitted on purpose.
+    // Both are pure `Set.has(segments[0] ?? '')` reads over module-level
+    // constants, and `segments` is already a dependency — neither can
+    // change without `segments` changing first, so this effect can never
+    // observe a stale copy of them. Listing them is redundant rather
+    // than safer, which is why the warning is left standing instead of
+    // being disabled.
   }, [isHydrated, navigationState?.key, router, segments, token, needsOnboarding]);
 
   const shouldBlockRender =
