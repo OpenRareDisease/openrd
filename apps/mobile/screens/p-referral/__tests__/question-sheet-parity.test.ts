@@ -1,11 +1,11 @@
 /**
  * The local 我想问的问题 list against the server's.
  *
- * Both copies reach the same patient on the same screen: this list is
- * the checklist above, and the server's `REFERRAL_QUESTION_PROMPTS` is
- * rendered inside `pack.markdown` below it. A patient who ticks a
- * question up top and then reads a differently-worded one in the
- * document they are about to hand over has been given two sheets. The
+ * Both copies reach the same patient on the same screen: the server's
+ * `REFERRAL_QUESTION_PROMPTS` arrives inside `pack.markdown` above, and
+ * this list is the checklist below it. A patient who reads one wording
+ * in the document they are about to hand over and then ticks a
+ * differently-worded one further down has been given two sheets. The
  * duplication is unavoidable (question-sheet.ts explains why); silent
  * drift is not, and nothing else in the tree would catch it.
  *

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
+import { documentScopedAmbulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
-import { buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
+import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
+import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
 const build = (overrides: Partial<PatientProfileDTO> = {}, includeLocalOnly = false) =>
@@ -272,10 +274,123 @@ describe('FHIR R4 — a report with no readable date is not dated to the upload'
 });
 
 describe('FHIR R4 — instruments are declared as withheld', () => {
+  /**
+   * Every walking-related Observation this bundle is CAPABLE of
+   * carrying, enumerated from the label tables rather than from what
+   * the fixture happens to hold. The daily-impact suffix mirrors the
+   * one fhir-r4.ts builds its `code.text` with.
+   */
+  const WALKING_OBSERVATION_LABELS = [
+    ...Object.values(FUNCTION_TEST_LABELS),
+    ...Object.values(DAILY_IMPACT_LABELS).map((label) => `${label}困难程度`),
+  ].filter((label) => /行走|步行/.test(label));
+
+  // A profile exercising all of them at once, so no assertion below
+  // can pass by the fixture simply not having the awkward case.
+  const walkingHeavy: Partial<PatientProfileDTO> = {
+    functionTests: [
+      ...EXPORT_FIXTURE_PROFILE.functionTests,
+      {
+        ...EXPORT_FIXTURE_PROFILE.functionTests[0],
+        id: '44444444-4444-4444-8444-444444444443',
+        testType: 'six_minute_walk',
+        measuredValue: 210,
+        unit: 'm',
+      },
+      {
+        ...EXPORT_FIXTURE_PROFILE.functionTests[0],
+        id: '44444444-4444-4444-8444-444444444444',
+        testType: 'timed_up_and_go',
+        measuredValue: 18.5,
+        unit: 'sec',
+      },
+    ],
+    dailyImpacts: [
+      ...EXPORT_FIXTURE_PROFILE.dailyImpacts,
+      {
+        ...EXPORT_FIXTURE_PROFILE.dailyImpacts[0],
+        id: '66666666-6666-4666-8666-666666666662',
+        adlKey: 'walking_outdoors',
+        difficultyLevel: 4,
+      },
+    ],
+  };
+
+  const withAmbulation = (independentlyAmbulatory: string) => {
+    const baseline = EXPORT_FIXTURE_PROFILE.baseline as {
+      currentStatus: Record<string, unknown>;
+    } & Record<string, unknown>;
+    return build({
+      ...walkingHeavy,
+      baseline: {
+        ...baseline,
+        currentStatus: { ...baseline.currentStatus, independentlyAmbulatory },
+      },
+    });
+  };
+
+  const reasonOf = (result: ReturnType<typeof build>) =>
+    result.omissions.find((entry) => entry.field.includes('Brooke'))?.reasonZh ?? '';
+
   it('says Brooke and Vignos are collected and not in this bundle', () => {
     const omission = build().omissions.find((entry) => entry.field.includes('Brooke'));
     expect(omission?.reasonZh).toContain('Vignos');
     expect(omission?.reasonZh).toContain('不表示患者没有做过分级');
+  });
+
+  it('carries no resource derived from the baseline walking state, for any of its values', () => {
+    // Ground truth for the omission, stated structurally. This used to
+    // be `not.toContain('行走')`, which held only because the fixture's
+    // walk test is 「10 米步行计时」 — 步行, not 行走 — so a fixture
+    // gaining a TUG turned it red with no production change, while a
+    // bundle that genuinely leaked the walking state under any other
+    // label would not have turned it red at all. What is actually true
+    // is that nothing here reads `currentStatus.ambulation`, so neither
+    // the stored value nor its display label can appear.
+    Object.entries(AMBULATION_LABELS).forEach(([value, labelZh]) => {
+      const serialised = JSON.stringify(withAmbulation(value).document);
+      expect(serialised, value).not.toContain(value);
+      expect(serialised, labelZh).not.toContain(labelZh);
+    });
+  });
+
+  it('does carry walking measurements, and the reason accounts for every one of them', () => {
+    // The half the old wording got wrong: 「本 Bundle 不含任何行走能力
+    // （ambulation）资源」 while the same bundle timed the patient walking
+    // ten metres. A receiver reading that goes back to the patient for
+    // walking ability this document measured.
+    const result = build(walkingHeavy);
+    const present = resourcesOf(result, 'Observation')
+      .map((resource) => (resource.code as { text: string }).text)
+      .filter((text) => /行走|步行/.test(text));
+    const reason = reasonOf(result);
+    expect(WALKING_OBSERVATION_LABELS.length).toBeGreaterThan(0);
+    WALKING_OBSERVATION_LABELS.forEach((label) => {
+      expect(present, label).toContain(label);
+      // Each gets the disambiguation `started_wheelchair` already had.
+      // A new walking test in labels.ts turns this red until the
+      // sentence covers it, which is the point.
+      expect(reason, label).toContain(label);
+    });
+  });
+
+  it('makes no claim that the walking state is somewhere in this bundle', () => {
+    const reason = reasonOf(build(walkingHeavy));
+    // Every sentence in this reason that talks about the walking state
+    // AND about this bundle, in order, each pinned by the denial it
+    // exists to make. The list is exhaustive on purpose: a new such
+    // sentence — 「基线行走状态没有单独的资源类型，但会作为 Observation
+    // 写入本 Bundle。」 is the shape that has slipped past twice — makes
+    // this array longer and turns the test red before anyone reads the
+    // wording. The earlier guards asked whether a sentence negated;
+    // reason-claims.ts says why that question cannot be answered here.
+    expect(documentScopedAmbulationSentences(reason)).toEqual([
+      expect.stringContaining('本 Bundle 不含基线记录的行走状态'),
+      expect.stringContaining('都不是行走状态本身'),
+      expect.stringContaining('基线行走状态不在本 Bundle 中'),
+    ]);
+    // No pointer into a document that has no sections at all.
+    expect(locatorsIn(reason)).toEqual([]);
   });
 });
 
@@ -290,7 +405,7 @@ describe('FHIR R4 — bounded, and honest about the bound', () => {
 
   it('caps observations and reports the drop instead of truncating silently', () => {
     const result = build({ measurements: manyMeasurements });
-    expect(resourcesOf(result, 'Observation')).toHaveLength(500);
+    expect(resourcesOf(result, 'Observation')).toHaveLength(MAX_OBSERVATIONS);
     const omission = result.omissions.find((entry) => entry.field === 'Observation');
     expect(omission?.reasonZh).toContain('未写入');
   });
@@ -310,6 +425,58 @@ describe('FHIR R4 — bounded, and honest about the bound', () => {
       .map((resource) => String(resource.effectiveDateTime))
       .filter((value) => value.startsWith('2015-01-01'));
     expect(effectives).toEqual([]);
+  });
+
+  it('never lets an undated report field evict a record that states its date', () => {
+    // The failure: a long-logging patient uploads a stack of old,
+    // undated reports today. Each parsed field's `observedAt` is the
+    // UPLOAD time, so ranking on it puts Observations that publish no
+    // effectiveDateTime at the top of the bundle and pushes genuinely
+    // recent readings off the end of the cut. The receiver is told
+    // only 「其余 N 条未写入」 and cannot tell what displaced what.
+    const datedMeasurements = Array.from({ length: MAX_OBSERVATIONS }, (_, index) => ({
+      ...EXPORT_FIXTURE_PROFILE.measurements[0],
+      id: `dated-${index}`,
+      recordedAt: new Date(Date.UTC(2024, 0, 1) + index * 3_600_000).toISOString(),
+    }));
+    const oldestDated = datedMeasurements[0].recordedAt;
+    const undatedUploadedToday = Array.from({ length: 5 }, (_, index) => ({
+      ...EXPORT_FIXTURE_PROFILE.documents[1],
+      id: `88888888-8888-4888-8888-99999999000${index}`,
+      documentType: 'pulmonary_function',
+      // Newer than every measurement above, and the only date this
+      // report has is the moment it was photographed.
+      uploadedAt: '2026-01-14T00:00:00.000Z',
+      ocrPayload: { fields: { fvcPredPct: `${50 + index}%` } },
+    }));
+
+    const result = build({
+      measurements: datedMeasurements,
+      functionTests: [],
+      symptomScores: [],
+      dailyImpacts: [],
+      followupEvents: [],
+      documents: undatedUploadedToday,
+    });
+    const observations = resourcesOf(result, 'Observation');
+    expect(observations).toHaveLength(MAX_OBSERVATIONS);
+
+    // Every dated reading survived, including the oldest one — the
+    // dateless rows are what fell off, not what stayed.
+    expect(
+      observations.filter((resource) => (resource.code as { text: string }).text.includes('肌力')),
+    ).toHaveLength(MAX_OBSERVATIONS);
+    expect(observations.map((resource) => resource.effectiveDateTime)).toContain(oldestDated);
+    expect(
+      observations.filter((resource) =>
+        (resource.code as { text: string }).text.includes('FVC%pred'),
+      ),
+    ).toHaveLength(0);
+
+    // And the drop notice describes the rule that was applied.
+    const omission = result.omissions.find((entry) => entry.field === 'Observation');
+    expect(omission?.reasonZh).toContain('没有写明观察时间的条目');
+    expect(omission?.reasonZh).toContain('其余 5 条未写入');
   });
 
   it('lists LOINC withholding as an explicit omission', () => {

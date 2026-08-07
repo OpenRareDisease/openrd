@@ -434,15 +434,37 @@ export const normaliseSource = (
  * state envelope.ts says `omissions` exists to prevent.
  *
  * Until the normaliser is given the administrations, every format
- * declares the gap. The wording is shared so the three cannot drift
- * into describing the same hole differently.
+ * declares the gap. The paragraph below is shared so the three cannot
+ * drift into describing the same hole differently.
+ *
+ * What is NOT shared is what each format does with the walking state a
+ * Vignos sync writes into the baseline, because that is a fact about
+ * one document rather than about the pipeline. It used to be the last
+ * sentence of this constant, phrased for TREAT-NMD — so the FHIR
+ * bundle and the Phenopacket, neither of which carries that baseline
+ * state, were telling their receivers to look for one in a 运动功能
+ * section neither of them has. Sharing a sentence that is only true of
+ * one output is how the shared wording became the untrue part.
+ *
+ * 「Baseline state」 is the precise noun and each format's sentence has
+ * to keep it precise. The FHIR bundle carries timed walk tests and a
+ * 户外行走 self-rating; a sentence there claiming no ambulation data of
+ * any kind would be false against its own Observations, and would send
+ * a receiver back to the patient for something the document measured.
  */
 export const INSTRUMENT_OMISSION_REASON_ZH =
-  '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。';
+  '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。';
 
-export const instrumentOmission = (field: string): ExportOmission => ({
+/**
+ * @param ambulationNoteZh What THIS format does with the walking state
+ *   a Vignos sync writes into the baseline, stated in that format's
+ *   own vocabulary (envelope.ts:24). Required rather than optional: a
+ *   fourth serialiser must not be able to inherit another format's
+ *   answer by leaving the argument out.
+ */
+export const instrumentOmission = (field: string, ambulationNoteZh: string): ExportOmission => ({
   field,
-  reasonZh: INSTRUMENT_OMISSION_REASON_ZH,
+  reasonZh: `${INSTRUMENT_OMISSION_REASON_ZH}${ambulationNoteZh}`,
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

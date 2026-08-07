@@ -129,20 +129,34 @@ export const buildPhenopacketExport = (
   // we cannot supply. Recorded per-category so the receiver knows
   // that data EXISTS here and was withheld for lack of a code, rather
   // than that the patient has no findings and no results.
+  //
+  // Both reasons are stated as facts about THIS export's mappings
+  // rather than about what the repository happens to hold today. The
+  // earlier wording — 「本仓库内没有可核对的 LOINC/HPO 来源」 — is a
+  // claim a single promotion in codings.ts falsifies, in a document
+  // this file would not be re-read while making.
   if (profile.measurements.length > 0 || profile.functionTests.length > 0) {
     omissions.push({
       field: 'measurements',
-      reasonZh: `本次导出持有 ${profile.measurements.length} 条肌力记录与 ${profile.functionTests.length} 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本仓库内没有可核对的 LOINC 来源，因此不写入。这些数据在 FHIR 导出中以「有显示名、无编码」的形式完整保留。`,
+      reasonZh: `本次导出持有 ${profile.measurements.length} 条肌力记录与 ${profile.functionTests.length} 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式完整保留。`,
     });
   }
   if (source.challenges.length > 0 || profile.symptomScores.length > 0) {
     omissions.push({
       field: 'phenotypicFeatures',
       reasonZh:
-        'PhenotypicFeature.type 必须是 HPO 本体项。本仓库内没有可核对的 HPO 术语来源，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。',
+        'PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。',
     });
   }
-  omissions.push(instrumentOmission('measurements（Brooke 上肢分级 / Vignos 下肢分级）'));
+  omissions.push(
+    instrumentOmission(
+      'measurements（Brooke 上肢分级 / Vignos 下肢分级）',
+      // This packet is id / subject / diseases / files / metaData. It
+      // holds no mobility data of any kind, so there is no section to
+      // point a receiver at and it must not sound as though there is.
+      '本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置。需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出。',
+    ),
+  );
   omissions.push({
     field: 'interpretations',
     reasonZh:

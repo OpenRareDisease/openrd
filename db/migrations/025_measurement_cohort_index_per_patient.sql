@@ -74,10 +74,97 @@
 -- Still deliberately NOT narrowed to a recency window, for 018's reason:
 -- what the cohort MEANS is a clinical decision, not an indexing one.
 --
--- Not CONCURRENTLY, and the same SHARE lock as 018 — see 018 for the
--- by-hand escape hatch if this table ever grows enough for the write
--- lock to matter. The DROP below takes ACCESS EXCLUSIVE, briefly, on a
--- table that at present holds a few hundred rows.
+-- LOCK NOTE — ACCESS EXCLUSIVE for the whole build, not 018's SHARE
+--
+-- Not CONCURRENTLY, for 018's reason: applyPendingMigrations
+-- (apps/api/src/db/migrate.ts) wraps each file in one BEGIN/COMMIT, and
+-- CREATE INDEX CONCURRENTLY cannot run inside a transaction. But that
+-- same wrapper is also why this file does NOT take the SHARE lock 018
+-- took, and the two statements below are not two separate locks. The
+-- DROP takes ACCESS EXCLUSIVE on patient_measurements and holds it
+-- until COMMIT, so the CREATE after it builds under ACCESS EXCLUSIVE —
+-- which blocks SELECT as well as INSERT/UPDATE/DELETE. 018 blocked
+-- writes only; this file stops the table dead for the length of the
+-- build.
+--
+-- Measured on the dev database (PG18, patient_measurements at 233
+-- rows) by holding the transaction open and reading pg_locks from a
+-- second session:
+--
+--   after the CREATE had run, pg_locks showed AccessExclusiveLock on
+--   patient_measurements granted and still held, alongside the build's
+--   own ShareLock — both at once
+--   `SELECT count(*) FROM patient_measurements` from that second
+--   session never returned; it was cancelled by a 2s statement_timeout
+--   DROP 1.5 ms, CREATE 4.7 ms — so reads are blocked for about 6 ms
+--   at this size, and it is the CREATE half that grows with the user
+--   base
+--
+-- Tolerable at this size and only at this size, for 015's two reasons:
+-- the row count, and a deploy shape with no concurrent reader or writer
+-- (one `api:` service, no `deploy.replicas`, so the old container is
+-- stopped before the new one migrates).
+--
+-- 018's by-hand escape hatch does NOT carry over to this file, and
+-- following it as written is worse than not trying. It says to build
+-- the index CONCURRENTLY outside the runner and let the IF NOT EXISTS
+-- become the no-op that records it — but the DROP below removes
+-- whatever index carries that name first, so the hand-built one is
+-- destroyed and then rebuilt non-concurrently under the full lock. At
+-- a size where the window matters, the swap has to REPLACE this file
+-- rather than precede it. Outside any transaction:
+--
+--   CREATE INDEX CONCURRENTLY idx_patient_measurements_cohort_v2
+--     ON patient_measurements
+--     (muscle_group, profile_id, recorded_at DESC, strength_score DESC);
+--
+-- then, in one transaction:
+--
+--   BEGIN;
+--   SET lock_timeout = '2s';
+--   DROP INDEX idx_patient_measurements_cohort;
+--   ALTER INDEX idx_patient_measurements_cohort_v2
+--     RENAME TO idx_patient_measurements_cohort;
+--   INSERT INTO schema_migrations (id, checksum) VALUES
+--     ('025_measurement_cohort_index_per_patient.sql',
+--      '<shasum -a 256 of this file>');
+--   COMMIT;
+--
+-- What the swap buys is a shorter stall, not the absence of one. That
+-- second transaction opens with a DROP INDEX, so it takes the same
+-- ACCESS EXCLUSIVE on patient_measurements as the file below and holds
+-- it until COMMIT — reads stop for it exactly as they stop for the
+-- CREATE. What changes is the length: measured on dev, the swap's DROP
+-- is 1.5 ms and the RENAME 0.3 ms, against a window that otherwise
+-- contains the whole CREATE and grows with the user base.
+--
+-- The `SET lock_timeout` is not decoration. ACCESS EXCLUSIVE cannot be
+-- granted while any reader still holds ACCESS SHARE, so at the size
+-- where this hatch is worth running the DROP first has to queue behind
+-- whatever SELECT is already in flight — and everything arriving while
+-- it queues stacks up behind it, reads included, because Postgres does
+-- not let later lock requests overtake a waiting exclusive one.
+-- Measured on dev with one reader deliberately held open: the DROP sat
+-- ungranted, and a plain `SELECT count(*)` issued after it was
+-- cancelled by a 2 s statement_timeout without ever running. With the
+-- lock_timeout the DROP gives up instead — 55P03, 「canceling statement
+-- due to lock timeout」 — the transaction rolls back with the v2 index
+-- still in place, and the queue drains; retry when the table is quiet.
+--
+-- The schema_migrations row is the part that is easy to forget and the
+-- part that makes the whole thing work — applyPendingMigrations skips
+-- on filename alone, so without it the next deploy runs the DROP+CREATE
+-- below anyway and throws away the concurrent build. A NULL checksum is
+-- accepted (`--status` then reports `applied` with no drift verdict);
+-- recording the real one keeps `--status` able to tell an edited file
+-- from the one that ran. On a ledger old enough to predate checksums
+-- there is no `checksum` column to write to: it is added by
+-- ensureMigrationsTable (migrate.ts) on a runner invocation, and this
+-- hatch runs BEFORE the deploy that would supply one, so the INSERT as
+-- written dies on 42703. Insert `(id)` alone on such a database — that
+-- is the same NULL checksum, reached the other way. The _down script's
+-- hatch needs none of this: its ledger statement is a DELETE, which
+-- names no columns, so it runs against a pre-checksum ledger unchanged.
 
 DROP INDEX IF EXISTS idx_patient_measurements_cohort;
 

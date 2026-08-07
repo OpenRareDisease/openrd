@@ -90,10 +90,29 @@ describe('Button', () => {
     });
   });
 
-  it('draws a full-size target by default', () => {
-    const flattened = StyleSheet.flatten(
-      control(render(<Button label="登录" onPress={() => {}} />)).props.style as never,
-    ) as { minHeight?: number };
-    expect(flattened.minHeight).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
-  });
+  /**
+   * Every variant, and both dimensions.
+   *
+   * The default was the only thing measured here, which left `plain`
+   * unpinned — and `plain` is the variant that replaces base's
+   * `paddingHorizontal: SPACE.lg` with SPACE.xs, so with base's
+   * `alignSelf: 'flex-start'` the box shrinks to the label. A
+   * two-character label (撤销 on 隐私设置, 删除 on 跌倒记录) drew a strip
+   * far under 48 wide while passing a minHeight-only assertion. On the
+   * web export the drawn box is the whole hit box — `hitSlop` is not
+   * read — so a target that is short in either dimension is short.
+   */
+  it.each(['prominent', 'tinted', 'plain', 'destructive'] as const)(
+    'draws a full-size target for %s, in both dimensions',
+    (variant) => {
+      // Two CJK characters: the shortest label the app actually ships,
+      // and the one that makes a content-width control too small.
+      const flattened = StyleSheet.flatten(
+        control(render(<Button label="撤销" variant={variant} onPress={() => {}} />)).props
+          .style as never,
+      ) as { minHeight?: number; minWidth?: number };
+      expect(flattened.minHeight).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+      expect(flattened.minWidth).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+    },
+  );
 });

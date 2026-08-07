@@ -42,8 +42,11 @@ describe('原研究的数字', () => {
 
   it('主要结局和摘要一致', () => {
     const byId = Object.fromEntries(TRIAL_FACTS.map((fact) => [fact.id, fact]));
-    expect(byId.vo2peak.value).toBe('+19%');
-    expect(byId.vo2peak.detail).toContain('P = 0.002');
+    // The abstract's 「+19%, P = 0.002」 is the week-6 figure (§3.1); the
+    // page reports week 24 like the four numbers next to it. Pinned in
+    // its own test below.
+    expect(byId.vo2peak.value).toBe('+29%');
+    expect(byId.vo2peak.detail).toContain('P = 0.012');
     expect(byId.fibre.value).toBe('+34%');
     expect(byId.fibre.detail).toContain('P = 0.008');
     expect(byId.adherence.value).toBe('91%');
@@ -79,6 +82,41 @@ describe('原研究的数字', () => {
     // the place it costs the most.
     const phase4 = EXERCISE_PHASES.find((phase) => phase.id === 'phase-4');
     expect(phase4?.trialNote).toContain('6 分钟步行距离 +14%');
+  });
+
+  it('VO2peak 给的是第 24 周的值，不是摘要标题里那个第 6 周的', () => {
+    // Table 2, mean difference in change: T6 19.7% (P = 0.002), T12
+    // 22.7%, T18 30.4%, T24 29.4% (P = 0.012). §3.1 attributes the ~20%
+    // to T6 explicitly. The abstract headlines 「+19%, P = 0.002」 and
+    // this page had folded it into a row of otherwise-T24 numbers,
+    // where a different timepoint is invisible.
+    const vo2 = TRIAL_FACTS.find((fact) => fact.id === 'vo2peak');
+    expect(vo2?.value).toBe('+29%');
+    expect(vo2?.detail).toContain('P = 0.012');
+    expect(vo2?.detail).toContain('第 24 周');
+
+    // phase-4 is the page's headline comparison — a list of week-24
+    // outcomes, read by a patient putting their own re-measure next to
+    // it. The week-6 number does not belong in it.
+    const phase4 = EXERCISE_PHASES.find((phase) => phase.id === 'phase-4');
+    expect(phase4?.trialNote).toContain('VO2peak +29%');
+    expect(phase4?.trialNote).not.toMatch(/19(\.\d)?%/);
+  });
+
+  it('凡是写出 19% 的地方都带着「第 6 周」', () => {
+    // The week-6 figure is not banned — it is the abstract's headline
+    // and the page is entitled to explain where it comes from. What is
+    // banned is stating it without the week it belongs to, which is
+    // how it ended up under a 第 19–24 周 heading.
+    const strings = [
+      ...TRIAL_FACTS.flatMap((fact) => [fact.value, fact.detail]),
+      ...EXERCISE_PHASES.flatMap((phase) => [phase.title, phase.focus, phase.trialNote]),
+    ];
+    const claims = strings.filter((text) => /(?<!\d)19(\.\d)?%/.test(text));
+    expect(claims.length).toBeGreaterThan(0);
+    claims.forEach((text) => {
+      expect(text).toContain('第 6 周');
+    });
   });
 
   it('样本量没有被四舍五入成「16 人的研究」而丢掉入组数', () => {

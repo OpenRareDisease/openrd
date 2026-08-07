@@ -12,7 +12,8 @@
  *     patient who answers nothing should still leave with the list.
  *  3. On the exercise tab, 「这个方案和原研究的差别」 must appear ABOVE
  *     the first trial number in document order. Under it, the reader
- *     has already treated an RPE plan as the thing that produced +19%.
+ *     has already treated an RPE plan as the thing that produced the
+ *     trial's VO2peak gain.
  */
 
 import TestRenderer, { act } from 'react-test-renderer';
@@ -38,6 +39,7 @@ jest.mock('expo-router', () => ({
 }));
 
 import RehabShareScreen from '../index';
+import { TRIAL_FACTS } from '../../../lib/home-exercise-content';
 
 /** Every string the screen renders, in document order, concatenated. */
 const collectText = (node: unknown): string => {
@@ -142,7 +144,12 @@ describe('运动方案：替代说明在数字前面', () => {
     openExerciseTab(tree);
     const text = collectText(tree.toJSON());
     const noteAt = text.indexOf('这个方案和原研究的差别');
-    const numberAt = text.indexOf('+19%');
+    // Read the first result off the module rather than pasting the
+    // percentage in: a hardcoded 「+19%」 went on matching after the
+    // VO2peak figure was corrected to the week-24 value, because the
+    // week-6 number is still quoted further down inside the detail.
+    const firstResult = TRIAL_FACTS.find((fact) => fact.id === 'vo2peak')!.value;
+    const numberAt = text.indexOf(firstResult);
     expect(noteAt).toBeGreaterThan(-1);
     expect(numberAt).toBeGreaterThan(-1);
     expect(noteAt).toBeLessThan(numberAt);

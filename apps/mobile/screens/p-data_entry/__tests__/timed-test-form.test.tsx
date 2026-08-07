@@ -8,7 +8,7 @@
  * 按方案完成, and what reaches the API carries the grade.
  */
 
-import { StyleSheet } from 'react-native';
+import { StyleSheet, TextInput } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 
 // `mock`-prefixed so the factory below may close over them: jest hoists
@@ -27,6 +27,38 @@ const addFunctionTest = mockAddFunctionTest;
 const createSubmission = mockCreateSubmission;
 
 jest.mock('@expo/vector-icons/Ionicons', () => 'Ionicons');
+
+/**
+ * The device's store, in memory.
+ *
+ * A real round trip rather than a spy: the unfinished-save record is
+ * written as JSON and read back by a parser that rejects shapes it does
+ * not recognise, so a test that only checked「setSessionValue was
+ * called」would pass over a record that can never be read again.
+ * `mock`-prefixed for the same hoisting reason as the API mocks above.
+ */
+const mockSessionStore = new Map<string, string>();
+
+jest.mock('../../../lib/session-storage', () => ({
+  __esModule: true,
+  // Reads the map when the promise settles, not when the call is made.
+  // Neither AsyncStorage nor SecureStore promises to capture the value
+  // at call time, and the difference is the whole point of the
+  // hydration gate: a mount that writes its empty map before the read
+  // has settled is a mount that erases the record it was about to
+  // recover. Capturing at call time would make that gate untestable and
+  // therefore deletable.
+  getSessionValue: (key: string) => Promise.resolve().then(() => mockSessionStore.get(key) ?? null),
+  setSessionValue: (key: string, value: string | null) => {
+    if (value === null) mockSessionStore.delete(key);
+    else mockSessionStore.set(key, value);
+    return Promise.resolve();
+  },
+  removeSessionValue: (key: string) => {
+    mockSessionStore.delete(key);
+    return Promise.resolve();
+  },
+}));
 
 /** Every AppState listener the component registered, so a test can play
  *  the part of the OS backgrounding the webview. */
@@ -49,11 +81,15 @@ jest.mock('react-native/Libraries/AppState/AppState', () => ({
 }));
 
 import TimedTestForm from '../TimedTestForm';
+import { DATA_ENTRY_DRAFT_KEYS, PATIENT_SCOPED_SECURE_KEYS } from '../../../lib/draft-keys';
 import { decodeProtocolField, type PreviousReading } from '../../../lib/timed-test-protocols';
+
+const PENDING_SAVES_KEY = DATA_ENTRY_DRAFT_KEYS.timedPendingSaves;
 
 const mounted: TestRenderer.ReactTestRenderer[] = [];
 
-type Profile = Parameters<typeof TimedTestForm>[0]['profile'];
+type Props = Parameters<typeof TimedTestForm>[0];
+type Profile = Props['profile'];
 
 const makeProfile = (overrides: Record<string, unknown> = {}): Profile =>
   ({
@@ -77,6 +113,9 @@ afterEach(() => {
   });
   jest.clearAllMocks();
   jest.useRealTimers();
+  // The store is the device, and every test gets a fresh one. Without
+  // this a half-finished save leaks into the next test as a locked row.
+  mockSessionStore.clear();
 });
 
 const allText = (node: ReactTestInstance | string | number | null): string => {
@@ -559,6 +598,307 @@ describe('a half-finished 四项抗重力 save', () => {
     expect(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成').props.disabled).toBe(true);
     expect(control(tree, '下一级台阶：今天做不了').props.disabled).toBe(false);
     expect(allText(tree.root)).toContain('这一项刚才已经存上了');
+  });
+
+  /** Answer the four, save, and have 下一级台阶 drop. */
+  const saveWithOneDropped = async (tree: TestRenderer.ReactTestRenderer) => {
+    dropOneItem();
+    answerAllFour(tree);
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+    expect(addFunctionTest).toHaveBeenCalledTimes(4);
+  };
+
+  it('still knows what landed after the card is closed and reopened', async () => {
+    // The locked rows leave no way to change an answer, so closing the
+    // card is the escape the patient can see. If that threw away which
+    // items are already on the server, reopening would re-arm the exact
+    // double post the retry exists to prevent — and `addFunctionTest` is
+    // a bare INSERT, so the duplicate rows would be permanent.
+    const tree = await render();
+    await saveWithOneDropped(tree);
+
+    press(control(tree, '四项抗重力')); // collapse
+    press(control(tree, '四项抗重力')); // and back
+
+    expect(allText(tree.root)).toContain('这一项刚才已经存上了');
+    const landedRow = control(tree, '坐 → 站：不用手撑、不用扶，一次就完成');
+    expect(landedRow.props.disabled).toBe(true);
+    // Showing the answer it landed with, not a blank row calling itself
+    // stored.
+    expect(landedRow.props.accessibilityState.selected).toBe(true);
+
+    addFunctionTest.mockResolvedValue({ id: 'ft-4' });
+    press(control(tree, '下一级台阶：今天做不了'));
+    // The grade came back with the rest of the session — not re-picked
+    // here, because the row that is about to be sent has to describe the
+    // same conditions as the three already stored.
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    expect(addFunctionTest).toHaveBeenCalledTimes(5);
+    const resent = addFunctionTest.mock.calls[4][0];
+    expect(resent.notes).toContain('下一级台阶');
+    expect(decodeProtocolField(resent.protocol)?.grade).toBe('per_protocol');
+    // One visit, not two on the same day.
+    expect(createSubmission).toHaveBeenCalledTimes(1);
+    expect(resent.submissionId).toBe('sub-1');
+    expect(allText(tree.root)).toContain('已保存四项抗重力');
+  });
+
+  it('survives the whole component being unmounted, not just the card closing', async () => {
+    // Three separate gestures unmount this component, and they are the
+    // three ways out of a card that will not let you change your
+    // answers: the mode picker (日常记录 and back), 返回 / the phone's
+    // back gesture, and a WeChat X5 reload. Nothing about them is
+    // distinguishable from here — they all end in a fresh mount with an
+    // empty memory — so one test covers all three, and it passes NOTHING
+    // between the two mounts except the device's store.
+    const tree = await render();
+    await saveWithOneDropped(tree);
+
+    act(() => {
+      tree.unmount();
+      mounted.pop();
+    });
+
+    const again = await render();
+    press(control(again, '有人在旁边'));
+    press(control(again, '四项抗重力'));
+    expect(allText(again.root)).toContain('这一项刚才已经存上了');
+    const landedRow = control(again, '坐 → 站：不用手撑、不用扶，一次就完成');
+    expect(landedRow.props.disabled).toBe(true);
+    expect(landedRow.props.accessibilityState.selected).toBe(true);
+
+    addFunctionTest.mockResolvedValue({ id: 'ft-4' });
+    press(control(again, '下一级台阶：今天做不了'));
+    await act(async () => {
+      control(again, '保存四项抗重力').props.onPress();
+    });
+
+    // One POST on the second visit, not four, and no second visit id.
+    expect(addFunctionTest).toHaveBeenCalledTimes(5);
+    expect(createSubmission).toHaveBeenCalledTimes(1);
+    expect(addFunctionTest.mock.calls[4][0].submissionId).toBe('sub-1');
+  });
+
+  it('writes the record to a key a sign-out sweeps', async () => {
+    // Asserted against the key the component actually wrote, not against
+    // the constant it was supposed to use. Surviving navigation is only
+    // safe because the same persistence is inside the logout sweep: this
+    // record names one person's visit id and the answers they gave, and
+    // FSHD is autosomal dominant, so several affected members of one
+    // family on one phone is the ordinary case for this cohort.
+    const tree = await render();
+    await saveWithOneDropped(tree);
+
+    const written = [...mockSessionStore.keys()];
+    expect(written).toHaveLength(1);
+    for (const key of written) {
+      expect(PATIENT_SCOPED_SECURE_KEYS).toContain(key);
+    }
+  });
+
+  it('keeps a visit id that has no landed items across an unmount', async () => {
+    // The non-三项 path writes a record with an empty `savedItems`: the
+    // visit was opened, the single row failed. Nothing is locked on the
+    // reopened card, so this is invisible on screen — the only evidence
+    // is that the retry does not open a second visit for the same test.
+    createSubmission.mockResolvedValue({ id: 'sub-grip' });
+    addFunctionTest.mockRejectedValue(new Error('网络不稳定，这次没有传上去。'));
+
+    const tree = await render();
+    press(control(tree, '握力（选做）'));
+    press(control(tree, '自由记录：没照卡片做，随手记一个。同样是你的数据，同样不进趋势线。'));
+    act(() => {
+      // The reading, then the venue note — this is the first TextInput.
+      tree.root.findAllByType(TextInput)[0].props.onChangeText('28');
+    });
+    await act(async () => {
+      control(tree, '保存握力（选做）').props.onPress();
+    });
+    expect(createSubmission).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      tree.unmount();
+      mounted.pop();
+    });
+
+    addFunctionTest.mockReset().mockResolvedValue({ id: 'ft-grip' });
+    const again = await render();
+    press(control(again, '握力（选做）'));
+    // The conditions came back with the visit, so the row that is about
+    // to be sent describes the session the visit was opened for.
+    act(() => {
+      again.root.findAllByType(TextInput)[0].props.onChangeText('28');
+    });
+    await act(async () => {
+      control(again, '保存握力（选做）').props.onPress();
+    });
+
+    expect(addFunctionTest).toHaveBeenCalledTimes(1);
+    expect(addFunctionTest.mock.calls[0][0].submissionId).toBe('sub-grip');
+    expect(createSubmission).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets the record once the last item lands, so the next session is its own visit', async () => {
+    // Left behind, the record would lock the next session's rows against
+    // a visit that is already closed and restore that session's grade,
+    // aids and venue over today's — the failure the clear on the success
+    // path exists to prevent.
+    const tree = await render();
+    await saveWithOneDropped(tree);
+
+    addFunctionTest.mockResolvedValue({ id: 'ft-4' });
+    press(control(tree, '下一级台阶：今天做不了'));
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+    expect(allText(tree.root)).toContain('已保存四项抗重力');
+    expect(mockSessionStore.get(PENDING_SAVES_KEY)).toBeUndefined();
+
+    // Tomorrow, same card.
+    createSubmission.mockResolvedValue({ id: 'sub-2' });
+    press(control(tree, '四项抗重力'));
+    const text = allText(tree.root);
+    expect(text).not.toContain('这一项刚才已经存上了');
+    expect(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成').props.disabled).toBe(false);
+
+    press(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成'));
+    press(control(tree, PER_PROTOCOL));
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    expect(createSubmission).toHaveBeenCalledTimes(2);
+    expect(addFunctionTest).toHaveBeenCalledTimes(6);
+    expect(addFunctionTest.mock.calls[5][0].submissionId).toBe('sub-2');
+  });
+
+  it('refuses to print 已保存 when the reopened card has nothing new to send', async () => {
+    // The reopened card shows the three landed answers again, so「4 项里
+    //至少选一项」is satisfied by rows that are already stored. Saving
+    // there would send nothing and still report success over a record
+    // that is still missing 下一级台阶.
+    const tree = await render();
+    await saveWithOneDropped(tree);
+
+    press(control(tree, '四项抗重力'));
+    press(control(tree, '四项抗重力'));
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    expect(addFunctionTest).toHaveBeenCalledTimes(4);
+    const text = allText(tree.root);
+    expect(text).toContain('其中 3 项刚才已经存上了');
+    expect(text).toContain('还有 1 项没选答案');
+    expect(text).not.toContain('已保存四项抗重力');
+  });
+
+  it('counts the landed and the outstanding rather than assuming three and one', async () => {
+    // One item landed, three did not. 「剩下的那一项」 was true for the
+    // case above and a fabricated count for this one, which is the same
+    // defect as any other number the app states without having.
+    addFunctionTest.mockImplementation((payload: { notes?: unknown }) =>
+      typeof payload?.notes === 'string' && payload.notes.includes('坐 → 站')
+        ? Promise.resolve({ id: 'ft' })
+        : Promise.reject(new Error('网络不稳定，这次没有传上去。')),
+    );
+
+    const tree = await render();
+    answerAllFour(tree);
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+    expect(allText(tree.root)).toContain('其余 1 项已经存上了');
+
+    press(control(tree, '四项抗重力'));
+    press(control(tree, '四项抗重力'));
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    const text = allText(tree.root);
+    expect(text).toContain('其中 1 项刚才已经存上了');
+    expect(text).toContain('还有 3 项没选答案');
+    expect(text).not.toContain('剩下的那一项');
+  });
+
+  /** What the store holds after a half-finished save, with one field
+   *  replaced by something this build cannot make sense of. */
+  const storeRecord = (entry: Record<string, unknown>) => {
+    mockSessionStore.set(PENDING_SAVES_KEY, JSON.stringify({ anti_gravity_four: entry }));
+  };
+
+  const validStoredEntry = {
+    submissionId: 'sub-old',
+    savedItems: { sit_to_stand: 2 },
+    grade: 'per_protocol',
+    aidKeys: ['cane'],
+    venueNote: '家里客厅',
+  };
+
+  const unreadableRecords: Array<[string, Record<string, unknown>]> = [
+    ['a grade this build no longer defines', { ...validStoredEntry, grade: 'roughly_ok' }],
+    ['no grade at all', { ...validStoredEntry, grade: undefined }],
+    ['no visit id', { ...validStoredEntry, submissionId: '' }],
+    ['a visit id that is not a string', { ...validStoredEntry, submissionId: 7 }],
+  ];
+
+  it.each(unreadableRecords)('drops a stored record with %s', async (_label, entry) => {
+    // The record is replayed into buildFunctionTestPayload and into the
+    // disabled state of the answer rows, so a shape that survived an app
+    // upgrade cannot be trusted the way an object this session built
+    // can. Dropping it costs a duplicate row; keeping it would post a
+    // grade the server does not know, or lock a row against a visit that
+    // cannot be named.
+    storeRecord(entry);
+
+    const tree = await render();
+    press(control(tree, '有人在旁边'));
+    press(control(tree, '四项抗重力'));
+    expect(allText(tree.root)).not.toContain('这一项刚才已经存上了');
+    expect(control(tree, '坐 → 站：不用手撑、不用扶，一次就完成').props.disabled).toBe(false);
+  });
+
+  it('drops only the items it cannot read, and keeps the visit', async () => {
+    // A junk entry inside `savedItems` must not cost the whole record:
+    // the visit id and the items that ARE readable are what stop the
+    // retry from opening a second visit and re-posting stored rows.
+    storeRecord({
+      ...validStoredEntry,
+      savedItems: { sit_to_stand: 2, not_an_item: 1, step_up: 99, stand_to_sit: 'yes' },
+    });
+
+    const tree = await render();
+    press(control(tree, '有人在旁边'));
+    press(control(tree, '四项抗重力'));
+
+    const landedRow = control(tree, '坐 → 站：不用手撑、不用扶，一次就完成');
+    expect(landedRow.props.disabled).toBe(true);
+    expect(landedRow.props.accessibilityState.selected).toBe(true);
+    // 99 is not one of the three states and「站 → 坐: 'yes'」is not a
+    // number, so neither locks a row.
+    expect(control(tree, '上一级台阶：今天做不了').props.disabled).toBe(false);
+    expect(control(tree, '站 → 坐：今天做不了').props.disabled).toBe(false);
+
+    press(control(tree, '站 → 坐：今天做不了'));
+    press(control(tree, '上一级台阶：今天做不了'));
+    press(control(tree, '下一级台阶：今天做不了'));
+    await act(async () => {
+      control(tree, '保存四项抗重力').props.onPress();
+    });
+
+    // Three POSTs — everything but the one item that was readable — all
+    // on the visit the first attempt opened.
+    expect(addFunctionTest).toHaveBeenCalledTimes(3);
+    expect(createSubmission).not.toHaveBeenCalled();
+    for (const call of addFunctionTest.mock.calls) {
+      expect(call[0].submissionId).toBe('sub-old');
+    }
   });
 });
 

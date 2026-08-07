@@ -29,8 +29,10 @@
  *
  * The one thing this file exists to keep straight
  * -----------------------------------------------
- * Bankolé's numbers are real and they are good: +19% VO2peak, +34%
- * fibre cross-sectional area, no worsening of the dystrophic picture,
+ * Bankolé's numbers are real and they are good: +29% VO2peak at week
+ * 24 (the abstract's headline +19% is the week-6 figure — Table 2 runs
+ * 19.7 / 22.7 / 30.4 / 29.4 at T6 / T12 / T18 / T24), +34% fibre
+ * cross-sectional area, no worsening of the dystrophic picture,
  * 91% adherence over 24 weeks. They were also obtained on a stationary
  * ergocycle, with the first 5–10 sessions supervised in the patient's
  * home by an exercise physiologist, with weekly telephone support plus
@@ -153,9 +155,16 @@ export const TRIAL_FACTS: TrialFact[] = [
   {
     id: 'vo2peak',
     label: '峰值摄氧量（VO2peak）',
-    value: '+19%',
+    // Table 2, mean difference in change: T6 19.7% (P = 0.002), T12
+    // 22.7%, T18 30.4%, T24 29.4% (P = 0.012); §3.1 attributes the ~20%
+    // to T6 in so many words. The abstract's headline 「+19%, P = 0.002」
+    // is that week-6 figure, and it shipped here as though it were the
+    // week-24 one — invisible, because mvc / endurance / walk / fatigue
+    // beside it are all T24. This row is T24 like its neighbours; the
+    // week-6 number stays in `detail`, with its week attached.
+    value: '+29%',
     detail:
-      'P = 0.002。第 6 周就已经出现显著提高，之后到第 24 周继续上升。对照组 24 周内没有变化。',
+      'P = 0.012，第 24 周对比基线（Table 2 为 29.4%）。第 6 周就已经出现显著提高（+19.7%，P = 0.002，也就是摘要里写的那个「+19%」），之后到第 24 周继续上升。对照组 24 周内没有变化。',
     evidence: 'trial',
     source: TRIAL_SOURCE,
   },
@@ -438,7 +447,7 @@ export const EXERCISE_PHASES: ExercisePhase[] = [
     focus:
       '把第 24 周的复测和第 0 周的记录并排看。这一页的价值在这一次对比里，不在中间任何一天的感觉里。',
     trialNote:
-      '原研究到第 24 周时：VO2peak +19%、MVC +15%、肌肉耐力 +23%、6 分钟步行距离 +14%、疲劳 −38%、肌纤维横截面积 +34%。',
+      '原研究到第 24 周时：VO2peak +29%、MVC +15%、肌肉耐力 +23%、6 分钟步行距离 +14%、疲劳 −38%、肌纤维横截面积 +34%。',
   },
 ];
 

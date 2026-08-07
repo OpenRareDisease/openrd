@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppEnv } from '../../config/env.js';
 import type { AppLogger } from '../../config/logger.js';
 import { errorHandler } from '../../middleware/error-handler.js';
+import { notFoundHandler } from '../../middleware/not-found.js';
 
 /**
  * The public half of the pickup flow, end to end through Express.
@@ -55,17 +56,25 @@ const context = { env: {} as AppEnv, logger };
 
 const makeApp = () => {
   const app = express();
-  // Mirrors server.ts, all three lines of it, because each one is a
+  // Mirrors server.ts, all four lines of it, because each one is a
   // thing this router has to survive:
   //   - trust proxy 1, so the rate limiters key on the forwarded client
   //     rather than on the proxy hop;
   //   - a JSON-only body parser, so a pickup route that stops bringing
   //     its own urlencoded middleware fails here and not in a hospital;
+  //   - the app-level JSON notFoundHandler, which is where a path that
+  //     matches no route in this router goes. This harness omitted it,
+  //     so a test written here against an unmatched path would have been
+  //     measured against Express's own HTML 「Cannot GET」 rather than
+  //     against the 「{"error":"Route not found"}」 production actually
+  //     returned — close enough to look fine, which is the shape of miss
+  //     this file exists to prevent;
   //   - the app-level JSON error handler, which is precisely what the
   //     public surface must NOT fall through to.
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '256kb' }));
   app.use('/s/passport', createPublicPassportRouter(context));
+  app.use(notFoundHandler);
   app.use(errorHandler({ logger }));
   return app;
 };
@@ -305,5 +314,66 @@ describe('还没进 handler 就失败的，也得是一张页', () => {
     // The app-level handler used to log this. It no longer sees it, so
     // this router has to.
     expect(logger.error).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Paths under /s/passport that match NO route in this router.
+ *
+ * A different exit from the one above: a route miss calls plain
+ * `next()`, and an Express error handler never sees that — the request
+ * walks off the end of the router and out to the app-level
+ * `notFoundHandler`, which is why `makeApp` above now mounts it. Before
+ * the terminal layer, every one of these came back as
+ * 「{"error":"Route not found"}」 as application/json, with none of the
+ * private headers, from a URL a clinician got by forwarding a link
+ * WeChat truncated or by deleting 「/pickup」 to go up a level.
+ *
+ * The assertions are on the answer, not on the layer: HTML, the same
+ * page a dead token gets, and the headers — so a future route that
+ * matches these paths and answers wrongly fails here too.
+ */
+describe('没匹配上任何路由的路径，也得是一张页', () => {
+  const NOT_A_SHARE = [
+    ['GET', '/s/passport', '被截断到最后一段的链接'],
+    ['GET', '/s/passport/', '截断后又补了一个斜杠'],
+    ['GET', '/s/passport/a/b', '多出一段'],
+    ['GET', '/s/passport/pickup/extra', '取件码表单后面又接了东西'],
+    ['POST', `/s/passport/${TOKEN}`, '对令牌页发 POST'],
+  ] as const;
+
+  for (const [method, path, why] of NOT_A_SHARE) {
+    it(`${method} ${path}（${why}）返回中文页面，不是 JSON`, async () => {
+      const app = makeApp();
+      const res = await (method === 'POST' ? request(app).post(path) : request(app).get(path));
+
+      expect(res.status).toBe(404);
+      expect(res.headers['content-type']).toContain('text/html');
+      // The app-level JSON 404 is mounted in this harness, so this
+      // assertion is what says the request never got that far.
+      expect(res.text).not.toContain('Route not found');
+      expect(res.text).not.toContain('{"error"');
+      // The same page a revoked or expired token gets: an incomplete URL
+      // and a dead link are the same situation for whoever holds it.
+      expect(res.text).toContain('这个链接打不开了');
+      expect(res.headers['cache-control']).toContain('no-store');
+      expect(res.headers['x-robots-tag']).toContain('noindex');
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+    });
+  }
+
+  it('这一层不吃掉它上面的路由 —— 取件码表单和令牌页还在', async () => {
+    const app = makeApp();
+    const form = await request(app).get('/s/passport/pickup');
+    expect(form.status).toBe(200);
+    expect(form.text).toContain('用取件码打开患者记录');
+
+    queryMock.mockResolvedValue({ rows: [], rowCount: 0 });
+    const token = await request(app)
+      .get(`/s/passport/${TOKEN}`)
+      .set('x-forwarded-for', '203.0.113.10');
+    expect(token.status).toBe(404);
+    // Reached the resolver — the terminal layer never queries.
+    expect(queryMock).toHaveBeenCalled();
   });
 });

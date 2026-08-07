@@ -29,7 +29,7 @@ import {
 } from '../../lib/api';
 import { COLOR } from '../../lib/design';
 import { DATA_ENTRY_DRAFT_KEYS } from '../../lib/draft-keys';
-import { isAmbulationLimited } from '../../lib/profile-baseline-options';
+import { AMBULATION_LABELS, toAmbulationChoice } from '../../lib/profile-baseline-options';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import { buildFollowupFeedback } from './followup-feedback';
 import { SLEEP_BUCKETS, bucketForScore, stepSleepScore } from './sleep-score';
@@ -830,6 +830,14 @@ const DataEntryScreen = () => {
   // registration write too — the ledger is read here, not assumed.
   const { ensureSensitiveDataConsent, gateProps } = useSensitiveDataConsentGate();
   const [entryMode, setEntryMode] = useState<EntryMode>('followup');
+  /* Which rows a half-finished 在家计时测试 save already left on the
+   * server used to be held here, in a ref, so that switching to 日常记录
+   * and back did not forget them. A ref on this screen was the wrong
+   * home: this screen is an Expo Router Stack screen, so 返回, the
+   * phone's back gesture and a WeChat X5 reload all unmount it, and each
+   * of those threw the record away just as thoroughly as the mode picker
+   * would have. It lives on the device now, beside the drafts below —
+   * see the comment on `pendingSaves` in TimedTestForm.tsx. */
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   /** True when the profile request failed for a reason other than 404.
    *  Without it, a network error and「还没建档」are the same `null`, and
@@ -1989,17 +1997,46 @@ const DataEntryScreen = () => {
   const previousPainScore = profile ? getLatestSymptomValue(profile, PAIN_SCALE.key) : null;
   const previousFatigueScore = profile ? getLatestSymptomValue(profile, FATIGUE_SCALE.key) : null;
 
-  // The baseline profile already says whether stairs are plausible:
-  // 「当前行走」answered anything but 「可独立行走」, or a device that
-  // rules them out. Used ONLY to word the hint beside the toggle so the
-  // patient doesn't have to re-explain what they already told us —
-  // never to pre-select it, because the toggle is itself a record of
-  // today, and a record the patient didn't make is a fabricated one.
-  const stairsLikelyOutOfReach =
-    isAmbulationLimited(profile?.baseline?.currentStatus?.independentlyAmbulatory) ||
-    (profile?.baseline?.currentStatus?.assistiveDevices ?? []).some(
+  // The hint beside the 今天做不了 toggle, worded from what the patient
+  // actually filed. Used ONLY to word the hint — never to pre-select the
+  // toggle, because the toggle is itself a record of today, and a record
+  // the patient didn't make is a fabricated one.
+  //
+  // Every branch quotes the answer it is standing on. 无法行走 and
+  // 需要辅助 are two different answers since migration 022 split them
+  // apart, and a hint that reads the wrong one back has invented a
+  // record just as surely as a pre-filled toggle would; so has one that
+  // reports a device as if it were an answer about walking, which is
+  // possible in the other direction too — a patient can list 轮椅 for
+  // long distances and still answer 可独立行走.
+  const stairHintZh = (() => {
+    const ambulation = toAmbulationChoice(
+      profile?.baseline?.currentStatus?.independentlyAmbulatory,
+    );
+    const limitingDevices = (profile?.baseline?.currentStatus?.assistiveDevices ?? []).filter(
       (device) => device === '轮椅' || device === '助行器',
     );
+    // 「不用留空」 is the point of all three of these: the toggle below
+    // stores a real record, and a blank stores nothing.
+    const notApplicableIsAnAnswer =
+      '上不了楼梯不用留空，点下面的“今天做不了 / 不适用”就行，这一条同样会被记录。';
+    const secondsIfWalking =
+      '如果今天能走，请填完成 10 级台阶的秒数，中途停顿或扶栏也按实际用时填。';
+
+    if (ambulation === 'unable') {
+      // No 「如果今天能走」 here: they have told us they cannot, and
+      // asking them to condition on it reads as not having been heard.
+      // The seconds field stays open in case today was different.
+      return `你在档案里填过${AMBULATION_LABELS.unable}，所以先说明：${notApplicableIsAnAnswer}要是今天确实上了台阶，也可以直接填秒数。`;
+    }
+    if (ambulation === 'assisted') {
+      return `你在档案里填过行动${AMBULATION_LABELS.assisted}，所以先说明：${notApplicableIsAnAnswer}${secondsIfWalking}`;
+    }
+    if (limitingDevices.length > 0) {
+      return `你在档案里填过用${limitingDevices.join('、')}，所以先说明：${notApplicableIsAnAnswer}${secondsIfWalking}`;
+    }
+    return '请填写这次完成 10 级台阶所用的秒数；中途停顿或扶栏也按实际用时填。今天做不了就点下面的按钮，不用留空。';
+  })();
 
   const renderFollowupForm = () => (
     <View style={styles.formStack}>
@@ -2014,11 +2051,7 @@ const DataEntryScreen = () => {
             <Text style={styles.fieldHint}>连续上 10 级台阶</Text>
           </View>
           <Text style={styles.sectionSubtitle}>
-            {followupForm.stairNotApplicable
-              ? '已标记“今天做不了”，本次不填秒数。'
-              : stairsLikelyOutOfReach
-                ? '你在档案里填过行动需要辅助，所以先说明：上不了楼梯不用留空，点下面的“今天做不了 / 不适用”就行，这一条同样会被记录。如果今天能走，请填完成 10 级台阶的秒数，中途停顿或扶栏也按实际用时填。'
-                : '请填写这次完成 10 级台阶所用的秒数；中途停顿或扶栏也按实际用时填。今天做不了就点下面的按钮，不用留空。'}
+            {followupForm.stairNotApplicable ? '已标记“今天做不了”，本次不填秒数。' : stairHintZh}
           </Text>
 
           {/* The copy above has always said「无法完成」was a normal

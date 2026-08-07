@@ -7,6 +7,8 @@ import { COMFORTABLE_TOUCH_TARGET, MIN_TOUCH_TARGET } from '../../lib/a11y';
 import { COLOR, RADIUS } from '../../lib/design';
 import PressableScale from '../../lib/press-scale';
 import { addFunctionTest, createSubmission, type PatientProfile } from '../../lib/api';
+import { DATA_ENTRY_DRAFT_KEYS } from '../../lib/draft-keys';
+import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import {
   AID_OPTIONS,
   ANTI_GRAVITY_ITEMS,
@@ -63,6 +65,29 @@ import {
  *     today's household.
  */
 
+/**
+ * What one test's half-finished save left on the server.
+ *
+ * `addFunctionTest` is a bare INSERT with no unique constraint and no
+ * idempotency key, so a row that reached the server is stored for good.
+ * The submission id rides along so the retry's rows join the visit the
+ * first attempt opened instead of inventing a second one minutes later,
+ * and the conditions ride along so the re-sent row cannot end up
+ * describing the session differently from the rows beside it.
+ */
+export type PendingTimedTestSave = {
+  submissionId: string;
+  /** Anti-gravity items this app watched land, with the answer each
+   *  landed with — so a card reopened after a partial save shows the
+   *  record rather than a blank row claiming to be stored. */
+  savedItems: Record<string, number>;
+  grade: QualityGrade;
+  aidKeys: string[];
+  venueNote: string;
+};
+
+export type PendingTimedTestSaves = Partial<Record<TimedTestId, PendingTimedTestSave>>;
+
 interface TimedTestFormProps {
   profile: PatientProfile | null;
   /** The screen's PIPL gate — same contract as InstrumentForm. */
@@ -76,6 +101,85 @@ interface TimedTestFormProps {
 type AntiGravityAnswers = Record<string, number | undefined>;
 
 const TICK_MS = 100;
+
+const PENDING_SAVES_KEY = DATA_ENTRY_DRAFT_KEYS.timedPendingSaves;
+
+/* ------------------------------------------------------------------ */
+/* The unfinished-save record, on the device                           */
+/* ------------------------------------------------------------------ */
+
+const KNOWN_TEST_IDS = new Set<string>(TIMED_TESTS.map((test) => test.id));
+const KNOWN_GRADES = new Set<string>(QUALITY_GRADES.map((option) => option.key));
+const KNOWN_ANTI_GRAVITY_KEYS = new Set<string>(ANTI_GRAVITY_ITEMS.map((item) => item.key));
+const KNOWN_ANTI_GRAVITY_VALUES = new Set<number>(ANTI_GRAVITY_STATES.map((state) => state.value));
+const KNOWN_AID_KEYS = new Set<string>(AID_OPTIONS.map((option) => option.key));
+
+/**
+ * Read the record back off the device.
+ *
+ * Every field is checked against the constant it came from rather than
+ * cast, because this JSON is replayed into two places that must not be
+ * fed a guess: `buildFunctionTestPayload`, which would post an unknown
+ * grade or an out-of-range answer, and the disabled state of the answer
+ * rows, which would lock a row that was never stored and leave the
+ * patient no way to record it.
+ *
+ * Anything unrecognised is dropped rather than repaired. Dropping costs
+ * a duplicate row — the item is re-sent because this app has forgotten
+ * it landed — and repairing would put a number nobody measured into a
+ * medical record, so the direction is not a close call.
+ */
+const parsePendingSaves = (raw: string | null): PendingTimedTestSaves => {
+  if (!raw) return {};
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return {};
+
+  const parsed: PendingTimedTestSaves = {};
+  for (const [testId, value] of Object.entries(decoded as Record<string, unknown>)) {
+    if (!KNOWN_TEST_IDS.has(testId)) continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+
+    // Without a visit id the record cannot do the one thing it exists
+    // for — send the retry to the visit the first attempt opened.
+    if (typeof entry.submissionId !== 'string' || entry.submissionId.length === 0) continue;
+    // The grade travels with the row, so a stale one would describe this
+    // session's conditions with a word this build does not define.
+    if (typeof entry.grade !== 'string' || !KNOWN_GRADES.has(entry.grade)) continue;
+
+    const savedItems: Record<string, number> = {};
+    const rawItems = entry.savedItems;
+    if (rawItems && typeof rawItems === 'object' && !Array.isArray(rawItems)) {
+      for (const [itemKey, itemValue] of Object.entries(rawItems as Record<string, unknown>)) {
+        if (!KNOWN_ANTI_GRAVITY_KEYS.has(itemKey)) continue;
+        if (typeof itemValue !== 'number' || !KNOWN_ANTI_GRAVITY_VALUES.has(itemValue)) continue;
+        savedItems[itemKey] = itemValue;
+      }
+    }
+
+    parsed[testId as TimedTestId] = {
+      submissionId: entry.submissionId,
+      savedItems,
+      grade: entry.grade as QualityGrade,
+      aidKeys: Array.isArray(entry.aidKeys)
+        ? entry.aidKeys.filter(
+            (key): key is string => typeof key === 'string' && KNOWN_AID_KEYS.has(key),
+          )
+        : [],
+      // Same 60-character cap the input enforces, so a hand-edited store
+      // cannot widen what the venue line is allowed to carry.
+      venueNote: typeof entry.venueNote === 'string' ? entry.venueNote.slice(0, 60) : '',
+    };
+  }
+
+  return parsed;
+};
 
 /* ------------------------------------------------------------------ */
 /* Screen wake + voice, both best-effort                               */
@@ -193,16 +297,89 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
-  // What a half-finished 四项抗重力 save left behind. `addFunctionTest`
-  // is a bare INSERT with no unique constraint and no idempotency key, so
-  // an item that reached the server is stored for good — pressing 保存
-  // again must not send it a second time. The submission id is kept with
-  // it so the retry's rows join the same visit rather than inventing a
-  // second one minutes later.
-  const [antiGravitySavedKeys, setAntiGravitySavedKeys] = useState<string[]>([]);
-  const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
+
+  /**
+   * What a half-finished save left behind, per test.
+   *
+   * Deliberately not part of `resetEntry()`, and deliberately not tied to
+   * the open card. The draft — the answers, the grade, the timer — is the
+   * patient's, and closing a card is how they throw it away. Which rows
+   * already reached the server is the record's, and nothing on this
+   * screen can un-write them: if collapsing the card cleared this,
+   * reopening it would re-arm the exact double post the retry exists to
+   * prevent, and the locked rows push the patient towards closing the
+   * card because that is the only way out of a card that will not let
+   * them change their answers.
+   *
+   * Keyed by test id because a submission is summarised with one test's
+   * name — a pending id must never be spent on a different card.
+   *
+   * It lives on the device rather than in memory because every way out
+   * of a locked card unmounts something. Collapsing the card is handled
+   * by the state itself; the mode picker unmounts this component;
+   * 返回 in the header, the phone's back gesture and a WeChat X5 reload
+   * unmount the whole Expo Router screen. That last group is why an
+   * in-memory holder on the screen was not enough — it dies with the
+   * screen, and the card then reopens blank, enabled and with no visit
+   * id, which is the four-POSTs-on-the-second-visit failure this record
+   * exists to prevent. The key is registered in lib/draft-keys.ts, which
+   * is what makes a sign-out sweep it; that, not a short lifetime, is
+   * the thing that keeps one person's visit id off the next person's
+   * screen.
+   *
+   * Deliberately not time-bounded, unlike the registration draft in that
+   * file. Ageing this out would not undo the rows — they are on the
+   * server for good — it would only make the app forget them and post
+   * them again.
+   */
+  const [pendingSaves, setPendingSaves] = useState<PendingTimedTestSaves>({});
+  const [isRecordHydrated, setRecordHydrated] = useState(false);
+
+  // Read the record back before the writer below is allowed to run. The
+  // gate is the point: without it the first render's empty map is
+  // persisted over the stored one, and the read that was about to
+  // recover it finds what it just wrote.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let stored: PendingTimedTestSaves = {};
+      try {
+        stored = parsePendingSaves(await getSessionValue(PENDING_SAVES_KEY));
+      } catch {
+        // Unreadable storage is not a reason to refuse a measurement.
+        // The cost is that a retry may duplicate a stored row, which is
+        // the same cost as the corrupt-entry path above.
+      }
+      if (cancelled) return;
+      // Merged under, not over. The card mounts closed, so a save cannot
+      // have finished in the window this read covers — but if one ever
+      // did, what this session watched land is the newer fact.
+      setPendingSaves((current) => ({ ...stored, ...current }));
+      setRecordHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isRecordHydrated) return;
+    // Cleared rather than stored as `{}` when nothing is outstanding, so
+    // a finished session leaves no key behind for the sweep to find.
+    void setSessionValue(
+      PENDING_SAVES_KEY,
+      Object.keys(pendingSaves).length > 0 ? JSON.stringify(pendingSaves) : null,
+    ).catch(() => undefined);
+  }, [pendingSaves, isRecordHydrated]);
 
   const openTest = useMemo(() => TIMED_TESTS.find((test) => test.id === openId) ?? null, [openId]);
+
+  const pendingSave = openId ? (pendingSaves[openId] ?? null) : null;
+  const pendingSubmissionId = pendingSave?.submissionId ?? null;
+  const antiGravitySavedKeys = useMemo(
+    () => Object.keys(pendingSave?.savedItems ?? {}),
+    [pendingSave],
+  );
   const isRunning = run !== null && run.stoppedAt === null;
 
   useScreenWakeLock(isRunning);
@@ -249,6 +426,9 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
     speak('结束');
   }, [openTest, run, tick, countdownMs]);
 
+  /** Throws the draft away. Everything here is something the patient
+   *  typed or tapped and has not sent; `pendingSaves` is not, and is not
+   *  cleared here — see its comment. */
   const resetEntry = () => {
     setRun(null);
     setValueText('');
@@ -259,13 +439,34 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
     setAntiGravity({});
     setSide('right');
     setError(null);
-    setAntiGravitySavedKeys([]);
-    setPendingSubmissionId(null);
+  };
+
+  /** Forget a test's unfinished save. Called only where the save is
+   *  actually finished — never on a gesture that merely closes a card. */
+  const clearPendingSave = (id: TimedTestId) => {
+    setPendingSaves((current) => {
+      if (!current[id]) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   };
 
   const toggleOpen = (id: TimedTestId) => {
-    setOpenId((current) => (current === id ? null : id));
+    const next = openId === id ? null : id;
+    setOpenId(next);
     resetEntry();
+    // A card reopened after a half-finished save comes back as the record
+    // left it: the items that landed, with the answers they landed with,
+    // and the conditions they were recorded under — so the one item still
+    // missing is re-sent describing the same session, not a new one.
+    const carried = next ? pendingSaves[next] : undefined;
+    if (carried) {
+      setAntiGravity({ ...carried.savedItems });
+      setGrade(carried.grade);
+      setAidKeys([...carried.aidKeys]);
+      setVenueNote(carried.venueNote);
+    }
     setSavedNotice(null);
   };
 
@@ -362,10 +563,24 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
     if (!grade) return '请先选这次记录的质量：按方案完成 / 条件不完整 / 自由记录。';
 
     if (openTest.measure === 'three_state') {
-      const answered = ANTI_GRAVITY_ITEMS.filter(
-        (item) => typeof antiGravity[item.key] === 'number',
+      // Items already on the server do not count towards this: a card
+      // reopened after a partial save shows their answers again, and
+      // 保存 with nothing new to send would print 「已保存」 over a
+      // record that is still missing the item that failed.
+      const outstanding = ANTI_GRAVITY_ITEMS.filter(
+        (item) => !antiGravitySavedKeys.includes(item.key),
       );
-      if (answered.length === 0) return '四项里至少选一项。';
+      const answered = outstanding.filter((item) => typeof antiGravity[item.key] === 'number');
+      if (answered.length === 0) {
+        // Both counts are computed for the same reason the banner below
+        // computes its own: a partial save can land any number of the
+        // four. The first version of this line said 「剩下的那一项」,
+        // which is true only for the three-landed case and states a
+        // count the app does not have in every other one.
+        return antiGravitySavedKeys.length > 0
+          ? `其中 ${antiGravitySavedKeys.length} 项刚才已经存上了，再存一次不会多记一条。还有 ${outstanding.length} 项没选答案，至少选一项再按保存。`
+          : `${ANTI_GRAVITY_ITEMS.length} 项里至少选一项。`;
+      }
       return null;
     }
 
@@ -396,6 +611,24 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
 
     setIsSaving(true);
     setError(null);
+    const testId = openTest.id;
+    // Records what this attempt left on the server, merged over whatever
+    // an earlier attempt left. Called as soon as there is a visit to
+    // remember and again as items land, because everything after this
+    // point can fail in a way that leaves rows behind.
+    const rememberPendingSave = (visitId: string, landedItems: Record<string, number> = {}) => {
+      setPendingSaves((current) => ({
+        ...current,
+        [testId]: {
+          submissionId: visitId,
+          savedItems: { ...(current[testId]?.savedItems ?? {}), ...landedItems },
+          grade: grade as QualityGrade,
+          aidKeys,
+          venueNote,
+        },
+      }));
+    };
+
     try {
       if (ensureConsent) {
         const consented = await ensureConsent();
@@ -424,7 +657,7 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
           throw new Error('保存失败：服务器没有返回这次记录的编号，请稍后重试。');
         }
         submissionId = submission.id;
-        setPendingSubmissionId(submissionId);
+        rememberPendingSave(submissionId);
       }
 
       const base = {
@@ -468,7 +701,10 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
 
         if (failed.length > 0) {
           const storedCount = antiGravitySavedKeys.length + landed.length;
-          setAntiGravitySavedKeys((current) => [...current, ...landed.map((item) => item.key)]);
+          rememberPendingSave(
+            submissionId,
+            Object.fromEntries(landed.map((item) => [item.key, antiGravity[item.key] as number])),
+          );
           const firstRejection = results.find(
             (result): result is PromiseRejectedResult => result.status === 'rejected',
           );
@@ -507,6 +743,10 @@ const TimedTestForm = ({ profile, ensureConsent, onSaved }: TimedTestFormProps) 
               QUALITY_GRADES.find((option) => option.key === grade)?.labelZh ?? ''
             }」。`,
       );
+      // Nothing is outstanding now, so the unfinished-save record for this
+      // test goes with the draft. Left behind it would lock the rows of
+      // the next session against a visit that is already closed.
+      clearPendingSave(testId);
       resetEntry();
       setOpenId(null);
       onSaved?.();

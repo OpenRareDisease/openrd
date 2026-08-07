@@ -42,15 +42,41 @@
  * `verifiedAgainst` naming the release version you checked and
  * `fhirSystem` set to the canonical system URI the FHIR release you
  * are targeting gives that code system. The serialisers pick it up
- * with no other change: the report-field loop in fhir-r4.ts asks
- * `verifiedCoding(field.codingKey)` for every OCR-derived value and
- * feeds whatever it emitted into `buildCodingProvenance`, so the code
- * appears on the Observation AND moves from `withheld` to `emitted`
- * in the same edit. coding-promotion.test.ts pins both halves — it
- * was written after a review found `codingKey` was read by nothing at
- * all, which made this paragraph false and would have let a promotion
- * ship as a no-op whose only visible effect was CK quietly dropping
- * out of the withheld list.
+ * with no other change, and that is arranged rather than hoped for:
+ *
+ *   - the report-field loop in fhir-r4.ts asks
+ *     `verifiedCoding(field.codingKey)` for every OCR-derived value and
+ *     records the key on the candidate Observation, so the code appears
+ *     on that Observation AND moves from `withheld` to `emitted` in the
+ *     same edit;
+ *   - the three places the FHIR envelope describes its own use of
+ *     terminology — the `CodeableConcept.coding (LOINC)` omission,
+ *     `conformanceZh` and `notes.编码` — and `codingProvenance.emitted`
+ *     are derived from the codings on the Observations that SURVIVED
+ *     the MAX_OBSERVATIONS cut, so none of them can go on telling a
+ *     receiver the document carries no external codings while it
+ *     carries one, and none of them can name a system for an
+ *     Observation the cut removed.
+ *
+ * coding-promotion.test.ts pins all of it. It was written after a
+ * review found `codingKey` was read by nothing at all, which would
+ * have let a promotion ship as a no-op whose only visible effect was
+ * CK quietly dropping out of the withheld list; it was extended after
+ * a second review found the envelope still hardcoded the absence,
+ * which would have shipped a bundle whose omissions contradicted its
+ * own content; and again after a third found the derivation reading
+ * the pre-cut candidate pool, which contradicts the document in the
+ * same direction for any patient with more than MAX_OBSERVATIONS rows.
+ *
+ * THE ONE THING A PROMOTION DOES NOT DO BY ITSELF. codings.test.ts
+ * asserts that no LOINC system URI appears in any of the three
+ * documents, and fhir-r4.test.ts asserts that every `system` in the
+ * bundle is FHIR-spec-internal. Promoting a LOINC code is MEANT to
+ * turn those red — they are the tripwire that says a third-party
+ * vocabulary just entered a patient's record. Read the diff, narrow
+ * each assertion to what is still withheld, and only then regenerate
+ * the goldens. Relaxing them and running `vitest -u` without reading
+ * is the move this whole file exists to prevent.
  *
  * FORMAT-INTERNAL CODES ARE NOT LEDGERED. `Observation.status =
  * 'final'`, `Bundle.type = 'document'`,

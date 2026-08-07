@@ -55,15 +55,15 @@
   "omissions": [
     {
       "field": "measurements",
-      "reasonZh": "本次导出持有 2 条肌力记录与 2 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本仓库内没有可核对的 LOINC 来源，因此不写入。这些数据在 FHIR 导出中以「有显示名、无编码」的形式完整保留。"
+      "reasonZh": "本次导出持有 2 条肌力记录与 2 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式完整保留。"
     },
     {
       "field": "phenotypicFeatures",
-      "reasonZh": "PhenotypicFeature.type 必须是 HPO 本体项。本仓库内没有可核对的 HPO 术语来源，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。"
+      "reasonZh": "PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。"
     },
     {
       "field": "measurements（Brooke 上肢分级 / Vignos 下肢分级）",
-      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，只有由分级推出的行走状态会出现在运动功能一节，分级本身仍然不在。"
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置。需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出。"
     },
     {
       "field": "interpretations",

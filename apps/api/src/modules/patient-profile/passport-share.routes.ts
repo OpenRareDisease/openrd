@@ -1,4 +1,11 @@
-import { Router, urlencoded, type ErrorRequestHandler, type Request, type Response } from 'express';
+import {
+  Router,
+  urlencoded,
+  type ErrorRequestHandler,
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express';
 
 import {
   buildPassportSharePage,
@@ -40,14 +47,26 @@ import { asyncHandler } from '../../utils/async-handler.js';
  * it can treat differently at the proxy (no caching, its own rate
  * limit) without pattern-matching inside /api.
  *
- * What the mount point does NOT buy: `cors` and the JSON `errorHandler`
- * are registered on the app (server.ts), not on the /api router, so
- * they still see these requests. This comment used to claim otherwise,
- * and the claim was load-bearing — it is why every failure that never
- * reached a handler (a 429, an over-long form body) was answered with a
- * JSON envelope rendered as page text in a clinician's browser. The
- * terminal error handler at the bottom of `createPublicPassportRouter`
- * is what actually keeps this surface HTML.
+ * What the mount point does NOT buy: `cors`, the JSON `errorHandler`
+ * and the JSON `notFoundHandler` are registered on the app (server.ts),
+ * not on the /api router, so they still see these requests. This comment
+ * used to claim otherwise, and the claim was load-bearing — it is why
+ * every failure that never reached a handler (a 429, an over-long form
+ * body) was answered with a JSON envelope rendered as page text in a
+ * clinician's browser.
+ *
+ * Keeping this surface HTML therefore takes TWO layers at the bottom of
+ * `createPublicPassportRouter`, because Express routes the two kinds of
+ * miss to two different places:
+ *
+ *   - `publicErrorHandler` catches anything that reaches a route or a
+ *     middleware and then calls `next(err)`;
+ *   - the terminal `router.use` above it catches anything that matches
+ *     no route in this router and calls plain `next()`. An error handler
+ *     never sees those. `GET /s/passport`, `GET /s/passport/a/b` and
+ *     `POST /s/passport/<token>` used to leave the router and come back
+ *     as 「{"error":"Route not found"}」 — a clinician whose forwarded
+ *     link WeChat truncated at the last segment read that as the page.
  */
 
 const RESOLVE_FAILED_PAGE = `<!DOCTYPE html>
@@ -66,7 +85,9 @@ const RESOLVE_FAILED_PAGE = `<!DOCTYPE html>
 </div></body></html>`;
 
 /**
- * One response for expired, revoked and never-existed.
+ * One response for expired, revoked, never-existed — and, from the
+ * terminal layer at the bottom of the public router, for a URL under
+ * /s/passport that is not a share at all.
  *
  * Telling them apart would tell whoever is guessing tokens that they
  * guessed a real one — and a real one identifies a real patient. The
@@ -234,14 +255,28 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     message: '请求过于频繁，请稍后再试',
   });
 
-  /** Applied to every response in this router: the pages are private
-   *  publications and a proxy, a history entry or a Referer carrying
-   *  one onward is the leak. */
-  const setPrivateHeaders = (res: Response) => {
+  /**
+   * The pages here are private publications, and a proxy, a history
+   * entry or a Referer carrying one onward is the leak.
+   *
+   * This is the router's FIRST layer rather than a line at the top of
+   * each handler, which is what it used to be. Each of those lines was
+   * true of the response it guarded and silent about every other one:
+   * the 429 and the 413 reached no handler, and an unmatched path
+   * reached no handler either and left the router entirely. Setting the
+   * headers on the way in means the claim「every response out of this
+   * router」is enforced by the router, and a route added below without
+   * reading this comment still gets them.
+   *
+   * Headers set here survive `res.status().type().send()` on every path
+   * below, including the error handler's — none of them rewrite the head.
+   */
+  router.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
     res.setHeader('Referrer-Policy', 'no-referrer');
-  };
+    next();
+  });
 
   /* ------------------------------------------------------------ *
    * Pickup. REGISTERED BEFORE `/:token` AND IT HAS TO STAY THERE —
@@ -259,7 +294,6 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     '/pickup',
     pickupLimiter,
     asyncHandler(async (req: Request, res: Response) => {
-      setPrivateHeaders(res);
       res
         .status(200)
         .type('html')
@@ -277,7 +311,6 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     // 2kb because the payload is a code and a date.
     urlencoded({ extended: false, limit: '2kb' }),
     asyncHandler(async (req: Request, res: Response) => {
-      setPrivateHeaders(res);
       const body = (req.body ?? {}) as { code?: unknown; dob?: unknown };
 
       const resolved = await shares.redeemPickup(body.code, body.dob);
@@ -322,10 +355,9 @@ export const createPublicPassportRouter = (context: RouteContext) => {
     asyncHandler(async (req: Request, res: Response) => {
       // A share is a private publication. Nothing between the patient's
       // clinician and us should hold a copy, and the URL itself is the
-      // credential — so it must not travel onward in a Referer header
-      // or sit in a shared proxy.
-      setPrivateHeaders(res);
-
+      // credential — so it must not travel onward in a Referer header or
+      // sit in a shared proxy. That is the router's first layer now,
+      // above, rather than a line here that only covered this route.
       const resolved = await shares.resolve(String(req.params.token ?? ''));
       if (!resolved) {
         sendUnavailable(res);
@@ -360,9 +392,32 @@ export const createPublicPassportRouter = (context: RouteContext) => {
   );
 
   /**
-   * The last layer of this router, and the reason it has to exist:
-   * a failure in MIDDLEWARE never reaches a handler, so it never
-   * reaches any of the pages above it either.
+   * Nothing above matched. Express does NOT send this to the error
+   * handler — a route miss calls plain `next()`, which walks off the end
+   * of the router and out to the app-level `notFoundHandler`
+   * (middleware/not-found.ts), whose answer is 「{"error":"Route not
+   * found"}」 as application/json.
+   *
+   * The three routes above are the whole surface, so everything else
+   * under /s/passport lands here: `GET /s/passport` (a link WeChat
+   * truncated at the last segment), `GET /s/passport/a/b`, a POST to a
+   * token, or `/pickup` with something appended. Every one of those is a
+   * clinician trying to open a handover and reading a JSON envelope as
+   * the page.
+   *
+   * Same page and same 404 as a dead token, deliberately: an incomplete
+   * URL and a revoked link are the same situation for the person holding
+   * it, the next step is identical, and telling them apart would tell
+   * someone probing which prefixes exist.
+   */
+  router.use((_req: Request, res: Response) => {
+    sendUnavailable(res);
+  });
+
+  /**
+   * The other half, for failures that DID enter a route or a middleware
+   * and then called `next(err)` — an error handler never sees the misses
+   * above.
    *
    * `openLimiter` rejecting the 61st open in a minute — one NAT'd
    * outpatient department is all it takes — and the urlencoded
@@ -374,10 +429,10 @@ export const createPublicPassportRouter = (context: RouteContext) => {
    * PayloadTooLargeError is worse — it is neither AppError nor
    * ZodError, so it came back as a 500 「Internal server error」.
    *
-   * Those paths also short-circuit `setPrivateHeaders`, so the
-   * responses we did not hand-build were also the only ones without
-   * no-store / noindex / no-referrer — which is why this handler sets
-   * them before it decides anything else.
+   * The private headers those paths used to miss are no longer this
+   * handler's business: they are set by the router's first layer, which
+   * every request into this router passes through before any route,
+   * limiter or parser can reject it.
    */
   const statusOf = (error: unknown): number => {
     if (error instanceof AppError) return error.statusCode;
@@ -406,7 +461,6 @@ export const createPublicPassportRouter = (context: RouteContext) => {
       return;
     }
 
-    setPrivateHeaders(res);
     const status = statusOf(error);
 
     if (status >= 500) {

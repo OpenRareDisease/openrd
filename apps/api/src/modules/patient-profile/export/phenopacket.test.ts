@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
+import { documentScopedAmbulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
+import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
@@ -133,5 +135,54 @@ describe('Phenopacket v2 — held-but-unemitted instruments are declared', () =>
     const omission = build().omissions.find((entry) => entry.field.includes('Brooke'));
     expect(omission?.reasonZh).toContain('Vignos');
     expect(omission?.reasonZh).toContain('不表示患者没有做过分级');
+  });
+
+  it('has nowhere for a walking state to be, whatever the baseline says', () => {
+    // Structural ground truth for the omission. The packet's whole
+    // shape is asserted, so 「there is no mobility data in it」 is read
+    // off the document rather than inferred from a character being
+    // absent — the previous `not.toContain('行走')` passed only because
+    // the fixture's walk test is spelt 步行, and would have gone red on
+    // a fixture change that altered nothing in production.
+    expect(Object.keys(build().document).sort()).toEqual([
+      'diseases',
+      'files',
+      'id',
+      'metaData',
+      'subject',
+    ]);
+    Object.entries(AMBULATION_LABELS).forEach(([value, labelZh]) => {
+      const serialised = JSON.stringify(
+        build({
+          baseline: {
+            ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+            currentStatus: {
+              ...(EXPORT_FIXTURE_PROFILE.baseline as { currentStatus: Record<string, unknown> })
+                .currentStatus,
+              independentlyAmbulatory: value,
+            },
+          },
+        }).document,
+      );
+      expect(serialised, value).not.toContain(value);
+      expect(serialised, labelZh).not.toContain(labelZh);
+    });
+  });
+
+  it('does not tell the receiver a walking state is somewhere in a packet that has none', () => {
+    const reason =
+      build().omissions.find((entry) => entry.field.includes('Brooke'))?.reasonZh ?? '';
+    // The shared wording used to end 「…会出现在运动功能一节」 — true of
+    // TREAT-NMD, and describing nothing that exists here. Its
+    // replacement guard pinned that phrase, so a new sentence making
+    // the same claim in other words stayed green. So this is the
+    // exhaustive list of sentences that mention the walking state and
+    // this file together: exactly one, and it denies. A second one
+    // makes this array longer whatever it says.
+    expect(documentScopedAmbulationSentences(reason)).toEqual([
+      expect.stringContaining('本文件不含任何行走能力或运动功能数据'),
+    ]);
+    // And no locator may point into a document that has no sections.
+    expect(locatorsIn(reason)).toEqual([]);
   });
 });

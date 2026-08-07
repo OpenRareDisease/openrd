@@ -55,6 +55,22 @@ export const DATA_ENTRY_DRAFT_KEYS = {
   entryMode: 'openrd.dataEntry.entryMode',
   followup: 'openrd.dataEntry.followup',
   event: 'openrd.dataEntry.event',
+  /**
+   * Which 在家计时测试 rows a half-finished save already left on the
+   * server, per test — see PendingTimedTestSave in
+   * screens/p-data_entry/TimedTestForm.tsx.
+   *
+   * Not a draft: a draft is what the patient typed and has not sent,
+   * and closing the card is how they throw one away. This is the
+   * opposite — rows that ARE sent, which nothing on the device can
+   * un-write, because `addFunctionTest` is a bare INSERT with no unique
+   * constraint. It is in this registry for both of the reasons the
+   * drafts are. It must survive navigating off the screen, or the card
+   * reopens blank and enabled with no visit id and posts the stored
+   * rows a second time. And it must not survive a sign-out, because it
+   * names one person's visit id and the answers they gave.
+   */
+  timedPendingSaves: 'openrd.dataEntry.timedPendingSaves',
 } as const;
 
 /**

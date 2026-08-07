@@ -320,7 +320,20 @@ export const buildTreatNmdExport = (
       '本节不含 Brooke 上肢分级与 Vignos 下肢分级——本平台采集这两项，但它们尚未接入本导出。详见 omissions 中的 sections.motorFunction.instruments。',
   };
 
-  omissions.push(instrumentOmission('sections.motorFunction.instruments'));
+  omissions.push(
+    instrumentOmission(
+      'sections.motorFunction.instruments',
+      // This format is the only one of the three that carries a
+      // walking state at all, so it is the only one whose reason may
+      // point at a section — and it has to name every section that
+      // holds one. Naming 运动功能 alone undercounted. The count is not
+      // restated here because restating it is how it goes stale:
+      // treat-nmd.test.ts derives the set from `document.sections` and
+      // fails if this sentence names fewer, or names one that does not
+      // hold the state.
+      '若患者在填写 Vignos 时选择了同步到基线，由分级推出的行走状态会出现在 sections.motorFunction 的 motor.ambulation 与 sections.wheelchairUse 的 wheelchair.currentState，分级本身仍然不在。',
+    ),
+  );
 
   // ----------------------------------------------------- 轮椅使用
   const wheelchairMilestones = source.milestones.filter(

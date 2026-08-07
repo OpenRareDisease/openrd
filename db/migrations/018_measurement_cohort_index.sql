@@ -38,12 +38,23 @@
 -- hand outside the migration runner and let the IF NOT EXISTS here
 -- become the no-op that records it.
 --
+-- That hatch stops at this file. 025 rebuilds this same index name and
+-- opens with an unconditional `DROP INDEX IF EXISTS`, so an index built
+-- concurrently by hand to get past THIS file is destroyed by that one
+-- and rebuilt non-concurrently under a lock that blocks reads as well.
+-- 025 carries its own hatch, which replaces 025 rather than preceding
+-- it; use that one, not this one, once the chain reaches 025.
+--
 -- To be precise about which lock, since 015/017 in this same batch take
 -- a different one: a plain CREATE INDEX takes SHARE on
 -- patient_measurements — it blocks INSERT/UPDATE/DELETE for the
 -- duration of the build but not SELECT, so reads of the manage screen
 -- keep working while writes queue. 015 and 017 take ACCESS EXCLUSIVE,
--- which blocks both. At 233 rows neither is observable; the difference
+-- which blocks both. SHARE is what THIS file takes because the CREATE
+-- is the only statement in its transaction — 025 pairs a DROP with the
+-- CREATE inside one, so it holds ACCESS EXCLUSIVE through the build and
+-- blocks reads too; do not carry this line forward to it. At 233 rows
+-- none of the three is observable; the difference
 -- only starts to matter at the scale that would motivate the by-hand
 -- CONCURRENTLY build above, and that build has to land BEFORE the
 -- runner reaches this file, or the runner does it non-concurrently

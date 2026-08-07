@@ -14,6 +14,7 @@ import {
   _laterMigrationsStillApplied,
   _resolveDownTarget,
   _rollBackMigration,
+  _stripSqlComments,
   type MigrationLedgerClient,
 } from './migrate.js';
 
@@ -327,6 +328,311 @@ describe('every _down script on disk has a forward sibling and no transaction co
     // Order is the whole point: preserving after the NULLing UPDATE
     // would copy the NULLs.
     expect(preserveAt).toBeLessThan(destroyAt);
+  });
+});
+
+/*
+ * Locks compose inside the runner's transaction, so a migration that
+ * describes them statement by statement gets the answer wrong.
+ *
+ * applyPendingMigrations wraps a whole file in one BEGIN/COMMIT. A file
+ * that drops an index and then creates one is therefore not taking two
+ * locks in turn: the DROP's ACCESS EXCLUSIVE on the table is held until
+ * COMMIT, and the CREATE builds under it. That blocks SELECT as well as
+ * INSERT/UPDATE/DELETE — a different outage from the SHARE lock a lone
+ * CREATE INDEX takes, and a different thing to plan a deploy around.
+ *
+ * 025 shipped saying the opposite: 「the same SHARE lock as 018 — see
+ * 018 for the by-hand escape hatch … The DROP below takes ACCESS
+ * EXCLUSIVE, briefly」. An operator reading that budgets for a window
+ * that stops writes when it stops reads, and following the pointer to
+ * 018's CONCURRENTLY hatch makes it worse rather than better: 025's
+ * unconditional DROP removes the hand-built index and rebuilds it
+ * non-concurrently under the full lock.
+ *
+ * Measured on PG18 against dev (patient_measurements, 233 rows) by
+ * holding the transaction open and reading pg_locks from a second
+ * session: AccessExclusiveLock granted on the table and still held
+ * after the CREATE had run, alongside the build's own ShareLock; a
+ * plain `SELECT count(*)` from that second session never returned and
+ * was cancelled by a 2s statement_timeout.
+ *
+ * The lock's CONSEQUENCE is guarded separately from its name and its
+ * duration, because 025's correction got the first two right and then
+ * described its own escape-hatch swap — a transaction opening with
+ * `DROP INDEX` — as work 「neither reads nor writes stop for」. Both
+ * halves are checkable independently and a file can pass either while
+ * failing the other, so both are checked.
+ *
+ * The swap is checked in its own right too. It is not made of the
+ * file's statements, so the paragraph selector cannot reach it by
+ * looking at what the file does; and the sentence that describes it is
+ * the one an operator acts on by hand, against a live database. So a
+ * file that offers a swap — or borrows the neighbouring file's — has to
+ * carry the swap's lock in a paragraph of its own, which is what the
+ * _down script did not do while its forward sibling covered for it.
+ *
+ * Which files are held to this is derived from the statements rather
+ * than listed, so migration 026 is covered the day someone writes it in
+ * this shape. The assertions are on claims a file in this shape cannot
+ * honestly make, not on any particular wording of the correction.
+ */
+describe('a migration that rebuilds an index describes the lock it really takes', () => {
+  const migrationsDir = path.resolve(__dirname, '../../../../db/migrations');
+
+  const sqlOf = (file: string) => _decodeSqlBuffer(fs.readFileSync(path.join(migrationsDir, file)));
+
+  /** The comment text as a reader meets it: `--` markers dropped and
+   *  wrapped lines rejoined, so a sentence split across three lines is
+   *  one string here as it is one sentence on screen. */
+  const commentLinesOf = (sql: string) =>
+    sql
+      .split('\n')
+      .filter((line) => line.trimStart().startsWith('--'))
+      .map((line) => line.trimStart().replace(/^--\s?/, ''));
+
+  const proseOf = (sql: string) => commentLinesOf(sql).join(' ').replace(/\s+/g, ' ');
+
+  /** The same text cut at the blank `--` lines, so an assertion can ask
+   *  about the paragraph that makes a claim rather than about the file.
+   *  Whole-file matching is too weak here: 025's original text named
+   *  ACCESS EXCLUSIVE in one paragraph and described a catalog blip in
+   *  another, and every file-global check it had stayed green. */
+  const paragraphsOf = (sql: string) =>
+    commentLinesOf(sql)
+      .join('\n')
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+  /** Paragraphs that describe the composition itself — this lock, over
+   *  this DROP, with a build or a rename after it. Those are the ones an
+   *  operator budgets a deploy from, so those are the ones held to the
+   *  consequence. A heading or a recipe listing naming only one of the
+   *  three is not making the claim.
+   *
+   *  The lock name is matched in both spellings a writer reaches for:
+   *  `ACCESS EXCLUSIVE` as the SQL level and `AccessExclusiveLock` as
+   *  pg_locks prints it. Matching only the first left the paragraph that
+   *  quotes pg_locks outside every assertion here. */
+  const claimParagraphs = (sql: string) =>
+    paragraphsOf(sql).filter(
+      (paragraph) =>
+        /ACCESS\s*EXCLUSIVE/i.test(paragraph) &&
+        /\bDROP\b/.test(paragraph) &&
+        /\bCREATE\b|\bbuilds?\b|\bRENAME\b/.test(paragraph),
+    );
+
+  /** Says reads are among what stops — not merely that a lock is taken. */
+  const statesReadsStop =
+    /\b(?:blocks?|stops?|stopped|stopping|cancell?ed|cancels?)\b[^.]{0,40}\b(?:SELECTs?|reads?|readers?)\b|\b(?:SELECTs?|[Rr]eads?)\b[^.]{0,60}\b(?:blocked|blocks?|stops?|stop|queue|queues|cancell?ed)\b/;
+
+  /** True when the runner's single transaction leaves the index build
+   *  running under an earlier statement's ACCESS EXCLUSIVE. Statements
+   *  are split with the runner's own comment stripper so a `DROP INDEX`
+   *  quoted in prose does not count as one. */
+  const buildsIndexUnderAccessExclusive = (sql: string) => {
+    const statements = _stripSqlComments(sql)
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    const exclusive = statements.findIndex((s) => /^DROP\s+INDEX\b/i.test(s));
+    const build = statements.findIndex((s) => /^CREATE\s+INDEX\b/i.test(s));
+    return exclusive >= 0 && build > exclusive;
+  };
+
+  /** True when the file hands the operator a by-hand swap — spelled out
+   *  as a recipe, or borrowed from the neighbouring file by reference.
+   *  The swap is a SECOND transaction that opens with `DROP INDEX`, so
+   *  it takes the same lock as the file itself; but it is not made of
+   *  the file's own statements, so nothing above can see it. That is
+   *  where 025's original text put its comfort — the swap was 「catalog
+   *  work, not a build」 that 「neither reads nor writes stop for」 — and
+   *  every check in this describe stayed green over it. */
+  /** One vocabulary, used by BOTH predicates below.
+   *
+   *  They disagreed: `swapLockParagraphs` already counted 「second
+   *  transaction」 as naming a swap while `offersASwap` did not, and
+   *  `offersASwap` is the trigger — so a file that handed the operator
+   *  the same recipe under 「the by-hand alternative」 was skipped
+   *  entirely and every assertion in this describe stayed green over
+   *  it. Reproduced against 025's _down script, which went straight
+   *  back to the inherit-by-reference state it was corrected out of. */
+  const SWAP_VOCABULARY =
+    /\bhatch\b|\bswap\b|by[- ]hand|second transaction|RENAME TO|CREATE INDEX CONCURRENTLY/i;
+
+  const offersASwap = (sql: string) => SWAP_VOCABULARY.test(proseOf(sql));
+
+  /** Paragraphs that state the swap's lock in full: the lock's name,
+   *  that it is held to COMMIT, and that reads stop for it. All three in
+   *  ONE paragraph that names the swap, because the honest sentences
+   *  about the file's own DROP live in a different paragraph and
+   *  borrowing them is exactly how the _down script passed while
+   *  carrying no caveat of its own. */
+  const swapLockParagraphs = (sql: string) =>
+    paragraphsOf(sql).filter(
+      (paragraph) =>
+        SWAP_VOCABULARY.test(paragraph) &&
+        /ACCESS\s*EXCLUSIVE/i.test(paragraph) &&
+        /until COMMIT|still held|through the build/i.test(paragraph) &&
+        statesReadsStop.test(paragraph),
+    );
+
+  const rebuilders = fs
+    .readdirSync(migrationsDir)
+    .filter((file) => file.endsWith('.sql'))
+    .filter((file) => buildsIndexUnderAccessExclusive(sqlOf(file)));
+
+  it('finds the migrations in that shape', () => {
+    expect(rebuilders).toContain('025_measurement_cohort_index_per_patient.sql');
+    // The rollback script has the same shape and the same lock, which
+    // is why it is held to the same rule rather than exempted for being
+    // hand-run.
+    expect(rebuilders).toContain('025_measurement_cohort_index_per_patient_down.sql');
+  });
+
+  it.each(rebuilders)('%s says the exclusive lock outlives the DROP', (file) => {
+    const claims = claimParagraphs(sqlOf(file));
+    // A file in this shape has to make the claim somewhere.
+    expect(claims.length).toBeGreaterThan(0);
+    // Naming the lock is not enough — 025 named it and still described a
+    // catalog blip. The paragraph making the claim has to say the lock
+    // is held across the build, and has to say it itself: borrowing
+    // 「until COMMIT」 from an unrelated paragraph elsewhere in the file
+    // is how the original text passed.
+    for (const claim of claims) {
+      expect(claim).toMatch(/until COMMIT|still held|through the build/i);
+    }
+  });
+
+  it.each(rebuilders)('%s says reads stop too, not only writes', (file) => {
+    // The half with the operational teeth. The lock's NAME and DURATION
+    // are both compatible with the outage an operator already knows —
+    // writes queue, the manage screen keeps rendering — and that is the
+    // budget they will set unless the text says otherwise. So the
+    // paragraph that makes the claim has to name reads among what stops.
+    for (const claim of claimParagraphs(sqlOf(file))) {
+      expect(claim).toMatch(statesReadsStop);
+    }
+  });
+
+  it.each(rebuilders)('%s does not claim a lock this shape cannot take', (file) => {
+    const prose = proseOf(sqlOf(file));
+    // SHARE is what a lone CREATE INDEX takes; it is not available to a
+    // file that dropped an index first in the same transaction.
+    expect(prose).not.toMatch(/same SHARE lock/i);
+    // 「briefly」 is true of a DROP on its own and false of a transaction
+    // that holds the lock through an index build.
+    expect(prose).not.toMatch(/ACCESS EXCLUSIVE[^.]{0,40}\bbrief/i);
+    // The reassurance the lock cannot support, in any paragraph: under
+    // ACCESS EXCLUSIVE nothing reads the table, so no part of this file
+    // may tell an operator that reads carry on. Checked file-wide on
+    // purpose — a file that says reads stop in one place and reads keep
+    // working in another has not corrected anything.
+    expect(prose).not.toMatch(
+      /\b(?:SELECTs?|reads?|readers?)\b[^.]{0,60}\b(?:keeps?|stays?|remains?|unaffected|untouched|carry on|still (?:work|works|run|runs))\b/i,
+    );
+    // 「only writes」 in any spelling: the DROP's lock does not have a
+    // writers-only mode to fall back to.
+    expect(prose).not.toMatch(/\bonly\b[^.]{0,30}\bINSERT\b/i);
+    expect(prose).not.toMatch(/\bonly\b[^.]{0,20}\bwrites?\b/i);
+    // The same reassurance in negative form — 「neither reads nor writes
+    // stop for it」. It names no lock and uses none of the verbs above,
+    // which is how the original text about the swap transaction passed
+    // every check in this describe.
+    expect(prose).not.toMatch(
+      /\b(?:neither|nothing|not)\b[^.]{0,40}\b(?:reads?|writes?|SELECTs?)\b[^.]{0,50}\b(?:stops?|blocked|blocks?|pauses?|waits?|queues?)\b/i,
+    );
+    // ACCESS EXCLUSIVE is a lock on the TABLE. A bare RENAME takes
+    // ShareUpdateExclusive on the index only — true, and irrelevant to
+    // any transaction that opened with a DROP INDEX.
+    expect(prose).not.toMatch(/no lock on the table/i);
+    // The same denial reached without naming reads at all: the table
+    // 「keeps answering」, 「stays available」, 「nothing waits」. These are
+    // what the sentence above becomes once its banned words are gone,
+    // and they are false for the same reason — the lock is on the table
+    // and it is held to COMMIT.
+    expect(prose).not.toMatch(
+      /\b(?:keeps?|stays?|stay|remains?|is|are)\b[^.]{0,30}\b(?:available|answering|serving|readable|online|reachable)\b/i,
+    );
+    expect(prose).not.toMatch(
+      /\b(?:nothing|nobody|no one)\b[^.]{0,40}\b(?:waits?|blocked|blocks?|queues?|stops?|stalls?)\b/i,
+    );
+    // 「Reads continue throughout the swap」 — the affirmative that needs
+    // none of the verbs above. Plainer than any of them, and it passed.
+    expect(prose).not.toMatch(
+      /\b(?:reads?|SELECTs?|readers?)\b[^.]{0,40}\b(?:continue|continues|proceed|proceeds|go on|goes on)\b/i,
+    );
+    // 「does not lock the table for reads」 / 「holds no read lock」. The
+    // negative-form check above wants a stop-verb AFTER the noun, so
+    // both of these slipped past it.
+    expect(prose).not.toMatch(
+      /\bdoes not (?:lock|block)\b[^.]{0,40}\b(?:table|reads?|SELECTs?|readers?)\b/i,
+    );
+    expect(prose).not.toMatch(/\b(?:no|without a)\b[^.]{0,20}\bread lock\b/i);
+    // 「the 1.8 ms swap is invisible to readers」 — a duration reframed
+    // as an absence of consequence. The duration may be honest; the
+    // conclusion is not, because the wait is unbounded behind whatever
+    // is already reading.
+    expect(prose).not.toMatch(
+      /\b(?:invisible|imperceptible|unnoticeable)\b[^.]{0,30}(?:to )?\b(?:readers?|reads?|clients?|callers?|users?)\b/i,
+    );
+    // 「the manage screen keeps rendering right through it」. This one is
+    // the sentence THIS TEST'S OWN comment uses to describe the false
+    // belief it exists to prevent, and it passed every assertion above.
+    expect(prose).not.toMatch(
+      /\b(?:manage screen|table|screen|app|UI)\b[^.]{0,30}\b(?:keeps?|goes on|carries on)\b[^.]{0,20}\b(?:rendering|answering|working|serving|responding)\b/i,
+    );
+  });
+
+  it.each(rebuilders)('%s says what the by-hand swap it offers locks', (file) => {
+    const sql = sqlOf(file);
+    // Only files that offer a swap, or borrow the neighbouring file's,
+    // are held to this — a future migration in this shape that offers
+    // none makes no claim to check.
+    if (!offersASwap(sql)) return;
+    // The swap is the ONE thing in these files an operator runs by hand
+    // on a live database, and it opens with the same DROP INDEX the file
+    // does. A file that hands it over without saying so is describing a
+    // window that does not exist. Both 025 files own this sentence
+    // themselves; inheriting it from the forward file by reference is
+    // the state the _down script shipped in.
+    expect(swapLockParagraphs(sql)).not.toHaveLength(0);
+  });
+
+  it('does not send the operator after a 42703 the _down hatch cannot raise', () => {
+    const forward = '025_measurement_cohort_index_per_patient.sql';
+    const down = '025_measurement_cohort_index_per_patient_down.sql';
+    // 42703 is 「column does not exist」: the forward hatch's ledger
+    // INSERT names `checksum`, and a ledger old enough to predate that
+    // column rejects the statement. The _down hatch DELETEs its ledger
+    // row instead, and a DELETE names no columns — so the workaround
+    // does not carry over, and pointing the operator at it sends them to
+    // edit a statement that was never going to fail.
+    const downProse = proseOf(sqlOf(down));
+    expect(downProse).toMatch(/\bDELETE\b[^.]{0,80}schema_migrations/);
+    expect(downProse).not.toMatch(/INSERT INTO schema_migrations/);
+
+    const clauses = paragraphsOf(sqlOf(forward)).filter((paragraph) => paragraph.includes('42703'));
+    // The hatch does not work on an old ledger without this explanation,
+    // so it has to be there for the rest of the check to mean anything.
+    expect(clauses).not.toHaveLength(0);
+    for (const clause of clauses) {
+      if (!/_down/.test(clause)) continue;
+      // If it mentions the _down script at all it has to name the DELETE
+      // that exempts it, rather than extending the INSERT's fix to it.
+      expect(clause).toMatch(/\bDELETE\b/);
+      expect(clause).not.toMatch(/same treatment|same shape/i);
+    }
+  });
+
+  it.each(rebuilders)('%s does not forward the reader to a hatch its own DROP defeats', (file) => {
+    const prose = proseOf(sqlOf(file));
+    // 018's escape hatch is "build it CONCURRENTLY by hand and let the
+    // IF NOT EXISTS become the no-op that records it". A DROP above the
+    // CREATE deletes the hand-built index first, so a file in this shape
+    // has to carry its own hatch instead of pointing at another file's.
+    expect(prose).not.toMatch(/see \d{3} for the (?:by-hand )?(?:escape )?hatch/i);
   });
 });
 

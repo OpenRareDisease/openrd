@@ -172,6 +172,25 @@ export default Button;
 const styles = StyleSheet.create({
   base: {
     minHeight: MIN_TOUCH_TARGET,
+    /**
+     * A touch target has two dimensions, and MIN_TOUCH_TARGET is about
+     * the smaller one — so the floor has to be stated on both.
+     *
+     * Height alone was enough for as long as every variant kept base's
+     * `paddingHorizontal: SPACE.lg` (16), which puts even a
+     * two-character label past 48 on its own. `plain` does not: it
+     * replaces that padding with SPACE.xs (4) so the tap area cannot
+     * claim more room than the text occupies, and with base's
+     * `alignSelf: 'flex-start'` the box then shrinks to the label. Two
+     * CJK glyphs at `fontSize: 15` plus 4 + 4 leaves a strip narrower
+     * than the finger aiming at it — on 撤销/作废, the control that
+     * takes back access to a medical record.
+     *
+     * On the web export the drawn box IS the hit box (`hitSlop` is not
+     * read — see the note on `compact`), so this cannot be bought back
+     * later either.
+     */
+    minWidth: MIN_TOUCH_TARGET,
     paddingHorizontal: SPACE.lg,
     paddingVertical: SPACE.sm,
     borderRadius: RADIUS.control,
@@ -239,14 +258,17 @@ const TONE: Record<ButtonVariant, { container: ViewStyle; text: { color: string 
     text: { color: COLOR.alert },
   },
   plain: {
-    // No fill: the label *is* the control. It keeps the touch-target
-    // minimum from `styles.base` but loses the horizontal padding,
-    // which would otherwise make the tap area lie about where the text
-    // ends. The minimum survives `plain` ALONE — combined with
-    // `compact` it does not, because compact's own minHeight (34) wins
-    // over base's. That combination drew the 撤销 button on 隐私设置 at
-    // roughly 35x34pt, and it is the reason to read `compact`'s note
-    // before reaching for it.
+    // No fill: the label *is* the control. Dropping the horizontal
+    // padding is deliberate — with no shape behind it, padding would
+    // make the tap area lie about where the text ends.
+    //
+    // What holds the target up is therefore `styles.base` alone, in
+    // BOTH dimensions: its `minHeight` (which `compact` overrides with
+    // 34, so `plain` + `compact` is a 34pt-tall control — read
+    // `compact`'s note before reaching for it) and its `minWidth`,
+    // which nothing here overrides and which is the only thing standing
+    // between a two-character label and a ~4 + text + 4 strip. That
+    // strip is what 撤销 on 隐私设置 and 删除 on 跌倒记录 were drawn as.
     container: { backgroundColor: 'transparent', paddingHorizontal: SPACE.xs },
     text: { color: COLOR.accent },
   },

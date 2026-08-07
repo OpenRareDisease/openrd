@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
+import { locatorsIn } from './__fixtures__/reason-claims.js';
 import { classifyDiagnosisType, normaliseSource } from './export-source.js';
 import { buildTreatNmdExport, type TreatNmdSection } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -208,6 +209,79 @@ describe('TREAT-NMD alignment — held-but-unemitted instruments are declared', 
 
   it('points at it from the section a reader is actually looking at', () => {
     expect(sectionOf(build(), 'motorFunction').noteZh).toContain('Vignos');
+  });
+
+  it('every section the reason sends a reader to exists and carries the walking state', () => {
+    // This is the only one of the three formats that carries a walking
+    // state, so it is the only one whose omission may point at a
+    // section — and it has to point at every section that has one.
+    // Two sections do; the wording named one and was shared with two
+    // formats that have neither.
+    const result = build();
+    const reason =
+      result.omissions.find((entry) => entry.field === 'sections.motorFunction.instruments')
+        ?.reasonZh ?? '';
+    const locators = locatorsIn(reason);
+    expect(locators.length).toBeGreaterThan(0);
+
+    // Forward: nothing the reason points at is imaginary. Item keys are
+    // literal strings in the payload, so a missing one fails here. A
+    // `sections.X` locator is resolved segment by segment rather than
+    // by its first two — `sections.motorFunction.nothingLikeThis` must
+    // not pass because `motorFunction` exists.
+    const serialised = JSON.stringify(result.document);
+    locators.forEach((locator) => {
+      const [head, sectionKey, ...within] = locator.split('.');
+      if (head !== 'sections') {
+        expect(serialised, locator).toContain(locator);
+        return;
+      }
+      const section = result.document.sections.find((entry) => entry.key === sectionKey);
+      expect(section, locator).toBeDefined();
+      if (within.length > 0) expect(JSON.stringify(section), locator).toContain(within.join('.'));
+    });
+
+    const ambulation = (
+      (EXPORT_FIXTURE_PROFILE.baseline as { currentStatus: Record<string, unknown> })
+        .currentStatus as { independentlyAmbulatory: string }
+    ).independentlyAmbulatory;
+    const named = [
+      ...new Set(
+        locators
+          .filter((locator) => locator.startsWith('sections.'))
+          .map((locator) => locator.split('.')[1]),
+      ),
+    ];
+
+    // Reverse, which is the half a hardcoded expected list cannot
+    // check: every section that ACTUALLY holds the walking state must
+    // be named. Verified against the mutation the audit used — adding a
+    // third section carrying `currentStatus.ambulation` while leaving
+    // the reason alone left the old `toEqual(['motorFunction',
+    // 'wheelchairUse'])` green, which is exactly the undercount the
+    // 「只有…运动功能一节」 wording committed.
+    //
+    // Searched over the whole serialised section rather than over
+    // `item.value === ambulation`: an equality check only sees the bare
+    // enum, and the sections next to these already carry object and
+    // array values (`motor.functionTests`, `motor.assistiveDevices`),
+    // so the next item to hold the state plausibly wraps it — and a
+    // wrapped state is just as much a reason to name the section. The
+    // token is safe to search for: `assisted` is not a substring of any
+    // other key, label or value these sections serialise.
+    const carrying = result.document.sections
+      .filter((section) => JSON.stringify(section).includes(ambulation))
+      .map((section) => section.key);
+    expect(carrying.length).toBeGreaterThan(0);
+    expect(named.sort()).toEqual([...carrying].sort());
+
+    // The local-only block is not in `sections` and so cannot be
+    // reached by a `sections.X` locator. It must therefore not carry
+    // the walking state at all, in either variant — again in any shape,
+    // not only as a bare value.
+    [build(), build({}, true)].forEach((variant) => {
+      expect(JSON.stringify(variant.document.localOnly ?? null)).not.toContain(ambulation);
+    });
   });
 });
 

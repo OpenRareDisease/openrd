@@ -22,15 +22,31 @@ import { toPartialFhirDate } from './occurrence-date.js';
 /**
  * FHIR R4 document bundle.
  *
- * THE ONE THING THIS FILE IS ABOUT. Every clinical concept here is
- * emitted as a `CodeableConcept` with `text` and NO `coding`. That is
- * valid FHIR — `CodeableConcept.text` is exactly the element for a
+ * THE ONE THING THIS FILE IS ABOUT. A clinical concept here acquires a
+ * `coding` only where codings.ts holds a verified entry for it, and
+ * today it holds none that FHIR may emit — so today every one of them
+ * is a `CodeableConcept` with `text` and no `coding`. That is valid
+ * FHIR — `CodeableConcept.text` is exactly the element for a
  * human-readable rendering when no code is available — and it is the
  * only honest option available to us today. See codings.ts for why
  * the five LOINC codes this lane was scoped around are not emitted:
  * no LOINC release and no LOINC-bearing document exists anywhere in
  * this repository to check them against, and a receiving system
  * believes a code in a way it does not believe a label.
+ *
+ * 「Today」 is load-bearing in that paragraph, so the bundle does not
+ * repeat it as a fact. The three places this envelope tells a receiver
+ * what terminology it uses — the `CodeableConcept.coding (LOINC)`
+ * omission, `conformanceZh` and `notes.编码` — are all derived from the
+ * `codingSystems` set that `declaredByKept` returns, and that function
+ * is handed `kept`, the observations that survived the MAX_OBSERVATIONS
+ * cut, NOT the candidate pool the report-field loop appends to.
+ * Promoting a code in codings.ts therefore cannot leave this document
+ * declaring an absence it contradicts, and neither can a cut that
+ * evicts the one coded Observation out of a bundle whose envelope has
+ * already announced its system. Every statement in this envelope that
+ * is ABOUT the document is read off what the document ended up
+ * containing.
  *
  * WHAT *IS* CODED, AND WHY THAT IS NOT A CONTRADICTION. A handful of
  * `system` + `code` pairs below point at
@@ -92,23 +108,38 @@ const OBSERVATION_CATEGORY_SYSTEM = 'http://terminology.hl7.org/CodeSystem/obser
  * of rows, and a FHIR document bundle is one JSON body held whole in
  * memory at both ends. Some bound is unavoidable — but a SILENT bound
  * hands a researcher a complete-looking record with its oldest half
- * missing. So: every candidate observation is pooled and sorted by
- * its own effective time before the cut, the newest survive, and the
- * number dropped is reported in `omissions`. Pooling first is what
- * makes 「newest first」 true across categories rather than only
- * within whichever category happened to be built first — otherwise a
- * patient with 500 strength readings would export no symptom scores
- * at all and the export would not say so.
+ * missing. So: every candidate observation is pooled and ranked by
+ * the observation time it actually publishes, the newest survive, and
+ * the number dropped is reported in `omissions`. A candidate with no
+ * usable observation time ranks LAST — see
+ * `NO_KNOWN_OBSERVATION_TIME`. Pooling first is what makes 「newest
+ * first」 true across categories rather than only within whichever
+ * category happened to be built first — otherwise a patient with 500
+ * strength readings would export no symptom scores at all and the
+ * export would not say so.
  */
-const MAX_OBSERVATIONS = 500;
+export const MAX_OBSERVATIONS = 500;
 
 const codeableText = (text: string): FhirCodeableConcept => ({ text });
 
+/**
+ * Where a candidate with no usable observation time is ranked.
+ *
+ * Last, so that a record which does not say when it was measured
+ * cannot evict one that does. Two kinds land here and they deserve the
+ * same treatment: a timestamp that will not parse, and a report field
+ * whose date OCR never found. The second is the dangerous one — its
+ * `observedAt` is the UPLOAD time, and the Observation built from it
+ * deliberately publishes no `effectiveDateTime` at all, so ranking it
+ * on `observedAt` would put a stack of old reports photographed this
+ * morning at the very top of the bundle and push genuinely recent
+ * symptom scores and strength readings off the end of the cut.
+ */
+const NO_KNOWN_OBSERVATION_TIME = Number.NEGATIVE_INFINITY;
+
 const sortKey = (timestamp: string): number => {
   const parsed = Date.parse(timestamp);
-  // Unparseable timestamps sort last rather than throwing or sorting
-  // first: a bad timestamp must not be able to evict good records.
-  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+  return Number.isNaN(parsed) ? NO_KNOWN_OBSERVATION_TIME : parsed;
 };
 
 interface ObservationCandidate {
@@ -116,7 +147,48 @@ interface ObservationCandidate {
   readonly resource: FhirResource;
   /** Set for observations parsed out of an uploaded report. */
   readonly documentId?: string;
+  /**
+   * What this candidate would make the envelope SAY about the bundle,
+   * if it survives the cut.
+   *
+   * Carried here rather than accumulated while the pool is being
+   * filled, because each of these becomes a sentence about what the
+   * document contains. A candidate the cut evicts contributes no
+   * resource, so it must contribute no sentence either: before this,
+   * a single coded Observation ranked 501st still made all three
+   * terminology declarations name a system no reader could find in the
+   * bundle, and `codingProvenance.emitted` cite a code that was not
+   * there. Read once, after the cut, by `declaredByKept`.
+   */
+  readonly declares?: {
+    /** Ledger key whose coding was written onto `resource.code`. */
+    readonly codingKey?: string;
+    /** That coding's `system`, for the envelope's terminology lines. */
+    readonly codingSystem?: string;
+    /** True for a report field whose report stated no date of its own. */
+    readonly undatedReportField?: boolean;
+  };
 }
+
+interface KeptDeclarations {
+  readonly codingKeys: ReadonlySet<string>;
+  readonly codingSystems: ReadonlySet<string>;
+  readonly hasUndatedReportField: boolean;
+}
+
+/** Everything the envelope may assert about the bundle, read off the survivors. */
+const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations => {
+  const codingKeys = new Set<string>();
+  const codingSystems = new Set<string>();
+  let hasUndatedReportField = false;
+  kept.forEach(({ declares }) => {
+    if (!declares) return;
+    if (declares.codingKey) codingKeys.add(declares.codingKey);
+    if (declares.codingSystem) codingSystems.add(declares.codingSystem);
+    if (declares.undatedReportField) hasUndatedReportField = true;
+  });
+  return { codingKeys, codingSystems, hasUndatedReportField };
+};
 
 // --------------------------------------------------------------- builder
 
@@ -429,10 +501,6 @@ export const buildFhirExport = (
     });
   });
 
-  // Ledger keys this bundle actually emitted, so `codingProvenance`
-  // reports what was coded rather than a hardcoded empty list.
-  const emittedCodingKeys = new Set<string>();
-
   source.reportFields.forEach((field) => {
     const documentRef = documentRefById.get(field.documentId);
     // The one place an OCR-derived value can acquire an external code.
@@ -443,9 +511,20 @@ export const buildFhirExport = (
     const coding = ledgered?.fhirSystem
       ? { system: ledgered.fhirSystem, code: ledgered.code, display: ledgered.label }
       : null;
-    if (coding && ledgered) emittedCodingKeys.add(ledgered.key);
     candidates.push({
-      sortAt: sortKey(field.observedAt),
+      // Recorded, not accumulated: whether this coding gets to be
+      // announced by the envelope depends on whether the Observation
+      // below survives the cut.
+      declares: {
+        ...(coding && ledgered ? { codingKey: ledgered.key, codingSystem: coding.system } : {}),
+        undatedReportField: field.observedAtIsUploadTime,
+      },
+      // Not `sortKey(field.observedAt)`: for an undated report field
+      // that value is the upload time, and this Observation is about
+      // to refuse to publish it as the measurement time. Ranking on a
+      // date the resource itself declines to state is how the cut
+      // below would keep the dateless rows and drop the dated ones.
+      sortAt: field.observedAtIsUploadTime ? NO_KNOWN_OBSERVATION_TIME : sortKey(field.observedAt),
       documentId: field.documentId,
       resource: {
         resourceType: 'Observation',
@@ -500,13 +579,14 @@ export const buildFhirExport = (
   const ranked = [...candidates].sort((a, b) => b.sortAt - a.sortAt);
   const kept = ranked.slice(0, MAX_OBSERVATIONS);
   const dropped = ranked.length - kept.length;
+  const declared = declaredByKept(kept);
 
   const observationRefs = kept.map(({ resource }) => push(resource));
 
   if (dropped > 0) {
     omissions.push({
       field: 'Observation',
-      reasonZh: `本次导出的观察条目上限为 ${MAX_OBSERVATIONS} 条。所有候选条目按各自的观察时间排序后取最新的 ${MAX_OBSERVATIONS} 条，其余 ${dropped} 条未写入。完整时间序列仍可从不带 format 参数的数据导出取得。`,
+      reasonZh: `本次导出的观察条目上限为 ${MAX_OBSERVATIONS} 条。所有候选条目按各自写明的观察时间排序后取最新的 ${MAX_OBSERVATIONS} 条；没有写明观察时间的条目（例如报告上没有识别到日期的解析项）一律排在最后，不会挤掉写明了时间的记录。其余 ${dropped} 条未写入。完整时间序列仍可从不带 format 参数的数据导出取得。`,
     });
   }
 
@@ -593,7 +673,14 @@ export const buildFhirExport = (
     entry: [{ fullUrl: `urn:uuid:${composition.id}`, resource: composition }, ...entries],
   };
 
-  if (source.reportFields.some((field) => field.observedAtIsUploadTime)) {
+  // Gated on the survivors for the same reason as the terminology
+  // declarations below: this omission explains why certain Observations
+  // IN THIS BUNDLE carry no `effectiveDateTime`. If the cut evicted
+  // every one of them, there is no such entry to explain, and raising
+  // it anyway would send a reader hunting the bundle for a resource
+  // that is not in it. The general rule stays stated unconditionally in
+  // `notes.日期`.
+  if (declared.hasUndatedReportField) {
     omissions.push({
       field: 'Observation.effectiveDateTime（报告自动解析项）',
       reasonZh:
@@ -601,27 +688,65 @@ export const buildFhirExport = (
     });
   }
 
+  // The three statements this bundle makes about external terminology
+  // — this omission, `conformanceZh` and `notes.编码` — are derived
+  // from the codings that are IN the bundle, not written down once and
+  // left. They used to be hardcoded 「没有外部编码」, so the five-line
+  // promotion codings.ts advertises would have shipped a document
+  // carrying a LOINC code while its own omissions told the receiving
+  // hospital there were none anywhere in it. They were then derived
+  // from every candidate the report-field loop built, which has the
+  // same shape of error one step later: a coded Observation that
+  // MAX_OBSERVATIONS evicts is not in the bundle, and a receiver told
+  // to look for its system would find nothing. An omission that
+  // contradicts the document is worse than no omission list: it is the
+  // one part of the envelope a receiver is asked to trust.
+  const codedSystemsZh = [...declared.codingSystems].sort().join('、');
+  const hasExternalCodings = declared.codingSystems.size > 0;
+
   omissions.push({
     field: 'CodeableConcept.coding (LOINC)',
-    reasonZh:
-      '所有临床概念都以 text + 显示名给出，不附带 LOINC 等外部编码。本仓库内没有可核对的 LOINC 来源，写入未经核对的编码会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。具体见 codingProvenance.withheld。',
+    reasonZh: hasExternalCodings
+      ? `除以下已核对来源的编码系统外，本 Bundle 的临床概念都以 text + 显示名给出，不附带外部编码：${codedSystemsZh}。未经核对的编码一律不写入，因为写入会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。已写入的编码见 codingProvenance.emitted（含核对来源），仍然留空的见 codingProvenance.withheld。`
+      : '所有临床概念都以 text + 显示名给出，不附带 LOINC 等外部编码。本仓库内没有可核对的 LOINC 来源，写入未经核对的编码会让接收系统「确信」一个可能错误的映射——这比不给编码更糟。具体见 codingProvenance.withheld。',
   });
 
-  omissions.push(instrumentOmission('Observation（Brooke 上肢分级 / Vignos 下肢分级）'));
+  omissions.push(
+    instrumentOmission(
+      'Observation（Brooke 上肢分级 / Vignos 下肢分级）',
+      // What is missing is the BASELINE walking state: nothing in this
+      // file reads `source.currentStatus`, so that value reaches no
+      // resource here. The earlier wording claimed the bundle held no
+      // ambulation resource of any kind, which this same bundle
+      // contradicts — 10 米步行计时 is in it, and 6 分钟步行距离,
+      // 起立行走计时（TUG） and 户外行走困难程度 can be. A receiver
+      // reading 「不含任何行走能力资源」 and then 「请向患者索取」 would
+      // go back to the patient for walking ability this document
+      // measured. So the claim is narrowed to the state, and each
+      // neighbour that is present gets the disambiguation
+      // `started_wheelchair` already had: a timing and a self-rating
+      // are one day's readings, a milestone is a point in time, and
+      // none of the three is the baseline state.
+      '本 Bundle 不含基线记录的行走状态（ambulation）：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本 Bundle 的任何位置。本 Bundle 里凡是与走路有关的 Observation，都不是行走状态本身——「10 米步行计时」「6 分钟步行距离」「起立行走计时（TUG）」是某一天的一次计时，「户外行走困难程度」是一项自评，「开始使用轮椅」等随访事件记录的是一个时点，把其中任何一项读作基线行走状态都会读错。基线行走状态不在本 Bundle 中；需要它请向患者索取，或改用 TREAT-NMD 对齐导出。',
+    ),
+  );
 
   return {
     format: 'HL7 FHIR R4 document Bundle',
-    conformanceZh:
-      '按 FHIR R4 的资源结构序列化为 type=document 的 Bundle（首个条目为 Composition），未经官方校验器校验。所有临床概念使用 CodeableConcept.text，不附带外部术语编码。',
+    conformanceZh: hasExternalCodings
+      ? `按 FHIR R4 的资源结构序列化为 type=document 的 Bundle（首个条目为 Composition），未经官方校验器校验。临床概念以 CodeableConcept.text 给出；其中来源已核对的项目另附外部术语编码（${codedSystemsZh}），其余不附带。`
+      : '按 FHIR R4 的资源结构序列化为 type=document 的 Bundle（首个条目为 Composition），未经官方校验器校验。所有临床概念使用 CodeableConcept.text，不附带外部术语编码。',
     generatedAt: options.generatedAt,
     document: bundle,
     omissions,
     notes: {
-      编码: '本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。',
+      编码: hasExternalCodings
+        ? `本 Bundle 中出现的 system，除已核对来源的第三方术语（${codedSystemsZh}）之外，均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category）。哪些是第三方术语、各自的核对来源，见 codingProvenance.emitted。`
+        : '本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。',
       文件: 'DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。',
       日期: '里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。报告自动解析出的项目只在报告本身写明日期时才带 effectiveDateTime；没写明的一律不给日期，也不用上传时间顶替。',
     },
-    codingProvenance: buildCodingProvenance([...emittedCodingKeys]),
+    codingProvenance: buildCodingProvenance([...declared.codingKeys]),
   };
 };
 

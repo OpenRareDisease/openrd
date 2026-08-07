@@ -25,7 +25,6 @@ import {
   buildShareUrl,
   describePickupState,
   describeShareLife,
-  isPickupLive,
   isShareRowLive,
   PICKUP_TTL_MINUTES,
   type PassportShare,
@@ -214,31 +213,74 @@ const PrivacySettingsScreen = () => {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
-    // Pickup codes are what makes this urgent: they live fifteen
-    // minutes, so a frozen row is wrong within one visit. Link rows are
-    // measured in days and are not worth a permanent interval, so once
-    // every pickup row is spent the clock stops and the rows keep their
-    // last (terminal) reading.
-    const pickups = (shares ?? []).filter((share) => share.pickup);
-    if (pickups.length === 0) return;
+    const rows = shares ?? [];
+    /**
+     * Everything on this screen that the clock can move: per row, the
+     * one line of text under it and whether it still gets a button.
+     * Two clocks that produce the same string here render the same
+     * pixels, so keeping the older of the two lets React bail out of
+     * the render entirely — the trick PickupCodeCard already plays on
+     * its own minute counter.
+     *
+     * Derived from the same three calls the row itself makes rather
+     * than from a granularity constant, so a row kind added later, or
+     * a threshold moved inside describeShareLife, cannot leave this
+     * behind claiming nothing changed while the row says otherwise.
+     */
+    const readingAt = (at: Date) =>
+      rows
+        .map(
+          (share) =>
+            `${isShareRowLive(share, at) ? '1' : '0'} ${
+              describePickupState(share, at) ?? describeShareLife(share, at)
+            }`,
+        )
+        .join('\n');
+    const advanceTo = (at: Date) =>
+      setNow((prev) => (readingAt(prev) === readingAt(at) ? prev : at));
+    // Once immediately, before anything else: a list that arrives from
+    // loadShares() is read against whatever `now` was last set, which
+    // may be minutes old. This used to sit under an early return for
+    // 「no pickup rows」, so a list of nothing but links was read against
+    // the mount-time clock for the whole life of the screen.
+    const at = new Date();
+    advanceTo(at);
+    // Keep ticking while ANY row is still an open door — link rows
+    // included. The condition is not 「is there a pickup code」: what the
+    // clock is for is the moment a row stops being live, because that is
+    // the moment the 撤销/作废 button has to go. A seven-day link crosses
+    // that moment exactly like a fifteen-minute code does, just later,
+    // and a patient who has this screen open when it happens is the one
+    // being told the door is still open.
+    //
+    // Once every row has reached a terminal reading (已过期 / 已撤销 /
+    // 已被医生取走一次), nothing on the screen can change again without a
+    // refetch, so the clock stops and the rows keep that reading.
+    if (!rows.some((share) => isShareRowLive(share, at))) return;
     const handle: { id?: ReturnType<typeof setInterval> } = {};
     const stop = () => {
       if (handle.id !== undefined) clearInterval(handle.id);
     };
     const tick = () => {
-      const at = new Date();
-      setNow(at);
-      if (!pickups.some((share) => isPickupLive(share, at))) stop();
+      const t = new Date();
+      advanceTo(t);
+      if (!rows.some((share) => isShareRowLive(share, t))) stop();
     };
-    // Ten seconds, not one: the line is minute-granular (「还能用约 N
-    // 分钟」), and a per-second interval would re-render this whole
-    // screen 900 times over one code's life to move a number 15 times.
-    // Not a minute either — that is how long a dead code would keep
-    // offering 作废.
+    // Ten seconds, not one: the finest thing on screen is a minute
+    // (「还能用约 N 分钟」 on a pickup code), and a per-second interval
+    // would sample 900 times over one code's life to move a number 15
+    // times. Not a minute either — that is how long a dead row would
+    // keep offering 作废.
+    //
+    // Ten seconds is the SAMPLING rate, and it is only the re-render
+    // rate for a row whose text is that fine. A link is day-granular
+    // above 24 hours, so for six of a seven-day link's seven days every
+    // sample reads 「N 天后过期」 and `advanceTo` keeps the previous
+    // clock — no state change, no render. Without that bail-out this
+    // interval bought 360 full renders an hour of a screen this size,
+    // for six days, to move one digit; the stop inside `tick` does not
+    // bound that, because for a link the stop is seven days away.
     handle.id = setInterval(tick, 10_000);
-    // Once immediately: a list that arrives from loadShares() is read
-    // against whatever `now` was last set, which may be minutes old.
-    tick();
     return stop;
   }, [shares]);
 
@@ -1126,15 +1168,22 @@ const PrivacySettingsScreen = () => {
                       </Text>
                     </View>
                     {live ? (
-                      // `plain` but NOT `compact`. Compact draws 34pt,
-                      // and the hitSlop that would buy the rest back is
-                      // not read by Pressable on react-native-web — so
-                      // on the only channel that ships, this was a 34pt
-                      // target on the control that takes back access to
-                      // a medical record, aimed at by people whose grip
-                      // and reach this disease has already taken. See
-                      // Button.tsx's note on `compact`, and the sibling
-                      // list rows in p-falls.
+                      // `plain` but NOT `compact`. Compact draws 34pt
+                      // tall, and the hitSlop that would buy the rest
+                      // back is not read by Pressable on
+                      // react-native-web — so on the only channel that
+                      // ships, this was a 34pt-tall target on the
+                      // control that takes back access to a medical
+                      // record, aimed at by people whose grip and reach
+                      // this disease has already taken.
+                      //
+                      // The other dimension is not this call site's to
+                      // fix: `plain` drops the horizontal padding, so
+                      // the width comes from `styles.base`'s minWidth in
+                      // Button.tsx. Do not paper over it with a `style`
+                      // here — a caller style is applied last and would
+                      // override the floor for this one button while the
+                      // sibling list rows in p-falls kept it.
                       <Button
                         label={share.pickup ? '作废' : '撤销'}
                         variant="plain"

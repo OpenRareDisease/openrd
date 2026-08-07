@@ -38,7 +38,7 @@ import {
  *
  *  1. EXERCISE_SUBSTITUTION_NOTE renders as the accented block at the
  *     top, above the results — not as a footnote under them. Someone
- *     who reads「+19% VO2peak」and then a plan they can follow has
+ *     who reads「+29% VO2peak」and then a plan they can follow has
  *     already drawn the conclusion the note exists to prevent.
  *  2. Every block that contains substitute content carries the
  *     evidence tag, in warn colour, next to the block — including the
