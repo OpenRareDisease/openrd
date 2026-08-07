@@ -652,3 +652,41 @@ describe('容量上限不把自己马上要作废的那一行算进去', () => {
     expect(capacity?.params[1]).toBe(false);
   });
 });
+
+describe('出生日期：医生实际会打出来的那些形状', () => {
+  /**
+   * Found by running the flow rather than by reading it. The function's
+   * own comment claimed 「1985/3/12」 already worked; it produced six
+   * digits and was rejected, and because every redemption failure
+   * answers with the same 「打不开了」 page, a clinician who typed an
+   * entirely ordinary date had no way to learn the format was the
+   * problem.
+   */
+  it.each([
+    ['1988-03-12', '1988-03-12'],
+    ['1988/03/12', '1988-03-12'],
+    ['19880312', '1988-03-12'],
+    ['1988/3/12', '1988-03-12'],
+    ['1988-3-12', '1988-03-12'],
+    ['1988年3月12日', '1988-03-12'],
+    ['1988.3.12', '1988-03-12'],
+  ])('%s → %s', (input, expected) => {
+    expect(normalizeBirthDate(input)).toBe(expected);
+  });
+
+  it('没有分隔符时不猜 —— 1988312 可能是 3月12 也可能是 31月2', () => {
+    expect(normalizeBirthDate('1988312')).toBeNull();
+    expect(normalizeBirthDate('198831')).toBeNull();
+  });
+
+  it('不是三段的分隔形状也不认', () => {
+    expect(normalizeBirthDate('1988-03')).toBeNull();
+    expect(normalizeBirthDate('88-3-12')).toBeNull();
+    expect(normalizeBirthDate('1988-3-12-5')).toBeNull();
+  });
+
+  it('不存在的日期仍然拒掉，不能花掉一次尝试', () => {
+    expect(normalizeBirthDate('1988-2-31')).toBeNull();
+    expect(normalizeBirthDate('1988-13-1')).toBeNull();
+  });
+});

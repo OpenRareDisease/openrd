@@ -180,7 +180,33 @@ export const formatPickupCode = (code: string): string =>
  */
 export const normalizeBirthDate = (raw: unknown): string | null => {
   if (typeof raw !== 'string' || raw.length > 32) return null;
-  const digits = raw.replace(/\D/g, '');
+
+  // Two shapes, because a doctor types this on their own phone with the
+  // patient waiting, and the single most likely thing they type was
+  // being rejected:
+  //
+  //   separated — 1988-3-12, 1988/3/12, 1988年3月12日. Split on the
+  //     separators and pad, because a person writing a date by hand
+  //     does not pad single digits and should not have to.
+  //   bare — 19880312 only. Padding is impossible without separators:
+  //     「1988312」 is 1988-3-12 or 1988-31-2 and nothing distinguishes
+  //     them, so a 6- or 7-digit run is refused rather than guessed at.
+  //
+  // This function's comment used to claim 「1985/3/12」 already worked.
+  // It did not — it produced six digits and was rejected — and the
+  // failure was invisible: the redemption page answers every failure
+  // with the same 「打不开了」, so a clinician who typed a perfectly
+  // ordinary date had no way to learn the format was the problem, and
+  // gave up in front of the patient.
+  const parts = raw.match(/\d+/g) ?? [];
+  let digits: string;
+  if (parts.length === 3) {
+    const [y, m, d] = parts;
+    if (y.length !== 4 || m.length > 2 || d.length > 2) return null;
+    digits = `${y}${m.padStart(2, '0')}${d.padStart(2, '0')}`;
+  } else {
+    digits = parts.join('');
+  }
   if (digits.length !== 8) return null;
   const year = Number(digits.slice(0, 4));
   const month = Number(digits.slice(4, 6));
