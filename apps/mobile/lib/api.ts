@@ -1417,6 +1417,13 @@ export interface AiCitation {
   sourceFile?: string | null;
   chunkIndex?: number | null;
   snippet: string;
+  /** Source strength —「指南/共识」/「文献」/「资料」/「病友经验」— or
+   *  null/absent for a source with no ranking (your own records,
+   *  platform docs) and for chats stored before the field existed.
+   *  Rendered by screens/common/AuthorityChip; see that file for why
+   *  the filename alone cannot carry this. Mirrors `Citation` in the
+   *  API's ai-agents/retrievers/base.ts. */
+  authorityLabel?: string | null;
 }
 
 export interface AiUsage {
@@ -2008,21 +2015,22 @@ export const patchPatientDocumentOcr = (documentId: string, fields: Record<strin
 /**
  * Delete one report.
  *
- * A 200 means the database row is gone. It does NOT mean the stored
- * file is: the API deletes the row first and then tries the blob, and
- * reports the outcome separately as `storageCleanupStatus` —
- * 'removed' (gone), 'missing' (was already absent), or 'failed' (the
- * scan is still sitting in storage). See
+ * A 200 means the database row is gone AND the stored file is
+ * accounted for: the API removes the blob first and only then deletes
+ * the row, so `storageCleanupStatus` on a 200 is 'removed' (erased) or
+ * 'missing' (already absent). When the file cannot be removed the API
+ * refuses the whole delete — 503, row intact — because a row is the
+ * only record of where the file lives, and deleting it first would put
+ * the scan permanently out of reach of the account-deletion purge. See
  * profile.controller.ts#deleteDocument.
  *
- * KNOWN DEFECT, not fixed here: both call sites — p-report_management's
- * `runDeleteReport` and p-report_detail's `runDelete` — `await` this
- * and throw the result away, so a 'failed' cleanup is announced to the
- * patient as「已删除…这份报告已移除」. For a genetic or MRI scan that is
- * the app telling them their document is gone when the server just
- * said it could not remove it. Those two screens are outside this
- * change's scope; the field is documented here so the next person to
- * open either one has the contract in front of them.
+ * Both call sites — p-report_management's `runDeleteReport` and
+ * p-report_detail's `runDelete` — must read the field rather than
+ * assume erasure, because the web export and the API deploy
+ * separately: this bundle can be talking to an API container that
+ * still answers 200 with 'failed'. `lib/report-delete.ts` holds the
+ * one mapping from status to what the patient is told, including for a
+ * status this bundle does not recognise.
  */
 export const deletePatientDocument = (documentId: string) =>
   apiRequest<{

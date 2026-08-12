@@ -325,7 +325,15 @@ describe('擦不到的拼法，也确实哪儿都进不去', () => {
     [`/s/passport./${TOKEN}`, '第二段后面多一个点，挂载点就不认了'],
     [`/s/passpor/${TOKEN}`, '第二段少一个字母'],
     [`/spassport/${TOKEN}`, '两段之间没有斜杠'],
-    [`/s/passporK/${TOKEN}`, '非 ASCII 大小写折叠：非 u 的 i 标志不折 K'],
+    // The only case here that is not an edited literal. `%C5%BF` is the
+    // long s, U+017F: `'ſ'.toUpperCase()` is ASCII `'S'`, but the `i`
+    // flag folds it only with `u` alongside, and this pattern has no
+    // `u` — so the decoding chain reduces the target to
+    // `/ſ/paſſport/<token>` and neither form matches. Percent-encoded
+    // rather than raw because a raw U+017F cannot reach Node at all:
+    // its client rejects a path outside U+0021-U+00FF, and every
+    // browser encodes it first, so this IS the spelling that arrives.
+    [`/%C5%BF/pa%C5%BF%C5%BFport/${TOKEN}`, '长 s 折叠：i 标志没有 u 就不把 ſ 折成 s'],
   ];
 
   UNCOVERED.forEach(([path, why], index) => {

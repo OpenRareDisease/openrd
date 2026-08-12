@@ -36,12 +36,19 @@ logger = logging.getLogger("fshd_kb")
 # 去掉入库时加在每一块前面的 [label] 行
 # （scripts/kb-ingest.py: tagged = f"[{section.label}]\n{raw.content}"）。
 #
-# 9594 块语料里有 7448 块带着它。那是流水线自己的标注 —— 多数是
-# [page 92]，有时是来源页标题 —— 下游任何过滤都不该拿它当正文判。
-# 下面每一条过滤原本都在读它，于是一个不走运的 section label 就能把
-# 整份文档从语料里抹掉：《中国康复辅助器具目录》因为自己标题里的
-# 「目录」丢光，ClinicalTrials 列表页因为每块前缀里的抓取横幅丢掉全部
-# 40 块 —— 连带里面真实的 NCT 编号、申办方和招募状态。
+# 10241 块语料里有 7524 块带着它（2026-08-11 实测，见下面 AUTHORITY_TIERS
+# 那段记的 SQL）。那是流水线自己的标注 —— 多数是 [page 92]，有时是来源
+# 页标题 —— 下游任何过滤都不该拿它当正文判。下面每一条过滤原本都在读
+# 它，于是一个不走运的 section label 就能把整份文档从语料里抹掉：
+#《中国康复辅助器具目录（2023年版）》修订说明.docx 一共 2 块，两块都因为
+# 标题里的「目录」被判掉，整份清零；ClinicalTrials 列表页因为每块前缀里
+# 的抓取横幅丢掉全部 40 块 —— 连带里面真实的 NCT 编号、申办方和招募状态。
+#
+# 注意被清零的是那份 2 块的修订说明，不是同名的 110 页目录正本
+#（08.无障碍生活/…/A.中国康复辅助器具目录（2023年版）.docx，534 块）。
+# 正本当时根本不在索引里 —— 它是一份披着 .docx 的老式 .doc，解析器直接
+# 跳过，4d27900 才修好；旧过滤对它 534 块里也只命中 2 块。两件事看起来
+# 都是「目录不见了」，成因完全无关，别混成一条。
 #
 # 判之前先剥一次。一个能凭标注把整份文档删掉的过滤器不是过滤器，
 # 是一个瞄不准的删除键。
@@ -55,7 +62,9 @@ def _strip_ingest_label(text: str) -> str:
 # 微信公众号版式家具 —— 文章周围的导航和署名，不是文章本身。
 #
 # 按密度判，不按出现判。旧版本对整段正文做子串匹配，代价是实测在
-# 9594 块语料上静默删掉 72 块、波及 39 个文件，其中三个文件被整份清零：
+# 10241 块语料上静默删掉 75 块、波及 40 个文件，其中三个文件被整份清零
+#（2026-08-11 重测；同一次重放在 2026-08-07 之前那 7800 块的快照上是
+# 73 块 / 39 个文件 / 同样三份清零，也就是这段话原本写的数）：
 #
 #   FSHD康复医师网络.docx              给医生的转诊名单
 #   FSHD青年路社区简介.docx             这个社区是谁
@@ -136,8 +145,8 @@ DEFAULT_MAX_PER_SOURCE = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
 #: Cosine-distance ceiling above which a hit is treated as「语料里没有」
 #: rather than「这是最接近的」.
 #:
-#: There was no floor at all. A nearest-neighbour search over 9,594
-#: chunks ALWAYS returns something, so 「明天北京天气怎么样」came back
+#: There was no floor at all. A nearest-neighbour search over the whole
+#: corpus ALWAYS returns something, so 「明天北京天气怎么样」came back
 #: with the Dutch FSHD genetic-diagnostics guideline and 「杜氏肌营养不良
 #: DMD 的激素治疗方案」came back with an FSHD history paper — and the
 #: answer layer, which could not tell those apart from a real hit, wrote
@@ -145,36 +154,61 @@ DEFAULT_MAX_PER_SOURCE = int(os.getenv("KB_MAX_PER_SOURCE", "4"))
 #: arrive misdiagnosed and asking about adjacent neuromuscular diseases,
 #: that is the worst possible failure mode.
 #:
-#: MEASURED, not guessed. `python3 scripts/kb-verify.py --floor-probe`
-#: reproduces it: 15 in-corpus probes (the kb-verify probe set plus five
-#: covering anaesthesia / pregnancy / AFO / prognosis / coping) and 22
-#: out-of-corpus probes (vaccines, 中药, 针灸, DMD, ALS, 重症肌无力, SMA,
-#: 「某某医院能不能做基因检测」, weather, recipes, crypto, ...). Against
-#: the live corpus (9,594 chunks, bge-m3, 2026-08) the two distributions
-#: do not overlap at all on best-hit distance:
+#: MEASURED, not guessed. `DATABASE_URL=… python3 scripts/kb-verify.py
+#: --floor-probe` reproduces the table below: 15 in-corpus probes (the
+#: kb-verify probe set plus five covering anaesthesia / pregnancy / AFO /
+#: prognosis / coping) and 23 out-of-corpus probes (DMD, ALS, 重症肌无力,
+#: SMA ×2, vaccines, 中药, 针灸, 「某某医院能不能做基因检测」, weather,
+#: recipes, crypto, ...). Re-run 2026-08-11 against the live corpus
+#: (10,241 chunks / 211 files, bge-m3):
 #:
 #:            best-hit cosine distance      min      p50      max
-#:   in-corpus  (15 probes)               0.2119   0.3023   0.3782
-#:   out-of-corpus (22 probes)            0.4054   0.4708   0.5825
+#:   in-corpus  (15 probes)               0.2119   0.2944   0.3782
+#:   out-of-corpus (23 probes)            0.3123   0.4653   0.6261
 #:
-#: 0.40 sits inside that empty band [0.3782, 0.4054]. At 0.40 every one
-#: of the 22 out-of-corpus probes loses its entire candidate set, and 14
-#: of the 15 in-corpus probes still keep 8+ chunks (「D4Z4 重复减少是什么
-#: 意思」is the one that thins out — its 8th hit is at 0.4137 — but it
-#: keeps its top hits and still answers).
+#: THE TWO DISTRIBUTIONS NOW OVERLAP, and the script says so ("NO
+#: separating band"). 21 of the 23 out-of-corpus probes still sit at
+#: 0.4054 and above, so the band this number was originally picked out of
+#: — [0.3782, 0.4054], ~0.027 wide — is intact for everything the old
+#: probe set covered. The two that break it are the Chinese SMA probes,
+#: 0.3123 and 0.3557, both landing on 文献/面-肩-肱型肌营养不良症研究进展
+#: 史.pdf: a Chinese paper about FSHD answers a Chinese question about SMA
+#: at 0.31 because 肌萎缩/肌营养不良 is the vocabulary of the whole disease
+#: family. That paper was indexed 2026-05-28, so this is not new drift —
+#: it is a hole the old probe set never looked into. See the retired probe
+#: note in scripts/kb-verify.py.
 #:
-#: One notch higher is already too high: at 0.42 the DMD steroid-regimen
-#: probe keeps 5 chunks of FSHD literature and the 针灸 probe keeps 5,
-#: which is exactly enough for the model to write a confident answer to
-#: a question this corpus cannot answer.
+#: No floor closes that hole. Shutting the SMA probes out needs a floor
+#: below 0.3123, and 5 of the 15 in-corpus probes have a best hit at or
+#: above that — they would come back with nothing at all. So 0.40 stays,
+#: on what it does buy:
 #:
-#: The band is only ~0.027 wide, so err LOW on purpose. Too low costs a
-#: real question some of its chunks and, at worst, an honest 「知识库里
-#: 没找到」. Too high hands the model FSHD literature to answer a DMD
-#: question with. Those are not symmetric.
+#:   - at 0.40, 21 of 23 out-of-corpus probes lose their entire candidate
+#:     set (6 chunks survive in total, 3 under each SMA probe), and no
+#:     in-corpus probe is emptied — 14 of the 15 keep 8+ chunks, and
+#:    「D4Z4 重复减少是什么意思」keeps exactly 1 (its 3rd hit is 0.4039).
+#:   - dropping to 0.38 halves the out-of-corpus survivors (6 chunks -> 3)
+#:     without freeing a single probe (still 21 of 23 emptied) and costs
+#:     84 in-corpus chunks; 0.36 costs another 77 and starts emptying an
+#:     in-corpus probe (1 of 15).
+#:   - 0.42 is worse on the side that matters: only 17 of 23 out-of-corpus
+#:     probes lose everything, the DMD steroid-regimen probe keeps 5 chunks
+#:     of FSHD literature and the 针灸 probe keeps 5 — exactly enough for
+#:     the model to write a confident answer to a question this corpus
+#:     cannot answer.
+#:
+#: Err LOW on purpose. Too low costs a real question some of its chunks
+#: and, at worst, an honest 「知识库里没找到」. Too high hands the model
+#: FSHD literature to answer a DMD question with. Those are not symmetric.
+#:
+#: And do not read this number as a guarantee about adjacent neuromuscular
+#: disease — the SMA probes are the standing proof that it is not one.
+#: That is the answer layer's job, not the floor's.
 #:
 #: Re-measure when the embedding model or the corpus changes materially
-#: — the number is a property of both, not a universal constant.
+#: — the number is a property of both, not a universal constant. Paste the
+#: run in here, including whatever the script says about the band; a table
+#: that no longer reproduces is worse than no table.
 DEFAULT_RELEVANCE_FLOOR = 0.40
 
 #: Values of KB_RELEVANCE_FLOOR that turn the floor off entirely.
@@ -223,30 +257,40 @@ _FLOOR_UNSET = object()
 # The tier is derived from the corpus-relative source path (the same
 # `source_key` the ingester stores in `kb_chunks.source_file`, e.g.
 # "11.病友经验/第二批：2025年5月15日/我们的故事丨....pdf"). Measured over
-# the live corpus (9,594 chunks / 206 files, 2026-08):
+# the live corpus (10,241 chunks / 211 files, 2026-08-11) with
+#
+#   select coalesce(nullif(metadata->>'category',''),'<root>'), count(*)
+#     from kb_chunks group by 1 order by 2 desc;
 #
 #   指南共识/                                             51 chunks
-#   文献/                                              4,818
-#   (corpus root — papers, preprints, abstract books)   1,751
-#   AFO/                                                 546
-#   05.相关研究/                                          494
+#   文献/                                              5,009
+#   (corpus root — papers, preprints, abstract books)   1,746
+#   AFO/                                                 550
+#   05.相关研究/                                          401
 #   11.病友经验/ (including the 连载 subdirectory)          150
-#   everything else (01/02/03/04/06/07/08/09/10/12/孕期) 1,784
+#   everything else (01/02/03/04/06/07/08/09/10/12/孕期) 2,334
+#
+# Every one of these moved when this branch re-chunked the corpus, and
+# they will move again on the next ingest. Nothing enforces them; the SQL
+# above is the enforcement, so re-run it rather than trusting the block.
 #
 # `penalty` is added to the cosine distance for RANKING ONLY — never for
 # the relevance floor, which must keep judging raw distance or the tier
 # would quietly move the floor around. The whole spread is 0.03 against
 # an in-corpus top-8 distance band of roughly 0.21-0.41, i.e. small
 # enough to break near-ties and too small to overturn a clear relevance
-# win. Two measured checks fixed that size:
+# win. Two measured checks fixed that size (both re-run 2026-08-11 against
+# the 10,241-chunk corpus and unchanged to four decimals):
 #
 #   「FSHD 麻醉 恶性高热 风险」— AANA paper (literature) 0.3323 -> 0.3423
 #     vs the MDA patient-experience piece (reference) 0.3912 -> 0.4112.
 #     The paper's lead widens. This is the case the tiering exists for.
 #
 #   「确诊 FSHD 后心理上怎么调整？」— top 病友经验 chunk 0.3023 -> 0.3323,
-#     still ahead of the 指南共识 chunk at 0.3695. For a question about
-#     coping, lived experience IS the right source; a larger penalty
+#     still ahead of the nearest guideline-tier chunk, which the penalty
+#     does not move: 0.3642 (孕期/FSHD女性的怀孕指南, promoted by the
+#     filename rule below) and 0.3695 for 指南共识/ itself. For a question
+#     about coping, lived experience IS the right source; a larger penalty
 #     would have demoted it wrongly. 0.03 is the largest spread that
 #     leaves this ordering intact.
 
@@ -265,7 +309,7 @@ AUTHORITY_TIERS: Dict[str, Dict[str, Any]] = {
 #: Top-level corpus folder -> tier. Anything not listed falls to
 #: `reference`; a file sitting directly at the corpus root falls to
 #: `literature` because every root file today is a paper, preprint or
-#: conference abstract book (measured: 29 files, 1,751 chunks).
+#: conference abstract book (measured 2026-08-11: 29 files, 1,746 chunks).
 _FOLDER_TIERS: Dict[str, str] = {
     "指南共识": "guideline",
     "文献": "literature",
@@ -281,16 +325,19 @@ _DEFAULT_TIER = "reference"
 #: 指南共识/ — that folder holds a single document while the Dutch
 #: guideline, the AAN evidence-based summary, the 2024 molecular
 #: diagnostics best-practice paper and the 中华医学会 consensus all live
-#: under 01./02./03. Folder alone would therefore tier 51 of 9,594 chunks
+#: under 01./02./03. Folder alone would therefore tier 51 of 10,241 chunks
 #: as guidance and miss every guideline a patient actually asks about.
 #:
-#: Matching the filename recovers them. Measured over all 206 corpus
-#: files this hits exactly 14, and 13 are unambiguous clinical practice
-#: guidelines or expert consensus statements. The 14th,
-#:《FSHD女性的怀孕指南》, is a community-written patient guide that the
-#: rule over-promotes — accepted knowingly because the consequence is a
-#: 0.02 ranking nudge and a label the document applies to itself, not a
-#: claim about evidence grade. Renaming that one file is the real fix.
+#: Matching the filename recovers them. Measured 2026-08-11 over the 211
+#: source files IN THE INDEX (`select distinct source_file from kb_chunks`
+#: — not the 235 files on disk, which is a different population and where
+#: the rule hits 14; the extra two never parsed) this hits exactly 12, and
+#: 11 are unambiguous clinical practice guidelines or expert consensus
+#: statements. The 12th,《FSHD女性的怀孕指南》, is a community-written
+#: patient guide that the rule over-promotes — accepted knowingly because
+#: the consequence is a 0.02 ranking nudge and a label the document
+#: applies to itself, not a claim about evidence grade. Renaming that one
+#: file is the real fix.
 #:
 #: The promotion never applies to the community tier, so a future patient
 #: story titled「求医指南」cannot be labelled as guidance.
@@ -334,8 +381,12 @@ def resolve_authority(
 ) -> Dict[str, Any]:
     """Authority for a retrieved hit: stored value first, path second.
 
-    The path fallback is what makes the ranking preference work on the
-    9,594 rows that predate the backfill. Without it this feature would
+    The path fallback is what makes the ranking preference work on rows
+    that predate the backfill. On the dev corpus that is now none of them
+    — 0 of 10,241 rows are missing `authority_tier` as of 2026-08-11,
+    because the backfill has been run here — which is exactly why the
+    fallback has to stay: any deployment seeded from an older dump is
+    still on the other side of it. Without it this feature would
     do nothing at all until an operator remembered to run
     `scripts/kb-ingest.py --backfill-authority`, and「a patient asking
     about anaesthesia gets an anecdote」would still be live in

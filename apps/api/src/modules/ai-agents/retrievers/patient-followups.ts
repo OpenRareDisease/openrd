@@ -48,8 +48,9 @@
  * the whole reason is stated at `eventsSql`: a fall exists in two
  * tables, and two queries would put two different fall counts in one
  * prompt. The summary they feed is composed in
- * patient-profile/falls/falls.summary.ts, which is also what the
- * passport reads — one set of numbers, two renderings.
+ * patient-profile/falls/falls.summary.ts, which is also what the 跌倒
+ * 记录 block on 病程管理 reads — one set of numbers, two renderings.
+ * (Not the clinical passport: it renders no falls at all.)
  *
  * `unit` is the third patient-writable column, and it is not excluded
  * because it is the one whose value set is small enough to enumerate.
@@ -464,7 +465,7 @@ export class PatientFollowupRetriever implements IRetriever {
      * The first branch is every non-fall event, unchanged, padded out
      * to the falls column list. The second is FALL_HISTORY_SQL, which
      * owns the de-duplication between the two tables and is shared with
-     * the falls endpoints so the passport and the assistant cannot
+     * the falls endpoints so 病程管理 and the assistant cannot
      * disagree.
      */
     const eventsSql = `

@@ -74,8 +74,8 @@ export type CreateFallInput = z.infer<typeof createFallSchema>;
  * Window for the list and summary reads, in days.
  *
  * Clamped to the same 730-day ceiling the followup retriever uses so
- * the passport, the diary screen and the assistant cannot disagree
- * about how far back「最近」reaches.
+ * 病程管理, the diary screen and the assistant cannot disagree about
+ * how far back「最近」reaches.
  */
 export const fallsQuerySchema = z.object({
   windowDays: z.coerce.number().int().min(1).max(730).optional(),

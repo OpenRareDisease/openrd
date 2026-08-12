@@ -25,6 +25,7 @@ import { bumpConsentEpoch } from '../../lib/consent-epoch';
 import { inferMriBodyMap, inferReportKind, type BodyView } from '../../lib/clinical-visuals';
 import { COLOR } from '../../lib/design';
 import { buildReportInsights, getSystemPanelHeroMetrics } from '../../lib/report-insights';
+import { describeReportDelete } from '../../lib/report-delete';
 import Button from '../common/Button';
 import SegmentedControl from '../common/SegmentedControl';
 import AnswerText from '../common/AnswerText';
@@ -595,15 +596,20 @@ export default function ReportDetailScreen() {
 
     try {
       setDeleteLoading(true);
-      await deletePatientDocument(documentId);
+      const result = await deletePatientDocument(documentId);
+      // Not discarded. A 200 means the row is gone; whether the stored
+      // scan is gone is a separate answer, and saying「这份报告已移除」
+      // over a failed cleanup is the app telling a patient their
+      // genetic report was erased when it was not. See
+      // lib/report-delete.ts for the wording of each case.
+      const outcome = describeReportDelete(result.storageCleanupStatus);
       // The banner lives in the root provider, so it survives this
       // navigation — the patient lands on the list and still sees the
       // confirmation, instead of arriving at a silently shorter list.
-      notify({
-        title: '已删除',
-        message: '这份报告已移除，相关汇总会按最新数据重新计算。',
-        tone: 'success',
-      });
+      // That matters more for the unhappy branch than the happy one:
+      // the row is gone either way, so there is nothing left on this
+      // screen to hold the message.
+      notify({ title: outcome.title, message: outcome.message, tone: outcome.tone });
       router.replace('/p-report_management');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';

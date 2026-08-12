@@ -11,4 +11,12 @@
 # The whole directory, not the two files that happened to fail:
 # golden.phenopacket.json and golden.fhir-r4.json pass today only
 # because neither currently holds an array short enough to collapse.
+#
+# This file covers the hook and nothing else. Prettier 3 resolves the
+# ignore file against its CWD and does not walk up to the repo root, so
+# `npm run format` — CWD apps/api, both under npm workspaces and in CI's
+# api job — never loaded this file and listed both golden.treat-nmd*.json.
+# apps/api/.prettierignore is the counterpart that covers that invocation;
+# the two lists have to stay in step, and apps/api/src/format-ignore.test.ts
+# runs prettier from both directories to make sure they do.
 apps/api/src/modules/patient-profile/export/__fixtures__/golden.*.json

@@ -1101,28 +1101,85 @@ export class PatientProfileController {
     loaded.stream.pipe(res);
   };
 
+  /**
+   * DELETE /api/profiles/me/documents/:id
+   *
+   * The stored file goes first, and the row only goes once the file is
+   * confirmed gone.
+   *
+   * It used to run the other way round: hard-delete the row, then try
+   * `storage.remove`, and answer 200 with
+   * `storageCleanupStatus: 'failed'` when that threw. That 200 was the
+   * unrecoverable branch. `patient_documents.storage_uri` is the only
+   * record anything keeps of where a scan lives — the account-deletion
+   * purge enumerates a user's files by joining `patient_documents` to
+   * `patient_profiles` (account-deletion.ts) — so a blob whose row was
+   * already deleted is invisible to the one process whose job is to
+   * guarantee erasure. A patient's genetic report would have outlived
+   * the account it belonged to, with no path left for PIPL Art. 47
+   * erasure to reach it, while both delete screens showed
+   *「这份报告已移除」.
+   *
+   * Refusing the request instead keeps deletion reachable: the row
+   * still points at the blob, so the patient can retry, and the purge
+   * still finds it. The mirror-image race is survivable in a way that
+   * one was not — if the file is removed and the row delete then fails,
+   * the row is a dangling pointer, and the next DELETE resolves it
+   * (remove → 404 → 'missing' → the row goes).
+   *
+   * A 404 out of storage is not a failure: the object is already
+   * absent, which is the state this endpoint is trying to reach.
+   * Anything else — MinIO down, a URI no configured provider can route
+   * — is, and the caller is told so rather than being told the report
+   * is gone.
+   *
+   * account-deletion.ts takes the OPPOSITE trade for the account purge
+   * ("an orphaned file is recoverable garbage while a dangling DB row
+   * is a broken account"), and both are right for their own case. There
+   * the user row is going too, so a surviving document row would
+   * resurrect an account that asked to be erased, nobody is left to
+   * retry, and the purge writes the unremoved URI to the log — the
+   * pointer outlives the row. Here the patient is still present, the
+   * row is the retry, and refusing costs them one more tap.
+   */
   deleteDocument = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
+    // Ownership-checked; throws 404 for a document that is not this
+    // user's, exactly as the delete itself did.
+    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+
+    let storageCleanupStatus: 'removed' | 'missing' = 'removed';
+    try {
+      await this.storage.remove(document.storage_uri);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 404) {
+        storageCleanupStatus = 'missing';
+      } else {
+        this.logger?.error(
+          {
+            documentId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Refusing to delete the document row: its stored file could not be removed',
+        );
+        throw new AppError('暂时无法删除这份报告的文件，记录仍然保留，请稍后再试。', 503);
+      }
+    }
+
     const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId, {
       ip: req.ip,
       userAgent:
         typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
     });
 
-    let storageCleanupStatus: 'removed' | 'missing' | 'failed' = 'removed';
-    try {
-      await this.storage.remove(deleted.storageUri);
-    } catch (error) {
-      if (error instanceof AppError && error.statusCode === 404) {
-        storageCleanupStatus = 'missing';
-      } else {
-        storageCleanupStatus = 'failed';
-      }
-    }
-
     res.status(200).json({
       documentId: deleted.id,
       deleted: true,
+      // Never 'failed' any more: this endpoint no longer answers 200
+      // for a file it could not erase. The clients still handle that
+      // value, because the web export and the API deploy separately —
+      // a freshly loaded bundle can be talking to an API container
+      // that has not been restarted yet.
       storageCleanupStatus,
     });
   };

@@ -97,9 +97,25 @@ describe('护照的诊断确认状态', () => {
   });
 
   it('4q 单倍型或 EcoRI 片段也算', () => {
-    for (const f of [{ haplotype: '4qA' }, { ecoRIFragment: '18kb' }]) {
+    // Annotated rather than inferred. An inline array of two object literals
+    // with disjoint keys widens to `{haplotype: string; ecoRIFragment?:
+    // undefined} | {ecoRIFragment: string; haplotype?: undefined}`, and
+    // `Record<string, string>` refuses the synthesised `?: undefined` members
+    // (TS2345). vitest could not see it — esbuild strips types without
+    // checking them — so this was red only under `npm run typecheck`, which is
+    // the hole tsconfig.test.json exists to close. The annotation gives each
+    // literal a contextual type, so no `?: undefined` is synthesised.
+    const geneticEvidence: Record<string, string>[] = [
+      { haplotype: '4qA' },
+      { ecoRIFragment: '18kb' },
+    ];
+    for (const f of geneticEvidence) {
       const s = buildClinicalPassportSummary(base({ documents: [geneticReport(f)] } as never));
-      expect(s.diagnosis.confirmation).toBe('genetic');
+      // Name the arm. The loop aborts on the first failing iteration, so a
+      // bare toBe reports `expected 'none' to be 'genetic'` and nothing about
+      // which of the two kinds of evidence stopped counting; with the label
+      // the same run reads `haplotype: expected 'none' to be 'genetic'`.
+      expect(s.diagnosis.confirmation, Object.keys(f).join(',')).toBe('genetic');
     }
   });
 

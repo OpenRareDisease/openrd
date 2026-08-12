@@ -44,10 +44,11 @@ export class FallsController {
   /**
    * GET /api/profiles/me/falls/summary
    *
-   * The quarterly count the clinical passport renders. Returns zeroed
-   * counts and an empty `quarters` array for a patient with no falls
-   * on record — which is NOT the same as a patient who has not fallen,
-   * and the passport must not label it that way.
+   * The quarterly count the 跌倒记录 block on 病程管理 renders. Returns
+   * zeroed counts and an empty `quarters` array for a patient with no
+   * falls on record — which is NOT the same as a patient who has not
+   * fallen, and no reader may label it that way (the mobile side says
+   *「空白只代表这里没有记录」; see summarizeFallsForCourse).
    */
   getSummary = async (req: AuthenticatedRequest, res: Response) => {
     const query = fallsQuerySchema.parse(req.query);

@@ -218,9 +218,26 @@ describe('createFallSchema', () => {
     // the field would still save.
     const parsed = createFallSchema.parse({
       occurredOn: '2026-08-01',
-      // @ts-expect-error — proving the schema strips what it does not know
       notes: '在厨房差点摔了',
     });
     expect(JSON.stringify(parsed)).not.toContain('厨房');
+
+    // The `@ts-expect-error` that used to sit on the `notes:` line above
+    // suppressed nothing: `ZodType.parse` declares its argument as
+    // `unknown`, so the object literal never went through excess-property
+    // checking, and `tsc --project tsconfig.test.json` reported the
+    // directive itself as unused (TS2578) — the whole api job red on a
+    // line whose comment claimed it was proving something.
+    //
+    // Here the directive is load-bearing. `notes` is genuinely absent from
+    // `z.infer<typeof createFallSchema>`, so this is TS2339 today; the day
+    // someone adds a free-text column to the schema the error disappears,
+    // the directive goes unused, and `npm run typecheck` fails. That is the
+    // compile-time half of this test — the 厨房 assertion above only shows
+    // that today's parser strips an unknown key, which stays true even after
+    // `notes` becomes a known one.
+    // @ts-expect-error — CreateFallInput must never carry a free-text member
+    const freeText: unknown = parsed.notes;
+    expect(freeText).toBeUndefined();
   });
 });

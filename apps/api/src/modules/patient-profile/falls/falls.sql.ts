@@ -4,10 +4,10 @@
  * Two callers read falls — the falls endpoints in this folder and the
  * followup retriever that answers「我最近跌倒是不是更频繁了」— and they
  * must agree to the row, because they are two renderings of one
- * question. A patient shown「本季度 3 次」on the passport and told
- * 「你最近记录了 5 次」by the assistant has been given two facts about
- * their own body and no way to tell which is real. So the query lives
- * here once and both import it.
+ * question. A patient shown「本季度 3 次」in 病程管理's 跌倒记录 block
+ * and told「你最近记录了 5 次」by the assistant has been given two facts
+ * about their own body and no way to tell which is real. So the query
+ * lives here once and both import it.
  *
  * WHY IT IS A UNION AND NOT A SELECT
  * ----------------------------------

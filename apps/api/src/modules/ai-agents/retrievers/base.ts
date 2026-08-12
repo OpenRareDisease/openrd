@@ -127,11 +127,22 @@ export interface Citation {
   /** Short snippet shown in the UI. Retrievers should keep this under
    *  ~200 chars and stripped of newlines for compact display. */
   snippet: string;
-  /** Patient-facing authority label for this citation —「指南/共识」,
-   *  「文献」,「资料」,「病友经验」— or `null` when the source has no
-   *  authority ranking. A citation chip that says 病友经验 and one that
-   *  says 指南/共识 are claims of very different strength, and until now
-   *  the UI could only show a filename, so they looked identical. */
+  /**
+   * Patient-facing authority label for this citation —「指南/共识」,
+   *「文献」,「资料」,「病友经验」— or `null` when the source has no
+   * authority ranking.
+   *
+   * A citation chip that says 病友经验 and one that says 指南/共识 are
+   * claims of very different strength. The chip could not tell them
+   * apart on its own: it renders the BASENAME of `sourceFile`
+   * (apps/mobile/lib/citation-label.ts, deliberately, so a patient
+   * report's storage path never reaches the screen), and the basename
+   * is precisely the part of「11.病友经验/forum.pdf」that drops the
+   * tier. So the grade travels as its own field, and the mobile side
+   * renders it beside the source name in the expanded 引用 list, in the
+   * inline [N] popover, and on the 问一问 drawer's chips — see
+   * apps/mobile/screens/common/AuthorityChip.tsx.
+   */
   authorityLabel?: string | null;
 }
 

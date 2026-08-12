@@ -26,9 +26,9 @@ import type { FallActivity, FallLocation } from '../profile.constants.js';
  * dropped falls silently stop appearing on the 病程时间线.
  */
 
-/** Default look-back for the diary and the passport count. Matches the
- *  followup retriever's DEFAULT_WINDOW_DAYS so 「最近」 means the same
- *  number of days on every screen that says it. */
+/** Default look-back for the diary and for the 跌倒记录 count on 病程
+ *  管理. Matches the followup retriever's DEFAULT_WINDOW_DAYS so 「最近」
+ *  means the same number of days on every screen that says it. */
 export const DEFAULT_FALLS_WINDOW_DAYS = 180;
 
 /**
@@ -212,7 +212,8 @@ export class FallsService {
   }
 
   /**
-   * The quarterly count the clinical passport shows.
+   * The quarterly count 病程管理 shows and the assistant reasons over.
+   * Not the clinical passport — that surface renders no falls.
    *
    * Reads the full history, so a patient whose falls were all logged
    * through the old event route still gets a real number rather than a

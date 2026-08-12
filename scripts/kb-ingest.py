@@ -81,15 +81,40 @@ DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 #: per-file fingerprint includes this so a refactor invalidates the
 #: whole KB without needing a manual wipe.
 #:
-#: v3 — the chunker learned to split a classification catalogue on its
-#: own entry codes (see `_CODE_TABLE_RECORD`). Only one document in
-#: the corpus changes shape, and re-embedding the other 234 to get it
-#: is real cost on whatever box runs the ingest. It is still the right
-#: lever: the alternative is a hand-written DELETE against one
-#: source_file, which leaves the backend holding chunks whose stored
-#: fingerprint claims a pipeline that no longer exists — and the next
-#: person to wonder why a document chunked oddly has nothing to read.
-PIPELINE_VERSION = "v3.code-table-aware"
+#: v4 — the PDF parser pins pdfminer's reading order, so a file parses
+#: to the same text in every process (kb_parsers/pdfminer_determinism).
+#: 26 of the corpus's 184 PDFs did not, which is part of why the stored
+#: rows below still miss the cache: their text was written in an order
+#: the parser no longer produces. v3 before it taught the chunker to split
+#: a classification catalogue on its own entry codes
+#: (`_CODE_TABLE_RECORD`).
+#:
+#: The bump invalidates every file's SOURCE fingerprint, so all 235
+#: files under content/medical-kb/source are re-read, re-parsed and
+#: re-chunked. That is the bulk of the cost: 299 s wall clock on the
+#: laptop that ingests this corpus (298.8 s and 299.4 s on two runs),
+#: inside which 84 pages across 31 PDFs are rasterised at 300 DPI and
+#: run through tesseract — 30 of those, in 15 files, come back with
+#: enough text to replace the page, which is the `pages_via_ocr` the
+#: parser reports; the other 54 change nothing.
+#:
+#: Re-embedding is no longer the bulk of it, but it is not nothing.
+#: `VectorBackend.reusable_embeddings` hands back the stored vector for
+#: every chunk whose text did not move. Measured against the live
+#: pgvector DB (2026-08-11) by re-chunking the corpus and looking each
+#: fingerprint up: the 211 indexed files chunk to 11,110 chunks, 10,064
+#: of which hit a stored vector and cost no embedding, and 1,046 of
+#: which are embedded. 890 of that remainder sit in 21 files whose
+#: stored row count does not match their chunk count at all — earlier
+#: partial ingests — and 156 sit in 15 files that are complete, 13 of
+#: them files this bump exists to make stable.
+#:
+#: It is still the right lever: the alternative is a hand-written
+#: DELETE against one source_file, which leaves the backend holding
+#: chunks whose stored fingerprint claims a pipeline that no longer
+#: exists — and the next person to wonder why a document chunked oddly
+#: has nothing to read.
+PIPELINE_VERSION = "v4.deterministic-pdf-layout"
 
 
 # --------------------------------------------------------- injection scanner
@@ -673,15 +698,19 @@ def ingest(
         # be handed identical input and return identical numbers.
         #
         # This is what makes bumping PIPELINE_VERSION affordable. The
-        # bump exists so a chunker change reaches corpora that are
-        # already ingested — without it, the deployments that have the
-        # bug keep it. But it invalidates every SOURCE fingerprint, and
-        # before this the ingest answered that by re-embedding all
+        # bump exists so a chunker or parser change reaches corpora that
+        # are already ingested — without it, the deployments that have
+        # the bug keep it. But it invalidates every SOURCE fingerprint,
+        # and before this the ingest answered that by re-embedding all
         # ~11,800 chunks to change the 64 that a one-document chunker
         # fix actually touched. On a 16 GB laptop that put the machine
         # into 12 GB of swap and took a batch from 3.8 seconds to 50
-        # minutes. Re-parsing and re-chunking every file is cheap and
-        # stays; re-embedding text that did not change was the waste.
+        # minutes. Re-parsing and re-chunking every file stays and is
+        # now most of the cost of a bump — 299 s for the 235 files in
+        # this corpus — while the embedder sees only the chunks whose
+        # text actually moved: 1,046 of the 11,110 chunks the corpus
+        # stored today produces, see PIPELINE_VERSION for where that
+        # remainder comes from.
         reused = backend.reusable_embeddings(
             [chunk.fingerprint for chunk in pending], embedder.model_name
         )
@@ -776,10 +805,15 @@ def backfill_authority(*, backend: VectorBackend, dry_run: bool) -> Dict[str, in
     Why this exists rather than "just re-ingest": the per-file
     fingerprint covers the file bytes, the parser and PIPELINE_VERSION —
     none of which change when we start writing a new *metadata* key. So
-    every one of the 9,594 already-ingested chunks is reported unchanged
-    and would never pick the tier up. Bumping PIPELINE_VERSION would
-    work but re-embeds the whole corpus for a value derived purely from
-    the path.
+    every already-ingested chunk (10,241 of them today) is reported
+    unchanged and would never pick the tier up. Bumping PIPELINE_VERSION
+    does reach them, and since `reusable_embeddings` landed it re-embeds
+    nothing whose text did not move — but it still re-reads, re-parses
+    and re-chunks all 235 files, 299 s of it measured on this corpus,
+    84 pages of that rasterised at 300 DPI for the OCR fallback, plus
+    the 1,046 chunks whose stored text does not match what the parser
+    produces today (see PIPELINE_VERSION) — all to stamp a value
+    derived purely from the path.
 
     Idempotent by construction, and deliberately fill-only: the UPDATE's
     WHERE clause touches only rows that have NO stored tier, so a second

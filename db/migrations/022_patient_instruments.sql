@@ -422,17 +422,39 @@ ON CONFLICT (key, version) DO NOTHING;
 --
 -- The DO block below reports the count instead of guessing, so the
 -- question this file cannot answer is at least answered somewhere.
--- WHERE it is answered, precisely: RAISE lands in the POSTGRES SERVER
--- log (verified against PG 18), not in the output of
--- apps/api/src/db/migrate.ts — node-postgres delivers WARNING and
--- NOTICE on the connection's 'notice' event and the runner does not
--- subscribe to it, so `npm run db:migrate` prints only
--- "Applied 022_patient_instruments.sql". Go and read the server log;
--- do not assume a silent deploy means a clean table. If it reports
--- zero, an operator can promote the constraint with
+-- WHERE it is answered, precisely: it is RAISE WARNING, and only
+-- WARNING, that lands in the POSTGRES SERVER log. Measured on PG 18
+-- with the stock `log_min_messages = warning` this repo never
+-- overrides (no postgresql.conf, no `command:` on the compose postgres
+-- service): raising NOTICE, LOG, INFO and WARNING in one DO block
+-- appends only the LOG and WARNING lines to the server log, and shows
+-- only the NOTICE, INFO and WARNING lines to the psql client. NOTICE
+-- is therefore the one level that reaches neither channel on the
+-- documented deploy path, which is why BOTH branches below raise
+-- WARNING — the clean branch is good news carrying a severity chosen
+-- for delivery, not for alarm. Nothing of this reaches the output of
+-- apps/api/src/db/migrate.ts either: node-postgres delivers WARNING
+-- and NOTICE on the connection's 'notice' event and the runner does
+-- not subscribe to it, so `npm run db:migrate` prints only
+-- "Applied 022_patient_instruments.sql". Go and read the server log; a
+-- silent deploy means the DO block did not run, not a clean table.
+--
+-- AND ON A DATABASE WHERE 022 ALREADY RAN, IT NEVER WILL. The runner
+-- skips files already in schema_migrations, and a checksum change is a
+-- report rather than a gate (see checksumOf in migrate.ts), so raising
+-- the level here does nothing for a database that took the NOTICE
+-- version — which includes dev, where the constraint is still NOT VALID.
+-- There the operator has to ask directly, which costs one seq scan of
+-- patient_measurements and answers the same question:
+--     SELECT count(*) FROM patient_measurements
+--      WHERE muscle_group NOT IN (
+--        'deltoid', 'biceps', 'triceps', 'tibialis', 'quadriceps',
+--        'hamstrings', 'gluteus', 'face', 'abdominal');
+--
+-- Either way, if the count is zero the constraint can be promoted with
 --     ALTER TABLE patient_measurements
 --       VALIDATE CONSTRAINT patient_measurements_muscle_group_check;
--- If it reports more than zero, run
+-- If it is more than zero, run
 --     SELECT muscle_group, count(*) FROM patient_measurements
 --      WHERE muscle_group NOT IN (...) GROUP BY 1;
 -- and decide what those rows are before validating anything.
@@ -463,7 +485,11 @@ BEGIN
    );
 
   IF offending = 0 THEN
-    RAISE NOTICE
+    -- WARNING, not NOTICE, and the level is the whole point: NOTICE is
+    -- filtered out by the stock log_min_messages, so the clean result —
+    -- the one the operator is told to act on — was the one outcome that
+    -- reached no log at all.
+    RAISE WARNING
       'patient_measurements.muscle_group: 0 rows outside the value set; the constraint can be promoted with VALIDATE CONSTRAINT patient_measurements_muscle_group_check.';
   ELSE
     RAISE WARNING

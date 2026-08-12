@@ -91,8 +91,19 @@ def find_doc_converter() -> Tuple[str, str] | None:
 
     Preference order is deliberate: `textutil` ships with macOS, needs
     no user profile and converts the 2.3 MB catalogue in ~0.4s, while
-    LibreOffice needs ~20s on its first headless run. CI and production
-    are Linux and land on LibreOffice.
+    LibreOffice needs ~20s on its first headless run.
+
+    Which branch runs where, accurately. Ingest happens on a developer's
+    macOS machine — the corpus is gitignored and lives nowhere else, and
+    neither apps/api/Dockerfile nor Dockerfile.kb contains this file, so
+    「production」 does not run this code at all: a new deploy seeds
+    kb_chunks by copying an already-ingested table
+    (docs/runbooks/v2.5.0-deploy.md §3.5). textutil is therefore the
+    branch that carries the real catalogue, and the LibreOffice branch's
+    only execution anywhere is CI, which is why .github/workflows/ci.yml
+    installs libreoffice-writer in the report-manager job. Before that it
+    installed neither, and the three tests covering this function skipped
+    on every run.
     """
     override = os.getenv(_CONVERTER_ENV_VAR, "").strip()
     if override:

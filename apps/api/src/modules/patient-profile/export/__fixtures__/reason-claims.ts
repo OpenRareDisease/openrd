@@ -25,10 +25,18 @@
  *     must name only ones that resolve, and all of the ones that carry
  *     the state.
  *
- * Deliberately over-broad on both sides: a false positive costs a test
- * author one line in a known-good list, a false negative costs a
- * receiving hospital a pointer into a document that does not have what
- * it says it has.
+ * The two are calibrated differently, and「over-broad on both sides」was
+ * the mistake that put 关节 in a locator list. `documentScopedAmbulation
+ * Sentences` IS deliberately over-broad, because it has somewhere to put
+ * a false positive: both callers spell out the sentences their format is
+ * allowed to have, and one more line there is a human approving one more
+ * sentence. `locatorsIn` has no such place. fhir-r4.test.ts and
+ * phenopacket.test.ts assert `toEqual([])`, so a line added to those is a
+ * recorded falsehood under a comment reading「no pointer into a document
+ * that has no sections」, and treat-nmd.test.ts feeds every locator back
+ * into the serialised document, where a Chinese false positive can only
+ * fail. So `locatorsIn` returns pointers that are shaped like pointers,
+ * and the shapes it does not catch are named at the expression itself.
  *
  * WHY THERE IS NO 「does it negate」 TEST HERE. There was one: a
  * sentence was exempted when it contained 不/未/没有/无/非 anywhere. It
@@ -101,18 +109,58 @@ export const documentScopedAmbulationSentences = (reasonZh: string): string[] =>
   );
 
 /**
+ * What a named Chinese section pointer looks like.
+ *
+ * 节 by itself is not a section. 关节 is core FSHD vocabulary — 关节活动
+ * 度 is a thing this platform measures — and 细节, 章节, 环节, 季节 are
+ * ordinary words a receiver-facing reason may reach for at any time. The
+ * first version of this expression made both the brackets and the 一
+ * optional, so any 2-8 CJK characters sitting in front of a 节 came back
+ * as a place inside the document: dropping 「这些测量的细节见各条
+ * Observation。」 into the shipped FHIR reason returned
+ * `['这些测量的细节']` and reddened `expect(locatorsIn(reason))
+ * .toEqual([])` — a guard against pointing at a section that does not
+ * exist, failing a sentence that points at nothing at all.
+ *
+ * So a pointer has to be shaped like one, in the two ways these exports
+ * write it:
+ *
+ *   1. bracketed —「运动功能」一节, where the brackets bound the name;
+ *   2. after a pointing particle — 见/在/于/到/至 + name + 一节, which is
+ *      how the round-one TREAT-NMD wording shipped it (「…会出现在运动功
+ *      能一节」). The particle is what bounds the name on the left; with
+ *      no left bound the greedy run ate the prose in front of it and
+ *      returned 「会出现在运动功能一节」, which resolves against no
+ *      document either.
+ *
+ * In the unbracketed form the 一 is required, and it is the whole
+ * difference between 运动功能一节 and 关节.
+ *
+ * Two shapes it does NOT catch, both stated rather than hidden: a
+ * numbered section (「见第一节」) and a name longer than twelve
+ * characters. No export writes either today, and a bounded false
+ * negative is the price of not making an author reword 关节活动度 around
+ * a test regex.
+ */
+const NAMED_SECTION = /「([^「」\n]{2,12})」[ 　]*一?节|[见在于到至][ 　]*([一-鿿]{2,8})一节/g;
+
+/**
  * Every place inside the document the reason points at.
  *
  * Two shapes, because those are the two the exports use: a dotted
  * locator (`sections.motorFunction`, `wheelchair.currentState`), and a
- * named Chinese section (「运动功能一节」). A path-looking token with no
+ * named Chinese section (「运动功能」一节). A path-looking token with no
  * dot — `/me/instruments`, `TREAT-NMD` — is not a place in this
  * document and is not returned.
+ *
+ * A named section is returned as the NAME (运动功能), not as the phrase
+ * that carried it, because that is the string a caller can resolve: the
+ * TREAT-NMD test searches a non-dotted locator in the serialised
+ * document, where the name appears as a section's `titleZh` and
+ * 「运动功能」一节 appears nowhere.
  */
 export const locatorsIn = (reasonZh: string): string[] => {
   const dotted = reasonZh.match(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/g) ?? [];
-  const namedSections = [...reasonZh.matchAll(/「?([一-鿿]{2,8})」?一?节/g)].map(
-    (match) => match[0],
-  );
+  const namedSections = [...reasonZh.matchAll(NAMED_SECTION)].map((match) => match[1] ?? match[2]);
   return [...dotted, ...namedSections];
 };

@@ -151,7 +151,13 @@ def test_resolve_authority_prefers_the_stored_tier(kb):
 
 
 def test_resolve_authority_falls_back_to_the_path(kb):
-    """The 9,594 rows that predate the backfill still have to rank."""
+    """Rows that predate the backfill still have to rank.
+
+    None are left on the dev corpus (0 of 10,241 rows lack
+    `authority_tier` as of 2026-08-11), which is exactly why this is
+    tested rather than deleted: any deployment seeded from an older
+    `pg_dump` of kb_chunks is still on the other side of the backfill.
+    """
     assert kb.resolve_authority({}, "指南共识/x.pdf")["tier"] == "guideline"
     assert kb.resolve_authority(None, "11.病友经验/x.pdf")["tier"] == "community"
 
@@ -187,12 +193,104 @@ def test_resolve_relevance_floor(kb, raw, expected):
 def test_default_floor_sits_in_the_measured_separating_band(kb):
     """Guards the documented measurement, not an arbitrary number.
 
-    [0.3782, 0.4054] is the gap between the worst in-corpus best-hit and
-    the best out-of-corpus best-hit measured by
-    `scripts/kb-verify.py --floor-probe`. A default outside it either
-    cuts real answers or admits questions the corpus cannot answer.
+    Both bounds come from `scripts/kb-verify.py --floor-probe`, re-run
+    2026-08-11 against the live 10,241-chunk corpus:
+
+      * 0.3782 is the worst in-corpus best-hit (「D4Z4 重复减少是什么
+        意思」). Below it, a question the corpus answers comes back
+        with nothing at all.
+      * 0.4054 is the best out-of-corpus best-hit among the 21 probes
+        that clear the in-corpus band (the DMD steroid-regimen probe).
+        Above it, the model starts being handed FSHD literature to
+        answer a DMD question with.
+
+    The remaining 2 of the 23 out-of-corpus probes — the Chinese SMA
+    pair, 0.3123 and 0.3557 — sit inside the in-corpus range, so the two
+    distributions overlap and no floor separates them. That is recorded
+    at DEFAULT_RELEVANCE_FLOOR and is deliberately NOT what this
+    assertion claims to guard: pretending a bound could exclude them
+    would only push the floor down into the in-corpus band.
     """
     assert 0.3782 < kb.DEFAULT_RELEVANCE_FLOOR < 0.4054
+
+
+def _probe_set_sizes() -> Dict[str, int]:
+    """Sizes of kb-verify.py's two probe lists, read without importing it.
+
+    `ast` rather than `import`: the script does
+    `from kb_backends.pgvector import PgVectorBackend` and
+    `from embed_models import create_embedder` at module scope, and this
+    suite must not need psycopg or drag in torch.
+    """
+    import ast
+
+    source = (_REPO_ROOT / "scripts" / "kb-verify.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sizes: Dict[str, int] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id in ("IN_CORPUS_QUESTIONS", "OUT_OF_CORPUS_QUESTIONS")
+                and isinstance(node.value, ast.List)
+            ):
+                # `*DEFAULT_QUESTIONS` counts as its own elements.
+                size = 0
+                for element in node.value.elts:
+                    if isinstance(element, ast.Starred):
+                        size += len(DEFAULT_QUESTIONS_LEN_MARKER)
+                    else:
+                        size += 1
+                sizes[target.id] = size
+    return sizes
+
+
+#: The one starred splice in IN_CORPUS_QUESTIONS is `*DEFAULT_QUESTIONS`;
+#: resolving it properly would mean importing the script, so its length is
+#: asserted separately below and reused here.
+DEFAULT_QUESTIONS_LEN_MARKER: List[None] = [None] * 10
+
+
+def test_floor_comment_probe_counts_match_the_probe_sets():
+    """The floor comment quotes a table; the table has to be this table.
+
+    DEFAULT_RELEVANCE_FLOOR's block says how many probes each
+    distribution was measured over. Add, drop or relabel a probe in
+    scripts/kb-verify.py and that table describes a run nobody made —
+    which is precisely how the block came to claim a 9,594-chunk corpus
+    and a 22-probe out-of-corpus set that no longer existed. Changing
+    either list must force a re-run and a re-paste.
+    """
+    import ast
+    import re
+
+    verify_source = (_REPO_ROOT / "scripts" / "kb-verify.py").read_text(encoding="utf-8")
+    defaults = next(
+        node.value
+        for node in ast.parse(verify_source).body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "DEFAULT_QUESTIONS" for t in node.targets
+        )
+    )
+    assert isinstance(defaults, ast.List)
+    assert len(defaults.elts) == len(DEFAULT_QUESTIONS_LEN_MARKER)
+
+    sizes = _probe_set_sizes()
+    assert set(sizes) == {"IN_CORPUS_QUESTIONS", "OUT_OF_CORPUS_QUESTIONS"}
+
+    knowledge_source = (_REPO_ROOT / "apps" / "api" / "knowledge.py").read_text(
+        encoding="utf-8"
+    )
+    claimed_in = re.search(r"in-corpus\s+\((\d+) probes\)", knowledge_source)
+    claimed_out = re.search(r"out-of-corpus \((\d+) probes\)", knowledge_source)
+    assert claimed_in, "knowledge.py no longer states an in-corpus probe count"
+    assert claimed_out, "knowledge.py no longer states an out-of-corpus probe count"
+
+    assert int(claimed_in.group(1)) == sizes["IN_CORPUS_QUESTIONS"]
+    assert int(claimed_out.group(1)) == sizes["OUT_OF_CORPUS_QUESTIONS"]
 
 
 # --------------------------------------------------------------- search_multi

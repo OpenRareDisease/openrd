@@ -14,6 +14,7 @@ import {
   type PatientProfile,
 } from '../../lib/api';
 import { COLOR } from '../../lib/design';
+import { describeReportDelete } from '../../lib/report-delete';
 import InlineNotice from '../common/feedback/InlineNotice';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
@@ -336,8 +337,18 @@ export default function ReportManagementScreen() {
     try {
       setDeletingReportId(documentId);
       setListNotice(null);
-      await deletePatientDocument(documentId);
+      const result = await deletePatientDocument(documentId);
+      const outcome = describeReportDelete(result.storageCleanupStatus);
       await loadData(true);
+      // After the refetch, never before it: `loadData` clears
+      // `listNotice` on success, so a warning set first would be wiped
+      // by the reload it was warning about. The happy case stays
+      // silent — the row disappearing from the list is the
+      // confirmation — but a file the server could not erase has to be
+      // said out loud, and this screen has no other place to say it.
+      if (!outcome.fileErased) {
+        setListNotice(`${outcome.title}：${outcome.message}`);
+      }
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';
       setListNotice(`删除失败：${message}`);

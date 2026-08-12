@@ -82,11 +82,16 @@ export interface MedicalKbRetrieverOptions {
  * Judged by DENSITY, not by presence, for the same reason
  * `apparatusScore` and `DAMAGED_RATIO` below are: a paragraph that
  * mentions 目录 is a paragraph. This filter used to test presence
- * anywhere in the chunk and it cost real content — measured against
- * the 9,594-chunk corpus, presence-testing dropped 112 chunks across
- * 40 files and emptied four completely (see stripIngestLabel above for
- * the other half of that story). Switching to density recovers 72 of
- * them; the label strip recovers the rest.
+ * anywhere in the chunk and it cost real content. Replaying master's
+ * pattern over the live 10,241-chunk corpus (2026-08-11) drops 114
+ * chunks across 41 files and empties four completely; over the
+ * pre-2026-08-07 snapshot this was first measured against — 7,800
+ * chunks, before the re-chunk — it was 112 / 40 / the same four. Of the
+ * 114, switching to density recovers 74 on its own and the label strip
+ * recovers another 39 (see stripIngestLabel above for that half of the
+ * story). One is still dropped, and correctly: chunk 0 of the
+ * ClinicalTrials listing carries the scrape banner in its body, not
+ * only in its ingest label.
  *
  * It also took 4 of 6 chunks out of each part of the patient
  * autobiography《不管如何，你得长大》连载1-4. Three of the patterns
@@ -228,15 +233,26 @@ export const isDamagedExtraction = (text: string): boolean => {
  * Remove the `[label]` line the ingest pipeline prepends to every chunk
  * (scripts/kb-ingest.py:328 — `tagged = f"[{section.label}]\n{...}"`).
  *
- * 7,448 of the corpus's 9,594 chunks carry one. It is the pipeline's own
- * annotation — usually `[page 92]`, sometimes the source page's title —
- * and nothing downstream should judge content by it. Every filter below
- * was reading it as though the document itself said it, which is how a
- * single unlucky section label could empty a whole file out of the
- * corpus:《中国康复辅助器具目录》lost every chunk to the word 目录 in
- * its own heading, and the ClinicalTrials listing lost all 40 to the
- * scrape banner prepended to each one — including the chunks carrying
- * real NCT numbers, sponsors and recruiting status.
+ * 7,524 of the corpus's 10,241 chunks carry one (measured 2026-08-11).
+ * It is the pipeline's own annotation — usually `[page 92]`, sometimes
+ * the source page's title — and nothing downstream should judge content
+ * by it. Every filter below was reading it as though the document itself
+ * said it, which is how a single unlucky section label could empty a
+ * whole file out of the corpus:《中国康复辅助器具目录（2023年版）》修订
+ * 说明.docx is 2 chunks long and lost both to the word 目录 in its own
+ * heading, and the ClinicalTrials listing lost all 40 to the scrape
+ * banner prepended to each one — including the chunks carrying real NCT
+ * numbers, sponsors and recruiting status.
+ *
+ * Spell that first filename out in full, because the short form collides
+ * with a different document and a different bug. The 110-page catalogue
+ * proper — 08.无障碍生活/…/A.中国康复辅助器具目录（2023年版）.docx, 534
+ * chunks — was never emptied by this filter: master's pattern matches 2
+ * of its 534 and the density-gated version matches 0. It was invisible
+ * for an unrelated reason (a legacy .doc wearing a .docx extension, so
+ * the parser skipped it silently until 4d27900) and it was not even in
+ * the index when this measurement was taken. Two causes, one abbreviated
+ * name; do not let the next operator diagnose one as the other.
  *
  * Strip it once, here, before any judgement. A filter that can name a
  * document out of the corpus by its label is not a filter, it is a
@@ -291,8 +307,9 @@ const extractChunkIndex = (metadata: Record<string, unknown>): number | null => 
  * every request it made. Collapse those to `null` once, here.
  *
  * `null`/`undefined` VALUES are dropped; an empty string is not, because
- * `category: ''` is a real filter over this corpus (the 1,751 chunks
- * whose files sit at the corpus root carry exactly that).
+ * `category: ''` is a real filter over this corpus (the 1,746 chunks
+ * whose files sit at the corpus root carry exactly that, measured
+ * 2026-08-11).
  */
 const normalizeFilter = (filter?: Record<string, unknown>): Record<string, unknown> | null => {
   if (!filter) return null;
@@ -325,17 +342,18 @@ export class MedicalKbRetriever implements IRetriever {
    * model fill the gap from its own priors.
    *
    * And it is not a hypothetical. Measured against the live service
-   * (9,594 chunks, 2026-08),「确诊 FSHD 之后心理上怎么调整」returns 8
-   * chunks unfiltered (best distance 0.310) but ZERO under
-   * `category: 10.心理支持` — that folder's closest chunk is 0.413, just
+   * (10,241 chunks, re-run 2026-08-11),「确诊 FSHD 之后心理上怎么调整」
+   * returns 8 chunks unfiltered (best distance 0.3100) but ZERO under
+   * `category: 10.心理支持` — that folder's closest chunk is 0.4135, just
    * past the 0.40 floor. Reporting that as「资料库里没有」would be a flat
    * untruth about a question the corpus answers well.
    *
    * So the filter is treated as what it actually is: a ranking
    * preference, not a promise about coverage. If the category has the
-   * answer the patient gets it without competing against 4,818 chunks of
-   * molecular biology; if it does not, they get the corpus-wide answer
-   * they would have got before this parameter existed. Nothing is
+   * answer the patient gets it without competing against the 5,009
+   * chunks of molecular biology in 文献/; if it does not, they get the
+   * corpus-wide answer they would have got before this parameter
+   * existed. Nothing is
    * hidden, and every downstream claim stays true. `filterFellBack` in
    * the metadata says which of the two happened, and the tool wrapper
    * puts it in front of the model so it cannot present a widened result

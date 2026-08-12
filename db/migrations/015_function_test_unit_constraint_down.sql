@@ -45,7 +45,16 @@ BEGIN
       SET unit = unit_legacy
       WHERE unit_legacy IS NOT NULL
         AND unit IS DISTINCT FROM unit_legacy;
-    RAISE NOTICE 'patient_function_tests.unit restored from unit_legacy';
+    -- WARNING rather than NOTICE for the good branch too. The two
+    -- branches of this IF are the difference between「units restored」
+    -- and「units are gone, go get the pg_dump」, and stock
+    -- log_min_messages = warning discards a NOTICE — so on the
+    -- documented rollback path (`npm run db:migrate:down`, which does
+    -- not subscribe to node-postgres's 'notice' event either) the
+    -- restore branch was indistinguishable from a DO block that never
+    -- ran. An operator reading the server log has to be able to tell
+    -- which of the two happened, not just hear from the bad one.
+    RAISE WARNING 'patient_function_tests.unit restored from unit_legacy';
   ELSE
     RAISE WARNING 'patient_function_tests.unit_legacy does not exist: the CHECK constraint has been dropped, but any unit value migration 015 rewrote or NULLed is NOT recoverable from this database. Restore it from the pre-migration pg_dump.';
   END IF;

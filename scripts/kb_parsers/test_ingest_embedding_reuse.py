@@ -9,10 +9,33 @@ change one document. Measured on a 16 GB laptop, re-embedding ~11,800
 chunks to fix 64 drove the machine into 12 GB of swap and took a single
 batch from 3.8 seconds to 50 minutes.
 
-Re-parsing and re-chunking every file is cheap and stays. Re-embedding
-text that did not change was the waste, and these tests pin that it no
-longer happens — and, just as importantly, that it never happens when
-the text DID change or when the model is different.
+Re-parsing and re-chunking every file stays, and is now most of the
+cost of a bump: 299 s over the 235-file corpus, 84 pages of it
+rasterised at 300 DPI and run through tesseract (30 of the 84 come back
+with usable text — that smaller number is `pages_via_ocr`, not the
+rasterise count). Re-embedding text that did not change was the waste,
+and these tests pin that it no longer happens — and, just as
+importantly, that it never happens when the text DID change or when the
+model is different.
+
+What a bump costs in embedding is therefore whatever text really did
+move. On the corpus stored today that is 1,046 of the 11,110 chunks
+the 211 indexed files produce — 890 of them in files that were only
+partly ingested to begin with, the rest in files whose stored text
+predates a parser fix; see PIPELINE_VERSION in scripts/kb-ingest.py.
+The tests below run on a synthetic corpus where nothing moves, so they
+pin the zero-embedding floor, not that figure.
+
+Scope, because one test below used to carry a name that promised more
+than anything here can deliver: every test in this file drives a
+`FakeBackend` that re-implements the cache read in Python, so what they
+pin is the INGEST's half of the contract — which fingerprints it
+offers, which model name it forwards, what it does with what comes
+back. The SQL that actually enforces the
+model match and the NULL-embedding skip lives in
+`PgVectorBackend.reusable_embeddings`, and is tested against a real
+Postgres in test_pgvector_reusable_embeddings.py. Deleting either guard
+from that SQL leaves every test in THIS file green.
 """
 
 from __future__ import annotations
@@ -172,10 +195,19 @@ def test_changed_text_is_re_embedded_even_when_its_neighbours_are_not(
     assert all(c.embedding for c in backend.upserted)
 
 
-def test_a_different_embed_model_is_never_reused(ingest_mod, tmp_path: Path) -> None:
-    """Two models produce two incompatible geometries. A distance
-    computed across them is meaningless in a way no assertion
-    downstream could catch, so the model has to match exactly."""
+def test_the_ingest_forwards_its_model_name_and_re_embeds_on_a_miss(
+    ingest_mod, tmp_path: Path
+) -> None:
+    """Two models produce two incompatible geometries, so the model has
+    to match exactly — but the match itself is the backend's job, and
+    this fake performs it. What this test can prove is the ingest side:
+    it passes `embedder.model_name` down rather than some other string
+    or nothing, and when the backend answers with nothing it embeds
+    every chunk instead of upserting vectorless ones.
+
+    The exact match in the shipped SQL is pinned in
+    test_pgvector_reusable_embeddings.py::test_a_different_embed_model_is_not_reused.
+    """
     root = _corpus(tmp_path, BODY)
     probe_backend, probe_embedder = FakeBackend(), FakeEmbedder()
     _run(ingest_mod, root, probe_backend, probe_embedder)
@@ -187,6 +219,13 @@ def test_a_different_embed_model_is_never_reused(ingest_mod, tmp_path: Path) -> 
 
     assert stats.chunks_reused == 0
     assert len(embedder.seen) == stats.chunks_upserted
+    # The forwarded string is the embedder's own model name, and every
+    # pending fingerprint went with it — the two inputs the SQL guard
+    # then has to match on.
+    assert [model for _, model in backend.reuse_calls] == [FakeEmbedder.model_name]
+    offered = set(backend.reuse_calls[0][0])
+    assert offered == {c.fingerprint for c in backend.upserted}
+    assert all(c.embedding == [9.0] * DIM for c in backend.upserted)
 
 
 def test_a_backend_without_the_method_still_works(ingest_mod, tmp_path: Path) -> None:
@@ -204,3 +243,66 @@ def test_a_backend_without_the_method_still_works(ingest_mod, tmp_path: Path) ->
     stats = _run(ingest_mod, root, backend, embedder)
     assert stats.chunks_reused == 0
     assert len(embedder.seen) == stats.chunks_upserted
+
+
+class PersistingFakeBackend(FakeBackend):
+    """A FakeBackend that also remembers what an earlier pass stored, so
+    the unchanged-file check has something to answer with. The plain
+    FakeBackend reports no source fingerprints at all, which makes every
+    file look new and hides the case below."""
+
+    def __init__(self, source_fps: Dict[str, Set[str]] | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.source_fps = source_fps or {}
+
+    def list_source_fingerprints(self, source_files: List[str]) -> Dict[str, Set[str]]:
+        wanted = set(source_files)
+        return {key: fps for key, fps in self.source_fps.items() if key in wanted}
+
+
+def test_a_pipeline_version_bump_re_chunks_every_file_and_re_embeds_none(
+    ingest_mod, tmp_path: Path, monkeypatch
+) -> None:
+    """The claim the PIPELINE_VERSION comment and
+    `backfill_authority`'s docstring both make about the same lever:
+    a bump costs a full re-read/re-parse/re-chunk of every file, and
+    costs no embedding at all for text that did not move.
+
+    Both halves have to hold together. The first is why the bump is not
+    free (299 s of parsing on the FSHD corpus); the second is why it is
+    affordable, and it holds only because `chunk_fingerprint` excludes
+    PIPELINE_VERSION. Fold the version into that hash and this test is
+    the one that notices.
+    """
+    root = _corpus(tmp_path, BODY)
+
+    first, first_embedder = PersistingFakeBackend(), FakeEmbedder()
+    stats = _run(ingest_mod, root, first, first_embedder)
+    assert stats.files_new == 2
+    assert len(first_embedder.seen) == stats.chunks_upserted
+
+    source_fps = {c.source_file: {c.source_fingerprint} for c in first.upserted}
+    stored = {c.fingerprint: [7.0] * DIM for c in first.upserted}
+
+    # Control: no bump, nothing on disk changed. Every file reports
+    # unchanged, so nothing is even parsed.
+    same = PersistingFakeBackend(source_fps, stored=stored)
+    same_embedder = FakeEmbedder()
+    unchanged = _run(ingest_mod, root, same, same_embedder)
+    assert unchanged.files_unchanged == 2
+    assert unchanged.chunks_upserted == 0
+    assert same_embedder.seen == []
+
+    monkeypatch.setattr(ingest_mod, "PIPELINE_VERSION", "v4.test-bump")
+    bumped = PersistingFakeBackend(source_fps, stored=stored)
+    bumped_embedder = FakeEmbedder()
+    after = _run(ingest_mod, root, bumped, bumped_embedder)
+
+    # Every file was re-read, re-parsed, re-chunked and re-upserted...
+    assert after.files_unchanged == 0
+    assert after.files_updated == 2
+    assert after.chunks_upserted == len(stored)
+    # ...and not one chunk was handed to the embedder.
+    assert after.chunks_reused == len(stored)
+    assert bumped_embedder.seen == []
+    assert {c.fingerprint: c.embedding for c in bumped.upserted} == stored

@@ -96,14 +96,24 @@ class VectorBackend(ABC):
         recomputing the vector would spend GPU/CPU time to arrive at
         the same numbers.
 
-        This is what makes a PIPELINE_VERSION bump affordable. The
-        version string invalidates every file's SOURCE fingerprint, so
-        every file is re-parsed and re-chunked — which is correct and
-        cheap. Without this method it also re-embedded every chunk,
-        which is neither: bumping the version to re-chunk one
-        110-page catalogue meant re-embedding all ~11,800 chunks, and
-        on a 16 GB laptop that drove the machine into 12 GB of swap
-        and took batches from 3.8 seconds to 50 minutes.
+        This is what makes a PIPELINE_VERSION bump affordable — not
+        free, and not embedding-free either. The version string
+        invalidates every file's SOURCE fingerprint, so every file is
+        re-read, re-parsed and re-chunked, which is correct and is the
+        bulk of the cost: 299 s measured over the 235-file FSHD corpus,
+        84 pages of it rasterised at 300 DPI and run through tesseract
+        (30 of those 84 come back with usable text). What this method
+        removes is the embedding of text that did not move; what
+        survives it is the text that did. Measured against the corpus
+        stored today, a bump embeds 1,046 of the 11,110 chunks the 211
+        indexed files produce — see PIPELINE_VERSION in
+        scripts/kb-ingest.py for where that remainder comes from.
+        One-off and bounded either way. Without this method the bump
+        re-embedded every chunk, which is neither: bumping the version
+        to re-chunk one 110-page catalogue meant re-embedding all
+        ~11,800 chunks, and on a 16 GB laptop that drove the machine
+        into 12 GB of swap and took batches from 3.8 seconds to 50
+        minutes.
 
         Default returns nothing, so a backend that does not implement
         it simply pays the old cost — never a wrong answer.

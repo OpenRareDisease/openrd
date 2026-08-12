@@ -19,6 +19,7 @@ import Icon from '../common/Icon';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Button from '../common/Button';
 import AnswerText from '../common/AnswerText';
+import AuthorityChip, { readAuthorityLabel } from '../common/AuthorityChip';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   ApiError,
@@ -332,6 +333,12 @@ const AssistantMetadataBlock = ({ message }: { message: ChatMessage }) => {
                     }}
                   >
                     {idx + 1}. {formatCitationLabel(c.sourceFile, c.source)}
+                    {/* Separator keyed on the SAME predicate the chip
+                        is, not on raw truthiness: an authorityLabel of
+                        「   」 is truthy and renders no chip, which
+                        would leave a stray space in front of 「· 段 N」. */}
+                    {readAuthorityLabel(c.authorityLabel) ? ' ' : ''}
+                    <AuthorityChip label={c.authorityLabel} />
                     {c.chunkIndex !== null && c.chunkIndex !== undefined
                       ? ` · 段 ${c.chunkIndex}`
                       : ''}
@@ -559,6 +566,12 @@ const CitationPopoverModal = ({
                     }}
                   >
                     [{i}] {formatCitationLabel(c.sourceFile, c.source)}
+                    {/* Separator keyed on the SAME predicate the chip
+                        is, not on raw truthiness: an authorityLabel of
+                        「   」 is truthy and renders no chip, which
+                        would leave a stray space in front of 「· 段 N」. */}
+                    {readAuthorityLabel(c.authorityLabel) ? ' ' : ''}
+                    <AuthorityChip label={c.authorityLabel} />
                     {c.chunkIndex !== null && c.chunkIndex !== undefined
                       ? ` · 段 ${c.chunkIndex}`
                       : ''}

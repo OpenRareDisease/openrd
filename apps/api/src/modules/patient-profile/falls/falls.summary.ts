@@ -3,11 +3,20 @@
  * without lying.
  *
  * This module is pure. It takes the rows FALL_HISTORY_SQL returns and
- * produces (a) a quarterly count, which is what the clinical passport
- * shows, and (b) one Chinese sentence, which is what the AI retriever
- * hands to the model. Both come from the same numbers, computed once,
- * because the passport and the assistant answering「我最近跌倒是不是更
- * 频繁了」are the same question asked twice.
+ * produces (a) a quarterly count, which is what the 跌倒记录 block on
+ * 病程管理 shows（最近 90 天记录到 N 次跌倒, via the mobile
+ * `summarizeFallsForCourse`), and (b) one Chinese sentence, which is
+ * what the AI retriever hands to the model. Both come from the same
+ * numbers, computed once, because 病程管理 and the assistant answering
+ *「我最近跌倒是不是更频繁了」are the same question asked twice.
+ *
+ * The clinical passport does NOT render a fall count. Comments in this
+ * module used to say it did, in five files, and none of it was ever
+ * true — profile.passport.ts has no falls reader at all. Putting one
+ * there is a product decision and a disclosure decision (the passport
+ * is the artefact a patient forwards to a clinician by link, and what a
+ * share exposes is governed by sharing-preferences.ts), so it is not
+ * something to assert in a doc comment ahead of making it.
  *
  *
  * THE THREE THINGS THIS FILE REFUSES TO DO
@@ -80,7 +89,9 @@ export interface FallSummaryRow {
 }
 
 /** Days per reporting bucket. A quarter, because that is the interval
- *  the passport and a routine neurology follow-up both work in. */
+ *  a routine neurology follow-up works in — the patient is asked「上次
+ *  见面之后摔过几次」, and a bucket that does not line up with the
+ *  appointment cannot answer it. */
 export const FALL_QUARTER_DAYS = 90;
 
 export const FALL_ACTIVITY_LABELS_ZH: Record<FallActivity, string> = {

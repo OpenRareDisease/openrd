@@ -718,42 +718,145 @@ describe('PatientProfileController.generateDocumentSummary — consent + redacti
   });
 });
 
-describe('PatientProfileController.deleteDocument — service receives audit meta', () => {
-  it('forwards req.ip + user-agent so the service can write the audit row', async () => {
+/**
+ * DELETE /me/documents/:id — the row is the only pointer to the file.
+ *
+ * The handler used to delete the row first and then try the blob, and
+ * report a failed blob removal as `storageCleanupStatus: 'failed'` on
+ * an HTTP 200. Nothing could reach that file afterwards: the
+ * account-deletion purge enumerates a user's uploads by joining
+ * `patient_documents`, so a blob whose row is gone is invisible to the
+ * one process that exists to guarantee erasure (PIPL Art. 47) — while
+ * both delete screens told the patient「这份报告已移除」.
+ */
+describe('PatientProfileController.deleteDocument', () => {
+  const buildDeleteDeps = (
+    over: {
+      remove?: ReturnType<typeof vi.fn>;
+      getDocumentForUser?: ReturnType<typeof vi.fn>;
+    } = {},
+  ) => {
     const deleteDocumentForUser = vi.fn().mockResolvedValue({
       id: 'doc-1',
       documentType: 'mri',
       title: null,
       storageUri: 'local://uploads/x/scan.pdf',
     });
-    const service = { deleteDocumentForUser } as unknown as PatientProfileService;
+    const getDocumentForUser =
+      over.getDocumentForUser ??
+      vi.fn().mockResolvedValue({ id: 'doc-1', storage_uri: 'local://uploads/x/scan.pdf' });
+    const service = {
+      deleteDocumentForUser,
+      getDocumentForUser,
+    } as unknown as PatientProfileService;
     const storage = {
-      remove: vi.fn().mockResolvedValue(undefined),
+      remove: over.remove ?? vi.fn().mockResolvedValue(undefined),
       load: vi.fn(),
       save: vi.fn(),
       canHandle: vi.fn(),
     } as unknown as StorageProvider;
     const ocr = { parse: vi.fn() } as unknown as OcrProvider;
     const controller = new PatientProfileController(service, storage, ocr);
-
     const res = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
     } as unknown as Response;
-    await controller.deleteDocument(
-      {
-        user: { id: 'u-1' },
-        params: { id: 'doc-1' },
-        ip: '127.0.0.1',
-        headers: { 'user-agent': 'TestAgent/1.0' },
-      } as unknown as AuthenticatedRequest,
-      res,
-    );
+    return { controller, service, storage, res, deleteDocumentForUser, getDocumentForUser };
+  };
 
-    expect(deleteDocumentForUser).toHaveBeenCalledWith('u-1', 'doc-1', {
+  const req = {
+    user: { id: 'u-1' },
+    params: { id: 'doc-1' },
+    ip: '127.0.0.1',
+    headers: { 'user-agent': 'TestAgent/1.0' },
+  } as unknown as AuthenticatedRequest;
+
+  it('forwards req.ip + user-agent so the service can write the audit row', async () => {
+    const deps = buildDeleteDeps();
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.deleteDocumentForUser).toHaveBeenCalledWith('u-1', 'doc-1', {
       ip: '127.0.0.1',
       userAgent: 'TestAgent/1.0',
     });
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'removed',
+    });
+  });
+
+  it('removes the stored file BEFORE the row, so nothing is ever orphaned', async () => {
+    const order: string[] = [];
+    const remove = vi.fn(async () => {
+      order.push('storage.remove');
+    });
+    const deps = buildDeleteDeps({ remove });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      order.push('deleteDocumentForUser');
+      return { id: 'doc-1', documentType: 'mri', title: null, storageUri: 'local://x' };
+    });
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(order).toEqual(['storage.remove', 'deleteDocumentForUser']);
+  });
+
+  it('keeps the row when the file cannot be removed, and says so instead of answering 200', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('MinIO unreachable', 500)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // The row survives, which is what keeps the file reachable: by the
+    // download endpoint, by a retry of this one, and by the
+    // account-deletion purge.
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+    expect(deps.res.json).not.toHaveBeenCalled();
+  });
+
+  it('treats an unroutable storage uri as a failure too, not as a clean delete', async () => {
+    // RoutedStorageProvider throws 400 when no provider claims the URI.
+    // That is a misconfigured deployment, not an absent object; deleting
+    // the row would orphan a file that is still sitting there.
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('Unsupported storage uri', 400)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the row when the file was already gone', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.deleteDocumentForUser).toHaveBeenCalled();
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'missing',
+    });
+  });
+
+  it("404s on someone else's document without touching storage", async () => {
+    const deps = buildDeleteDeps({
+      getDocumentForUser: vi.fn().mockRejectedValue(new AppError('Document not found', 404)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
   });
 });
 

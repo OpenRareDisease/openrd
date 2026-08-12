@@ -101,6 +101,32 @@ describe('category — the corpus filter the planner can now reach', () => {
     expect(schema.properties.category.description).toContain('根目录');
   });
 
+  it('names every category in the description without quoting a chunk census', () => {
+    const schema = tool.parametersSchema as {
+      properties: { category: { enum: string[]; description: string } };
+    };
+    const description = schema.properties.category.description;
+
+    // Every enum value has to be described, or the model is choosing
+    // between a name and nothing.
+    for (const category of KB_CATEGORIES) {
+      expect(description).toContain(`- ${category}`);
+    }
+
+    // And no per-category chunk count. This string is the `category`
+    // parameter's schema description, serialised to the model on every
+    // call (llm/siliconflow.ts), so a census written into it is decision
+    // guidance the model routes on — and it went 5.4x wrong on
+    // 08.无障碍生活 the first time the chunker changed, with nothing in
+    // this suite able to notice, because a test can read the string and
+    // never the table. The counts live in the doc comment above
+    // KB_CATEGORIES, dated, next to the SQL that reproduces them.
+    const censusLines = description
+      .split('\n')
+      .filter((line) => /^- .+[（(][\d,]+[）)]/.test(line));
+    expect(censusLines).toEqual([]);
+  });
+
   it('accepts an exact category and forwards it as a filter', async () => {
     const search = vi.fn().mockResolvedValue(stubResult(2));
     const withSearch = new SearchMedicalKbTool({ search } as unknown as MedicalKbRetriever);

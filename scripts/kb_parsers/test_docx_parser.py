@@ -6,11 +6,14 @@ sectioning, table flattening, and the legacy-.doc conversion bridge.
 
 The legacy-.doc tests build a real OLE2 file with whichever converter
 the machine has, so the round trip is exercised end to end rather than
-mocked. They skip (never silently pass) when no converter exists.
+mocked. They skip (never silently pass) when no converter exists — and
+under CI, where one is installed on purpose, they fail rather than skip:
+see `_no_converter`.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,6 +22,32 @@ from docx import Document  # type: ignore
 
 from kb_parsers import docx_parser as docx_mod
 from kb_parsers.docx_parser import DocxParser, find_doc_converter
+
+#: A green run has to mean the conversion ran. GitHub Actions sets
+#: CI=true, and the report-manager job installs libreoffice-writer for
+#: exactly these three tests; KB_DOC_TESTS_REQUIRED forces the same
+#: strictness anywhere else. (Same shape as _DB_REQUIRED in
+#: test_pgvector_reusable_embeddings.py, for the same reason.)
+#:
+#: A skip is the right answer on a developer machine with nothing
+#: installed. It was the wrong answer on the only Linux box that ever
+#: executes this code: before LibreOffice was installed, three tests
+#: evaporated on every CI run, the job stayed green, and the legacy-.doc
+#: bridge was verified on exactly one developer's laptop — while the
+#: docstring in docx_parser.py claimed CI landed on LibreOffice.
+_CONVERTER_REQUIRED = bool(os.environ.get("CI") or os.environ.get("KB_DOC_TESTS_REQUIRED"))
+
+
+def _no_converter(reason: str) -> None:
+    """Fail where a converter is mandatory, skip loudly elsewhere."""
+    if _CONVERTER_REQUIRED:
+        pytest.fail(
+            f"{reason} — but CI/KB_DOC_TESTS_REQUIRED says this environment must "
+            "have one. Install it (Debian/Ubuntu: `apt-get install -y "
+            "libreoffice-writer`; macOS ships textutil), or point "
+            "KB_DOC_CONVERTER at a non-PATH install."
+        )
+    pytest.skip(reason)
 
 
 def _write_docx(tmp_path: Path, build) -> Path:
@@ -30,20 +59,31 @@ def _write_docx(tmp_path: Path, build) -> Path:
 
 
 def _make_legacy_doc(tmp_path: Path, body: str) -> Path:
-    """Produce a genuine OLE2 .doc, or skip the test.
+    """Produce a genuine OLE2 .doc, or skip (or fail — see `_no_converter`).
 
     Uses the same converter the parser would, running it backwards
-    (txt -> doc). Building the fixture rather than checking in a binary
+    (docx -> doc). Building the fixture rather than checking in a binary
     keeps the repo clean and means the test is exercising a file the
     local toolchain actually considers a legacy .doc.
+
+    The seed is a real .docx, not a .txt. A text seed made the fixture
+    depend on how each converter guesses an encoding — textutil assumes
+    UTF-8, LibreOffice's Text filter consults the locale — so the Chinese
+    in `body` round-tripped reliably on the macOS machine this was
+    written on and was a coin flip on the Linux runner it now has to pass
+    on. Both converters read .docx from a declared encoding instead.
     """
     converter = find_doc_converter()
     if converter is None:
-        pytest.skip("no legacy-.doc converter on this machine")
+        _no_converter("no legacy-.doc converter on this machine")
     kind, exe = converter
 
-    src = tmp_path / "seed.txt"
-    src.write_text(body, encoding="utf-8")
+    src = tmp_path / "seed.docx"
+    seed = Document()
+    for line in body.splitlines():
+        if line.strip():
+            seed.add_paragraph(line)
+    seed.save(str(src))
     outdir = tmp_path / "legacy"
     outdir.mkdir()
 
@@ -65,13 +105,13 @@ def _make_legacy_doc(tmp_path: Path, body: str) -> Path:
         ]
     proc = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
     if not out.exists() or out.stat().st_size == 0:
-        pytest.skip(
+        _no_converter(
             f"{kind} could not build a .doc fixture: "
             f"{(proc.stderr or b'').decode('utf-8', 'replace')[:200]}"
         )
     with out.open("rb") as fh:
         if fh.read(4) != b"\xD0\xCF\x11\xE0":
-            pytest.skip(f"{kind} did not emit an OLE2 container")
+            _no_converter(f"{kind} did not emit an OLE2 container")
 
     # The whole bug class is「.doc wearing a .docx extension」, so the
     # fixture wears one too.
@@ -223,7 +263,7 @@ def test_legacy_doc_conversion_failure_is_surfaced(tmp_path: Path) -> None:
     `test_legacy_doc_without_a_converter_fails_loudly` already covers.
     """
     if find_doc_converter() is None:
-        pytest.skip("no legacy-.doc converter on this machine")
+        _no_converter("no legacy-.doc converter on this machine")
     f = tmp_path / "looks_legit.docx"
     f.write_bytes(b"\xD0\xCF\x11\xE0" + b"\x00" * 100)
 

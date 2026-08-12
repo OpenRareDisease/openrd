@@ -317,6 +317,13 @@ class PgVectorBackend(VectorBackend):
         as an empty vector — the caller must re-embed those, and a
         `[]` would sail through as a valid-looking result and be
         rejected much later by the dimension check on upsert.
+
+        Both guards are pinned by
+        scripts/kb_parsers/test_pgvector_reusable_embeddings.py, which
+        runs this SQL against a real Postgres. Nothing else does: the
+        reuse tests next to it drive a FakeBackend that re-implements
+        the filtering in Python, so a refactor that loosens the WHERE
+        clause is green everywhere except there.
         """
         if not fingerprints or not embed_model:
             return {}

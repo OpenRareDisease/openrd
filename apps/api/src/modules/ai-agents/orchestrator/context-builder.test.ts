@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildContext, CitationIndex } from './context-builder.js';
 import type { ExecutedToolCall } from './executor.js';
 import type { RetrieveContext, RetrievedChunk } from '../retrievers/base.js';
+import type { RedactionMode } from '../security/allowlist.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -243,10 +244,12 @@ describe('citation numbering is global, not per-retriever', () => {
   });
 });
 
-describe('authority label (degrades when the retrieval lane has not landed it)', () => {
-  /** `on` picks which side of the result carries the label, mirroring
-   *  the shapes the retriever lane produces (citation + chunk) and the
-   *  chunk-only shape a passthrough retriever would leave. */
+describe('authority label (the grade the patient is shown, and what it refuses to show)', () => {
+  /** `on` picks which side of the result carries the label — the two
+   *  holders retrievers/base.ts declares: `Citation.authorityLabel`,
+   *  where medical-kb stamps it, and `RetrievedChunk.authorityLabel`,
+   *  for a retriever that grades the chunk and builds a plainer
+   *  citation. */
   const withAuthority = (value: unknown, on: 'citation' | 'chunk'): ExecutedToolCall =>
     ({
       toolCallId: 'tc1',
@@ -446,13 +449,32 @@ const emptyWithReason = (toolCallId: string, retrieverId: string, reason: string
     latencyMs: 5,
   }) as unknown as ExecutedToolCall;
 
-const contentOf = (call: ExecutedToolCall) =>
-  buildContext([call], { mode: 'full', logger: silentLogger, citationIndex: new CitationIndex() })
+/**
+ * Both modes the server can actually be in, and every case below is run
+ * against each.
+ *
+ * This helper hardcoded `mode: 'full'`, which is not a `RedactionMode` —
+ * the type is `'strict' | 'precise'` (../security/allowlist.ts) and there
+ * has never been a third. vitest transpiles with esbuild and checks no
+ * types, so the whole describe read green while driving a mode the server
+ * never selects, and `npm run typecheck` was the only thing that saw it.
+ *
+ * Parameterising rather than picking one: which of the three zero-result
+ * outcomes the model is told about is a property of the retrieval, not of
+ * the consent level the patient granted. A change that named the outcomes
+ * correctly under `strict` and fell back to 「（无内容）」 under `precise`
+ * would be a bug in exactly the branch these tests exist to hold, and a
+ * single-mode helper could not see it.
+ */
+const REDACTION_MODES: readonly RedactionMode[] = ['strict', 'precise'];
+
+const contentOf = (call: ExecutedToolCall, mode: RedactionMode) =>
+  buildContext([call], { mode, logger: silentLogger, citationIndex: new CitationIndex() })
     .toolMessages[0].content;
 
-describe('零结果的三种成因必须各自说清楚', () => {
+describe.each(REDACTION_MODES)('零结果的三种成因必须各自说清楚（%s）', (mode) => {
   it('查过了、没有足够相关的 → 不是故障，也不叫用户重试', () => {
-    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'));
+    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'), mode);
     expect(text).not.toContain('（无内容）');
     expect(text).toContain('no_relevant_results');
     expect(text).toContain('资料库查过了');
@@ -467,12 +489,12 @@ describe('零结果的三种成因必须各自说清楚', () => {
     // The whole point. This is the branch a patient hits when they ask
     // about another disease, and model priors on someone else's disease
     // read exactly like sourced FSHD content to them.
-    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'));
+    const text = contentOf(emptyWithReason('t1', 'medical_kb', 'no_relevant_results'), mode);
     expect(text).toContain('不要用你自己记忆里的知识');
   });
 
   it('语料库是空的 → 不说「过一会儿再问一次」，因为它不会自己好', () => {
-    const text = contentOf(emptyWithReason('t2', 'medical_kb', 'kb_empty_corpus'));
+    const text = contentOf(emptyWithReason('t2', 'medical_kb', 'kb_empty_corpus'), mode);
     expect(text).toContain('retrieval_failed');
     expect(text).not.toContain('过一会儿再问一次');
     expect(text).toContain('重试');
@@ -480,12 +502,12 @@ describe('零结果的三种成因必须各自说清楚', () => {
   });
 
   it('检索确实挂了 → 保留重试话术', () => {
-    const text = contentOf(emptyWithReason('t3', 'medical_kb', 'kb_service_unreachable'));
+    const text = contentOf(emptyWithReason('t3', 'medical_kb', 'kb_service_unreachable'), mode);
     expect(text).toContain('过一会儿再问一次');
   });
 
   it('没有任何 reason 的空结果仍然是「（无内容）」', () => {
-    const text = contentOf(emptyWithReason('t4', 'medical_kb', ''));
+    const text = contentOf(emptyWithReason('t4', 'medical_kb', ''), mode);
     expect(text).toContain('（无内容）');
   });
 });

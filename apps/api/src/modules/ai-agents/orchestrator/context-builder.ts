@@ -84,26 +84,11 @@ export interface ToolMessagePayload {
   content: string;
 }
 
-/**
- * A citation, possibly carrying the authority label the retrievers
- * stamp on a source —「指南/共识」,「文献」,「资料」,「病友经验」. A chip
- * that says 病友经验 and one that says 指南/共识 are claims of very
- * different strength, and a filename alone made them look identical.
- *
- * Declared as an intersection rather than read off `Citation` directly
- * because the field is owned by the retriever lane, which is landing
- * concurrently. Everything here reads it defensively (see
- * `readAuthorityLabel`): if that lane does not finish, or renames the
- * field, nothing below changes behaviour — the label is simply absent
- * and every header and citation renders exactly as it did before.
- */
-export type RenderedCitation = Citation & { authorityLabel?: string | null };
-
 export interface BuiltContext {
   toolMessages: ToolMessagePayload[];
   /** Ordered, deduped, and numbered — `citations[N-1]` is the source
    *  the prompt called 【片段N】. See {@link CitationIndex}. */
-  citations: RenderedCitation[];
+  citations: Citation[];
   fieldsUsed: string[];
   usedPersonalData: boolean;
   /** Which classes of retrieval could not run in this batch. Both flags
@@ -150,12 +135,12 @@ export interface BuildContextOptions {
  */
 export class CitationIndex {
   private readonly numberByChunk = new Map<string, number>();
-  private readonly ordered: RenderedCitation[] = [];
+  private readonly ordered: Citation[] = [];
 
   /** Register (or look up) a citation. Idempotent per `chunkId`, so a
    *  chunk returned by two different tool calls keeps one number and
    *  one card. Returns the 1-based number. */
-  register(citation: RenderedCitation): number {
+  register(citation: Citation): number {
     const existing = this.numberByChunk.get(citation.chunkId);
     if (existing !== undefined) return existing;
     const assigned = this.ordered.length + 1;
@@ -185,7 +170,7 @@ export class CitationIndex {
 
   /** Snapshot in assignment order. `citations[n - 1].chunkId` is the
    *  chunk numbered `n`. */
-  get citations(): RenderedCitation[] {
+  get citations(): Citation[] {
     return [...this.ordered];
   }
 }
@@ -209,9 +194,6 @@ const CHUNK_END = '<<<END_DOC_CHUNK>>>';
 const stripDelimiters = (content: string): string =>
   content.split(CHUNK_BEGIN).join('').split(CHUNK_END).join('');
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
 /**
  * Longest authority label we will paste into a prompt header or a
  * citation card. A label is a grade —「临床指南」,「同行评议研究」— not a
@@ -222,39 +204,38 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 const MAX_AUTHORITY_CHARS = 24;
 
 /**
- * Read an authority label off whatever the retrieval lane attached,
- * without requiring it to exist or to have any particular shape.
+ * Resolve the authority label for one citation, and normalise it.
  *
- * Checked in order: the citation (where the KB retriever puts it), the
- * chunk, then the chunk's metadata (where a retriever that only passes
- * the backend payload through would leave it). Accepts a bare string or
- * a `{ label }` / `{ name }` object. Anything else — missing, null,
- * empty, wrong type, oversized — yields null and every caller renders
- * exactly what it rendered before this function existed.
+ * Two holders, one key. `Citation.authorityLabel` is where the KB
+ * retriever puts it; `RetrievedChunk.authorityLabel` is the fallback for
+ * a retriever that grades the chunk and builds a plainer citation. Both
+ * are declared in retrievers/base.ts, so this is a documented contract
+ * rather than a guess at someone else's shape.
  *
- * Written this way on purpose. The field is owned by a lane landing in
- * parallel; a half-built feature must not change a single character of
- * a patient-facing string, and a rename over there must not turn into a
- * type error or a blank label over here.
+ * It used to probe three holders (adding `chunk.metadata`) × three key
+ * spellings (`authority`, `sourceAuthority`) and unwrap `{label}`/
+ *`{name}` objects, justified in a comment saying the field was "owned
+ * by a lane landing in parallel" and might yet be renamed. Both lanes
+ * landed in af72417; there is no parallel lane and no rename to absorb.
+ * None of the extra shapes was ever produced — medical-kb.ts reads the
+ * backend's snake_case `authority_label` out of metadata and stamps the
+ * camelCase field itself (medical-kb.ts:583-607) — and none was ever
+ * tested, so the breadth was defence against nothing that could happen.
+ *
+ * The RUNTIME check on the value stays, and is not the same thing. The
+ * label is now rendered to the patient (AuthorityChip.tsx), so a
+ * backend that answers `42`, three spaces, or a paragraph must produce
+ * no chip rather than a nonsense one: anything not a non-empty string
+ * within MAX_AUTHORITY_CHARS yields null, and the caller then deletes
+ * the field outright.
  */
 const readAuthorityLabel = (
   citation: Citation | undefined,
   chunk: RetrievedChunk | undefined,
 ): string | null => {
-  const candidates: unknown[] = [];
-  const push = (holder: Record<string, unknown> | undefined | null) => {
-    if (!holder) return;
-    candidates.push(holder.authorityLabel, holder.authority, holder.sourceAuthority);
-  };
-  push(citation as unknown as Record<string, unknown> | undefined);
-  push(chunk as unknown as Record<string, unknown> | undefined);
-  push(chunk?.metadata);
-
-  for (const candidate of candidates) {
-    let label: unknown = candidate;
-    if (isPlainObject(candidate)) label = candidate.label ?? candidate.name;
-    if (typeof label !== 'string') continue;
-    const trimmed = label.replace(/\s+/g, ' ').trim();
+  for (const candidate of [citation?.authorityLabel, chunk?.authorityLabel] as unknown[]) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.replace(/\s+/g, ' ').trim();
     if (!trimmed || trimmed.length > MAX_AUTHORITY_CHARS) continue;
     return trimmed;
   }
@@ -452,7 +433,7 @@ export const buildContext = (
       // what the patient's snippet card is built from, and a card that
       // silently drops the grade is the failure this is here to avoid.
       const label = readAuthorityLabel(citation, chunkById.get(citation.chunkId));
-      const normalized: RenderedCitation = { ...(citation as RenderedCitation) };
+      const normalized: Citation = { ...citation };
       // Normalised rather than passed through. `authorityLabel` is the
       // retrieval lane's field, but this is the object the patient's
       // snippet chip is built from, and a chip rendering `42` or three

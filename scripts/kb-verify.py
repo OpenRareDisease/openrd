@@ -77,11 +77,24 @@ IN_CORPUS_QUESTIONS = [
 #:
 #: If a floor lets group 1 through, it is too high, whatever it does for
 #: group 3.
+#:
+#: A probe belongs here only if the corpus really has no passage that
+#: answers it. One of the original SMA probes did not clear that bar and
+#: was retired on 2026-08-11: 「脊髓性肌萎缩症 SMA 的诺西那生钠多少钱一
+#: 针？」 came back at best-hit 0.2314 — nearer than 13 of the 15
+#: in-corpus probes — because 06.政策与倡导教育/…/B.以患者为中心”的互动
+#: 交流活动——白皮书》完整版.pdf chunk 48 literally quotes 「单只 70 万元」
+#: for that drug. That is a true positive, so it can only pull the
+#: out-of-corpus minimum below any usable floor and make the band look
+#: broken for the wrong reason. Two SMA questions the corpus genuinely
+#: does not answer replace it (their top hit is a Chinese FSHD paper,
+#: not an SMA answer), and they measure the same danger honestly.
 OUT_OF_CORPUS_QUESTIONS = [
     "杜氏肌营养不良 DMD 的激素治疗方案是什么？",
     "渐冻症 ALS 的确诊标准是什么？",
     "重症肌无力的胸腺切除手术效果如何？",
-    "脊髓性肌萎缩症 SMA 的诺西那生钠多少钱一针？",
+    "脊髓性肌萎缩症 SMA 分几型，怎么区分？",
+    "脊髓性肌萎缩症 SMA 的 SMN1 基因检测怎么做？",
     "帕金森病的早期症状有哪些？",
     "新冠疫苗打了会不会加重肌无力？",
     "中药调理对肌营养不良有效吗？",
