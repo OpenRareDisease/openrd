@@ -208,6 +208,60 @@ describe('p-register_profile — Art. 29 consent is asked about real data', () =
     });
   });
 
+  /**
+   * The other direction: an all-null payload is not「nothing to save」,
+   * it is a DELETION.
+   *
+   * `writesHealthData` answers 「does this payload carry health data」,
+   * which is the right question for the consent ask and the wrong one
+   * for whether a write is needed. Gating the PUT on it alone meant a
+   * patient who cleared their LAST clinical answer — a hand-typed 分型
+   * they had just learned was never genetically confirmed — got
+   * 「档案已保存」 and a trip home while the server kept FSHD1, and the
+   * passport a clinician opens, the referral pack and the AI context
+   * all went on stating it. Reopening the form reloaded the old value,
+   * so the edit reverted in front of them with no error ever shown.
+   */
+  it('sends the erase when the last clinical field is cleared', async () => {
+    mockGetMyPatientProfile.mockReset().mockResolvedValue({
+      id: 'p-1',
+      fullName: '张三',
+      dateOfBirth: '1988-03-12',
+      gender: 'male',
+      baseline: {
+        foundation: { fullName: '张三', birthYear: 1988, diagnosisYear: null, regionLabel: null },
+        diseaseBackground: {
+          diagnosisLadder: null,
+          diagnosisType: 'FSHD1',
+          d4z4: null,
+          onsetRegion: null,
+          familyHistory: null,
+        },
+        currentStatus: { independentlyAmbulatory: null, assistiveDevices: [] },
+      },
+    });
+
+    const tree = await renderScreen();
+    // The form still needs its required identity fields to submit at
+    // all; the point of the test is what happens to the CLINICAL half.
+    await fillMinimalFields(tree);
+    await act(async () => {
+      byAccessibilityLabel(tree, 'set-region').props.onPress();
+    });
+    await act(async () => {
+      byPlaceholder(tree, '例如：FSHD1').props.onChangeText('');
+    });
+    await pressSave(tree);
+
+    expect(mockUpdateMyBaseline).toHaveBeenCalledTimes(1);
+    expect(mockUpdateMyBaseline.mock.calls[0][0]).toMatchObject({
+      diseaseBackground: { diagnosisType: null },
+    });
+    // Erasing is not a new act of processing: the patient who stored it
+    // already granted the consent this gate looks for.
+    expect(mockEnsureSensitiveDataConsent).not.toHaveBeenCalled();
+  });
+
   it('stores nothing when the patient declines on a payload that carries health data', async () => {
     mockEnsureSensitiveDataConsent.mockResolvedValue(false);
     const tree = await renderScreen();

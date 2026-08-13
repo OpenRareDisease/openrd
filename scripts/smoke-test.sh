@@ -13,6 +13,28 @@ log_step "Health"
 request_get /api/healthz
 assert_status 200
 
+# The public passport surface is mounted OUTSIDE /api (routes/index.ts
+# says why), so it needs its own route in every proxy in front of the
+# origin. It shipped without one: Caddy's /api/* block did not match it,
+# the catch-all handed it to the static app, nginx's try_files answered
+# 200 with index.html, and expo-router rendered +not-found. A clinician
+# opening a forwarded share link saw a Chinese consumer app's not-found
+# screen, opened_count stayed 0, and the patient's revoke list therefore
+# told them the doctor had never opened it. Nothing failed anywhere.
+#
+# So the smoke test asks the question the deploy could not answer: does a
+# token-shaped path reach the API at all? A bogus token is the right
+# probe — the router answers every unknown/expired/revoked token with the
+# same 404 HTML page by design, so 404 + text/html IS the proof it
+# arrived. index.html from the static app would be 200.
+log_step "Public Passport Route Reaches The API"
+request_get "/s/passport/smoke-test-not-a-real-token-000000000000000000000"
+assert_status 404
+case "$RESPONSE_BODY" in
+  *"这个链接打不开了"*) : ;;
+  *) fail "GET /s/passport/<token> did not reach the API. Expected the router's own 404 page; got: ${RESPONSE_BODY:0:200}" ;;
+esac
+
 log_step "Register And Login"
 PHONE="$(next_phone_number)"
 REGISTER_RESULT="$(register_test_user "$PHONE")"

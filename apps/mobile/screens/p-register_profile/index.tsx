@@ -387,6 +387,27 @@ const RegisterProfileScreen: React.FC = () => {
     // background section and the first report upload both still do.
     const writesHealthData = baselineCarriesHealthData(baselinePayload);
 
+    // A SECOND predicate, because the two questions are not the same one.
+    //
+    // `writesHealthData` asks 「does this payload contain health data」,
+    // which is exactly right for the consent ask below and exactly wrong
+    // for 「is a write needed」: an all-null payload is what a DELETION of
+    // the stored clinical fields looks like. Gating the PUT on it meant a
+    // patient who cleared their LAST remaining answer — say a hand-typed
+    // 分型 they had just learned was never genetically confirmed — got
+    // 「档案已保存」 and a trip to the home screen while the server kept
+    // the old value, and the passport, the referral pack and the AI
+    // context all went on stating it. Reopening the form reloaded it, so
+    // the edit visibly reverted with no error ever shown.
+    //
+    // So: write whenever the payload carries health data OR the stored
+    // baseline did. The consent gate stays on the first predicate alone,
+    // which is still correct — a patient who once stored a clinical field
+    // already has the ledger row `requireSensitiveDataConsent` looks for,
+    // and erasing data is not a new act of processing to consent to.
+    const erasesStoredHealthData =
+      !writesHealthData && existingBaseline !== null && baselineCarriesHealthData(existingBaseline);
+
     // Ordered after the guardian gate on purpose: for a child, the
     // person answering both questions is the guardian, and asking them
     // to consent to sensitive-data processing before establishing that
@@ -448,7 +469,7 @@ const RegisterProfileScreen: React.FC = () => {
       // and every reader of `baseline.foundation` falls back to those
       // profile columns. Writing it anyway is what forced the consent
       // ask onto first-run users.
-      if (writesHealthData) {
+      if (writesHealthData || erasesStoredHealthData) {
         await updateMyBaseline(baselinePayload);
       }
       // The saved state is now canonical on the server — drop the
