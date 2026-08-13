@@ -1,4 +1,4 @@
-import { Text } from 'react-native';
+import { Text, type TextStyle } from 'react-native';
 import { COLOR } from '../../lib/design';
 
 /**
@@ -25,11 +25,22 @@ import { COLOR } from '../../lib/design';
  * colour filter, at 3am, or with low vision — see lib/design.ts on the
  * contrast ramp. Nothing here is legible by colour alone.
  *
- * 病友经验 carries `warn` rather than the neutral tone the other three
- * share. That is a statement about the strength of the CLAIM, not about
- * the person who wrote it: the KB ranker already applies its largest
- * relevance penalty to that tier, and a chip that looked identical to
- *「指南/共识」would contradict the ranking the answer was built on.
+ * Three tones over the four labels, ranked the way knowledge.py's
+ * AUTHORITY_TIERS ranks them:
+ *
+ *   指南/共识  accent
+ *   文献       neutral
+ *   资料       neutral
+ *   病友经验   warn
+ *
+ * That is a statement about the strength of the CLAIM, not about the
+ * person who wrote it: the KB ranker gives 指南/共识 no relevance
+ * penalty at all and 病友经验 its largest, and a chip that made those
+ * two look identical would contradict the ranking the answer was built
+ * on. The table above is the whole palette, and
+ * __tests__/authority-chip-palette.test.ts reads it back out of this
+ * comment and compares it against TONES — a comment describing a map
+ * ten lines below it is exactly the pair that drifts.
  */
 
 interface AuthorityTone {
@@ -63,6 +74,30 @@ export const readAuthorityLabel = (raw: string | null | undefined): string | nul
 };
 
 /**
+ * The chip is one word, so it has to break like one.
+ *
+ * On the web export a nested `Text` is an inline `<span>` that inherits
+ * the parent's `white-space: pre-wrap`, and CSS allows a line break
+ * between any two Han characters — so「指南/共识」is four break
+ * opportunities sitting in the middle of a citation title. An inline box
+ * that breaks fragments: `box-decoration-break` defaults to `slice`, so
+ * each fragment paints its own `backgroundColor` and `borderRadius` and
+ * `paddingHorizontal` lands only on the outer edges. The chip comes out
+ * as two half-pills on two lines, one of them flush to the margin with a
+ * squared-off edge, which reads as a rendering glitch at the moment the
+ * grade is meant to be read at a glance.
+ *
+ * Measured on the 211 source_file names in the live index, laid out in
+ * headless Chrome at five phone content widths (280/296/312/328/344px):
+ * 107 of 1,055 chip renders split, 0 with this style. `whiteSpace` is a
+ * CSS property react-native-web passes straight through to the span and
+ * React Native's `TextStyle` has no key for it, hence the cast; native
+ * ignores it, which is right — native measures a nested run as a unit
+ * and never fragments its background.
+ */
+const NO_WRAP = { whiteSpace: 'nowrap' } as TextStyle;
+
+/**
  * Rendered as a nested `<Text>` so it flows inside the citation's title
  * line and cannot push the layout around: on the web export a nested
  * Text is an inline `<span>`, and vertical padding on an inline box does
@@ -75,14 +110,17 @@ export const AuthorityChip = ({ label }: { label: string | null | undefined }) =
 
   return (
     <Text
-      style={{
-        color: tone.color,
-        backgroundColor: tone.backgroundColor,
-        fontSize: 10,
-        fontWeight: '700',
-        paddingHorizontal: 4,
-        borderRadius: 4,
-      }}
+      style={[
+        {
+          color: tone.color,
+          backgroundColor: tone.backgroundColor,
+          fontSize: 10,
+          fontWeight: '700',
+          paddingHorizontal: 4,
+          borderRadius: 4,
+        },
+        NO_WRAP,
+      ]}
     >
       {text}
     </Text>

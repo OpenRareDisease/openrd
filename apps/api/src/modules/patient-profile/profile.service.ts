@@ -1512,6 +1512,104 @@ export class PatientProfileService {
     return result.rowCount ?? 0;
   }
 
+  /**
+   * The two audit events the delete endpoint writes OUTSIDE
+   * `deleteDocumentForUser`'s transaction, because the thing they
+   * describe happens outside it too.
+   *
+   * `patient_document.delete_started` is the intent record: the
+   * controller commits it BEFORE it touches the blob, so the
+   * irreversible half can only run once a trail of the attempt is
+   * already durable. `patient_document.delete_failed` is the
+   * compensating record: it says how an attempt that did not end in a
+   * row delete ended, and — via `storageCleanupStatus` — whether the
+   * file survived it.
+   *
+   * The pair is what makes the transaction's own invariant ("no
+   * removal without a trail") true for the file and not just for the
+   * row; see the doc block on `deleteDocument` for why the blob cannot
+   * be inside the transaction in the first place.
+   */
+  private async recordDocumentDeletionEvent(
+    eventType: 'patient_document.delete_started' | 'patient_document.delete_failed',
+    entry: {
+      userId: string;
+      documentId: string;
+      documentType: string | null;
+      /**
+       * What became of the stored object by the time the attempt
+       * ended: 'kept' — never removed, 'missing' — already absent
+       * before we tried, 'removed' — destroyed by this request.
+       * `delete_failed` + 'removed' is the row that says a file is
+       * gone while its record is not.
+       */
+      storageCleanupStatus?: 'removed' | 'missing' | 'kept';
+      reason?: string;
+      ip?: string;
+      userAgent?: string;
+    },
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO audit_logs (event_type, event_payload)
+       VALUES ($1, $2)`,
+      [
+        eventType,
+        // Same content rule as the `patient_document.deleted` payload
+        // below: documentId + documentType prove an erasure was
+        // attempted, while title / file_name / storage_uri are report
+        // content that would outlive the account purge.
+        maskAuditPayload({
+          userId: entry.userId,
+          documentId: entry.documentId,
+          documentType: entry.documentType,
+          ...(entry.storageCleanupStatus
+            ? { storageCleanupStatus: entry.storageCleanupStatus }
+            : {}),
+          ...(entry.reason ? { reason: entry.reason } : {}),
+          ip: entry.ip ?? null,
+          userAgent: entry.userAgent ?? null,
+        }),
+      ],
+    );
+  }
+
+  /**
+   * Commit the intent to delete before anything irreversible runs.
+   *
+   * Throws if the row cannot be written, and the controller turns that
+   * into a refusal — deliberately. The gate is the whole point: if the
+   * database is too sick to record that a patient asked for an
+   * erasure, it is also too sick for us to start performing one.
+   */
+  async recordDocumentDeletionIntent(entry: {
+    userId: string;
+    documentId: string;
+    documentType: string | null;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    await this.recordDocumentDeletionEvent('patient_document.delete_started', entry);
+  }
+
+  /**
+   * Record how a delete that did not complete ended. Best-effort: a
+   * throw here is swallowed by the caller, because the error the
+   * patient and the operator need is the original one, and this insert
+   * is being attempted on a database that has just failed a query.
+   * The intent row is the trail that does not depend on this landing.
+   */
+  async recordDocumentDeletionFailure(entry: {
+    userId: string;
+    documentId: string;
+    documentType: string | null;
+    storageCleanupStatus: 'removed' | 'missing' | 'kept';
+    reason: string;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    await this.recordDocumentDeletionEvent('patient_document.delete_failed', entry);
+  }
+
   async deleteDocumentForUser(
     userId: string,
     documentId: string,
@@ -1551,8 +1649,11 @@ export class PatientProfileService {
       // the caller needs storage_uri to delete the blob, which is a
       // different job. A patient names their own uploads
       //（「基因检测 2026」）and hospitals put names and IDs in file
-      // names, so all three are report content rather than evidence
-      // that a deletion occurred. `documentId` + `documentType` proves
+      // names（「ZHANG-WEI-1987-WES.pdf」）, so all three are report
+      // content rather than evidence that a deletion occurred — and
+      // the second example is the one that reaches storage_uri, which
+      // keeps only `[A-Za-z0-9-_.]` and would store the first as
+      //「_____2026」. `documentId` + `documentType` proves
       // that completely, and unlike the other three it resolves to
       // nothing once the account is purged.
       await client.query(

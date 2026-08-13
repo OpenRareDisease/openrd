@@ -716,11 +716,14 @@ describe('a migration that rebuilds an index describes the lock it really takes'
     }
   });
 
-  /** Everything a file in this shape may not say, in one list. The
-   *  three entries are not three phrasings — they are the three KINDS of
-   *  claim the lock cannot support, and each is polarity-aware, so the
-   *  correction of each is not on the list. */
-  const falseReassurances = (prose: string) => [
+  /** Everything a file in this shape may not say, in a single list.
+   *  The entries are not phrasings — they are the KINDS of claim the lock
+   *  cannot support, and each is polarity-aware, so the correction of
+   *  each is not on the list. How many kinds there are is derived from
+   *  this array by the count test below rather than written into the
+   *  sentence above it, which is how it came to say 「three」 over four
+   *  of them. */
+  const FALSE_REASSURANCE_KINDS: Array<(prose: string) => string[]> = [
     // The reassurance the lock cannot support: under ACCESS EXCLUSIVE
     // nothing reads the table, so no part of this file may tell an
     // operator that reads carry on — as an affirmative (「reads keep
@@ -729,19 +732,22 @@ describe('a migration that rebuilds an index describes the lock it really takes'
     // 「does not lock the table for reads」, 「nothing waits」). Read
     // file-wide on purpose: a file that says reads stop in one place
     // and reads keep working in another has not corrected anything.
-    ...segmentsClaiming(prose, 'carries-on'),
+    (prose) => segmentsClaiming(prose, 'carries-on'),
     // 「only writes」: the DROP's lock has no writers-only mode to fall
     // back to. Asserted only — 「Reads stop too, not only writes」 and
     // 「blocks SELECT, not only INSERT/UPDATE/DELETE」 are the sentences
     // this test is named after, and the ban used to reject both.
-    ...assertingSegments(prose, /\bonly\b[^.]{0,30}\b(?:INSERTs?|writes?)\b/i),
+    (prose) => assertingSegments(prose, /\bonly\b[^.]{0,30}\b(?:INSERTs?|writes?)\b/i),
     // SHARE is what a lone CREATE INDEX takes; it is not available to a
     // file that dropped an index first in the same transaction.
-    ...assertingSegments(prose, /same SHARE lock/i),
+    (prose) => assertingSegments(prose, /same SHARE lock/i),
     // 「briefly」 is true of a DROP on its own and false of a transaction
     // that holds the lock through an index build.
-    ...assertingSegments(prose, /ACCESS\s*EXCLUSIVE[^.]{0,40}\bbrief/i),
+    (prose) => assertingSegments(prose, /ACCESS\s*EXCLUSIVE[^.]{0,40}\bbrief/i),
   ];
+
+  const falseReassurances = (prose: string): string[] =>
+    FALSE_REASSURANCE_KINDS.flatMap((kind) => kind(prose));
 
   it.each(rebuilders)('%s does not claim a lock this shape cannot take', (file) => {
     // Reported as the offending segments rather than as a regex that
@@ -763,11 +769,33 @@ describe('a migration that rebuilds an index describes the lock it really takes'
    * around it.
    *
    * So both directions are pinned here, on sentences rather than on
-   * files. FALSE_REASSURANCE is the archive: 025's original text, the
-   * sentences each later widening was written for, and the phrasings
-   * this block's own comments quote as the belief it exists to prevent.
-   * HONEST is the corrections — the ones the shipped 025 files use, and
-   * the ones the four findings named as wrongly rejected.
+   * files. FALSE_REASSURANCE is the archive, in two arrays because it
+   * has two provenances: 025's original text, and every phrasing those
+   * four rounds of widening were written for — the ones this block's
+   * own comments quote as the belief it exists to prevent among them,
+   * since a comment quoting a phrasing is how that phrasing is
+   * recorded at all. HONEST is the corrections: the ones the shipped
+   * 025 files use, and the true sentences the guard as it stood
+   * rejected.
+   *
+   * FIXTURE: twenty banned sentences — three of them 025's own text and
+   * seventeen from the four rounds of widening — and nineteen honest
+   * ones, against four kinds of banned claim.
+   * Stated here, and derived from the arrays by the last test in this
+   * block, because the size of this fixture is the evidence offered
+   * that the guard was recalibrated against every phrasing an earlier
+   * widening was written for — and the one place it was written down,
+   * the commit message that added the fixture, says twenty-two. A
+   * number nobody can check is a number that is already wrong.
+   *
+   * That last point applies to this docblock too, which is why the
+   * count test below does not stop at the FIXTURE line: it scans every
+   * number word in this block's comments that is attached to something
+   * countable here, and fails on any that no derivation accounts for.
+   * A single `toContain` over one sentence is satisfied by a docblock
+   * that contradicts itself two lines away, which is how 「seventeen
+   * from the widening history」 came to sit under a three-part
+   * enumeration and over an array split two ways.
    *
    * Both lists are about A FILE IN THIS SHAPE. 018 says 「reads of the
    * manage screen keep working while writes queue」 and is telling the
@@ -775,13 +803,31 @@ describe('a migration that rebuilds an index describes the lock it really takes'
    * in a DROP-then-CREATE file is a lie. That is why the guard runs on
    * `rebuilders` and not on the directory.
    */
-  const FALSE_REASSURANCE = [
-    // 025 as it shipped, about its own swap transaction.
+  /**
+   * How many times the ban was widened against 025's original text
+   * before this fixture existed. A fact about the guard's history, not
+   * the size of anything here — so it is a named constant every
+   * sentence stating it is built from, rather than a number retyped in
+   * three paragraphs and contradicted by a fourth.
+   */
+  const WIDENING_ROUNDS = 4;
+
+  /** 025 as it shipped, about its own swap transaction. */
+  const FALSE_REASSURANCE_AS_SHIPPED = [
     'The swap is catalog work, not a build, and neither reads nor writes stop for it.',
     'This transaction takes the same SHARE lock 018 took.',
     'ACCESS EXCLUSIVE is held only briefly here.',
-    // Each of these got past the ban list as it stood when the previous
-    // one was added.
+  ];
+
+  /**
+   * Each of these got past the ban list as it stood at some point
+   * across those four rounds. NOT one phrasing per round — the version
+   * of this comment that shipped said it was, which put 「seventeen」
+   * and 「four」 in the same docblock for the same history. A round that
+   * widens a regex is a round that has been shown several phrasings;
+   * what is one-per-round is the widening, not the sentence.
+   */
+  const FALSE_REASSURANCE_PER_WIDENING = [
     'Reads continue throughout the swap.',
     'The swap does not lock the table for reads.',
     'The RENAME holds no read lock.',
@@ -806,8 +852,16 @@ describe('a migration that rebuilds an index describes the lock it really takes'
     'Only INSERT/UPDATE/DELETE queue behind it.',
   ];
 
+  const FALSE_REASSURANCE = [...FALSE_REASSURANCE_AS_SHIPPED, ...FALSE_REASSURANCE_PER_WIDENING];
+
   const HONEST = [
-    // The four sentences findings 3-6 caught the old guard rejecting.
+    // True of a file in this shape, and rejected by the ban as it
+    // stood. Findings 3-6 named two of them: 「Reads stop too, not only
+    // writes」, which this suite uses as a test title, and 「the table is
+    // not available to readers」, which is the plainest true thing such
+    // a file can say. The rest are the same claim in the shapes a
+    // correction reaches for; which of them the old guard would have
+    // rejected is not recorded anywhere, so no count is stated here.
     'Reads stop too, not only writes.',
     'It blocks SELECT, not only INSERT/UPDATE/DELETE.',
     'During the build the table is not available to readers.',
@@ -837,6 +891,107 @@ describe('a migration that rebuilds an index describes the lock it really takes'
 
   it.each(FALSE_REASSURANCE)('bans 「%s」', (sentence) => {
     expect(falseReassurances(sentence)).not.toHaveLength(0);
+  });
+
+  it('states the size of its own fixture, and states it right', () => {
+    const words = [
+      'zero',
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      'six',
+      'seven',
+      'eight',
+      'nine',
+      'ten',
+      'eleven',
+      'twelve',
+      'thirteen',
+      'fourteen',
+      'fifteen',
+      'sixteen',
+      'seventeen',
+      'eighteen',
+      'nineteen',
+      'twenty',
+      'twenty-one',
+      'twenty-two',
+      'twenty-three',
+      'twenty-four',
+    ];
+    /** A number word, or a loud failure rather than `undefined`. */
+    const word = (value: number): string => {
+      expect(words[value], `no number word for ${value}; extend the list`).toBeDefined();
+      return words[value];
+    };
+    // Doc comments with their wrapping removed, which is how the
+    // sentence above is written and how a reader reads it.
+    const prose = fs
+      .readFileSync(fileURLToPath(import.meta.url), 'utf8')
+      .replace(/\n\s*\*\s?/g, ' ');
+
+    /**
+     * Every count this block's comments state about this fixture. The
+     * version of this test that shipped derived the FIXTURE line and
+     * nothing else, so 「Four rounds of widening」 two paragraphs up,
+     * 「the three entries」 over an array of four and 「The four
+     * sentences」 over an array of eight all stayed invisible — a
+     * `toContain` is satisfied by one true sentence however many false
+     * ones sit beside it.
+     */
+    const DERIVED = [
+      `FIXTURE: ${word(FALSE_REASSURANCE.length)} banned sentences — ` +
+        `${word(FALSE_REASSURANCE_AS_SHIPPED.length)} of them 025's own text and ` +
+        `${word(FALSE_REASSURANCE_PER_WIDENING.length)} from the ${word(WIDENING_ROUNDS)} rounds of widening — ` +
+        `and ${word(HONEST.length)} honest ones, against ` +
+        `${word(FALSE_REASSURANCE_KINDS.length)} kinds of banned claim.`,
+      `${word(WIDENING_ROUNDS).replace(/^./, (c) => c.toUpperCase())} rounds of widening it against 025's original text`,
+      `every phrasing those ${word(WIDENING_ROUNDS)} rounds of widening were written for`,
+      `got past the ban list as it stood at some point across those ${word(WIDENING_ROUNDS)} rounds`,
+    ];
+    DERIVED.forEach((statement) => expect(prose, statement).toContain(statement));
+
+    /**
+     * And the other direction: a number word next to something this
+     * block counts, that no derivation above accounts for. Coverage is
+     * by removal rather than by containment, so a new sentence cannot
+     * ride on a phrasing already approved somewhere else.
+     */
+    const COUNTS_SOMETHING = new RegExp(
+      `\\b(?:${words.join('|')})\\b(?:\\W+\\w+){0,3}?\\W+` +
+        `(?:sentences|entries|phrasings?|rounds?|kinds?|honest)\\b`,
+      'gi',
+    );
+    /**
+     * Number words in this block's comments that are not counting this
+     * fixture: the counts this block records as WRONG, quoted, plus the
+     * sentence that denies a one-to-one match between the archive and
+     * the widening history. A
+     * quotation must not track the arrays — that is what makes it a
+     * quotation — so each is listed rather than derived, and each is
+     * marked with 「」 or with the denial around it.
+     */
+    const NOT_THE_FIXTURE = [
+      'says twenty-two',
+      'NOT one phrasing per round',
+      'what is one-per-round is the widening',
+      '「Four rounds of widening」',
+      '「the three entries」 over an array of four',
+      '「The four sentences」 over an array of eight',
+    ];
+    // From the ban's own doc comment, not from the fixture's: the
+    // miscount over the KINDS array sits above the fixture, and a scan
+    // that started at the fixture could not see it.
+    const block = prose.slice(prose.indexOf('Everything a file in this shape may not say'));
+    const covered = [...DERIVED, ...NOT_THE_FIXTURE];
+    const unaccounted = [
+      ...covered
+        .reduce((rest, statement) => rest.split(statement).join(' … '), block)
+        .matchAll(COUNTS_SOMETHING),
+    ].map((match) => match[0]);
+    expect(unaccounted, 'counts stated in this block that nothing here derives').toEqual([]);
   });
 
   it.each(HONEST)('leaves 「%s」 alone', (sentence) => {

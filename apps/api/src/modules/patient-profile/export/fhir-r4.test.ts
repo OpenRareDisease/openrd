@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
-import { documentScopedAmbulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
+import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
 import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
 import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
@@ -375,22 +375,44 @@ describe('FHIR R4 — instruments are declared as withheld', () => {
   });
 
   it('makes no claim that the walking state is somewhere in this bundle', () => {
-    const reason = reasonOf(build(walkingHeavy));
-    // Every sentence in this reason that talks about the walking state
-    // AND about this bundle, in order, each pinned by the denial it
-    // exists to make. The list is exhaustive on purpose: a new such
-    // sentence — 「基线行走状态没有单独的资源类型，但会作为 Observation
-    // 写入本 Bundle。」 is the shape that has slipped past twice — makes
-    // this array longer and turns the test red before anyone reads the
-    // wording. The earlier guards asked whether a sentence negated;
-    // reason-claims.ts says why that question cannot be answered here.
-    expect(documentScopedAmbulationSentences(reason)).toEqual([
-      expect.stringContaining('本 Bundle 不含基线记录的行走状态'),
-      expect.stringContaining('都不是行走状态本身'),
-      expect.stringContaining('基线行走状态不在本 Bundle 中'),
+    const result = build(walkingHeavy);
+    // EVERY omission the bundle carries, not the Brooke one alone. The
+    // version of this test that shipped read `reasonOf(...)`, which
+    // finds the entry whose field mentions Brooke — so the same false
+    // claim written into the LOINC omission pushed three lines above it
+    // in fhir-r4.ts left this test green and moved only the golden.
+    // This bundle has three omissions; one was guarded.
+    const claims = result.omissions.flatMap((entry) => ambulationSentences(entry.reasonZh));
+    // Every sentence in those reasons that talks about the walking state
+    // at all, in order, BY EXACT STRING. Two things turn this red: a
+    // new such sentence — 「基线行走状态没有单独的资源类型，但会作为
+    // Observation 写入本 Bundle。」 is the shape that has slipped past
+    // twice — and an edit to an approved one, including a clause hung
+    // off it with ，or ；. `expect.stringContaining` was what let the
+    // second through: it turns every entry here into a safe harbour,
+    // and 「…运动功能测量，基线行走状态也会随本次导出一并写出」 appended
+    // to the first entry satisfied it with the array unchanged.
+    //
+    // The first two lines are the shared instrument prefix, which
+    // reaches this list because it names Vignos, 下肢功能 and 运动功能 —
+    // the grade the walking state is derived from and the name the
+    // TREAT-NMD section carrying `motor.ambulation` gives it. Neither
+    // makes a claim about the bundle; they are enumerated rather than
+    // filtered out, because every rule that would drop them is a rule a
+    // false claim can be written to satisfy.
+    expect(claims).toEqual([
+      '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本',
+      '这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取',
+      '本 Bundle 不含基线记录的行走状态（ambulation）：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本 Bundle 的任何位置',
+      '本 Bundle 里凡是与走路有关的 Observation，都不是行走状态本身——「10 米步行计时」「6 分钟步行距离」「起立行走计时（TUG）」是某一天的一次计时，「户外行走困难程度」是一项自评，「开始使用轮椅」等随访事件记录的是一个时点，把其中任何一项读作基线行走状态都会读错',
+      '基线行走状态不在本 Bundle 中；需要它请向患者索取，或改用 TREAT-NMD 对齐导出',
     ]);
-    // No pointer into a document that has no sections at all.
-    expect(locatorsIn(reason)).toEqual([]);
+    // No pointer into a document that has no sections at all. Scoped to
+    // this reason rather than to every omission, because the LOINC one
+    // legitimately points at `codingProvenance.emitted` / `.withheld`,
+    // which are places in this bundle — an enumeration those deserve
+    // and do not have.
+    expect(locatorsIn(reasonOf(result))).toEqual([]);
   });
 });
 

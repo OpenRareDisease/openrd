@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
-import { documentScopedAmbulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
+import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
@@ -170,17 +170,37 @@ describe('Phenopacket v2 — held-but-unemitted instruments are declared', () =>
   });
 
   it('does not tell the receiver a walking state is somewhere in a packet that has none', () => {
-    const reason =
-      build().omissions.find((entry) => entry.field.includes('Brooke'))?.reasonZh ?? '';
+    const result = build();
+    const reason = result.omissions.find((entry) => entry.field.includes('Brooke'))?.reasonZh ?? '';
+    // EVERY omission this packet carries, not the Brooke one alone: the
+    // packet has four, and reading one of them is how the same claim
+    // written into a neighbouring reason would ship green.
+    const claims = result.omissions.flatMap((entry) => ambulationSentences(entry.reasonZh));
     // The shared wording used to end 「…会出现在运动功能一节」 — true of
     // TREAT-NMD, and describing nothing that exists here. Its
     // replacement guard pinned that phrase, so a new sentence making
     // the same claim in other words stayed green. So this is the
-    // exhaustive list of sentences that mention the walking state and
-    // this file together: exactly one, and it denies. A second one
-    // makes this array longer whatever it says.
-    expect(documentScopedAmbulationSentences(reason)).toEqual([
-      expect.stringContaining('本文件不含任何行走能力或运动功能数据'),
+    // exhaustive list of sentences that name the walking state in one
+    // of AMBULATION_SUBJECT's words: the shared instrument prefix,
+    // which names Vignos and 运动功能 and claims nothing about this
+    // packet, then the denial, then the redirect. One more makes this
+    // array longer whatever it says.
+    //
+    // The redirect — 「需要行走状态请向患者索取，或改用 TREAT-NMD 对齐
+    // 导出」 — points AWAY from this packet. It is listed rather than
+    // filtered: the filter that used to drop it keyed on a
+    // demonstrative, and a claim about this packet written without one
+    // — 「基线行走状态会作为 Observation 一并导出。」 — was dropped with it.
+    //
+    // By EXACT STRING, not `expect.stringContaining`: a substring
+    // matcher makes every approved entry a place to hang a false clause
+    // on with ，or ；, and `sentencesOf` splits on 。 only, so the array
+    // stays the same length and the whole suite stays green.
+    expect(claims).toEqual([
+      '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本',
+      '这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取',
+      '本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置',
+      '需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出',
     ]);
     // And no locator may point into a document that has no sections.
     expect(locatorsIn(reason)).toEqual([]);

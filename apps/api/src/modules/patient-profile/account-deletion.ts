@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 
 import type { AppLogger } from '../../config/logger.js';
-import { AUDIT_IDENTITY_KEYS } from '../../services/audit/identity-masking.js';
+import { AUDIT_IDENTITY_KEYS, maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { normalizePhone } from '../../utils/phone.js';
 
 /**
@@ -157,8 +157,11 @@ export const getAccountDeletionStatus = async (
  * Called from the startup sweep and the periodic interval — both
  * single-instance assumptions, same as the OCR job map.
  *
- * `removeFile` failures are logged and skipped: by the time we call
- * it the DB commit already made the deletion authoritative.
+ * `removeFile` failures do not fail the purge — by the time we call it
+ * the DB commit already made the deletion authoritative — but they are
+ * counted into an `account.purge_files_orphaned` audit row, because a
+ * purge the ledger records as complete while files survive it is a
+ * PIPL Art. 47 gap and not just an operational one.
  */
 export const purgeDueAccountDeletions = async (
   pool: Pool,
@@ -291,13 +294,69 @@ export const purgeDueAccountDeletions = async (
       client.release();
     }
 
+    let orphanedFileCount = 0;
     for (const uri of fileUris) {
       try {
         await removeFile(uri);
       } catch (error) {
+        orphanedFileCount += 1;
         logger.warn(
           { storageUri: uri, error: error instanceof Error ? error.message : String(error) },
           'Orphaned upload file left behind after account purge',
+        );
+      }
+    }
+
+    if (orphanedFileCount > 0) {
+      // The blob removals run after the commit, so the ledger row
+      // above already says 'purged' while these files are still
+      // sitting in the bucket. A container log that rotates is not a
+      // record of an incomplete erasure — this is the same gap the
+      // document delete endpoint closes with its intent row, in the
+      // other direction: there the file dies with no trail, here it
+      // survives an erasure the ledger claims finished.
+      //
+      // The count and nothing else. `storage_uri` embeds the file name
+      // the upload arrived with, and both providers keep every
+      // `[A-Za-z0-9-_.]` character of it (local-storage.ts,
+      // minio-storage.ts), so a hospital-issued name such as
+      //「ZHANG-WEI-1987-WES.pdf」survives into the URI intact — report
+      // content and an identity in one string. (A Chinese title does
+      // not survive: every other character is replaced with `_`, so
+      //「基因检测 2026」stores as「_____2026」. The latin case is the
+      // one that leaks, which is why the rule is about the URI and not
+      // about the language.) deleteDocumentForUser keeps storage_uri
+      // out of audit_logs for exactly that reason, and the row that
+      // says an account was erased is the last place to start writing
+      // it. The URIs are in the warn lines above for as long as the
+      // log is kept; what has to outlive the log is the fact that this
+      // purge did not finish.
+      //
+      // No key here needs masking (see AUDIT_IDENTITY_KEYS) — `userId`
+      // deliberately survives a purge, and a count identifies nobody —
+      // but it still goes through maskAuditPayload so the write
+      // boundary stays the single place that decides.
+      //
+      // Best-effort: the purge itself already committed, and failing
+      // the sweep over its own bookkeeping would strand the remaining
+      // due requests.
+      try {
+        await pool.query(
+          `INSERT INTO audit_logs (event_type, event_payload)
+           VALUES ($1, $2)`,
+          [
+            'account.purge_files_orphaned',
+            maskAuditPayload({ userId: request.user_id, orphanedFileCount }),
+          ],
+        );
+      } catch (auditError) {
+        logger.error(
+          {
+            requestId: request.id,
+            orphanedFileCount,
+            error: auditError instanceof Error ? auditError.message : String(auditError),
+          },
+          'Account purge left files behind and could not record it in audit_logs',
         );
       }
     }

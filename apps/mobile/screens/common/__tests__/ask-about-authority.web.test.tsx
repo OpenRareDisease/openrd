@@ -19,6 +19,17 @@
  * (or a screen reader) receives. `authorityToneFor` gives the two
  * grades different colours, and a props-level assertion would happily
  * accept colour as the only carrier.
+ *
+ * This drawer is NOT the 问答 chip. It shares `authorityToneFor` and
+ * `readAuthorityLabel` and nothing else: AskAboutDrawer renders the
+ * grade with its own inline `<Text style={[styles.citationChipAuthority,
+ * {color: …}]}>`, stacked above the source name, because the pill is
+ * capped at 150pt and clamped to one line. So the AuthorityChip tests
+ * cover none of this and the two properties have to be asserted again
+ * here — separately, one test per reader, for the reason spelled out in
+ * p-qna/__tests__/citation-authority.web.test.tsx: the single test that
+ * used to stand for both stripped every `[style]` attribute and then
+ * asserted on `textContent`, which no style attribute can change.
  */
 
 jest.mock('react-native', () => require('react-native-web'));
@@ -107,6 +118,8 @@ jest.mock('../../../lib/ai-streaming', () => ({
 
 import { act, type ReactNode } from 'react';
 import AskAboutDrawer from '../AskAboutDrawer';
+import { authorityToneFor } from '../AuthorityChip';
+import { accessibleText } from '../__testutils__/accessible-text';
 
 const { createRoot } = require('react-dom/client') as {
   createRoot: (container: Element) => { render: (node: ReactNode) => void };
@@ -164,6 +177,22 @@ const renderAndAnswer = async () => {
   return document.body;
 };
 
+/** The element that PRINTS a string: the deepest node whose own rendered
+ *  text is exactly it. Every ancestor also contains it, which is how
+ *「the grade is somewhere in the document」proves less than it looks. */
+const printing = (container: HTMLElement, text: string): HTMLElement | undefined =>
+  Array.from(container.querySelectorAll<HTMLElement>('*')).find(
+    (node) => node.children.length === 0 && node.textContent === text,
+  );
+
+/** Same colour string the DOM would hold, so a hex in design.ts and the
+ *  `rgb(...)` jsdom writes back compare equal. */
+const asRendered = (color: string): string => {
+  const probe = document.createElement('span');
+  probe.style.color = color;
+  return probe.style.color;
+};
+
 describe('web export：问一问的依据 chip 也要带来源等级', () => {
   beforeEach(() => {
     emit = null;
@@ -178,12 +207,45 @@ describe('web export：问一问的依据 chip 也要带来源等级', () => {
     expect(text).toContain('病友经验');
   });
 
-  it('等级是文字，不是颜色', async () => {
+  it('等级是文字，不是颜色 —— 上色的那个节点自己就写着等级', async () => {
     const container = await renderAndAnswer();
-    container.querySelectorAll('[style]').forEach((node) => node.removeAttribute('style'));
-    const stripped = container.textContent ?? '';
-    expect(stripped).toContain('指南/共识');
-    expect(stripped).toContain('病友经验');
+
+    // The drawer paints the grade with `color` only — the pill's `well`
+    // background belongs to the whole chip and says nothing about the
+    // source. So the whole distinction rides on that one property, and
+    // what has to be true is that the node holding it also holds the
+    // words.
+    for (const grade of ['指南/共识', '病友经验']) {
+      const line = printing(container, grade);
+      expect(line).toBeDefined();
+      expect(line!.style.color).toBe(asRendered(authorityToneFor(grade).color));
+    }
+    expect(printing(container, '指南/共识')).not.toBe(printing(container, '病友经验'));
+  });
+
+  it('等级读屏也读得到', async () => {
+    const container = await renderAndAnswer();
+
+    // Not `textContent`: that is blind to `aria-hidden`, which takes the
+    // grade out of the accessibility tree and leaves every text node
+    // where it was. See __testutils__/accessible-text.ts.
+    //
+    // Read at the CHIP LINE, not at `document.body`.
+    // `accessibleText(container).toContain(grade)` is satisfied by any
+    // other node on the page spelling the grade out — and the answer
+    // body is the likely one, since knowledge.py hands the model
+    //「｜来源等级：指南/共识」in its prompt header. Measured: with the
+    // grade line `aria-hidden` and the tiers named in the answer, the
+    // document-wide read passes while a screen reader reaches neither
+    // grade; anchored here it fails on the first one. `printing` finds
+    // the line by its printed text, so this also pins the grade as a
+    // text node — deliberately: the colour test above already requires
+    // that, and it fails first on any chip that drops it.
+    for (const grade of ['指南/共识', '病友经验']) {
+      const line = printing(container, grade);
+      expect(line).toBeDefined();
+      expect(accessibleText(line!)).toBe(grade);
+    }
   });
 
   it('等级不挤掉它要修饰的来源名 —— 两者在同一个 chip 里各占一行', async () => {

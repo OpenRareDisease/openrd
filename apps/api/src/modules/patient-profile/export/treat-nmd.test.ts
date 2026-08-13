@@ -229,6 +229,13 @@ describe('TREAT-NMD alignment — held-but-unemitted instruments are declared', 
     // `sections.X` locator is resolved segment by segment rather than
     // by its first two — `sections.motorFunction.nothingLikeThis` must
     // not pass because `motorFunction` exists.
+    //
+    // Scoped to what `locatorsIn` returns, which is not every pointer a
+    // sentence could contain: a dotted path with a segment under three
+    // characters (`sections.motorFunction.q1`, `subject.id`) is not
+    // returned at all, so this loop never sees it. That bound is stated
+    // and pinned at DOTTED_LOCATOR and in reason-claims.test.ts; do not
+    // read this test as 「every pointer in the reason resolves」.
     const serialised = JSON.stringify(result.document);
     locators.forEach((locator) => {
       const [head, sectionKey, ...within] = locator.split('.');

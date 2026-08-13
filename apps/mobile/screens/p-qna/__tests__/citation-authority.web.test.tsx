@@ -20,6 +20,30 @@
  * that carried the distinction in `backgroundColor` alone would satisfy
  * a props-level assertion and tell a screen-reader user, or anyone with
  * a colour filter on, nothing at all.
+ *
+ * Two readers, two projections
+ * ----------------------------
+ * The colour-filtered reader and the screen-reader user are not the same
+ * person and are not served by the same assertion, so they get one test
+ * each:
+ *
+ *   - SIGHTED: the node that carries the tone must itself print the
+ *     grade. Read off `textContent` and the inline `color`.
+ *   - ASSISTIVE: the grade must survive the accessibility tree. Read off
+ *     `accessibleText`, which honours `aria-hidden` and `aria-label`.
+ *
+ * Both are read AT THE CHIP. A projection of the whole document only
+ * ever proves the string exists somewhere on the page, and this page has
+ * a second place it can come from — the answer body, which the model
+ * writes from a prompt header carrying「｜来源等级：指南/共识」.
+ *
+ * They used to be one test that stripped every `[style]` attribute and
+ * then asserted on `container.textContent` — a value that is independent
+ * of style attributes by definition, so it re-read the string the test
+ * above it had already read. It could not fail while that one passed,
+ * and its comment claimed it「read the page the way a screen reader
+ * does」. It did not: adding `aria-hidden` to the chip hides the grade
+ * from every screen reader and left it green.
  */
 
 jest.mock('react-native', () => require('react-native-web'));
@@ -130,6 +154,8 @@ jest.mock('../../../lib/consent-epoch', () => ({
 
 import { act, type ReactNode } from 'react';
 import P_QNA from '../index';
+import { authorityToneFor } from '../../common/AuthorityChip';
+import { accessibleText } from '../../common/__testutils__/accessible-text';
 
 const { createRoot } = require('react-dom/client') as {
   createRoot: (container: Element) => { render: (node: ReactNode) => void };
@@ -213,6 +239,25 @@ const renderToDom = async () => {
   return container;
 };
 
+/**
+ * The element that PRINTS a grade: the deepest node whose own rendered
+ * text is exactly the grade. Anything above it in the tree also contains
+ * the string, which is how「the grade is somewhere in the document」ends
+ * up proving less than it looks.
+ */
+const chipPrinting = (container: HTMLElement, grade: string): HTMLElement | undefined =>
+  Array.from(container.querySelectorAll<HTMLElement>('*')).find(
+    (node) => node.children.length === 0 && node.textContent === grade,
+  );
+
+/** Same colour string the DOM would hold, so a hex in design.ts and the
+ *  `rgb(...)` jsdom writes back compare equal. */
+const asRendered = (color: string): string => {
+  const probe = document.createElement('span');
+  probe.style.color = color;
+  return probe.style.color;
+};
+
 const expandCitations = async (container: HTMLElement) => {
   const toggle = Array.from(container.querySelectorAll('[aria-label]')).find((node) =>
     (node.getAttribute('aria-label') ?? '').includes('引用详情'),
@@ -242,16 +287,94 @@ describe('web export：引用要带来源等级', () => {
     expect(text).toContain('病友经验');
   });
 
-  it('等级是文字而不是颜色 —— 去掉样式后两条引用仍然可以区分', async () => {
+  it('等级是文字而不是颜色 —— 上色的那个节点自己就写着等级', async () => {
     const container = await renderToDom();
     await expandCitations(container);
 
-    // Strip every style attribute, i.e. read the page the way a screen
-    // reader does. The two citations must still be distinguishable.
-    container.querySelectorAll('[style]').forEach((node) => node.removeAttribute('style'));
-    const stripped = container.textContent ?? '';
-    expect(stripped).toContain('指南/共识');
-    expect(stripped).toContain('病友经验');
+    // Not「the grade appears somewhere」— the test above already says
+    // that. The claim here is that the node CARRYING THE TONE is the
+    // node PRINTING the words, which is what a reader with a colour
+    // filter is left with.
+    //
+    // The mutation this adds coverage for is the tone drifting onto an
+    // ancestor — a chip that wraps the grade in a plain inner `Text` and
+    // styles the wrapper. The words and the colour are then on different
+    // nodes, so the grade stops being readable at a glance next to a
+    // long citation title, and every character is still in
+    // `container.textContent`: the test above stays green and this one
+    // goes red. (Measured on that mutation — the grade wrapped in a
+    // plain inner `Text` — test 1 green, this one red on the first grade
+    // with `Received: ""` for the colour, and the no-wrap test below red
+    // too, since it reads the same node.)
+    //
+    // The chip shapes that DROP the text — moving the grade to an
+    // `aria-label`, or leaving the background alone to carry it — never
+    // get this far: they fail the test above first, on
+    //「Expected substring: "指南/共识"」. Measured on the `aria-label`
+    // one: 5 of the 6 tests here red, test 1 among them.
+    for (const grade of ['指南/共识', '病友经验']) {
+      const chip = chipPrinting(container, grade);
+      expect(chip).toBeDefined();
+      expect(chip!.style.color).toBe(asRendered(authorityToneFor(grade).color));
+      expect(chip!.style.backgroundColor).toBe(asRendered(authorityToneFor(grade).backgroundColor));
+    }
+
+    // And the tone is redundant rather than the carrier: the two grades
+    // are told apart by four different characters whatever the colours
+    // do. Pinned here so「both chips print their grade」cannot be
+    // satisfied by two chips printing the SAME grade.
+    expect(chipPrinting(container, '指南/共识')).not.toBe(chipPrinting(container, '病友经验'));
+  });
+
+  it('等级读屏也读得到 —— 不是画给眼睛看完就算', async () => {
+    const container = await renderToDom();
+    await expandCitations(container);
+
+    // `textContent` cannot answer this: it is blind to `aria-hidden`,
+    // which removes the chip from the accessibility tree while leaving
+    // every text node in place. See __testutils__/accessible-text.ts.
+    //
+    // Read at the CHIP, not at the document. A `.toContain(grade)` over
+    // `accessibleText(container)` is satisfied by anything on the page
+    // spelling the grade out, and the answer body is primed to do so:
+    // knowledge.py puts「｜来源等级：指南/共识」in the model's prompt
+    // header, so an answer reading「第一条来自指南/共识，第二条是病友
+    // 经验。」is a shape this screen really renders. Measured on that
+    // pair — chips `aria-hidden`, tiers named in the answer prose — the
+    // document-wide assertion passes with no grade reachable by any
+    // screen reader; anchored here it fails on the first chip.
+    //
+    // What anchoring costs: `chipPrinting` finds the chip by its printed
+    // text, so a chip that moved the grade to an `aria-label` on a
+    // childless node — which a screen reader announces perfectly well —
+    // is red here for the wrong reason. That shape is already forbidden
+    // by the SIGHTED test above, which fails on it first, so this file
+    // pins the grade as a TEXT NODE on purpose rather than by accident.
+    for (const grade of ['指南/共识', '病友经验']) {
+      const chip = chipPrinting(container, grade);
+      expect(chip).toBeDefined();
+      expect(accessibleText(chip!)).toBe(grade);
+    }
+  });
+
+  it('等级不会被折成两个半药丸', async () => {
+    const container = await renderToDom();
+    await expandCitations(container);
+
+    // The chip is a nested `Text`, i.e. an inline `<span>` inheriting
+    // the title line's `white-space: pre-wrap`, and CSS may break
+    // between any two Han characters. An inline box that breaks paints
+    // its background and radius per fragment
+    // (`box-decoration-break: slice`) and puts the horizontal padding
+    // only on the outer edges, so「指南/共识」comes back as two
+    // half-pills on two lines. Measured in headless Chrome over the 211
+    // source names in the live index at five phone widths: 107 of 1,055
+    // renders split without this, 0 with it. jsdom does no layout, so
+    // what is asserted here is the property that forbids the break.
+    for (const grade of ['指南/共识', '病友经验']) {
+      const chip = chipPrinting(container, grade)!;
+      expect(getComputedStyle(chip).whiteSpace).toBe('nowrap');
+    }
   });
 
   it('没有等级的来源（你自己的报告）不长出一个空 chip', async () => {

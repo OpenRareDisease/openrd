@@ -16,10 +16,12 @@ from one process to the next, so the same PDF parsed twice can come
 back with its text boxes in a different order.
 
 Measured on the FSHD corpus (`content/medical-kb/source`, 184 PDFs):
-parsing every file's text layer in two separate processes and comparing
-a sha256 over each file's page texts, 26 of the 184 files disagreed.
-The differences are reordered blocks, not lost characters — but they
-move chunk boundaries, so the chunk fingerprints move too, and
+parsing every file's text layer in separate processes and comparing a
+sha256 over each file's page texts, three pairs of processes disagreed
+on 27, 26 and 24 files — 28 distinct files across the three, since which
+tied pair wins is a coin flip per process and no single pair turns them
+all up. The differences are reordered blocks, not lost characters, but
+they move chunk boundaries, so the chunk fingerprints move too and
 `VectorBackend.reusable_embeddings` misses on chunks whose source file
 never changed. Two ingests of an untouched corpus also disagree about
 what the corpus says.
@@ -34,12 +36,17 @@ comparison over the same 184 files reports 0 files differing.
 
 This is a fork of a third-party internal, and requirements.txt pins
 pdfminer only as `>=`, so `test_pdfminer_determinism.py` pins the
-sha256 of the upstream function we forked from. A pdfminer upgrade that
-touches `group_textboxes` turns that test red, which is the signal to
-re-read upstream and re-sync this copy. Note what the red test does NOT
-do: `install()` still applies this copy, because a version skew is a
-reason to review the fork, not a reason to hand the corpus back to a
-parse that differs run to run.
+upstream function's executable shape: its AST with annotations,
+docstring, formatting and the `Union[X, Y]` / `X | Y` spelling of a
+type normalised away, re-rendered as canonical Python. That is one
+single value across all 11 releases `>=20240706` allows, so upstream
+reformatting the function (which it did twice inside that range) does
+not fire it and upstream changing a statement does. A red there is the
+signal to re-read upstream and re-sync this copy, and the checklist for
+doing that is `_group_textboxes_stable`'s own docstring below. Note what
+the red test does NOT do: `install()` still applies this copy, because a
+version skew is a reason to review the fork, not a reason to hand the
+corpus back to a parse that differs run to run.
 """
 
 from __future__ import annotations
@@ -48,7 +55,7 @@ import heapq
 import itertools
 from typing import Sequence, cast
 
-#: pdfminer.six release this file was forked from. The upstream source
+#: pdfminer.six release this file was forked from. The upstream shape
 #: hash lives in the test, not here, so that reading this module never
 #: requires importing pdfminer.
 FORKED_FROM_VERSION = "20260107"
@@ -89,13 +96,51 @@ def _group_textboxes_stable(
     """`LTLayoutContainer.group_textboxes`, tie-broken on first-seen
     order instead of on `id()`.
 
-    Transcribed from pdfminer.six 20260107. The only edits are the two
-    `id(obj)` calls in each heap tuple, which become `_ordinal(obj)`,
-    and the `done` set, which now holds those ordinals. Keeping the
-    ordinals in the same tuple positions preserves the comparison order
-    upstream relies on: `(skip_isany, distance, ...)` still decides
-    every pair whose distance differs, and the boxes themselves are
-    still never compared.
+    Transcribed from pdfminer.six 20260107. The edit this file exists
+    for is the two `id(obj)` calls in each of the two heap tuples, which
+    become `_ordinal(obj)`; `done` then holds ordinals rather than
+    addresses. Keeping the ordinals in the same tuple positions
+    preserves the comparison order upstream relies on: `(skip_isany,
+    distance, ...)` still decides every pair whose distance differs, and
+    the boxes themselves are still never compared.
+
+    The rest of the diff against upstream changes nothing at runtime:
+    the `counter` / `ordinals` / `_ordinal` helper the edit needs,
+    upstream's module-level imports moved in here so that importing this
+    module does not import pdfminer, upstream's opening
+    `ElementT = Union[LTTextBox, LTTextGroup]` dropped along with the
+    annotations that were its only readers (transcribe that line
+    literally and you get `NameError: name 'Union' is not defined`, and
+    once you fix that, the same for `LTTextBox` — this module imports
+    neither), and annotations dropped or loosened elsewhere:
+    `done: set[int]` is ours, upstream writes a bare `done = set()`.
+    Everything else — `dist`, `isany`, the O(n^2) sweep, the merge loop
+    — is upstream's, minus those tie-break fields.
+
+    So re-syncing after a pdfminer upgrade is: re-transcribe the
+    function, re-apply exactly what the paragraphs above name, and then
+    check the two things the reading order actually depends on, because
+    a transcription can preserve every line named above and still lose
+    the property.
+
+    1. The tie-break fields, which is the edit itself. The field test in
+       `test_pdfminer_determinism.py` reads them back out of the heap
+       tuples rather than checking the order they decide.
+    2. The order of `boxes`. The sweep numbers the boxes in the order
+       they arrive, so anything that reorders the sequence on the way in
+       — `list(set(boxes))`, `sorted(boxes, key=id)` — hands the tie
+       straight back to the allocator while leaving every ordinal a
+       well-formed dense index. That is why the field test groups the
+       same boxes twice, in opposite orders.
+
+    `Plane.__iter__`'s order is not a third dependency, though it reads
+    like one: every object the re-push loop takes out of the plane has
+    already been numbered by the sweep (measured: 0 unnumbered in 4,456
+    iterations of that loop over 400 random scenes), and `heapq` pops in
+    tuple order however the tuples were pushed. Checked rather than
+    argued — with `Plane.__iter__` reversed, and again with it sorted by
+    address, the reading order came back identical on all 800 random
+    tie-prone scenes.
     """
     from pdfminer.layout import (  # type: ignore
         LTTextBoxVertical,
@@ -111,9 +156,21 @@ def _group_textboxes_stable(
     def _ordinal(obj) -> int:
         """First-seen index for `obj`. Keyed on `id()` — which is fine
         here, unlike upstream, because the value is only used to look
-        the ordinal up: every object that gets one is held alive by
-        `plane` or by the heap for as long as the ordinal is in use, so
-        no address is ever recycled underneath us."""
+        the ordinal up, never to order anything.
+
+        That keying is sound only while nothing numbered here can be
+        freed and have its address handed to something else, and nothing
+        can: a box is held by `boxes` for the whole call; a group is
+        held by the local `group` name from the moment it is created —
+        which is the moment it is numbered — then by every tuple it is
+        pushed into, by `plane` from `plane.add` until it is merged, and
+        by the group it is merged into after that. No shipped test
+        checks this, and none usefully could: a test watching the
+        numbered objects would have to hold them, which is the very
+        condition that makes a recycle impossible. Measured instead, by
+        taking a weakref at each numbering and collecting just before
+        the return: over 400 random scenes, 0 of 3,482 numbered objects
+        had died while the table was still being read."""
         key = id(obj)
         if key not in ordinals:
             ordinals[key] = next(counter)
@@ -140,12 +197,6 @@ def _group_textboxes_stable(
         y1 = max(obj1.y1, obj2.y1)
         objs = set(plane.find((x0, y0, x1, y1)))
         return objs.difference((obj1, obj2))
-
-    # Number the boxes before any distance is computed, so the ordinals
-    # follow the order pdfminer produced the boxes in rather than the
-    # order the O(n^2) sweep happens to touch them.
-    for box in boxes:
-        _ordinal(box)
 
     dists: list = []
     for i in range(len(boxes)):

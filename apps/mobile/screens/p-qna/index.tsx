@@ -70,12 +70,18 @@ const createMessageId = (prefix: string) =>
  * Typing is the single most expensive thing this app can ask for:
  * FSHD takes the face, shoulders and upper arms first, so holding a
  * phone up and tapping out a sentence is the exact motion that is
- * going. And the people who most need a 9594-chunk FSHD corpus — a
+ * going. And the people who most need the FSHD knowledge base — a
  * decade of being told it was a rotator cuff, no reports to upload,
  * only symptoms — are the ones least likely to know the words that
  * retrieve well. AskAboutDrawer already solved this for the in-place
  * drawer, and its prop doc says why:「so the patient never faces an
  * empty input」. Same pattern, the tab that needed it most.
+ *
+ * The corpus is deliberately not sized here. This paragraph used to
+ * quote a chunk count, which went stale the day the corpus was
+ * re-chunked and stayed stale, because nothing on the app side of the
+ * repo can check a number against `kb_chunks`. No starter below is
+ * chosen for that count, so the claim went rather than the check.
  *
  * Every starter is answerable with nothing on file: no upload, no
  * follow-up history, no diagnosis. A starter like「我的报告说明什么」

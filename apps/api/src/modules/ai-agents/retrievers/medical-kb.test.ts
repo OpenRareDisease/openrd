@@ -450,8 +450,9 @@ describe('category filter — narrows when it helps, widens rather than lie', ()
   });
 
   it('widens to the whole corpus when the category had nothing close enough', async () => {
-    // 11.病友经验 is 150 of 9,594 chunks. A question it cannot answer is
-    // not a question the corpus cannot answer.
+    // 11.病友经验 is 150 of the corpus's 10,241 chunks (2026-08-11). A
+    // question it cannot answer is not a question the corpus cannot
+    // answer.
     const fetchMock = mockFetchSequence([
       {
         chunks: [],

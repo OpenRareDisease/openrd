@@ -734,6 +734,8 @@ describe('PatientProfileController.deleteDocument', () => {
     over: {
       remove?: ReturnType<typeof vi.fn>;
       getDocumentForUser?: ReturnType<typeof vi.fn>;
+      recordDocumentDeletionIntent?: ReturnType<typeof vi.fn>;
+      recordDocumentDeletionFailure?: ReturnType<typeof vi.fn>;
     } = {},
   ) => {
     const deleteDocumentForUser = vi.fn().mockResolvedValue({
@@ -744,10 +746,20 @@ describe('PatientProfileController.deleteDocument', () => {
     });
     const getDocumentForUser =
       over.getDocumentForUser ??
-      vi.fn().mockResolvedValue({ id: 'doc-1', storage_uri: 'local://uploads/x/scan.pdf' });
+      vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'mri',
+        storage_uri: 'local://uploads/x/scan.pdf',
+      });
+    const recordDocumentDeletionIntent =
+      over.recordDocumentDeletionIntent ?? vi.fn().mockResolvedValue(undefined);
+    const recordDocumentDeletionFailure =
+      over.recordDocumentDeletionFailure ?? vi.fn().mockResolvedValue(undefined);
     const service = {
       deleteDocumentForUser,
       getDocumentForUser,
+      recordDocumentDeletionIntent,
+      recordDocumentDeletionFailure,
     } as unknown as PatientProfileService;
     const storage = {
       remove: over.remove ?? vi.fn().mockResolvedValue(undefined),
@@ -756,12 +768,34 @@ describe('PatientProfileController.deleteDocument', () => {
       canHandle: vi.fn(),
     } as unknown as StorageProvider;
     const ocr = { parse: vi.fn() } as unknown as OcrProvider;
-    const controller = new PatientProfileController(service, storage, ocr);
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+    };
+    const controller = new PatientProfileController(
+      service,
+      storage,
+      ocr,
+      undefined,
+      logger as unknown as ConstructorParameters<typeof PatientProfileController>[4],
+    );
     const res = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
     } as unknown as Response;
-    return { controller, service, storage, res, deleteDocumentForUser, getDocumentForUser };
+    return {
+      controller,
+      service,
+      storage,
+      res,
+      logger,
+      deleteDocumentForUser,
+      getDocumentForUser,
+      recordDocumentDeletionIntent,
+      recordDocumentDeletionFailure,
+    };
   };
 
   const req = {
@@ -786,12 +820,15 @@ describe('PatientProfileController.deleteDocument', () => {
     });
   });
 
-  it('removes the stored file BEFORE the row, so nothing is ever orphaned', async () => {
+  it('records the intent, THEN removes the file, THEN the row', async () => {
     const order: string[] = [];
     const remove = vi.fn(async () => {
       order.push('storage.remove');
     });
-    const deps = buildDeleteDeps({ remove });
+    const recordDocumentDeletionIntent = vi.fn(async () => {
+      order.push('recordDocumentDeletionIntent');
+    });
+    const deps = buildDeleteDeps({ remove, recordDocumentDeletionIntent });
     (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockImplementation(async () => {
       order.push('deleteDocumentForUser');
       return { id: 'doc-1', documentType: 'mri', title: null, storageUri: 'local://x' };
@@ -799,7 +836,206 @@ describe('PatientProfileController.deleteDocument', () => {
 
     await deps.controller.deleteDocument(req, deps.res);
 
-    expect(order).toEqual(['storage.remove', 'deleteDocumentForUser']);
+    // The blob cannot be inside deleteDocumentForUser's transaction,
+    // so the trail is committed before it instead: whichever of the
+    // last two steps fails, audit_logs already knows an erasure was
+    // attempted on this document by this user.
+    expect(order).toEqual([
+      'recordDocumentDeletionIntent',
+      'storage.remove',
+      'deleteDocumentForUser',
+    ]);
+    expect(recordDocumentDeletionIntent).toHaveBeenCalledWith({
+      userId: 'u-1',
+      documentId: 'doc-1',
+      documentType: 'mri',
+      ip: '127.0.0.1',
+      userAgent: 'TestAgent/1.0',
+    });
+  });
+
+  it('touches nothing until the intent row has actually landed', async () => {
+    // The ordering test above only proves the calls happened in that
+    // order; it passes just as happily if the intent write is raced
+    // against a timeout, or fired without `await`, because the mock
+    // resolves in the same microtask either way. This one holds the
+    // intent open. A `Promise.race([intent, timeout])` wrapper — the
+    // shape someone reaches for when the ledger insert is "too slow" —
+    // reintroduces the whole defect and is invisible to every other
+    // test in this file.
+    let landIntent!: () => void;
+    const intentLanded = new Promise<void>((resolve) => {
+      landIntent = resolve;
+    });
+    const recordDocumentDeletionIntent = vi.fn(() => intentLanded);
+    const deps = buildDeleteDeps({ recordDocumentDeletionIntent });
+
+    const handled = deps.controller.deleteDocument(req, deps.res);
+    // Real time, not a flushed microtask queue: a timeout wrapper
+    // resumes on a macrotask, so only real elapsed time can catch it.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(recordDocumentDeletionIntent).toHaveBeenCalledTimes(1);
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+
+    landIntent();
+    await handled;
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+  });
+
+  it('destroys nothing when the deletion attempt cannot be recorded', async () => {
+    const deps = buildDeleteDeps({
+      recordDocumentDeletionIntent: vi
+        .fn()
+        .mockRejectedValue(new Error('sorry, too many clients already')),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // A database too sick to record that an erasure was requested is
+    // too sick for us to start performing one.
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+  });
+
+  it('records the outcome and tells the truth when the file is gone but the row is not', async () => {
+    const deps = buildDeleteDeps();
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+      // NOT「删除失败」: the scan really is erased on this branch, and a
+      // patient who believes otherwise keeps it in her list and sends
+      // it to a clinician, where the download 404s.
+      message: '这份报告的文件已经删除，但记录没能移除，请再点一次删除完成清理。',
+    });
+
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith({
+      userId: 'u-1',
+      documentId: 'doc-1',
+      documentType: 'mri',
+      storageCleanupStatus: 'removed',
+      reason: 'row_delete_failed',
+      ip: '127.0.0.1',
+      userAgent: 'TestAgent/1.0',
+    });
+
+    // The thrown 503 is a NEW error, so errorHandler never sees the
+    // one Postgres gave us. On the one branch that has already
+    // destroyed a patient's scan, the reason has to survive somewhere
+    // — audit_logs carries only `reason: 'row_delete_failed'`.
+    expect(deps.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: 'doc-1',
+        storageCleanupStatus: 'removed',
+        error: 'canceling statement due to statement timeout',
+      }),
+      'The document file was removed but its row could not be deleted',
+    );
+  });
+
+  it('answers 200 rather than 「删除失败」 when a concurrent delete won the race', async () => {
+    // Ownership was already checked, so a DELETE that matches nothing
+    // means the row is gone — and this request removed the blob on the
+    // way here. Both halves of the erasure are done. It used to
+    // rethrow the 404, which both delete screens render as
+    //「删除失败：Document not found」 to a patient whose file this very
+    // request destroyed.
+    const deps = buildDeleteDeps();
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AppError('Document not found', 404),
+    );
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+    expect(deps.res.status).toHaveBeenCalledWith(200);
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'removed',
+    });
+    // The race still gets its own ledger row: the winner wrote
+    // `patient_document.deleted`, this one records which half it did.
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'removed', reason: 'row_already_gone' }),
+    );
+  });
+
+  it('answers 200 for a lost race even when the file was already absent', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AppError('Document not found', 404),
+    );
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'missing',
+    });
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'missing', reason: 'row_already_gone' }),
+    );
+  });
+
+  it('keeps 「删除失败」 when the row delete fails on a file that was already absent', async () => {
+    const rowError = new Error('connection terminated unexpectedly');
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(rowError);
+
+    // Nothing was destroyed by THIS request, so the generic failure is
+    // the accurate message and the original error is what propagates.
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toBe(rowError);
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'missing', reason: 'row_delete_failed' }),
+    );
+  });
+
+  it('records the refusal when the file could not be removed', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('MinIO unreachable', 500)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // Repo precedent audits refusals (auth.login_failed,
+    // otp.verify_failed). Without this the 15-工作日 PIPL reply is
+    // answered from a ledger that never heard of the request.
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'kept', reason: 'storage_remove_failed' }),
+    );
+  });
+
+  it('lets the original error through when the outcome row cannot be written either', async () => {
+    const deps = buildDeleteDeps({
+      recordDocumentDeletionFailure: vi.fn().mockRejectedValue(new Error('audit insert failed')),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    // The compensating row is best-effort: it runs on a database that
+    // just failed a query, and it must not replace the error the
+    // caller is owed. The intent row is the trail that does not depend
+    // on this landing.
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+      message: '这份报告的文件已经删除，但记录没能移除，请再点一次删除完成清理。',
+    });
   });
 
   it('keeps the row when the file cannot be removed, and says so instead of answering 200', async () => {
