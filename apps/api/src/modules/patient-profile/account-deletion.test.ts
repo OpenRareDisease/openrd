@@ -169,6 +169,75 @@ describe('purgeDueAccountDeletions', () => {
   });
 
   /**
+   * The removals run after the commit, so a failure leaves the ledger
+   * saying 「purged」 while the patient's scans are still in the
+   * bucket. That is a PIPL Art. 47 gap, and a container log that
+   * rotates is not a record of it.
+   */
+  it('records an audit row when the purge leaves files behind', async () => {
+    const { client } = buildClient();
+    const poolQuery = vi.fn().mockResolvedValue({ rows: [{ id: 'req-1', user_id: 'u1' }] });
+    const pool = {
+      query: poolQuery,
+      connect: vi.fn().mockResolvedValue(client),
+    } as unknown as Pool;
+
+    await purgeDueAccountDeletions(
+      pool,
+      vi.fn().mockRejectedValue(new Error('minio down')),
+      logger,
+    );
+
+    const insert = poolQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0].includes('INSERT INTO audit_logs'),
+    );
+    expect(insert).toBeDefined();
+    expect(insert![1][0]).toBe('account.purge_files_orphaned');
+    // The count and nothing else: storage_uri embeds the patient's own
+    // file name, which deleteDocumentForUser deliberately keeps out of
+    // audit_logs. `userId` survives a purge by design.
+    expect(insert![1][1]).toEqual({ userId: 'u1', orphanedFileCount: 1 });
+  });
+
+  it('writes no orphan row when every file was removed', async () => {
+    const { client } = buildClient();
+    const poolQuery = vi.fn().mockResolvedValue({ rows: [{ id: 'req-1', user_id: 'u1' }] });
+    const pool = {
+      query: poolQuery,
+      connect: vi.fn().mockResolvedValue(client),
+    } as unknown as Pool;
+
+    await purgeDueAccountDeletions(pool, vi.fn().mockResolvedValue(undefined), logger);
+
+    expect(
+      poolQuery.mock.calls.some(
+        (call) => typeof call[0] === 'string' && call[0].includes('INSERT INTO audit_logs'),
+      ),
+    ).toBe(false);
+  });
+
+  it('a failed orphan audit insert does not break the sweep', async () => {
+    const { client } = buildClient();
+    const poolQuery = vi.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('INSERT INTO audit_logs')) throw new Error('audit insert failed');
+      return { rows: [{ id: 'req-1', user_id: 'u1' }] };
+    });
+    const pool = {
+      query: poolQuery,
+      connect: vi.fn().mockResolvedValue(client),
+    } as unknown as Pool;
+
+    // The purge itself already committed; failing the sweep over its
+    // own bookkeeping would strand the remaining due requests.
+    const purged = await purgeDueAccountDeletions(
+      pool,
+      vi.fn().mockRejectedValue(new Error('minio down')),
+      logger,
+    );
+    expect(purged).toBe(1);
+  });
+
+  /**
    * The ledger row says 「purged」; audit_logs used to keep the raw
    * phone number, email and client IP forever, because no insert site
    * ever populates audit_logs.user_id and so init_db.sql's

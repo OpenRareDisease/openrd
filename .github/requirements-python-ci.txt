@@ -39,9 +39,15 @@ PyYAML>=6.0
 # scripts/kb_parsers/test_factory_default.py imports kb_backends.pgvector AND
 # kb_backends.chroma_cloud eagerly — it monkey-patches both constructors to
 # prove the factory default is pgvector without connecting to anything — so
-# both backends' import-time dependencies must resolve even though neither
-# backend is ever instantiated. psycopg needs the `pool` extra specifically:
+# both backends' import-time dependencies must resolve even though that test
+# instantiates neither. psycopg needs the `pool` extra specifically:
 # apps/api/kb_backends/pgvector.py imports psycopg_pool at module scope.
+#
+# test_pgvector_reusable_embeddings.py does construct a real PgVectorBackend
+# and open connections, against the postgres service container the
+# report-manager job declares, so these two are runtime requirements as well
+# as import-time ones. `pgvector` also brings numpy, which is what
+# register_vector hands embeddings back as.
 psycopg[binary,pool]>=3.2.10,<3.4
 pgvector>=0.3.6,<0.5
 chromadb==1.4.0

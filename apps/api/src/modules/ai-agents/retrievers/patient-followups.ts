@@ -31,6 +31,27 @@
  * titles off the allowlist. Events still surface as counts by type and
  * severity, which is the clinically useful part.
  *
+ * Falls
+ * -----
+ * That exclusion had a cost, and migration 023 is the repair. A fall
+ * was one event row with everything worth knowing about it typed into
+ * `description`, so the retriever could count falls and could say
+ * nothing else about them — the assistant meant to help a patient
+ * think about「我最近跌倒是不是更频繁了」saw a number and a severity
+ * band. The falls diary replaces that free text with closed columns
+ * (what they were doing, indoor or outdoor, hands full, could they get
+ * up, were they hurt), and closed columns can be summarised safely
+ * because the value set was chosen here rather than typed by a
+ * patient.
+ *
+ * Those falls ride the event query rather than getting their own, and
+ * the whole reason is stated at `eventsSql`: a fall exists in two
+ * tables, and two queries would put two different fall counts in one
+ * prompt. The summary they feed is composed in
+ * patient-profile/falls/falls.summary.ts, which is also what the 跌倒
+ * 记录 block on 病程管理 reads — one set of numbers, two renderings.
+ * (Not the clinical passport: it renders no falls at all.)
+ *
  * `unit` is the third patient-writable column, and it is not excluded
  * because it is the one whose value set is small enough to enumerate.
  * It is mapped through a fixed table on the way out (UNIT_ALIASES) so
@@ -67,6 +88,16 @@ import type {
   RetrievedChunk,
 } from './base.js';
 import { emptyResult } from './base.js';
+import {
+  FALL_HISTORY_COLUMNS,
+  FALL_HISTORY_SQL,
+  type FallHistoryRow,
+} from '../../patient-profile/falls/falls.sql.js';
+import {
+  buildFallsSummary,
+  composeFallClausesZh,
+  fallDayAge,
+} from '../../patient-profile/falls/falls.summary.js';
 
 /**
  * Metric keys the record can actually contain, mapped to the label
@@ -197,6 +228,24 @@ const MAX_POINTS_PER_SERIES = 12;
 const MAX_ROWS_PER_SERIES = 200;
 
 /**
+ * Rows kept by the event query.
+ *
+ * Was 50, and 50 was sized when a fall was one line in a tally. The
+ * falls diary now rides this query (see eventsSql), and the population
+ * this is built for falls a lot: about 30% of adults with FSHD fall at
+ * least monthly, so a 730-day window can legitimately hold two dozen
+ * falls before any other event type is counted.
+ *
+ * The ceiling still matters, and it matters asymmetrically: the query
+ * orders DESC, so what gets cut is always the OLDEST end — which is
+ * the half the「上一个 90 天」comparison rests on. Truncating there
+ * biases every quarterly comparison toward「更频繁了」, so hitting this
+ * cap suppresses that comparison outright rather than shading it. See
+ * refusal (3) in falls.summary.ts.
+ */
+const MAX_EVENT_ROWS = 200;
+
+/**
  * Recorded units we are willing to forward, keyed by their lowercased
  * raw form.
  *
@@ -274,11 +323,20 @@ interface SeriesRow {
   recorded_at: string | Date;
 }
 
-interface EventRow {
+/**
+ * One row of the event query.
+ *
+ * The fall-specific columns are the falls diary joining this query
+ * (migration 023). They are null on every row that is not a fall, and
+ * on legacy fall rows that only ever carried a date — which is why
+ * every consumer of them in falls.summary.ts states the denominator it
+ * counted over instead of dividing by the event count.
+ */
+type EventRow = {
   event_type: string;
   severity: string | null;
   occurred_at: string | Date;
-}
+} & Partial<Omit<FallHistoryRow, 'event_type' | 'severity' | 'occurred_at'>>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -391,15 +449,48 @@ export class PatientFollowupRetriever implements IRetriever {
        WHERE rn <= ${MAX_ROWS_PER_SERIES}
        ORDER BY recorded_at ASC`;
 
+    /**
+     * The event tally, plus the falls diary joined into it.
+     *
+     * WHY FALLS RIDE THIS QUERY RATHER THAN GETTING THEIR OWN
+     *
+     * A fall can live in two tables (migration 023: the diary row and
+     * its patient_followup_events twin), and the one thing that must
+     * never happen is two different fall counts reaching the same
+     * prompt. Two queries producing two numbers is exactly how that
+     * happens — the model picks one, and the patient asking「我最近跌倒
+     * 是不是更频繁了」gets an answer whose provenance nobody can
+     * reconstruct. One query, one set of rows, one count.
+     *
+     * The first branch is every non-fall event, unchanged, padded out
+     * to the falls column list. The second is FALL_HISTORY_SQL, which
+     * owns the de-duplication between the two tables and is shared with
+     * the falls endpoints so 病程管理 and the assistant cannot
+     * disagree.
+     */
     const eventsSql = `
-      SELECT fe.event_type, fe.severity, fe.occurred_at
+      SELECT ${FALL_HISTORY_COLUMNS.join(', ')}
+        FROM (
+      SELECT fe.event_type                  AS event_type,
+             fe.severity                    AS severity,
+             fe.occurred_at                 AS occurred_at,
+             NULL::int                      AS fall_day_age,
+             NULL::text                     AS fall_activity,
+             NULL::text                     AS fall_location,
+             NULL::boolean                  AS fall_hands_full,
+             NULL::boolean                  AS fall_got_up_unaided,
+             NULL::boolean                  AS fall_injured
         FROM patient_followup_events fe
         JOIN patient_profiles pp ON pp.id = fe.profile_id
        WHERE pp.user_id = $1
          AND fe.deleted_at IS NULL
+         AND fe.event_type <> 'fall'
          AND fe.occurred_at >= NOW() - ($2 || ' days')::interval
-       ORDER BY fe.occurred_at DESC
-       LIMIT 50`;
+      UNION ALL
+${FALL_HISTORY_SQL}
+        ) events
+       ORDER BY occurred_at DESC
+       LIMIT ${MAX_EVENT_ROWS}`;
 
     /**
      * Days the patient recorded「今天做不了」.
@@ -595,9 +686,20 @@ export class PatientFollowupRetriever implements IRetriever {
       // own description of each event is free text we don't ship, and
       // "跌倒（轻）×2，最近 3 天前" is the clinically useful residue.
       const tally = new Map<string, { count: number; mostRecentAge: number }>();
+      const fallRows: EventRow[] = [];
       for (const row of eventsResult.rows) {
-        const age = daysAgo(row.occurred_at, now);
+        // Falls carry a day-precision age computed in SQL, because
+        // their date column is a DATE and a JS-side midnight would age
+        // every one of them by an extra day east of Greenwich. Every
+        // other event has a real timestamp and keeps the old path.
+        const age =
+          row.event_type === 'fall' ? fallDayAge(row, now) : daysAgo(row.occurred_at, now);
         if (age === null) continue;
+        // Falls stay IN the tally as well as feeding the summary below.
+        // Pulling them out would leave 跌倒 off the event line it has
+        // always appeared on, and the standing rule this release is
+        // built under is that nothing gets demoted.
+        if (row.event_type === 'fall') fallRows.push(row);
         const label = `${EVENT_LABELS[row.event_type] ?? row.event_type}${
           row.severity ? `（${SEVERITY_LABELS[row.severity] ?? row.severity}）` : ''
         }`;
@@ -610,9 +712,27 @@ export class PatientFollowupRetriever implements IRetriever {
 
       if (tally.size > 0) {
         const chunkId = randomUUID();
-        const summary = [...tally.entries()]
-          .map(([label, v]) => `${label}×${v.count}，最近 ${v.mostRecentAge} 天前`)
-          .join('；');
+        // The falls clauses are appended, never interleaved: the tally
+        // is the sentence every other event type shares, and the falls
+        // detail is a rider on it. Both come out of one row set, so the
+        // count in the tally and the counts inside the clauses are the
+        // same falls counted once.
+        //
+        // `atCap` is the row ceiling of THIS query, not of the falls
+        // branch alone — a window crowded with other events truncates
+        // the oldest falls just as effectively as a window crowded with
+        // falls, and the quarterly comparison has to be suppressed
+        // either way.
+        const fallsSummary = buildFallsSummary(fallRows, {
+          atCap: eventRowCount >= MAX_EVENT_ROWS,
+          now,
+        });
+        const summary = [
+          [...tally.entries()]
+            .map(([label, v]) => `${label}×${v.count}，最近 ${v.mostRecentAge} 天前`)
+            .join('；'),
+          ...composeFallClausesZh(fallsSummary),
+        ].join('；');
         chunks.push({
           id: chunkId,
           source: this.id,

@@ -14,6 +14,7 @@ import {
   type PatientProfile,
 } from '../../lib/api';
 import { COLOR } from '../../lib/design';
+import { describeReportDelete } from '../../lib/report-delete';
 import InlineNotice from '../common/feedback/InlineNotice';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
@@ -336,8 +337,18 @@ export default function ReportManagementScreen() {
     try {
       setDeletingReportId(documentId);
       setListNotice(null);
-      await deletePatientDocument(documentId);
+      const result = await deletePatientDocument(documentId);
+      const outcome = describeReportDelete(result.storageCleanupStatus);
       await loadData(true);
+      // After the refetch, never before it: `loadData` clears
+      // `listNotice` on success, so a warning set first would be wiped
+      // by the reload it was warning about. The happy case stays
+      // silent — the row disappearing from the list is the
+      // confirmation — but a file the server could not erase has to be
+      // said out loud, and this screen has no other place to say it.
+      if (!outcome.fileErased) {
+        setListNotice(`${outcome.title}：${outcome.message}`);
+      }
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '删除报告失败';
       setListNotice(`删除失败：${message}`);
@@ -368,6 +379,20 @@ export default function ReportManagementScreen() {
       {/* Plain paper. The page gradient was decorative and cost every
           surface above it contrast. */}
       <View style={styles.backgroundGradient}>
+        {/* The REPORT MANAGEMENT eyebrow is gone: it translated the
+            title sitting directly beneath it. Title + back + home now
+            come from ScreenHeader so every stack screen exits the same
+            way; 添加报告 and the patient name keep the row below.
+
+            Outside the ScrollView, matching p-data_entry: this is a
+            list screen with no upper bound on its length — a patient
+            who has been uploading for a year scrolls a long way — and
+            inside the scroller the only navigation surface on the
+            screen scrolled away with the content, leaving no back and
+            no home until they flung back to the top. A sticky header
+            is the other way to do it, but hoisting keeps the
+            ScrollView's refreshControl and content indices alone. */}
+        <ScreenHeader title="报告管理" fallbackHref="/p-home" />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -380,14 +405,7 @@ export default function ReportManagementScreen() {
             />
           }
         >
-          {/* The REPORT MANAGEMENT eyebrow is gone: it translated the
-              title sitting directly beneath it. Title + back + home now
-              come from ScreenHeader so every stack screen exits the
-              same way; 添加报告 and the patient name keep the row
-              below, which is still one row rather than the two the
-              original layout spent. */}
           <View style={styles.header}>
-            <ScreenHeader title="报告管理" fallbackHref="/p-home" style={styles.screenHeaderRow} />
             <View style={styles.headerTopRow}>
               <View style={styles.headerLead}>
                 {patientName ? <Text style={styles.pageSubtitle}>{patientName}</Text> : null}

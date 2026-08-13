@@ -129,6 +129,15 @@ def _parse_text_layer(path: Path) -> List[ParsedSection]:
     from pdfminer.pdfpage import PDFPage  # type: ignore
     from pdfminer.pdfparser import PDFParser  # type: ignore
 
+    # pdfminer's reading-order pass breaks distance ties on CPython
+    # memory addresses, so the same PDF parsed in two processes can
+    # come back with its text boxes in a different order — which moves
+    # chunk boundaries and therefore chunk fingerprints. See
+    # pdfminer_determinism for the measurement and the fix.
+    from .pdfminer_determinism import install as _install_stable_layout
+
+    _install_stable_layout()
+
     laparams = LAParams()
     sections: List[ParsedSection] = []
 

@@ -1,3 +1,5 @@
+import { PREGNANCY_DUE_DATE_KEY } from './draft-keys';
+import type { AmbulationState } from './profile-baseline-options';
 import { getSessionValue, removeSessionValue, setSessionValue } from './session-storage';
 
 export const AUTH_TOKEN_STORAGE_KEY = 'openrd.authToken';
@@ -20,6 +22,9 @@ export const QNA_HISTORY_EPOCH_STORAGE_KEY = 'openrd.qna.historyEpoch';
 export const PATIENT_SCOPED_CACHE_KEYS: string[] = [
   QNA_CHAT_STORAGE_KEY,
   QNA_HISTORY_EPOCH_STORAGE_KEY,
+  // See lib/draft-keys.ts for why this one is declared there and not
+  // beside the screen that writes it.
+  PREGNANCY_DUE_DATE_KEY,
 ];
 
 // Single source of truth for the API base URL. ai-streaming.ts and
@@ -389,6 +394,40 @@ export const upsertPatientProfile = async (payload: Record<string, unknown>) => 
   }
 };
 
+/**
+ * 「你的诊断走到哪一步了」 — the five rungs the baseline form writes.
+ *
+ * MIRRORED, NOT INVENTED. The wire values and the Chinese wording are
+ * both owned by the API: apps/api/src/modules/patient-profile/
+ * profile.schema.ts, `DIAGNOSIS_LADDER_STATES` and
+ * `DIAGNOSIS_LADDER_LABELS`. There is no shared package between the two
+ * apps, so this is a copy — keep it byte-identical to that file. The
+ * server validates the value against its own enum (`z.enum`), so a
+ * drifted string here is rejected at the write, not silently stored;
+ * drifted *labels* are worse, because they would put a different
+ * question in front of the patient than the one the passport answers.
+ *
+ * ORDER IS MEANINGFUL — index 0 is the most complete evidence, index 4
+ * the least, and the form renders them in that order.
+ */
+export const DIAGNOSIS_LADDER_STATES = [
+  'confirmed_with_report',
+  'confirmed_report_unavailable',
+  'clinical_only',
+  'untested_wants_test',
+  'untested_no_plan',
+] as const;
+
+export type DiagnosisLadderState = (typeof DIAGNOSIS_LADDER_STATES)[number];
+
+export const DIAGNOSIS_LADDER_LABELS: Record<DiagnosisLadderState, string> = {
+  confirmed_with_report: '已确诊，基因报告在手上',
+  confirmed_report_unavailable: '已确诊，但报告不在手上',
+  clinical_only: '临床诊断，还没做过基因检测',
+  untested_wants_test: '还没测过，想测',
+  untested_no_plan: '还没测过，暂时不打算测',
+};
+
 export interface BaselineProfilePayload {
   foundation?: {
     fullName?: string | null;
@@ -399,6 +438,14 @@ export interface BaselineProfilePayload {
     diagnosisYear?: number | null;
   };
   diseaseBackground?: {
+    /** See DIAGNOSIS_LADDER_STATES. Optional on the wire: the API's
+     *  schema marks it `.optional().nullable()` so a handset still
+     *  running an older web export — WeChat's in-app browser caches for
+     *  days — keeps saving successfully with only `diagnosedFshd`. */
+    diagnosisLadder?: DiagnosisLadderState | null;
+    /** Derived server-side from `diagnosisLadder` whenever that is
+     *  present (profile.schema.ts transforms the object), so the two
+     *  halves cannot disagree on disk. Still sent by older clients. */
     diagnosedFshd?: boolean | null;
     diagnosisType?: string | null;
     d4z4?: string | null;
@@ -408,7 +455,11 @@ export interface BaselineProfilePayload {
     onsetRegion?: string | null;
   };
   currentStatus?: {
-    independentlyAmbulatory?: boolean | null;
+    /** Three states since migration 022, which back-filled the old
+     *  booleans and put a CHECK on the column. `boolean` stays in the
+     *  union only for a server that has not run 022 yet — see
+     *  toAmbulationChoice in profile-baseline-options.ts. */
+    independentlyAmbulatory?: AmbulationState | boolean | null;
     armRaiseDifficulty?: boolean | null;
     facialWeakness?: boolean | null;
     footDrop?: boolean | null;
@@ -587,6 +638,138 @@ export interface PassportFreshness {
   daysSince: number | null;
 }
 
+/** The four grades plus 未知 — the API's `GeneticEvidenceGrade`. It
+ *  grades the EVIDENCE, never the person. */
+/** The five the API can send. Kept as a value so the reader below can
+ *  actually check against it — a type alone validates nothing at
+ *  runtime, which is how the bare `as` got in. */
+export const GENETIC_EVIDENCE_GRADES = [
+  'not_tested',
+  'method_not_applicable',
+  'method_right_incomplete',
+  'trial_ready',
+  'unknown',
+] as const;
+
+export type GeneticEvidenceGrade = (typeof GENETIC_EVIDENCE_GRADES)[number];
+
+export interface GeneticTestRequestSection {
+  heading: string;
+  body: string[];
+  source: string;
+}
+
+/** 《检查申请说明》 — the page a patient hands across a clinic desk. */
+export interface GeneticTestRequest {
+  title: string;
+  intro: string;
+  sections: GeneticTestRequestSection[];
+  /** The same content flattened, for print / copy. */
+  printable: string;
+}
+
+export interface PassportGeneticEvidence {
+  grade: GeneticEvidenceGrade;
+  gradeLabel: string;
+  headline: string;
+  reason: string;
+  action: string;
+  /** Non-null only when the repeat count is in the 8–10 gray zone. */
+  greyZoneNote: string | null;
+  /** Null once the report already carries size AND haplotype — at that
+   *  point there is nothing left to ask a clinic for. */
+  testRequest: GeneticTestRequest | null;
+  sources: string[];
+}
+
+// `asStringArray` is declared further down this file, next to the
+// document/report readers. Used here rather than copied: two spellings
+// of「keep only the strings」is two things to keep in step.
+
+const asTestRequest = (raw: unknown): GeneticTestRequest | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  // `printable` is the carrier that leaves the app (print / copy), and
+  // `title` names the document a patient is handing over. Without
+  // either, the block would render a heading with nothing under it.
+  if (typeof record.printable !== 'string' || typeof record.title !== 'string') return null;
+  const sections = Array.isArray(record.sections)
+    ? record.sections.flatMap((entry): GeneticTestRequestSection[] => {
+        if (!entry || typeof entry !== 'object') return [];
+        const section = entry as Record<string, unknown>;
+        if (typeof section.heading !== 'string') return [];
+        return [
+          {
+            heading: section.heading,
+            body: asStringArray(section.body),
+            // A clinical claim without its source is not shown as a
+            // claim with a missing source — the empty string renders
+            // nothing at all. See the reader in p-clinical_passport.
+            source: typeof section.source === 'string' ? section.source : '',
+          },
+        ];
+      })
+    : [];
+  return {
+    title: record.title,
+    intro: typeof record.intro === 'string' ? record.intro : '',
+    sections,
+    printable: record.printable,
+  };
+};
+
+/**
+ * `diagnosis.geneticEvidence`, unwrapped and shape-checked.
+ *
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call, and that type
+ * parameter is an UNCHECKED ASSERTION over whatever the server sent —
+ * see lib/passport-share-api.ts's header for what that cost the share
+ * screen. This block is new on the wire, and this app ships as a web
+ * export that WeChat's in-app browser caches for days: a handset can
+ * therefore be running today's bundle against an API build that has no
+ * `geneticEvidence` at all. Reaching straight for `.gradeLabel` there
+ * throws inside render and takes the whole passport — diagnosis,
+ * reports, timeline — down with it.
+ *
+ * Returns null instead, and the screen renders nothing rather than a
+ * half-built 《检查申请说明》. Every field a patient reads is required
+ * here for the same reason: a grade with no headline, or a headline
+ * with no next step, is not a shorter answer, it is a misleading one.
+ */
+export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEvidence | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  if (
+    typeof record.grade !== 'string' ||
+    typeof record.gradeLabel !== 'string' ||
+    typeof record.headline !== 'string' ||
+    typeof record.reason !== 'string' ||
+    typeof record.action !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    // Validated, not asserted. Every sibling field in this reader is
+    // checked; `grade` was the one bare `as`, so any string the server
+    // sent would have typed as one of five enum members. It happens to
+    // be unread today (the screen renders `gradeLabel`), which is
+    // exactly why it was worth fixing now: the next person to branch on
+    // `grade === 'not_tested'` would reasonably assume it had been
+    // checked. Unrecognised falls to 'unknown', which is a real member
+    // and the one that promises nothing.
+    grade: GENETIC_EVIDENCE_GRADES.includes(record.grade as GeneticEvidenceGrade)
+      ? (record.grade as GeneticEvidenceGrade)
+      : 'unknown',
+    gradeLabel: record.gradeLabel,
+    headline: record.headline,
+    reason: record.reason,
+    action: record.action,
+    greyZoneNote: typeof record.greyZoneNote === 'string' ? record.greyZoneNote : null,
+    testRequest: asTestRequest(record.testRequest),
+    sources: asStringArray(record.sources),
+  };
+};
+
 export interface ClinicalPassportSummary {
   generatedAt: string;
   passportId: string;
@@ -611,6 +794,15 @@ export interface ClinicalPassportSummary {
   }>;
   diagnosis: {
     ready: boolean;
+    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的。
+     *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
+     *  医生手里，患者的自述不能和基因结果长得一样。 */
+    confirmation: 'genetic' | 'self_reported' | 'none';
+    /** 患者自己在建档表上答的那一级，没答过就是 null。和 `confirmation`
+     *  回答的不是同一个问题（「你怎么说」 vs 「报告怎么写」），护照两个
+     *  都显示，不做调和。 */
+    ladder?: DiagnosisLadderState | null;
+    ladderLabel?: string | null;
     latestSourceDate: string | null;
     latestDocumentId: string | null;
     freshness: PassportFreshness;
@@ -619,6 +811,18 @@ export interface ClinicalPassportSummary {
     methylationValue: string;
     diagnosisDate: string;
     geneEvidence: string;
+    /**
+     * 对基因证据的分级读法，外加可以递给医生的《检查申请说明》。
+     *
+     * Typed as `unknown` on purpose. The server always sends this
+     * object, but the type parameter on `getClinicalPassportSummary` is
+     * an unchecked assertion and a cached WeChat bundle can be talking
+     * to an API build that predates the field. `unknown` makes the
+     * compiler refuse `.gradeLabel` until it has gone through
+     * `readPassportGeneticEvidence`, which is the only thing that has
+     * actually looked at the bytes.
+     */
+    geneticEvidence?: unknown;
   };
   motor: {
     ready: boolean;
@@ -649,11 +853,23 @@ export interface ClinicalPassportSummary {
       latestDate: string | null;
       latestDocumentId: string | null;
       freshness: PassportFreshness;
+      /** `unreadable` means a report IS on file but nothing structured
+       *  came out of it — see the API's PassportMonitoringItemDTO. The
+       *  anesthesia card must not collapse it into `absent`. */
+      state: 'present' | 'unreadable' | 'absent';
+      /** Whether this test is indicated at all — see the API's
+       *  PassportMonitoringItemDTO. Not every slot is expected of every
+       *  patient, and the panel used to imply otherwise. */
+      note?: string;
     }>;
   };
   nextSteps: Array<{
     title: string;
     description: string;
+    /** `record` completes the passport; `clinical` is something to
+     *  raise at a visit. They render in separate cards — see the API's
+     *  PassportNextStepDTO for why they must not be merged. */
+    kind: 'record' | 'clinical';
   }>;
   timeline: Array<{
     id: string;
@@ -724,6 +940,299 @@ export const addFollowupEvent = (payload: Record<string, unknown>) =>
 export const getMedications = () => apiRequest('/profiles/me/medications');
 
 export const getRiskSummary = () => apiRequest('/profiles/me/risk');
+
+/* ------------------------------------------------------------------ *
+ * Instruments (Brooke / Vignos, and whatever the registry adds later)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The client half of the instrument engine.
+ *
+ * ONE SOURCE OF TRUTH FOR THE ANCHORS
+ *
+ * There is deliberately no table of level descriptions anywhere in
+ * this app. The anchor wording IS the measurement — brooke.ts on the
+ * API says so at length and freezes it at v1 — so a second copy here
+ * would be a second definition of what「3 级」means, drifting silently
+ * the first time either side was reworded. Instead:
+ *
+ *  - `getInstrumentCatalogue` fetches the anchors, the prompt, the
+ *    citation, the licence and the documented limitations. The form
+ *    renders what it fetched or it renders nothing.
+ *  - Every stored administration comes back carrying `levelLabelZh`,
+ *    resolved on the server against the version the patient actually
+ *    answered. It is `null` when that version is not in the server's
+ *    registry, and null propagates: a level with no words is dropped
+ *    rather than shown as a bare number.
+ */
+
+export interface InstrumentCatalogueLevel {
+  value: number;
+  labelZh: string;
+  /** The English the Chinese was translated from. Not rendered to
+   *  patients; kept because it is what makes the translation
+   *  checkable. */
+  sourceEn: string | null;
+}
+
+export interface InstrumentCatalogueItem {
+  code: string;
+  version: string;
+  promptZh: string;
+  levels: InstrumentCatalogueLevel[];
+}
+
+export interface InstrumentCatalogueEntry {
+  key: string;
+  version: string;
+  nameZh: string;
+  descriptionZh: string;
+  licenceStatus: string;
+  sourceCitation: string;
+  scoreMin: number | null;
+  scoreMax: number | null;
+  higherIsWorse: boolean | null;
+  recallPeriod: string | null;
+  adminMinutes: number | null;
+  /** Documented weaknesses of the scale — floor effects, what it does
+   *  not cover. The API's controller is explicit that these are served
+   *  WITH the anchors rather than from a second endpoint, because a
+   *  screen that renders a scale without its floor-effect warning
+   *  tells a patient that a flat line means a stable disease. */
+  limitationsZh: string[];
+  /** How well patient self-report agrees with a clinician on this
+   *  particular scale. Differs per instrument and must not be
+   *  flattened into「经过验证」. */
+  selfReportEvidenceZh: string;
+  items: InstrumentCatalogueItem[];
+}
+
+export interface InstrumentResponseItem {
+  itemCode: string;
+  /** null when the patient skipped it, marked it 不适用, or the value
+   *  could not be read. Never coerced to 0 — 1 is the best Brooke
+   *  grade and 0 is not on the scale at all, so a 0 here would be a
+   *  value no patient could have chosen. */
+  responseValue: number | null;
+  skipped: boolean;
+  notApplicable: boolean;
+}
+
+export interface InstrumentAdministration {
+  id: string | null;
+  instrumentKey: string | null;
+  instrumentVersion: string | null;
+  instrumentNameZh: string | null;
+  /** The graded level. */
+  scoredValue: number | null;
+  /** The anchor sentence for `scoredValue`, resolved by the server
+   *  against the version answered. null when the server could not
+   *  resolve it — see the class comment: null is preserved, never
+   *  replaced with the number. */
+  levelLabelZh: string | null;
+  source: string | null;
+  assistedBy: string | null;
+  supersededById: string | null;
+  administeredAt: string | null;
+  createdAt: string | null;
+  responses: InstrumentResponseItem[];
+}
+
+const asStringOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value : null;
+
+const asFiniteOrNull = (value: unknown): number | null => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const asStringArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+
+/** Pull the array out of `{key: [...]}`, or accept a bare array. */
+const listFrom = (payload: unknown, keys: string[]): unknown[] => {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as Record<string, unknown>;
+  for (const key of keys) {
+    if (Array.isArray(record[key])) return record[key] as unknown[];
+  }
+  return [];
+};
+
+const normalizeCatalogueLevel = (raw: unknown): InstrumentCatalogueLevel | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const value = asFiniteOrNull(record.value);
+  const labelZh = asStringOrNull(record.labelZh);
+  // A level with no words is not a level this app can offer: the
+  // patient would be picking a number whose meaning is not on screen.
+  if (value === null || !labelZh) return null;
+  return { value, labelZh, sourceEn: asStringOrNull(record.sourceEn) };
+};
+
+const normalizeCatalogueItem = (raw: unknown): InstrumentCatalogueItem | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const code = asStringOrNull(record.code);
+  if (!code) return null;
+  const levels = (Array.isArray(record.levels) ? record.levels : [])
+    .map(normalizeCatalogueLevel)
+    .filter((level): level is InstrumentCatalogueLevel => level !== null);
+  if (levels.length === 0) return null;
+  return {
+    code,
+    version: asStringOrNull(record.version) ?? '',
+    promptZh: asStringOrNull(record.promptZh) ?? '',
+    levels,
+  };
+};
+
+/**
+ * Coerce the catalogue response into something renderable.
+ *
+ * Every drop here is a refusal to render half a scale: an entry with
+ * no key, no items, or no levels with words would put a control on
+ * screen that a patient cannot answer meaningfully. `[]` is the
+ * correct outcome when the engine has not shipped — the screens treat
+ * it as "nothing to offer" and say so.
+ */
+export const normalizeInstrumentCatalogue = (payload: unknown): InstrumentCatalogueEntry[] => {
+  const entries: InstrumentCatalogueEntry[] = [];
+  for (const raw of listFrom(payload, ['instruments', 'items', 'data'])) {
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as Record<string, unknown>;
+    const key = asStringOrNull(record.key);
+    if (!key) continue;
+    const items = (Array.isArray(record.items) ? record.items : [])
+      .map(normalizeCatalogueItem)
+      .filter((item): item is InstrumentCatalogueItem => item !== null);
+    if (items.length === 0) continue;
+    entries.push({
+      key,
+      version: asStringOrNull(record.version) ?? '',
+      nameZh: asStringOrNull(record.nameZh) ?? key,
+      descriptionZh: asStringOrNull(record.descriptionZh) ?? '',
+      licenceStatus: asStringOrNull(record.licenceStatus) ?? '',
+      sourceCitation: asStringOrNull(record.sourceCitation) ?? '',
+      scoreMin: asFiniteOrNull(record.scoreMin),
+      scoreMax: asFiniteOrNull(record.scoreMax),
+      higherIsWorse: typeof record.higherIsWorse === 'boolean' ? record.higherIsWorse : null,
+      recallPeriod: asStringOrNull(record.recallPeriod),
+      adminMinutes: asFiniteOrNull(record.adminMinutes),
+      limitationsZh: asStringArray(record.limitationsZh),
+      selfReportEvidenceZh: asStringOrNull(record.selfReportEvidenceZh) ?? '',
+      items,
+    });
+  }
+  return entries;
+};
+
+const normalizeInstrumentResponse = (raw: unknown): InstrumentResponseItem | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const itemCode = asStringOrNull(record.itemCode);
+  if (!itemCode) return null;
+  return {
+    itemCode,
+    responseValue: asFiniteOrNull(record.responseValue),
+    skipped: record.skipped === true,
+    notApplicable: record.notApplicable === true,
+  };
+};
+
+export const normalizeInstrumentAdministrations = (
+  payload: unknown,
+): InstrumentAdministration[] => {
+  const administrations: InstrumentAdministration[] = [];
+  for (const raw of listFrom(payload, ['administrations', 'items', 'data', 'results'])) {
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as Record<string, unknown>;
+    administrations.push({
+      id: asStringOrNull(record.id),
+      instrumentKey: asStringOrNull(record.instrumentKey),
+      instrumentVersion: asStringOrNull(record.instrumentVersion),
+      instrumentNameZh: asStringOrNull(record.instrumentNameZh),
+      scoredValue: asFiniteOrNull(record.scoredValue),
+      levelLabelZh: asStringOrNull(record.levelLabelZh),
+      source: asStringOrNull(record.source),
+      assistedBy: asStringOrNull(record.assistedBy),
+      supersededById: asStringOrNull(record.supersededById),
+      administeredAt: asStringOrNull(record.administeredAt),
+      createdAt: asStringOrNull(record.createdAt),
+      responses: (Array.isArray(record.responses) ? record.responses : [])
+        .map(normalizeInstrumentResponse)
+        .filter((item): item is InstrumentResponseItem => item !== null),
+    });
+  }
+  return administrations;
+};
+
+export const getInstrumentCatalogue = async (): Promise<InstrumentCatalogueEntry[]> =>
+  normalizeInstrumentCatalogue(await apiRequest<unknown>('/profiles/me/instruments'));
+
+export interface InstrumentAdministrationQuery {
+  instrumentKey?: string;
+  limit?: number;
+  offset?: number;
+  includeSuperseded?: boolean;
+}
+
+export const getInstrumentAdministrations = async (
+  query: InstrumentAdministrationQuery = {},
+): Promise<InstrumentAdministration[]> => {
+  const params = new URLSearchParams();
+  if (query.instrumentKey) params.set('instrumentKey', query.instrumentKey);
+  if (typeof query.limit === 'number') params.set('limit', String(query.limit));
+  if (typeof query.offset === 'number') params.set('offset', String(query.offset));
+  if (query.includeSuperseded) params.set('includeSuperseded', 'true');
+  const suffix = params.toString();
+  return normalizeInstrumentAdministrations(
+    await apiRequest<unknown>(
+      `/profiles/me/instruments/administrations${suffix ? `?${suffix}` : ''}`,
+    ),
+  );
+};
+
+export interface RecordInstrumentAdministrationPayload {
+  instrumentKey: string;
+  responses: Array<{
+    itemCode: string;
+    responseValue?: number | null;
+    skipped?: boolean;
+    notApplicable?: boolean;
+  }>;
+  source?: 'self' | 'clinician' | 'proxy';
+  assistedBy?: 'none' | 'family' | 'caregiver' | 'clinician' | 'other';
+  /** The correction pointer. An administration is immutable; fixing a
+   *  mis-tap means recording a new one that names the row it replaces. */
+  supersedesId?: string;
+  administeredAt?: string;
+}
+
+/**
+ * POST one administration.
+ *
+ * Returns the normalized administration, or null if the response did
+ * not contain one. Null means「保存了，但读不回来」, and the caller must
+ * not synthesise a reading from what it just sent — the server is the
+ * one that decides the score and resolves its anchor.
+ */
+export const recordInstrumentAdministration = async (
+  payload: RecordInstrumentAdministrationPayload,
+): Promise<InstrumentAdministration | null> => {
+  const result = await apiRequest<unknown>('/profiles/me/instruments/administrations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const record = result && typeof result === 'object' ? (result as Record<string, unknown>) : null;
+  const administration = record?.administration ?? record;
+  return normalizeInstrumentAdministrations([administration])[0] ?? null;
+};
 
 export type ConsentLevel = 'none' | 'basic' | 'precise';
 
@@ -908,6 +1417,13 @@ export interface AiCitation {
   sourceFile?: string | null;
   chunkIndex?: number | null;
   snippet: string;
+  /** Source strength —「指南/共识」/「文献」/「资料」/「病友经验」— or
+   *  null/absent for a source with no ranking (your own records,
+   *  platform docs) and for chats stored before the field existed.
+   *  Rendered by screens/common/AuthorityChip; see that file for why
+   *  the filename alone cannot carry this. Mirrors `Citation` in the
+   *  API's ai-agents/retrievers/base.ts. */
+  authorityLabel?: string | null;
 }
 
 export interface AiUsage {
@@ -1496,6 +2012,26 @@ export const patchPatientDocumentOcr = (documentId: string, fields: Record<strin
     { method: 'PATCH', body: JSON.stringify({ fields }) },
   );
 
+/**
+ * Delete one report.
+ *
+ * A 200 means the database row is gone AND the stored file is
+ * accounted for: the API removes the blob first and only then deletes
+ * the row, so `storageCleanupStatus` on a 200 is 'removed' (erased) or
+ * 'missing' (already absent). When the file cannot be removed the API
+ * refuses the whole delete — 503, row intact — because a row is the
+ * only record of where the file lives, and deleting it first would put
+ * the scan permanently out of reach of the account-deletion purge. See
+ * profile.controller.ts#deleteDocument.
+ *
+ * Both call sites — p-report_management's `runDeleteReport` and
+ * p-report_detail's `runDelete` — must read the field rather than
+ * assume erasure, because the web export and the API deploy
+ * separately: this bundle can be talking to an API container that
+ * still answers 200 with 'failed'. `lib/report-delete.ts` holds the
+ * one mapping from status to what the patient is told, including for a
+ * status this bundle does not recognise.
+ */
 export const deletePatientDocument = (documentId: string) =>
   apiRequest<{
     documentId: string;

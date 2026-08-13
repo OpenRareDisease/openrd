@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   ACTIVITY_SOURCES,
+  AMBULATION_STATES,
   BODY_REGIONS,
   DAILY_IMPACT_KEYS,
   DOCUMENT_TYPES,
@@ -60,6 +61,111 @@ export type CreateProfileInput = z.infer<typeof createProfileSchema>;
 export const updateProfileSchema = baseProfileSchema.partial();
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
+/**
+ * 「当前行走」 on the baseline form: three states, plus a compatibility
+ * shim for the boolean the field used to be.
+ *
+ * The three states and why two were not enough are documented on
+ * AMBULATION_STATES in profile.constants.ts. This is the write-side
+ * half of a TWO-PLACE edit — the other half is the CHECK constraint on
+ * `patient_profiles.baseline_payload` in migration 022, which is what
+ * defends the column against the paths Zod never sees. Widening the
+ * state set means editing both.
+ *
+ * WHY THE BOOLEAN BRANCH IS STILL HERE. The app ships as a web export
+ * that patients open in WeChat's in-app browser, which caches
+ * aggressively; the handset that submits a baseline an hour after this
+ * deploy may still be running the build that sends `true` / `false`.
+ * Rejecting those would 400 the registration form — the one screen a
+ * new patient cannot get past. So the boolean is accepted and
+ * normalised, exactly the way the DB back-fill in 022 normalises the
+ * rows already on disk:
+ *
+ *   true  → 'independent'   (「可独立行走」)
+ *   false → 'assisted'      (「需要辅助」)
+ *
+ * `false → assisted` reproduces the label the patient tapped and
+ * nothing more. It does not assert they can walk with aid; an old
+ * client has no way to say 'unable'. Remove this branch only once the
+ * mobile build that sends the string is the oldest one in the wild.
+ */
+const ambulationStateSchema = z
+  .union([z.enum(AMBULATION_STATES), z.boolean()])
+  .transform((value) => {
+    if (typeof value !== 'boolean') return value;
+    return value ? 'independent' : 'assisted';
+  });
+
+/**
+ * 「你的诊断走到哪一步了」 — five states, where there used to be one
+ * boolean.
+ *
+ * `diagnosedFshd: true | false | null` collapsed five situations that
+ * call for five different next moves, and the two it hurt most are the
+ * two this population is actually in:
+ *
+ *   - 「医生说是 FSHD，但我没有基因报告」 answered `true`, and every
+ *     screen downstream treated that as a molecular diagnosis. Clinical
+ *     trials do not: entry requires a confirmed molecular genetic
+ *     diagnosis (Giardina et al., Clin Genet 2024;106(1):13-26, doi
+ *     10.1111/cge.14533 —「clinical trials, all of which require a
+ *     confirmed molecular genetic diagnosis for entry」; the paper is in
+ *     the corpus under 03.遗传生育).
+ *   - 「我做了检测，报告丢了/在老家医院」 also answered `true`, and the
+ *     app then had no way to tell that person the one useful thing:
+ *     the report exists and can be requested back.
+ *
+ * And on the negative side, 「想测但还没测」 and 「不打算测」 are the
+ * same `false`, which is why the app could only ever nag both of them
+ * with the same sentence.
+ *
+ * ORDER IS MEANINGFUL: index 0 is the most complete evidence, index 4
+ * the least. Nothing indexes into it today; it is ordered so that a
+ * screen which wants to render it as a ladder can, without inventing
+ * an order of its own.
+ */
+export const DIAGNOSIS_LADDER_STATES = [
+  'confirmed_with_report',
+  'confirmed_report_unavailable',
+  'clinical_only',
+  'untested_wants_test',
+  'untested_no_plan',
+] as const;
+export type DiagnosisLadderState = (typeof DIAGNOSIS_LADDER_STATES)[number];
+
+/** Patient-facing wording. Kept next to the enum so a new state cannot
+ *  be added without someone writing the Chinese for it. */
+export const DIAGNOSIS_LADDER_LABELS: Record<DiagnosisLadderState, string> = {
+  confirmed_with_report: '已确诊，基因报告在手上',
+  confirmed_report_unavailable: '已确诊，但报告不在手上',
+  clinical_only: '临床诊断，还没做过基因检测',
+  untested_wants_test: '还没测过，想测',
+  untested_no_plan: '还没测过，暂时不打算测',
+};
+
+/**
+ * The old boolean, derived from the ladder.
+ *
+ * `clinical_only` maps to `true` deliberately: a neurologist did
+ * diagnose this person with FSHD, and that is precisely what the
+ * boolean has always meant on the baseline form —「我被诊断为 FSHD」.
+ * It has never meant「基因确诊」, and no caller may read it that way:
+ * the passport derives its own `confirmation` from OCR'd report fields
+ * (see PassportDiagnosisConfirmation in profile.passport.ts) and does
+ * not consult this boolean at all.
+ *
+ * There is deliberately no inverse. `true` could be any of the first
+ * three rungs and `false` either of the last two, so reconstructing a
+ * ladder from a legacy boolean means guessing which rung — and the
+ * whole reason for the ladder is that those rungs are not
+ * interchangeable. A profile written by an older client simply has no
+ * ladder until its owner answers the question.
+ */
+export const diagnosedFshdFromLadder = (state: DiagnosisLadderState): boolean =>
+  state === 'confirmed_with_report' ||
+  state === 'confirmed_report_unavailable' ||
+  state === 'clinical_only';
+
 export const baselineProfileSchema = z.object({
   foundation: z
     .object({
@@ -74,6 +180,12 @@ export const baselineProfileSchema = z.object({
     .optional(),
   diseaseBackground: z
     .object({
+      /** See DIAGNOSIS_LADDER_STATES. Optional because the field is
+       *  new: a handset running the previous web export sends only
+       *  `diagnosedFshd`, and that submission has to keep working —
+       *  this ships as a web export into WeChat's in-app browser,
+       *  which caches for days. */
+      diagnosisLadder: z.enum(DIAGNOSIS_LADDER_STATES).optional().nullable(),
       diagnosedFshd: z.boolean().optional().nullable(),
       diagnosisType: nullableText(40),
       d4z4: nullableText(80),
@@ -83,10 +195,28 @@ export const baselineProfileSchema = z.object({
       onsetRegion: nullableText(120),
     })
     .partial()
+    // `diagnosedFshd` becomes a DERIVED value the moment a ladder
+    // state is present, so the two can never disagree on disk. They
+    // could otherwise: the new form sends both, and a client that
+    // posts `{ diagnosisLadder: 'untested_no_plan', diagnosedFshd:
+    // true }` — a half-migrated form, a stale local draft — would
+    // persist a row whose two halves say opposite things, with every
+    // reader free to pick either. The ladder wins because it is the
+    // answer the patient actually gave; the boolean is a projection
+    // of it kept for the readers that predate it.
+    //
+    // Absent a ladder the boolean is passed through untouched. See
+    // `diagnosedFshdFromLadder` for why nothing is inferred the other
+    // way round.
+    .transform((value) =>
+      value.diagnosisLadder
+        ? { ...value, diagnosedFshd: diagnosedFshdFromLadder(value.diagnosisLadder) }
+        : value,
+    )
     .optional(),
   currentStatus: z
     .object({
-      independentlyAmbulatory: z.boolean().optional().nullable(),
+      independentlyAmbulatory: ambulationStateSchema.optional().nullable(),
       armRaiseDifficulty: z.boolean().optional().nullable(),
       facialWeakness: z.boolean().optional().nullable(),
       footDrop: z.boolean().optional().nullable(),

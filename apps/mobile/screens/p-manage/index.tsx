@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -28,6 +28,8 @@ import {
   type PatientProfile,
   type ProgressionSummary,
 } from '../../lib/api';
+import { getFallsSummary } from '../../lib/falls-api';
+import { FALLS_WINDOW_DAYS, summarizeFallsForCourse, type FallsSummary } from '../../lib/falls';
 import { formatDateLabel, getRiskMeta } from '../../lib/clinical-visuals';
 import { COLOR, INTERACTION, MOTION } from '../../lib/design';
 import {
@@ -199,6 +201,14 @@ export default function ManageScreen() {
   const [muscleInsights, setMuscleInsights] = useState<
     Array<{ label: string; insight: MuscleInsight }>
   >([]);
+  // The falls count. Three states, and they are NOT interchangeable:
+  // a summary (a real count), `null` while nothing has been read, and
+  // `fallsUnreadable` when the fetch or the parse failed. Collapsing
+  // the last two into a zeroed summary would print 「还没有跌倒记录」
+  // to a patient whose falls simply did not load — the app telling
+  // someone they have not fallen.
+  const [fallsSummary, setFallsSummary] = useState<FallsSummary | null>(null);
+  const [fallsUnreadable, setFallsUnreadable] = useState(false);
 
   const submitMedication = async () => {
     const name = medDraft.name.trim();
@@ -268,10 +278,28 @@ export default function ManageScreen() {
           )
           .map((result) => result.value),
       );
+
+      // Falls, best-effort and in its own catch. It is one more
+      // endpoint on a page that already makes seven calls, and a falls
+      // outage must not blank 病程 — but it also must not be allowed to
+      // silently render as「还没有跌倒记录」, which is why the failure
+      // has its own flag rather than a zeroed summary. The window is
+      // sent explicitly so the sentence's number and the server's
+      // arithmetic cannot drift apart.
+      try {
+        const falls = await getFallsSummary(FALLS_WINDOW_DAYS);
+        setFallsSummary(falls);
+        setFallsUnreadable(falls === null);
+      } catch {
+        setFallsSummary(null);
+        setFallsUnreadable(true);
+      }
     } catch (error) {
       setProfile(null);
       setSummary(null);
       setRiskSummary(null);
+      setFallsSummary(null);
+      setFallsUnreadable(false);
       setErrorMessage(error instanceof ApiError ? error.message : '暂时无法加载病程管理页。');
     } finally {
       setIsLoading(false);
@@ -279,9 +307,30 @@ export default function ManageScreen() {
     }
   };
 
-  useEffect(() => {
-    loadData().catch(() => undefined);
-  }, []);
+  // 病程 is a tab and stays mounted for the whole session, so a
+  // mount-only fetch pinned this page to the payload that existed when
+  // the app opened: record a followup, come back here, and 最近记录 /
+  // 变化摘要 / the trend curves are all still the previous state.
+  //
+  // Pull-to-refresh cannot cover for it on the platform patients use.
+  // react-native-web ships RefreshControl as an empty shell (it
+  // destructures `onRefresh`/`refreshing` away and renders a plain
+  // View), so the gesture below is inert on web, and WeChat's in-app
+  // browser has no address bar to reload from.
+  //
+  // Copied from p-report_management: `refresh` mode keeps a focus
+  // regain on the small spinner, and there is deliberately no separate
+  // mount effect — expo-router fires this on the initial mount too, and
+  // running both fired two concurrent fetches on every entry. The first
+  // render's full-screen overlay still comes from `isLoading`'s
+  // initial `true`.
+  useFocusEffect(
+    // loadData is recreated per render; an empty dep list runs the
+    // refetch exactly once per focus gain.
+    useCallback(() => {
+      loadData(true).catch(() => undefined);
+    }, []),
+  );
 
   /** Reset to the first tab when the screen loses focus, so coming back
    *  always lands on 近况 rather than wherever the patient happened to
@@ -311,6 +360,11 @@ export default function ManageScreen() {
     [profile, summary],
   );
   const medicationHighlights = useMemo(() => buildMedicationHighlights(profile), [profile]);
+  const fallsCourseNote = useMemo(
+    () => (fallsSummary ? summarizeFallsForCourse(fallsSummary, FALLS_WINDOW_DAYS) : null),
+    [fallsSummary],
+  );
+  const fallsHasRecords = (fallsSummary?.total ?? 0) > 0;
   const assistiveDevices =
     profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];
   const evidencePanels = [reportInsights.diagnosisPanel, reportInsights.imagingPanel];
@@ -360,6 +414,44 @@ export default function ManageScreen() {
             )}
 
             <View style={styles.rule} />
+            {/* 跌倒记录 lives here — beside 最近记录的变化 — because
+                「我最近怎么样」 is the question this tab answers and a
+                fall is part of that answer. It is ONE number and its
+                caveat, never a trend: the API can compose a
+                quarter-by-quarter comparison and deliberately keeps it
+                for the assistant, because a running total with an arrow
+                on it is a progression alert, not a status line.
+
+                The entry point matters as much as the number. Before
+                the diary existed there was nowhere to record a fall
+                except a free-text followup event the AI retriever is
+                required to refuse, so this button is the whole
+                feature's front door. */}
+            <Text style={styles.blockHeading}>跌倒记录</Text>
+            {fallsUnreadable ? (
+              // Never 「0 次」 here. A failed read is a failed read.
+              <Text style={styles.emptyText}>这会儿读不到跌倒记录。</Text>
+            ) : fallsCourseNote ? (
+              <>
+                <Text style={styles.fallsLine}>{fallsCourseNote.headline}</Text>
+                {fallsCourseNote.caveat ? (
+                  <Text style={styles.cohortCaption}>{fallsCourseNote.caveat}</Text>
+                ) : null}
+              </>
+            ) : null}
+            {/* Full-size rather than `compact`: on the web export a
+                compact button is a 34pt target (see Button.tsx), and
+                this leads to the form a patient opens right after
+                falling. */}
+            <View style={styles.fallsAction}>
+              <Button
+                label={fallsHasRecords ? '打开跌倒记录' : '记一次跌倒'}
+                variant="tinted"
+                onPress={() => router.push('/p-falls')}
+              />
+            </View>
+
+            <View style={styles.rule} />
             <Text style={styles.blockHeading}>和病友群体相比</Text>
             {muscleInsights.length > 0 ? (
               muscleInsights.map(({ label, insight }) => (
@@ -369,9 +461,19 @@ export default function ManageScreen() {
                 <View key={insight.muscleGroup} style={styles.cohortRow}>
                   <View style={styles.cohortCopy}>
                     <Text style={styles.cohortLabel}>{label}</Text>
+                    {/* The API withholds `distribution` until enough
+                        distinct patients have contributed (see
+                        COHORT_MIN_PATIENTS). Rendering the null case as
+                        「群体中位 — 分 · 0 人」 still asserts a cohort,
+                        and for a while it asserted a false one: the
+                        query compared the patient against their own
+                        rows and counted measurements as people, so the
+                        first person to test both sides five times was
+                        told 「10 人」. Say what is true instead. */}
                     <Text style={styles.cohortCaption}>
-                      群体中位 {insight.distribution?.medianScore ?? '—'} 分 ·{' '}
-                      {insight.distribution?.sampleCount ?? 0} 人
+                      {insight.distribution
+                        ? `群体中位 ${insight.distribution.medianScore} 分 · ${insight.distribution.sampleCount} 人`
+                        : '病友数据还不够，暂不做对比'}
                     </Text>
                   </View>
                   {/* 「你」has to stay. Dropping it left the cohort

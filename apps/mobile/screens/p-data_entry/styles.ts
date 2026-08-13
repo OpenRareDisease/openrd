@@ -126,6 +126,16 @@ export default StyleSheet.create({
     lineHeight: 22,
     color: COLOR.ink,
   },
+  /** The「可以用键盘的语音键」line, under the composer rather than
+   *  above it: it is an alternative route for someone who has already
+   *  looked at the box and decided typing is too much, not part of the
+   *  card's opening pitch. Set at caption weight for the same reason —
+   *  it must not read as the recommended path (see the comment at the
+   *  call site). */
+  speakVoiceHint: {
+    ...TYPE.caption,
+    marginTop: -SPACE.xs,
+  },
   speakNoticeWrap: {
     marginTop: -SPACE.xs,
   },
@@ -232,6 +242,21 @@ export default StyleSheet.create({
   fieldErrorText: {
     ...TYPE.caption,
     color: COLOR.alert,
+  },
+  /** Why a question is being asked, with its source — the habit
+   *  lib/genetics-family-content.ts set. Set apart from the surrounding
+   *  captions by a rule and a wash, because it is provenance rather
+   *  than instruction: a patient skimming for what to tap should be
+   *  able to skip it, and a patient wondering why the app keeps asking
+   *  about pain should be able to find it. */
+  guidelineNote: {
+    ...TYPE.caption,
+    marginTop: SPACE.lg,
+    padding: SPACE.md,
+    borderRadius: RADIUS.control,
+    backgroundColor: COLOR.well,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
   },
 
   input: {

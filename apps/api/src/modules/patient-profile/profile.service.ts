@@ -607,6 +607,20 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
     'provider', ocr_payload -> 'provider'
   ) END AS ocr_payload`;
 
+/**
+ * Fewest distinct patients before a cohort distribution is shown.
+ *
+ * Not a statistics choice — a re-identification one. This platform's
+ * whole population is people with one rare disease who may well know
+ * each other through the same patient association, so a median drawn
+ * from three contributors is a median any one of them can invert. Ten
+ * is the smallest floor that stops that being trivial while still
+ * being reachable by this cohort.
+ *
+ * It is also an honesty floor: 「和病友群体相比」 promises a group.
+ */
+const COHORT_MIN_PATIENTS = 10;
+
 export class PatientProfileService {
   private readonly pool: Pool;
   private readonly logger: AppLogger;
@@ -656,9 +670,15 @@ export class PatientProfileService {
         // query feeds the whole app — mobile timeline, passport,
         // progression summary, data export — so a missing filter here
         // would resurrect a retracted record everywhere at once.
+        // `not_applicable` is not optional decoration: it is the only
+        // thing that separates 「当天尝试后做不了」 from 「没测」, and
+        // this query is the sole feed for the referral pack and all
+        // three portable exports. Dropping the column made every
+        // 做不了 row read as a never-attempted test — the referral pack
+        // filtered it out entirely and FHIR labelled it 「未记录测量值」.
         client.query(
           `SELECT id, profile_id, submission_id, test_type, measured_value, side, protocol, unit,
-                  device_used, assistance_required, notes, performed_at, created_at
+                  device_used, assistance_required, notes, not_applicable, performed_at, created_at
            FROM patient_function_tests
            WHERE profile_id = $1 AND deleted_at IS NULL
            ORDER BY performed_at DESC`,
@@ -786,6 +806,7 @@ export class PatientProfileService {
           assistanceRequired:
             row.assistance_required === null ? null : Boolean(row.assistance_required),
           notes: row.notes,
+          notApplicable: row.not_applicable === true,
           performedAt: toTimestampString(row.performed_at),
           createdAt: toTimestampString(row.created_at),
           submissionId: row.submission_id ?? null,
@@ -1491,6 +1512,104 @@ export class PatientProfileService {
     return result.rowCount ?? 0;
   }
 
+  /**
+   * The two audit events the delete endpoint writes OUTSIDE
+   * `deleteDocumentForUser`'s transaction, because the thing they
+   * describe happens outside it too.
+   *
+   * `patient_document.delete_started` is the intent record: the
+   * controller commits it BEFORE it touches the blob, so the
+   * irreversible half can only run once a trail of the attempt is
+   * already durable. `patient_document.delete_failed` is the
+   * compensating record: it says how an attempt that did not end in a
+   * row delete ended, and — via `storageCleanupStatus` — whether the
+   * file survived it.
+   *
+   * The pair is what makes the transaction's own invariant ("no
+   * removal without a trail") true for the file and not just for the
+   * row; see the doc block on `deleteDocument` for why the blob cannot
+   * be inside the transaction in the first place.
+   */
+  private async recordDocumentDeletionEvent(
+    eventType: 'patient_document.delete_started' | 'patient_document.delete_failed',
+    entry: {
+      userId: string;
+      documentId: string;
+      documentType: string | null;
+      /**
+       * What became of the stored object by the time the attempt
+       * ended: 'kept' — never removed, 'missing' — already absent
+       * before we tried, 'removed' — destroyed by this request.
+       * `delete_failed` + 'removed' is the row that says a file is
+       * gone while its record is not.
+       */
+      storageCleanupStatus?: 'removed' | 'missing' | 'kept';
+      reason?: string;
+      ip?: string;
+      userAgent?: string;
+    },
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO audit_logs (event_type, event_payload)
+       VALUES ($1, $2)`,
+      [
+        eventType,
+        // Same content rule as the `patient_document.deleted` payload
+        // below: documentId + documentType prove an erasure was
+        // attempted, while title / file_name / storage_uri are report
+        // content that would outlive the account purge.
+        maskAuditPayload({
+          userId: entry.userId,
+          documentId: entry.documentId,
+          documentType: entry.documentType,
+          ...(entry.storageCleanupStatus
+            ? { storageCleanupStatus: entry.storageCleanupStatus }
+            : {}),
+          ...(entry.reason ? { reason: entry.reason } : {}),
+          ip: entry.ip ?? null,
+          userAgent: entry.userAgent ?? null,
+        }),
+      ],
+    );
+  }
+
+  /**
+   * Commit the intent to delete before anything irreversible runs.
+   *
+   * Throws if the row cannot be written, and the controller turns that
+   * into a refusal — deliberately. The gate is the whole point: if the
+   * database is too sick to record that a patient asked for an
+   * erasure, it is also too sick for us to start performing one.
+   */
+  async recordDocumentDeletionIntent(entry: {
+    userId: string;
+    documentId: string;
+    documentType: string | null;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    await this.recordDocumentDeletionEvent('patient_document.delete_started', entry);
+  }
+
+  /**
+   * Record how a delete that did not complete ended. Best-effort: a
+   * throw here is swallowed by the caller, because the error the
+   * patient and the operator need is the original one, and this insert
+   * is being attempted on a database that has just failed a query.
+   * The intent row is the trail that does not depend on this landing.
+   */
+  async recordDocumentDeletionFailure(entry: {
+    userId: string;
+    documentId: string;
+    documentType: string | null;
+    storageCleanupStatus: 'removed' | 'missing' | 'kept';
+    reason: string;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    await this.recordDocumentDeletionEvent('patient_document.delete_failed', entry);
+  }
+
   async deleteDocumentForUser(
     userId: string,
     documentId: string,
@@ -1530,8 +1649,11 @@ export class PatientProfileService {
       // the caller needs storage_uri to delete the blob, which is a
       // different job. A patient names their own uploads
       //（「基因检测 2026」）and hospitals put names and IDs in file
-      // names, so all three are report content rather than evidence
-      // that a deletion occurred. `documentId` + `documentType` proves
+      // names（「ZHANG-WEI-1987-WES.pdf」）, so all three are report
+      // content rather than evidence that a deletion occurred — and
+      // the second example is the one that reaches storage_uri, which
+      // keeps only `[A-Za-z0-9-_.]` and would store the first as
+      //「_____2026」. `documentId` + `documentType` proves
       // that completely, and unlike the other three it resolves to
       // nothing once the account is purged.
       await client.query(
@@ -2153,7 +2275,7 @@ export class PatientProfileService {
       // valid) and simply lists one fewer item.
       this.pool.query(
         `SELECT id, submission_id, test_type, measured_value, side, protocol, unit, device_used,
-                  assistance_required, notes, performed_at, created_at
+                  assistance_required, notes, not_applicable, performed_at, created_at
            FROM patient_function_tests
            WHERE submission_id = ANY($1::uuid[]) AND deleted_at IS NULL
            ORDER BY performed_at ASC`,
@@ -2259,6 +2381,7 @@ export class PatientProfileService {
         assistanceRequired:
           row.assistance_required === null ? null : Boolean(row.assistance_required),
         notes: row.notes,
+        notApplicable: row.not_applicable === true,
         performedAt: toTimestampString(row.performed_at),
         createdAt: toTimestampString(row.created_at),
         submissionId,
@@ -2861,17 +2984,49 @@ export class PatientProfileService {
          LIMIT $3`,
         [profileId, muscleGroup, limit],
       ),
+      // One row per OTHER patient, then aggregate. The row picked is
+      // that patient's latest score for this muscle group — deliberately
+      // the same statistic as `userLatestScore` below, because the two
+      // numbers are rendered side by side (「群体中位 X 分」 next to
+      // 「你 Y 分」) and a comparison between a median-of-all-history and
+      // a latest-value is not a comparison of anything.
+      //
+      // Aggregating the raw rows instead is what this used to do, and it
+      // let one person be the cohort: 11 patients who tested deltoid once
+      // at 5, plus one who tests daily at 1, is 211 rows whose median is
+      // 1 and whose COUNT(DISTINCT profile_id) is 12 — 「群体中位 1 分 ·
+      // 12 人」, when 11 of those 12 people score above it. Verified on
+      // Postgres: same data, row-weighted median 1, person-weighted 5.
+      // The skew is not confined to that extreme — it is present at every
+      // ratio of testing frequency, and testing frequency is not a
+      // property of the disease.
+      //
+      // Ties on recorded_at are real: a left/right pair inserted in one
+      // transaction shares NOW(). Without a tiebreak DISTINCT ON picks
+      // arbitrarily and two identical requests can return two different
+      // medians, so break on strength_score DESC — which also keeps every
+      // column this reads inside idx_patient_measurements_cohort (see
+      // migration 025) and the plan an Index Only Scan. The latest-score
+      // query below has no such tiebreak, so on a tie it can show the
+      // other side of the pair; that decides one patient's own row rather
+      // than a whole cohort's median, and giving it this ORDER BY would
+      // cost it its own index-ordered LIMIT 1.
       this.pool.query(
-        `SELECT
+        `WITH per_patient AS (
+           SELECT DISTINCT ON (profile_id) profile_id, strength_score
+           FROM patient_measurements
+           WHERE muscle_group = $1 AND profile_id <> $2
+           ORDER BY profile_id, recorded_at DESC, strength_score DESC
+         )
+         SELECT
            MIN(strength_score) AS min_score,
            MAX(strength_score) AS max_score,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY strength_score) AS median_score,
            percentile_cont(0.25) WITHIN GROUP (ORDER BY strength_score) AS quartile_25,
            percentile_cont(0.75) WITHIN GROUP (ORDER BY strength_score) AS quartile_75,
            COUNT(*) AS sample_count
-         FROM patient_measurements
-         WHERE muscle_group = $1`,
-        [muscleGroup],
+         FROM per_patient`,
+        [muscleGroup, profileId],
       ),
       this.pool.query(
         `SELECT strength_score
@@ -2892,17 +3047,42 @@ export class PatientProfileService {
       .reverse();
 
     const distributionRow = distributionResult.rows[0];
-    const distribution = distributionRow?.sample_count
-      ? {
-          muscleGroup,
-          minScore: Number(distributionRow.min_score),
-          maxScore: Number(distributionRow.max_score),
-          medianScore: Number(distributionRow.median_score),
-          quartile25: Number(distributionRow.quartile_25),
-          quartile75: Number(distributionRow.quartile_75),
-          sampleCount: Number(distributionRow.sample_count),
-        }
-      : null;
+    /**
+     * Three defects sat on top of each other here, and together they
+     * made this screen state a falsehood to a patient about their own
+     * disease.
+     *
+     *  1. No self-exclusion. The first patient to record a muscle test
+     *     was compared against their own scores and told it was the
+     *     cohort. The query now carries `profile_id <> $2`.
+     *  2. The whole row was row-weighted while the caption said 人. The
+     *     first pass at this fixed only the count — COUNT(*) → COUNT(
+     *     DISTINCT profile_id) — and left MIN/MAX and the three
+     *     percentiles aggregating raw rows, so the number of PEOPLE was
+     *     printed beside a median of MEASUREMENTS and the two were not
+     *     about the same population. The query now collapses to one row
+     *     per patient first; see its comment for which row and why.
+     *  3. No floor at all. A median over two people is not a
+     *     distribution, and at this size it is re-identifying: with
+     *     three contributors each one can subtract themselves and read
+     *     the other two.
+     *
+     * Below the floor the block is withheld entirely rather than shown
+     * with a caveat. A caveat under a number does not stop the number
+     * being read, and the number being read here is「我比别人差多少」.
+     */
+    const distribution =
+      Number(distributionRow?.sample_count ?? 0) >= COHORT_MIN_PATIENTS
+        ? {
+            muscleGroup,
+            minScore: Number(distributionRow.min_score),
+            maxScore: Number(distributionRow.max_score),
+            medianScore: Number(distributionRow.median_score),
+            quartile25: Number(distributionRow.quartile_25),
+            quartile75: Number(distributionRow.quartile_75),
+            sampleCount: Number(distributionRow.sample_count),
+          }
+        : null;
 
     const latestRow = latestResult.rows[0];
     const userLatestScore = latestRow ? Number(latestRow.strength_score) : null;

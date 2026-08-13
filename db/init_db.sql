@@ -1,18 +1,71 @@
 -- PostgreSQL initialization script for the FSHD-openrd platform.
+--
 -- Usage:
 --   psql -U postgres -f db/init_db.sql
--- This script creates the primary application database, extensions,
--- schemas, and core tables required for early development.
+--   psql -U postgres -v target_db=openrd_staging -f db/init_db.sql
+--
+-- Creates the application database, extensions, schemas and core
+-- tables. The sanctioned path is `npm run db:migrate`, which reads this
+-- file, strips the meta-commands and runs the rest against the
+-- connection it already holds (apps/api/src/db/migrate.ts,
+-- extractBootstrapSql). Everything below the guard is therefore for
+-- people invoking psql by hand.
+--
+-- WHY THERE IS A GUARD AT ALL
+--
+-- This file used to open with an unconditional `\connect fshd_openrd`,
+-- and psql's `\connect` silently overrides whatever `-d` you passed.
+-- So `psql -d openrd_staging -f db/init_db.sql` — restoring to staging,
+-- building a scratch instance to test a migration — bootstrapped the
+-- LIVE database instead, with no warning and no error. That is not
+-- hypothetical: it happened here while someone was verifying migration
+-- 022 against a throwaway database. It was survivable only because
+-- every statement in this file is idempotent, which is luck, not a
+-- design.
+--
+-- So: the target is a variable, it is announced, and pointing psql at a
+-- third database aborts rather than being quietly ignored.
+
+\set ON_ERROR_STOP on
+
+-- The database psql was actually pointed at, captured before the first
+-- \connect switches away from it.
+SELECT current_database() AS entry_db \gset
+
+\if :{?target_db}
+\else
+  \set target_db fshd_openrd
+\endif
+
+SELECT (:'entry_db' <> 'postgres' AND :'entry_db' <> :'target_db') AS wrong_entry \gset
+
+\if :wrong_entry
+  \echo ''
+  \echo 'ABORTED: you connected to a database this script would then abandon.'
+  \echo ''
+  \echo '  psql is connected to : ':entry_db
+  \echo '  this script targets  : ':target_db
+  \echo ''
+  \echo 'psql''s \connect overrides -d, so continuing would bootstrap the'
+  \echo 'target above rather than the database you asked for. If you meant'
+  \echo 'the target, run it against postgres:'
+  \echo ''
+  \echo '  psql -U postgres -v target_db=':entry_db' -f db/init_db.sql'
+  \echo ''
+  \quit
+\endif
+
+\echo 'init_db: targeting database ':target_db
 
 \connect postgres
 
 -- Create the application database if it does not already exist.
-SELECT 'CREATE DATABASE fshd_openrd'
+SELECT 'CREATE DATABASE ' || quote_ident(:'target_db')
 WHERE NOT EXISTS (
-    SELECT FROM pg_database WHERE datname = 'fshd_openrd'
+    SELECT FROM pg_database WHERE datname = :'target_db'
 )\gexec
 
-\connect fshd_openrd
+\connect :target_db
 
 -- Enable useful extensions.
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

@@ -24,7 +24,12 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "肌愈通",
+      "shortName": "肌愈通",
+      "lang": "zh-Hans-CN",
+      "themeColor": "#FBF8F3",
+      "description": "面向面肩肱型肌营养不良（FSHD）患者的自我管理平台：记录症状与肌力变化，整理化验单和检查报告，查阅带出处的疾病知识。"
     },
     "plugins": [
       "expo-router",

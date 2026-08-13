@@ -12,6 +12,10 @@ import { getPool } from '../db/pool.js';
 import { isShuttingDown } from '../lifecycle.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { createLegalRouter } from '../modules/legal/legal.routes.js';
+import {
+  createPassportShareRouter,
+  createPublicPassportRouter,
+} from '../modules/patient-profile/passport-share.routes.js';
 import { createPatientProfileRouter } from '../modules/patient-profile/profile.routes.js';
 import { OCR_PROCESSOR_DISCLOSURES } from '../services/ocr/ocr-provider.js';
 import { asyncHandler } from '../utils/async-handler.js';
@@ -451,6 +455,18 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
   apiRouter.use('/ai', createAiChatRoutes(context));
   apiRouter.use('/legal', createLegalRouter(context));
   apiRouter.use('/profiles', createPatientProfileRouter(context));
+  apiRouter.use('/passport-shares', createPassportShareRouter(context));
 
   app.use('/api', apiRouter);
+
+  // OUTSIDE /api, and that is the point.
+  //
+  // This is the one route in the product a stranger's browser loads:
+  // a clinician opening a link a patient forwarded them in WeChat, with
+  // no account and no app. Everything under /api is shaped for our own
+  // client — auth, CORS, JSON error envelopes — and none of it fits a
+  // page. Keeping the prefix separate also lets the proxy give it its
+  // own caching and rate-limit rules without matching paths inside the
+  // API surface.
+  app.use('/s/passport', createPublicPassportRouter(context));
 };

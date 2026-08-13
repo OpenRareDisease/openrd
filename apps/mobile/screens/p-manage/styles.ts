@@ -369,6 +369,19 @@ export default StyleSheet.create({
     gap: 3,
   },
 
+  /* 跌倒记录 -------------------------------------------------------- */
+  /** Body weight, not `metric`. The count is context on this page; the
+   *  30pt treatment TYPE.metric gives a clinical value would make it
+   *  the headline of 近况, and a fall count as a headline is a
+   *  progression alert. */
+  fallsLine: {
+    ...TYPE.bodyStrong,
+  },
+  fallsAction: {
+    marginTop: SPACE.md,
+    alignItems: 'flex-start',
+  },
+
   /* 最近记录的变化 ------------------------------------------------- */
   changeRow: {
     flexDirection: 'row',

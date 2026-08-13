@@ -288,6 +288,30 @@ export default StyleSheet.create({
     color: COLOR.alert,
   },
 
+  /* Starters ------------------------------------------------------ */
+  /** Openers for a blank transcript. Sits on the page rather than in a
+   *  card — the transcript below it is set on paper too, and boxing the
+   *  starters would read as a banner rather than as the first thing to
+   *  do. */
+  starterBlock: {
+    marginTop: SPACE.md,
+    gap: SPACE.sm,
+  },
+  starterTitle: {
+    ...TYPE.micro,
+  },
+  /** Full-width rows, one per line: these are tap targets for hands
+   *  that cannot aim, so nothing here shares a row with anything else.
+   *  Same stance as AskAboutDrawer's suggestion stack. */
+  starterStack: {
+    gap: SPACE.sm,
+  },
+  starterNote: {
+    ...TYPE.caption,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+
   /* Composer ------------------------------------------------------ */
   composerShell: {
     paddingHorizontal: SPACE.gutter,

@@ -1,0 +1,125 @@
+{
+  "format": "GA4GH Phenopacket v2",
+  "conformanceZh": "按 Phenopacket v2 的消息结构序列化，未经官方校验器校验。只填写了能够如实填写的部分；所有因缺少可核对本体项而未写入的内容都列在 omissions 中，并说明了原因与替代承载位置。",
+  "generatedAt": "2026-01-15T08:00:00.000Z",
+  "document": {
+    "id": "openrd-profile-11111111-1111-4111-8111-111111111111",
+    "subject": {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "sex": "FEMALE"
+    },
+    "diseases": [
+      {
+        "term": {
+          "id": "OMIM:158900",
+          "label": "Facioscapulohumeral muscular dystrophy 1 (FSHD1)"
+        }
+      }
+    ],
+    "files": [
+      {
+        "uri": "/patient-profiles/me/documents/88888888-8888-4888-8888-888888888881",
+        "fileAttributes": {
+          "documentType": "genetic_report",
+          "uploadedAt": "2024-02-01T06:00:00.000Z",
+          "title": "D4Z4 检测报告",
+          "mimeType": "application/pdf"
+        }
+      },
+      {
+        "uri": "/patient-profiles/me/documents/88888888-8888-4888-8888-888888888882",
+        "fileAttributes": {
+          "documentType": "blood_panel",
+          "uploadedAt": "2025-05-10T06:00:00.000Z",
+          "title": "生化检验",
+          "mimeType": "application/pdf"
+        }
+      }
+    ],
+    "metaData": {
+      "created": "2026-01-15T08:00:00.000Z",
+      "createdBy": "openrd 肌愈通 patient-held export",
+      "resources": [
+        {
+          "id": "omim",
+          "name": "Online Mendelian Inheritance in Man",
+          "namespacePrefix": "OMIM",
+          "url": "https://www.omim.org",
+          "version": "",
+          "iriPrefix": "https://www.omim.org/entry/"
+        }
+      ],
+      "phenopacketSchemaVersion": "2.0"
+    }
+  },
+  "omissions": [
+    {
+      "field": "measurements",
+      "reasonZh": "本次导出持有 2 条肌力记录与 2 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式完整保留。"
+    },
+    {
+      "field": "phenotypicFeatures",
+      "reasonZh": "PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。"
+    },
+    {
+      "field": "measurements（Brooke 上肢分级 / Vignos 下肢分级）",
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置。需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出。"
+    },
+    {
+      "field": "interpretations",
+      "reasonZh": "FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。D4Z4 重复数与单倍型在 TREAT-NMD 对齐导出中按其本来面目呈现。"
+    }
+  ],
+  "notes": {
+    "本体项": "Phenopacket 的多数字段要求本体项（id + label），没有「知道是什么但没有编码」的位置。本导出不会为了让文件更完整而填入未经核对的本体 id。",
+    "文件路径": "files[].uri 是本平台的 API 路径，需要患者本人的凭据才能取到原件；导出中不包含对象存储的内部地址。",
+    "本地留存": "subject.id 是内部标识，不含姓名等直接身份信息。"
+  },
+  "codingProvenance": {
+    "emitted": [
+      {
+        "curie": "OMIM:158900",
+        "label": "Facioscapulohumeral muscular dystrophy 1 (FSHD1)",
+        "labelZh": "面肩肱型肌营养不良 1 型（FSHD1）",
+        "verifiedAgainst": [
+          "content/medical-kb/source/FSHD_知识库/01.疾病定义和科普/第一批：2025年3月31日/B.FSHD REVIEW 2017.pdf — 「we review what is known about the genetics of FSHD1 (OMIM: 158900)」",
+          "content/medical-kb/source/FSHD_知识库/2025.08.01.668136v1.full.pdf — 「type 1 Facioscapulohumeral Dystrophy (FSHD1, OMIM 158900)」",
+          "content/medical-kb/source/FSHD_知识库/01.疾病定义和科普/第一批：2025年3月31日/B.A Unifying Genetic Model.pdf — 「autosomal dominant FSHD (FSHD1; OMIM 158900)」"
+        ]
+      }
+    ],
+    "withheld": [
+      {
+        "system": "LOINC",
+        "code": "2157-6",
+        "wouldMean": "Creatine kinase [Enzymatic activity/volume] in Serum or Plasma",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "19870-5",
+        "wouldMean": "Forced vital capacity [Volume] Respiratory system",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "19872-1",
+        "wouldMean": "FVC percent predicted",
+        "whyNotVerified": "No LOINC release in this repository, and the %-predicted spirometry codes are a family that is easy to confuse with the plain-volume ones — the highest-risk entry in this list."
+      },
+      {
+        "system": "LOINC",
+        "code": "19911-7",
+        "wouldMean": "Diffusing capacity of the lung for carbon monoxide (DLCO)",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      },
+      {
+        "system": "LOINC",
+        "code": "64098-7",
+        "wouldMean": "6 minute walk test distance",
+        "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+      }
+    ],
+    "noteZh": "本导出只使用可在本仓库内核对来源的编码。无法核对的编码一律不写入，相关项目改为「有显示名、无编码」的纯文本形式——这在 FHIR 与 Phenopacket 中都是合法的，且不会让接收系统误信一个未经核对的代码。withheld 列出的是本应编码、但因缺少可核对来源而留空的项目。"
+  }
+}

@@ -92,12 +92,31 @@ const PROFILE_ROW = {
       familyHistory: '母亲疑似',
     },
     currentStatus: {
-      independentlyAmbulatory: true,
+      independentlyAmbulatory: 'unable',
       assistiveDevices: ['AFO'],
     },
   },
   notes: '私人备注：联系医生李四，电话 13812345678',
 };
+
+/** The same profile with the walking state swapped, for the cases where
+ *  the state itself is what is under test. */
+const ambulationRow = (state: string) => ({
+  ...PROFILE_ROW,
+  baseline_payload: {
+    ...PROFILE_ROW.baseline_payload,
+    currentStatus: {
+      ...PROFILE_ROW.baseline_payload.currentStatus,
+      independentlyAmbulatory: state,
+    },
+  },
+});
+
+const ASSISTED_PROFILE_ROW = ambulationRow('assisted');
+
+/** The one prompt line the model reads the walking state off. */
+const ambulationLine = (content: string): string | undefined =>
+  content.split('\n').find((line) => line.startsWith('行走能力:'));
 
 const REPORT_ROWS = [
   {
@@ -183,6 +202,75 @@ describe('renderChunkForPrompt — patient profile, strict mode (regression fenc
     expect(rendered.fieldsUsed).not.toContain('notes');
     expect(rendered.fieldsUsed).not.toContain('d4z4');
     expect(rendered.fieldsUsed).toContain('d4z4_clinical');
+  });
+
+  // End to end from the row on disk to the prompt line, because the
+  // gap this covers opened between the two: migration 022 made the
+  // stored value a string and the retriever's guard still tested for a
+  // boolean, so the field left the prompt with nothing failing.
+  it('carries the ambulation state through to the prompt in readable Chinese', async () => {
+    const retriever = new PatientProfileRetriever(fakePool([PROFILE_ROW]));
+    const result = await retriever.search({ question: '我适合做哪些家庭训练' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    expect(rendered.fieldsUsed).toContain('independentlyAmbulatory');
+    expect(rendered.content).toContain('无法行走');
+    // The enum itself is not something to make the model interpret.
+    expect(rendered.content).not.toContain('unable');
+  });
+
+  // Migration 022 turned every historical boolean `false` into
+  // `assisted`, and before 022 that was the only answer available to a
+  // patient who cannot walk at all — so a stored `assisted` licenses
+  // 「非独立行走」 and nothing more. Nothing can date the value, so the
+  // prompt must never state the affirmative version. What is asserted
+  // below is the reading the model is handed, not the shape of the fix.
+  it('never tells the model an `assisted` patient can walk with aids', async () => {
+    const retriever = new PatientProfileRetriever(fakePool([ASSISTED_PROFILE_ROW]));
+    const result = await retriever.search({ question: '我适合做哪些家庭训练' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    const line = ambulationLine(rendered.content);
+    expect(line).toBeDefined();
+    expect(line).not.toContain('assisted');
+
+    // The reading the model is handed, taken apart from any caveat that
+    // follows it: on its own it must claim no more than non-independence.
+    const [reading] = line!.split('注意：');
+    expect(reading).toContain('非独立行走');
+    expect(reading).not.toMatch(/(才|仍|尚)能行走|可以行走|能够行走/);
+
+    // And the caveat has to actually be there — saying less is not the
+    // same as saying why the value cannot be sharpened.
+    expect(line).toContain('迁移');
+    expect(line).toContain('不能据此认为患者借助器具仍能行走');
+
+    // The allowlist passes this field in precise mode too, and precise
+    // mode is where a patient has opted into MORE detail — not into a
+    // sharper reading of a value that has none.
+    const precise = await new PatientProfileRetriever(fakePool([ASSISTED_PROFILE_ROW])).search(
+      { question: '我适合做哪些家庭训练' },
+      makeCtx({ consentLevel: 'precise' }),
+    );
+    const preciseLine = ambulationLine(
+      renderChunkForPrompt(precise.chunks[0], { mode: 'precise' }).content,
+    );
+    expect(preciseLine).toBe(line);
+  });
+
+  // The caveat exists because `assisted` is ambiguous. The other two
+  // states are not: a historical `true` reproduced the label the
+  // patient tapped, and `unable` can only have been written after 022.
+  // Attaching the warning to them would be noise in a prompt the model
+  // has to reason from.
+  it('does not attach the 022 caveat to the two unambiguous states', async () => {
+    for (const state of ['independent', 'unable']) {
+      const retriever = new PatientProfileRetriever(fakePool([ambulationRow(state)]));
+      const result = await retriever.search({ question: '我适合做哪些家庭训练' }, makeCtx());
+      const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+      expect(ambulationLine(rendered.content)).not.toContain('迁移');
+    }
   });
 
   it('keeps raw values when the user has opted into precise mode', async () => {

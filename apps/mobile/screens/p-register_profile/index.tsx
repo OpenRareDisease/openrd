@@ -15,11 +15,15 @@ import SensitiveDataConsentGate, {
 import { LEGAL_DOCUMENTS } from '../../lib/legal-content';
 import { requiresGuardianConsent } from '../../lib/guardian-consent';
 import styles from './styles';
+import { baselineCarriesHealthData } from './baseline-payload';
 import { PROFILE_FORM_DRAFT_KEY } from '../../lib/draft-keys';
 import Button from '../common/Button';
 import {
   ApiError,
   type BaselineProfilePayload,
+  DIAGNOSIS_LADDER_LABELS,
+  DIAGNOSIS_LADDER_STATES,
+  type DiagnosisLadderState,
   getMyPatientProfile,
   updateMyBaseline,
   upsertPatientProfile,
@@ -48,6 +52,25 @@ import { BirthDatePickers, RegionPickers } from '../common/DemographicsPickers';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import { useProfileContext } from '../../contexts/ProfileContext';
+
+/**
+ * The stored ladder value, or '' — never a string this build cannot
+ * render.
+ *
+ * `baseline` is an untyped JSONB column on the server and reaches the
+ * client through `apiRequest`'s unchecked type assertion, so the value
+ * on the wire is whatever some client wrote there. An unrecognised
+ * string would select none of the five options while still sitting in
+ * `form.diagnosisLadder`, and the save below would post it straight
+ * back — where the API's `z.enum` rejects the whole baseline. The
+ * patient would see 「保存失败」 on a form where every visible field is
+ * fine. Falling back to unanswered puts the question back in front of
+ * them instead, which is the only thing that can actually fix it.
+ */
+const readStoredLadder = (raw: unknown): DiagnosisLadderState | '' =>
+  typeof raw === 'string' && (DIAGNOSIS_LADDER_STATES as readonly string[]).includes(raw)
+    ? (raw as DiagnosisLadderState)
+    : '';
 
 const isValidDate = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -87,6 +110,10 @@ const RegisterProfileScreen: React.FC = () => {
     fullName: '',
     dateOfBirth: '',
     diagnosisYear: '',
+    // '' means「还没答」. Distinct from every one of the five rungs,
+    // including 「还没测过，暂时不打算测」 — that one is an answer, and
+    // the passport says something different to a person who gave it.
+    diagnosisLadder: '' as DiagnosisLadderState | '',
     diagnosisType: '',
     d4z4: '',
     onsetRegion: '',
@@ -113,6 +140,14 @@ const RegisterProfileScreen: React.FC = () => {
     return '请输入手机号或邮箱';
   }, [form.contactPhone, form.contactEmail]);
 
+  // Runs once on mount. `isOnboarding` is read in the catch below but
+  // deliberately left out of the dependency list: it derives from the
+  // route params, and the only writer of `?mode=onboarding` is the
+  // root-layout gate, which `router.replace`s BEFORE this screen mounts.
+  // There is no path that flips it while the fetch below is in flight,
+  // and keying the effect on it would re-run the whole draft-restore
+  // sequence — re-layering a stale draft over the form — on a param
+  // change this screen never actually sees.
   useEffect(() => {
     let isMounted = true;
     const loadProfile = async () => {
@@ -124,6 +159,24 @@ const RegisterProfileScreen: React.FC = () => {
       try {
         const rawDraft = await getSessionValue(PROFILE_FORM_DRAFT_KEY);
         draft = rawDraft ? (JSON.parse(rawDraft) as Partial<typeof form>) : null;
+        // The draft is JSON this build did not necessarily write — an
+        // older bundle, a hand-edited store — and it is layered ON TOP
+        // of the server value below, so an unrecognised ladder string
+        // here would win over a good stored one and then be posted
+        // back, where the API's z.enum rejects the whole baseline.
+        //
+        // The key is DROPPED rather than blanked, so the stored answer
+        // survives an unreadable draft. '' is left alone on purpose: it
+        // is what deselecting writes, and a patient who cleared the
+        // question and walked away meant to clear it.
+        if (draft && 'diagnosisLadder' in draft) {
+          const drafted = draft.diagnosisLadder;
+          if (drafted !== '' && !readStoredLadder(drafted)) {
+            const sanitized: Partial<typeof form> = { ...draft };
+            delete sanitized.diagnosisLadder;
+            draft = sanitized;
+          }
+        }
       } catch {
         draft = null;
       }
@@ -146,6 +199,7 @@ const RegisterProfileScreen: React.FC = () => {
             baseline?.foundation?.diagnosisYear !== null
               ? String(baseline.foundation.diagnosisYear)
               : '',
+          diagnosisLadder: readStoredLadder(diseaseBackground?.diagnosisLadder),
           diagnosisType: diseaseBackground?.diagnosisType ?? '',
           d4z4: diseaseBackground?.d4z4 != null ? String(diseaseBackground.d4z4) : '',
           onsetRegion: diseaseBackground?.onsetRegion ?? '',
@@ -281,17 +335,110 @@ const RegisterProfileScreen: React.FC = () => {
       }
     }
 
+    // The baseline is assembled here rather than at the call site so
+    // the Art. 29 question below can be asked about what we are
+    // actually about to store.
+    const baselinePayload: BaselineProfilePayload = {
+      ...(existingBaseline ?? {}),
+      foundation: {
+        ...(existingBaseline?.foundation ?? {}),
+        fullName: form.fullName.trim(),
+        birthYear: Number(form.dateOfBirth.slice(0, 4)),
+        diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
+        regionLabel:
+          buildRegionLabel({
+            regionProvince: form.regionProvince.trim(),
+            regionCity: form.regionCity.trim(),
+            regionDistrict: form.regionDistrict.trim(),
+          }) || null,
+      },
+      diseaseBackground: {
+        ...(existingBaseline?.diseaseBackground ?? {}),
+        // `null` when unanswered, and never a guess: there is no
+        // inverse of `diagnosedFshdFromLadder` on the server, because
+        // `true` could be any of the first three rungs and `false`
+        // either of the last two. A profile written by an older client
+        // simply has no ladder until its owner answers this question.
+        //
+        // Sending it also makes the server DERIVE `diagnosedFshd` from
+        // it (profile.schema.ts), overwriting whatever the spread above
+        // carried forward — which is what keeps the two halves from
+        // saying opposite things on disk.
+        diagnosisLadder: form.diagnosisLadder || null,
+        diagnosisType: form.diagnosisType.trim() || null,
+        // `|| null` like its four siblings, with no fallback to the
+        // stored value. The fallback meant an emptied box resolved to
+        // what was already there and the PUT wrote it straight back, so
+        // this was the one clinical field on the form a patient could
+        // not erase — and it is the one carrying a genetic measurement.
+        // A D4Z4 repeat count is prognostic: 3 versus 8 is a different
+        // conversation about severity, and it flows on into the
+        // TREAT-NMD export a clinician receives and into the context the
+        // AI answers the patient's own questions from.
+        //
+        // What clearing it does NOT do is override an uploaded report.
+        // `applyGeneticReportAutofill` re-derives this field at read time
+        // from a parsed genetic report, so where one is on file the
+        // report's reading comes back. That is the right precedence —
+        // the report is the evidence and the box is not — and the
+        // placeholder now says so rather than promising a correction it
+        // cannot make. Erasing works where the value has no report
+        // behind it: hand-typed, or from a report since removed.
+        d4z4: form.d4z4.trim() || null,
+        onsetRegion: form.onsetRegion.trim() || null,
+        familyHistory: form.familyHistory.trim() || null,
+      },
+      currentStatus: {
+        ...(existingBaseline?.currentStatus ?? {}),
+        independentlyAmbulatory: fromAmbulationChoice(form.independentlyAmbulatory),
+        assistiveDevices: mergeAssistiveDevices(form.assistiveDevices, form.customAssistiveDevices),
+      },
+    };
+    // Onboarding renders name/birth/gender only, so the baseline it
+    // builds is identity fields plus a row of nulls — and PUT
+    // /me/baseline is consent-gated because of the clinical fields that
+    // are not there. Asking a first-run user to accept the genetic-data
+    // document to store nothing is not a consent, it is a toll: the
+    // root layout's onboarding gate keeps sending a profile-less user
+    // back to this form, so 「暂不同意」 locked them out of the app
+    // entirely. Ask when there is something to ask about; the FSHD
+    // background section and the first report upload both still do.
+    const writesHealthData = baselineCarriesHealthData(baselinePayload);
+
+    // A SECOND predicate, because the two questions are not the same one.
+    //
+    // `writesHealthData` asks 「does this payload contain health data」,
+    // which is exactly right for the consent ask below and exactly wrong
+    // for 「is a write needed」: an all-null payload is what a DELETION of
+    // the stored clinical fields looks like. Gating the PUT on it meant a
+    // patient who cleared their LAST remaining answer — say a hand-typed
+    // 分型 they had just learned was never genetically confirmed — got
+    // 「档案已保存」 and a trip to the home screen while the server kept
+    // the old value, and the passport, the referral pack and the AI
+    // context all went on stating it. Reopening the form reloaded it, so
+    // the edit visibly reverted with no error ever shown.
+    //
+    // So: write whenever the payload carries health data OR the stored
+    // baseline did. The consent gate stays on the first predicate alone,
+    // which is still correct — a patient who once stored a clinical field
+    // already has the ledger row `requireSensitiveDataConsent` looks for,
+    // and erasing data is not a new act of processing to consent to.
+    const erasesStoredHealthData =
+      !writesHealthData && existingBaseline !== null && baselineCarriesHealthData(existingBaseline);
+
     // Ordered after the guardian gate on purpose: for a child, the
     // person answering both questions is the guardian, and asking them
     // to consent to sensitive-data processing before establishing that
     // they may consent at all is the wrong way round.
-    const sensitiveConsented = await ensureSensitiveDataConsent();
-    if (!sensitiveConsented) {
-      setFeedback({
-        type: 'error',
-        message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
-      });
-      return;
+    if (writesHealthData) {
+      const sensitiveConsented = await ensureSensitiveDataConsent();
+      if (!sensitiveConsented) {
+        setFeedback({
+          type: 'error',
+          message: '未记录敏感个人信息处理同意，档案没有保存。诊断与基因信息需要这项同意才能存储。',
+        });
+        return;
+      }
     }
 
     // Onboarding asks for the bare minimum (name/birth/gender) —
@@ -334,36 +481,15 @@ const RegisterProfileScreen: React.FC = () => {
         regionCity: form.regionCity.trim(),
         regionDistrict: form.regionDistrict.trim(),
       });
-      await updateMyBaseline({
-        ...(existingBaseline ?? {}),
-        foundation: {
-          ...(existingBaseline?.foundation ?? {}),
-          fullName: form.fullName.trim(),
-          birthYear: Number(form.dateOfBirth.slice(0, 4)),
-          diagnosisYear: form.diagnosisYear.trim() ? Number(form.diagnosisYear.trim()) : null,
-          regionLabel:
-            buildRegionLabel({
-              regionProvince: form.regionProvince.trim(),
-              regionCity: form.regionCity.trim(),
-              regionDistrict: form.regionDistrict.trim(),
-            }) || null,
-        },
-        diseaseBackground: {
-          ...(existingBaseline?.diseaseBackground ?? {}),
-          diagnosisType: form.diagnosisType.trim() || null,
-          d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
-          onsetRegion: form.onsetRegion.trim() || null,
-          familyHistory: form.familyHistory.trim() || null,
-        },
-        currentStatus: {
-          ...(existingBaseline?.currentStatus ?? {}),
-          independentlyAmbulatory: fromAmbulationChoice(form.independentlyAmbulatory),
-          assistiveDevices: mergeAssistiveDevices(
-            form.assistiveDevices,
-            form.customAssistiveDevices,
-          ),
-        },
-      });
+      // Skipped when the payload carries no health data: every field
+      // it would have written is either null or already stored by
+      // `upsertPatientProfile` above (fullName, dateOfBirth, region),
+      // and every reader of `baseline.foundation` falls back to those
+      // profile columns. Writing it anyway is what forced the consent
+      // ask onto first-run users.
+      if (writesHealthData || erasesStoredHealthData) {
+        await updateMyBaseline(baselinePayload);
+      }
       // The saved state is now canonical on the server — drop the
       // unsaved-edit draft so it doesn't shadow future loads.
       await setSessionValue(PROFILE_FORM_DRAFT_KEY, null);
@@ -485,6 +611,61 @@ const RegisterProfileScreen: React.FC = () => {
                   <Text style={styles.sectionTitle}>FSHD 背景</Text>
                   <Text style={styles.sectionSubtitle}>补充不会从报告自动识别出来的关键信息</Text>
                   <View style={styles.card}>
+                    {/* The first question in this section, because it
+                        frames every field under it. 「我被诊断为 FSHD」
+                        used to be one boolean, and it collapsed five
+                        situations that call for five different next
+                        moves — most damagingly 「医生说是，但我没有基因
+                        报告」 and 「测过，报告丢了」, both of which
+                        answered `true` and were then read downstream as
+                        a molecular diagnosis. The labels come from
+                        lib/api.ts, mirrored from the API's
+                        DIAGNOSIS_LADDER_LABELS; do not reword them
+                        here. */}
+                    <Text style={styles.inputLabel}>诊断进度</Text>
+                    <Text style={styles.fieldHint}>
+                      临床诊断和基因确诊不是一回事，这一项分开问。临床护照会据此说明下一步该做什么、
+                      以及该向医院要哪一项检查；不填也可以，其余内容照常保存。
+                    </Text>
+                    <View style={styles.ladderColumn}>
+                      {DIAGNOSIS_LADDER_STATES.map((state) => {
+                        const isActive = form.diagnosisLadder === state;
+                        return (
+                          <TouchableOpacity
+                            key={state}
+                            style={[
+                              styles.optionButton,
+                              styles.ladderOption,
+                              isActive && styles.optionButtonActive,
+                            ]}
+                            accessibilityRole="radio"
+                            accessibilityLabel={DIAGNOSIS_LADDER_LABELS[state]}
+                            accessibilityState={{ selected: isActive }}
+                            aria-checked={isActive}
+                            onPress={() =>
+                              setForm((prev) => ({
+                                ...prev,
+                                // Tapping the selected rung clears it,
+                                // same as 当前行走 above — the five
+                                // options have no 「不想说」 among them,
+                                // and answering is not compulsory.
+                                diagnosisLadder: prev.diagnosisLadder === state ? '' : state,
+                              }))
+                            }
+                          >
+                            {/* Deliberately not numberOfLines={1}: the
+                                longest label is 12 characters and the
+                                difference between 「已确诊，基因报告在
+                                手上」 and 「已确诊，但报告不在手上」 is
+                                the tail of the sentence. */}
+                            <Text style={[styles.optionText, isActive && styles.optionTextActive]}>
+                              {DIAGNOSIS_LADDER_LABELS[state]}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
                     <Text style={styles.inputLabel}>确诊年份</Text>
                     <TextInput
                       style={styles.input}
@@ -513,7 +694,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <Text style={styles.inputLabel}>D4Z4 重复数（如有基因报告）</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="例如：4/22（报告识别有误时可在此修正）"
+                      placeholder="例如：4/22（留空则以基因报告的识别结果为准）"
                       placeholderTextColor={COLOR.inkFaint}
                       value={form.d4z4}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, d4z4: text }))}

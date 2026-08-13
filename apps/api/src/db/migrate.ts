@@ -386,11 +386,11 @@ const SELF_MANAGED_TX = /^\s*(BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK)\s*;/im;
  *  explains at length why it does NOT follow 012's NOT VALID
  *  convention — and a `-- … COMMIT …` in prose must not trip the
  *  guard. */
-const stripSqlComments = (sql: string): string =>
+export const _stripSqlComments = (sql: string): string =>
   sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
 
 export const _hasSelfManagedTransaction = (sql: string): boolean =>
-  SELF_MANAGED_TX.test(stripSqlComments(sql));
+  SELF_MANAGED_TX.test(_stripSqlComments(sql));
 
 const listMigrationFiles = async () => {
   const migrationsDir = getMigrationsDir();

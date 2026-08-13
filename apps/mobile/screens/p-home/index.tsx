@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import Button from '../common/Button';
 import ListGroup, { Row } from '../common/ListGroup';
 import Icon from '../common/Icon';
@@ -115,9 +115,32 @@ const HomeScreen = () => {
     }
   };
 
-  useEffect(() => {
-    loadData().catch(() => undefined);
-  }, []);
+  // 今天 is a tab, so this screen mounts once and stays mounted for the
+  // whole session. With a mount-only effect the brief a patient came
+  // back to read was whatever the server said when the app opened: they
+  // record a followup in 记录数据, tap 今天, and 记录节奏 still says
+  //「距上次记录 3 天」under a 简报 assembled from the older data.
+  //
+  // There is no second way to fix that on the platform this ships to.
+  // react-native-web's RefreshControl is an empty shell — it
+  // destructures `onRefresh`/`refreshing` away and renders a plain
+  // View — so the pull gesture below does nothing on web, and inside
+  // WeChat's browser there is no address bar to reload from either.
+  // Refetching on focus is the only refresh a patient actually has.
+  //
+  // Same shape as p-report_management: `refresh` mode so returning to
+  // the tab shows the small spinner instead of the full-screen
+  // overlay, and no separate mount effect — expo-router fires this on
+  // the initial mount too, and keeping both caused a double concurrent
+  // fetch on every entry. The first render's full-screen loading still
+  // comes from `isLoading`'s initial `true`.
+  useFocusEffect(
+    // loadData is recreated per render; an empty dep list runs the
+    // refetch exactly once per focus gain.
+    useCallback(() => {
+      loadData(true).catch(() => undefined);
+    }, []),
+  );
 
   // One clock reading per load rather than per render: `todayLabel`
   // and the greeting derive from it, and recomputing on every render

@@ -31,6 +31,21 @@ assert_status 201
 PROFILE_ID="$(json_get_from "$RESPONSE_BODY" "id")"
 assert_nonempty "profile id" "$PROFILE_ID"
 
+# PIPL Art. 29. requireSensitiveDataConsent guards every write below
+# that stores health or genetic data — the baseline, all six follow-up
+# tables, submissions and document upload. Registration does not record
+# the acceptance (in the app the consent modal does), so without this
+# the very next request is a 403 `sensitive_consent_required` and this
+# script has not run past here since the gate moved out of the mobile
+# modal and onto the server (commit 683fe65).
+#
+# The version is not pinned server-side, so this records the version
+# the mobile bundle currently shows — see lib/legal-content.ts.
+log_step "Sensitive Data Consent"
+request_json POST /api/legal/acceptances \
+  '{"document":"sensitive_data_consent","version":"2026-08-02"}' "$TOKEN"
+assert_status_any 200 201
+
 log_step "Baseline"
 request_json PUT /api/profiles/me/baseline \
   '{
@@ -207,11 +222,54 @@ assert_eq "submission total" "$(json_get_from "$RESPONSE_BODY" "total")" "1"
 assert_eq "submission id" "$(json_get_from "$RESPONSE_BODY" "items.0.id")" "$SUBMISSION_ID"
 
 if should_run_ai_tests; then
-  log_step "AI"
-  request_json POST /api/ai/ask \
-    '{"question":"请简要解释 FSHD 的常见临床特点","userContext":{"language":"zh"}}' \
-    "$TOKEN"
+  # Streaming, not POST /api/ai/ask: no patient reaches the plain JSON
+  # route. lib/ai-streaming.ts opens /api/ai/ask/stream and every AI
+  # surface in the app goes through it, and that route carries its own
+  # consent gate, multi-turn history parsing, SSE backpressure,
+  # keepalives and an end-of-stream audit write — none of which the old
+  # check touched, so a regression in any of them passed.
+  log_step "AI (streaming)"
+
+  # Both flags, or getConsentStatus returns level 'none' and the route
+  # answers 403 code=consent_required before committing to SSE.
+  request_json PUT /api/profiles/me/consent '{"personal":true,"thirdParty":true}' "$TOKEN"
   assert_status 200
+
+  STREAM_PROGRESS_ID="latest-stream-$(date +%s)-$$"
+  # `history` exercises the shared history parser; --max-time keeps a
+  # stream that never terminates from hanging the run.
+  request -X POST "$API_BASE_URL/api/ai/ask/stream" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -H "Accept: text/event-stream" \
+    --no-buffer \
+    --max-time 180 \
+    -d "{\"question\":\"请简要解释 FSHD 的常见临床特点\",\"progressId\":\"$STREAM_PROGRESS_ID\",\"history\":[{\"role\":\"user\",\"content\":\"你好\"},{\"role\":\"assistant\",\"content\":\"你好，有什么可以帮你？\"}]}"
+  assert_status 200
+
+  # `event: <type>\ndata: <json>\n\n` — pull the data line after the
+  # first `event: done`. A stream that errored or was cut short never
+  # emits one.
+  DONE_FRAME="$(printf '%s\n' "$RESPONSE_BODY" | awk '/^event: done$/ { getline; sub(/^data: /, ""); print; exit }')"
+  assert_nonempty "SSE done frame" "$DONE_FRAME"
+  assert_eq "done frame type" "$(json_get_from "$DONE_FRAME" "type")" "done"
+  assert_nonempty "streamed answer" "$(json_get_from "$DONE_FRAME" "data.answer")"
+  assert_eq "progressId echoed" "$(json_get_from "$DONE_FRAME" "data.progressId")" "$STREAM_PROGRESS_ID"
+  assert_eq "history turns used" "$(json_get_from "$DONE_FRAME" "data.historyMessageCount")" "2"
+  # The done frame must stay narrowed to buildAskResponseData: the
+  # audit-internal prompt fields have leaked onto this channel before.
+  assert_eq "no raw prompt on the wire" "$(json_get_from "$DONE_FRAME" "data.finalPrompt" "absent")" "absent"
+  assert_eq "no prompt hash on the wire" "$(json_get_from "$DONE_FRAME" "data.redactedPromptHash" "absent")" "absent"
+
+  # The audit row lands after the last frame, so finding it also proves
+  # the stream reached its end. Substring match: other AI calls here
+  # write rows too and the ordering is not ours to depend on.
+  request_get /api/ai/audit?limit=20 "$TOKEN"
+  assert_status 200
+  case "$RESPONSE_BODY" in
+    *"$STREAM_PROGRESS_ID"*) ;;
+    *) fail "no audit row for progressId $STREAM_PROGRESS_ID: $RESPONSE_BODY" ;;
+  esac
 
   request_json POST "/api/profiles/me/documents/$GENETIC_DOC_ID/summary" '{}' "$TOKEN"
   assert_status 200

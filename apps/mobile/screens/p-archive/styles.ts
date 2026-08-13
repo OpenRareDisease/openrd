@@ -60,14 +60,10 @@ export default StyleSheet.create({
     paddingBottom: SPACE.sm,
     gap: SPACE.md,
   },
-  /** ScreenHeader carries the app-wide gutter and vertical rhythm of
-   *  its own; `header` above already supplies both, so the shared row
-   *  is flattened here rather than paying for the padding twice and
-   *  pushing the title off the app's left margin. */
-  screenHeaderRow: {
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-  },
+  /* `screenHeaderRow` (a padding reset applied to ScreenHeader while
+     it lived inside `header`) is gone: ScreenHeader now sits outside
+     the ScrollView on both screens that use this file, where it
+     carries its own gutter and rhythm and nothing double-pads it. */
   headerTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

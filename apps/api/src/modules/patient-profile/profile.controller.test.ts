@@ -1,7 +1,10 @@
-import type { Response } from 'express';
+import express, { type Response } from 'express';
+import jwt from 'jsonwebtoken';
 import { Readable } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import request from 'supertest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { EXPORT_FIXTURE_PROFILE } from './export/__fixtures__/profile.fixture.js';
 import { DOCUMENT_TYPES } from './profile.constants.js';
 import {
   PatientProfileController,
@@ -10,10 +13,42 @@ import {
   _SAFE_INLINE_MIME_ALLOWLIST,
 } from './profile.controller.js';
 import type { PatientProfileService } from './profile.service.js';
+import type { AppEnv } from '../../config/env.js';
+import type { AppLogger } from '../../config/logger.js';
+import { errorHandler } from '../../middleware/error-handler.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
 import type { StorageProvider } from '../../services/storage/storage-provider.js';
 import { AppError } from '../../utils/app-error.js';
+
+/**
+ * Module doubles for the last describe in this file — the end-to-end
+ * tests that put GET /me/data-export?format=… through Express, because
+ * the thing under test there is a query string, and a query string only
+ * exists once a real request has been parsed.
+ *
+ * Hoisted, so they apply to the whole file. That is safe: every other
+ * test here constructs the controller with its own hand-built service
+ * double, and profile.controller.ts imports `PatientProfileService` for
+ * its TYPE only, which TypeScript erases.
+ */
+const routeGetProfileByUserId = vi.fn();
+vi.mock('./profile.service.js', () => ({
+  PatientProfileService: class {
+    getProfileByUserId = (...args: unknown[]) => routeGetProfileByUserId(...args);
+    // Both are called once at router construction by the OCR sweep and
+    // the deletion purge. They must resolve, or the router logs an
+    // unhandled rejection over the assertions below.
+    sweepStuckProcessingDocuments = async () => 0;
+    purgeDueAccountDeletions = async () => 0;
+  },
+}));
+vi.mock('../../db/pool.js', () => ({
+  getPool: () => ({ query: async () => ({ rows: [], rowCount: 0 }) }),
+}));
+vi.mock('../../services/audit/retention.js', () => ({
+  startRetentionSweep: () => ({ unref: () => undefined }) as unknown as NodeJS.Timeout,
+}));
 
 const fakeRes = () =>
   ({
@@ -683,42 +718,381 @@ describe('PatientProfileController.generateDocumentSummary — consent + redacti
   });
 });
 
-describe('PatientProfileController.deleteDocument — service receives audit meta', () => {
-  it('forwards req.ip + user-agent so the service can write the audit row', async () => {
+/**
+ * DELETE /me/documents/:id — the row is the only pointer to the file.
+ *
+ * The handler used to delete the row first and then try the blob, and
+ * report a failed blob removal as `storageCleanupStatus: 'failed'` on
+ * an HTTP 200. Nothing could reach that file afterwards: the
+ * account-deletion purge enumerates a user's uploads by joining
+ * `patient_documents`, so a blob whose row is gone is invisible to the
+ * one process that exists to guarantee erasure (PIPL Art. 47) — while
+ * both delete screens told the patient「这份报告已移除」.
+ */
+describe('PatientProfileController.deleteDocument', () => {
+  const buildDeleteDeps = (
+    over: {
+      remove?: ReturnType<typeof vi.fn>;
+      getDocumentForUser?: ReturnType<typeof vi.fn>;
+      recordDocumentDeletionIntent?: ReturnType<typeof vi.fn>;
+      recordDocumentDeletionFailure?: ReturnType<typeof vi.fn>;
+    } = {},
+  ) => {
     const deleteDocumentForUser = vi.fn().mockResolvedValue({
       id: 'doc-1',
       documentType: 'mri',
       title: null,
       storageUri: 'local://uploads/x/scan.pdf',
     });
-    const service = { deleteDocumentForUser } as unknown as PatientProfileService;
+    const getDocumentForUser =
+      over.getDocumentForUser ??
+      vi.fn().mockResolvedValue({
+        id: 'doc-1',
+        document_type: 'mri',
+        storage_uri: 'local://uploads/x/scan.pdf',
+      });
+    const recordDocumentDeletionIntent =
+      over.recordDocumentDeletionIntent ?? vi.fn().mockResolvedValue(undefined);
+    const recordDocumentDeletionFailure =
+      over.recordDocumentDeletionFailure ?? vi.fn().mockResolvedValue(undefined);
+    const service = {
+      deleteDocumentForUser,
+      getDocumentForUser,
+      recordDocumentDeletionIntent,
+      recordDocumentDeletionFailure,
+    } as unknown as PatientProfileService;
     const storage = {
-      remove: vi.fn().mockResolvedValue(undefined),
+      remove: over.remove ?? vi.fn().mockResolvedValue(undefined),
       load: vi.fn(),
       save: vi.fn(),
       canHandle: vi.fn(),
     } as unknown as StorageProvider;
     const ocr = { parse: vi.fn() } as unknown as OcrProvider;
-    const controller = new PatientProfileController(service, storage, ocr);
-
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+    };
+    const controller = new PatientProfileController(
+      service,
+      storage,
+      ocr,
+      undefined,
+      logger as unknown as ConstructorParameters<typeof PatientProfileController>[4],
+    );
     const res = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
     } as unknown as Response;
-    await controller.deleteDocument(
-      {
-        user: { id: 'u-1' },
-        params: { id: 'doc-1' },
-        ip: '127.0.0.1',
-        headers: { 'user-agent': 'TestAgent/1.0' },
-      } as unknown as AuthenticatedRequest,
+    return {
+      controller,
+      service,
+      storage,
       res,
-    );
+      logger,
+      deleteDocumentForUser,
+      getDocumentForUser,
+      recordDocumentDeletionIntent,
+      recordDocumentDeletionFailure,
+    };
+  };
 
-    expect(deleteDocumentForUser).toHaveBeenCalledWith('u-1', 'doc-1', {
+  const req = {
+    user: { id: 'u-1' },
+    params: { id: 'doc-1' },
+    ip: '127.0.0.1',
+    headers: { 'user-agent': 'TestAgent/1.0' },
+  } as unknown as AuthenticatedRequest;
+
+  it('forwards req.ip + user-agent so the service can write the audit row', async () => {
+    const deps = buildDeleteDeps();
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.deleteDocumentForUser).toHaveBeenCalledWith('u-1', 'doc-1', {
       ip: '127.0.0.1',
       userAgent: 'TestAgent/1.0',
     });
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'removed',
+    });
+  });
+
+  it('records the intent, THEN removes the file, THEN the row', async () => {
+    const order: string[] = [];
+    const remove = vi.fn(async () => {
+      order.push('storage.remove');
+    });
+    const recordDocumentDeletionIntent = vi.fn(async () => {
+      order.push('recordDocumentDeletionIntent');
+    });
+    const deps = buildDeleteDeps({ remove, recordDocumentDeletionIntent });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      order.push('deleteDocumentForUser');
+      return { id: 'doc-1', documentType: 'mri', title: null, storageUri: 'local://x' };
+    });
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    // The blob cannot be inside deleteDocumentForUser's transaction,
+    // so the trail is committed before it instead: whichever of the
+    // last two steps fails, audit_logs already knows an erasure was
+    // attempted on this document by this user.
+    expect(order).toEqual([
+      'recordDocumentDeletionIntent',
+      'storage.remove',
+      'deleteDocumentForUser',
+    ]);
+    expect(recordDocumentDeletionIntent).toHaveBeenCalledWith({
+      userId: 'u-1',
+      documentId: 'doc-1',
+      documentType: 'mri',
+      ip: '127.0.0.1',
+      userAgent: 'TestAgent/1.0',
+    });
+  });
+
+  it('touches nothing until the intent row has actually landed', async () => {
+    // The ordering test above only proves the calls happened in that
+    // order; it passes just as happily if the intent write is raced
+    // against a timeout, or fired without `await`, because the mock
+    // resolves in the same microtask either way. This one holds the
+    // intent open. A `Promise.race([intent, timeout])` wrapper — the
+    // shape someone reaches for when the ledger insert is "too slow" —
+    // reintroduces the whole defect and is invisible to every other
+    // test in this file.
+    let landIntent!: () => void;
+    const intentLanded = new Promise<void>((resolve) => {
+      landIntent = resolve;
+    });
+    const recordDocumentDeletionIntent = vi.fn(() => intentLanded);
+    const deps = buildDeleteDeps({ recordDocumentDeletionIntent });
+
+    const handled = deps.controller.deleteDocument(req, deps.res);
+    // Real time, not a flushed microtask queue: a timeout wrapper
+    // resumes on a macrotask, so only real elapsed time can catch it.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(recordDocumentDeletionIntent).toHaveBeenCalledTimes(1);
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+
+    landIntent();
+    await handled;
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+  });
+
+  it('destroys nothing when the deletion attempt cannot be recorded', async () => {
+    const deps = buildDeleteDeps({
+      recordDocumentDeletionIntent: vi
+        .fn()
+        .mockRejectedValue(new Error('sorry, too many clients already')),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // A database too sick to record that an erasure was requested is
+    // too sick for us to start performing one.
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+  });
+
+  it('records the outcome and tells the truth when the file is gone but the row is not', async () => {
+    const deps = buildDeleteDeps();
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+      // NOT「删除失败」: the scan really is erased on this branch, and a
+      // patient who believes otherwise keeps it in her list and sends
+      // it to a clinician, where the download 404s.
+      message: '这份报告的文件已经删除，但记录没能移除，请再点一次删除完成清理。',
+    });
+
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith({
+      userId: 'u-1',
+      documentId: 'doc-1',
+      documentType: 'mri',
+      storageCleanupStatus: 'removed',
+      reason: 'row_delete_failed',
+      ip: '127.0.0.1',
+      userAgent: 'TestAgent/1.0',
+    });
+
+    // The thrown 503 is a NEW error, so errorHandler never sees the
+    // one Postgres gave us. On the one branch that has already
+    // destroyed a patient's scan, the reason has to survive somewhere
+    // — audit_logs carries only `reason: 'row_delete_failed'`.
+    expect(deps.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: 'doc-1',
+        storageCleanupStatus: 'removed',
+        error: 'canceling statement due to statement timeout',
+      }),
+      'The document file was removed but its row could not be deleted',
+    );
+  });
+
+  it('answers 200 rather than 「删除失败」 when a concurrent delete won the race', async () => {
+    // Ownership was already checked, so a DELETE that matches nothing
+    // means the row is gone — and this request removed the blob on the
+    // way here. Both halves of the erasure are done. It used to
+    // rethrow the 404, which both delete screens render as
+    //「删除失败：Document not found」 to a patient whose file this very
+    // request destroyed.
+    const deps = buildDeleteDeps();
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AppError('Document not found', 404),
+    );
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.storage.remove).toHaveBeenCalledWith('local://uploads/x/scan.pdf');
+    expect(deps.res.status).toHaveBeenCalledWith(200);
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'removed',
+    });
+    // The race still gets its own ledger row: the winner wrote
+    // `patient_document.deleted`, this one records which half it did.
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'removed', reason: 'row_already_gone' }),
+    );
+  });
+
+  it('answers 200 for a lost race even when the file was already absent', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new AppError('Document not found', 404),
+    );
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'missing',
+    });
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'missing', reason: 'row_already_gone' }),
+    );
+  });
+
+  it('keeps 「删除失败」 when the row delete fails on a file that was already absent', async () => {
+    const rowError = new Error('connection terminated unexpectedly');
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(rowError);
+
+    // Nothing was destroyed by THIS request, so the generic failure is
+    // the accurate message and the original error is what propagates.
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toBe(rowError);
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'missing', reason: 'row_delete_failed' }),
+    );
+  });
+
+  it('records the refusal when the file could not be removed', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('MinIO unreachable', 500)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // Repo precedent audits refusals (auth.login_failed,
+    // otp.verify_failed). Without this the 15-工作日 PIPL reply is
+    // answered from a ledger that never heard of the request.
+    expect(deps.recordDocumentDeletionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ storageCleanupStatus: 'kept', reason: 'storage_remove_failed' }),
+    );
+  });
+
+  it('lets the original error through when the outcome row cannot be written either', async () => {
+    const deps = buildDeleteDeps({
+      recordDocumentDeletionFailure: vi.fn().mockRejectedValue(new Error('audit insert failed')),
+    });
+    (deps.deleteDocumentForUser as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('canceling statement due to statement timeout'),
+    );
+
+    // The compensating row is best-effort: it runs on a database that
+    // just failed a query, and it must not replace the error the
+    // caller is owed. The intent row is the trail that does not depend
+    // on this landing.
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+      message: '这份报告的文件已经删除，但记录没能移除，请再点一次删除完成清理。',
+    });
+  });
+
+  it('keeps the row when the file cannot be removed, and says so instead of answering 200', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('MinIO unreachable', 500)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    // The row survives, which is what keeps the file reachable: by the
+    // download endpoint, by a retry of this one, and by the
+    // account-deletion purge.
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+    expect(deps.res.json).not.toHaveBeenCalled();
+  });
+
+  it('treats an unroutable storage uri as a failure too, not as a clean delete', async () => {
+    // RoutedStorageProvider throws 400 when no provider claims the URI.
+    // That is a misconfigured deployment, not an absent object; deleting
+    // the row would orphan a file that is still sitting there.
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('Unsupported storage uri', 400)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the row when the file was already gone', async () => {
+    const deps = buildDeleteDeps({
+      remove: vi.fn().mockRejectedValue(new AppError('File not found', 404)),
+    });
+
+    await deps.controller.deleteDocument(req, deps.res);
+
+    expect(deps.deleteDocumentForUser).toHaveBeenCalled();
+    expect(deps.res.json).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      deleted: true,
+      storageCleanupStatus: 'missing',
+    });
+  });
+
+  it("404s on someone else's document without touching storage", async () => {
+    const deps = buildDeleteDeps({
+      getDocumentForUser: vi.fn().mockRejectedValue(new AppError('Document not found', 404)),
+    });
+
+    await expect(deps.controller.deleteDocument(req, deps.res)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(deps.storage.remove).not.toHaveBeenCalled();
+    expect(deps.deleteDocumentForUser).not.toHaveBeenCalled();
   });
 });
 
@@ -1055,5 +1429,162 @@ describe('PatientProfileController.patchDocumentOcr — hand-correction whitelis
       reportName: '基因检测报告',
     });
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+/**
+ * GET /me/data-export?format=… through Express.
+ *
+ * These go through the route rather than calling the controller with a
+ * hand-made `req`, and through the real `buildPortableExport` rather
+ * than a spy, because the whole subject is the one-line derivation
+ * `includeLocalOnly: req.query?.includeLocalOnly === 'true'`. Every
+ * other test of that flag (export/treat-nmd.test.ts and the goldens)
+ * hands the builder a literal, so nothing connected a query string to
+ * the gate: loosening the comparison to `!== undefined` — the natural
+ * 「also accept 1/on」 edit — would have put the patient's name, their
+ * physician's name and their account of their RELATIVES' health into
+ * every export, with the whole suite green.
+ */
+const logger = {
+  fatal: vi.fn(),
+  error: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+  trace: vi.fn(),
+  child: () => logger,
+} as unknown as AppLogger;
+
+const EXPORT_JWT_SECRET = 'data-export-test-secret-value';
+
+const exportEnv = {
+  JWT_SECRET: EXPORT_JWT_SECRET,
+  // Keeps the router off the Python OCR path and off MinIO. Neither is
+  // reachable from this endpoint; both are constructed eagerly.
+  OCR_PROVIDER: 'mock',
+  STORAGE_PROVIDER: 'local',
+} as unknown as AppEnv;
+
+const { createPatientProfileRouter } = await import('./profile.routes.js');
+
+const makeExportApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/patients', createPatientProfileRouter({ env: exportEnv, logger }));
+  app.use(errorHandler({ logger }));
+  return app;
+};
+
+/** A fresh user id per test: the export cooldown is keyed by user and
+ *  lives on the controller instance, so a shared id would leak a 429
+ *  between tests and make failures depend on execution order. */
+let exportUserSeq = 0;
+const nextExportUser = () => `u-export-${(exportUserSeq += 1)}`;
+
+const exportTokenFor = (userId: string) =>
+  jwt.sign({ sub: userId, role: 'patient' }, EXPORT_JWT_SECRET);
+
+const getExport = (query: string, userId = nextExportUser()) =>
+  request(makeExportApp())
+    .get(`/api/patients/me/data-export${query}`)
+    .set('Authorization', `Bearer ${exportTokenFor(userId)}`);
+
+/** The two strings that must not leave with the block closed: the
+ *  physician is a third person's name, and the statement is the
+ *  patient's account of RELATIVES who consented to nothing here. Read
+ *  off the fixture rather than retyped, so a fixture edit cannot leave
+ *  these assertions passing against text nobody exports any more. */
+const PHYSICIAN_NAME = EXPORT_FIXTURE_PROFILE.primaryPhysician ?? '';
+const FAMILY_HISTORY_STATEMENT = (
+  EXPORT_FIXTURE_PROFILE.baseline as { diseaseBackground?: { familyHistory?: string } } | null
+)?.diseaseBackground?.familyHistory;
+
+describe('GET /me/data-export?format= — the local-only gate, over HTTP', () => {
+  beforeEach(() => {
+    routeGetProfileByUserId.mockReset();
+    routeGetProfileByUserId.mockResolvedValue(EXPORT_FIXTURE_PROFILE);
+  });
+
+  it('has the two identifiers under test, so a silent fixture edit cannot pass this file', () => {
+    expect(PHYSICIAN_NAME).toBeTruthy();
+    expect(FAMILY_HISTORY_STATEMENT).toBeTruthy();
+  });
+
+  it('400s an unknown format, naming the ones that exist, before reading the profile', async () => {
+    const res = await getExport('?format=treat_nmd');
+    expect(res.status).toBe(400);
+    // The message is the whole answer the caller gets: the AppError
+    // also carries `details.supportedFormats`, but that key is not on
+    // the error handler's client-safe allowlist, so the handler drops
+    // `details` entirely. Asserting the array here would pin a field
+    // that never reaches a client.
+    expect(res.body.error).toContain('treat-nmd、phenopacket、fhir-r4');
+    expect(res.body.details).toBeUndefined();
+    expect(routeGetProfileByUserId).not.toHaveBeenCalled();
+  });
+
+  it('404s inside the format branch instead of emitting a document about nobody', async () => {
+    routeGetProfileByUserId.mockResolvedValue(null);
+    const res = await getExport('?format=treat-nmd');
+    expect(res.status).toBe(404);
+    expect(res.body.format).toBeUndefined();
+  });
+
+  it('withholds the local-only block when the query string does not ask for it', async () => {
+    const res = await getExport('?format=treat-nmd');
+
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly).toBeNull();
+    // Not merely absent — the receiver is told it was held back, which
+    // is what lets 「按规则未发送」 be told apart from 「没有家族史」.
+    const omitted = res.body.omissions.map((o: { field: string }) => o.field);
+    expect(omitted).toContain('localOnly');
+    expect(omitted).toContain('sections.familyHistory');
+    // Not anywhere in the bytes, whatever shape the document takes.
+    expect(JSON.stringify(res.body)).not.toContain(FAMILY_HISTORY_STATEMENT);
+    expect(JSON.stringify(res.body)).not.toContain(PHYSICIAN_NAME);
+  });
+
+  it('emits it only for the literal string 「true」', async () => {
+    const res = await getExport('?format=treat-nmd&includeLocalOnly=true');
+
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly?.key).toBe('localOnly');
+    expect(JSON.stringify(res.body)).toContain(PHYSICIAN_NAME);
+    expect(JSON.stringify(res.body)).toContain(FAMILY_HISTORY_STATEMENT);
+  });
+
+  it.each(['1', 'on', 'yes', 'TRUE', '0', 'false', ''])(
+    'keeps the block closed for includeLocalOnly=%s',
+    async (value) => {
+      // A gate over somebody else's data fails closed. `=0` is the one
+      // that matters most: a loosening to `!== undefined` reads an
+      // explicit refusal as consent.
+      const res = await getExport(`?format=treat-nmd&includeLocalOnly=${value}`);
+      expect(res.status).toBe(200);
+      expect(res.body.document.localOnly).toBeNull();
+      expect(JSON.stringify(res.body)).not.toContain(FAMILY_HISTORY_STATEMENT);
+    },
+  );
+
+  it('keeps the block closed when the parameter arrives twice', async () => {
+    // Express parses a repeated key as an array, which is not the
+    // string 'true'. Ambiguous input is not consent.
+    const res = await getExport('?format=treat-nmd&includeLocalOnly=true&includeLocalOnly=true');
+    expect(res.status).toBe(200);
+    expect(res.body.document.localOnly).toBeNull();
+  });
+
+  it('does not spend the PIPL export cooldown, in either direction', async () => {
+    // The branch's own comment says so: a portable document costs one
+    // getProfileByUserId, and sharing the 60s budget would mean the
+    // cheap call paying for the expensive one.
+    const app = makeExportApp();
+    const token = `Bearer ${exportTokenFor(nextExportUser())}`;
+    const url = '/api/patients/me/data-export?format=fhir-r4';
+
+    expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
+    expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
   });
 });

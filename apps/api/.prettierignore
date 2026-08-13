@@ -1,0 +1,36 @@
+# Same list as the repo-root .prettierignore, and it has to be stated twice
+# because the two prettier invocations this repo makes have different working
+# directories and Prettier 3 resolves the ignore file against the CWD only --
+# it does not walk up to the repository root.
+#
+#   pre-commit  .husky/pre-commit -> npx lint-staged, CWD = repo root
+#               -> reads /.prettierignore
+#   CI + local  npm run format / format:write, CWD = apps/api (npm runs a
+#               workspace script inside the workspace, and CI's api job also
+#               sets defaults.run.working-directory: apps/api)
+#               -> reads apps/api/.prettierignore, this file
+#
+# Config resolution is the opposite, which is what made this surprising:
+# `prettier --find-config-path src/index.ts` from apps/api answers
+# ../../prettier.config.cjs, because config lookup walks up from each file
+# while ignore lookup does not walk up from the CWD.
+#
+# With only the root file, `cd apps/api && npm run format` listed both
+# golden.treat-nmd*.json and exited 1, so the Format step in .github/workflows/
+# ci.yml was red on merge. `npm run format:write` is the worse half of the same
+# hole: it rewrites the fixtures in place and turns golden.test.ts red.
+#
+# Why the fixtures must not be formatted at all: they are generator OUTPUT. The
+# test renders with JSON.stringify(x, null, 2) and compares byte-for-byte, and
+# Prettier's printWidth:100 collapses a short array onto one line -- a shape
+# JSON.stringify can never emit. Measured: --write over the four fixtures
+# rewrites golden.treat-nmd.json and golden.treat-nmd.local-only.json and takes
+# golden.test.ts from 4 passed to 2 failed | 2 passed.
+#
+# The whole directory, not the two files that happen to fail today:
+# golden.phenopacket.json and golden.fhir-r4.json pass only because neither
+# currently holds an array short enough to collapse.
+#
+# format-ignore.test.ts drives prettier from both working directories and fails
+# if either file stops covering the fixtures, so the duplication cannot drift.
+src/modules/patient-profile/export/__fixtures__/golden.*.json

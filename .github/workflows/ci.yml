@@ -203,6 +203,31 @@ jobs:
   report-manager:
     name: Report manager (pytest)
     runs-on: ubuntu-latest
+
+    # scripts/kb_parsers/test_pgvector_reusable_embeddings.py drives the real
+    # PgVectorBackend against this container. It is the only thing anywhere
+    # that executes the embedding cache's SQL — every other reuse test uses a
+    # FakeBackend that re-implements the `embed_model` and `embedding IS NOT
+    # NULL` guards in Python, so without a database both guards could be
+    # deleted from apps/api/kb_backends/pgvector.py and this job stayed green.
+    # The image is pgvector's rather than plain postgres because the tests
+    # need the `vector` type; the suite creates and drops its own scratch
+    # table and never applies a migration.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kb_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -225,11 +250,37 @@ jobs:
       # kind of hollow gate this workflow exists to avoid — so the binaries are
       # installed. chi-sim is required as well as eng: the reports being parsed
       # are Chinese hospital documents.
-      - name: Install OCR system packages
+      # libreoffice-writer is the same argument one document type over.
+      # scripts/kb_parsers/docx_parser.py bridges legacy .doc files —
+      # 《中国康复辅助器具目录（2023年版）》 is one, 2,303,041 bytes of the
+      # national assistive-device catalogue wearing a .docx extension — by
+      # shelling out to `soffice --headless --convert-to docx`. The ubuntu
+      # runner image ships no LibreOffice, so that branch had never once
+      # executed: the three tests that drive it skipped on every run while
+      # the parser's own docstring claimed 「CI and production are Linux and
+      # land on LibreOffice」. Installing it means those tests can no longer
+      # skip — `_no_converter` now fails instead — so deleting this package
+      # turns the job red rather than quietly smaller. `soffice --version`
+      # is here so a package rename fails on this step instead of inside
+      # pytest.
+      #
+      # Said carefully, because the rest of this workflow's comments state
+      # things that were measured and this one cannot be: NOBODY HAS SEEN
+      # THIS PATH RUN. It is unreachable on the macOS machine this branch
+      # was written on (textutil wins the converter search) and there is no
+      # Docker daemon there to stand a runner up in. The first CI run on
+      # this branch is the first execution of the LibreOffice branch
+      # anywhere, and `test_legacy_doc_conversion_failure_is_surfaced` is
+      # the one to watch: it needs soffice to REJECT a 104-byte OLE2-magic
+      # stub rather than salvage it through a fallback filter, and that is
+      # a guess about LibreOffice's behaviour, not an observation. A red
+      # job there is the gate working, not the gate broken.
+      - name: Install OCR and document-conversion system packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            tesseract-ocr tesseract-ocr-chi-sim poppler-utils
+            tesseract-ocr tesseract-ocr-chi-sim poppler-utils libreoffice-writer
+          soffice --version
 
       - name: Install Python dependencies
         run: |
@@ -238,7 +289,41 @@ jobs:
 
       # Run from the repo root over both trees at once. apps/report-manager
       # needs its own conftest.py on sys.path for `app.services...` to resolve
-      # from here; scripts/kb_parsers bootstraps apps/api itself. 181
-      # assertions, ~6s.
+      # from here; scripts/kb_parsers bootstraps apps/api itself. 327 tests
+      # across 19 files (`pytest apps/report-manager/tests scripts/kb_parsers
+      # --collect-only -q`, and the same piped through
+      # `grep '::' | cut -d: -f1 | sort -u | wc -l` for the file count).
+      # BOTH numbers live here and nowhere else — docs/release-checklist.md
+      # points at this comment rather than restating either, because two
+      # hand-maintained copies drift apart. Nothing tests them; update them
+      # here when you add a test file.
+      #
+      # Wall clock is dominated by headless LibreOffice in
+      # scripts/kb_parsers/test_docx_parser.py: five real converter
+      # processes, each paying its own ~20 s first-run profile build,
+      # because both call sites pass their own `-env:UserInstallation` temp
+      # profile (docx_parser.py says why: concurrent soffice processes
+      # sharing a profile deadlock). If this job's runtime is what you are
+      # trying to cut, that is where it is.
+      #
+      # DATABASE_URL points at the service container above. GitHub sets
+      # CI=true for every job, and the pgvector cache tests turn that into
+      # "an unreachable database is a failure, not a skip" — so a runner that
+      # loses the container cannot report a green run in which the only
+      # coverage of that SQL silently vanished.
+      #
+      # That container is EMPTY of `kb_chunks` and stays that way: the 547 MB
+      # medical corpus is gitignored and no job ingests it. So the corpus
+      # census in test_kb_corpus_census.py splits in two here — the half that
+      # reads each ENUMERATED census claim back out of the source runs, the
+      # half that compares it against the corpus skips. Enumerated is the
+      # load-bearing word: a census number written later in a shape nobody
+      # wrote a pattern for is invisible everywhere, CI included, outside
+      # the one region the module docstring names. The split is the whole
+      # point of the file: while both halves sat behind the same fixture,
+      # deleting a census claim from knowledge.py produced「9 skipped」and a
+      # green job.
       - name: Test
         run: pytest apps/report-manager/tests scripts/kb_parsers
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kb_ci

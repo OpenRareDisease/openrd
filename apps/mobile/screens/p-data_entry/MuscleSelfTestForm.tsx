@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Button from '../common/Button';
 
 import { addPatientMeasurement } from '../../lib/api';
 import { MIN_TOUCH_TARGET } from '../../lib/a11y';
-import { COLOR, INTERACTION, RADIUS } from '../../lib/design';
+import { COLOR, RADIUS } from '../../lib/design';
+// Same press response as the rest of 记录数据 — see lib/press-scale.tsx.
+import PressableScale from '../../lib/press-scale';
 
 /**
  * Migrated with the rest of p-data_entry: this form renders *inside*
@@ -96,9 +98,8 @@ const MuscleSelfTestForm = () => {
                 text — about 38pt. minHeight brings it to the target and
                 the role/state make it announce as the expandable
                 selector it is. */}
-            <TouchableOpacity
+            <PressableScale
               style={styles.actionSelect}
-              activeOpacity={INTERACTION.pressOpacity}
               accessibilityRole="button"
               accessibilityLabel={saved ? `${action.label}，已记 ${saved}` : action.label}
               accessibilityState={{ expanded: isActive }}
@@ -110,7 +111,7 @@ const MuscleSelfTestForm = () => {
                 {saved ? <Text style={styles.savedBadge}>已记 {saved}</Text> : null}
               </View>
               <Text style={styles.actionHowTo}>{action.howTo}</Text>
-            </TouchableOpacity>
+            </PressableScale>
 
             {isActive ? (
               <View style={styles.scorePanel}>
@@ -123,10 +124,9 @@ const MuscleSelfTestForm = () => {
                         ['bilateral', '双侧'],
                       ] as const
                     ).map(([value, label]) => (
-                      <TouchableOpacity
+                      <PressableScale
                         key={value}
                         style={[styles.sideButton, side === value && styles.sideButtonActive]}
-                        activeOpacity={INTERACTION.pressOpacity}
                         accessibilityRole="radio"
                         accessibilityLabel={label}
                         accessibilityState={{ selected: side === value }}
@@ -141,16 +141,15 @@ const MuscleSelfTestForm = () => {
                         >
                           {label}
                         </Text>
-                      </TouchableOpacity>
+                      </PressableScale>
                     ))}
                   </View>
                 ) : null}
 
                 {STRENGTH_LEVELS.map((level) => (
-                  <TouchableOpacity
+                  <PressableScale
                     key={level.score}
                     style={[styles.scoreButton, score === level.score && styles.scoreButtonActive]}
-                    activeOpacity={INTERACTION.pressOpacity}
                     accessibilityRole="radio"
                     accessibilityLabel={`${level.score} 分 · ${level.label}`}
                     accessibilityState={{ selected: score === level.score }}
@@ -167,7 +166,7 @@ const MuscleSelfTestForm = () => {
                     >
                       {level.label}
                     </Text>
-                  </TouchableOpacity>
+                  </PressableScale>
                 ))}
 
                 {errorMessage ? (

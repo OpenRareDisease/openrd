@@ -25,12 +25,35 @@ from PIL import Image, ImageDraw, ImageFont
 from app.services import ocr_service
 
 
+#: .github/workflows/ci.yml installs tesseract, chi-sim and poppler for
+#: these classes specifically. Where the workflow promises a binary, its
+#: absence has to be a failure rather than a skip — a skip is
+#: indistinguishable from a pass in the job summary, and these classes are
+#: the only coverage the production (Tesseract-only) OCR path has. Same
+#: shape, and the same reason, as _CONVERTER_REQUIRED in
+#: scripts/kb_parsers/test_docx_parser.py.
+_BINARIES_REQUIRED = bool(os.environ.get("CI") or os.environ.get("OCR_BIN_TESTS_REQUIRED"))
+
+
 def _tesseract_available() -> bool:
+    if _BINARIES_REQUIRED:
+        # Do not skip: run. ocr_service catches every OCR exception and
+        # returns "" (see _log_ocr_message / `except Exception` in
+        # app/services/ocr_service.py), so a runner with no tesseract
+        # fails these as `'FSHD' not found in ''` rather than as a
+        # missing-binary error — measured with `CI=true PATH=/nonexistent
+        # pytest apps/report-manager/tests/test_ocr_service.py`: 3 failed
+        # where the same run without CI reports 3 skipped. Blunt, but a
+        # red job that names this file beats a green one three tests
+        # short.
+        return True
     return shutil.which("tesseract") is not None
 
 
 def _poppler_available() -> bool:
     # pdf2image shells out to poppler's pdftoppm / pdfinfo.
+    if _BINARIES_REQUIRED:
+        return True
     return shutil.which("pdftoppm") is not None
 
 

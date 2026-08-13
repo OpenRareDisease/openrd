@@ -484,5 +484,163 @@ class FshdReportServiceCoverageTest(unittest.TestCase):
         self.assertEqual(panel["stool_occult_blood"], "阴性(-)")
 
 
+class GeneticMethodAndRangeTest(unittest.TestCase):
+    """Which test was run, and what it actually said.
+
+    The single most valuable thing this product can tell a Chinese FSHD
+    patient is that a negative whole-exome report is not a negative
+    answer — it is the wrong test. That claim only exists downstream if
+    something up here records which test it was, and records it without
+    ever guessing: telling somebody their real Southern blot was
+    inapplicable would send them to pay for a second one.
+    """
+
+    @staticmethod
+    def _field(result, name):
+        return next(
+            (f for f in result["fshd"]["structured_fields"] if f["field_name"] == name),
+            None,
+        )
+
+    def test_southern_blot_is_recognised(self):
+        text = "\n".join([
+            "基因检测报告",
+            "检测方法: EcoR I + Bln I 双酶切,脉冲场凝胶电泳,p13E-11探针Southern blotting",
+            "检测结果",
+            "D4Z4重复单元数: 4",
+            "单倍型: 4qA",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "SB.pdf")
+        self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"],
+            "southern_blot",
+        )
+
+    def test_optical_genome_mapping_is_recognised(self):
+        text = "\n".join([
+            "基因检测报告",
+            "本项目对受检者样本进行光学基因组图谱(Optical Genome Mapping)分析",
+            "检测结果",
+            "D4Z4重复单元数: 3",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "OGM.pdf")
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"],
+            "optical_genome_mapping",
+        )
+
+    def test_whole_exome_is_recognised_as_short_read(self):
+        """The report that this whole feature exists for."""
+        text = "\n".join([
+            "基因检测报告",
+            "检测项目: 全外显子组测序(WES)",
+            "检测结果",
+            "未检出与受检者临床表型相关的明确致病变异",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "WES.pdf")
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"],
+            "short_read_sequencing",
+        )
+
+    def test_limitations_section_does_not_relabel_a_wes_report(self):
+        """A WES report's caveats tell you to go do a Southern blot.
+
+        Search the whole page and every negative exome report looks like
+        a Southern blot — which is precisely backwards, and would hide
+        the one sentence this patient needs. The detector reads the body
+        with the boilerplate tail already removed.
+        """
+        text = "\n".join([
+            "基因检测报告",
+            "检测项目: 全外显子组测序",
+            "检测结果",
+            "未检出与受检者临床表型相关的明确致病变异",
+            "附录信息 -检测局限",
+            "1. 本方法无法检测D4Z4重复序列长度。如临床怀疑FSHD,",
+            "建议行脉冲场凝胶电泳联合p13E-11探针的Southern blotting检测。",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "WES.pdf")
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"],
+            "short_read_sequencing",
+        )
+
+    def test_two_platforms_in_the_body_are_ambiguous_not_a_guess(self):
+        text = "\n".join([
+            "基因检测报告",
+            "检测方法: 全外显子组测序,以及Southern blotting分析",
+            "检测结果",
+            "详见下文",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Both.pdf")
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"],
+            "ambiguous",
+        )
+
+    def test_no_method_named_stays_unset(self):
+        text = "\n".join([
+            "基因检测报告",
+            "检测结果",
+            "D4Z4重复单元数: 3",
+            "单倍型: 4qA",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Plain.pdf")
+        self.assertIsNone(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["genetic_test_method"]
+        )
+        self.assertIsNone(self._field(result, "genetic_test_method"))
+
+    def test_d4z4_range_is_kept_as_a_range(self):
+        """「1-10」 used to be reported as 「1」.
+
+        `D4Z4[^\\d]{0,16}(\\d+)` takes the first number it sees, so a
+        lab's stated interval became a confident single figure — and one
+        inside the 1–4 window that gates the passport's ophthalmology
+        recommendation.
+        """
+        text = "\n".join([
+            "基因检测报告",
+            "检测结果",
+            "D4Z4重复单元数: 1-10",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Range.pdf")
+        field = self._field(result, "d4z4_repeat_pathogenic")
+        self.assertIsNotNone(field)
+        self.assertEqual(field["field_value"], "1-10")
+        # The typed count must be empty: only the raw text is honest.
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+        self.assertIsNone(result["d4z4_repeats"])
+
+    def test_a_plain_count_still_normalizes_to_an_int(self):
+        text = "\n".join([
+            "基因检测报告",
+            "检测结果",
+            "D4Z4重复单元数: 3",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Single.pdf")
+        field = self._field(result, "d4z4_repeat_pathogenic")
+        self.assertEqual(field["field_value"], "3")
+        self.assertEqual(field["normalized_value"], 3)
+        self.assertEqual(
+            result["fshd"]["normalized_summary"]["genetic_summary"]["d4z4_repeat_pathogenic"], 3
+        )
+        self.assertEqual(result["d4z4_repeats"], 3)
+
+    def test_a_slash_pair_is_still_a_pair_not_a_range(self):
+        text = "\n".join([
+            "基因检测报告",
+            "检测结果",
+            "D4Z4重复单元数: 3/11",
+        ])
+        result = analyze_fshd_report(text, "genetic_report", "Pair.pdf")
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+        self.assertEqual(summary["d4z4_repeat_other"], 11)
+
+
 if __name__ == "__main__":
     unittest.main()

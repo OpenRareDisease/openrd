@@ -173,6 +173,14 @@ export const buildClinicalPassportPdfHtml = (
           </div>
           <p>${escapeHtml(item.summary)}</p>
           <p class="monitor-meta">最近日期：${safeDate(item.latestDate)}</p>
+          ${
+            // The cardiac note is the one that has to survive printing:
+            // this page gets handed to clinicians who mostly meet FSHD
+            // through other dystrophies, where an annual echo is
+            // correct. An empty 心脏检查 box with no explanation reads
+            // as an overdue test to exactly that reader.
+            item.note ? `<p class="monitor-note">${escapeHtml(item.note)}</p>` : ''
+          }
         </article>
       `,
     )
@@ -370,8 +378,46 @@ export const buildClinicalPassportPdfHtml = (
         background: #f0e7dc;
         color: #7d5c41;
       }
-      .metric-summary,
-      .metric-meta,
+      .unconfirmed-banner {
+        /* Printed and handed to a neurologist who may see three FSHD
+           patients in a career. A patient's own guess must not share a
+           visual register with a genetic result, and grey small print
+           is exactly how it would. Border and weight survive a
+           photocopy and a 一块钱 print shop.
+
+           This selector used to also carry 「.metric-summary」 and
+           「.metric-meta」 — the body and footer of every summary card on
+           the hero. So all four cards wore the amber "this is not
+           evidence" frame, on a page whose one genuinely unconfirmed
+           block is this banner. Amber that appears five times says
+           nothing the fifth time, and the one place it had to be read
+           was the fifth. It is the only amber on the page again. */
+        margin: 6px 0 10px;
+        padding: 7px 10px;
+        border: 1.5px solid #8a5a00;
+        background: #fff6e5;
+        color: #6b4400;
+        font-weight: 600;
+        font-size: 11.5px;
+        line-height: 1.5;
+        border-radius: 4px;
+      }
+      /* Ordinary card text, which is what these two always were. They
+         are not matched by the 「.section-copy, …」 block below, so they
+         carry their own size and rhythm rather than inheriting body
+         defaults from the browser. */
+      .metric-summary {
+        margin: 8px 0 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: #4c5b68;
+      }
+      .metric-meta {
+        margin: 4px 0 0;
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+
       .section-copy,
       .monitor-card p,
       .timeline-desc,
@@ -383,6 +429,18 @@ export const buildClinicalPassportPdfHtml = (
         line-height: 1.7;
         color: #4c5b68;
       }
+      /* Sits under the reading of a test that may be absent, and has to
+         explain why it is absent. Ruled off and set apart so it does not
+         get skimmed as more of the same measurement text. */
+      .monitor-card p.monitor-note {
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid #d8dee5;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: #3d4a56;
+      }
+
       .metric-meta,
       .timeline-date {
         color: #7d8891;
@@ -462,6 +520,15 @@ export const buildClinicalPassportPdfHtml = (
           <div>
             <h2>诊断证据</h2>
             <p class="section-copy">集中查看基因结果、诊断日期和证据摘要。</p>
+            ${
+              summary.diagnosis.confirmation === 'genetic'
+                ? ''
+                : `<p class="unconfirmed-banner">${
+                    summary.diagnosis.confirmation === 'self_reported'
+                      ? '⚠ 未经基因确诊：本节内容由患者本人填写，尚无基因检测报告佐证，请勿据此确认诊断。'
+                      : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
+                  }</p>`
+            }
           </div>
           <span class="freshness">${escapeHtml(summary.diagnosis.freshness.label)}</span>
         </div>

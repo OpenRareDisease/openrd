@@ -1,561 +1,452 @@
-import { StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
+import { COLOR, HAIRLINE, RADIUS, SPACE, TYPE } from '../../lib/design';
+import { MIN_TOUCH_TARGET } from '../../lib/a11y';
 
+/**
+ * 康复：辅具与运动.
+ *
+ * What this replaces
+ * ------------------
+ * The previous stylesheet here described a video-sharing screen — a
+ * player, a poster frame, an upload modal, a progress bar, a success
+ * toast — for a screen whose index.tsx has always rendered
+ * `UnavailableScreen`. None of it was ever on a patient's phone. It is
+ * replaced rather than extended because the page this screen now is (two
+ * reading-and-answering flows built out of the corpus) shares no element
+ * with it, and the old palette (#0F0F23 on rgba white) predates
+ * lib/design.ts entirely.
+ *
+ * Everything below is the same vocabulary as 残疾评定准备 and 我的随访
+ * 计划: hairlines, one accented block, sources under every claim.
+ */
 export default StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F23',
+    backgroundColor: COLOR.paper,
   },
-
-  // 顶部导航栏
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+  safeArea: {
+    flex: 1,
   },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  uploadButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // 滚动视图
   scrollView: {
     flex: 1,
+    paddingHorizontal: SPACE.gutter,
+  },
+  scrollContent: {
+    paddingBottom: 48,
   },
 
-  // 视频播放器区域
-  videoPlayerSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
+  segmented: {
+    marginBottom: SPACE.lg,
   },
-  videoPlayerContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+
+  intro: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+    marginBottom: SPACE.md,
   },
-  videoPlayer: {
-    position: 'relative',
+
+  /* The provenance strip. Same placement decision as 残疾评定: the
+     failure mode of this page is a stale or unsourced claim, so the
+     date sits above the content. */
+  provenance: {
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+    paddingLeft: SPACE.md,
+    marginBottom: SPACE.lg,
   },
-  videoPoster: {
-    width: '100%',
-    height: 192,
-    resizeMode: 'cover',
-  },
-  videoOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playIcon: {
-    marginLeft: 4,
-  },
-  videoInfo: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-  },
-  videoTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  provenanceDate: {
+    ...TYPE.label,
+    color: COLOR.inkMuted,
     marginBottom: 4,
   },
-  videoMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  videoAuthor: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.9)',
-  },
-  videoDuration: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.9)',
+  provenanceNote: {
+    ...TYPE.caption,
+    marginBottom: SPACE.sm,
   },
 
-  // 视频控制栏
-  videoControls: {
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  videoActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  videoActionButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  actionButtonText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  fullscreenButton: {
-    padding: 4,
-  },
-
-  // 进度条
-  progressContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  timeText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    width: 40,
-  },
-  progressBarContainer: {
-    flex: 1,
-    height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 2,
-  },
-  progressBar: {
-    height: 4,
-    backgroundColor: '#969FFF',
-    borderRadius: 2,
-  },
-
-  // 动作捕捉纠错提示
-  actionCorrectionSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  correctionCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  correctionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  correctionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  correctionTextContainer: {
-    flex: 1,
-  },
-  correctionTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  correctionDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-
-  // 视频列表区域
-  videoListSection: {
-    marginHorizontal: 24,
-    marginBottom: 24,
-  },
-  videoListHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
+  section: {
+    backgroundColor: COLOR.surface,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    padding: SPACE.lg,
+    marginBottom: SPACE.md,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+    ...TYPE.title,
+    color: COLOR.ink,
+    marginBottom: 6,
   },
-  listActions: {
+  sectionLede: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+    marginBottom: 10,
+  },
+  point: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    marginBottom: 10,
   },
-  actionIconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+  pointRule: {
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: COLOR.line,
+    marginRight: 10,
+  },
+  pointText: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+    flex: 1,
+  },
+  sourceRow: {
+    marginTop: 4,
+    paddingTop: 8,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  sourceText: {
+    ...TYPE.caption,
+    color: COLOR.inkMuted,
   },
 
-  // 视频列表
-  videoList: {
-    gap: 12,
+  /* The one accented block per tab: the caveat that has to be read
+     before the content it qualifies. */
+  caveatCard: {
+    backgroundColor: COLOR.surfaceAccent,
+    borderRadius: RADIUS.surface,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.accentLine,
+    padding: SPACE.lg,
+    marginBottom: SPACE.md,
   },
-  videoCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+  caveatTitle: {
+    ...TYPE.title,
+    marginBottom: 6,
   },
-  videoCardContent: {
-    flexDirection: 'row',
+  caveatBody: {
+    ...TYPE.bodyStrong,
+    marginBottom: SPACE.sm,
   },
-  videoThumbnailContainer: {
-    position: 'relative',
-    width: 96,
-    height: 64,
-    flexShrink: 0,
+
+  /* ---- questions ---- */
+  question: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.lg,
   },
-  videoThumbnail: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
+  questionTitle: {
+    ...TYPE.heading,
+    marginBottom: 2,
   },
-  thumbnailOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    alignItems: 'center',
+  questionPrompt: {
+    ...TYPE.bodyStrong,
+    marginBottom: 6,
+  },
+  questionWhy: {
+    ...TYPE.caption,
+    marginBottom: SPACE.sm,
+  },
+  questionHint: {
+    ...TYPE.caption,
+    color: COLOR.inkFaint,
+    marginBottom: SPACE.sm,
+  },
+  choices: {
+    gap: SPACE.sm,
+  },
+  // Stacked full-width rather than wrapped pills: several of these
+  // labels run to two lines of Chinese, and lib/a11y.ts's first rule is
+  // that a target never shrinks to fit a row.
+  choice: {
+    minHeight: MIN_TOUCH_TARGET,
     justifyContent: 'center',
+    paddingHorizontal: SPACE.lg,
+    paddingVertical: SPACE.md,
+    borderRadius: RADIUS.control,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.lineStrong,
+    backgroundColor: COLOR.surface,
   },
-  durationBadge: {
-    position: 'absolute',
-    bottom: 4,
-    right: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 4,
+  choiceSelected: {
+    backgroundColor: COLOR.accentWash,
+    borderColor: COLOR.accent,
   },
-  durationText: {
-    fontSize: 10,
-    color: '#FFFFFF',
+  choiceLabel: {
+    ...TYPE.bodyStrong,
   },
-  videoCardInfo: {
-    flex: 1,
-    padding: 12,
-    justifyContent: 'space-between',
+  choiceLabelSelected: {
+    color: COLOR.accent,
   },
-  videoCardTitle: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#FFFFFF',
+  choiceDetail: {
+    ...TYPE.caption,
+    marginTop: 4,
+  },
+
+  /* ---- the plan ---- */
+  planProgress: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
+  },
+  trackHeading: {
+    ...TYPE.micro,
+    marginTop: SPACE.md,
+    marginBottom: SPACE.sm,
+  },
+  item: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.md,
+  },
+  itemHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
     marginBottom: 4,
   },
-  videoCardMeta: {
+  itemTitle: {
+    ...TYPE.heading,
+    flexShrink: 1,
+  },
+  kindTag: {
+    ...TYPE.micro,
+    letterSpacing: 0.2,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 2,
+    borderRadius: RADIUS.pill,
+    overflow: 'hidden',
+  },
+  kindTagDevice: {
+    color: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
+  },
+  kindTagNeutral: {
+    color: COLOR.inkMuted,
+    backgroundColor: COLOR.well,
+  },
+  kindTagWarn: {
+    color: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+  },
+  itemBecause: {
+    ...TYPE.caption,
+    marginBottom: 6,
+  },
+  itemBody: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
     marginBottom: 8,
   },
-  videoCardAuthor: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  videoCardStats: {
+  caution: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    marginBottom: 6,
   },
-  videoCardStatsLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  cautionRule: {
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: COLOR.accentLine,
+    marginRight: 10,
   },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  statText: {
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  publishTime: {
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-
-  // 模态框通用样式
-  modalOverlay: {
+  cautionText: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
   },
 
-  // 上传视频弹窗
-  uploadModal: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    width: '100%',
-    maxWidth: 400,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+  /* ---- the two standing rules ---- */
+  ruleBlock: {
+    marginBottom: SPACE.md,
   },
-  uploadModalHeader: {
-    alignItems: 'center',
-    marginBottom: 24,
+  ruleTitle: {
+    ...TYPE.heading,
+    color: COLOR.accent,
+    marginBottom: 2,
   },
-  uploadModalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 8,
+  ruleBody: {
+    ...TYPE.bodyStrong,
   },
-  uploadModalSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
+
+  /* ---- referral ---- */
+  clinician: {
+    paddingTop: SPACE.sm,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.sm,
   },
-  uploadModalContent: {
-    gap: 16,
+  clinicianName: {
+    ...TYPE.heading,
   },
-  uploadOption: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    padding: 16,
+  clinicianWhere: {
+    ...TYPE.caption,
+  },
+
+  /* ---- copyable narrative ---- */
+  narrativeBlock: {
+    marginTop: SPACE.md,
+    padding: SPACE.md,
+    backgroundColor: COLOR.well,
+    borderRadius: RADIUS.control,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+  },
+  narrativeHint: {
+    ...TYPE.caption,
+    marginBottom: SPACE.sm,
+  },
+  narrativeLine: {
+    ...TYPE.body,
+    color: COLOR.ink,
+    marginBottom: 2,
+  },
+
+  /* ---- exercise: facts ---- */
+  fact: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.md,
+  },
+  factHead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+    marginBottom: 2,
+  },
+  factValue: {
+    ...TYPE.metricSmall,
+  },
+  factLabel: {
+    ...TYPE.label,
+  },
+  factDetail: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
+
+  /* The evidence tag. This is the load-bearing control on the exercise
+     tab: it is what keeps「原研究实测」and「本页的替代做法」from being
+     read in the same register. */
+  evidenceTag: {
+    ...TYPE.micro,
+    letterSpacing: 0.2,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 2,
+    borderRadius: RADIUS.pill,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+    marginBottom: 6,
+  },
+  evidenceTagTrial: {
+    color: COLOR.good,
+    backgroundColor: COLOR.goodWash,
+  },
+  evidenceTagGuideline: {
+    color: COLOR.inkMuted,
+    backgroundColor: COLOR.well,
+  },
+  evidenceTagSubstitute: {
+    color: COLOR.warn,
+    backgroundColor: COLOR.warnWash,
+  },
+
+  /* ---- exercise: bands, sessions, phases ---- */
+  band: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.md,
+  },
+  bandHead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: SPACE.sm,
+    marginBottom: 2,
+  },
+  bandRange: {
+    ...TYPE.metricSmall,
+  },
+  bandLabel: {
+    ...TYPE.heading,
+  },
+  bandLine: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+  },
+
+  sessionMeta: {
+    ...TYPE.caption,
+    marginBottom: SPACE.sm,
+  },
+  subHeading: {
+    ...TYPE.label,
+    marginTop: SPACE.sm,
+    marginBottom: 4,
+  },
+
+  phase: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.md,
+  },
+  phaseTitle: {
+    ...TYPE.heading,
+    marginBottom: 4,
+  },
+  phaseFocus: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+    marginBottom: 6,
+  },
+  phaseTrialNote: {
+    ...TYPE.caption,
+  },
+
+  remeasure: {
+    paddingTop: SPACE.md,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+    marginBottom: SPACE.md,
+  },
+  remeasureHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+    marginBottom: 2,
   },
-  uploadOptionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  remeasureLabel: {
+    ...TYPE.heading,
   },
-  uploadOptionIconSecondary: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(81, 71, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  remeasureEvery: {
+    ...TYPE.micro,
+    color: COLOR.accent,
+    backgroundColor: COLOR.accentWash,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: 2,
+    borderRadius: RADIUS.pill,
+    overflow: 'hidden',
   },
-  uploadOptionText: {
-    fontSize: 16,
-    color: '#FFFFFF',
-  },
-  cancelButton: {
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.7)',
+  remeasureWhy: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
   },
 
-  // 上传进度弹窗
-  progressModal: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    padding: 24,
-    width: 320,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
+  linkBlock: {
+    marginTop: SPACE.sm,
+    alignItems: 'flex-start',
+    gap: 6,
   },
-  progressModalIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(150, 159, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  progressModalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  progressModalSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  uploadProgressBarContainer: {
-    width: '100%',
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 4,
-    marginBottom: 16,
-  },
-  uploadProgressBar: {
-    height: 8,
-    backgroundColor: '#969FFF',
-    borderRadius: 4,
-  },
-  progressText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
+  linkHint: {
+    ...TYPE.caption,
   },
 
-  // 成功提示
-  successToast: {
-    position: 'absolute',
-    top: 80,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 1000,
-  },
-  successToastContent: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 8,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#969FFF',
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.1,
-        shadowRadius: 32,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  successIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  successText: {
-    fontSize: 14,
-    color: '#FFFFFF',
+  disclaimer: {
+    ...TYPE.body,
+    color: COLOR.inkSoft,
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.section,
   },
 });

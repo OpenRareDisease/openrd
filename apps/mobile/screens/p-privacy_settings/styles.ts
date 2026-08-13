@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { MIN_TOUCH_TARGET } from '../../lib/a11y';
 import { COLOR, HAIRLINE, SPACE, SURFACE, TYPE } from '../../lib/design';
 
@@ -186,5 +186,55 @@ export default StyleSheet.create({
   privacyNoticeText: {
     flex: 1,
     ...TYPE.caption,
+  },
+  shareFresh: {
+    backgroundColor: COLOR.surfaceAccent,
+    borderRadius: 10,
+    padding: 14,
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  shareFreshTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLOR.ink,
+    marginBottom: 6,
+  },
+  // Monospace and selectable: this is a credential the patient has to
+  // get out of the app intact, and a proportional font makes a
+  // mistyped character invisible.
+  shareFreshValue: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    fontSize: 13,
+    lineHeight: 20,
+    color: COLOR.ink,
+    marginBottom: 8,
+  },
+  shareHint: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: COLOR.inkMuted,
+    marginTop: 8,
+  },
+  shareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  shareRowCopy: {
+    flex: 1,
+  },
+  shareRowTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLOR.ink,
+  },
+  shareRowMeta: {
+    fontSize: 12.5,
+    color: COLOR.inkMuted,
+    marginTop: 2,
   },
 });

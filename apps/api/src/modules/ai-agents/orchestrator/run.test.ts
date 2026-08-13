@@ -174,8 +174,13 @@ describe('Orchestrator.run', () => {
     // And the model is told which kind of empty this is.
     const round2Arg = llm.chat.mock.calls[1][0] as LlmChatRequest;
     const toolMessage = round2Arg.messages.find((m) => m.role === 'tool');
-    expect(toolMessage?.content).toContain('检索失败');
+    expect(toolMessage?.content).toContain('error_code:retrieval_failed');
+    expect(toolMessage?.content).toContain('kb_service_unreachable');
     expect(toolMessage?.content).not.toBe('（无内容）');
+    // And it is told to refuse rather than fill the gap from priors.
+    // The instruction this replaced said「请基于常识与上下文继续作答」.
+    expect(toolMessage?.content).not.toContain('基于常识');
+    expect(toolMessage?.content).toContain('不要用你自己记忆里的 FSHD 知识');
   });
 
   // The other side: an empty result that is a real answer about the
@@ -744,6 +749,306 @@ describe('Orchestrator.run', () => {
   });
 });
 
+/**
+ * `finishReason` came back from the provider on every call and was
+ * dropped on the floor by `askRound`. An answer that stopped because it
+ * ran out of tokens was therefore shipped as a finished answer — and on
+ * a medical question the qualification is the last sentence, so the
+ * fragment is not "less of the answer", it is the answer with its
+ * caveats removed.
+ */
+describe('token-limit truncation is threaded and marked', () => {
+  const cutOffRun = async (finishReason: LlmChatResponse['finishReason']) => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '呼吸功能建议每年查一次肺功能，如果你同时在用激素',
+        toolCalls: [],
+        finishReason,
+      },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    return orch.run({
+      userId: 'u1',
+      question: '我需要注意什么',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+  };
+
+  it('flags a length-capped answer and tells the patient how to continue', async () => {
+    const result = await cutOffRun('length');
+    expect(result.answerCutOff).toBe(true);
+    // Visible to the patient regardless of what the client does with
+    // the flag — a mobile release that ignores `answerCutOff` must not
+    // silently show a fragment as a complete answer.
+    expect(result.answer).toContain('长度上限');
+    expect(result.answer).toContain('接着说');
+    // Still the answer, not a replacement for it.
+    expect(result.answer).toContain('呼吸功能建议每年查一次肺功能');
+    // Different failure from "produced nothing usable".
+    expect(result.answerTruncated).toBeUndefined();
+  });
+
+  it('leaves a normally finished answer untouched', async () => {
+    const result = await cutOffRun('stop');
+    expect(result.answerCutOff).toBeUndefined();
+    expect(result.answer).not.toContain('接着说');
+  });
+
+  it('flags the planner direct-answer path too', async () => {
+    // The planner runs at maxTokens 800 — a quarter of the answer
+    // round's budget — so this is the path most likely to hit the cap,
+    // and it had no check at all.
+    const llm = mkLlm([
+      { content: '确诊后要注意的第一点是', toolCalls: [], finishReason: 'length' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 0))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.answerCutOff).toBe(true);
+    expect(result.answer).toContain('接着说');
+  });
+
+  it('does not stack the notice on the apology fallback', async () => {
+    // Round 2 produced only a preamble and the retry produced nothing;
+    // the patient gets the apology. Telling them to ask for "the rest"
+    // of a message that does not exist would be its own small lie.
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '让我再搜索一下：', toolCalls: [], finishReason: 'length' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.answerTruncated).toBe(true);
+    expect(result.answerCutOff).toBeUndefined();
+    expect(result.answer).not.toContain('接着说');
+  });
+});
+
+describe('retrieval failure reaches the patient as state and as prose', () => {
+  const downTool = (name: string, retrieverId: string): ITool => ({
+    name,
+    description: name,
+    parametersSchema: { type: 'object' },
+    parseArgs: () => ({}),
+    execute: async () => ({
+      retrieval: {
+        retrieverId,
+        chunks: [],
+        citations: [],
+        metadata: { reason: 'kb_service_unreachable' },
+      },
+      display: `${retrieverId}: 0 chunks`,
+    }),
+  });
+
+  it('prefixes a fixed notice and reports a machine-readable code', async () => {
+    // The model is instructed to refuse, and here it ignores the
+    // instruction and answers from its priors anyway — which is exactly
+    // the case the prompt alone cannot cover. The server-written notice
+    // is what keeps the guarantee.
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: 'FSHD 通常由 D4Z4 重复缩短引起。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(downTool('search_medical_kb', 'medical_kb')),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'FSHD 是怎么回事',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    expect(result.retrievalFailure).toEqual({
+      codes: ['retrieval_failed'],
+      corpusUnavailable: true,
+      personalDataUnavailable: false,
+    });
+    expect(result.answer.startsWith('⚠️')).toBe(true);
+    expect(result.answer).toContain('没能查到医学知识库');
+    expect(result.answer).toContain('FSHD 通常由 D4Z4 重复缩短引起。');
+  });
+
+  it('says something different when it is the patient own data that failed', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'get_my_reports', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '这次先说通用的部分。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(downTool('get_my_reports', 'patient_reports')),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: '我的报告怎么样',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    expect(result.retrievalFailure).toEqual({
+      codes: ['personal_data_unavailable'],
+      corpusUnavailable: false,
+      personalDataUnavailable: true,
+    });
+    expect(result.answer).toContain('没能读到你的档案');
+    // "we could not read it" must not be delivered as "you have none".
+    expect(result.answer).toContain('这不代表你没有记录');
+  });
+
+  it('leaves a healthy run with no failure state and no banner', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '正常回答。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 2))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: 'q',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+    expect(result.retrievalFailure).toBeUndefined();
+    expect(result.answer).toBe('正常回答。');
+  });
+});
+
+describe('citation numbering across a whole run', () => {
+  it('numbers a second retriever continuing from the first', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [
+          { id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD"}' },
+          { id: 'tc2', name: 'get_my_reports', argumentsJson: '{}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      { content: '回答 [1] [3]', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const registry = new ToolRegistry()
+      .register(mkTool('search_medical_kb', stubResult('medical_kb', 2)))
+      .register(
+        mkTool('get_my_reports', stubResult('patient_reports', 2, { classifiedType: '基因报告' })),
+      );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: '结合知识库看我的报告',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    const round2 = llm.chat.mock.calls[1][0] as LlmChatRequest;
+    const toolMessages = round2.messages.filter((m) => m.role === 'tool');
+    const numbers = toolMessages
+      .flatMap((m) => [...m.content.matchAll(/【片段(\d+)】/g)])
+      .map((m) => Number(m[1]));
+    // 1,2 for the KB and 3,4 for the reports — one sequence, not two.
+    expect(numbers.sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+    // And [N] resolves to citations[N-1] on the client.
+    expect(result.citations).toHaveLength(4);
+    expect(result.citations[2].source).toBe('patient_reports');
+    const reportMessage = toolMessages.find((m) => m.content.includes('patient_reports'));
+    expect(reportMessage?.content).toMatch(/【片段3】/);
+  });
+
+  it('does not re-add round 1 citations when a second gather round runs', async () => {
+    // `context.citations.push(...roundContext.citations)` meant round 2
+    // re-appended round 1's list, so the same source got two cards and
+    // the second card's position no longer matched its 【片段N】.
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"a"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: null,
+        toolCalls: [{ id: 'tc2', name: 'get_my_reports', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '最终回答', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const registry = new ToolRegistry()
+      .register(mkTool('search_medical_kb', stubResult('medical_kb', 2)))
+      .register(
+        mkTool('get_my_reports', stubResult('patient_reports', 1, { classifiedType: '基因报告' })),
+      );
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: '先查资料再看我的报告',
+      requestId: 'r1',
+      consentLevel: 'basic',
+    });
+
+    expect(result.citations.map((c) => c.chunkId)).toEqual([
+      'c-medical_kb-0',
+      'c-medical_kb-1',
+      'c-patient_reports-0',
+    ]);
+  });
+});
+
 describe('Orchestrator.run with streamFinalAnswer=true', () => {
   /** Convenience: build an LLM where round 1 returns one tool call and
    *  round 2's `chatStream` yields the given text deltas + a finish
@@ -864,6 +1169,43 @@ describe('Orchestrator.run with streamFinalAnswer=true', () => {
     // provider tool-call markup that got stripped, so the copy invites
     // a retry rather than reporting the assistant as unavailable.
     expect(result.answer).toMatch(/没能把回答整理出来/);
+  });
+
+  it('marks a streamed answer that the token limit cut off', async () => {
+    // The streamed path is what a patient actually watches, and it
+    // discarded `finishReason` from the `finish` frame entirely — once
+    // the deltas stopped, a `length` stop was indistinguishable from a
+    // finished answer.
+    const chat = vi.fn().mockResolvedValue({
+      content: null,
+      toolCalls: [{ id: 'tc1', name: 'search_medical_kb', argumentsJson: '{"query":"x"}' }],
+      finishReason: 'tool_calls',
+    });
+    const chatStream = vi.fn(async function* () {
+      yield { type: 'text_delta' as const, text: '呼吸功能每年查一次，如果你同时在用' };
+      yield { type: 'finish' as const, finishReason: 'length' as const, usage: undefined };
+    });
+    const llm = {
+      providerName: 'mock',
+      model: 'mock-model',
+      supportsToolCalling: true,
+      chat,
+      chatStream,
+    } as unknown as ILLMProvider;
+
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run(
+      { userId: 'u1', question: 'q', requestId: 'r1', consentLevel: 'basic' },
+      undefined,
+      { streamFinalAnswer: true },
+    );
+
+    expect(result.answerCutOff).toBe(true);
+    expect(result.answer).toContain('接着说');
   });
 });
 

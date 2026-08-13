@@ -58,6 +58,26 @@
 		}
 	}
 
+	# The one public surface a stranger's browser loads: /s/passport/:token
+	# is the clinical passport a patient forwards to a clinician in WeChat,
+	# and /s/passport/pickup is the form behind the QR code they hold up
+	# across a consulting-room desk. It is mounted OUTSIDE /api on purpose
+	# (routes/index.ts says why: /api carries auth, CORS and JSON error
+	# envelopes shaped for our own client), which means it needs its own
+	# route here — the /api/* block above does not match it and the
+	# catch-all below hands it to the static app.
+	#
+	# Without this block the whole feature is silently dead in production:
+	# nginx's try_files answers /s/passport/<token> with index.html at 200,
+	# expo-router finds no such route and renders +not-found, and the
+	# clinician sees a Chinese consumer app's not-found screen. The share
+	# row is minted and opened_count stays 0, so the patient's revoke list
+	# tells them the doctor never opened it. scripts/smoke-test.sh checks
+	# this path for exactly that reason.
+	handle /s/* {
+		reverse_proxy api:4000
+	}
+
 	handle {
 		# frame-ancestors is scoped to the app rather than set site-wide on
 		# purpose: a site-level Content-Security-Policy would REPLACE the

@@ -13,6 +13,28 @@ log_step "Health"
 request_get /api/healthz
 assert_status 200
 
+# The public passport surface is mounted OUTSIDE /api (routes/index.ts
+# says why), so it needs its own route in every proxy in front of the
+# origin. It shipped without one: Caddy's /api/* block did not match it,
+# the catch-all handed it to the static app, nginx's try_files answered
+# 200 with index.html, and expo-router rendered +not-found. A clinician
+# opening a forwarded share link saw a Chinese consumer app's not-found
+# screen, opened_count stayed 0, and the patient's revoke list therefore
+# told them the doctor had never opened it. Nothing failed anywhere.
+#
+# So the smoke test asks the question the deploy could not answer: does a
+# token-shaped path reach the API at all? A bogus token is the right
+# probe — the router answers every unknown/expired/revoked token with the
+# same 404 HTML page by design, so 404 + text/html IS the proof it
+# arrived. index.html from the static app would be 200.
+log_step "Public Passport Route Reaches The API"
+request_get "/s/passport/smoke-test-not-a-real-token-000000000000000000000"
+assert_status 404
+case "$RESPONSE_BODY" in
+  *"这个链接打不开了"*) : ;;
+  *) fail "GET /s/passport/<token> did not reach the API. Expected the router's own 404 page; got: ${RESPONSE_BODY:0:200}" ;;
+esac
+
 log_step "Register And Login"
 PHONE="$(next_phone_number)"
 REGISTER_RESULT="$(register_test_user "$PHONE")"
@@ -46,6 +68,22 @@ assert_nonempty "profile id" "$PROFILE_ID"
 
 request_get /api/profiles/me "$TOKEN"
 assert_status 200
+
+# PIPL Art. 29. Every route that STORES health or genetic data sits
+# behind requireSensitiveDataConsent, and nothing records the
+# acceptance at registration — in the app it is the consent modal that
+# writes the ledger row. A script that never records it gets a 403
+# `sensitive_consent_required` on the first measurement below, which is
+# where this smoke test has been dying since the gate moved out of the
+# mobile modal and onto the server (commit 683fe65).
+#
+# The version is not pinned server-side (the web export ships
+# separately from the API), so this records the version the mobile
+# bundle currently shows — see lib/legal-content.ts.
+log_step "Sensitive Data Consent"
+request_json POST /api/legal/acceptances \
+  '{"document":"sensitive_data_consent","version":"2026-08-02"}' "$TOKEN"
+assert_status_any 200 201
 
 log_step "Core Follow-up"
 request_json POST /api/profiles/me/measurements \
@@ -150,17 +188,76 @@ request_json POST /api/profiles \
   '{"fullName":"Smoke User B","diagnosisStage":"Stage1"}' "$TOKEN_B"
 assert_status 201
 
+# User B needs the Art. 29 acceptance too, or the consent middleware
+# answers 403 before the ownership check ever runs — and this step
+# would then "pass" for a reason that has nothing to do with cross-user
+# isolation, while silently no longer testing it.
+request_json POST /api/legal/acceptances \
+  '{"document":"sensitive_data_consent","version":"2026-08-02"}' "$TOKEN_B"
+assert_status_any 200 201
+
 request_json POST /api/profiles/me/measurements \
   "{\"muscleGroup\":\"deltoid\",\"side\":\"left\",\"strengthScore\":3,\"entryMode\":\"self_report\",\"submissionId\":\"$SUBMISSION_A\"}" \
   "$TOKEN_B"
 assert_status 404
 
 if should_run_ai_tests; then
-  log_step "AI Checks"
-  request_json POST /api/ai/ask \
-    '{"question":"什么是FSHD？","userContext":{"language":"zh"}}' \
-    "$TOKEN"
+  # The AI check used to hit POST /api/ai/ask. No patient reaches that
+  # route: lib/ai-streaming.ts opens /api/ai/ask/stream and every AI
+  # surface in the app (问答, AskAboutDrawer) goes through it. The
+  # streaming route has machinery /ask does not — its own consent gate,
+  # multi-turn history parsing, SSE backpressure, keepalives and an
+  # end-of-stream audit write — so a regression in any of it shipped
+  # green while the smoke test asked a route nobody uses.
+  #
+  # This asserts the whole path a patient actually takes: consent
+  # granted → POST /ask/stream → a `done` frame with a real answer →
+  # an audit row carrying our progressId.
+  log_step "AI Checks (streaming, the route the app uses)"
+
+  # /ask/stream 403s with code=consent_required unless BOTH flags are
+  # on (level 'none' otherwise). Granting them here means a broken
+  # consent lookup surfaces as a 403 below rather than as a skipped
+  # check.
+  request_json PUT /api/profiles/me/consent '{"personal":true,"thirdParty":true}' "$TOKEN"
   assert_status 200
+
+  STREAM_PROGRESS_ID="smoke-stream-$(date +%s)-$$"
+  # `history` is sent so the shared history parser runs — an invalid
+  # history is a pre-SSE 400, and the done frame echoes how many turns
+  # the server actually kept.
+  # --max-time bounds the run: an SSE response that never terminates
+  # would otherwise hang the deploy check indefinitely.
+  request -X POST "$API_BASE_URL/api/ai/ask/stream" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -H "Accept: text/event-stream" \
+    --no-buffer \
+    --max-time 180 \
+    -d "{\"question\":\"什么是FSHD？\",\"progressId\":\"$STREAM_PROGRESS_ID\",\"history\":[{\"role\":\"user\",\"content\":\"你好\"},{\"role\":\"assistant\",\"content\":\"你好，有什么可以帮你？\"}]}"
+  assert_status 200
+
+  # SSE frames are `event: <type>\ndata: <json>\n\n`. Take the data
+  # line that follows the first `event: done`; a stream that errored or
+  # was cut short never emits one, which is exactly the failure the old
+  # check could not see.
+  DONE_FRAME="$(printf '%s\n' "$RESPONSE_BODY" | awk '/^event: done$/ { getline; sub(/^data: /, ""); print; exit }')"
+  assert_nonempty "SSE done frame" "$DONE_FRAME"
+  assert_eq "done frame type" "$(json_get_from "$DONE_FRAME" "type")" "done"
+  assert_nonempty "streamed answer" "$(json_get_from "$DONE_FRAME" "data.answer")"
+  assert_eq "progressId echoed" "$(json_get_from "$DONE_FRAME" "data.progressId")" "$STREAM_PROGRESS_ID"
+  assert_eq "history turns used" "$(json_get_from "$DONE_FRAME" "data.historyMessageCount")" "2"
+
+  # The audit row is written after the last frame, so it also proves
+  # the route reached its end rather than dying mid-stream. Substring
+  # match instead of items.0 — other AI calls in this script write rows
+  # too and the ordering is not ours to depend on.
+  request_get /api/ai/audit?limit=20 "$TOKEN"
+  assert_status 200
+  case "$RESPONSE_BODY" in
+    *"$STREAM_PROGRESS_ID"*) ;;
+    *) fail "no audit row for progressId $STREAM_PROGRESS_ID: $RESPONSE_BODY" ;;
+  esac
 
   request_json POST "/api/profiles/me/documents/$DOCUMENT_ID/summary" '{}' "$TOKEN"
   if [ "$RESPONSE_CODE" != "200" ]; then

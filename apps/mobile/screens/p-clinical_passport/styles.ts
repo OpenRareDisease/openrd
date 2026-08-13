@@ -373,6 +373,47 @@ export default StyleSheet.create({
     fontSize: 16.5,
     lineHeight: 22,
   },
+  /**
+   * The same cells when `diagnosis.confirmation !== 'genetic'`.
+   *
+   * Metric type — 16.5pt, 700, tabular figures — is what this screen
+   * uses for a measured value, and the four diagnosis cells were set in
+   * it whether the number came off a genetics report or out of the
+   * free-text box on the baseline form. Body-strong instead, and the
+   * tabular figures dropped with it: aligned digits are a table of
+   * readings, and 「FSHD1」 typed by a patient who has been guessing for
+   * eight years is not one.
+   *
+   * Built from TYPE.bodyStrong rather than overriding `infoValue`, so
+   * there is no `fontVariant` left to cancel — the screen swaps the
+   * whole style rather than layering.
+   */
+  infoValueSelfReported: {
+    ...TYPE.bodyStrong,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  /**
+   * The notice above those cells. Deliberately NOT amber: in this
+   * product amber means exactly one thing — not genetically confirmed —
+   * and it is already spent on the banner of the PDF this screen
+   * exports. Spending it twice makes it a decoration in both places.
+   *
+   * What makes it register instead is position (between the heading and
+   * the values it is about) and an ink-weight left rule, which is a
+   * step up from the `noteCard` rule used for ordinary prose.
+   */
+  diagnosisNotice: {
+    marginTop: SPACE.lg,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.ink,
+  },
+  diagnosisNoticeText: {
+    ...TYPE.bodyStrong,
+    fontSize: 14,
+    lineHeight: 21,
+  },
 
   /* Prose notes — a rule in the margin, not another box ------------ */
   noteCard: {
@@ -390,6 +431,160 @@ export default StyleSheet.create({
     ...TYPE.body,
     fontSize: 14,
     lineHeight: 21,
+  },
+
+  /* 基因证据分级 + 《检查申请说明》 --------------------------------- */
+  /**
+   * The graded read of the genetic evidence.
+   *
+   * Same left-rule vocabulary as `noteCard`, one rule further in tone:
+   * this is prose about a document, not a reading off one. It is
+   * deliberately NOT amber and NOT a filled alert box — amber in this
+   * product means exactly one thing (not genetically confirmed) and it
+   * is already spent on the PDF banner. The grade here is frequently
+   * 「方法对，但结果不全」, which is where a correct Southern blot with
+   * a missing 4qA line lands, and dressing that as a warning tells a
+   * patient their report is bad when what it needs is one more line
+   * from the lab that already has their sample.
+   */
+  geneticEvidenceBlock: {
+    marginTop: SPACE.lg,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+  },
+  geneticGradeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  geneticGradePill: {
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: RADIUS.pill,
+    backgroundColor: COLOR.accentWash,
+  },
+  geneticGradePillText: {
+    ...TYPE.label,
+    fontSize: 11,
+    color: COLOR.accent,
+  },
+  /** Rides next to the grade, not under the paragraphs. A reader who
+   *  meets 「关于报告，不是关于你」 after the grade has already read the
+   *  grade as a verdict about themselves. */
+  geneticScopeTag: {
+    ...TYPE.micro,
+  },
+  geneticHeadline: {
+    ...TYPE.bodyStrong,
+    fontSize: 14.5,
+    lineHeight: 21,
+    color: COLOR.ink,
+  },
+  geneticBody: {
+    ...TYPE.body,
+    marginTop: SPACE.sm,
+    fontSize: 13.5,
+    lineHeight: 21,
+  },
+  geneticGreyZone: {
+    marginTop: SPACE.md,
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.lineStrong,
+  },
+  geneticSource: {
+    ...TYPE.micro,
+    marginTop: SPACE.sm,
+  },
+
+  /**
+   * 《检查申请说明》 as text — the carrier that cannot fail.
+   *
+   * No fixed heights and no line clamping anywhere in this block, for
+   * the same reason as the anesthesia card's text layer: this content
+   * has to survive 200% text size, a screen reader, and being pasted
+   * into WeChat. The printable page beside it is the convenience, not
+   * the document.
+   */
+  testRequestBlock: {
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  testRequestTitle: {
+    ...TYPE.heading,
+    fontSize: 14.5,
+    color: COLOR.accent,
+  },
+  testRequestHint: {
+    ...TYPE.caption,
+    marginTop: SPACE.xs,
+  },
+  testRequestIntro: {
+    ...TYPE.body,
+    marginTop: SPACE.md,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  testRequestSection: {
+    marginTop: SPACE.md,
+  },
+  testRequestHeading: {
+    ...TYPE.label,
+    color: COLOR.ink,
+    marginBottom: SPACE.xs,
+  },
+  testRequestLine: {
+    ...TYPE.body,
+    marginTop: SPACE.xs,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  testRequestSource: {
+    ...TYPE.micro,
+    marginTop: SPACE.sm,
+  },
+  testRequestAction: {
+    marginTop: SPACE.lg,
+  },
+
+  /* 功能分级 (Brooke / Vignos) ------------------------------------- */
+  /** Same left-rule vocabulary as noteCard — this is a note about the
+   *  patient's function, not a metric tile. It is deliberately NOT a
+   *  big number: the number is the least useful half of the reading. */
+  instrumentBlock: {
+    paddingLeft: SPACE.md,
+    borderLeftWidth: 2,
+    borderLeftColor: COLOR.accentLine,
+    gap: SPACE.sm,
+  },
+  instrumentRow: {
+    gap: 2,
+  },
+  instrumentHeadline: {
+    ...TYPE.bodyStrong,
+    fontSize: 14,
+    color: COLOR.ink,
+    fontVariant: ['tabular-nums'],
+  },
+  /** The behavioural anchor. Never smaller than caption size and never
+   *  truncated: it is the part a clinician actually reads the level
+   *  against. */
+  instrumentAnchor: {
+    ...TYPE.body,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  instrumentPrevious: {
+    ...TYPE.caption,
+    marginTop: 2,
+  },
+  instrumentSource: {
+    ...TYPE.micro,
   },
 
   /* 正面 / 背面 ---------------------------------------------------- */
@@ -445,5 +640,75 @@ export default StyleSheet.create({
   /* Export -------------------------------------------------------- */
   exportCard: {
     ...sectionRule,
+  },
+  anesthesiaCardImage: {
+    width: '100%',
+    // aspectRatio comes from the render at the call site — the card's
+    // height depends on how the clinical text wraps, and a fixed guess
+    // letterboxes it and shrinks type meant to be read across a
+    // pre-op desk.
+    borderRadius: 10,
+    borderWidth: HAIRLINE,
+    borderColor: COLOR.line,
+    marginBottom: 10,
+  },
+
+  /* Anesthesia card, text carrier ---------------------------------- */
+  /**
+   * The same model the PNG is drawn from, set as real text.
+   *
+   * No fixed heights anywhere in this block, and no line clamping: the
+   * point of it is that it reflows — at 200% text size, at a phone
+   * held in one hand, and in whatever app the patient pastes it into.
+   * The image cannot do any of those, and it is also the carrier a
+   * screen reader cannot enter.
+   */
+  anesthesiaTextBlock: {
+    marginTop: SPACE.lg,
+    paddingTop: SPACE.lg,
+    borderTopWidth: HAIRLINE,
+    borderTopColor: COLOR.line,
+  },
+  anesthesiaTextHint: {
+    ...TYPE.caption,
+    marginBottom: SPACE.md,
+  },
+  anesthesiaTextTitle: {
+    ...TYPE.heading,
+    color: COLOR.accent,
+  },
+  anesthesiaTextName: {
+    ...TYPE.bodyStrong,
+    marginTop: SPACE.xs,
+  },
+  /** The patient's own facts — diagnosis basis, last PFT, last cardiac
+   *  study. Set a step above the literature lines below them: this is
+   *  the half of the card that is about this person. */
+  anesthesiaTextPatient: {
+    ...TYPE.bodyStrong,
+    marginTop: SPACE.xs,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  anesthesiaTextSection: {
+    marginTop: SPACE.md,
+  },
+  anesthesiaTextHeading: {
+    ...TYPE.label,
+    color: COLOR.accent,
+    marginBottom: SPACE.xs,
+  },
+  anesthesiaTextLine: {
+    ...TYPE.body,
+    marginTop: SPACE.xs,
+    fontSize: 13.5,
+    lineHeight: 20,
+  },
+  anesthesiaTextFine: {
+    ...TYPE.caption,
+    marginTop: SPACE.sm,
+    fontSize: 12,
+    lineHeight: 18,
+    color: COLOR.inkFaint,
   },
 });

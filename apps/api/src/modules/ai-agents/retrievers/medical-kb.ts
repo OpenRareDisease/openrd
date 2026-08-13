@@ -19,12 +19,16 @@ import type {
   RetrieveResult,
   RetrievedChunk,
 } from './base.js';
-import { buildSnippet, emptyResult } from './base.js';
+import { buildSnippet, emptyResult, retrievalFailureReason } from './base.js';
 
 interface KbServiceChunk {
   content?: string;
   metadata?: Record<string, unknown>;
   distance?: number | null;
+  /** Authority tier + label derived from the chunk's corpus path.
+   *  Emitted by knowledge.py's `resolve_authority`. */
+  authority_tier?: string | null;
+  authority_label?: string | null;
 }
 
 interface KbServiceResponse {
@@ -32,6 +36,25 @@ interface KbServiceResponse {
   chunks?: Array<KbServiceChunk | string>;
   metadata?: Record<string, unknown>;
 }
+
+/**
+ * Reason reported when the KB was searched successfully and every
+ * candidate was further away than the relevance floor.
+ *
+ * Deliberately NOT in `RETRIEVAL_FAILURE_REASONS`. That set means "the
+ * retrieval could not run", and the answer layer turns it into 「检索
+ * 失败…资料暂时取不到」. This is the opposite fact: the corpus WAS
+ * consulted and genuinely has nothing on the subject. Telling a patient
+ * the system is broken when the honest answer is 「我在知识库里没找到」
+ * is its own kind of untrue.
+ *
+ * The floor itself lives on the Python side (knowledge.py,
+ * `DEFAULT_RELEVANCE_FLOOR`, configurable via KB_RELEVANCE_FLOOR) — one
+ * place, one measured number. This retriever only relays the verdict.
+ * Re-applying a floor here against a second copy of the env var would
+ * give two processes two different opinions about the same threshold.
+ */
+export const NO_RELEVANT_RESULTS = 'no_relevant_results';
 
 export interface MedicalKbRetrieverOptions {
   /** Base URL for the Python KB service, e.g. `http://kb-service:5010`. */
@@ -52,12 +75,56 @@ export interface MedicalKbRetrieverOptions {
   };
 }
 
-/** Patterns the legacy retrieval flow used to drop boilerplate
- *  chunks coming from public-channel scrapes. We keep an extra
- *  defence here so any chunks the KB service does forward stay out
- *  of the orchestrator's context. */
-const JUNK_PATTERN =
-  /目录|上一篇|下一篇|连载|排版|撰文|责任编辑|点击阅读|更多内容|病友故事\s*·\s*目录|社区简介|康复医师网络|List Results \| ClinicalTrials|Search for:.*Recruiting studies/;
+/**
+ * WeChat article furniture — the navigation and credits around a piece
+ * rather than the piece.
+ *
+ * Judged by DENSITY, not by presence, for the same reason
+ * `apparatusScore` and `DAMAGED_RATIO` below are: a paragraph that
+ * mentions 目录 is a paragraph. This filter used to test presence
+ * anywhere in the chunk and it cost real content. Replaying master's
+ * pattern over the live 10,241-chunk corpus (2026-08-11) drops 114
+ * chunks across 41 files and empties four completely; over the
+ * pre-2026-08-07 snapshot this was first measured against — 7,800
+ * chunks, before the re-chunk — it was 112 / 40 / the same four. Of the
+ * 114, switching to density recovers 74 on its own and the label strip
+ * recovers another 39 (see stripIngestLabel above for that half of the
+ * story). One is still dropped, and correctly: chunk 0 of the
+ * ClinicalTrials listing carries the scrape banner in its body, not
+ * only in its ingest label.
+ *
+ * It also took 4 of 6 chunks out of each part of the patient
+ * autobiography《不管如何，你得长大》连载1-4. Three of the patterns
+ * were not
+ * boilerplate at all — 连载, 社区简介 and 康复医师网络 are the TITLES
+ * of documents someone curated on purpose. They are gone from this
+ * list; a filter must never be able to name a document out of the
+ * corpus.
+ *
+ * What remains is genuine furniture, and it only wins when it
+ * dominates: these markers appear on their own short lines, so a chunk
+ * that is mostly them is a navigation block, and a chunk that mentions
+ * one in a sentence is prose.
+ */
+const FURNITURE_PATTERN =
+  /^\s*(目录|上一篇|下一篇|排版|撰文|责任编辑|点击阅读|更多内容|阅读原文|扫码关注)\s*[:：]?\s*.{0,24}$/;
+
+/** Scraped ClinicalTrials.gov result pages — list chrome, never prose,
+ *  so presence is the right test for these two. */
+const SCRAPE_PATTERN = /List Results \| ClinicalTrials|Search for:.*Recruiting studies/;
+
+/** Majority of non-empty lines being furniture. A navigation block is
+ *  almost entirely furniture; an article that ends with one credit
+ *  line is not. */
+const FURNITURE_RATIO = 0.5;
+
+export const isNavigationBoilerplate = (text: string): boolean => {
+  if (SCRAPE_PATTERN.test(text)) return true;
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return true;
+  const furniture = lines.filter((line) => FURNITURE_PATTERN.test(line)).length;
+  return furniture / lines.length > FURNITURE_RATIO;
+};
 
 /**
  * Citation apparatus — the machinery *around* a paper rather than what
@@ -162,13 +229,50 @@ export const isDamagedExtraction = (text: string): boolean => {
   return artifactChars / text.length >= DAMAGED_RATIO;
 };
 
-const isJunk = (text: string): boolean =>
-  !text ||
-  text.trim().length < 30 ||
-  JUNK_PATTERN.test(text) ||
-  isTitleFragment(text) ||
-  isDamagedExtraction(text) ||
-  apparatusScore(text) >= APPARATUS_LIMIT;
+/**
+ * Remove the `[label]` line the ingest pipeline prepends to every chunk
+ * (scripts/kb-ingest.py:328 — `tagged = f"[{section.label}]\n{...}"`).
+ *
+ * 7,524 of the corpus's 10,241 chunks carry one (measured 2026-08-11).
+ * It is the pipeline's own annotation — usually `[page 92]`, sometimes
+ * the source page's title — and nothing downstream should judge content
+ * by it. Every filter below was reading it as though the document itself
+ * said it, which is how a single unlucky section label could empty a
+ * whole file out of the corpus:《中国康复辅助器具目录（2023年版）》修订
+ * 说明.docx is 2 chunks long and lost both to the word 目录 in its own
+ * heading, and the ClinicalTrials listing lost all 40 to the scrape
+ * banner prepended to each one — including the chunks carrying real NCT
+ * numbers, sponsors and recruiting status.
+ *
+ * Spell that first filename out in full, because the short form collides
+ * with a different document and a different bug. The 110-page catalogue
+ * proper — 08.无障碍生活/…/A.中国康复辅助器具目录（2023年版）.docx, 534
+ * chunks — was never emptied by this filter: master's pattern matches 2
+ * of its 534 and the density-gated version matches 0. It was invisible
+ * for an unrelated reason (a legacy .doc wearing a .docx extension, so
+ * the parser skipped it silently until 4d27900) and it was not even in
+ * the index when this measurement was taken. Two causes, one abbreviated
+ * name; do not let the next operator diagnose one as the other.
+ *
+ * Strip it once, here, before any judgement. A filter that can name a
+ * document out of the corpus by its label is not a filter, it is a
+ * delete button with bad aim.
+ */
+const INGEST_LABEL = /^\s*\[[^\]\n]{0,120}\]\s*\n?/;
+
+export const stripIngestLabel = (text: string): string => (text ?? '').replace(INGEST_LABEL, '');
+
+const isJunk = (raw: string): boolean => {
+  const text = stripIngestLabel(raw);
+  return (
+    !text ||
+    text.trim().length < 30 ||
+    isNavigationBoilerplate(text) ||
+    isTitleFragment(text) ||
+    isDamagedExtraction(text) ||
+    apparatusScore(text) >= APPARATUS_LIMIT
+  );
+};
 
 const coerceDistance = (raw: unknown): number | null => {
   if (raw === null || raw === undefined) return null;
@@ -193,12 +297,68 @@ const extractChunkIndex = (metadata: Record<string, unknown>): number | null => 
   return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * A metadata filter with nothing in it is not a filter.
+ *
+ * `{}` is truthy in JavaScript, and the empty-corpus guard below asks
+ * exactly「was a filter sent?」 to decide whether zero hits means the
+ * corpus is gone. A caller that builds `{ category: undefined }` from an
+ * absent argument would therefore have silenced the outage alarm for
+ * every request it made. Collapse those to `null` once, here.
+ *
+ * `null`/`undefined` VALUES are dropped; an empty string is not, because
+ * `category: ''` is a real filter over this corpus (the 1,746 chunks
+ * whose files sit at the corpus root carry exactly that, measured
+ * 2026-08-11).
+ */
+const normalizeFilter = (filter?: Record<string, unknown>): Record<string, unknown> | null => {
+  if (!filter) return null;
+  const entries = Object.entries(filter).filter(([, v]) => v !== undefined && v !== null);
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+};
+
 export class MedicalKbRetriever implements IRetriever {
   readonly id = 'medical_kb';
   readonly kind = 'vector' as const;
 
   constructor(private readonly opts: MedicalKbRetrieverOptions) {}
 
+  /**
+   * Run the search, and when a metadata filter found nothing, run it
+   * again over the whole corpus.
+   *
+   * Why widening rather than reporting an empty category
+   * ----------------------------------------------------
+   * A filtered search that comes back empty has three possible honest
+   * readings —「this category has no chunks」,「nothing in it was within
+   * the relevance floor」,「everything in it was junk」— and the answer
+   * layer has vocabulary for none of them. It branches on exactly two
+   * things: `RETRIEVAL_FAILURE_REASONS` (which renders「资料库检索没有跑
+   * 成功」 — a malfunction the search did not have) and
+   * `NO_RELEVANT_RESULTS` (which renders「这个问题在平台的资料库里没有
+   * 找到相关资料」 — a claim about the WHOLE corpus that a
+   * category-scoped miss does not support). Anything else renders as
+   *「（无内容）」, which base.ts documents as the shape that makes the
+   * model fill the gap from its own priors.
+   *
+   * And it is not a hypothetical. Measured against the live service
+   * (10,241 chunks, re-run 2026-08-11),「确诊 FSHD 之后心理上怎么调整」
+   * returns 8 chunks unfiltered (best distance 0.3100) but ZERO under
+   * `category: 10.心理支持` — that folder's closest chunk is 0.4135, just
+   * past the 0.40 floor. Reporting that as「资料库里没有」would be a flat
+   * untruth about a question the corpus answers well.
+   *
+   * So the filter is treated as what it actually is: a ranking
+   * preference, not a promise about coverage. If the category has the
+   * answer the patient gets it without competing against the 5,009
+   * chunks of molecular biology in 文献/; if it does not, they get the
+   * corpus-wide answer they would have got before this parameter
+   * existed. Nothing is
+   * hidden, and every downstream claim stays true. `filterFellBack` in
+   * the metadata says which of the two happened, and the tool wrapper
+   * puts it in front of the model so it cannot present a widened result
+   * as material from the category it asked for.
+   */
   async search(input: RetrieveInput, ctx: RetrieveContext): Promise<RetrieveResult> {
     const queries = (input.queries ?? [input.question])
       .map((q) => (q ?? '').trim())
@@ -207,6 +367,58 @@ export class MedicalKbRetriever implements IRetriever {
     if (queries.length === 0 && !input.question.trim()) {
       return emptyResult(this.id, 'empty_question');
     }
+
+    const filter = normalizeFilter(input.filter);
+    const filtered = await this.searchOnce(input, ctx, filter);
+    if (!filter) return filtered;
+
+    const stayFiltered = (): RetrieveResult => ({
+      ...filtered,
+      metadata: { ...filtered.metadata, filterApplied: filter, filterFellBack: false },
+    });
+
+    if (filtered.chunks.length > 0) return stayFiltered();
+    // The search could not RUN (service down, 5xx). A second request
+    // without the filter cannot fix that and would double the wait a
+    // patient sits through before being told so.
+    if (retrievalFailureReason(filtered)) return stayFiltered();
+    // The caller hung up (dropped SSE client). Retrying would only
+    // abort again.
+    if (ctx.signal?.aborted) return stayFiltered();
+
+    ctx.logger.info(
+      { filter, filteredReason: filtered.metadata?.reason ?? null },
+      'medical_kb retriever: category-filtered search returned nothing — widening to the whole corpus',
+    );
+
+    const widened = await this.searchOnce(input, ctx, null);
+    return {
+      ...widened,
+      metadata: {
+        ...widened.metadata,
+        filterApplied: filter,
+        filterFellBack: true,
+        filteredAttempt: {
+          reason: filtered.metadata?.reason ?? null,
+          kbServiceMetadata: filtered.metadata?.kbServiceMetadata ?? null,
+        },
+      },
+    };
+  }
+
+  /**
+   * One round trip to the KB service. `filter` is already normalised —
+   * `null` means no filter was sent, and the empty-corpus guard below
+   * depends on that being exact.
+   */
+  private async searchOnce(
+    input: RetrieveInput,
+    ctx: RetrieveContext,
+    filter: Record<string, unknown> | null,
+  ): Promise<RetrieveResult> {
+    const queries = (input.queries ?? [input.question])
+      .map((q) => (q ?? '').trim())
+      .filter(Boolean);
 
     const wanted = input.limit ?? this.opts.defaults?.finalN ?? 8;
     const payload = {
@@ -222,7 +434,7 @@ export class MedicalKbRetriever implements IRetriever {
       top_k: Math.ceil(wanted * OVER_FETCH),
       fetch_k: this.opts.defaults?.fetchK ?? 80,
       max_per_source: this.opts.defaults?.maxPerSource ?? 4,
-      where: input.filter ?? null,
+      where: filter,
       keep_debug_fields: false,
     };
 
@@ -285,6 +497,49 @@ export class MedicalKbRetriever implements IRetriever {
       });
     }
 
+    // The vector store returned nothing at all. Over a populated table a
+    // nearest-neighbour search cannot do that, so this is an empty (or
+    // fully filtered-out) corpus rather than an answer about it. Only
+    // claim it when we sent no `where` filter — with a filter, zero hits
+    // just means the filter matched nothing, and「资料库尚未装载」routes
+    // to a hard-failure instruction that tells the patient the platform
+    // is broken. `filter` is the normalised value, so an empty object
+    // can never masquerade as a real filter and suppress this.
+    const backendHits = parsed.metadata?.backend_hits;
+    if (typeof backendHits === 'number' && backendHits === 0 && !filter) {
+      ctx.logger.error(
+        { kbServiceMetadata: parsed.metadata ?? null },
+        'medical_kb retriever: KB service returned zero candidates for an unfiltered ' +
+          'search — the corpus is empty. Run `npm run kb:ingest` or restore it.',
+      );
+      return emptyResult(this.id, 'kb_empty_corpus', {
+        kbServiceMetadata: parsed.metadata ?? null,
+        queriesUsed: payload.queries,
+      });
+    }
+
+    // The service applied its relevance floor and nothing survived.
+    // Surface that as its own reason rather than as a bare empty
+    // result: `chunks: []` with no reason renders as 「（无内容）」,
+    // which reads to the model exactly like a corpus that has no
+    // opinion, and it improvises from priors instead of saying so.
+    if (parsed.metadata?.below_relevance_floor === true) {
+      ctx.logger.info(
+        {
+          relevanceFloor: parsed.metadata?.relevance_floor ?? null,
+          bestDistance: parsed.metadata?.best_distance ?? null,
+          candidatesConsidered: parsed.metadata?.candidates_considered ?? null,
+        },
+        'medical_kb retriever: every candidate was below the relevance floor',
+      );
+      return emptyResult(this.id, NO_RELEVANT_RESULTS, {
+        kbServiceMetadata: parsed.metadata ?? null,
+        queriesUsed: payload.queries,
+        relevanceFloor: parsed.metadata?.relevance_floor ?? null,
+        bestDistance: parsed.metadata?.best_distance ?? null,
+      });
+    }
+
     const rawChunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
     const chunks: RetrievedChunk[] = [];
     const citations: Citation[] = [];
@@ -321,6 +576,16 @@ export class MedicalKbRetriever implements IRetriever {
       const sourceFile = extractSourceFile(metadata);
       const chunkIndex = extractChunkIndex(metadata);
       const distance = coerceDistance(typeof raw === 'string' ? null : raw?.distance);
+      // Top-level on the service payload, with the chunk's own metadata
+      // as the fallback: the backfill writes it into metadata, and
+      // knowledge.py lifts it to the top level for every hit including
+      // rows the backfill hasn't reached.
+      const authorityTier =
+        pickString(typeof raw === 'string' ? null : raw?.authority_tier) ??
+        pickString(metadata.authority_tier);
+      const authorityLabel =
+        pickString(typeof raw === 'string' ? null : raw?.authority_label) ??
+        pickString(metadata.authority_label);
 
       chunks.push({
         id: chunkId,
@@ -330,6 +595,8 @@ export class MedicalKbRetriever implements IRetriever {
         distance,
         sourceFile,
         chunkIndex,
+        authorityTier,
+        authorityLabel,
       });
       citations.push({
         chunkId,
@@ -337,6 +604,7 @@ export class MedicalKbRetriever implements IRetriever {
         sourceFile,
         chunkIndex,
         snippet: buildSnippet(content),
+        authorityLabel,
       });
 
       // idx referenced so we don't drop position info if we later

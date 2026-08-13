@@ -49,6 +49,10 @@ sys.path.insert(0, str(HERE))
 from kb_backends import create_backend  # noqa: E402
 from kb_backends.base import BackendChunk, VectorBackend  # noqa: E402
 from embed_models import Embedder, create_embedder  # noqa: E402
+# Single source of truth for「how authoritative is this path」, shared
+# with retrieval. Deriving it twice is how the ingested tier and the
+# retrieval-time fallback would drift apart without anyone noticing.
+from knowledge import authority_for_path  # noqa: E402
 from kb_parsers import (  # noqa: E402
     ALL_PARSERS,
     ParseResult,
@@ -76,7 +80,39 @@ DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 #: a way that would invalidate previously stored chunks. The
 #: per-file fingerprint includes this so a refactor invalidates the
 #: whole KB without needing a manual wipe.
-PIPELINE_VERSION = "v2.multi-format"
+#:
+#: v4 — the PDF parser pins pdfminer's reading order, so a file parses
+#: to the same text in every process (kb_parsers/pdfminer_determinism).
+#: 26 of the corpus's 184 PDFs did not, which is part of why the stored
+#: rows below still miss the cache: their text was written in an order
+#: the parser no longer produces. v3 before it taught the chunker to split
+#: a classification catalogue on its own entry codes
+#: (`_CODE_TABLE_RECORD`).
+#:
+#: The bump invalidates every file's SOURCE fingerprint, so all 235
+#: files under content/medical-kb/source are re-read, re-parsed and
+#: re-chunked. That is the bulk of the cost: ~299 s wall clock on the
+#: laptop that ingests this corpus, inside which 84 pages across 31 PDFs
+#: are rasterised at 300 DPI and run through tesseract — 30 of those, in
+#: 15 files, come back with enough text to replace the page, which is
+#: the `pages_via_ocr` the parser reports; the other 54 change nothing.
+#:
+#: Re-embedding is no longer the bulk of it, but it is not nothing.
+#: `VectorBackend.reusable_embeddings` hands back the stored vector for
+#: every chunk whose text did not move. Measured against the live
+#: pgvector DB (2026-08-11): the 211 indexed files chunk to 11,110
+#: chunks, 10,064 of which hit a stored vector and cost no embedding,
+#: and 1,046 of which are embedded. 890 of that remainder sit in 21
+#: files whose stored row count does not match their chunk count at all
+#: — earlier partial ingests — and 156 sit in 15 files that are
+#: complete.
+#:
+#: It is still the right lever: the alternative is a hand-written
+#: DELETE against one source_file, which leaves the backend holding
+#: chunks whose stored fingerprint claims a pipeline that no longer
+#: exists — and the next person to wonder why a document chunked oddly
+#: has nothing to read.
+PIPELINE_VERSION = "v4.deterministic-pdf-layout"
 
 
 # --------------------------------------------------------- injection scanner
@@ -342,6 +378,12 @@ class IngestStats:
     files_empty: int = 0
     files_errored: int = 0
     chunks_upserted: int = 0
+    #: Chunks that kept their stored vector instead of being
+    #: re-embedded. Printed because it is the difference between a
+    #: PIPELINE_VERSION bump costing minutes and costing hours, and
+    #: an operator watching a re-ingest deserves to see which one
+    #: they are in for.
+    chunks_reused: int = 0
     #: Number of (source_file, chunks) deletions issued by --prune.
     files_pruned: int = 0
     chunks_pruned: int = 0
@@ -448,6 +490,30 @@ def _prune_orphans(
             stats.actions.append(f"prune    error {source_key}: {exc}")
 
 
+def authority_key_for(
+    file_path: Path, content_root: Path, authority_root: Path | None
+) -> str:
+    """Path used to derive the authority tier.
+
+    Normally the same as the chunk's source_key. It differs when the
+    operator scopes a run with `--source`, and that difference matters:
+    `--source .../FSHD_知识库/11.病友经验` makes every source_key a bare
+    filename, so the tier would come out `literature` and the citation
+    would be labelled 「文献」 — patient stories re-badged as papers,
+    from a flag whose only intent was "re-ingest this folder". The
+    authority root pins the derivation to the corpus root regardless of
+    how the run was scoped.
+    """
+    if authority_root is not None:
+        try:
+            return relative_source_key(file_path, authority_root)
+        except ValueError:
+            # Not under the corpus root (an operator ingesting from
+            # somewhere else entirely) — fall back to the scoped key.
+            pass
+    return relative_source_key(file_path, content_root)
+
+
 def ingest(
     *,
     content_root: Path,
@@ -457,6 +523,7 @@ def ingest(
     dry_run: bool = False,
     only: Sequence[str] | None = None,
     prune: bool = False,
+    authority_root: Path | None = None,
 ) -> IngestStats:
     stats = IngestStats()
 
@@ -571,10 +638,19 @@ def ingest(
 
         chunks_per_source[source_key] = len(raw_chunks)
         path_metadata = _derive_metadata_from_path(source_key)
+        # Authority tier + display label, derived from the corpus path.
+        # Stored on every chunk so retrieval can rank and cite by it
+        # without re-deriving, and so `where` filters / SQL reports can
+        # see it. Existing rows get it from --backfill-authority.
+        authority = authority_for_path(
+            authority_key_for(file_path, content_root, authority_root)
+        )
         file_metadata: Dict[str, Any] = {
             **path_metadata,
             **parse_result.metadata,
             "file_type": file_path.suffix.lower().lstrip("."),
+            "authority_tier": authority["tier"],
+            "authority_label": authority["label"],
         }
 
         for raw in raw_chunks:
@@ -613,20 +689,55 @@ def ingest(
 
     stats.chunks_upserted = len(pending)
     if pending and not dry_run:
+        # Chunks whose text is already in the backend, embedded by this
+        # same model, keep their stored vector. The chunk fingerprint is
+        # (source_key, chunk_index, whitespace-normalised content) and
+        # excludes PIPELINE_VERSION, so a hit means the embedder would
+        # be handed identical input and return identical numbers.
+        #
+        # This is what makes bumping PIPELINE_VERSION affordable. The
+        # bump exists so a chunker or parser change reaches corpora that
+        # are already ingested — without it, the deployments that have
+        # the bug keep it. But it invalidates every SOURCE fingerprint,
+        # and before this the ingest answered that by re-embedding all
+        # ~11,800 chunks to change the 64 that a one-document chunker
+        # fix actually touched. On a 16 GB laptop that put the machine
+        # into 12 GB of swap and took a batch from 3.8 seconds to 50
+        # minutes. Re-parsing and re-chunking every file stays and is
+        # now most of the cost of a bump — 235 files in this corpus —
+        # while the embedder sees only the chunks whose text actually
+        # moved: 1,046 of the 11,110 chunks the corpus stored today
+        # produces, see PIPELINE_VERSION for where that remainder comes
+        # from.
+        reused = backend.reusable_embeddings(
+            [chunk.fingerprint for chunk in pending], embedder.model_name
+        )
+        if reused:
+            stats.actions.append(
+                f"reuse    {len(reused)} of {len(pending)} chunks kept their "
+                f"stored embedding (content unchanged, same embed model)"
+            )
+        stats.chunks_reused = len(reused)
+
         for start in range(0, len(pending), batch_size):
             batch = pending[start : start + batch_size]
-            texts = [chunk.content for chunk in batch]
-            embeddings = embedder.embed_texts(texts)
-            if len(embeddings) != len(batch):
-                raise RuntimeError(
-                    f"Embedder returned {len(embeddings)} vectors for "
-                    f"{len(batch)} chunks"
-                )
-            for chunk, emb in zip(batch, embeddings):
-                chunk.embedding = emb
+            fresh = [chunk for chunk in batch if chunk.fingerprint not in reused]
+            for chunk in batch:
+                if chunk.fingerprint in reused:
+                    chunk.embedding = reused[chunk.fingerprint]
+            if fresh:
+                embeddings = embedder.embed_texts([chunk.content for chunk in fresh])
+                if len(embeddings) != len(fresh):
+                    raise RuntimeError(
+                        f"Embedder returned {len(embeddings)} vectors for "
+                        f"{len(fresh)} chunks"
+                    )
+                for chunk, emb in zip(fresh, embeddings):
+                    chunk.embedding = emb
             backend.upsert(batch)
             stats.actions.append(
-                f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks"
+                f"upsert   batch {start // batch_size + 1}: {len(batch)} chunks "
+                f"({len(fresh)} embedded)"
             )
 
         # All new chunks landed safely → drop the stale ones whose
@@ -676,6 +787,126 @@ def ingest(
     return stats
 
 
+# ------------------------------------------------------- authority backfill
+
+#: Same identifier shape PgVectorBackend validates `table_name` against.
+#: Re-checked here because the UPDATE below has to f-string the table
+#: name into SQL (psycopg cannot bind identifiers) and a second file
+#: interpolating a value must not inherit trust from the first one's
+#: validation. Same reasoning as knowledge_service._SQL_IDENTIFIER_RE.
+_SQL_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}")
+
+
+def backfill_authority(*, backend: VectorBackend, dry_run: bool) -> Dict[str, int]:
+    """Stamp `authority_tier` / `authority_label` onto existing chunks.
+
+    Why this exists rather than "just re-ingest": the per-file
+    fingerprint covers the file bytes, the parser and PIPELINE_VERSION —
+    none of which change when we start writing a new *metadata* key. So
+    every already-ingested chunk (10,241 of them today) is reported
+    unchanged and would never pick the tier up. Bumping PIPELINE_VERSION
+    does reach them, and since `reusable_embeddings` landed it re-embeds
+    nothing whose text did not move — but it still re-reads, re-parses
+    and re-chunks all 235 files, 299 s of it measured on this corpus,
+    84 pages of that rasterised at 300 DPI for the OCR fallback, plus
+    the 1,046 chunks whose stored text does not match what the parser
+    produces today (see PIPELINE_VERSION) — all to stamp a value
+    derived purely from the path.
+
+    Idempotent by construction, and deliberately fill-only: the UPDATE's
+    WHERE clause touches only rows that have NO stored tier, so a second
+    run reports 0 updated and issues no writes — and, more importantly,
+    a value ingest already stored is never overwritten.
+
+    That last part is not a nicety. A row written by a scoped run
+    (`--source .../11.病友经验`) carries a bare filename in
+    `source_file`; deriving from it here yields `literature`, and an
+    overwriting backfill would re-badge patient stories as 「文献」 —
+    exactly the footgun `authority_key_for` exists to prevent on the
+    ingest side. Ingest owns the value; this fills gaps. Embeddings are
+    never read or written.
+
+    Talks to the pool directly because `VectorBackend` has no
+    metadata-update operation and adding one to the backend interface is
+    a much wider change than a one-shot maintenance task justifies. The
+    same escape hatch, with the same identifier re-validation, is
+    already used by knowledge_service._corpus_chunk_count.
+    """
+    pool = getattr(backend, "pool", None)
+    table = getattr(backend, "table_name", None)
+    if pool is None or not isinstance(table, str) or not _SQL_IDENTIFIER_RE.fullmatch(table):
+        raise SystemExit(
+            f"--backfill-authority needs a SQL-backed backend (got "
+            f"'{getattr(backend, 'id', '?')}'). Set KB_BACKEND=pgvector."
+        )
+
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT source_file FROM {table} "  # noqa: S608 — identifier re-validated above
+                f"WHERE source_file IS NOT NULL"
+            )
+            source_files = [row[0] for row in cur.fetchall() if row[0]]
+
+    # Group by tier so the whole corpus is at most one UPDATE per tier
+    # rather than one per file.
+    by_tier: Dict[str, tuple[Dict[str, str], List[str]]] = {}
+    for source_key in source_files:
+        # NOTE the WHERE clause below only touches rows with NO stored
+        # tier. That is what keeps this derivation safe: a row written
+        # by a scoped run (`--source .../11.病友经验`) has a bare
+        # filename in source_file and would derive as `literature`
+        # here, and this function has no way to recover the corpus-root
+        # path from it. Ingest pins that correctly via
+        # `authority_key_for` and already stored the right value; the
+        # backfill's job is to fill gaps, never to second-guess it.
+        authority = authority_for_path(source_key)
+        payload = {
+            "authority_tier": authority["tier"],
+            "authority_label": authority["label"],
+        }
+        by_tier.setdefault(authority["tier"], (payload, []))[1].append(source_key)
+
+    counts: Dict[str, int] = {}
+    for tier in sorted(by_tier):
+        payload, keys = by_tier[tier]
+        if dry_run:
+            # Count the rows the UPDATE would touch, without writing.
+            sql = (
+                f"SELECT count(*) FROM {table} "  # noqa: S608 — identifier re-validated above
+                f"WHERE source_file = ANY(%s) "
+                f"AND (metadata ->> 'authority_tier' IS NULL "
+                f"     OR metadata ->> 'authority_label' IS NULL)"
+            )
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (keys,))
+                    row = cur.fetchone()
+            counts[tier] = int(row[0]) if row else 0
+            continue
+
+        sql = (
+            f"UPDATE {table} SET metadata = metadata || %s::jsonb "  # noqa: S608 — identifier re-validated above
+            f"WHERE source_file = ANY(%s) "
+            f"AND (metadata ->> 'authority_tier' IS NULL "
+            f"     OR metadata ->> 'authority_label' IS NULL)"
+        )
+        with pool.connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql,
+                        (json.dumps(payload, ensure_ascii=False), keys),
+                    )
+                    counts[tier] = cur.rowcount or 0
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    return counts
+
+
 # ---------------------------------------------------------------------- main
 
 def main() -> int:
@@ -719,13 +950,53 @@ def main() -> int:
             "preview what would be deleted."
         ),
     )
+    parser.add_argument(
+        "--backfill-authority",
+        action="store_true",
+        help=(
+            "Maintenance mode: stamp authority_tier / authority_label onto "
+            "chunks already in the backend, derived from their source path, "
+            "then exit without walking any files. Idempotent — rerunning "
+            "updates 0 rows. Combine with --dry-run to count first. "
+            "Nothing is re-parsed and nothing is re-embedded."
+        ),
+    )
     args = parser.parse_args()
 
     only_list = [s for s in (args.only or "").split(",") if s.strip()] or None
     backend_name = os.getenv("KB_BACKEND") or DEFAULT_BACKEND
 
+    if args.backfill_authority:
+        print("KB authority backfill")
+        print(f"  backend      : {backend_name}")
+        if args.dry_run:
+            print("  DRY RUN (counting only, no backend writes)")
+        print()
+        backend = create_backend(backend_name)
+        try:
+            counts = backfill_authority(backend=backend, dry_run=args.dry_run)
+        finally:
+            backend.close()
+        verb = "would update" if args.dry_run else "updated"
+        for tier in sorted(counts):
+            print(f"  {tier:<12} {verb} {counts[tier]} chunks")
+        print(f"  {'total':<12} {verb} {sum(counts.values())} chunks")
+        return 0
+
     raw_source = Path(args.source)
     effective_source = resolve_effective_root(raw_source)
+
+    # Pin authority derivation to the corpus root even when --source
+    # scopes the run to a subfolder. See `authority_key_for`.
+    canonical_root = resolve_effective_root(DEFAULT_CONTENT_ROOT)
+    try:
+        authority_root = (
+            canonical_root
+            if effective_source.resolve().is_relative_to(canonical_root.resolve())
+            else None
+        )
+    except (OSError, ValueError):
+        authority_root = None
 
     print("KB ingest")
     print(f"  source       : {raw_source}")
@@ -752,6 +1023,7 @@ def main() -> int:
         dry_run=args.dry_run,
         only=only_list,
         prune=args.prune,
+        authority_root=authority_root,
     )
 
     if args.verbose:
@@ -769,6 +1041,11 @@ def main() -> int:
     print(f"  empty              : {stats.files_empty}")
     print(f"  errored            : {stats.files_errored}")
     print(f"  chunks upserted    : {stats.chunks_upserted}")
+    if stats.chunks_reused:
+        print(
+            f"  embeddings reused  : {stats.chunks_reused} "
+            f"({stats.chunks_upserted - stats.chunks_reused} newly embedded)"
+        )
     if args.prune:
         print(f"  pruned files       : {stats.files_pruned}")
         print(f"  pruned chunks      : {stats.chunks_pruned}")

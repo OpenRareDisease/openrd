@@ -1,0 +1,172 @@
+-- 025_measurement_cohort_index_per_patient.sql
+--
+-- Rebuilds idx_patient_measurements_cohort for the query the cohort
+-- distribution actually runs now.
+--
+-- WHY
+--
+-- 018 built (muscle_group, strength_score) for
+--
+--   SELECT MIN(...), MAX(...), percentile_cont(...), COUNT(*)
+--   FROM patient_measurements
+--   WHERE muscle_group = $1
+--
+-- and its note that "the query never has to touch the heap" was true of
+-- that query. The query has since changed twice, and both changes are
+-- corrections that have to stay:
+--
+--   * `profile_id <> $2`, because without it a patient was being
+--     compared against their own measurements and told it was the group.
+--   * a DISTINCT ON (profile_id) collapse to one row per patient, because
+--     percentiles over raw rows let whoever tests most often be the
+--     median while the caption beside it counts people. See the comment
+--     on the query in profile.service.ts.
+--
+-- The query is now
+--
+--   WITH per_patient AS (
+--     SELECT DISTINCT ON (profile_id) profile_id, strength_score
+--     FROM patient_measurements
+--     WHERE muscle_group = $1 AND profile_id <> $2
+--     ORDER BY profile_id, recorded_at DESC, strength_score DESC)
+--   SELECT MIN(...), MAX(...), percentile_cont(...), COUNT(*) FROM per_patient
+--
+-- and 018's index carries neither profile_id nor recorded_at, so it can
+-- neither cover the scan nor supply the DISTINCT ON ordering. It still
+-- narrows on muscle_group — 018's primary purpose, avoiding a sequential
+-- scan, survives — but the plan degrades to a heap scan plus a full sort.
+--
+-- MEASURED
+--
+-- PG18, a table with this exact column set holding 212,400 rows / 5,000
+-- profiles / 9 muscle groups (23,600 rows for 'deltoid'), VACUUM ANALYZEd,
+-- EXPLAIN (ANALYZE, BUFFERS), warm:
+--
+--   the current query on 018's index
+--     Sort (quicksort 2243kB) <- Bitmap Heap Scan, Heap Blocks: exact=338
+--     361 buffers, 4.4 ms
+--
+--   the same query on the index below
+--     Index Only Scan using idx_patient_measurements_cohort
+--     Heap Fetches: 0, no Sort node at all
+--     172 buffers, 1.7 ms
+--
+-- The sort is the part that matters more than the milliseconds. It is
+-- 2.2 MB of quicksort at 5,000 patients, it grows with the user base
+-- rather than with one patient's history, and p-manage opens four muscle
+-- groups at once — so four of them run concurrently and start spilling to
+-- disk together. That is the same failure shape 018 was written against.
+--
+-- ON THE COLUMN ORDER
+--
+-- (muscle_group, profile_id, recorded_at DESC, strength_score DESC).
+-- With muscle_group pinned by equality the remaining three are exactly
+-- the DISTINCT ON ordering, so Postgres reads the rows already grouped
+-- and already newest-first per patient. strength_score is last as a key
+-- rather than in an INCLUDE list because it is the deterministic
+-- tiebreak: a left/right pair written in one transaction shares
+-- recorded_at = NOW(), and without a tiebreak two identical requests can
+-- return two different medians. Keeping it a key column costs 2 bytes an
+-- entry and buys both the ordering and the covering property (13 MB here
+-- against 018's narrower index; an INCLUDE (id) variant measured 16 MB
+-- and 224 buffers for the same plan).
+--
+-- Still deliberately NOT narrowed to a recency window, for 018's reason:
+-- what the cohort MEANS is a clinical decision, not an indexing one.
+--
+-- LOCK NOTE — ACCESS EXCLUSIVE for the whole build, not 018's SHARE
+--
+-- Not CONCURRENTLY, for 018's reason: applyPendingMigrations
+-- (apps/api/src/db/migrate.ts) wraps each file in one BEGIN/COMMIT, and
+-- CREATE INDEX CONCURRENTLY cannot run inside a transaction. But that
+-- same wrapper is also why this file does NOT take the SHARE lock 018
+-- took, and the two statements below are not two separate locks. The
+-- DROP takes ACCESS EXCLUSIVE on patient_measurements and holds it
+-- until COMMIT, so the CREATE after it builds under ACCESS EXCLUSIVE —
+-- which blocks SELECT as well as INSERT/UPDATE/DELETE. 018 blocked
+-- writes only; this file stops the table dead for the length of the
+-- build.
+--
+-- Measured on the dev database (PG18, patient_measurements at 233
+-- rows) by holding the transaction open and reading pg_locks from a
+-- second session:
+--
+--   after the CREATE had run, pg_locks showed AccessExclusiveLock on
+--   patient_measurements granted and still held, alongside the build's
+--   own ShareLock — both at once
+--   `SELECT count(*) FROM patient_measurements` from that second
+--   session never returned; it was cancelled by a 2s statement_timeout
+--   DROP 1.5 ms, CREATE 4.7 ms — so reads are blocked for about 6 ms
+--   at this size, and it is the CREATE half that grows with the user
+--   base
+--
+-- Tolerable at this size and only at this size, for 015's two reasons:
+-- the row count, and a deploy shape with no concurrent reader or writer
+-- (one `api:` service, no `deploy.replicas`, so the old container is
+-- stopped before the new one migrates).
+--
+-- 018's by-hand escape hatch does NOT carry over to this file, and
+-- following it as written is worse than not trying. It says to build
+-- the index CONCURRENTLY outside the runner and let the IF NOT EXISTS
+-- become the no-op that records it — but the DROP below removes
+-- whatever index carries that name first, so the hand-built one is
+-- destroyed and then rebuilt non-concurrently under the full lock. At
+-- a size where the window matters, the swap has to REPLACE this file
+-- rather than precede it. Outside any transaction:
+--
+--   CREATE INDEX CONCURRENTLY idx_patient_measurements_cohort_v2
+--     ON patient_measurements
+--     (muscle_group, profile_id, recorded_at DESC, strength_score DESC);
+--
+-- then, in one transaction:
+--
+--   BEGIN;
+--   SET lock_timeout = '2s';
+--   DROP INDEX idx_patient_measurements_cohort;
+--   ALTER INDEX idx_patient_measurements_cohort_v2
+--     RENAME TO idx_patient_measurements_cohort;
+--   INSERT INTO schema_migrations (id, checksum) VALUES
+--     ('025_measurement_cohort_index_per_patient.sql',
+--      '<shasum -a 256 of this file>');
+--   COMMIT;
+--
+-- What the swap buys is a shorter stall, not the absence of one. That
+-- second transaction opens with a DROP INDEX, so it takes the same
+-- ACCESS EXCLUSIVE on patient_measurements as the file below and holds
+-- it until COMMIT — reads stop for it exactly as they stop for the
+-- CREATE. What changes is the length: measured on dev, the swap's DROP
+-- is 1.5 ms and the RENAME 0.3 ms, against a window that otherwise
+-- contains the whole CREATE and grows with the user base.
+--
+-- The `SET lock_timeout` is not decoration. ACCESS EXCLUSIVE cannot be
+-- granted while any reader still holds ACCESS SHARE, so at the size
+-- where this hatch is worth running the DROP first has to queue behind
+-- whatever SELECT is already in flight — and everything arriving while
+-- it queues stacks up behind it, reads included, because Postgres does
+-- not let later lock requests overtake a waiting exclusive one.
+-- Measured on dev with one reader deliberately held open: the DROP sat
+-- ungranted, and a plain `SELECT count(*)` issued after it was
+-- cancelled by a 2 s statement_timeout without ever running. With the
+-- lock_timeout the DROP gives up instead — 55P03, 「canceling statement
+-- due to lock timeout」 — the transaction rolls back with the v2 index
+-- still in place, and the queue drains; retry when the table is quiet.
+--
+-- The schema_migrations row is the part that is easy to forget and the
+-- part that makes the whole thing work — applyPendingMigrations skips
+-- on filename alone, so without it the next deploy runs the DROP+CREATE
+-- below anyway and throws away the concurrent build. A NULL checksum is
+-- accepted (`--status` then reports `applied` with no drift verdict);
+-- recording the real one keeps `--status` able to tell an edited file
+-- from the one that ran. On a ledger old enough to predate checksums
+-- there is no `checksum` column to write to: it is added by
+-- ensureMigrationsTable (migrate.ts) on a runner invocation, and this
+-- hatch runs BEFORE the deploy that would supply one, so the INSERT as
+-- written dies on 42703. Insert `(id)` alone on such a database — that
+-- is the same NULL checksum, reached the other way. The _down script's
+-- hatch needs none of this: its ledger statement is a DELETE, which
+-- names no columns, so it runs against a pre-checksum ledger unchanged.
+
+DROP INDEX IF EXISTS idx_patient_measurements_cohort;
+
+CREATE INDEX IF NOT EXISTS idx_patient_measurements_cohort
+  ON patient_measurements (muscle_group, profile_id, recorded_at DESC, strength_score DESC);

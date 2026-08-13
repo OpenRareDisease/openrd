@@ -14,6 +14,22 @@ import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_TITLES } from '../../lib/legal-content'
 import styles from './styles';
 
 import { bumpConsentEpoch } from '../../lib/consent-epoch';
+import {
+  createPassportPickup,
+  createPassportShare,
+  listPassportShares,
+  revokePassportShare,
+} from '../../lib/passport-share-api';
+import {
+  buildPickupUrl,
+  buildShareUrl,
+  describePickupState,
+  describeShareLife,
+  isShareRowLive,
+  PICKUP_TTL_MINUTES,
+  type PassportShare,
+} from '../../lib/passport-share';
+import PickupCodeCard from './components/PickupCodeCard';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import Button from '../common/Button';
@@ -134,6 +150,259 @@ const PrivacySettingsScreen = () => {
   const [sharingLoading, setSharingLoading] = useState(true);
   const [sharingError, setSharingError] = useState<string | null>(null);
   const [sharingSaving, setSharingSaving] = useState(false);
+
+  /**
+   * 「谁现在能读我的记录」.
+   *
+   * The share links live here rather than beside the export button
+   * because that is the question they answer. Exporting is something
+   * you do once; a live link is a standing permission, and the only
+   * place a patient looks for standing permissions is 隐私设置.
+   */
+  const [shares, setShares] = useState<PassportShare[] | null>(null);
+  const [sharesError, setSharesError] = useState<string | null>(null);
+  const [creatingShare, setCreatingShare] = useState(false);
+  const [revokingShareId, setRevokingShareId] = useState<string | null>(null);
+  // Held in component state and nowhere else. See passport-share-api.ts:
+  // the server keeps only a digest and cannot reissue this.
+  const [freshLink, setFreshLink] = useState<{ url: string | null; token: string } | null>(null);
+  /**
+   * The pickup code, held in component state and nowhere else, exactly
+   * like `freshLink`. The server stores a digest of it and cannot
+   * reissue it — see db/migrations/024.
+   *
+   * What is stored here is the SERVER'S numbers, not a rendered
+   * countdown. This used to hold a `minutesLeft` computed once at mint,
+   * on the argument that the card is looked at for thirty seconds — but
+   * the card stays mounted, so a code minted in the waiting room and
+   * shown twelve minutes later still claimed fifteen minutes. The card
+   * owns the clock now; this owns the facts it counts from.
+   */
+  const [creatingPickup, setCreatingPickup] = useState(false);
+  const [freshPickup, setFreshPickup] = useState<{
+    code: string;
+    qrUrl: string | null;
+    expiresAt: string;
+    ttlMinutes: number | null;
+    maxAttempts: number | null;
+  } | null>(null);
+
+  const loadShares = useCallback(async () => {
+    try {
+      setSharesError(null);
+      setShares(await listPassportShares());
+    } catch (error) {
+      setShares(null);
+      setSharesError(error instanceof ApiError ? error.message : '无法读取分享链接，请稍后重试');
+    }
+  }, []);
+
+  /**
+   * The clock the share list is read against.
+   *
+   * `describePickupState` and `isShareRowLive` default to `new Date()`,
+   * which samples RENDER time — and this screen has no reason to
+   * re-render on its own. So a pickup row minted in a waiting room kept
+   * saying 「还能用约 15 分钟」 and kept offering 作废 for as long as the
+   * screen stayed open, while PickupCodeCard three centimetres above it
+   * — which does tick — had already moved on to 「已过期，请重新生成」.
+   * Two answers about the same credential on one screen, and a live
+   * button on a door that is shut: the thing `isShareRowLive` exists to
+   * prevent, reached through staleness instead of a wrong predicate.
+   */
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const rows = shares ?? [];
+    /**
+     * Everything on this screen that the clock can move: per row, the
+     * one line of text under it and whether it still gets a button.
+     * Two clocks that produce the same string here render the same
+     * pixels, so keeping the older of the two lets React bail out of
+     * the render entirely — the trick PickupCodeCard already plays on
+     * its own minute counter.
+     *
+     * Derived from the same three calls the row itself makes rather
+     * than from a granularity constant, so a row kind added later, or
+     * a threshold moved inside describeShareLife, cannot leave this
+     * behind claiming nothing changed while the row says otherwise.
+     */
+    const readingAt = (at: Date) =>
+      rows
+        .map(
+          (share) =>
+            `${isShareRowLive(share, at) ? '1' : '0'} ${
+              describePickupState(share, at) ?? describeShareLife(share, at)
+            }`,
+        )
+        .join('\n');
+    const advanceTo = (at: Date) =>
+      setNow((prev) => (readingAt(prev) === readingAt(at) ? prev : at));
+    // Once immediately, before anything else: a list that arrives from
+    // loadShares() is read against whatever `now` was last set, which
+    // may be minutes old. This used to sit under an early return for
+    // 「no pickup rows」, so a list of nothing but links was read against
+    // the mount-time clock for the whole life of the screen.
+    const at = new Date();
+    advanceTo(at);
+    // Keep ticking while ANY row is still an open door — link rows
+    // included. The condition is not 「is there a pickup code」: what the
+    // clock is for is the moment a row stops being live, because that is
+    // the moment the 撤销/作废 button has to go. A seven-day link crosses
+    // that moment exactly like a fifteen-minute code does, just later,
+    // and a patient who has this screen open when it happens is the one
+    // being told the door is still open.
+    //
+    // Once every row has reached a terminal reading (已过期 / 已撤销 /
+    // 已被医生取走一次), nothing on the screen can change again without a
+    // refetch, so the clock stops and the rows keep that reading.
+    if (!rows.some((share) => isShareRowLive(share, at))) return;
+    const handle: { id?: ReturnType<typeof setInterval> } = {};
+    const stop = () => {
+      if (handle.id !== undefined) clearInterval(handle.id);
+    };
+    const tick = () => {
+      const t = new Date();
+      advanceTo(t);
+      if (!rows.some((share) => isShareRowLive(share, t))) stop();
+    };
+    // Ten seconds, not one: the finest thing on screen is a minute
+    // (「还能用约 N 分钟」 on a pickup code), and a per-second interval
+    // would sample 900 times over one code's life to move a number 15
+    // times. Not a minute either — that is how long a dead row would
+    // keep offering 作废.
+    //
+    // Ten seconds is the SAMPLING rate, and it is only the re-render
+    // rate for a row whose text is that fine. A link is day-granular
+    // above 24 hours, so for six of a seven-day link's seven days every
+    // sample reads 「N 天后过期」 and `advanceTo` keeps the previous
+    // clock — no state change, no render. Without that bail-out this
+    // interval bought 360 full renders an hour of a screen this size,
+    // for six days, to move one digit; the stop inside `tick` does not
+    // bound that, because for a link the stop is seven days away.
+    handle.id = setInterval(tick, 10_000);
+    return stop;
+  }, [shares]);
+
+  // The list has to load on open, not only after a create or a revoke.
+  // Without this the section renders empty for a patient who made a
+  // link last week — which reads as「我没分享过任何东西」, the exact
+  // opposite of the truth, on the screen whose job is to tell them who
+  // can currently read their record.
+  useEffect(() => {
+    void loadShares();
+  }, [loadShares]);
+
+  const onCreateShare = async () => {
+    setCreatingShare(true);
+    try {
+      // createPassportShare throws rather than resolving without a
+      // token: by that point the server has already issued a live
+      // credential, and a silent success is what let a patient press
+      // this five times and mint five invisible links.
+      const link = await createPassportShare();
+      {
+        setFreshLink({
+          // window.location only exists on the web export, which is how
+          // essentially every patient reaches this app. On native the
+          // token is shown with an explanation instead of a URL that
+          // would carry the wrong host.
+          url: buildShareUrl(
+            link.token,
+            typeof window !== 'undefined' ? window.location?.origin : null,
+          ),
+          token: link.token,
+        });
+      }
+      // One credential on screen at a time. Two of them under one
+      // heading is how a patient reads out the wrong one.
+      setFreshPickup(null);
+      await loadShares();
+    } catch (error) {
+      notify({
+        // Any Error's message, not just ApiError's — the shape check in
+        // passport-share-api throws a plain Error whose text tells the
+        // patient to go look at this very list, and swallowing it into
+        //「请稍后重试」would send them back to press the button again.
+        message: error instanceof Error ? error.message : '请稍后重试',
+        title: '没能生成链接',
+      });
+    } finally {
+      setCreatingShare(false);
+    }
+  };
+
+  const onCreatePickup = async () => {
+    setCreatingPickup(true);
+    try {
+      // Throws rather than resolving without a code, for the same
+      // reason createPassportShare does: the server has already opened
+      // a door by the time this returns.
+      const created = await createPassportPickup();
+      setFreshPickup({
+        code: created.share.code,
+        // window.location exists only on the web export, which is how
+        // essentially every patient reaches this app. On native there
+        // is no origin, so no QR — the card says the code alone, and
+        // the doctor types the address once. A QR built from a guessed
+        // host would send them to a page that does not exist.
+        qrUrl: buildPickupUrl(typeof window !== 'undefined' ? window.location?.origin : null),
+        expiresAt: created.share.pickup.expiresAt,
+        // Straight through, nulls and all. The old code turned an
+        // unusable expiry into the literal 15, which put a number the
+        // device had no evidence for on a live credential.
+        ttlMinutes: created.ttlMinutes,
+        maxAttempts: created.maxAttempts,
+      });
+      // Showing a pickup code and an old link at once is two doors on
+      // one screen with one heading; the list below still lists both.
+      setFreshLink(null);
+      await loadShares();
+    } catch (error) {
+      notify({
+        // Any Error, not just ApiError: the server's 「请先填写出生日期」
+        // and the client's shape-check message both tell the patient
+        // what to actually do, and 「请稍后重试」 would send them back
+        // to press the button again.
+        message: error instanceof Error ? error.message : '请稍后重试',
+        title: '没能生成取件码',
+      });
+    } finally {
+      setCreatingPickup(false);
+    }
+  };
+
+  const onRevokeShare = async (share: PassportShare) => {
+    // A pickup code is not a link and the dialog must not call it one:
+    // 「拿到这个链接的人」 means nothing to a patient who read eight
+    // characters out loud across a desk.
+    const ok = await confirm({
+      title: share.pickup ? '作废这个取件码？' : '撤销这个链接？',
+      message: share.pickup
+        ? '作废之后，你刚才念出去的那个取件码就打不开了。医生已经看过的内容我们收不回来。'
+        : '撤销之后，拿到这个链接的人就再也打不开了。他们已经看过的内容我们收不回来。',
+      confirmLabel: share.pickup ? '作废' : '撤销',
+      destructive: true,
+    });
+    if (!ok) return;
+    setRevokingShareId(share.id);
+    try {
+      await revokePassportShare(share.id);
+      // The credential on screen may be the one just revoked; clearing
+      // both stops the patient handing a dead URL — or reading out a
+      // dead code — to someone standing in front of them.
+      setFreshLink(null);
+      setFreshPickup(null);
+      await loadShares();
+    } catch (error) {
+      notify({
+        title: '撤销失败',
+        message: error instanceof ApiError ? error.message : '请稍后重试',
+      });
+    } finally {
+      setRevokingShareId(null);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -769,6 +1038,172 @@ const PrivacySettingsScreen = () => {
               </View>
             </View>
           </View>
+        </View>
+
+        {/* 谁现在能读我的记录 —— the standing permissions.
+            Placed above 授权记录 on purpose: a consent ledger is a
+            history, and a live share link is a door that is open right
+            now. The urgent one goes first. */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>谁现在能看我的记录</Text>
+          <Text style={styles.settingDescription}>
+            你可以生成一个只读链接，在微信里发给医生。对方不需要注册、不需要装 App，
+            打开就能看到你的临床护照。链接会自动失效，你也可以随时撤销。
+          </Text>
+          {/* 当面交 vs 微信发 —— two different rooms.
+              A URL is right when the doctor is not in front of you.
+              When they are, there is no chat window between you, and
+              「把手机举起来给对方看」 is exactly the ask this disease
+              makes hardest. See db/migrations/024. */}
+          {/* PICKUP_TTL_MINUTES, not a typed-out 15. This sentence is on
+              screen before anything has been minted, so there is no
+              server response to read — the constant mirrors the API's
+              and is the closest thing to a source we have here. */}
+          <Text style={styles.settingDescription}>
+            如果医生就在你面前，用取件码更省事：你念 8 位码，他在自己的电脑或手机上输入，
+            再输一次你的出生日期就能打开。取件码 {PICKUP_TTL_MINUTES} 分钟有效、只能用一次；
+            重新生成一个，上一个就立刻作废。
+          </Text>
+
+          {freshPickup ? (
+            /* `key` on the code, so a second mint REMOUNTS the card.
+               Without it React updates props on the same instance and
+               the countdown's mount timestamp stays pinned to the FIRST
+               mint — a code minted fourteen minutes later rendered
+               「约 1 分钟内有效」 and then 「已过期，请重新生成」 while the
+               server had given it a full fifteen.
+
+               That is the exact path the supersede-on-mint change exists
+               to serve: the patient reads the code out, the doctor
+               mishears a character, they tap again. The card would then
+               tell them to regenerate, and regenerating supersedes the
+               code that was still good. Two correct fixes composed into
+               a loop. */
+            <PickupCodeCard
+              key={freshPickup.code}
+              code={freshPickup.code}
+              qrUrl={freshPickup.qrUrl}
+              expiresAt={freshPickup.expiresAt}
+              ttlMinutes={freshPickup.ttlMinutes}
+              maxAttempts={freshPickup.maxAttempts}
+            />
+          ) : null}
+
+          {freshLink ? (
+            <View style={styles.shareFresh}>
+              <Text style={styles.shareFreshTitle}>链接已生成</Text>
+              {/* selectable, because copying it out is the entire point,
+                  and 「复制」 needs a clipboard permission this web
+                  export does not reliably have inside WeChat. */}
+              <Text style={styles.shareFreshValue} selectable>
+                {freshLink.url ?? freshLink.token}
+              </Text>
+              <Text style={styles.shareHint}>
+                {freshLink.url
+                  ? '长按上面这行复制，然后发给医生。这串地址只显示这一次，关掉就看不到了 —— 丢了就再生成一个。'
+                  : '这台设备上拼不出完整网址，上面是链接的口令部分。请在浏览器里打开本页面再生成一次。'}
+              </Text>
+            </View>
+          ) : null}
+
+          {/* The in-person action first: it is the one that happens
+              while the patient is standing in front of someone, and
+              the one whose credential dies in fifteen minutes. */}
+          <Button
+            label="当面给医生：生成取件码"
+            icon="qrcode"
+            variant="tinted"
+            fullWidth
+            busy={creatingPickup}
+            accessibilityHint={`生成一个 8 位取件码和二维码，医生在自己的设备上输入取件码和你的出生日期就能打开你的临床护照。${PICKUP_TTL_MINUTES} 分钟有效，只能用一次；你上一个还没用掉的取件码会立刻作废`}
+            onPress={onCreatePickup}
+          />
+
+          <Button
+            label="生成一个给医生看的链接"
+            icon="arrow-up-right-from-square"
+            variant="tinted"
+            fullWidth
+            busy={creatingShare}
+            accessibilityHint="生成一个有效期有限的只读链接，医生打开后可以看到你的临床护照"
+            onPress={onCreateShare}
+          />
+
+          {sharesError ? <Text style={styles.shareHint}>{sharesError}</Text> : null}
+
+          {shares && shares.length > 0
+            ? shares.map((share) => {
+                // A pickup row and a link row are both doors and belong
+                // in the same list — but they are not interchangeable:
+                // one was forwarded in WeChat and one was read out
+                // loud, and「已被取走一次」 has no meaning for a link.
+                //
+                // isShareRowLive, not isShareLive: a code that has been
+                // redeemed or burned is dead while its parent link is
+                // still unrevoked and unexpired, and isShareLive was
+                // offering 撤销 on it — a button that does nothing, on
+                // the one screen whose job is telling the patient which
+                // doors are open.
+                // `now` from the ticking state above, never the implicit
+                // default: the default samples render time, and this
+                // screen does not re-render on its own.
+                const live = isShareRowLive(share, now);
+                const pickupState = describePickupState(share, now);
+                return (
+                  <View key={share.id} style={styles.shareRow}>
+                    <View style={styles.shareRowCopy}>
+                      <Text style={styles.shareRowTitle}>
+                        {share.label ??
+                          `${share.createdAt.slice(0, 10)} ${share.pickup ? '生成的取件码' : '生成'}`}
+                      </Text>
+                      <Text style={styles.shareRowMeta}>
+                        {pickupState ?? describeShareLife(share, now)}
+                        {/* 「还没有人打开过」 is worth saying explicitly:
+                            a patient checking whether their doctor
+                            looked at it should not have to infer it
+                            from a missing number. */}
+                        {share.openedCount > 0
+                          ? ` · 被打开过 ${share.openedCount} 次`
+                          : ' · 还没有人打开过'}
+                      </Text>
+                    </View>
+                    {live ? (
+                      // `plain` but NOT `compact`. Compact draws 34pt
+                      // tall, and the hitSlop that would buy the rest
+                      // back is not read by Pressable on
+                      // react-native-web — so on the only channel that
+                      // ships, this was a 34pt-tall target on the
+                      // control that takes back access to a medical
+                      // record, aimed at by people whose grip and reach
+                      // this disease has already taken.
+                      //
+                      // The other dimension is not this call site's to
+                      // fix: `plain` drops the horizontal padding, so
+                      // the width comes from `styles.base`'s minWidth in
+                      // Button.tsx. Do not paper over it with a `style`
+                      // here — a caller style is applied last and would
+                      // override the floor for this one button while the
+                      // sibling list rows in p-falls kept it.
+                      <Button
+                        label={share.pickup ? '作废' : '撤销'}
+                        variant="plain"
+                        busy={revokingShareId === share.id}
+                        accessibilityHint={
+                          share.pickup
+                            ? '作废这个取件码，作废后医生再输入它也打不开你的记录'
+                            : '撤销这个链接，撤销后任何人都无法再打开'
+                        }
+                        onPress={() => onRevokeShare(share)}
+                      />
+                    ) : null}
+                  </View>
+                );
+              })
+            : null}
+
+          {shares && shares.length === 0 ? (
+            <Text style={styles.shareHint}>你还没有生成过任何链接。</Text>
+          ) : null}
         </View>
 
         {/* 授权记录 — the ledger the consent documents point at.

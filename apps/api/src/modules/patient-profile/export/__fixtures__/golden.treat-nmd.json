@@ -1,0 +1,319 @@
+{
+  "format": "TREAT-NMD FSHD core dataset",
+  "conformanceZh": "按 TREAT-NMD FSHD 核心数据集的六个强制性内容领域（诊断、家族史、症状、运动功能、轮椅使用、妊娠史）与可选的民族项组织。这是一次「对齐」，不是一致性声明：本仓库内没有该数据集的规范原文，因此本导出不标注版本号、不编造章节数、也不给出逐项的数据集条目编号。接收方在导入前应对照规范原文核对字段映射。",
+  "generatedAt": "2026-01-15T08:00:00.000Z",
+  "document": {
+    "datasetZh": "TREAT-NMD FSHD 核心数据集（2010 年 ENMC 工作会议议定，2016 年修订）",
+    "datasetSourceZh": "2025 FSHD 国际研究大会摘要集 P2.08（content/medical-kb/source/FSHD_知识库/2025-IRC-ABSTRACT-BOOK.pdf）：该数据集的强制性问题涵盖诊断、家族史、症状、运动功能、轮椅使用与妊娠史，并含一个可选的民族问题。",
+    "subjectRef": "11111111-1111-4111-8111-111111111111",
+    "sections": [
+      {
+        "key": "diagnosis",
+        "titleZh": "诊断",
+        "collected": true,
+        "items": [
+          {
+            "key": "diagnosis.type",
+            "labelZh": "FSHD 分型",
+            "value": "FSHD1",
+            "provenanceZh": "患者档案记录为「FSHD1」"
+          },
+          {
+            "key": "diagnosis.year",
+            "labelZh": "确诊年份",
+            "value": {
+              "answer": "known",
+              "answerZh": "已知",
+              "year": 2014
+            },
+            "provenanceZh": "基线问卷的确诊年份，缺失时回退到确诊日期的年份部分"
+          },
+          {
+            "key": "diagnosis.geneticallyConfirmed",
+            "labelZh": "是否有基因报告",
+            "value": true,
+            "provenanceZh": "依据患者是否上传过基因检测报告文件判断，不代表报告内容已被人工核对"
+          },
+          {
+            "key": "diagnosis.d4z4",
+            "labelZh": "D4Z4 重复单元数",
+            "value": "5 个重复单元",
+            "provenanceZh": "基线问卷或基因报告结构化解析"
+          },
+          {
+            "key": "diagnosis.haplotype",
+            "labelZh": "4q 单倍型",
+            "value": "4qA",
+            "provenanceZh": "基线问卷或基因报告结构化解析"
+          }
+        ],
+        "noteZh": null
+      },
+      {
+        "key": "familyHistory",
+        "titleZh": "家族史",
+        "collected": false,
+        "items": [],
+        "noteZh": "本节按默认规则未随本次导出发送：家族史是关于患者亲属的陈述，亲属是第二数据主体，未就此导出作出同意。collected=false 表示「未发送」，不表示「无家族史」。"
+      },
+      {
+        "key": "symptoms",
+        "titleZh": "症状",
+        "collected": true,
+        "items": [
+          {
+            "key": "symptom.fatigue",
+            "labelZh": "疲劳",
+            "value": {
+              "score": 7,
+              "scaleMin": 0,
+              "scaleMax": 10,
+              "recordedAt": "2025-06-02T01:00:00.000Z"
+            },
+            "provenanceZh": "患者自评，量表范围 0–10"
+          },
+          {
+            "key": "challenge.fatigue",
+            "labelZh": "疲劳",
+            "value": 3,
+            "provenanceZh": "基线问卷的困难程度自评"
+          },
+          {
+            "key": "challenge.pain",
+            "labelZh": "疼痛",
+            "value": 2,
+            "provenanceZh": "基线问卷的困难程度自评"
+          },
+          {
+            "key": "challenge.stairs",
+            "labelZh": "上下楼梯",
+            "value": 4,
+            "provenanceZh": "基线问卷的困难程度自评"
+          },
+          {
+            "key": "challenge.reachingUp",
+            "labelZh": "上举手臂",
+            "value": 4,
+            "provenanceZh": "基线问卷的困难程度自评"
+          }
+        ],
+        "noteZh": "每个症状只取该症状最近一次记录；完整时间序列在 PIPL 数据导出的 submissions 中，本格式不重复承载。"
+      },
+      {
+        "key": "motorFunction",
+        "titleZh": "运动功能",
+        "collected": true,
+        "items": [
+          {
+            "key": "motor.ambulation",
+            "labelZh": "当前行走能力",
+            "value": "assisted",
+            "provenanceZh": "需要辅助（拐杖、支具、扶人）才能行走"
+          },
+          {
+            "key": "motor.armRaiseDifficulty",
+            "labelZh": "上举手臂困难",
+            "value": true,
+            "provenanceZh": "患者自述"
+          },
+          {
+            "key": "motor.facialWeakness",
+            "labelZh": "面部肌无力",
+            "value": true,
+            "provenanceZh": "患者自述"
+          },
+          {
+            "key": "motor.footDrop",
+            "labelZh": "足下垂",
+            "value": false,
+            "provenanceZh": "患者自述"
+          },
+          {
+            "key": "motor.assistiveDevices",
+            "labelZh": "正在使用的辅助器具",
+            "value": [
+              "手杖",
+              "踝足矫形器"
+            ],
+            "provenanceZh": "患者自述"
+          },
+          {
+            "key": "motor.functionTests",
+            "labelZh": "功能测试（每类最近一次）",
+            "value": [
+              {
+                "testType": "ten_meter_walk",
+                "testLabelZh": "10 米步行计时",
+                "measuredValue": 14.2,
+                "unit": "sec",
+                "notApplicable": false,
+                "assistanceRequired": true,
+                "performedAt": "2025-06-01T03:00:00.000Z"
+              },
+              {
+                "testType": "stair_climb",
+                "testLabelZh": "爬楼梯计时",
+                "measuredValue": null,
+                "unit": null,
+                "notApplicable": true,
+                "assistanceRequired": null,
+                "performedAt": "2025-06-01T03:10:00.000Z"
+              }
+            ],
+            "provenanceZh": "患者自行完成并记录，非临床环境下的标准化测试；notApplicable 表示「尝试后当天做不了」，与「未测」不同"
+          }
+        ],
+        "noteZh": "本节不含 Brooke 上肢分级与 Vignos 下肢分级——本平台采集这两项，但它们尚未接入本导出。详见 omissions 中的 sections.motorFunction.instruments。"
+      },
+      {
+        "key": "wheelchairUse",
+        "titleZh": "轮椅使用",
+        "collected": true,
+        "items": [
+          {
+            "key": "wheelchair.currentState",
+            "labelZh": "当前状态",
+            "value": "assisted",
+            "provenanceZh": "注意：2022 年迁移 022 之前，「需要辅助」是无法行走者唯一可选的答案，历史值不能当作「借助器具仍可行走」的证据"
+          },
+          {
+            "key": "milestone.wheelchair",
+            "labelZh": "开始使用轮椅",
+            "value": {
+              "timestamp": "2019-01-01T00:00:00.000Z",
+              "precision": "unrecorded",
+              "pinnedToYearStart": true,
+              "pinnedToMonthStart": true,
+              "storedYear": 2019,
+              "noteZh": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+            },
+            "provenanceZh": "患者在随访时间线上记录的事件；日期精度见 occurrence.precision"
+          }
+        ],
+        "noteZh": "开始使用轮椅的日期来自随访事件，来源字段无法表示「只知道年份」，请以 occurrence 中的说明为准。"
+      },
+      {
+        "key": "milestones",
+        "titleZh": "其他里程碑事件（NIV / AFO）",
+        "collected": true,
+        "items": [
+          {
+            "key": "milestone.niv",
+            "labelZh": "开始使用无创通气（NIV）",
+            "value": {
+              "timestamp": "2023-08-14T13:30:00.000Z",
+              "precision": "unrecorded",
+              "pinnedToYearStart": false,
+              "pinnedToMonthStart": false,
+              "storedYear": 2023,
+              "noteZh": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+            },
+            "provenanceZh": "患者在随访时间线上记录的事件；日期精度见 occurrence.precision"
+          }
+        ],
+        "noteZh": "本节不属于该核心数据集列出的强制性内容，作为附加信息提供；日期精度限制同轮椅事件。"
+      },
+      {
+        "key": "followupEvents",
+        "titleZh": "其他随访事件",
+        "collected": true,
+        "items": [
+          {
+            "key": "event.77777777-7777-4777-8777-777777777773",
+            "labelZh": "跌倒",
+            "value": {
+              "eventType": "fall",
+              "occurrence": {
+                "timestamp": "2025-05-20T09:00:00.000Z",
+                "precision": "unrecorded",
+                "pinnedToYearStart": false,
+                "pinnedToMonthStart": false,
+                "storedYear": 2025,
+                "noteZh": "来源字段只能存一个完整时间点，无法表示「只知道年份」或「只知道月份」。因此本条的精度未记录：请不要把它当作精确到天的观察。pinnedToYearStart / pinnedToMonthStart 说明的是存储值本身的形态（是否正好落在某年 / 某月的第一毫秒），不是对患者本意的推断。"
+              },
+              "severity": "mild",
+              "severityZh": "轻",
+              "descriptionZh": "在浴室滑倒"
+            },
+            "provenanceZh": "患者自行记录的随访事件；日期精度限制同里程碑事件"
+          }
+        ],
+        "noteZh": "本节不属于该核心数据集列出的强制性内容，作为附加信息提供。已撤回（软删除）的事件不会出现在这里。"
+      },
+      {
+        "key": "pregnancyHistory",
+        "titleZh": "妊娠史",
+        "collected": false,
+        "items": [],
+        "noteZh": "本平台目前不采集妊娠史。collected=false 表示「没有采集这个问题」，不表示「没有妊娠史」。"
+      },
+      {
+        "key": "ethnicity",
+        "titleZh": "民族 / 族群（可选项）",
+        "collected": false,
+        "items": [],
+        "noteZh": "本平台不采集民族信息。"
+      }
+    ],
+    "localOnly": null,
+    "codingProvenance": {
+      "emitted": [],
+      "withheld": [
+        {
+          "system": "LOINC",
+          "code": "2157-6",
+          "wouldMean": "Creatine kinase [Enzymatic activity/volume] in Serum or Plasma",
+          "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+        },
+        {
+          "system": "LOINC",
+          "code": "19870-5",
+          "wouldMean": "Forced vital capacity [Volume] Respiratory system",
+          "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+        },
+        {
+          "system": "LOINC",
+          "code": "19872-1",
+          "wouldMean": "FVC percent predicted",
+          "whyNotVerified": "No LOINC release in this repository, and the %-predicted spirometry codes are a family that is easy to confuse with the plain-volume ones — the highest-risk entry in this list."
+        },
+        {
+          "system": "LOINC",
+          "code": "19911-7",
+          "wouldMean": "Diffusing capacity of the lung for carbon monoxide (DLCO)",
+          "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+        },
+        {
+          "system": "LOINC",
+          "code": "64098-7",
+          "wouldMean": "6 minute walk test distance",
+          "whyNotVerified": "No LOINC release or LOINC-bearing document exists in this repository."
+        }
+      ],
+      "noteZh": "本导出只使用可在本仓库内核对来源的编码。无法核对的编码一律不写入，相关项目改为「有显示名、无编码」的纯文本形式——这在 FHIR 与 Phenopacket 中都是合法的，且不会让接收系统误信一个未经核对的代码。withheld 列出的是本应编码、但因缺少可核对来源而留空的项目。"
+    }
+  },
+  "omissions": [
+    {
+      "field": "sections.familyHistory",
+      "reasonZh": "家族史涉及第二数据主体（亲属），默认不外发。"
+    },
+    {
+      "field": "sections.motorFunction.instruments",
+      "reasonZh": "本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本。这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取。若患者在填写 Vignos 时选择了同步到基线，由分级推出的行走状态会出现在 sections.motorFunction 的 motor.ambulation 与 sections.wheelchairUse 的 wheelchair.currentState，分级本身仍然不在。"
+    },
+    {
+      "field": "sections.pregnancyHistory",
+      "reasonZh": "该核心数据集的强制性内容之一，但本平台目前没有采集妊娠史的表单。"
+    },
+    {
+      "field": "localOnly",
+      "reasonZh": "姓名、称呼与确诊医生姓名属于直接身份信息，按数据集规则留在采集方本地。"
+    }
+  ],
+  "notes": {
+    "年份字段": "所有年份字段都有三种答案：已知 / 记不清了 / 未采集。「记不清了」是一个真实答案，表示问过而患者记不清，不要与「未采集」合并处理。",
+    "日期精度": "里程碑事件的日期来自一个只能存完整时间点的字段。请阅读每条事件的 occurrence.noteZh，不要把它当作精确到天的观察。",
+    "数据性质": "本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。"
+  }
+}

@@ -45,7 +45,20 @@
 - [ ] `npm run lint` 通过。
 - [ ] `npm run format` 通过（**不要**跳过：仓库里没有 CRLF 问题，prettier 在 master 上是干净的）。
 - [ ] `npm test` 通过（API + 移动端两个 workspace）。
-- [ ] `python -m pytest apps/report-manager/tests scripts/kb_parsers` 通过（13 个 Python 测试文件；依赖二进制的用例会自行 skip）。
+- [ ] `python -m pytest apps/report-manager/tests scripts/kb_parsers` 通过，且 **pytest 收到的测试文件数与 `.github/workflows/ci.yml` 里 Test step 上方注释记的那个数一致**：
+
+      ```
+      python -m pytest apps/report-manager/tests scripts/kb_parsers --collect-only -q | grep '::' | cut -d: -f1 | sort -u | wc -l
+      ```
+
+      这是 collection 的完整性检查，不是装饰：import-mode / conftest 一坏，`scripts/kb_parsers` 整个不被收集，pytest 照样打绿退出 0。
+
+      **不要用 `ls` 数文件**——这一条要抓的是「pytest 收没收」，而 `ls` 数的是「磁盘上有没有」，两回事。实测：往 `scripts/kb_parsers/` 放一个只有 `collect_ignore_glob = ["test_*.py"]` 的 conftest.py，`ls` 在坏树和好树上数出来一样多，`pytest -q` 退出 0，整条检查等于没做；上面那条命令在坏树上只剩 2 个文件。
+
+      末尾的 `N tests collected` 一起看，同样对照 ci.yml 那条注释。**测试数和文件数都只此一份，都在 ci.yml，不要在这里再抄**——两份拷贝会各自漂。两个数都是手工维护的，没有测试在盯着它们：加了测试就把 ci.yml 那两个数一起改；对不上时先确认是不是自己刚加的用例，再怀疑 collection。
+
+      「依赖二进制或依赖语料的用例会自行 skip」只对**开发机**成立。CI 上 `CI=true`，test_docx_parser.py 的 `_CONVERTER_REQUIRED` 和 test_pgvector_reusable_embeddings.py 的 `_DB_REQUIRED` 会把这些 skip 变成 fail——故意的，免得 runner 丢了 LibreOffice 或 pgvector 容器还报绿。语料相关的 census 用例在两边都 skip（语料 gitignore，没有 job ingest 过），除非显式设 `KB_CENSUS_REQUIRED=1`。
+
 - [ ] **release commit 上的 CI 全绿**：`.github/workflows/ci.yml` 的三个 job —— `API (lint, format, typecheck, test)`、`Mobile (lint, typecheck, test, web export)`、`Report manager (pytest)` —— 都是绿的。CI 存在**不代表**上面四条可以跳过：workflow 只在 push / PR 上跑，而 release commit 有可能是本地打完 tag 直接推的。所以本地手工跑 + CI 全绿是两道，不是二选一。
 - [ ] `docker compose --profile prod build` 在发布前至少成功过一次。CI 的 mobile job 已经跑 `expo export`（Metro 解析 + 静态渲染都过了），但**镜像本身**——api 镜像里的 Python OCR 依赖、`Dockerfile.kb` 的 ML 依赖、nginx 层——仍然只有真 build 会暴露。
 - [ ] `npm run db:migrate:status` 输出符合预期且**退出码为 0**：没有意外的 `pending`，没有 `drifted`（ledger 里的 SHA-256 和磁盘文件对不上），没有 `orphan`（ledger 有行、磁盘没文件；`*_down.sql` 形态的 orphan 会让这条命令直接非零退出，处理办法见 runbook §2.1 的 pre-flight）。这条命令是只读的，可以在生产上放心跑。

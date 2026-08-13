@@ -2,6 +2,10 @@ import { Router, type RequestHandler } from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
 import { DELETION_PURGE_INTERVAL_MS } from './account-deletion.js';
+import { FallsController } from './falls/falls.controller.js';
+import { FallsService } from './falls/falls.service.js';
+import { InstrumentsController } from './instruments/instruments.controller.js';
+import { InstrumentsService } from './instruments/instruments.service.js';
 import {
   OCR_STUCK_AFTER_MINUTES,
   OCR_SWEEP_INTERVAL_MS,
@@ -57,6 +61,16 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     pool: getPool(),
     logger: context.logger,
   });
+  const instrumentsService = new InstrumentsService({
+    pool: getPool(),
+    logger: context.logger,
+  });
+  const instrumentsController = new InstrumentsController(instrumentsService);
+  const fallsService = new FallsService({
+    pool: getPool(),
+    logger: context.logger,
+  });
+  const fallsController = new FallsController(fallsService);
   const localStorage = new LocalStorageProvider();
   const minioStorage =
     context.env.MINIO_ENDPOINT && context.env.MINIO_ACCESS_KEY && context.env.MINIO_SECRET_KEY
@@ -220,6 +234,31 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     keyResolver: (req) => (req as AuthenticatedRequest).user?.id ?? req.ip ?? 'unknown',
   });
 
+  /** Per-user throttle on the referral pack.
+   *
+   *  It sits between the two throttling regimes already in this file
+   *  and is deliberately neither of them. `/me/data-export` takes a
+   *  60-second cooldown because it fans out into ~75 paged queries;
+   *  `/me/passport` and `/me/passport/export` take nothing because
+   *  they are a single profile read. The pack is one
+   *  `getProfileByUserId` too, but it then runs the whole passport
+   *  summariser over every document the patient has ever uploaded and
+   *  builds the markdown document on top of that — CPU on the event
+   *  loop, in a process that also serves everyone else. A cooldown
+   *  would be wrong (a patient who mis-typed and pressed again in a
+   *  waiting room must not be told to wait a minute); 20/min per
+   *  account is far above pressing a button and still stops a
+   *  scripted loop from pinning a core. Keyed by user id —
+   *  authMiddleware runs first — so a whole clinic behind one NAT
+   *  does not share a budget. */
+  const referralPackLimiter = createRateLimitMiddleware({
+    keyPrefix: 'profile:referral-pack',
+    windowMs: 60_000,
+    maxRequests: 20,
+    message: '生成转诊资料过于频繁，请稍后再试',
+    keyResolver: (req) => (req as AuthenticatedRequest).user?.id ?? req.ip ?? 'unknown',
+  });
+
   router.use(authMiddleware);
 
   // PIPL Art. 29. Applied to every route that STORES or RE-PROCESSES
@@ -249,6 +288,13 @@ export const createPatientProfileRouter = (context: RouteContext) => {
   router.get('/me/passport', asyncHandler(controller.getMyPassport));
   router.get('/me/passport/export', asyncHandler(controller.exportMyPassport));
   router.get('/me/data-export', asyncHandler(controller.exportMyData));
+  // 转诊资料. Same class of data as /me/data-export above — the whole
+  // clinical record, serialised to leave the phone — so it takes the
+  // same auth (router-level, above) and the same consent treatment
+  // (none: it is a read, see the block comment on sensitiveDataConsent
+  // above). It gets its own throttle rather than the export cooldown;
+  // referralPackLimiter says why.
+  router.get('/me/referral-pack', referralPackLimiter, asyncHandler(controller.getMyReferralPack));
   router.put('/me', guardianConsent, asyncHandler(controller.updateMyProfile));
   // The baseline carries diagnosis type, D4Z4 repeat count, haplotype
   // and methylation — the privacy policy names those as 敏感个人信息
@@ -277,6 +323,53 @@ export const createPatientProfileRouter = (context: RouteContext) => {
     asyncHandler(controller.addFollowupEvent),
   );
   router.post('/me/activity-logs', sensitiveDataConsent, asyncHandler(controller.addActivityLog));
+
+  // ------------------------------------------------------------ falls diary
+  //
+  // A fall used to be one followup event with the interesting half
+  // typed into a free-text box the AI retriever is required to refuse.
+  // See db/migrations/023_patient_falls.sql. POST here writes the
+  // structured entry AND the followup event together, so the 病程时间线
+  // keeps showing falls exactly as it did.
+  //
+  // The reads are ungated like every other read on this router; the
+  // write carries the same consent gate as every other path that stores
+  // health data.
+  router.get('/me/falls', asyncHandler(fallsController.listFalls));
+  router.get('/me/falls/summary', asyncHandler(fallsController.getSummary));
+  router.post('/me/falls', sensitiveDataConsent, asyncHandler(fallsController.recordFall));
+  // Soft delete, and it retracts the timeline twin in the same
+  // transaction — otherwise the entry vanishes from the diary and the
+  // fall stays in the count.
+  router.delete('/me/falls/:id', asyncHandler(fallsController.deleteFall));
+
+  // ------------------------------------------------------------ instruments
+  //
+  // Published measurement scales (Brooke, Vignos), administered as
+  // patient self-assessment. See db/migrations/022_patient_instruments.sql
+  // for the immutability decision these endpoints are built around: a
+  // recorded administration is never updated, and there is deliberately
+  // no PUT or PATCH below. A correction is a POST carrying
+  // `supersedesId`.
+  //
+  // The catalogue is ungated, like every other read here: it contains
+  // no patient data at all, only the anchors, the citation and the
+  // documented limitations of each scale.
+  router.get('/me/instruments', asyncHandler(instrumentsController.listCatalogue));
+  router.get(
+    '/me/instruments/administrations',
+    asyncHandler(instrumentsController.listAdministrations),
+  );
+  router.get('/me/instruments/summary', asyncHandler(instrumentsController.getSummary));
+  // Stores a clinical score, and — when the patient asks for it with
+  // `applyToBaseline` — writes their ambulation state and a
+  // started_wheelchair followup event. Same consent as every other
+  // path that stores health data.
+  router.post(
+    '/me/instruments/administrations',
+    sensitiveDataConsent,
+    asyncHandler(instrumentsController.recordAdministration),
+  );
   // Retract one hand-entered record (function test / symptom score /
   // followup event). Soft delete: the row stays as an audited
   // tombstone, every read path filters it out. `:kind` is parsed

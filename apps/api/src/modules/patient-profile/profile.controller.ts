@@ -2,6 +2,11 @@ import type { Response } from 'express';
 import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
+import {
+  buildPortableExport,
+  isPortableExportFormat,
+  PORTABLE_EXPORT_FORMATS,
+} from './export/index.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
@@ -27,6 +32,7 @@ import {
   updateProfileSchema,
 } from './profile.schema.js';
 import type { PatientProfileService } from './profile.service.js';
+import { buildReferralPack } from './referral-pack.js';
 import type { AppLogger } from '../../config/logger.js';
 import type { AuthenticatedRequest } from '../../middleware/require-auth.js';
 import type { OcrProvider } from '../../services/ocr/ocr-provider.js';
@@ -487,6 +493,48 @@ export class PatientProfileController {
   };
 
   /**
+   * 罕见病诊疗协作网转诊资料 — the referral pack (./referral-pack.ts),
+   * built on demand and never stored.
+   *
+   * WHY IT IS BUILT PER REQUEST AND NOT CACHED
+   * ------------------------------------------
+   * The pack is a snapshot of the profile at the moment it is asked
+   * for, and the patient asks for it on the way to a clinic. A cached
+   * copy would hand a neurologist a document that omits the report the
+   * patient uploaded this morning — while carrying a 生成时间 that says
+   * otherwise. One `getProfileByUserId` is the same query GET /me
+   * already serves, so there is nothing to save by caching and a real
+   * way to be wrong.
+   *
+   * WHY THE BODY IS BARE AND NOT `{ data: ... }`
+   * --------------------------------------------
+   * Every other route in this router answers with the object itself
+   * (`getMyProfile`, `exportMyPassport`, `exportMyData`), while
+   * passport-share.routes.ts wraps in `{ data }`. Both conventions are
+   * live in this codebase and a client cannot tell which it is talking
+   * to by looking. That is exactly how apps/mobile/lib/api.ts's
+   * `apiRequest<T>` — an unchecked assertion that does NOT unwrap —
+   * shipped a blank share list to patients. So this route matches its
+   * siblings, and lib/referral-pack-api.ts unwraps tolerantly and
+   * shape-checks rather than trusting either.
+   *
+   * NOT gated on `requireSensitiveDataConsent`, deliberately, and for
+   * the reason profile.routes.ts already records: this is a read, and
+   * 查阅 / 复制 are rights PIPL grants rather than rewards for
+   * consenting. Nothing here leaves the caller's own account — the
+   * pack is theirs, and it is `req.user.id` that selects it.
+   */
+  getMyReferralPack = async (req: AuthenticatedRequest, res: Response) => {
+    const profile = await this.service.getProfileByUserId(req.user.id);
+
+    if (!profile) {
+      throw new AppError('Patient profile not found', 404);
+    }
+
+    res.status(200).json(buildReferralPack(profile));
+  };
+
+  /**
    * Full data export (data-portability right, 个保法可携带权): one
    * JSON document holding everything the platform stores about the
    * caller — profile with all nested records + document metadata,
@@ -500,9 +548,55 @@ export class PatientProfileController {
    * EXPORT_MAX_SUBMISSION_PAGES pages, audit at
    * EXPORT_MAX_AUDIT_ROWS rows, and the payload says so via
    * `truncation` flags instead of silently cutting off.
+   *
+   * `?format=` switches this endpoint to one of the portable
+   * research/clinical formats instead (see ./export). Those are a
+   * DIFFERENT job: the default body is the PIPL portability answer —
+   * everything we hold, in our own shape — while a `format` response
+   * is one document in somebody else's shape, with an explicit
+   * statement of what it could not carry. The default body is
+   * unchanged when `format` is absent, down to the field order,
+   * because that response is a legal obligation and not a feature.
    */
   exportMyData = async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user.id;
+
+    const requestedFormat = req.query?.format;
+    if (requestedFormat !== undefined) {
+      if (!isPortableExportFormat(requestedFormat)) {
+        throw new AppError(
+          `不支持的导出格式，可用格式：${PORTABLE_EXPORT_FORMATS.join('、')}`,
+          400,
+          { supportedFormats: PORTABLE_EXPORT_FORMATS },
+        );
+      }
+
+      const profile = await this.service.getProfileByUserId(userId);
+      if (!profile) {
+        throw new AppError('Patient profile not found', 404);
+      }
+
+      // Deliberately outside the cooldown below, and deliberately NOT
+      // stamping it. That throttle exists because the full export
+      // fans out into ~75 paged queries; a portable document costs
+      // exactly one getProfileByUserId — the same query GET /me
+      // already serves with no throttle at all. Sharing the budget
+      // would mean a patient who exported their PIPL bundle then gets
+      // 429 asking for the FHIR document, i.e. the cheap call paying
+      // for the expensive one.
+      res.status(200).json(
+        buildPortableExport(requestedFormat, profile, {
+          // Opt-in, and off by default. The local-only block carries
+          // direct identifiers and the patient's account of their
+          // RELATIVES' health — a second data subject who consented
+          // to nothing here. Defaulting it on would put family
+          // history into every document that leaves the phone.
+          includeLocalOnly: req.query?.includeLocalOnly === 'true',
+          generatedAt: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
 
     // Per-user cooldown: the export fans out into up to ~75 paged
     // queries, so an authenticated caller in a retry loop is a real
@@ -579,6 +673,11 @@ export class PatientProfileController {
       notes: {
         documents:
           '文档原始文件不包含在本导出中；profile.documents 列出全部文件元数据，可在报告详情页逐份下载原件。',
+        // Discovery. Without this line the three portable formats are
+        // reachable only by someone who has read the source, which
+        // makes "the record is portable" true in the code and false
+        // for the patient.
+        portableFormats: `如需可交给研究登记处或医院系统的格式，在本接口上加 ?format= 参数：${PORTABLE_EXPORT_FORMATS.join('、')}。`,
       },
     });
   };
@@ -1002,28 +1101,283 @@ export class PatientProfileController {
     loaded.stream.pipe(res);
   };
 
+  /**
+   * DELETE /api/profiles/me/documents/:id
+   *
+   * The stored file goes first, and the row only goes once the file is
+   * confirmed gone.
+   *
+   * It used to run the other way round: hard-delete the row, then try
+   * `storage.remove`, and answer 200 with
+   * `storageCleanupStatus: 'failed'` when that threw. That 200 was the
+   * unrecoverable branch. `patient_documents.storage_uri` is the only
+   * record anything keeps of where a scan lives — the account-deletion
+   * purge enumerates a user's files by joining `patient_documents` to
+   * `patient_profiles` (account-deletion.ts) — so a blob whose row was
+   * already deleted is invisible to the one process whose job is to
+   * guarantee erasure. A patient's genetic report would have outlived
+   * the account it belonged to, with no path left for PIPL Art. 47
+   * erasure to reach it, while both delete screens showed
+   *「这份报告已移除」.
+   *
+   * Refusing the request instead keeps deletion reachable: the row
+   * still points at the blob, so the patient can retry, and the purge
+   * still finds it.
+   *
+   * That ordering costs something the first version of it did not pay
+   * for. `deleteDocumentForUser` is the sole writer of the
+   * `patient_document.deleted` audit row, and it writes it inside the
+   * DELETE's transaction precisely so no removal can happen without a
+   * trail (profile.service.ts). Putting the blob first moves the
+   * irreversible half outside that transaction, so the invariant held
+   * for the row and not for the file: with Postgres failing over, or
+   * the audit INSERT hitting a statement timeout, the scan was gone
+   * from MinIO, `audit_logs` recorded nothing, and the patient was
+   * told「删除失败」about a file that no longer existed.
+   *
+   * So an INTENT ROW is committed first, before anything irreversible
+   * runs, and the destructive half is gated on it:
+   *
+   *   delete_started (committed) → storage.remove → DELETE + deleted
+   *                             ↘ delete_failed (best effort)
+   *
+   * The blob cannot join the transaction — object stores do not roll
+   * back — so the choice is which side of the commit the destruction
+   * sits on, and both sides lose something. Recording the intent first
+   * is what removes the choice: whichever step then fails, the ledger
+   * already knows an erasure was attempted, by whom, and on which
+   * document. If the intent row itself cannot be written we refuse
+   * without touching storage, which is the honest reading of a
+   * database too sick to record what we are about to do.
+   *
+   * A soft-delete-then-sweep would also close it, and is the shape
+   * `softDeleteRecordForUser` uses for follow-up records. It is the
+   * wrong shape here: a tombstoned row is still a row pointing at a
+   * live blob, so 删除 would stop meaning「文件已经不在了」and start
+   * meaning「排队等清理」— a weaker promise than PIPL Art. 47 erasure,
+   * on the one table where the object is the patient's medical scan.
+   * The intent row buys the same trail without deferring the erasure.
+   *
+   * The mirror-image race stays survivable: if the file is removed and
+   * the row delete then fails, the row is a dangling pointer and the
+   * next DELETE resolves it. HOW it resolves depends on the provider,
+   * and only one of the two 404s. LocalStorageProvider's `fs.unlink`
+   * raises ENOENT on the second pass, which local-storage.ts maps to a
+   * 404 and this handler reads as 'missing'. MinIO's `removeObject` is
+   * an S3 DELETE, which succeeds on a key that is not there, so
+   * minio-storage.ts's not-found mapping never fires and the retry
+   * reports 'removed' a second time. Either way the row goes; the
+   * response's `storageCleanupStatus` is the part that differs, so
+   * nothing may be inferred from it about whether THIS request is the
+   * one that destroyed the object.
+   *
+   * What the patient is told changes with it — 「文件已删除，但记录
+   * 未能移除」rather than 「删除失败」, because on that branch the file
+   * really is gone and telling her otherwise is what sends her to a
+   * clinician with a report that 404s.
+   *
+   * The trail is a LEDGER, not a work queue. `delete_started` is never
+   * cleared, retracted or updated on the success path — audit_logs is
+   * append-only here and tombstoned rather than deleted by the account
+   * purge (account-deletion.ts), which is what lets it answer a PIPL
+   * Art. 47 question months later. What closes an intent is a
+   * SUCCESSOR row, not the absence of one, so the pair to look for is
+   * `delete_started` followed by `deleted` (success) or `delete_failed`
+   * (everything else). The account purge tombstones both halves the
+   * same way — they carry `userId` in the payload, so the UPDATE in
+   * purgeDueAccountDeletions strips ip/userAgent out of them and stamps
+   * `subjectPurgedAt`; neither half is deleted, and neither keeps an
+   * identifier.
+   *
+   * A 404 out of storage is not a failure: the object is already
+   * absent, which is the state this endpoint is trying to reach.
+   * Anything else — MinIO down, a URI no configured provider can route
+   * — is, and the caller is told so rather than being told the report
+   * is gone.
+   *
+   * EVERY failure here retries to a clean state, which is why refusing
+   * is an acceptable answer at all. Intent write fails → nothing was
+   * touched. `storage.remove` fails → the blob and the row are both
+   * still there. Row delete fails after the blob went → the row is a
+   * dangling pointer the next DELETE clears. Row already gone → both
+   * halves are done and this request answers 200 rather than
+   *「删除失败：Document not found」, which is what it used to say on a
+   * request that had just destroyed the file. The one state a retry
+   * cannot leave is an unroutable `storage_uri`, because that is a
+   * deployment misconfiguration and not something the patient can tap
+   * her way out of; it refuses, keeps the row, and stays reachable for
+   * the account-deletion purge.
+   *
+   * account-deletion.ts takes the OPPOSITE trade for the account purge
+   * ("an orphaned file is recoverable garbage while a dangling DB row
+   * is a broken account"), and both are right for their own case. There
+   * the user row is going too, so a surviving document row would
+   * resurrect an account that asked to be erased, nobody is left to
+   * retry, and the purge writes the unremoved URI to the log — the
+   * pointer outlives the row. Here the patient is still present, the
+   * row is the retry, and refusing costs them one more tap.
+   */
   deleteDocument = async (req: AuthenticatedRequest, res: Response) => {
     const documentId = req.params.id;
-    const deleted = await this.service.deleteDocumentForUser(req.user.id, documentId, {
+    // Ownership-checked; throws 404 for a document that is not this
+    // user's, exactly as the delete itself did.
+    const document = await this.service.getDocumentForUser(req.user.id, documentId);
+
+    const meta = {
       ip: req.ip,
       userAgent:
         typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
-    });
+    };
+    const auditSubject = {
+      userId: req.user.id,
+      documentId,
+      documentType: document.document_type ?? null,
+      ...meta,
+    };
 
-    let storageCleanupStatus: 'removed' | 'missing' | 'failed' = 'removed';
+    // Committed before the first irreversible byte. Awaited and not
+    // caught-and-continued: a failure here means we cannot prove the
+    // attempt happened, so we do not make it happen.
     try {
-      await this.storage.remove(deleted.storageUri);
+      await this.service.recordDocumentDeletionIntent(auditSubject);
+    } catch (error) {
+      this.logger?.error(
+        {
+          documentId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Refusing to delete the document: the deletion attempt could not be recorded',
+      );
+      throw new AppError('暂时无法删除这份报告，记录仍然保留，请稍后再试。', 503);
+    }
+
+    // Best-effort by design — see recordDocumentDeletionFailure. It
+    // runs on a database that has just failed a query, and a throw
+    // from the ledger must not replace the error the caller is owed.
+    const recordFailure = async (
+      storageCleanupStatus: 'removed' | 'missing' | 'kept',
+      reason: string,
+    ) => {
+      try {
+        await this.service.recordDocumentDeletionFailure({
+          ...auditSubject,
+          storageCleanupStatus,
+          reason,
+        });
+      } catch (auditError) {
+        this.logger?.error(
+          {
+            documentId,
+            storageCleanupStatus,
+            error: auditError instanceof Error ? auditError.message : String(auditError),
+          },
+          'Failed to record the outcome of a failed document deletion',
+        );
+      }
+    };
+
+    let storageCleanupStatus: 'removed' | 'missing' = 'removed';
+    try {
+      await this.storage.remove(document.storage_uri);
     } catch (error) {
       if (error instanceof AppError && error.statusCode === 404) {
         storageCleanupStatus = 'missing';
       } else {
-        storageCleanupStatus = 'failed';
+        this.logger?.error(
+          {
+            documentId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Refusing to delete the document row: its stored file could not be removed',
+        );
+        await recordFailure('kept', 'storage_remove_failed');
+        throw new AppError('暂时无法删除这份报告的文件，记录仍然保留，请稍后再试。', 503);
       }
+    }
+
+    let deleted;
+    try {
+      deleted = await this.service.deleteDocumentForUser(req.user.id, documentId, meta);
+    } catch (error) {
+      // Every `delete_started` is meant to get exactly one successor —
+      // `deleted` from inside the transaction, or `delete_failed` from
+      // here. It is NOT guaranteed: `recordFailure` is best-effort and
+      // swallows its own throw (see the test "lets the original error
+      // through when the outcome row cannot be written either"), so an
+      // intent with no successor means either the process died
+      // mid-delete or the compensating insert failed on the same sick
+      // database. Both are "the write could not be completed"; neither
+      // is "nothing happened", and the intent row is what says so.
+      const rowAlreadyGone = error instanceof AppError && error.statusCode === 404;
+      await recordFailure(
+        storageCleanupStatus,
+        rowAlreadyGone ? 'row_already_gone' : 'row_delete_failed',
+      );
+      if (rowAlreadyGone) {
+        // A concurrent delete won the race. `getDocumentForUser` above
+        // already proved the row was this user's, so the only way the
+        // DELETE can match nothing is that the row is now gone — and
+        // this request removed the blob (or found it already absent)
+        // on the way here. Both halves of the erasure are therefore
+        // done, and 200 is the accurate answer.
+        //
+        // It used to rethrow the 404, which both delete screens render
+        // as「删除失败：Document not found」— telling the patient her
+        // report is still stored, on the one request that destroyed
+        // it. The winner of the race wrote its own
+        // `patient_document.deleted` row inside its transaction, so
+        // the ledger is complete; the `delete_failed` +
+        // 'row_already_gone' row above is this request saying which
+        // half it performed.
+        this.logger?.warn(
+          { documentId, storageCleanupStatus },
+          'Document row was already gone when the delete reached it; a concurrent delete won the race',
+        );
+        res.status(200).json({ documentId, deleted: true, storageCleanupStatus });
+        return;
+      }
+      if (storageCleanupStatus === 'removed') {
+        // The file is gone and the row is not. Say that — she has to
+        // know not to open this report again, and a retry is what
+        // clears the row (its `remove` 404s on local storage and
+        // succeeds on MinIO; either way the DELETE runs).
+        //
+        // Log the original failure first. Replacing it with a fresh
+        // AppError throws away the reason the database refused, and
+        // errorHandler only ever sees the replacement — so without
+        // this line the one branch that destroys a file leaves neither
+        // audit_logs nor the container log holding WHY, which is worse
+        // than the pre-intent-row behaviour where errorHandler at
+        // least logged it as 'Unhandled error'.
+        this.logger?.error(
+          {
+            documentId,
+            storageCleanupStatus,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'The document file was removed but its row could not be deleted',
+        );
+        // Worded to survive the client that is already deployed: both
+        // delete screens render a thrown error as
+        //「删除失败：${message}」, and the web export ships separately
+        // from the API, so a message that only reads correctly on its
+        // own would reach a patient as「删除失败：文件已删除」. Leading
+        // with the subject keeps it a sentence under that prefix.
+        throw new AppError('这份报告的文件已经删除，但记录没能移除，请再点一次删除完成清理。', 503);
+      }
+      // Nothing was destroyed by this request, so the original error
+      // is the accurate one and errorHandler logs it.
+      throw error;
     }
 
     res.status(200).json({
       documentId: deleted.id,
       deleted: true,
+      // Never 'failed' any more: this endpoint no longer answers 200
+      // for a file it could not erase. The clients still handle that
+      // value, because the web export and the API deploy separately —
+      // a freshly loaded bundle can be talking to an API container
+      // that has not been restarted yet.
       storageCleanupStatus,
     });
   };

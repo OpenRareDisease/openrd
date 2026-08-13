@@ -279,6 +279,7 @@ STRUCTURED_KEY_ALIASES = {
     "ecori_fragment_kb": "ecoriFragmentKb",
     "d4z4_repeat_pathogenic": "d4z4RepeatPathogenic",
     "d4z4_repeat_other": "d4z4RepeatOther",
+    "genetic_test_method": "geneticTestMethod",
     "onset_age": "onsetAge",
     "disease_duration": "diseaseDuration",
     "progression_node": "progressionNode",
@@ -1306,6 +1307,90 @@ def _pick_finding_sentence(block: Optional[str]) -> Optional[str]:
     return _clean_free_text("。".join(hits))
 
 
+#: How the D4Z4 array was measured, by explicit method name.
+#:
+#: This exists because of one sentence in the FSHD genetic-diagnostics
+#: best practice guideline (Giardina et al., Clin Genet 2024;106(1):13-26,
+#: doi:10.1111/cge.14533): the size and haplotype of the D4Z4 repeat
+#: array 「cannot be determined by short read WES- or WGS-like
+#: technologies」. A patient holding a negative whole-exome report does
+#: not have a negative answer — they have the wrong test, and no screen
+#: can tell them so unless something records which test it was.
+#:
+#: Patterns, not substrings, so that short Latin abbreviations (WES,
+#: WGS, OGM, PFGE) need a word boundary. A false positive here is the
+#: expensive direction: it is what would tell somebody their real
+#: Southern blot was inapplicable.
+_GENETIC_METHOD_PATTERNS: Dict[str, Tuple[str, ...]] = {
+    "southern_blot": (
+        r"southern\s*(?:blot|blotting|印迹|杂交)",
+        r"\bp13\s*e\s*-?\s*11\b",
+        r"\becor\s*[i1]\b",
+        r"\bbln\s*[i1]\b",
+        r"脉冲场(?:凝胶)?电泳",
+        r"\bpfge\b",
+    ),
+    "optical_genome_mapping": (
+        r"optical\s+genome\s+mapping",
+        r"光学基因组图谱",
+        r"光学图谱",
+        r"\bbionano\b",
+        r"\bogm\b",
+    ),
+    "molecular_combing": (
+        r"molecular\s+combing",
+        r"分子梳",
+    ),
+    "short_read_sequencing": (
+        r"全外显子",
+        r"whole\s+exome",
+        r"exome\s+sequencing",
+        r"\bwes\b",
+        r"全基因组(?:测序|重测序)",
+        r"whole\s+genome\s+sequencing",
+        r"\bwgs\b",
+        r"二代测序",
+        r"高通量测序",
+        r"next[-\s]generation\s+sequencing",
+        r"\bngs\b",
+        r"基因\s*panel",
+        r"panel\s*测序",
+        r"多基因(?:检测|包|panel)",
+        r"捕获测序",
+    ),
+}
+
+
+def _detect_genetic_method(body_lines: List[str]) -> Optional[str]:
+    """Which family of methods this report says it used.
+
+    Reads the report BODY — `_before_disclaimer_section` has already cut
+    the boilerplate tail off — and that is the whole trick. A whole-exome
+    report's limitations section routinely explains that the D4Z4 array
+    requires Southern blot, and a Southern blot report routinely lists
+    sequencing among the alternatives, so a keyword search over the
+    entire page labels both of them wrong in the direction that costs a
+    patient a second self-funded test.
+
+    Returns the family name when exactly one matched, "ambiguous" when
+    more than one did, and None when nothing did. The caller treats the
+    last two the same way — as「we do not know」— but they are kept
+    distinct so that a report which genuinely names two platforms is
+    visible as such rather than looking like an unparsed page.
+    """
+    haystack = "\n".join(body_lines).lower()
+    matched = [
+        family
+        for family, patterns in _GENETIC_METHOD_PATTERNS.items()
+        if any(re.search(pattern, haystack, re.IGNORECASE) for pattern in patterns)
+    ]
+    if not matched:
+        return None
+    if len(matched) > 1:
+        return "ambiguous"
+    return matched[0]
+
+
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     diagnosis_match, _ = _find_regex(text, [r"\b(FSHD1|FSHD2)\b", r"(FSHD\s*[12])"])
@@ -1332,16 +1417,35 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     )
     d4z4_pathogenic = d4z4_pair_match.group(1) if d4z4_pair_match else None
     d4z4_other = d4z4_pair_match.group(2) if d4z4_pair_match else None
+    d4z4_source_text = d4z4_pair_match.group(0) if d4z4_pair_match else None
+    # A range is not a count. `D4Z4[^\d]{0,16}(\d+)` matched the first
+    # number of 「D4Z4重复单元数: 1-10」 and reported it as 1 — turning a
+    # lab's stated uncertainty into a confident single figure, and one
+    # inside the 1–4 window that gates the passport's ophthalmology
+    # recommendation. Capture the interval instead and leave
+    # `normalized_value` empty, so every reader downstream can see that
+    # a test was done and that it did not pin the number down.
+    d4z4_is_range = False
     if not d4z4_pathogenic:
-        d4z4_single_match, _ = _find_regex(text, [r"D4Z4[^\d]{0,16}(\d+)"])
-        if d4z4_single_match:
-            d4z4_pathogenic = d4z4_single_match.group(1)
+        d4z4_range_match, _ = _find_regex(
+            text, [r"D4Z4[^\d]{0,16}(\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"]
+        )
+        if d4z4_range_match:
+            d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group(1))
+            d4z4_source_text = d4z4_range_match.group(0)
+            d4z4_is_range = True
+        else:
+            d4z4_single_match, _ = _find_regex(text, [r"D4Z4[^\d]{0,16}(\d+)"])
+            if d4z4_single_match:
+                d4z4_pathogenic = d4z4_single_match.group(1)
+                d4z4_source_text = d4z4_single_match.group(0)
 
     methylation_match, _ = _find_regex(text, [r"甲基化[^\d]{0,12}(\d+(?:\.\d+)?)\s*(%?)"])
     methylation_value = methylation_match.group(1) if methylation_match else None
     methylation_unit = methylation_match.group(2) if methylation_match else "%"
 
     body = _before_disclaimer_section(lines)
+    genetic_method = _detect_genetic_method(body)
     interpretation = _pick_finding_sentence(
         _extract_block_after_header(
             body,
@@ -1397,11 +1501,27 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         _build_field(
             "d4z4_repeat_pathogenic",
             d4z4_pathogenic,
-            normalized_value=int(d4z4_pathogenic) if d4z4_pathogenic else None,
-            source_text=d4z4_pair_match.group(0) if d4z4_pair_match else None,
-            confidence=0.97,
+            normalized_value=None if d4z4_is_range else int(d4z4_pathogenic),
+            source_text=d4z4_source_text,
+            # A range is a genuine reading, but it is a weaker one than a
+            # single number and the review queue should see it that way.
+            confidence=0.80 if d4z4_is_range else 0.97,
         )
         if d4z4_pathogenic
+        else None,
+    )
+    _append_field(
+        fields,
+        _build_field(
+            "genetic_test_method",
+            genetic_method,
+            source_text=None,
+            # Below the 0.75 review threshold on purpose when the report
+            # names two platforms: 「ambiguous」 is exactly the case a
+            # human should look at.
+            confidence=0.70 if genetic_method == "ambiguous" else 0.92,
+        )
+        if genetic_method
         else None,
     )
     _append_field(
@@ -1455,8 +1575,15 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         "genetic_positive": genetic_positive,
         "haplotype": haplotype,
         "ecori_fragment_kb": _safe_float(ecori_fragment) if ecori_fragment else None,
-        "d4z4_repeat_pathogenic": int(d4z4_pathogenic) if d4z4_pathogenic else None,
+        # None for a range: this key is typed as a count and every
+        # consumer of it does arithmetic. The interval itself survives on
+        # the `d4z4_repeat_pathogenic` structured field, whose
+        # `field_value` is the raw text.
+        "d4z4_repeat_pathogenic": (
+            int(d4z4_pathogenic) if d4z4_pathogenic and not d4z4_is_range else None
+        ),
         "d4z4_repeat_other": int(d4z4_other) if d4z4_other else None,
+        "genetic_test_method": genetic_method,
         "methylation_value": _safe_float(methylation_value) if methylation_value else None,
         "interpretation_summary": interpretation,
     }

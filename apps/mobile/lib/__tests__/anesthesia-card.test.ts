@@ -1,0 +1,196 @@
+import { buildAnesthesiaCard } from '../anesthesia-card';
+import { wrapText } from '../anesthesia-card-image';
+import type { ClinicalPassportSummary } from '../api';
+
+/**
+ * This card is handed to an anesthetist before surgery. Two things it
+ * must never do: overstate how the diagnosis is backed, and present a
+ * literature summary as an instruction.
+ */
+
+const summary = (over: Record<string, unknown> = {}) =>
+  ({
+    patientName: '张三',
+    diagnosis: { confirmation: 'genetic', d4z4Repeats: '4' },
+    monitoring: {
+      items: [
+        {
+          key: 'respiratory',
+          available: true,
+          summary: 'FVC 78%',
+          latestDate: '2026-03-02T12:00:00.000Z',
+        },
+        { key: 'cardiac', available: false, summary: '暂无心脏检查数据', latestDate: null },
+      ],
+    },
+    ...over,
+  }) as unknown as ClinicalPassportSummary;
+
+// 用本地分量构造，避免「生成日期」在 UTC 之外的时区退一天。
+const TODAY = new Date(2026, 7, 5, 12, 0, 0);
+const allText = (s: ClinicalPassportSummary) => {
+  const card = buildAnesthesiaCard(s, TODAY);
+  return [
+    card.title,
+    card.patientName,
+    ...card.patientLines,
+    ...card.sections.flatMap((section) => [section.title, ...section.lines]),
+    ...card.sources,
+    card.disclaimer,
+  ].join('\n');
+};
+
+describe('诊断依据不能在卡上被抬高', () => {
+  it('基因确诊时写明并带上重复数', () => {
+    const card = buildAnesthesiaCard(summary(), TODAY);
+    expect(card.patientLines[0]).toContain('基因确诊');
+    expect(card.patientLines[0]).toContain('4');
+  });
+
+  it('自填诊断必须写明尚无基因报告', () => {
+    // An anesthetist who reads 「FSHD」 will plan around FSHD. If nobody
+    // has confirmed it, they are entitled to know that before they
+    // pick an airway plan on the strength of it.
+    const card = buildAnesthesiaCard(
+      summary({ diagnosis: { confirmation: 'self_reported', d4z4Repeats: '—' } }),
+      TODAY,
+    );
+    expect(card.patientLines[0]).toContain('本人填报');
+    expect(card.patientLines[0]).not.toContain('基因确诊');
+  });
+
+  it('什么依据都没有时也不留白', () => {
+    const card = buildAnesthesiaCard(
+      summary({ diagnosis: { confirmation: 'none', d4z4Repeats: '—' } }),
+      TODAY,
+    );
+    expect(card.patientLines[0]).toContain('尚无诊断依据');
+  });
+});
+
+describe('缺数据要说出来，不能省略成一行不存在', () => {
+  it('没有肺功能时明说未做过或未上传', () => {
+    const card = buildAnesthesiaCard(summary({ monitoring: { items: [] } }), TODAY);
+    const joined = card.patientLines.join('\n');
+    expect(joined).toContain('最近肺功能：未做过或未上传');
+    expect(joined).toContain('最近心脏检查：未做过或未上传');
+  });
+
+  it('有肺功能时带上数值和日期', () => {
+    expect(buildAnesthesiaCard(summary(), TODAY).patientLines.join('\n')).toContain(
+      '最近肺功能：FVC 78%（2026-03-02）',
+    );
+  });
+});
+
+describe('临床内容的关键几条', () => {
+  const text = allText(summary());
+
+  it('恶性高热的说法不能被抬成「FSHD 有 MH 风险」', () => {
+    // 「studies show that MH is not more common in the FSHD population,
+    // it is advised to err on the side of caution」——两半都得在，
+    // 少了前半是吓人，少了后半是危险。
+    expect(text).toContain('并不比一般人群多见');
+    expect(text).toContain('MH 预案');
+  });
+
+  it('琥珀胆碱要给出原因而不只是「避免」', () => {
+    expect(text).toContain('琥珀胆碱');
+    expect(text).toContain('高钾血症');
+  });
+
+  it('椎管内麻醉写明可行，同时写明不可预测', () => {
+    expect(text).toContain('椎管内麻醉');
+    expect(text).toContain('57 小时');
+  });
+
+  it('术前心脏检查在卡上，和护照里「日常不需要常规筛查」不打架', () => {
+    expect(text).toContain('术前评估应包含这两项');
+  });
+
+  it('带出处，且写明不替代麻醉医师判断', () => {
+    expect(text).toContain('AANA Journal');
+    expect(text).toContain('Neurology. 2015');
+    expect(text).toContain('不替代麻醉医师');
+  });
+});
+
+describe('换行不能把术语拆开', () => {
+  // 等宽假测量：每个 ASCII 字符 1，每个中文字符 2。
+  const measure = (chunk: string) =>
+    [...chunk].reduce((sum, ch) => sum + (ch.charCodeAt(0) > 0x2e80 ? 2 : 1), 0);
+
+  it('中文可以任意断开', () => {
+    const lines = wrapText('丙泊酚瑞芬太尼靶控输注', 8, measure);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join('')).toBe('丙泊酚瑞芬太尼靶控输注');
+  });
+
+  it('TOF 不会被拆成两行', () => {
+    const lines = wrapText('全程 TOF 监测给药与拮抗', 10, measure);
+    expect(lines.some((line) => /T$|^OF/.test(line))).toBe(false);
+    expect(lines.join('').replace(/\s/g, '')).toContain('TOF');
+  });
+
+  it('数字不会被拆开 —— 5/7 小时和 57 小时是两回事', () => {
+    const lines = wrapText('运动阻滞 57 小时后完全恢复', 8, measure);
+    expect(lines.some((line) => /(^|[^5])7\s*小时/.test(line) && !line.includes('57'))).toBe(false);
+    expect(lines.join('').replace(/\s/g, '')).toContain('57');
+  });
+
+  it('换行后的行不以空格开头', () => {
+    const lines = wrapText('丙泊酚 瑞芬太尼 靶控输注', 8, measure);
+    expect(lines.every((line) => !line.startsWith(' '))).toBe(true);
+  });
+
+  it('空串也返回一行，不返回空数组', () => {
+    expect(wrapText('', 100, measure)).toEqual(['']);
+  });
+});
+
+describe('「上传了但读不出」不能塌成「没上传」', () => {
+  /**
+   * The passport and the PDF say 「暂无可自动读取的肺功能结果」. The card
+   * said 「未做过或未上传」 for the same patient — a false statement about
+   * their own care, made to the one reader who is not them, on the line
+   * that exists to stop an unassessed patient reaching general
+   * anesthesia. An anesthetist told the test was never done orders one;
+   * an anesthetist told a report exists but could not be parsed asks the
+   * patient to show it.
+   */
+  const withState = (state: 'unreadable' | 'absent', latestDate: string | null) =>
+    summary({
+      monitoring: {
+        items: [
+          {
+            key: 'respiratory',
+            available: false,
+            summary: '暂无可自动读取的肺功能结果',
+            latestDate,
+            state,
+          },
+        ],
+      },
+    });
+
+  const respiratoryLine = (s: ClinicalPassportSummary) =>
+    buildAnesthesiaCard(s, TODAY).patientLines.find((l) => l.startsWith('最近肺功能')) ?? '';
+
+  it('有报告但没解析出字段时，不说患者没上传', () => {
+    const line = respiratoryLine(withState('unreadable', '2026-03-02T12:00:00.000Z'));
+    expect(line).not.toContain('未做过或未上传');
+    expect(line).toContain('已上传报告');
+    expect(line).toContain('索取原件');
+    expect(line).toContain('2026-03-02');
+  });
+
+  it('确实没有报告时仍然说未做过或未上传', () => {
+    expect(respiratoryLine(withState('absent', null))).toContain('未做过或未上传');
+  });
+
+  it('槽位整个缺失时按「没有」处理，不假装有报告', () => {
+    expect(
+      buildAnesthesiaCard(summary({ monitoring: { items: [] } }), TODAY).patientLines.join('\n'),
+    ).toContain('未做过或未上传');
+  });
+});

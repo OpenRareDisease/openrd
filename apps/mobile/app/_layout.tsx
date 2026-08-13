@@ -1,7 +1,8 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { APP_TITLE } from '../lib/app-identity';
 import { StatusBar } from 'expo-status-bar';
-import { LogBox } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 import { useEffect } from 'react';
 import { AuthProvider } from '../contexts/AuthContext';
 import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
@@ -14,13 +15,52 @@ LogBox.ignoreLogs([
   // 添加其它想暂时忽略的错误或警告信息
 ]);
 
-const GUEST_ROUTES = new Set(['p-login_register']);
+/**
+ * Routes a signed-out visitor may open. Everything else redirects to
+ * the login screen.
+ *
+ * p-genetics_family is here because「会遗传给孩子吗」is the question
+ * that brings people to this app before they have decided to trust it
+ * with a phone number, and that page answers it completely, with the
+ * source named on every section (lib/genetics-family-content.ts). It
+ * reads no API and needs no token. Making someone register to read a
+ * cited reference page is a toll on the one thing we can give away.
+ */
+// p-pregnancy qualifies on identical grounds to p-genetics_family: it
+// reads no API, needs no token, and its reader is very often the person
+// who has not registered — someone who found this app because they are
+// pregnant or deciding whether to be. It was linked from the guest page
+// before it was allowed to be one, so the button landed and the gate
+// immediately replaced it with the login screen.
+const GUEST_ROUTES = new Set(['p-login_register', 'p-genetics_family', 'p-pregnancy']);
+
+/**
+ * The subset of GUEST_ROUTES a *signed-in* user must be bounced off.
+ *
+ * This used to be the same set, which is the trap in adding anything
+ * to GUEST_ROUTES: the gate below reads `token && isGuestRoute` and
+ * replaces with /p-home, so a second guest route would have become
+ * unreachable for every logged-in patient — the tap on「遗传与生育」
+ * from 我的 would have bounced straight back to 今天. Only the login
+ * form itself belongs here: it is the sign-in screen, and showing it to
+ * someone who already has a session is a dead end.
+ */
+const SIGNED_OUT_ONLY_ROUTES = new Set(['p-login_register']);
 
 // Routes reachable while the profile is still missing. The onboarding
 // destination itself must be exempt (or the gate would loop), and
 // about-us carries the legal texts a user may want before filling in
-// medical data.
-const ONBOARDING_EXEMPT_ROUTES = new Set(['p-login_register', 'p-register_profile', 'p-about_us']);
+// medical data. p-genetics_family is exempt for the same reason it is
+// a guest route: a signed-out visitor and a fully onboarded patient can
+// both read it, and bouncing only the person in between — who is
+// deciding whether to build a profile at all — would be arbitrary.
+const ONBOARDING_EXEMPT_ROUTES = new Set([
+  'p-login_register',
+  'p-register_profile',
+  'p-about_us',
+  'p-genetics_family',
+  'p-pregnancy',
+]);
 
 function AppNavigator() {
   const navigationState = useRootNavigationState();
@@ -30,6 +70,7 @@ function AppNavigator() {
   const { profileStatus } = useProfileContext();
   const currentRoute = segments[0] ?? '';
   const isGuestRoute = GUEST_ROUTES.has(currentRoute);
+  const isSignedOutOnlyRoute = SIGNED_OUT_ONLY_ROUTES.has(currentRoute);
   const isOnboardingExempt = ONBOARDING_EXEMPT_ROUTES.has(currentRoute);
   // The gate fires ONLY on a confirmed 404 ('missing'). 'error' is
   // fail-open by design — see ProfileContext's status semantics.
@@ -47,6 +88,25 @@ function AppNavigator() {
   // parent-frame channel: nothing in this app is embedded, and route
   // params here are medical identifiers.
 
+  // Keep the document title the product's name.
+  //
+  // +html.tsx serves the right <title>, and og:title (what a link
+  // forwarded into a patient group renders from) comes from that static
+  // HTML and is correct regardless. But react-navigation syncs
+  // document.title from the focused screen's `options.title` after
+  // hydration, and those options carry developer labels
+  // ('底部导航栏', '登录注册页'). Measured in a browser: the result is an
+  // empty title bar. WeChat's in-app browser renders that bar, and an
+  // empty one reads as a page that failed to load — on the one screen a
+  // patient reaches by tapping a link someone sent them.
+  //
+  // Keyed on `segments` so it re-applies after each navigation rather
+  // than racing the first one.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    if (document.title !== APP_TITLE) document.title = APP_TITLE;
+  }, [segments]);
+
   useEffect(() => {
     if (!isHydrated || !navigationState?.key) {
       return;
@@ -57,7 +117,7 @@ function AppNavigator() {
       return;
     }
 
-    if (token && isGuestRoute) {
+    if (token && isSignedOutOnlyRoute) {
       router.replace('/p-home');
       return;
     }
@@ -69,12 +129,19 @@ function AppNavigator() {
     if (needsOnboarding) {
       router.replace('/p-register_profile?mode=onboarding');
     }
+    // `isGuestRoute` and `isSignedOutOnlyRoute` are omitted on purpose.
+    // Both are pure `Set.has(segments[0] ?? '')` reads over module-level
+    // constants, and `segments` is already a dependency — neither can
+    // change without `segments` changing first, so this effect can never
+    // observe a stale copy of them. Listing them is redundant rather
+    // than safer, which is why the warning is left standing instead of
+    // being disabled.
   }, [isHydrated, navigationState?.key, router, segments, token, needsOnboarding]);
 
   const shouldBlockRender =
     isHydrated &&
     Boolean(navigationState?.key) &&
-    ((!token && !isGuestRoute) || (token && isGuestRoute) || needsOnboarding);
+    ((!token && !isGuestRoute) || (token && isSignedOutOnlyRoute) || needsOnboarding);
 
   if (shouldBlockRender) {
     return null;
@@ -122,6 +189,19 @@ function AppNavigator() {
         <Stack.Screen name="p-clinical_passport" options={{ title: 'FSHD临床护照页' }} />
         <Stack.Screen name="p-data_donation" options={{ title: '数据捐赠页' }} />
         <Stack.Screen name="p-resource_map" options={{ title: '医疗资源地图页' }} />
+        {/* app/p-genetics_family.tsx existed with no entry here, which
+            by this list's own rule means it was silently losing its
+            declared title. */}
+        <Stack.Screen name="p-genetics_family" options={{ title: '遗传与生育页' }} />
+        {/* Without this the route loses its title after hydration in
+            WeChat's browser — the defect commit 1e82bc6 fixed for
+            p-genetics_family, which this page would otherwise repeat. */}
+        <Stack.Screen name="p-pregnancy" options={{ title: '孕期时间线页' }} />
+        <Stack.Screen name="p-surveillance" options={{ title: '随访计划页' }} />
+        <Stack.Screen name="p-disability_assessment" options={{ title: '残疾评定准备页' }} />
+        <Stack.Screen name="p-rare_disease_status" options={{ title: '罕见病身份与权益页' }} />
+        <Stack.Screen name="p-referral" options={{ title: '协作网转诊包页' }} />
+        <Stack.Screen name="p-falls" options={{ title: '跌倒记录页' }} />
       </Stack>
     </AppDialogProvider>
   );

@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from './Icon';
 import { MIN_TOUCH_TARGET, expandHitSlop } from '../../lib/a11y';
 import { formatCitationLabel } from '../../lib/citation-label';
+import { authorityToneFor, readAuthorityLabel } from './AuthorityChip';
 
 import { COLOR, HAIRLINE, INTERACTION, RADIUS, SPACE, TYPE } from '../../lib/design';
 import Button from './Button';
@@ -433,13 +434,30 @@ const AskAboutDrawer = ({
                 {citations.length > 0 ? (
                   <View style={styles.citationRow}>
                     <Text style={styles.citationLabel}>依据</Text>
-                    {citations.slice(0, 4).map((citation, index) => (
-                      <View key={`${citation.chunkId}-${index}`} style={styles.citationChip}>
-                        <Text style={styles.citationChipText} numberOfLines={1}>
-                          {formatCitationLabel(citation.sourceFile, citation.source)}
-                        </Text>
-                      </View>
-                    ))}
+                    {citations.slice(0, 4).map((citation, index) => {
+                      // Stacked inside the pill rather than appended to
+                      // the title: the chip is capped at 150pt and
+                      // clamped to one line, so a prefix would eat the
+                      // source name it is meant to qualify.
+                      const authority = readAuthorityLabel(citation.authorityLabel);
+                      return (
+                        <View key={`${citation.chunkId}-${index}`} style={styles.citationChip}>
+                          {authority ? (
+                            <Text
+                              style={[
+                                styles.citationChipAuthority,
+                                { color: authorityToneFor(authority).color },
+                              ]}
+                            >
+                              {authority}
+                            </Text>
+                          ) : null}
+                          <Text style={styles.citationChipText} numberOfLines={1}>
+                            {formatCitationLabel(citation.sourceFile, citation.source)}
+                          </Text>
+                        </View>
+                      );
+                    })}
                   </View>
                 ) : null}
 
@@ -729,6 +747,14 @@ const styles = StyleSheet.create({
     ...TYPE.caption,
     fontSize: 11,
     lineHeight: 15,
+  },
+  /** Source strength, above the name. Colour comes from
+   *  authorityToneFor at the call site — never the only carrier of the
+   *  distinction, the words are always there. */
+  citationChipAuthority: {
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '700',
   },
   composer: {
     flexDirection: 'row',

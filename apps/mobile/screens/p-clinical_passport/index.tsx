@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  Image,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,17 +26,28 @@ import TimelineSectionCard from '../common/TimelineSectionCard';
 import {
   ApiError,
   getClinicalPassportSummary,
+  getInstrumentAdministrations,
+  getInstrumentCatalogue,
   getMyPatientProfile,
   isConsentRequiredError,
+  readPassportGeneticEvidence,
   type ClinicalPassportSummary,
+  type GeneticTestRequest,
   type PatientProfile,
   type StreamAiQuestionHandle,
 } from '../../lib/api';
+// The summary logic lives with the form that writes these records, so
+// there is one implementation of「a level only exists with its anchor」
+// rather than two. Importing across screens is already how
+// SensitiveDataConsentGate is shared.
+import { summarizeInstruments, type InstrumentSummary } from '../p-data_entry/instruments';
 import { streamAiQuestion } from '../../lib/ai-streaming';
 import { VISIT_PREP_NOTE_KEY } from '../../lib/draft-keys';
 import { getSessionValue, setSessionValue } from '../../lib/session-storage';
 import type { BodyRegionMap } from '../../lib/clinical-visuals';
 import { buildClinicalPassportPdfHtml } from '../../lib/clinical-passport-pdf';
+import { buildAnesthesiaCard, type AnesthesiaCardModel } from '../../lib/anesthesia-card';
+import { renderAnesthesiaCardPng, type RenderedCard } from '../../lib/anesthesia-card-image';
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import { formatDateLabel } from '../../lib/clinical-visuals';
 
@@ -87,6 +99,41 @@ const formatVisitPrepTimestamp = (value: string | null) => {
   return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * 《检查申请说明》 as one printable page.
+ *
+ * Built from `testRequest.printable`, not re-composed from `sections`:
+ * the server already flattened the document once, and a second layout
+ * here is a second place for the wording — and the citations under each
+ * claim — to drift away from what the screen shows.
+ *
+ * No web fonts, no stylesheet link, no image. This app is used inside
+ * WeChat's in-app browser in mainland China, where an external host at
+ * print time is a blank page, and the whole point of this document is
+ * that it survives being carried into a clinic.
+ */
+const buildTestRequestHtml = (testRequest: GeneticTestRequest) =>
+  [
+    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<title>${escapeHtml(testRequest.title)}</title>`,
+    '<style>',
+    'body{margin:0;padding:24px;font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:#17272E;}',
+    // pre-wrap keeps the server's line structure without this file
+    // deciding what a heading looks like. `printable` already opens
+    // with 【title】, so there is no <h1> above it — a second copy of
+    // the title is the kind of thing a clinician reads as two
+    // documents stapled together.
+    'pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:13px;line-height:1.85;margin:0;}',
+    '@page{margin:16mm;}',
+    '</style></head><body>',
+    `<pre>${escapeHtml(testRequest.printable)}</pre>`,
+    '</body></html>',
+  ].join('');
+
 const ClinicalPassportScreen = () => {
   const router = useRouter();
   const { notify } = useAppDialog();
@@ -95,7 +142,12 @@ const ClinicalPassportScreen = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingTestRequest, setIsExportingTestRequest] = useState(false);
   const [bodyView, setBodyView] = useState<'front' | 'back'>('front');
+  /** Brooke / Vignos, one entry per instrument that has a usable
+   *  reading. Empty until the instruments endpoint answers, and empty
+   *  forever if it never does. */
+  const [instrumentSummaries, setInstrumentSummaries] = useState<InstrumentSummary[]>([]);
   // 门诊准备: generated on demand, not on load. It costs an LLM round
   // trip and it's only wanted when a visit is actually coming up —
   // auto-generating on every open would spend tokens on the many
@@ -112,6 +164,31 @@ const ClinicalPassportScreen = () => {
   // which React may replay.
   const visitPrepStreamRef = useRef('');
 
+  /**
+   * 功能分级. Never throws: both reads swallow their own failure, and an
+   * empty result renders nothing at all.
+   *
+   * That second half is the enforcement behind「NEVER a bare number」on
+   * this screen. `summarizeInstruments` constructs no reading for a
+   * grade whose behavioural anchor it cannot produce — and the anchor
+   * it uses is the server's `levelLabelZh`, resolved against the
+   * version the patient answered, which the server itself leaves null
+   * rather than fabricating. There is therefore no code path from an
+   * unnamed grade to this page: the value being rendered does not exist
+   * without its sentence.
+   */
+  const loadInstruments = async () => {
+    // Two independent reads. The administrations are the record; the
+    // catalogue only supplies display names and the citation, and each
+    // stored row already carries its own resolved anchor — so a
+    // catalogue that fails still leaves a renderable, honest line.
+    const [administrations, catalogue] = await Promise.all([
+      getInstrumentAdministrations({ limit: 200 }).catch(() => []),
+      getInstrumentCatalogue().catch(() => []),
+    ]);
+    setInstrumentSummaries(summarizeInstruments(administrations, catalogue));
+  };
+
   const loadPassport = async () => {
     try {
       setIsLoading(true);
@@ -122,6 +199,21 @@ const ClinicalPassportScreen = () => {
       ]);
       setPassport(passportData);
       setProfile(profileData);
+      // The card embeds the patient's latest FVC and diagnosis state.
+      // Keeping a previously rendered one after a reload would hand an
+      // anesthetist a stale reading with a current-looking date on it.
+      // Both carriers, or the text layer keeps saying what the image no
+      // longer does.
+      setAnesthesiaCard(null);
+      setAnesthesiaModel(null);
+
+      // Instruments load SEPARATELY and never inside the Promise.all
+      // above. The endpoint is new; if it 404s, errors, or has not
+      // shipped, the passport must still render everything else. A
+      // rejection here would otherwise take the whole page to the error
+      // state — trading the diagnosis, the reports and the timeline for
+      // a functional grade that is nice to have.
+      void loadInstruments();
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '无法获取临床护照数据';
       setErrorMessage(message);
@@ -132,6 +224,14 @@ const ClinicalPassportScreen = () => {
     }
   };
 
+  // Mount-only, and `loadPassport` is deliberately not a dependency: it
+  // captures nothing that can go stale. Every binding it reads is either
+  // a setState setter (stable identity) or a module import, and
+  // `loadInstruments` — whose introduction is what made this line start
+  // warning, since it costs `loadPassport` the "no unstable references"
+  // shape the rule was previously satisfied by — is the same shape.
+  // Adding the dependency would refetch the whole passport on every
+  // render, because `loadPassport` is rebuilt each time.
   useEffect(() => {
     loadPassport();
   }, []);
@@ -370,6 +470,109 @@ const ClinicalPassportScreen = () => {
     [passport?.diagnosis.freshness.tone],
   );
 
+  /**
+   * Whether the diagnosis block below is showing evidence or a claim.
+   *
+   * The API has carried `confirmation` for a while and the PDF honours
+   * it; this screen did not read it at all, so 基因类型 and 诊断日期 were
+   * set in the same 16.5pt/700/tabular-nums metric type whether they
+   * came out of a genetics report or out of a free-text box on the
+   * baseline form — under a heading that said 证据摘要. Typography is
+   * not decoration here: a well-set number reads as a measurement.
+   */
+  const diagnosisConfirmed = passport?.diagnosis.confirmation === 'genetic';
+  /**
+   * The one sentence saying so, taken from the summary card rather than
+   * written again. `summaryCards` already computes the wording for all
+   * three states from the same `confirmation` value, and a second
+   * sentence for the same fact is a second thing to keep in step.
+   */
+  const diagnosisNotice = useMemo(() => {
+    if (!passport || passport.diagnosis.confirmation === 'genetic') return null;
+    return passport.summaryCards.find((card) => card.key === 'diagnosis')?.summary ?? null;
+  }, [passport]);
+  // Not amber, and not a fourth block of it. Amber in this product means
+  // exactly one thing — not genetically confirmed — and it is already
+  // spent on the banner of the PDF this screen exports.
+  const diagnosisValueStyle = diagnosisConfirmed ? styles.infoValue : styles.infoValueSelfReported;
+
+  /**
+   * The graded read of the genetic evidence, or null.
+   *
+   * Shape-checked rather than asserted — see
+   * `readPassportGeneticEvidence` in lib/api.ts. Null means either an
+   * API build that predates the field or a payload this bundle cannot
+   * render whole, and in both cases the block below simply does not
+   * appear. Nothing else on the passport depends on it.
+   */
+  const geneticEvidence = useMemo(
+    () => readPassportGeneticEvidence(passport?.diagnosis.geneticEvidence),
+    [passport],
+  );
+  const testRequest = geneticEvidence?.testRequest ?? null;
+  /** The ladder rung, as the API worded it. Checked rather than
+   *  asserted for the same reason as the block above: `ladderLabel` is
+   *  new on the wire and the type parameter proves nothing about it. */
+  const ladderLabel =
+    typeof passport?.diagnosis.ladderLabel === 'string' && passport.diagnosis.ladderLabel
+      ? passport.diagnosis.ladderLabel
+      : null;
+
+  /**
+   * Get the 《检查申请说明》 out of the app.
+   *
+   * Same shape as the anesthesia card: one model, two carriers, and the
+   * carrier that can fail is the generated one. The full text is
+   * already on screen and every line of it is `selectable`, so a
+   * blocked popup, a native shell with no share sheet or a WeChat
+   * browser with no print dialog costs the patient a nicer page — not
+   * the document. The whole reason this exists is that it has to reach
+   * a doctor who will not be holding this phone.
+   */
+  const handleExportTestRequest = async () => {
+    if (!testRequest) return;
+    try {
+      setIsExportingTestRequest(true);
+      const html = buildTestRequestHtml(testRequest);
+
+      if (Platform.OS === 'web') {
+        const printWindow = window.open('', '_blank');
+        if (!printWindow) {
+          throw new Error(
+            '浏览器拦截了打印窗口。上面的文字和这份说明内容完全一样，可以长按选中后复制发给医生。',
+          );
+        }
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.focus();
+        printWindow.onload = () => {
+          printWindow.print();
+        };
+        return;
+      }
+
+      const exported = await Print.printToFileAsync({ html, base64: false });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(exported.uri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: testRequest.title,
+        });
+        return;
+      }
+      await Print.printAsync({ html });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : '这份说明没能生成文件。上面的文字内容完全一样，可以长按选中后复制发给医生。';
+      notify({ title: '导出《检查申请说明》失败', message, tone: 'error' });
+    } finally {
+      setIsExportingTestRequest(false);
+    }
+  };
+
   const heroMetrics = useMemo(() => {
     if (!passport) return [];
     const metrics = passport.metrics.filter((item) => item.label !== '肌力组数');
@@ -387,6 +590,55 @@ const ClinicalPassportScreen = () => {
   const latestMriVisualization = useMemo(
     () => buildLatestMriVisualization(profile?.documents ?? []),
     [profile],
+  );
+  // Two lists, not one. 「补上传一份 MRI」 and 「问一次眼底检查」 are
+  // different kinds of instruction and the second one stops meaning
+  // what it says the moment it sits under a data-completeness heading.
+  const recordSteps = useMemo(
+    () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'record'),
+    [passport],
+  );
+  const [anesthesiaCard, setAnesthesiaCard] = useState<RenderedCard | null>(null);
+  /**
+   * The same model the PNG is drawn from, kept so it can also be
+   * rendered as text.
+   *
+   * Until this existed the card's clinical content lived in the app as
+   * pixels only: a screen reader reached the image and got the card's
+   * *name*, not 「避免琥珀胆碱」; the text did not reflow at 200%; and
+   * nothing on it could be copied into WeChat to send the surgical team
+   * before the day of the operation. The image is the convenience — you
+   * hold up a phone, or long-press to save it — not the only path to
+   * the content.
+   */
+  const [anesthesiaModel, setAnesthesiaModel] = useState<AnesthesiaCardModel | null>(null);
+  const [anesthesiaCardError, setAnesthesiaCardError] = useState<string | null>(null);
+
+  const handleGenerateAnesthesiaCard = () => {
+    if (!passport) return;
+    setAnesthesiaCardError(null);
+    const model = buildAnesthesiaCard(passport, new Date());
+    // Text first, and independent of the canvas: one model, two
+    // carriers, and the carrier that can fail is the picture.
+    setAnesthesiaModel(model);
+    // Canvas only exists on web, and this app reaches patients as a
+    // web export. On the native shell there is no image — but the
+    // clinical content is on screen either way now, so this says what
+    // is missing instead of reading as a dead button.
+    const rendered = renderAnesthesiaCardPng(model);
+    if (!rendered) {
+      setAnesthesiaCard(null);
+      setAnesthesiaCardError(
+        '这台设备上生成不了图片，下面的文字版内容完全一样，可以直接给麻醉医师看，或者复制发给手术团队。',
+      );
+      return;
+    }
+    setAnesthesiaCard(rendered);
+  };
+
+  const clinicalSteps = useMemo(
+    () => (passport?.nextSteps ?? []).filter((step) => step.kind === 'clinical'),
+    [passport],
   );
   const passportMriRegions =
     Object.keys(passport?.imaging.bodyRegions ?? {}).length > 0
@@ -656,33 +908,173 @@ const ClinicalPassportScreen = () => {
                     </View>
                   </View>
 
+                  {/* Above the values, because it is about them and a
+                      reader who meets it afterwards has already read
+                      them as results. */}
+                  {diagnosisNotice ? (
+                    <View style={styles.diagnosisNotice}>
+                      <Text style={styles.diagnosisNoticeText}>{diagnosisNotice}</Text>
+                    </View>
+                  ) : null}
+
                   <View style={styles.infoGrid}>
+                    {/* The passport ID keeps metric type in every state:
+                        it is generated by this system, not claimed by
+                        anyone. */}
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>临床护照 ID</Text>
                       <Text style={styles.infoValue}>{passport.passportId}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>基因类型</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.geneticType}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.geneticType}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>D4Z4 重复数</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.d4z4Repeats}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.d4z4Repeats}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>甲基化值</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.methylationValue}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.methylationValue}</Text>
                     </View>
                     <View style={styles.infoCell}>
                       <Text style={styles.infoLabel}>诊断日期</Text>
-                      <Text style={styles.infoValue}>{passport.diagnosis.diagnosisDate}</Text>
+                      <Text style={diagnosisValueStyle}>{passport.diagnosis.diagnosisDate}</Text>
                     </View>
+                    {/* The rung the patient answered on the baseline
+                        form. It answers a different question from
+                        `confirmation` — 「what did you tell us」 vs
+                        「what does the evidence show」 — and the passport
+                        shows both rather than reconciling them, which
+                        is also why this cell never takes metric type:
+                        it is a self-report by construction, whatever
+                        the uploaded reports say. Absent, not 「—」, when
+                        the question was never answered. */}
+                    {ladderLabel ? (
+                      <View style={styles.infoCell}>
+                        <Text style={styles.infoLabel}>本人填写的诊断进度</Text>
+                        <Text style={styles.infoValueSelfReported}>{ladderLabel}</Text>
+                      </View>
+                    ) : null}
                   </View>
 
                   <View style={styles.noteCard}>
-                    <Text style={styles.noteTitle}>证据摘要</Text>
+                    <Text style={styles.noteTitle}>
+                      {diagnosisConfirmed ? '证据摘要' : '本人填写的诊断信息'}
+                    </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
                   </View>
+
+                  {/* The graded read of the genetic evidence.
+                      Deliberately below the values it is about, and
+                      deliberately not styled as a verdict: it grades a
+                      REPORT — whether the method could see the locus
+                      and whether both required results are on it — and
+                      says nothing about whether this person has FSHD.
+                      「方法对但结果不全」 is where most Chinese reports
+                      legitimately land, because 4qA permissiveness is
+                      routinely missing even from a proper Southern
+                      blot, so the copy the server writes for it
+                      encourages rather than scolds and this block must
+                      not re-frame it. */}
+                  {geneticEvidence ? (
+                    <View style={styles.geneticEvidenceBlock}>
+                      <View style={styles.geneticGradeRow}>
+                        <View style={styles.geneticGradePill}>
+                          <Text style={styles.geneticGradePillText}>
+                            {geneticEvidence.gradeLabel}
+                          </Text>
+                        </View>
+                        <Text style={styles.geneticScopeTag}>关于报告，不是关于你</Text>
+                      </View>
+                      <Text style={styles.geneticHeadline} selectable>
+                        {geneticEvidence.headline}
+                      </Text>
+                      <Text style={styles.geneticBody} selectable>
+                        {geneticEvidence.reason}
+                      </Text>
+                      <Text style={styles.geneticBody} selectable>
+                        {geneticEvidence.action}
+                      </Text>
+
+                      {geneticEvidence.greyZoneNote ? (
+                        <View style={styles.geneticGreyZone}>
+                          <Text style={styles.noteTitle}>8–10 单元灰区</Text>
+                          <Text style={styles.geneticBody} selectable>
+                            {geneticEvidence.greyZoneNote}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {geneticEvidence.sources.map((source, index) => (
+                        <Text key={`grade-source-${index}`} style={styles.geneticSource} selectable>
+                          {`出处：${source}`}
+                        </Text>
+                      ))}
+
+                      {/* 《检查申请说明》 — the half of this block that
+                          has to leave the phone. Same pattern as the
+                          anesthesia card: the text is the carrier that
+                          always works (selectable, reflows at 200%,
+                          reachable by a screen reader), the printable
+                          page is the convenience. */}
+                      {testRequest ? (
+                        <View style={styles.testRequestBlock}>
+                          <Text style={styles.testRequestTitle} selectable>
+                            {testRequest.title}
+                          </Text>
+                          <Text style={styles.testRequestHint}>
+                            这一份是写给医生看的。可以长按选中复制发到微信，或者用下面的按钮生成一页打印出来带去门诊。
+                          </Text>
+                          {testRequest.intro ? (
+                            <Text style={styles.testRequestIntro} selectable>
+                              {testRequest.intro}
+                            </Text>
+                          ) : null}
+                          {testRequest.sections.map((section, sectionIndex) => (
+                            <View
+                              key={`test-request-${sectionIndex}`}
+                              style={styles.testRequestSection}
+                            >
+                              <Text style={styles.testRequestHeading} selectable>
+                                {section.heading}
+                              </Text>
+                              {section.body.map((line, lineIndex) => (
+                                <Text
+                                  key={`test-request-${sectionIndex}-${lineIndex}`}
+                                  style={styles.testRequestLine}
+                                  selectable
+                                >
+                                  {line}
+                                </Text>
+                              ))}
+                              {/* Absent rather than empty when the
+                                  server sent no citation: a clinical
+                                  claim printed under 「出处：」 with
+                                  nothing after it reads as a source
+                                  that failed to load. */}
+                              {section.source ? (
+                                <Text style={styles.testRequestSource} selectable>
+                                  {`出处：${section.source}`}
+                                </Text>
+                              ) : null}
+                            </View>
+                          ))}
+                          <View style={styles.testRequestAction}>
+                            <Button
+                              label="打印 / 导出这份说明"
+                              icon="file-pdf"
+                              variant="tinted"
+                              fullWidth
+                              busy={isExportingTestRequest}
+                              accessibilityHint="生成一页《检查申请说明》，可打印或分享给医生"
+                              onPress={handleExportTestRequest}
+                            />
+                          </View>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
                 </View>
               </View>
 
@@ -712,6 +1104,53 @@ const ClinicalPassportScreen = () => {
 
                 <View style={styles.figureStack}>
                   <View style={styles.figureShell}>
+                    {/* 功能分级. Rendered only when there is a reading
+                        whose level this build can name — an unnamed
+                        level produces no summary at all, so there is no
+                        path from a number to this page without the
+                        sentence that says what it means. A clinician
+                        who sees「3」 with nothing beside it will read it
+                        against whichever scale they used last, and this
+                        app runs three scales with three ranges and two
+                        directions (Brooke 1-6, Vignos 1-10, MRC 0-5). */}
+                    {instrumentSummaries.length > 0 ? (
+                      <View style={styles.instrumentBlock}>
+                        <Text style={styles.noteTitle}>功能分级（本人自评）</Text>
+                        {instrumentSummaries.map((summary) => (
+                          <View key={summary.instrumentKey} style={styles.instrumentRow}>
+                            <Text style={styles.instrumentHeadline}>{summary.headline}</Text>
+                            <Text style={styles.instrumentAnchor}>{summary.latest.anchor}</Text>
+                            {summary.comparison ? (
+                              // The earlier level gets its sentence too.
+                              // 「去年同期 2 级」 alone tells a reader
+                              // that something moved but not what the
+                              // patient could do then.
+                              <Text style={styles.instrumentPrevious}>
+                                {summary.comparison.label}（{summary.comparison.reading.level}{' '}
+                                级）：
+                                {summary.comparison.reading.anchor}
+                              </Text>
+                            ) : null}
+                          </View>
+                        ))}
+                        {/* Which published scale, straight from the
+                            catalogue. It changes how a reader weighs
+                            the number, and the licence on both of these
+                            scales requires the attribution to travel
+                            with the wording. Absent when the catalogue
+                            was unreachable — an empty line rather than
+                            a remembered citation. */}
+                        {instrumentSummaries.some((summary) => summary.entry?.sourceCitation) ? (
+                          <Text style={styles.instrumentSource}>
+                            {instrumentSummaries
+                              .map((summary) => summary.entry?.sourceCitation)
+                              .filter(Boolean)
+                              .join(' ')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+
                     <View style={styles.noteCard}>
                       <Text style={styles.noteTitle}>最近功能变化</Text>
                       <Text style={styles.noteText}>
@@ -804,7 +1243,7 @@ const ClinicalPassportScreen = () => {
                 </View>
 
                 <View style={styles.gapList}>
-                  {passport.nextSteps.length === 0 ? (
+                  {recordSteps.length === 0 ? (
                     <View style={styles.gapCard}>
                       <Text style={styles.gapTitle}>当前没有明显缺口</Text>
                       <Text style={styles.gapDescription}>
@@ -812,7 +1251,7 @@ const ClinicalPassportScreen = () => {
                       </Text>
                     </View>
                   ) : (
-                    passport.nextSteps.map((step) => (
+                    recordSteps.map((step) => (
                       <View key={step.title} style={styles.gapCard}>
                         <View style={styles.gapTopRow}>
                           <Icon name="triangle-exclamation" size={13} color={COLOR.warn} />
@@ -835,6 +1274,38 @@ const ClinicalPassportScreen = () => {
                 />
               </View>
 
+              {/* Guideline recommendations, kept out of the card above.
+                  Nothing here is a hole in your records and none of it
+                  is fixed by uploading a file, so it gets neither the
+                  warning triangle nor the 「去数据录入补齐」 button —
+                  both of which would send a patient to an upload form
+                  to resolve 「问一次眼底检查」. */}
+              {clinicalSteps.length > 0 ? (
+                <View style={styles.supportCard}>
+                  <View style={styles.cardHeadingRow}>
+                    <View>
+                      <Text style={styles.cardTitle}>值得和医生提一句</Text>
+                      <Text style={styles.cardSubtitle}>
+                        根据 FSHD 诊疗指南，结合你已录入的信息给出。不是急事，也不用现在做什么 ——
+                        下次就诊时问一下就好。
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.gapList}>
+                    {clinicalSteps.map((step) => (
+                      <View key={step.title} style={styles.gapCard}>
+                        <View style={styles.gapTopRow}>
+                          <Icon name="user-doctor" size={13} color={COLOR.accent} />
+                          <Text style={styles.gapTitle}>{step.title}</Text>
+                        </View>
+                        <Text style={styles.gapDescription}>{step.description}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
               <View style={styles.exportCard}>
                 <View style={styles.cardHeadingRow}>
                   <View>
@@ -853,6 +1324,117 @@ const ClinicalPassportScreen = () => {
                   accessibilityHint="导出临床护照 PDF，可保存、打印或发送给医生"
                   onPress={handleExport}
                 />
+              </View>
+
+              {/* A picture, not a PDF and not a print dialog. This gets
+                  used by showing a phone to an anesthetist, or by
+                  having it in the photo roll where no network is
+                  needed. A lot of these patients open the site inside
+                  WeChat's browser, which has no print dialog and turns
+                  a PDF into a viewer they then have to escape. */}
+              <View style={styles.exportCard}>
+                <View style={styles.cardHeadingRow}>
+                  <View>
+                    <Text style={styles.cardTitle}>麻醉注意事项卡</Text>
+                    <Text style={styles.cardSubtitle}>
+                      要做手术或胃肠镜时给麻醉医师看。生成一张图片，长按可保存到相册。
+                    </Text>
+                  </View>
+                </View>
+
+                {anesthesiaCard ? (
+                  <>
+                    <Image
+                      source={{ uri: anesthesiaCard.uri }}
+                      // From the render, not a guess: the height falls
+                      // out of how the clinical text wraps.
+                      style={[
+                        styles.anesthesiaCardImage,
+                        { aspectRatio: anesthesiaCard.width / anesthesiaCard.height },
+                      ]}
+                      resizeMode="contain"
+                      // The text below carries the same content, so the
+                      // label says which of the two this is rather than
+                      // standing in for content a screen reader can now
+                      // actually read.
+                      accessibilityLabel="FSHD 麻醉注意事项卡图片，内容与下方文字相同"
+                    />
+                    <Text style={styles.cardSubtitle}>长按图片即可保存到手机相册。</Text>
+                  </>
+                ) : null}
+
+                {/* Reappears when the text landed but the picture did
+                    not: setting the model unconditionally (correctly —
+                    the clinical content must not depend on canvas)
+                    otherwise took the button away with it, leaving no
+                    second attempt short of reloading the page. */}
+                {anesthesiaModel && anesthesiaCard ? null : (
+                  <Button
+                    label={anesthesiaModel ? '再试一次生成图片' : '生成麻醉卡'}
+                    icon="image"
+                    variant="tinted"
+                    fullWidth
+                    accessibilityHint="生成一张可保存的图片和一份可复制的文字版，供手术前给麻醉医师查看"
+                    onPress={handleGenerateAnesthesiaCard}
+                  />
+                )}
+                {anesthesiaCardError ? (
+                  <Text style={styles.cardSubtitle}>{anesthesiaCardError}</Text>
+                ) : null}
+
+                {/* Same model as the PNG, as text. Not a caption for the
+                    picture and not a summary of it — the whole card, so
+                    that a screen reader, a 200% text size and a copy into
+                    WeChat all reach the same clinical content the image
+                    carries. Every Text here is `selectable` for exactly
+                    the last of those: sending it to the surgical team in
+                    advance is the one use an image cannot serve. */}
+                {anesthesiaModel ? (
+                  <View style={styles.anesthesiaTextBlock}>
+                    <Text style={styles.anesthesiaTextHint}>
+                      下面是同一张卡的文字版，内容与图片一致，可长按选中复制，发给手术或麻醉团队。
+                    </Text>
+                    <Text style={styles.anesthesiaTextTitle} selectable>
+                      {anesthesiaModel.title}
+                    </Text>
+                    <Text style={styles.anesthesiaTextName} selectable>
+                      {anesthesiaModel.patientName}
+                    </Text>
+                    {anesthesiaModel.patientLines.map((line, index) => (
+                      <Text
+                        key={`patient-${index}`}
+                        style={styles.anesthesiaTextPatient}
+                        selectable
+                      >
+                        {line}
+                      </Text>
+                    ))}
+                    {anesthesiaModel.sections.map((section, sectionIndex) => (
+                      <View key={`section-${sectionIndex}`} style={styles.anesthesiaTextSection}>
+                        <Text style={styles.anesthesiaTextHeading} selectable>
+                          {section.title}
+                        </Text>
+                        {section.lines.map((line, lineIndex) => (
+                          <Text
+                            key={`line-${sectionIndex}-${lineIndex}`}
+                            style={styles.anesthesiaTextLine}
+                            selectable
+                          >
+                            {`· ${line}`}
+                          </Text>
+                        ))}
+                      </View>
+                    ))}
+                    <Text style={styles.anesthesiaTextFine} selectable>
+                      {anesthesiaModel.disclaimer}
+                    </Text>
+                    {anesthesiaModel.sources.map((source, index) => (
+                      <Text key={`source-${index}`} style={styles.anesthesiaTextFine} selectable>
+                        {source}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
               </View>
             </>
           ) : null}

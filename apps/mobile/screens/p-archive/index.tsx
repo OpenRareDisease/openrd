@@ -15,6 +15,7 @@ import { formatDateLabel } from '../../lib/clinical-visuals';
 import { COLOR } from '../../lib/design';
 import { buildDataAssetOverview } from '../../lib/data-asset';
 import { buildPatientVisualizationCards } from '../../lib/followup-analytics';
+import { ambulationLabel } from '../../lib/profile-baseline-options';
 import { buildReportInsights } from '../../lib/report-insights';
 import ScreenHeader from '../common/ScreenHeader';
 import styles from './styles';
@@ -104,12 +105,8 @@ const formatRegionLabel = (profile: PatientProfile | null) => {
   );
 };
 
-const formatAmbulationLabel = (profile: PatientProfile | null) => {
-  const independentlyAmbulatory = profile?.baseline?.currentStatus?.independentlyAmbulatory;
-  if (independentlyAmbulatory === true) return '可独立行走';
-  if (independentlyAmbulatory === false) return '需要辅助';
-  return '未填写';
-};
+const formatAmbulationLabel = (profile: PatientProfile | null) =>
+  ambulationLabel(profile?.baseline?.currentStatus?.independentlyAmbulatory) ?? '未填写';
 
 const formatAssistiveDevicesLabel = (profile: PatientProfile | null) => {
   const devices = profile?.baseline?.currentStatus?.assistiveDevices?.filter(Boolean) ?? [];
@@ -291,6 +288,22 @@ export default function ArchiveScreen() {
           lowers the contrast of everything set on it; the page is now
           flat paper and the hierarchy comes from rules and type. */}
       <View style={styles.backgroundGradient}>
+        {/* Since the archive left the tab bar it renders no AppTabBar
+            and the root stack hides its header, so this row is the
+            only way out — without it the sole exit is the iOS edge
+            swipe, the gesture our users are least able to perform.
+            `MY ARCHIVE` used to sit above the title; it said nothing
+            我的档案 does not already say.
+
+            Outside the ScrollView, matching p-data_entry: this page is
+            long (hero, data-asset console, nav list, visualisation
+            digest), and inside the scroller the only navigation
+            surface on the screen scrolled away — a patient several
+            hundred points down had no back and no home and had to
+            fling all the way up to find one. A sticky header is the
+            other way to do it, but hoisting keeps the ScrollView's
+            refreshControl and content indices alone. */}
+        <ScreenHeader title="我的档案" />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -304,13 +317,6 @@ export default function ArchiveScreen() {
           }
         >
           <View style={styles.header}>
-            {/* Since the archive left the tab bar it renders no
-                AppTabBar and the root stack hides its header, so
-                without this the only way out is the iOS edge swipe —
-                the gesture our users are least able to perform.
-                `MY ARCHIVE` used to sit above the title; it said
-                nothing 我的档案 does not already say. */}
-            <ScreenHeader title="我的档案" style={styles.screenHeaderRow} />
             <View style={styles.headerActionRow}>
               <Button
                 label="记录数据"

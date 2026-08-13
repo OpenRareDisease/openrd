@@ -14,6 +14,7 @@ import {
   _laterMigrationsStillApplied,
   _resolveDownTarget,
   _rollBackMigration,
+  _stripSqlComments,
   type MigrationLedgerClient,
 } from './migrate.js';
 
@@ -327,6 +328,778 @@ describe('every _down script on disk has a forward sibling and no transaction co
     // Order is the whole point: preserving after the NULLing UPDATE
     // would copy the NULLs.
     expect(preserveAt).toBeLessThan(destroyAt);
+  });
+});
+
+/*
+ * Locks compose inside the runner's transaction, so a migration that
+ * describes them statement by statement gets the answer wrong.
+ *
+ * applyPendingMigrations wraps a whole file in one BEGIN/COMMIT. A file
+ * that drops an index and then creates one is therefore not taking two
+ * locks in turn: the DROP's ACCESS EXCLUSIVE on the table is held until
+ * COMMIT, and the CREATE builds under it. That blocks SELECT as well as
+ * INSERT/UPDATE/DELETE — a different outage from the SHARE lock a lone
+ * CREATE INDEX takes, and a different thing to plan a deploy around.
+ *
+ * 025 shipped saying the opposite: 「the same SHARE lock as 018 — see
+ * 018 for the by-hand escape hatch … The DROP below takes ACCESS
+ * EXCLUSIVE, briefly」. An operator reading that budgets for a window
+ * that stops writes when it stops reads, and following the pointer to
+ * 018's CONCURRENTLY hatch makes it worse rather than better: 025's
+ * unconditional DROP removes the hand-built index and rebuilds it
+ * non-concurrently under the full lock.
+ *
+ * Measured on PG18 against dev (patient_measurements, 233 rows) by
+ * holding the transaction open and reading pg_locks from a second
+ * session: AccessExclusiveLock granted on the table and still held
+ * after the CREATE had run, alongside the build's own ShareLock; a
+ * plain `SELECT count(*)` from that second session never returned and
+ * was cancelled by a 2s statement_timeout.
+ *
+ * The lock's CONSEQUENCE is guarded separately from its name and its
+ * duration, because 025's correction got the first two right and then
+ * described its own escape-hatch swap — a transaction opening with
+ * `DROP INDEX` — as work 「neither reads nor writes stop for」. Both
+ * halves are checkable independently and a file can pass either while
+ * failing the other, so both are checked.
+ *
+ * The swap is checked in its own right too. It is not made of the
+ * file's statements, so the paragraph selector cannot reach it by
+ * looking at what the file does; and the sentence that describes it is
+ * the one an operator acts on by hand, against a live database. So a
+ * file that offers a swap — or borrows the neighbouring file's — has to
+ * carry the swap's lock in a paragraph of its own, which is what the
+ * _down script did not do while its forward sibling covered for it.
+ *
+ * Which files are held to this is derived from the statements rather
+ * than listed, so migration 026 is covered the day someone writes it in
+ * this shape. The assertions are on claims a file in this shape cannot
+ * honestly make, not on any particular wording of the correction.
+ */
+describe('a migration that rebuilds an index describes the lock it really takes', () => {
+  const migrationsDir = path.resolve(__dirname, '../../../../db/migrations');
+
+  const sqlOf = (file: string) => _decodeSqlBuffer(fs.readFileSync(path.join(migrationsDir, file)));
+
+  /** The comment text as a reader meets it: `--` markers dropped and
+   *  wrapped lines rejoined, so a sentence split across three lines is
+   *  one string here as it is one sentence on screen. */
+  const commentLinesOf = (sql: string) =>
+    sql
+      .split('\n')
+      .filter((line) => line.trimStart().startsWith('--'))
+      .map((line) => line.trimStart().replace(/^--\s?/, ''));
+
+  const proseOf = (sql: string) => commentLinesOf(sql).join(' ').replace(/\s+/g, ' ');
+
+  /** The same text cut at the blank `--` lines, so an assertion can ask
+   *  about the paragraph that makes a claim rather than about the file.
+   *  Whole-file matching is too weak here: 025's original text named
+   *  ACCESS EXCLUSIVE in one paragraph and described a catalog blip in
+   *  another, and every file-global check it had stayed green. */
+  const paragraphsOf = (sql: string) =>
+    commentLinesOf(sql)
+      .join('\n')
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+  /** Paragraphs that describe the composition itself — this lock, over
+   *  this DROP, with a build or a rename after it. Those are the ones an
+   *  operator budgets a deploy from, so those are the ones held to the
+   *  consequence. A heading or a recipe listing naming only one of the
+   *  three is not making the claim.
+   *
+   *  The lock name is matched in both spellings a writer reaches for:
+   *  `ACCESS EXCLUSIVE` as the SQL level and `AccessExclusiveLock` as
+   *  pg_locks prints it. Matching only the first left the paragraph that
+   *  quotes pg_locks outside every assertion here. */
+  const claimParagraphs = (sql: string) =>
+    paragraphsOf(sql).filter(
+      (paragraph) =>
+        /ACCESS\s*EXCLUSIVE/i.test(paragraph) &&
+        /\bDROP\b/.test(paragraph) &&
+        /\bCREATE\b|\bbuilds?\b|\bRENAME\b/.test(paragraph),
+    );
+
+  /* ------------------------------------------------------------------
+   * Reading the CLAIM out of the prose, rather than the words.
+   *
+   * Everything below used to be a list of bans over the whole file's
+   * text — `\bonly\b[^.]{0,20}\bwrites?\b`, `\b(?:is|are)\b[^.]{0,30}
+   * \bavailable\b`, and six more. Each was written against one false
+   * sentence and matched a character sequence, never asking whether the
+   * sentence ASSERTED that sequence or DENIED it. So they banned the
+   * honest correction as readily as the lie: 「Reads stop too, not only
+   * writes」 — the title of the sibling test below — 「the table is not
+   * available to readers」, 「Readers stay blocked until COMMIT」 and
+   * 「reads remain queued behind the lock」 all went red on files that
+   * were telling the truth. A guard that reddens the honest sentence is
+   * deleted by the next author rather than fixed, and then the lie it
+   * was written for walks back in.
+   *
+   * So polarity is read explicitly. Prose is cut into sentences, each
+   * sentence into SEGMENTS at its subordinators and hard punctuation,
+   * and inside a segment a claim is (subject × predicate × polarity):
+   *
+   *   reads/table/screen  +  「carries on」 verb   affirmative -> a lie
+   *   reads/table/screen  +  「stops」 verb        negated     -> a lie
+   *   either of those with the other polarity                 -> honest
+   *
+   * Segments, not clauses at every comma: 「reads are queued for a
+   * moment and then go on as before」 has to stay banned, and cutting at
+   * 「and」 strands the second half with no subject. Segments, not whole
+   * sentences: 025 ships 「…reads included, because Postgres does not
+   * let later lock requests overtake a waiting exclusive one」, where a
+   * sentence-wide negator sits between a reads-noun and a stop-verb
+   * that belong to different clauses. Cutting at 「because」 is what
+   * keeps that honest sentence out of the ban.
+   *
+   * None of this is a claim to parse English. It is bounded pattern
+   * matching with the polarity made explicit, and the thing that makes
+   * the next widening safe is not the patterns but the fixture below:
+   * every sentence in FALSE_REASSURANCE must be caught and every
+   * sentence in HONEST must not, and both lists are real prose — the
+   * lies out of 025's original text and this block's own history, the
+   * honest ones out of the shipped 025 files.
+   * ------------------------------------------------------------------ */
+
+  const sentencesOf = (prose: string) =>
+    prose
+      // Not a bare `.`: these files are full of `1.5 ms`, `018.sql` and
+      // `apps/api/src/db/migrate.ts`, and splitting inside those would
+      // cut a subject away from its verb.
+      .split(/(?<![0-9])[.!?](?![0-9])/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+
+  /** Subordinators and hard punctuation only. `and`/`but`/`,` are
+   *  deliberately NOT breaks — a coordinated second half is still about
+   *  the first half's subject. */
+  const SEGMENT_BREAK =
+    /[;:—–]|\s(?:because|while|which|that|though|although|unless|until|when|where|whereas|so)\s/i;
+
+  const segmentsOf = (sentence: string) =>
+    sentence
+      .split(SEGMENT_BREAK)
+      .map((segment) => (segment ?? '').trim())
+      .filter(Boolean);
+
+  /** What an availability claim can be ABOUT. Anything else in one of
+   *  these files — the query, the plan, the index, the deploy — is not
+   *  a reader, and a sentence about it makes no claim this block bans. */
+  const READ_SUBJECT =
+    /\b(?:SELECTs?|reads?|readers?|table|manage screen|screen|app|UI|clients?|callers?|users?|nothing|nobody|no one)\b/gi;
+
+  const NEGATOR =
+    /\b(?:not|never|no|none|nor|neither|nothing|nobody|cannot|can't|without)\b|n't\b/i;
+
+  /** 「the table stays available」, 「reads still work」, 「invisible to
+   *  readers」. The bare stative verbs are NOT here on their own: 「stay」
+   *  in 「readers stay blocked」 says the opposite of 「stays available」,
+   *  and putting `stays?` in a ban is what made finding 5 fire on the
+   *  honest sentence. The claim is in the complement. */
+  const CARRIES_ON =
+    /\b(?:available|answering|serving|readable|online|reachable|unaffected|untouched|uninterrupted|unblocked|invisible|imperceptible|unnoticeable)\b|\b(?:keeps?|kept|stays?|stay|remains?|remain|is|are|still)\s+(?:working|works?|running|runs?|rendering|answering|serving|responding|up|available|readable|online)\b|\b(?:carry|carries) on\b|\bgo(?:es)? on\b|\bcontinues?\b|\bproceeds?\b/gi;
+
+  /** The mirror. `locks?` is here so that 「does not lock the table」 and
+   *  「holds no read lock」 are read as what they are: a stop, denied. */
+  const STOPS =
+    /\b(?:blocked|blocks?|stops?|stopped|stopping|stalls?|stalled|queues?|queued|waits?|waiting|pauses?|paused|cancell?ed|cancels?|unavailable|unreadable|unreachable|offline|locks?|locked)\b/gi;
+
+  /** How far from its subject a predicate may sit and still be about
+   *  it. 60 characters is what the bans this replaces used, and it is
+   *  the distance across 「reads are queued for a moment and then go on
+   *  as before」. */
+  const SUBJECT_REACH = 60;
+
+  /** How far in front of a claim a negator may sit and still be part of
+   *  it: 「does not lock the table」, 「this file does not take the same
+   *  SHARE lock」. Bounded rather than 「anywhere earlier in the
+   *  segment」, because one segment can carry two claims and the first
+   *  one's negator does not reach the second: 「the table is not
+   *  available to readers, and it blocks SELECT」 is two honest halves,
+   *  and reading the leading 「not」 as governing 「blocks SELECT」 turns
+   *  the second half into a denied stop and reddens the whole
+   *  sentence. */
+  const NEGATOR_REACH = 24;
+
+  /** The span a negator has to appear in to govern this predicate: from
+   *  just before the claim to the predicate, and on past it to the end
+   *  of its subject when the subject FOLLOWS the verb — 「blocks
+   *  INSERT/UPDATE/DELETE but not SELECT」 negates the stop it just
+   *  asserted. Null when no subject is near enough, i.e. when the
+   *  segment makes no claim about readers at all. */
+  const claimScopeOf = (segment: string, start: number, end: number) => {
+    let best: { gap: number; start: number; end: number } | null = null;
+    for (const subject of segment.matchAll(READ_SUBJECT)) {
+      const from = subject.index;
+      const to = from + subject[0].length;
+      const gap = from >= end ? from - end : to <= start ? start - to : 0;
+      if (gap > SUBJECT_REACH) continue;
+      if (best === null || gap < best.gap) {
+        best = { gap, start: Math.min(start, from), end: Math.max(end, to) };
+      }
+    }
+    return best;
+  };
+
+  const negatedIn = (segment: string, scope: { start: number; end: number }) =>
+    NEGATOR.test(segment.slice(Math.max(0, scope.start - NEGATOR_REACH), scope.end));
+
+  type ReadClaim = 'carries-on' | 'stops' | 'none';
+
+  const claimOf = (segment: string): ReadClaim => {
+    let verdict: ReadClaim = 'none';
+    for (const match of segment.matchAll(CARRIES_ON)) {
+      const scope = claimScopeOf(segment, match.index, match.index + match[0].length);
+      if (scope === null) continue;
+      if (!negatedIn(segment, scope)) return 'carries-on';
+      verdict = 'stops';
+    }
+    for (const match of segment.matchAll(STOPS)) {
+      const scope = claimScopeOf(segment, match.index, match.index + match[0].length);
+      if (scope === null) continue;
+      if (negatedIn(segment, scope)) return 'carries-on';
+      verdict = 'stops';
+    }
+    return verdict;
+  };
+
+  const segmentsClaiming = (text: string, claim: ReadClaim) =>
+    sentencesOf(text).flatMap((sentence) =>
+      segmentsOf(sentence).filter((segment) => claimOf(segment) === claim),
+    );
+
+  /** Says reads are among what stops — not merely that a lock is taken.
+   *  Reached through the same classifier as the ban, so the two cannot
+   *  disagree about one sentence: before, 「Reads stay blocked until
+   *  COMMIT」 satisfied the ban on claiming reads carry on AND failed to
+   *  satisfy this, which is a self-contradictory verdict on honest
+   *  prose. */
+  const statesReadsStop = (text: string) => segmentsClaiming(text, 'stops').length > 0;
+
+  /** A ban on a fixed phrase, fired only where the segment ASSERTS it.
+   *  `same SHARE lock` and 「ACCESS EXCLUSIVE … brief」 are claims about
+   *  the lock's identity and duration rather than about readers, so the
+   *  classifier above cannot reach them — but they have the same
+   *  polarity problem: 「this file does not take the same SHARE lock 018
+   *  took」 and 「the lock is not brief」 are the corrections. */
+  const assertingSegments = (text: string, phrase: RegExp) =>
+    sentencesOf(text).flatMap((sentence) =>
+      segmentsOf(sentence).filter((segment) => {
+        const match = segment.match(phrase);
+        if (match?.index === undefined) return false;
+        return !negatedIn(segment, { start: match.index, end: match.index + match[0].length });
+      }),
+    );
+
+  /** True when the runner's single transaction leaves the index build
+   *  running under an earlier statement's ACCESS EXCLUSIVE. Statements
+   *  are split with the runner's own comment stripper so a `DROP INDEX`
+   *  quoted in prose does not count as one. */
+  const buildsIndexUnderAccessExclusive = (sql: string) => {
+    const statements = _stripSqlComments(sql)
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    const exclusive = statements.findIndex((s) => /^DROP\s+INDEX\b/i.test(s));
+    const build = statements.findIndex((s) => /^CREATE\s+INDEX\b/i.test(s));
+    return exclusive >= 0 && build > exclusive;
+  };
+
+  /** The vocabulary a by-hand swap is written in, used by BOTH
+   *  predicates below.
+   *
+   *  The swap is a SECOND transaction that opens with `DROP INDEX`, so
+   *  it takes the same lock as the file itself; but it is not made of
+   *  the file's own statements, so nothing above can see it. That is
+   *  where 025's original text put its comfort — the swap was 「catalog
+   *  work, not a build」 that 「neither reads nor writes stop for」 — and
+   *  every check in this describe stayed green over it.
+   *
+   *  The two predicates used to disagree about what counts: the
+   *  paragraph selector already counted 「second transaction」 while the
+   *  trigger did not, so a file that handed the operator the same
+   *  recipe under 「the by-hand alternative」 was skipped entirely.
+   *  Reproduced against 025's _down script, which went straight back to
+   *  the inherit-by-reference state it was corrected out of. One
+   *  vocabulary fixes that; what it cannot fix on its own is the
+   *  difference between naming a swap and offering one, which is what
+   *  `swapOffers` below is for. */
+  const SWAP_VOCABULARY =
+    /\bhatch\b|\bswap\b|by[- ]hand|second transaction|RENAME TO|CREATE INDEX CONCURRENTLY/i;
+
+  /** Denials of a swap, in the two shapes these files write them: a
+   *  plain negator (「there is no by-hand alternative」, 「this file
+   *  offers no escape hatch」, 「018's hatch does NOT carry over」) and
+   *  the unavailability every file of this shape has to state about
+   *  CONCURRENTLY (「cannot run inside a transaction」, 「is unavailable
+   *  inside the runner's transaction」). */
+  const SWAP_DENIAL = new RegExp(
+    `${NEGATOR.source}|\\bunavailable\\b|\\bunusable\\b|\\bimpossible\\b|\\bforbid(?:s|den)?\\b|\\brules? out\\b`,
+    'i',
+  );
+
+  /** Segments that OFFER the swap, rather than merely spelling its
+   *  name. `offersASwap` used to be `SWAP_VOCABULARY.test(proseOf(sql))`
+   *  over the whole file, and every file in this shape has to write
+   *  「CREATE INDEX CONCURRENTLY cannot run inside a transaction」 to
+   *  explain why it is not using one — 025 writes it verbatim. So the
+   *  trigger fired on files offering nothing, and then demanded a
+   *  paragraph describing the lock of a swap that does not exist. The
+   *  only way to green that is to invent a swap or delete the guard,
+   *  which is the opposite of what the comment two tests down promises
+   *  (「a future migration in this shape that offers none makes no claim
+   *  to check」). Both explicit denials — 「no escape hatch」, 「no by-hand
+   *  alternative」 — were read as offers for the same reason. */
+  const swapOffers = (sql: string) =>
+    sentencesOf(proseOf(sql)).flatMap((sentence) =>
+      segmentsOf(sentence).filter(
+        (segment) => SWAP_VOCABULARY.test(segment) && !SWAP_DENIAL.test(segment),
+      ),
+    );
+
+  const offersASwap = (sql: string) => swapOffers(sql).length > 0;
+
+  /** Paragraphs that state the swap's lock in full: the lock's name,
+   *  that it is held to COMMIT, and that reads stop for it. All three in
+   *  ONE paragraph that names the swap, because the honest sentences
+   *  about the file's own DROP live in a different paragraph and
+   *  borrowing them is exactly how the _down script passed while
+   *  carrying no caveat of its own. */
+  const swapLockParagraphs = (sql: string) =>
+    paragraphsOf(sql).filter(
+      (paragraph) =>
+        SWAP_VOCABULARY.test(paragraph) &&
+        /ACCESS\s*EXCLUSIVE/i.test(paragraph) &&
+        /until COMMIT|still held|through the build/i.test(paragraph) &&
+        statesReadsStop(paragraph),
+    );
+
+  const rebuilders = fs
+    .readdirSync(migrationsDir)
+    .filter((file) => file.endsWith('.sql'))
+    .filter((file) => buildsIndexUnderAccessExclusive(sqlOf(file)));
+
+  it('finds the migrations in that shape', () => {
+    expect(rebuilders).toContain('025_measurement_cohort_index_per_patient.sql');
+    // The rollback script has the same shape and the same lock, which
+    // is why it is held to the same rule rather than exempted for being
+    // hand-run.
+    expect(rebuilders).toContain('025_measurement_cohort_index_per_patient_down.sql');
+  });
+
+  it.each(rebuilders)('%s says the exclusive lock outlives the DROP', (file) => {
+    const claims = claimParagraphs(sqlOf(file));
+    // A file in this shape has to make the claim somewhere.
+    expect(claims.length).toBeGreaterThan(0);
+    // Naming the lock is not enough — 025 named it and still described a
+    // catalog blip. The paragraph making the claim has to say the lock
+    // is held across the build, and has to say it itself: borrowing
+    // 「until COMMIT」 from an unrelated paragraph elsewhere in the file
+    // is how the original text passed.
+    for (const claim of claims) {
+      expect(claim).toMatch(/until COMMIT|still held|through the build/i);
+    }
+  });
+
+  it.each(rebuilders)('%s says reads stop too, not only writes', (file) => {
+    // The half with the operational teeth. The lock's NAME and DURATION
+    // are both compatible with the outage an operator already knows —
+    // writes queue, the manage screen keeps rendering — and that is the
+    // budget they will set unless the text says otherwise. So the
+    // paragraph that makes the claim has to name reads among what stops.
+    for (const claim of claimParagraphs(sqlOf(file))) {
+      expect(statesReadsStop(claim), claim).toBe(true);
+    }
+  });
+
+  /** Everything a file in this shape may not say, in a single list.
+   *  The entries are not phrasings — they are the KINDS of claim the lock
+   *  cannot support, and each is polarity-aware, so the correction of
+   *  each is not on the list. How many kinds there are is derived from
+   *  this array by the count test below rather than written into the
+   *  sentence above it, which is how it came to say 「three」 over four
+   *  of them. */
+  const FALSE_REASSURANCE_KINDS: Array<(prose: string) => string[]> = [
+    // The reassurance the lock cannot support: under ACCESS EXCLUSIVE
+    // nothing reads the table, so no part of this file may tell an
+    // operator that reads carry on — as an affirmative (「reads keep
+    // working」, 「the table stays available」, 「invisible to readers」)
+    // or as a denied stop (「neither reads nor writes stop for it」,
+    // 「does not lock the table for reads」, 「nothing waits」). Read
+    // file-wide on purpose: a file that says reads stop in one place
+    // and reads keep working in another has not corrected anything.
+    (prose) => segmentsClaiming(prose, 'carries-on'),
+    // 「only writes」: the DROP's lock has no writers-only mode to fall
+    // back to. Asserted only — 「Reads stop too, not only writes」 and
+    // 「blocks SELECT, not only INSERT/UPDATE/DELETE」 are the sentences
+    // this test is named after, and the ban used to reject both.
+    (prose) => assertingSegments(prose, /\bonly\b[^.]{0,30}\b(?:INSERTs?|writes?)\b/i),
+    // SHARE is what a lone CREATE INDEX takes; it is not available to a
+    // file that dropped an index first in the same transaction.
+    (prose) => assertingSegments(prose, /same SHARE lock/i),
+    // 「briefly」 is true of a DROP on its own and false of a transaction
+    // that holds the lock through an index build.
+    (prose) => assertingSegments(prose, /ACCESS\s*EXCLUSIVE[^.]{0,40}\bbrief/i),
+  ];
+
+  const falseReassurances = (prose: string): string[] =>
+    FALSE_REASSURANCE_KINDS.flatMap((kind) => kind(prose));
+
+  it.each(rebuilders)('%s does not claim a lock this shape cannot take', (file) => {
+    // Reported as the offending segments rather than as a regex that
+    // did not match: the failure an author sees is the sentence they
+    // wrote, which is the thing they have to decide about.
+    expect(falseReassurances(proseOf(sqlOf(file)))).toEqual([]);
+  });
+
+  /**
+   * The fixture the guard above is calibrated against.
+   *
+   * A ban over prose is only as good as the sentences it was tried on,
+   * and this one was tried on exactly one file. Four rounds of widening
+   * it against 025's original text left a guard that reddened on 「Reads
+   * stop too, not only writes」 — a phrase the suite itself uses as a
+   * test title — and on 「the table is not available to readers」, which
+   * is the plainest true thing a file in this shape can say. Nobody
+   * noticed, because the only prose it ever ran on was already written
+   * around it.
+   *
+   * So both directions are pinned here, on sentences rather than on
+   * files. FALSE_REASSURANCE is the archive, in two arrays because it
+   * has two provenances: 025's original text, and every phrasing those
+   * four rounds of widening were written for — the ones this block's
+   * own comments quote as the belief it exists to prevent among them,
+   * since a comment quoting a phrasing is how that phrasing is
+   * recorded at all. HONEST is the corrections: the ones the shipped
+   * 025 files use, and the true sentences the guard as it stood
+   * rejected.
+   *
+   * FIXTURE: twenty banned sentences — three of them 025's own text and
+   * seventeen from the four rounds of widening — and nineteen honest
+   * ones, against four kinds of banned claim.
+   * Stated here, and derived from the arrays by the last test in this
+   * block, because the size of this fixture is the evidence offered
+   * that the guard was recalibrated against every phrasing an earlier
+   * widening was written for — and the one place it was written down,
+   * the commit message that added the fixture, says twenty-two. A
+   * number nobody can check is a number that is already wrong.
+   *
+   * That last point applies to this docblock too, which is why the
+   * count test below does not stop at the FIXTURE line: it scans every
+   * number word in this block's comments that is attached to something
+   * countable here, and fails on any that no derivation accounts for.
+   * A single `toContain` over one sentence is satisfied by a docblock
+   * that contradicts itself two lines away, which is how 「seventeen
+   * from the widening history」 came to sit under a three-part
+   * enumeration and over an array split two ways.
+   *
+   * Both lists are about A FILE IN THIS SHAPE. 018 says 「reads of the
+   * manage screen keep working while writes queue」 and is telling the
+   * truth, because its lone CREATE INDEX takes SHARE; the same sentence
+   * in a DROP-then-CREATE file is a lie. That is why the guard runs on
+   * `rebuilders` and not on the directory.
+   */
+  /**
+   * How many times the ban was widened against 025's original text
+   * before this fixture existed. A fact about the guard's history, not
+   * the size of anything here — so it is a named constant every
+   * sentence stating it is built from, rather than a number retyped in
+   * three paragraphs and contradicted by a fourth.
+   */
+  const WIDENING_ROUNDS = 4;
+
+  /** 025 as it shipped, about its own swap transaction. */
+  const FALSE_REASSURANCE_AS_SHIPPED = [
+    'The swap is catalog work, not a build, and neither reads nor writes stop for it.',
+    'This transaction takes the same SHARE lock 018 took.',
+    'ACCESS EXCLUSIVE is held only briefly here.',
+  ];
+
+  /**
+   * Each of these got past the ban list as it stood at some point
+   * across those four rounds. NOT one phrasing per round — the version
+   * of this comment that shipped said it was, which put 「seventeen」
+   * and 「four」 in the same docblock for the same history. A round that
+   * widens a regex is a round that has been shown several phrasings;
+   * what is one-per-round is the widening, not the sentence.
+   */
+  const FALSE_REASSURANCE_PER_WIDENING = [
+    'Reads continue throughout the swap.',
+    'The swap does not lock the table for reads.',
+    'The RENAME holds no read lock.',
+    'The 1.8 ms swap is invisible to readers.',
+    'The manage screen keeps rendering right through it.',
+    'Nothing waits on it.',
+    'The table stays available for the length of the build.',
+    'The table keeps answering while the index is rebuilt.',
+    'SELECTs are unaffected.',
+    'Reads still work throughout.',
+    'Reads carry on.',
+    'The table is readable throughout the build.',
+    // A stop, denied — the same claim as 「reads carry on」 reached from
+    // the other side.
+    'Readers are not blocked.',
+    'It blocks INSERT/UPDATE/DELETE for the duration of the build but not SELECT.',
+    // The stative verb is honest and the complement is not, so a ban
+    // keyed on 「stay」/「keep」 alone cannot tell these from the HONEST
+    // entries below.
+    'Reads are queued for a moment and then go on as before.',
+    'The lock blocks only writes.',
+    'Only INSERT/UPDATE/DELETE queue behind it.',
+  ];
+
+  const FALSE_REASSURANCE = [...FALSE_REASSURANCE_AS_SHIPPED, ...FALSE_REASSURANCE_PER_WIDENING];
+
+  const HONEST = [
+    // True of a file in this shape, and rejected by the ban as it
+    // stood. Findings 3-6 named two of them: 「Reads stop too, not only
+    // writes」, which this suite uses as a test title, and 「the table is
+    // not available to readers」, which is the plainest true thing such
+    // a file can say. The rest are the same claim in the shapes a
+    // correction reaches for; which of them the old guard would have
+    // rejected is not recorded anywhere, so no count is stated here.
+    'Reads stop too, not only writes.',
+    'It blocks SELECT, not only INSERT/UPDATE/DELETE.',
+    'During the build the table is not available to readers.',
+    'Readers stay blocked until COMMIT.',
+    'Reads remain queued behind the lock.',
+    'No SELECT keeps running: the lock is held to COMMIT.',
+    'The table is not readable until COMMIT.',
+    'The table is unavailable to readers until COMMIT.',
+    // Verbatim from the shipped 025 files. If the guard rejects these
+    // it is rejecting the correction it was written to enforce.
+    'The DROP takes ACCESS EXCLUSIVE on patient_measurements and holds it until COMMIT, so the CREATE after it builds under ACCESS EXCLUSIVE — which blocks SELECT as well as INSERT/UPDATE/DELETE.',
+    '018 blocked writes only; this file stops the table dead for the length of the build.',
+    'DROP 1.5 ms, CREATE 4.7 ms — so reads are blocked for about 6 ms at this size.',
+    'Reads as well as writes stop for the length of the build.',
+    'ACCESS EXCLUSIVE cannot be granted while any reader still holds ACCESS SHARE, so the DROP first has to queue behind whatever SELECT is already in flight.',
+    'A plain SELECT count(*) issued after it was cancelled by a 2 s statement_timeout without ever running.',
+    'Reads stop for it exactly as they stop for the CREATE.',
+    // The corrections of the two phrase bans, which were as blind to
+    // polarity as the read-claim ones.
+    'This file does not take the same SHARE lock 018 took.',
+    'ACCESS EXCLUSIVE is not brief here — it is held through the build.',
+    // Neither of these is about readers at all, and both carry a
+    // negator and a stop-verb in one sentence.
+    'Postgres does not let later lock requests overtake a waiting exclusive one.',
+    'Nothing reads the table while the lock is held.',
+  ];
+
+  it.each(FALSE_REASSURANCE)('bans 「%s」', (sentence) => {
+    expect(falseReassurances(sentence)).not.toHaveLength(0);
+  });
+
+  it('states the size of its own fixture, and states it right', () => {
+    const words = [
+      'zero',
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      'six',
+      'seven',
+      'eight',
+      'nine',
+      'ten',
+      'eleven',
+      'twelve',
+      'thirteen',
+      'fourteen',
+      'fifteen',
+      'sixteen',
+      'seventeen',
+      'eighteen',
+      'nineteen',
+      'twenty',
+      'twenty-one',
+      'twenty-two',
+      'twenty-three',
+      'twenty-four',
+    ];
+    /** A number word, or a loud failure rather than `undefined`. */
+    const word = (value: number): string => {
+      expect(words[value], `no number word for ${value}; extend the list`).toBeDefined();
+      return words[value];
+    };
+    // Doc comments with their wrapping removed, which is how the
+    // sentence above is written and how a reader reads it.
+    const prose = fs
+      .readFileSync(fileURLToPath(import.meta.url), 'utf8')
+      .replace(/\n\s*\*\s?/g, ' ');
+
+    /**
+     * Every count this block's comments state about this fixture. The
+     * version of this test that shipped derived the FIXTURE line and
+     * nothing else, so 「Four rounds of widening」 two paragraphs up,
+     * 「the three entries」 over an array of four and 「The four
+     * sentences」 over an array of eight all stayed invisible — a
+     * `toContain` is satisfied by one true sentence however many false
+     * ones sit beside it.
+     */
+    const DERIVED = [
+      `FIXTURE: ${word(FALSE_REASSURANCE.length)} banned sentences — ` +
+        `${word(FALSE_REASSURANCE_AS_SHIPPED.length)} of them 025's own text and ` +
+        `${word(FALSE_REASSURANCE_PER_WIDENING.length)} from the ${word(WIDENING_ROUNDS)} rounds of widening — ` +
+        `and ${word(HONEST.length)} honest ones, against ` +
+        `${word(FALSE_REASSURANCE_KINDS.length)} kinds of banned claim.`,
+      `${word(WIDENING_ROUNDS).replace(/^./, (c) => c.toUpperCase())} rounds of widening it against 025's original text`,
+      `every phrasing those ${word(WIDENING_ROUNDS)} rounds of widening were written for`,
+      `got past the ban list as it stood at some point across those ${word(WIDENING_ROUNDS)} rounds`,
+    ];
+    DERIVED.forEach((statement) => expect(prose, statement).toContain(statement));
+
+    /**
+     * And the other direction: a number word next to something this
+     * block counts, that no derivation above accounts for. Coverage is
+     * by removal rather than by containment, so a new sentence cannot
+     * ride on a phrasing already approved somewhere else.
+     */
+    const COUNTS_SOMETHING = new RegExp(
+      `\\b(?:${words.join('|')})\\b(?:\\W+\\w+){0,3}?\\W+` +
+        `(?:sentences|entries|phrasings?|rounds?|kinds?|honest)\\b`,
+      'gi',
+    );
+    /**
+     * Number words in this block's comments that are not counting this
+     * fixture: the counts this block records as WRONG, quoted, plus the
+     * sentence that denies a one-to-one match between the archive and
+     * the widening history. A
+     * quotation must not track the arrays — that is what makes it a
+     * quotation — so each is listed rather than derived, and each is
+     * marked with 「」 or with the denial around it.
+     */
+    const NOT_THE_FIXTURE = [
+      'says twenty-two',
+      'NOT one phrasing per round',
+      'what is one-per-round is the widening',
+      '「Four rounds of widening」',
+      '「the three entries」 over an array of four',
+      '「The four sentences」 over an array of eight',
+    ];
+    // From the ban's own doc comment, not from the fixture's: the
+    // miscount over the KINDS array sits above the fixture, and a scan
+    // that started at the fixture could not see it.
+    const block = prose.slice(prose.indexOf('Everything a file in this shape may not say'));
+    const covered = [...DERIVED, ...NOT_THE_FIXTURE];
+    const unaccounted = [
+      ...covered
+        .reduce((rest, statement) => rest.split(statement).join(' … '), block)
+        .matchAll(COUNTS_SOMETHING),
+    ].map((match) => match[0]);
+    expect(unaccounted, 'counts stated in this block that nothing here derives').toEqual([]);
+  });
+
+  it.each(HONEST)('leaves 「%s」 alone', (sentence) => {
+    expect(falseReassurances(sentence)).toEqual([]);
+  });
+
+  it.each([
+    'Readers stay blocked until COMMIT.',
+    'Reads remain queued behind the lock.',
+    'The table is not available to readers until COMMIT.',
+    'The table is unavailable to readers until COMMIT.',
+    'Reads as well as writes stop for the length of the build.',
+    'It blocks SELECT as well as INSERT/UPDATE/DELETE.',
+  ])('counts 「%s」 as saying reads stop', (sentence) => {
+    // The other half of the same classifier. These went red on
+    // 「%s says reads stop too」 while ALSO going red on the ban above —
+    // one file, two contradictory verdicts, both on honest prose.
+    expect(statesReadsStop(sentence)).toBe(true);
+  });
+
+  it.each([
+    '018 blocked writes only.',
+    'The DROP takes ACCESS EXCLUSIVE on patient_measurements and holds it until COMMIT.',
+    'The build runs under the lock the DROP took.',
+  ])('does not accept 「%s」 as saying reads stop', (sentence) => {
+    // Naming the lock, or naming what stops for writers, is the claim
+    // this suite exists to say is not enough.
+    expect(statesReadsStop(sentence)).toBe(false);
+  });
+
+  it.each([
+    'Not CONCURRENTLY, for 018s reason: the runner wraps each file in one BEGIN/COMMIT, and CREATE INDEX CONCURRENTLY cannot run inside a transaction.',
+    'CREATE INDEX CONCURRENTLY is unavailable inside the runner transaction.',
+    'There is no by-hand alternative here; run it in the deploy window.',
+    'This file offers no escape hatch.',
+    "018's by-hand escape hatch does NOT carry over to this file.",
+  ])('does not read 「%s」 as offering a swap', (sentence) => {
+    // Every file in this shape has to write the first of these. Reading
+    // it as an offer is what made the swap-lock test demand a paragraph
+    // about a swap the file does not have.
+    expect(offersASwap(`-- ${sentence}`)).toBe(false);
+  });
+
+  it.each([
+    'Outside any transaction: CREATE INDEX CONCURRENTLY idx_cohort_v2 ON patient_measurements (muscle_group);',
+    'ALTER INDEX idx_cohort_v2 RENAME TO idx_cohort;',
+    'At a size where the window matters, the swap has to REPLACE this file rather than precede it.',
+    "The forward file's escape hatch works here too, with two changes.",
+    'That second transaction opens with a DROP INDEX.',
+  ])('reads 「%s」 as offering a swap', (sentence) => {
+    // Including the by-reference form, which is the state the _down
+    // script shipped in and the reason the trigger was widened at all.
+    expect(offersASwap(`-- ${sentence}`)).toBe(true);
+  });
+
+  it.each(rebuilders)('%s says what the by-hand swap it offers locks', (file) => {
+    const sql = sqlOf(file);
+    // Only files that offer a swap, or borrow the neighbouring file's,
+    // are held to this — a future migration in this shape that offers
+    // none makes no claim to check.
+    if (!offersASwap(sql)) return;
+    // The swap is the ONE thing in these files an operator runs by hand
+    // on a live database, and it opens with the same DROP INDEX the file
+    // does. A file that hands it over without saying so is describing a
+    // window that does not exist. Both 025 files own this sentence
+    // themselves; inheriting it from the forward file by reference is
+    // the state the _down script shipped in.
+    expect(swapLockParagraphs(sql)).not.toHaveLength(0);
+  });
+
+  it('does not send the operator after a 42703 the _down hatch cannot raise', () => {
+    const forward = '025_measurement_cohort_index_per_patient.sql';
+    const down = '025_measurement_cohort_index_per_patient_down.sql';
+    // 42703 is 「column does not exist」: the forward hatch's ledger
+    // INSERT names `checksum`, and a ledger old enough to predate that
+    // column rejects the statement. The _down hatch DELETEs its ledger
+    // row instead, and a DELETE names no columns — so the workaround
+    // does not carry over, and pointing the operator at it sends them to
+    // edit a statement that was never going to fail.
+    const downProse = proseOf(sqlOf(down));
+    expect(downProse).toMatch(/\bDELETE\b[^.]{0,80}schema_migrations/);
+    expect(downProse).not.toMatch(/INSERT INTO schema_migrations/);
+
+    const clauses = paragraphsOf(sqlOf(forward)).filter((paragraph) => paragraph.includes('42703'));
+    // The hatch does not work on an old ledger without this explanation,
+    // so it has to be there for the rest of the check to mean anything.
+    expect(clauses).not.toHaveLength(0);
+    for (const clause of clauses) {
+      if (!/_down/.test(clause)) continue;
+      // If it mentions the _down script at all it has to name the DELETE
+      // that exempts it, rather than extending the INSERT's fix to it.
+      expect(clause).toMatch(/\bDELETE\b/);
+      expect(clause).not.toMatch(/same treatment|same shape/i);
+    }
+  });
+
+  it.each(rebuilders)('%s does not forward the reader to a hatch its own DROP defeats', (file) => {
+    const prose = proseOf(sqlOf(file));
+    // 018's escape hatch is "build it CONCURRENTLY by hand and let the
+    // IF NOT EXISTS become the no-op that records it". A DROP above the
+    // CREATE deletes the hand-built index first, so a file in this shape
+    // has to carry its own hatch instead of pointing at another file's.
+    // Asserted only, like the phrase bans above: 「do not see 018 for the
+    // escape hatch, it does not survive this DROP」 is the warning, not
+    // the pointer.
+    expect(assertingSegments(prose, /see \d{3} for the (?:by-hand )?(?:escape )?hatch/i)).toEqual(
+      [],
+    );
   });
 });
 

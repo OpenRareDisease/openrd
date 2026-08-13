@@ -74,6 +74,52 @@ const formatScalar = (value: unknown): string => {
   return value === null || value === undefined ? '' : String(value);
 };
 
+/** Rides on every `assisted`, because nothing can tell a migrated value
+ *  from one the patient chose. Same content as referral-pack.ts's
+ *  AMBULATION_ASSISTED_CAVEAT and export/treat-nmd.ts's provenance note,
+ *  with the one sentence those two do not need: this consumer produces
+ *  advice, so it has to be told not to act on the value. */
+const AMBULATION_ASSISTED_CAVEAT_ZH =
+  '注意：平台早期版本的问卷只有「可独立行走」和「需要辅助」两个选项，无法行走的患者当时只能选「需要辅助」，' +
+  '历史数据已按原选项迁移，本条无法区分是当时的迁移值还是近期填写。' +
+  '不能据此认为患者借助器具仍能行走，也不要据此给出需要站立或行走的建议——先请患者确认。';
+
+/** AMBULATION_STATES as the model should read them. The stored value
+ *  is an English enum; a prompt that carries it verbatim asks the model
+ *  to guess, and 「unable」 is the one this population cannot afford it
+ *  to guess wrong about.
+ *
+ *  `assisted` is deliberately NOT rendered as 「需要辅助才能行走」.
+ *  Migration 022 back-filled every historical boolean `false` to
+ *  `assisted` (022_patient_instruments.sql, BACK-FILL HONESTY; repeated
+ *  on AMBULATION_STATES in profile.constants.ts), and before 022 that
+ *  was the only answer on the screen for someone who cannot walk at
+ *  all. So a stored `assisted` licenses 「非独立行走」 and nothing
+ *  beyond it. There is no per-field timestamp, which is why the caveat
+ *  is unconditional here rather than applied to some datable subset —
+ *  the same guard referral-pack.ts (`ambulationCaveat`) and
+ *  export/treat-nmd.ts (`wheelchair.currentState`'s provenance) already
+ *  carry. Of the three consumers this is the one that generates
+ *  advice rather than showing a value to a clinician who can ask a
+ *  follow-up question, so it is the one that can least afford the
+ *  affirmative reading.
+ *
+ *  The other two states need no caveat: a historical `true` reproduced
+ *  the label the patient tapped, and `unable` can only have been
+ *  written after 022. */
+const AMBULATION_VALUE_LABELS: Record<string, string> = {
+  independent: '可独立行走',
+  assisted: `非独立行走（原始选项为「需要辅助」）。${AMBULATION_ASSISTED_CAVEAT_ZH}`,
+  unable: '无法行走（含长期使用轮椅、卧床）',
+};
+
+const formatFieldValue = (key: string, value: unknown): string => {
+  if (key === 'independentlyAmbulatory' && typeof value === 'string') {
+    return AMBULATION_VALUE_LABELS[value] ?? formatScalar(value);
+  }
+  return formatScalar(value);
+};
+
 const PROFILE_FIELD_LABELS: Record<string, string> = {
   ageGroup: '年龄段',
   gender: '性别',
@@ -88,7 +134,10 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   methylation_clinical: '甲基化临床分级',
   onsetRegion: '首发部位',
   familyHistory: '家族史',
-  independentlyAmbulatory: '独立行走',
+  // Was 「独立行走」 while the value was a yes/no. It is one of three
+  // states since migration 022, and 「独立行走: assisted」 reads as a
+  // contradiction rather than an answer.
+  independentlyAmbulatory: '行走能力',
   assistiveDevices: '辅具',
   symptomCategories: '症状分类',
 };
@@ -163,7 +212,7 @@ const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionSc
       continue;
     }
     const label = labels[key] ?? key;
-    lines.push(`${label}: ${formatScalar(value)}`);
+    lines.push(`${label}: ${formatFieldValue(key, value)}`);
   }
 
   return lines.join('\n');

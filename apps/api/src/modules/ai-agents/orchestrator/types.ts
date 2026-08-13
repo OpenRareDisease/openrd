@@ -76,6 +76,32 @@ export interface ToolCallSummary {
   errorDetail?: string;
 }
 
+/**
+ * A retrieval class that could not run, reported as state rather than
+ * left for the client to infer from the prose.
+ *
+ * The model is instructed to refuse when this happens (see
+ * `failureInstruction` in context-builder.ts) and the orchestrator
+ * additionally prefixes the answer with a fixed Chinese notice, so the
+ * patient is told even if the model ignores the instruction. This
+ * object is the machine-readable half of the same fact: a client can
+ * render a degraded-answer banner, suppress the "依据" chips, or offer a
+ * retry without pattern-matching text it does not control.
+ *
+ * `codes` are the stable `error_code:` slugs from
+ * `RETRIEVAL_FAILURE_CODES` — `retrieval_failed` for the corpus,
+ * `personal_data_unavailable` for the patient's own records.
+ */
+export interface RetrievalFailureState {
+  codes: string[];
+  /** The medical KB / platform docs could not be searched. Any FSHD
+   *  claim in the answer is therefore unsourced. */
+  corpusUnavailable: boolean;
+  /** The patient's own profile / reports / followups could not be read.
+   *  Distinct from "they have no records", which is a true answer. */
+  personalDataUnavailable: boolean;
+}
+
 export interface OrchestratorRunResult {
   answer: string;
   citations: Citation[];
@@ -102,6 +128,24 @@ export interface OrchestratorRunResult {
    *  very fallback text — never reached the client. A property of the
    *  run belongs on the run's result. */
   answerTruncated?: boolean;
+  /**
+   * The model stopped because it ran out of output tokens
+   * (`finishReason === 'length'`), so `answer` is a fragment.
+   *
+   * Separate from `answerTruncated`, which means the opposite kind of
+   * failure — no usable answer at all, `answer` is the apology. Here
+   * there IS an answer and it reads complete; that is exactly the
+   * danger. On a medical question the qualifying sentence is almost
+   * always last —「但如果你同时在用激素…」,「这个数值要结合肺功能一起
+   * 看」— so a cut-off answer is not a shorter answer, it is the answer
+   * with its caveats removed. `answer` therefore also carries a visible
+   * Chinese notice; this flag is for clients that want to render it as
+   * a state and offer a "continue" affordance.
+   */
+  answerCutOff?: boolean;
+  /** Set when at least one retrieval class hard-failed. Absent on a
+   *  healthy run. */
+  retrievalFailure?: RetrievalFailureState;
   redactionMode: RedactionMode;
   consentLevel: ConsentLevel;
   /** Final round system + user prompts (post-render). Useful for

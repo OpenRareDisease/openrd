@@ -282,6 +282,60 @@ const SettingsScreen = () => {
           />
         </ListGroup>
 
+        {/* Its own group, above 探索 · 即将上线 and visually unlike it.
+            Every page in here is finished and every claim on it carries
+            its source; putting them next to the placeholders would teach
+            patients to read a chevron here as 「大概又是个空页面」, which
+            is what those rows have already trained them to expect.
+
+            The group is 了解 FSHD · 在中国 rather than 了解 FSHD because
+            half of it is not about the disease at all — it is about the
+            administrative half of having it here, which nobody else has
+            an incentive to explain. 残疾评定准备 and 罕见病身份与权益 are
+            not medical reading; they are the two conversations a patient
+            has to have with an office. */}
+        <ListGroup title="了解 FSHD · 在中国">
+          <Row
+            icon="dna"
+            label="遗传与生育"
+            detail="遗传概率、三代试管的限制、怀孕会发生什么"
+            onPress={() => router.push('/p-genetics_family')}
+          />
+          {/* Built in an earlier batch with no way in at all. It reads
+              the patient's own record against the AAN/AANEM table, so
+              it belongs with the pages that answer 「这个病要注意什么」
+              rather than buried in the passport. */}
+          <Row
+            icon="calendar"
+            label="我的随访计划"
+            detail="按指南，结合你已录入的信息，哪些检查值得和医生确认"
+            onPress={() => router.push('/p-surveillance')}
+          />
+          <Row
+            icon="clipboard-list"
+            label="残疾评定准备"
+            detail="国家标准原文、被埋在最后的功能障碍条款、八项自述与材料清单"
+            onPress={() => router.push('/p-disability_assessment')}
+          />
+          <Row
+            icon="id-card"
+            label="罕见病身份与权益"
+            detail="目录第 25 项、协作网欠你什么、以及它现在给不了什么"
+            onPress={() => router.push('/p-rare_disease_status')}
+          />
+          {/* The referral pack shipped with a route, a client and a
+              screen, and no way in — 730 lines a patient could not
+              reach. It sits with 罕见病身份与权益 because that page is
+              where someone learns the 协作网 exists at all, and this is
+              what they hand over when they get there. */}
+          <Row
+            icon="user-doctor"
+            label="协作网转诊包"
+            detail="把你的记录整理成神经科医生要看的那份，带去协作网医院"
+            onPress={() => router.push('/p-referral')}
+          />
+        </ListGroup>
+
         <ListGroup title="应用设置">
           <Row
             icon="shield-halved"

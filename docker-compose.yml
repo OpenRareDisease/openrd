@@ -160,6 +160,12 @@ services:
       KB_FINAL_N: ${KB_FINAL_N:-8}
       KB_FETCH_K: ${KB_FETCH_K:-80}
       KB_MAX_PER_SOURCE: ${KB_MAX_PER_SOURCE:-4}
+      # Cosine-distance ceiling above which a hit is treated as「语料里没有」
+      # (knowledge.py). 0.40 was measured against one corpus with one
+      # embedding model; re-measure with `python3 scripts/kb-verify.py
+      # --floor-probe` after a corpus refresh and set the new number here, or
+      # `off` to disable the floor entirely. Empty = the measured default.
+      KB_RELEVANCE_FLOOR: ${KB_RELEVANCE_FLOOR:-}
       # Search admission control. Keep KB_MAX_CONCURRENT_SEARCHES and
       # KB_PG_POOL_MAX moving together — raising one alone just relocates the
       # queue into psycopg's pool timeout. KB_SEARCH_QUEUE_WAIT_SECONDS must
