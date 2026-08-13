@@ -4,32 +4,22 @@
 
 /**
  * 问一问 is the second place a citation chip is drawn, and it needs the
- * source grade for the same reason 问答 does.
+ * source grade for the same reason 问答 does — this drawer is reached
+ * from a number the patient is already looking at, so its answers are
+ * read fastest and with the least context.
  *
- * The drawer is reached from a number the patient is already looking at
- * — a report card, a measurement — so its answers are the ones read
- * fastest and with the least context. Its chips are also the tightest:
- * capped at 150pt and clamped to one line, which is why the grade is
- * stacked above the source name here instead of appended to it. A
- * prefix would have pushed the name it qualifies out of the box.
+ * It is NOT the 问答 chip. It shares `authorityToneFor` and
+ * `readAuthorityLabel` and nothing else: the grade is drawn by its own
+ * inline `<Text style={[styles.citationChipAuthority, {color: …}]}>`,
+ * stacked above the source name rather than prefixed to it, because the
+ * pill is capped at 150pt and clamped to one line. So the AuthorityChip
+ * tests cover none of this.
  *
  * Rendered through react-native-web against the DOM, like the 问答 test
- * beside it: this ships as the Expo web export read in WeChat's
- * browser, and the claim under test is that the grade is TEXT a reader
- * (or a screen reader) receives. `authorityToneFor` gives the two
- * grades different colours, and a props-level assertion would happily
- * accept colour as the only carrier.
- *
- * This drawer is NOT the 问答 chip. It shares `authorityToneFor` and
- * `readAuthorityLabel` and nothing else: AskAboutDrawer renders the
- * grade with its own inline `<Text style={[styles.citationChipAuthority,
- * {color: …}]}>`, stacked above the source name, because the pill is
- * capped at 150pt and clamped to one line. So the AuthorityChip tests
- * cover none of this and the two properties have to be asserted again
- * here — separately, one test per reader, for the reason spelled out in
- * p-qna/__tests__/citation-authority.web.test.tsx: the single test that
- * used to stand for both stripped every `[style]` attribute and then
- * asserted on `textContent`, which no style attribute can change.
+ * beside it, and split one test per reader for the same reason —
+ * SIGHTED off `textContent` and the inline `color`, ASSISTIVE off
+ * `accessibleText` plus `reachesAccessibilityTreeFrom`. See
+ * p-qna/__tests__/citation-authority.web.test.tsx.
  */
 
 jest.mock('react-native', () => require('react-native-web'));
@@ -119,7 +109,7 @@ jest.mock('../../../lib/ai-streaming', () => ({
 import { act, type ReactNode } from 'react';
 import AskAboutDrawer from '../AskAboutDrawer';
 import { authorityToneFor } from '../AuthorityChip';
-import { accessibleText } from '../__testutils__/accessible-text';
+import { accessibleText, reachesAccessibilityTreeFrom } from '../__testutils__/accessible-text';
 
 const { createRoot } = require('react-dom/client') as {
   createRoot: (container: Element) => { render: (node: ReactNode) => void };
@@ -230,21 +220,24 @@ describe('web export：问一问的依据 chip 也要带来源等级', () => {
     // grade out of the accessibility tree and leaves every text node
     // where it was. See __testutils__/accessible-text.ts.
     //
-    // Read at the CHIP LINE, not at `document.body`.
+    // Read at the CHIP LINE, not at `document.body`:
     // `accessibleText(container).toContain(grade)` is satisfied by any
-    // other node on the page spelling the grade out — and the answer
-    // body is the likely one, since knowledge.py hands the model
-    //「｜来源等级：指南/共识」in its prompt header. Measured: with the
-    // grade line `aria-hidden` and the tiers named in the answer, the
-    // document-wide read passes while a screen reader reaches neither
-    // grade; anchored here it fails on the first one. `printing` finds
-    // the line by its printed text, so this also pins the grade as a
-    // text node — deliberately: the colour test above already requires
-    // that, and it fails first on any chip that drops it.
+    // other node on the page spelling the grade out, and the answer body
+    // is the likely one, since knowledge.py hands the model
+    //「｜来源等级：指南/共识」in its prompt header.
+    //
+    // Anchoring is not a strict improvement, so both assertions are
+    // here: a read at the line cannot see an ancestor that drops the
+    // subtree (`aria-hidden` on the chip `View` leaves the line's own
+    // accessible text intact), which the document-wide read did cover.
+    // `printing` finds the line by its printed text, so this also pins
+    // the grade as a text node — deliberately: the colour test above
+    // requires that and fails first on any chip that drops it.
     for (const grade of ['指南/共识', '病友经验']) {
       const line = printing(container, grade);
       expect(line).toBeDefined();
       expect(accessibleText(line!)).toBe(grade);
+      expect(reachesAccessibilityTreeFrom(container, line!)).toBe(true);
     }
   });
 

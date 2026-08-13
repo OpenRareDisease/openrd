@@ -15,13 +15,7 @@ import { FALL_QUARTER_DAYS, buildFallsSummary, type FallSummaryRow } from './fal
  * renders nothing. The real second rendering is the 跌倒记录 block on
  * 病程管理 (apps/mobile/screens/p-manage), which reads `quarters[0]`.
  *
- * That mattered because falls.sql.ts's whole one-query rationale is
- * "two renderings of one question must agree to the row", and one of
- * the two renderings did not exist. A maintainer changing MAX_FALL_ROWS
- * would have gone looking for a passport consumer to keep consistent.
- *
- * Two assertions here, because the claim has two halves that can rot
- * independently:
+ * WHAT THIS GUARDS, in two halves that can rot independently:
  *
  *  1. The passport still reads no falls. Checked on the API side only,
  *     and that is sufficient rather than partial: every passport
@@ -35,32 +29,18 @@ import { FALL_QUARTER_DAYS, buildFallsSummary, type FallSummaryRow } from './fal
  *     reject the very sentence that fixed the defect. So the polarity
  *     of the predicate is itself pinned below.
  *
- * The claim has two shapes and the detector below has to see both.
+ * The archive the detector is calibrated against, in numbers 'states
+ * its own archive' derives rather than remembers:
  * ARCHIVE: ten sentences, five verb-bearing and five noun-phrase, from
  * six files.
  * SPLIT: five of the ten carried a rendering verb and five named the
  * passport as a holder with no verb at all.
  * REACH: five of the six files are in falls/ itself.
  *
- * The verb half reads 「the passport shows」 and 「a patient shown 「本季
- * 度 3 次」 on the passport」; the no-verb half reads 「the diary and the
- * passport count」 and 「the passport, the diary screen and the
- * assistant」.
- *
- * Every number on those three lines is derived from REMOVED_CLAIMS by
- * 'states its own archive' below, and so is every other count this
- * file's comments state about the archive — the sentence you are
- * reading included. The version of this paragraph that shipped said
- * eight, four and four over an array of ten; the fix written to close
- * that derived the ARCHIVE line only, and left the sentence directly
- * under it free to say four and four again.
- *
- * Both lists in the fixture at the bottom are the sentences themselves,
- * out of HEAD and out of the corrected files, because a guard checked
- * only against prose that no longer contains the claim is checked
- * against nothing. A third list holds the shapes nobody has written
- * yet, because a guard checked only against prose somebody already
- * wrote is calibrated against yesterday.
+ * The fixture at the bottom holds three lists, because each covers a
+ * direction the others cannot: REMOVED_CLAIMS is the archive, verbatim
+ * from HEAD; HONEST is the corrections that shipped in their place;
+ * UNWRITTEN_CLAIMS is the same claim in words nobody here has used.
  */
 
 const __filename = fileURLToPath(import.meta.url);
@@ -108,15 +88,9 @@ const FALLS_READER =
 /**
  * Comment prose, with wrapped lines rejoined.
  *
- * The first version of this guard split the raw source on newlines as
- * well as on full stops, which made every wrapped line its own
- * sentence. falls.summary.ts wrote the claim as
- *
- *     produces (a) a quarterly count, which is what the clinical
- *     passport shows
- *
- * — subject on one line, verb on the next — so the guard written to
- * catch that sentence never saw it whole. It caught three of the ten
+ * Splitting on newlines as well as on full stops is what the first
+ * version did, and a claim whose subject and verb sit on different
+ * comment lines is then never seen whole. It caught three of the ten
  * sentences it was written for: the three short enough to fit inside
  * one comment line, and no others. That is measured off the archive
  * below rather than remembered — see COMMENT_LINE_BUDGET.
@@ -162,19 +136,16 @@ const commentSentences = (source: string): string[] => {
  * The first version of this detector asked only 「is there a rendering
  * verb」, off a closed list — shows/renders/reads/displays/carries and
  * their inflections — and that list was written by reading the ten
- * sentences that had been removed. It is a transcript, not a rule.
- *「The clinical passport includes the quarterly fall count」,「The
- * passport surfaces this number」,「The count also appears on the
- * clinical passport」,「The passport lists / contains the fall count」,
- *「The fall count is printed on the passport」 — every ordinary verb the
- * next maintainer reaches for — went through it untouched, because a
- * verb list can only ever hold the verbs somebody already wrote.
+ * sentences that had been removed. It is a transcript, not a rule:
+ * every ordinary verb the next maintainer reaches for went through it
+ * untouched, because a verb list can only ever hold the verbs somebody
+ * already wrote.
  *
  * So the primary rule names no verb at all: the passport and this
  * module's number within one breath of each other, with no denial
- * reaching either of them. Half the archive never had a verb anyway
- * (「the diary and the passport count」), so the verb was never what
- * made those sentences claims — the proximity was.
+ * reaching either of them. The archived no-verb sentences (「the diary
+ * and the passport count」) claim with no verb to catch, so proximity is
+ * what makes a claim here.
  */
 const PASSPORT = /passport|护照/gi;
 
@@ -184,14 +155,10 @@ const PASSPORT = /passport|护照/gi;
  *
  * Every English noun here is excluded where it is a segment of a path
  * or a filename, because naming a module is not saying the passport
- * holds a count. `falls` was already excluded that way; `summary` was
- * not, and `falls.summary.ts` is the name of the file this module's
- * comments cite most often — so 「profile.passport.ts imports nothing
- * from falls.summary.ts.」 and 「profile.passport.ts and falls.summary.ts
- * are separate modules.」 were both read as claims. The same lookbehind
- * now covers the whole noun group, and the trailing 「not followed by a
- * dot and more word characters」 keeps 「the passport includes falls」 a
- * claim while dropping `falls.summary.ts`.
+ * holds a count: the lookbehind covers the whole noun group, and the
+ * trailing 「not followed by a dot and more word characters」 keeps 「the
+ * passport includes falls」 a claim while dropping `falls.summary.ts`,
+ * the file this module's comments cite most often.
  *
  * 摔倒 is 跌倒's everyday synonym and the word a patient uses; a comment
  * written in it is the same claim.
@@ -200,27 +167,21 @@ const FALL_NUMBER =
   /(?<![\w/.])(?:counts?|numbers?|figures?|totals?|tall(?:y|ies)|summar(?:y|ies))\b(?!\.\w)|(?<![\w/.])falls?(?!\.?\w)(?![/])|跌倒|摔倒|次数|\d+\s*次/gi;
 
 /**
- * How far apart the two may sit and still be one claim. The same 40
- * each hop of the co-surface pattern below allows, and it is doing real
- * work rather than padding a regex: falls.controller.ts's PRE-FIX
- * sentence 「Returns zeroed counts and an empty `quarters` array … and
- * the passport must not label it that way」 — the HONEST fixture entry
- * below, not what ships today, which says 「no reader may label it that
- * way」 and never names the passport — puts a 「counts」 no denial
- * reaches in the same sentence as the passport and claims nothing,
- * because they are 134 characters and two clauses apart. Measured, not
- * remembered: 'the two distances this file runs on' re-derives that 134
- * from the fixture entry.
+ * How far apart the two may sit and still be one claim, and the same
+ * distance each hop of the co-surface pattern below allows. It is doing
+ * real work rather than padding a regex: the HONEST fixture's PRE-FIX
+ * falls.controller.ts sentence puts a 「counts」 no denial reaches in the
+ * same sentence as the passport and claims nothing, because they are
+ * 134 characters and two clauses apart — re-derived from that entry in
+ * 'the two distances this file runs on'.
  *
  * THIS IS A BOUND, and the one an author is most likely to walk over:
  * 「The clinical passport, which a clinician opens from the share link,
  * also includes the quarterly fall count.」 puts 80 characters between
  * them, and only reaches the suite through the VERB path. The same
- * sentence with a verb outside RENDER_VERB — 「…, ends up with the
- * quarterly fall count in it.」 — is invisible here, and no widening of
- * the number list changes that. 'the two distances this file runs on'
- * pins the flip at SAME_BREATH and SAME_BREATH + 1 so that moving this
- * constant has to come here first.
+ * sentence with a verb outside RENDER_VERB is invisible here, and no
+ * widening of the number list changes that. The flip is pinned at the
+ * character in 'the two distances this file runs on'.
  */
 const SAME_BREATH = 40;
 
@@ -234,7 +195,6 @@ const SAME_BREATH = 40;
  * The passive is not thoroughness for its own sake: falls.sql.ts wrote
  * its claim as「A patient shown「本季度 3 次」on the passport」, and a
  * list of active forms alone did not match a single character of it.
- *
  * The Chinese half is here because PASSPORT already matches 护照 while
  * this list was English-only, so 「临床护照会一并展示…摔倒记录数目」 named
  * the surface, named a rendering, and hit nothing.
@@ -242,11 +202,8 @@ const SAME_BREATH = 40;
  * STILL A CLOSED LIST, and that is the residual limit of this path: a
  * claim whose only verb is outside it (「the passport owns the quarterly
  * fall count」, 「本季度次数由护照负责」) reaches the suite through the
- * other two paths or not at all. It is survivable because it is no
- * longer the only thing standing between a claim and a green suite —
- * the proximity rule needs no verb — but a verb list can only ever hold
- * the verbs somebody already wrote, so this one is not offered as
- * coverage of the class.
+ * other two paths or not at all. Survivable because the proximity rule
+ * needs no verb, but this path is not offered as coverage of the class.
  */
 const RENDER_VERB =
   /\b(?:shows?|showed|shown|renders?|rendered|reads?|displays?|displayed|carries|carried|includes?|included|contains?|contained|lists?|listed|prints?|printed|surfaces?|surfaced|appears?|appeared|holds?|held)\b|展示|显示|呈现|列出|写入|写进|收录|印有|写有|带有|载有/gi;
@@ -262,28 +219,20 @@ const CO_SURFACE = /assistant|diary|screen|retriever|follow-?up|病程\s*管理|
  * The passport standing in a list beside a surface that does render
  * this number, with neither a verb nor a number of its own. Five of the
  * ten sentences were the no-verb shape, and two of those name no number
- * either — this is the third path, for them:
- *
- *   「Default look-back for the diary and the passport count」
- *   「so the passport, the diary screen and the assistant cannot
- *     disagree」
- *   「the interval the passport and a routine neurology follow-up both
- *     work in」
- *   「because the passport and the assistant … are the same question
- *     asked twice」
- *   「shared with the falls endpoints so the passport and the assistant
- *     cannot disagree」
+ * either — this is the third path, for them (「Default look-back for the
+ * diary and the passport count」).
  *
  * Narrow rather than broad. 「passport」 near a bare 「and」 would fire on
  * the shipped 「the passport is the artefact a patient forwards to a
  * clinician by link, and what a share exposes is governed by
  * sharing-preferences.ts」, which claims nothing about falls. So the
- * passport has to stand within 40 characters of a surface that does
- * render this number.
+ * passport has to stand within SAME_BREATH characters of a surface that
+ * does render this number.
  */
 const PASSPORT_LISTED_WITH_A_REAL_SURFACE = new RegExp(
-  `\\bpassport\\b[^.]{0,40}?(?:\\band\\b|,)[^.]{0,40}?(?:${CO_SURFACE.source})` +
-    `|(?:${CO_SURFACE.source})[^.]{0,40}?(?:\\band\\b|,)[^.]{0,40}?\\bpassport\\b`,
+  `\\bpassport\\b[^.]{0,${SAME_BREATH}}?(?:\\band\\b|,)[^.]{0,${SAME_BREATH}}?(?:${CO_SURFACE.source})` +
+    `|(?:${CO_SURFACE.source})[^.]{0,${SAME_BREATH}}?(?:\\band\\b|,)` +
+    `[^.]{0,${SAME_BREATH}}?\\bpassport\\b`,
   'i',
 );
 
@@ -291,33 +240,19 @@ const PASSPORT_LISTED_WITH_A_REAL_SURFACE = new RegExp(
  * A negator counts only where it negates the claim it is next to.
  *
  * 「anywhere in the sentence」 exempts a sentence for words that have
- * nothing to do with the rendering: falls.controller.ts's own claim sat
- * in 「…for a patient with no falls on record — which is NOT the same as
- * a patient who has not fallen, and the passport must not label it that
- * way」, three negators away from the assertion two lines up.
- *
- * The first fix for that was a character budget alone — NEGATOR_REACH
- * either side of whichever token matched — and it was wrong both ways at
- * once, because a distance is not a rule about attachment.
- *
- *   - Too generous forwards: 「The passport includes the quarterly fall
- *     count, not the raw rows.」 and 「The passport shows the quarterly
- *     count, not the raw rows.」 were both exempted by a 「not」 that
- *     denies the rows, not the count. The second dies on a verb this
- *     list has held since the file was written.
- *   - Too mean backwards: 「It is not the passport that owns this
- *     quarterly fall count.」 puts its denial 40-odd characters ahead of
- *     the number, out of reach of it, and read as a claim.
+ * nothing to do with the rendering. A character budget alone is not a
+ * rule about attachment either, and was wrong both ways at once: too
+ * generous forwards (「The passport includes the quarterly fall count,
+ * not the raw rows.」, where the 「not」 denies the rows) and too mean
+ * backwards (「It is not the passport that owns this quarterly fall
+ * count.」, whose denial sits 40-odd characters from the number).
  *
  * So a denial has to satisfy BOTH: within NEGATOR_REACH of some part of
  * the claim, and reachable from it without crossing a clause break — a
  * comma, a semicolon, a colon, a dash or a Chinese equivalent. The
  * clause break is what stops a contrast in the next clause from
  * exempting the claim in this one; the distance is what stops a negator
- * about something else at the far end of a long clause from doing it
- * («…and no way to tell which is real», 90 characters past the number
- * it is not about, in falls.sql.ts's own archived sentence).
- *
+ * about something else at the far end of a long clause from doing it.
  * And the whole claim is the anchor, not the token that happened to
  * match: 「It is not the passport」 denies the pair, so a denial counts
  * if it reaches EITHER the number or the passport it stands next to.
@@ -328,8 +263,6 @@ const PASSPORT_LISTED_WITH_A_REAL_SURFACE = new RegExp(
  *     pinned by 'reads a trailing denial as a claim';
  *   - a denial more than NEGATOR_REACH away inside its own clause does
  *     not reach either, pinned by 'the two distances this file runs on'.
- * The fix for an author who hits the first is the shape the corrected
- * files already use: two sentences, the denial in its own.
  */
 const NEGATOR = /\b(?:not|never|no|nothing|none|neither|nor)\b|不|没有|没|无/gi;
 const NEGATOR_REACH = 24;
@@ -424,6 +357,15 @@ describe('falls: the clinical passport claim', () => {
   });
 
   /**
+   * The comments below quote falls.controller.ts's shipped denial, and
+   * an unchecked quotation is how the previous one rotted: the guard
+   * stayed green while the sentence it quoted was reworded away.
+   */
+  it('quotes falls.controller.ts as it stands', () => {
+    expect(read('falls/falls.controller.ts')).toContain('no reader may label it that way');
+  });
+
+  /**
    * The correction is only half a fix if the surface it names is as
    * unchecked as the passport was. falls.summary.ts now says the count
    * lands in 病程管理's 跌倒记录 block as「最近 90 天记录到 N 次跌倒」,
@@ -454,38 +396,29 @@ describe('falls: the clinical passport claim', () => {
    *
    * The first version of it was checked against nothing but the
    * corrected files, which is how it shipped able to catch three of the
-   * ten sentences it was written for: it read one wrapped line at a
-   * time, knew only the active voice, and exempted a whole sentence for
-   * a negator sitting anywhere in it. All three holes are invisible
-   * when the only prose you run on is prose that no longer contains the
-   * claim.
+   * ten sentences it was written for. The second fixed that and was
+   * still calibrated the same way — its verb list was the verbs these
+   * ten sentences happen to use — so 「the passport INCLUDES the count」
+   * walked through it. A fixture built only from removed prose can only
+   * ever prove the detector catches yesterday, which is why there is a
+   * third list.
    *
-   * The second version fixed those three and was still calibrated the
-   * same way — its verb list was the verbs these ten sentences happen
-   * to use — so 「the passport INCLUDES the count」 walked through it.
-   * A fixture built only from removed prose can only ever prove the
-   * detector catches yesterday, which is why there is a third list.
+   * REMOVED_CLAIMS is the archive: every one of the ten sentences,
+   * verbatim from HEAD, joined the way `commentSentences` joins a
+   * wrapped comment, each carrying the file it came out of so the
+   * counts in this file's header can be derived rather than recounted.
+   * HONEST is the corrections that shipped in their place, plus the
+   * sentences from HEAD that were already honest — falls.controller.ts
+   * denied that the passport may label an empty quarter as「没摔过」in
+   * the same paragraph as its false claim, and a guard that cannot tell
+   * those two apart is no guard. UNWRITTEN_CLAIMS is the same claim in
+   * words nobody in this repo has used.
    *
-   * So three directions are pinned on sentences. REMOVED_CLAIMS is the
-   * archive: every one of the ten sentences, verbatim from HEAD, joined
-   * the way `commentSentences` joins a wrapped comment, each carrying
-   * the file it came out of so the counts in this file's header can be
-   * derived rather than recounted. HONEST is the corrections that
-   * shipped in their place, plus the sentences from HEAD that were
-   * already honest — falls.controller.ts denied that the passport may
-   * label an empty quarter as「没摔过」in the same paragraph as its false
-   * claim, and a guard that cannot tell those two apart is no guard.
-   * UNWRITTEN_CLAIMS is the direction neither of those covers: the same
-   * claim in words nobody in this repo has used.
-   *
-   * `from` is the FILE and not a line in it. The first version of this
-   * archive carried line numbers into f387613^, the revision these
-   * sentences were deleted in, and five of the ten were off by one or
-   * two — measured against `git show f387613^:<file>`. Nothing in this
-   * tree can read that revision, so nothing here could ever have
-   * checked them; the sentence text is verbatim, which is what
-   * `git log -S` needs anyway. The file, by contrast, IS checked
-   * against FALLS_SOURCES below.
+   * `from` is the FILE and not a line in it: the first version carried
+   * line numbers into a revision nothing in this tree can read, and
+   * five of the ten were off by one or two. The sentence text is
+   * verbatim, which is what `git log -S` needs anyway; the file IS
+   * checked against FALLS_SOURCES below.
    */
   const REMOVED_CLAIMS: Array<{ from: string; sentence: string }> = [
     {
@@ -595,8 +528,8 @@ describe('falls: the clinical passport claim', () => {
     // the same paragraph as a false claim, which is the reason a denial
     // is scoped to the claim rather than dropped. Not what ships today
     // — the shipped line reads 「no reader may label it that way」 and
-    // never names the passport, so it clears the guard trivially. This
-    // is the harder version and the one worth keeping.
+    // never names the passport, so it clears the guard trivially
+    // ('quotes falls.controller.ts as it stands' pins that wording).
     'Returns zeroed counts and an empty `quarters` array for a patient with no falls on record — which is NOT the same as a patient who has not fallen, and the passport must not label it that way.',
     // The shapes a future correction is likely to reach for.
     'The passport never showed a fall count and does not show one now.',
@@ -629,24 +562,10 @@ describe('falls: the clinical passport claim', () => {
   });
 
   /**
-   * The header states four numbers about the archive — how many
-   * sentences, how many verb-bearing, how many noun-phrase, how many
-   * files — and the version of it that shipped said eight, four and
-   * four over an array of ten. A number stated in prose about the array
-   * directly below it is exactly the defect this whole file exists to
-   * catch, so the numbers are derived here and the prose has to match
-   * them, not the other way round.
-   *
-   * The version of THIS test that shipped derived the ARCHIVE line and
-   * scanned for one literal phrase, `of the (\w+) sentences`. That let
-   * the sentence directly under the ARCHIVE line go on saying four and
-   * four — 「Four of the ten sentences were a verb」 / 「and four named
-   * the passport as a holder」 kept the suite green while contradicting
-   * the derived line two lines above it — and it was blind to the
-   * counts stated in this file's opening paragraph, in the note over
-   * FALLS_SOURCES, in commentSentences' doc comment, in the co-surface
-   * pattern's, in the fixture's, and to this file's own quotations of
-   * the wrong number. So there are two halves now:
+   * A number stated in prose about the array directly below it is
+   * exactly the defect this whole file exists to catch, so every count
+   * this file's comments state about the archive is derived here and
+   * the prose has to match, not the other way round. Two halves:
    *
    *   DERIVED — every prose sentence in this file that states a count
    *   about the archive, rebuilt here from REMOVED_CLAIMS and
@@ -656,8 +575,8 @@ describe('falls: the clinical passport claim', () => {
    *   ACCOUNTED-FOR — a scan for a number word attached to `sentences`,
    *   `files`, `archive`, `list` or `array` anywhere in this file's
    *   comments. Every hit has to sit inside a DERIVED string or inside
-   *   NOT_THE_ARCHIVE. A new counting sentence nobody derived fails
-   *   here, which is the half the last version had no equivalent of.
+   *   NOT_THE_ARCHIVE, so a new counting sentence nobody derived fails
+   *   here.
    */
   const NUMBER_WORDS = [
     'zero',
@@ -697,24 +616,17 @@ describe('falls: the clinical passport claim', () => {
    * to come past here.
    */
   const NOT_THE_ARCHIVE = [
-    // Ordinary sentences that happen to put a number next to one of the
-    // scan's nouns.
-    'one of the two renderings did not exist',
+    // An ordinary sentence that happens to put a number next to one of
+    // the scan's nouns.
     'two sentences, the denial in its own',
-    // Quotations of a count this file records as WRONG. These must not
-    // track the arrays — that is the point of quoting them — so they are
-    // listed here rather than derived. A stale number can hide behind an
-    // entry here, which is why every one of them is a quotation, marked
-    // with 「」 or with the history that makes it a quotation.
-    'said eight, four and four over an array of ten',
     // Not a count of the array: how many of the line numbers the first
-    // version of the archive carried were wrong. Measured once, against
-    // a revision this tree cannot read — `git show f387613^:<file>` and
-    // grep for the sentence — which is why those line numbers are gone
-    // and why this one has to sit on this list rather than be derived.
+    // version of the archive carried were wrong, measured once against
+    // a revision this tree cannot read.
     'five of the ten were off by one or two',
+    // Quotations of a count this file records as WRONG. These must not
+    // track the arrays — that is the point of quoting them — so they
+    // are listed here rather than derived.
     '「four of the eight」',
-    '「Four of the ten sentences were a verb」',
     '「Only three of the ten sentences ever named a number.」',
   ];
 
@@ -818,15 +730,13 @@ describe('falls: the clinical passport claim', () => {
   });
 
   /**
-   * The two numbers this file runs on, pinned at the character where
+   * The two distances this file runs on, pinned at the character where
    * each one flips.
    *
-   * SAME_BREATH and NEGATOR_REACH were both undeclared: the header
-   * promised the sentence break was the only bound, and neither of
-   * these was mentioned there or checked anywhere. They are real
-   * limits — a claim can be written a character on the wrong side of
-   * either — so they are measured here, both directions, and a future
-   * widening has to come past this test.
+   * With LITERALS, and the constants asserted separately. `apart(gap)`
+   * builds its string FROM its argument, so a flip written as
+   * `apart(SAME_BREATH)` / `apart(SAME_BREATH + 1)` holds at every value
+   * of SAME_BREATH and pins nothing at all.
    */
   it('the two distances this file runs on', () => {
     // Neutral filler: no passport, no number of ours, no verb from the
@@ -837,21 +747,23 @@ describe('falls: the clinical passport claim', () => {
     const apart = (gap: number): string => `The passport${filler(gap - 1)} count.`;
     /** A denial, then exactly `reach` characters, then the claim. */
     const denialAhead = (reach: number): string => `Not${filler(reach - 1)} passport count.`;
-    expect(filler(SAME_BREATH)).toHaveLength(SAME_BREATH);
+    expect(filler(40)).toHaveLength(40);
 
     // SAME_BREATH. Nothing to go on but how far apart the two anchors
     // sit — which is the shape 「The clinical passport, which a clinician
     // opens from the share link, ends up with the quarterly fall
     // count.」 has, once its verb is one this file does not hold.
-    expect(apart(SAME_BREATH)).toContain('passport');
-    expect(claimsThePassportRendersFalls(apart(SAME_BREATH))).toBe(true);
-    expect(claimsThePassportRendersFalls(apart(SAME_BREATH + 1))).toBe(false);
+    expect(SAME_BREATH).toBe(40);
+    expect(apart(40)).toContain('passport');
+    expect(claimsThePassportRendersFalls(apart(40))).toBe(true);
+    expect(claimsThePassportRendersFalls(apart(41))).toBe(false);
 
     // NEGATOR_REACH, backwards: 「It is not the passport…」 denies the
     // pair from in front of it, and has to reach the passport rather
     // than the number to do it.
-    expect(claimsThePassportRendersFalls(denialAhead(NEGATOR_REACH))).toBe(false);
-    expect(claimsThePassportRendersFalls(denialAhead(NEGATOR_REACH + 1))).toBe(true);
+    expect(NEGATOR_REACH).toBe(24);
+    expect(claimsThePassportRendersFalls(denialAhead(24))).toBe(false);
+    expect(claimsThePassportRendersFalls(denialAhead(25))).toBe(true);
 
     // And the 134 the SAME_BREATH doc comment cites, re-derived from
     // the fixture entry it is about rather than remembered.
@@ -861,15 +773,12 @@ describe('falls: the clinical passport claim', () => {
   });
 
   /**
-   * The bound, stated as a test rather than as a promise.
-   *
-   * A denial that trails another surface's claim inside ONE sentence
-   * reads as a claim, because it sits in the next clause and nothing
-   * here parses English well enough to attach it backwards. The fix for
-   * an author who hits this is the shape the corrected files already
-   * use: two sentences, the denial in its own. Pinned so that the limit
-   * is measured instead of asserted, and so that widening the reach
-   * later has to come here first.
+   * The bound, stated as a test rather than as a promise: a denial that
+   * trails another surface's claim inside ONE sentence reads as a
+   * claim, because it sits in the next clause and nothing here parses
+   * English well enough to attach it backwards. The fix for an author
+   * who hits this is the shape the corrected files already use: two
+   * sentences, the denial in its own.
    */
   it('reads a trailing denial as a claim, and two sentences as honest', () => {
     expect(
@@ -892,19 +801,12 @@ describe('falls: the clinical passport claim', () => {
    * thing keeping it honest); SAME_BREATH and NEGATOR_REACH are
    * distances, pinned in 'the two distances this file runs on'; a
    * denial in the next clause does not reach back, pinned in 'reads a
-   * trailing denial as a claim'; and this one.
-   *
-   * Both anchors have to be in the SAME sentence, so a claim that names
-   * the passport in one sentence and its number in the next is invisible
-   * here — no amount of widening the number list or the verb list
-   * changes that, because the splitter hands the predicate one sentence
-   * at a time. Attaching a pronoun to a subject across a full stop is
-   * the thing this file is not able to do, so it does not claim to.
-   *
-   * Pinned rather than described: the false half is the shape an author
-   * would have to write to slip a claim past this file today, and the
-   * true half is the same claim inside one sentence, so the pair also
-   * shows that the miss is the sentence break and nothing else.
+   * trailing denial as a claim'; and this one — both anchors have to be
+   * in the SAME sentence, so a claim that names the passport in one
+   * sentence and its number in the next is invisible here, whatever the
+   * number list or the verb list holds. Attaching a pronoun to a
+   * subject across a full stop is the thing this file is not able to
+   * do, so it does not claim to.
    */
   it('cannot see a claim split across two sentences, and says so', () => {
     expect(

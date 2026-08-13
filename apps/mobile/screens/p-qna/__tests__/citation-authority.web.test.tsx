@@ -23,27 +23,20 @@
  *
  * Two readers, two projections
  * ----------------------------
- * The colour-filtered reader and the screen-reader user are not the same
- * person and are not served by the same assertion, so they get one test
- * each:
+ * The colour-filtered reader and the screen-reader user are not served
+ * by the same assertion, so they get one test each:
  *
  *   - SIGHTED: the node that carries the tone must itself print the
  *     grade. Read off `textContent` and the inline `color`.
  *   - ASSISTIVE: the grade must survive the accessibility tree. Read off
- *     `accessibleText`, which honours `aria-hidden` and `aria-label`.
+ *     `accessibleText` AT THE CHIP, plus `reachesAccessibilityTreeFrom`
+ *     for the ancestors between it and the container — one call sees
+ *     what the chip itself drops, the other what an ancestor drops.
  *
- * Both are read AT THE CHIP. A projection of the whole document only
- * ever proves the string exists somewhere on the page, and this page has
- * a second place it can come from — the answer body, which the model
- * writes from a prompt header carrying「｜来源等级：指南/共识」.
- *
- * They used to be one test that stripped every `[style]` attribute and
- * then asserted on `container.textContent` — a value that is independent
- * of style attributes by definition, so it re-read the string the test
- * above it had already read. It could not fail while that one passed,
- * and its comment claimed it「read the page the way a screen reader
- * does」. It did not: adding `aria-hidden` to the chip hides the grade
- * from every screen reader and left it green.
+ * Neither is read over the whole document: that only proves the string
+ * exists somewhere on the page, and this page has a second place it can
+ * come from — the answer body, which the model writes from a prompt
+ * header carrying「｜来源等级：指南/共识」.
  */
 
 jest.mock('react-native', () => require('react-native-web'));
@@ -155,7 +148,10 @@ jest.mock('../../../lib/consent-epoch', () => ({
 import { act, type ReactNode } from 'react';
 import P_QNA from '../index';
 import { authorityToneFor } from '../../common/AuthorityChip';
-import { accessibleText } from '../../common/__testutils__/accessible-text';
+import {
+  accessibleText,
+  reachesAccessibilityTreeFrom,
+} from '../../common/__testutils__/accessible-text';
 
 const { createRoot } = require('react-dom/client') as {
   createRoot: (container: Element) => { render: (node: ReactNode) => void };
@@ -298,20 +294,14 @@ describe('web export：引用要带来源等级', () => {
     //
     // The mutation this adds coverage for is the tone drifting onto an
     // ancestor — a chip that wraps the grade in a plain inner `Text` and
-    // styles the wrapper. The words and the colour are then on different
-    // nodes, so the grade stops being readable at a glance next to a
-    // long citation title, and every character is still in
-    // `container.textContent`: the test above stays green and this one
-    // goes red. (Measured on that mutation — the grade wrapped in a
-    // plain inner `Text` — test 1 green, this one red on the first grade
-    // with `Received: ""` for the colour, and the no-wrap test below red
-    // too, since it reads the same node.)
+    // styles the wrapper. The words and the colour land on different
+    // nodes then, so the grade stops being readable at a glance beside a
+    // long citation title, while every character stays in
+    // `container.textContent` and the test above stays green.
     //
-    // The chip shapes that DROP the text — moving the grade to an
-    // `aria-label`, or leaving the background alone to carry it — never
-    // get this far: they fail the test above first, on
-    //「Expected substring: "指南/共识"」. Measured on the `aria-label`
-    // one: 5 of the 6 tests here red, test 1 among them.
+    // The chip shapes that DROP the text — the grade moved to an
+    // `aria-label`, or the background left to carry it — fail the test
+    // above first, on「Expected substring: "指南/共识"」.
     for (const grade of ['指南/共识', '病友经验']) {
       const chip = chipPrinting(container, grade);
       expect(chip).toBeDefined();
@@ -344,16 +334,21 @@ describe('web export：引用要带来源等级', () => {
     // document-wide assertion passes with no grade reachable by any
     // screen reader; anchored here it fails on the first chip.
     //
-    // What anchoring costs: `chipPrinting` finds the chip by its printed
-    // text, so a chip that moved the grade to an `aria-label` on a
-    // childless node — which a screen reader announces perfectly well —
-    // is red here for the wrong reason. That shape is already forbidden
-    // by the SIGHTED test above, which fails on it first, so this file
-    // pins the grade as a TEXT NODE on purpose rather than by accident.
+    // Anchoring is not a strict improvement over the document-wide read,
+    // so both assertions are here. Reading AT the chip cannot see an
+    // ancestor that drops the whole subtree — `aria-hidden` on the
+    // per-citation `View` leaves `accessibleText(chip)` equal to the
+    // grade — hence the reachability check, which the document-wide read
+    // did cover. And `chipPrinting` finds the chip by its printed text,
+    // so a grade moved to an `aria-label` on a childless node is red
+    // here for the wrong reason; that shape is forbidden by the SIGHTED
+    // test above, which fails on it first, so the grade is pinned as a
+    // TEXT NODE on purpose.
     for (const grade of ['指南/共识', '病友经验']) {
       const chip = chipPrinting(container, grade);
       expect(chip).toBeDefined();
       expect(accessibleText(chip!)).toBe(grade);
+      expect(reachesAccessibilityTreeFrom(container, chip!)).toBe(true);
     }
   });
 

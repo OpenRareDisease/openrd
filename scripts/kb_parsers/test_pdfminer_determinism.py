@@ -13,21 +13,9 @@ The tie-break test reads the fields out of the heap tuples rather than
 checking the reading order they decide, and that is deliberate. With
 upstream's `id()` restored, which of two exactly-tied pairs merges first
 is `sign(id(a) - id(b))`, so an assertion *about the outcome* is decided
-by the allocator, and the rate moves with whatever allocated before it.
-Measured on this branch, six configurations of 20 fresh processes each —
-the outcome test alone and then the whole file, against a fork reverted
-at both tie-break sites, at the sweep only, and at the re-push only —
-left `test_a_tied_page_merges_in_document_order` at the bottom of this
-file green between 8 and 20 times out of 20. Do not expect that spread
-to reproduce: four runs of those same six configurations — only comment
-text changed between them — gave 8-20, 16-20, 13-20 and 14-20. What
-reproduces is the direction. The field test was red 20 of 20 in all six,
-and in four more configurations that reorder `boxes` instead of
-reverting the fields: 40 mutant configurations across the four runs,
-800 processes, no escape.
-On the intact tree both tests were green 20 of 20 in every scope. The
-field test is never flaky-red; the outcome test is only ever
-flaky-green.
+by the allocator and a reverted fork walks past it on most runs. The
+field test reads the fields themselves, so it is red on a revert every
+run. Neither is ever flaky-red.
 """
 
 from __future__ import annotations
@@ -67,7 +55,8 @@ def _flatten_or(elements: list) -> ast.expr:
 class _ExecutableShape(ast.NodeTransformer):
     """Reduce a function's AST to what actually runs: no annotations, no
     docstring, `Union`/`Optional` written in PEP 604 form, and
-    `list(<genexpr>)` folded into the equivalent comprehension.
+    `list`/`set`/`dict` of a genexpr folded into the equivalent
+    comprehension.
 
     Every one of those is a rewrite that leaves the statements alone:
     the annotation strip and the docstring strip are the reason a hash
@@ -282,14 +271,17 @@ def test_shape_ignores_layout_and_typing_but_not_statements() -> None:
     plus one that changes behaviour and one it deliberately does not
     absorb — pinned on toy pairs so this test says what `_shape` does
     without depending on how upstream happens to be written today."""
+    # `ElementT`'s only reader is an annotation, the way upstream's is;
+    # `MaybeT` is read at runtime, so `Optional` is still normalised
+    # somewhere the strip cannot reach.
     legacy = (
         "def f(self, xs: List[int]) -> Tuple[int, ...]:\n"
         "    ElementT = Union[int, str]\n"
-        "    MaybeT = Optional[ElementT]\n"
-        "    ys: List[int] = list(x for x in xs)\n"
+        "    MaybeT = Optional[int]\n"
+        "    ys: List[ElementT] = list(x for x in xs)\n"
         "    zs: Set[int] = set(x for x in xs)\n"
         "    ds: Dict[int, int] = dict((x, x) for x in xs)\n"
-        "    return tuple(ys), zs, ds, ElementT, MaybeT\n"
+        "    return tuple(ys), zs, ds, MaybeT\n"
     )
     modernised = (
         "def f(\n"
@@ -298,11 +290,11 @@ def test_shape_ignores_layout_and_typing_but_not_statements() -> None:
         ") -> tuple[int, ...]:\n"
         '    """Now with a docstring."""\n'
         "    ElementT = int | str\n"
-        "    MaybeT = ElementT | None\n"
-        "    ys = [x for x in xs]\n"
-        "    zs = {x for x in xs}\n"
-        "    ds = {x: x for x in xs}\n"
-        "    return tuple(ys), zs, ds, ElementT, MaybeT\n"
+        "    MaybeT = int | None\n"
+        "    ys: list[ElementT] = [x for x in xs]\n"
+        "    zs: set[int] = {x for x in xs}\n"
+        "    ds: dict[int, int] = {x: x for x in xs}\n"
+        "    return tuple(ys), zs, ds, MaybeT\n"
     )
     assert _shape(legacy) == _shape(modernised)
 
@@ -312,13 +304,11 @@ def test_shape_ignores_layout_and_typing_but_not_statements() -> None:
     assert _shape(behaviour_changed) != _shape(modernised)
 
     # The disclosed edge, pinned here so a future widening has to come
-    # through this line. `_shape` normalises how a type is spelled, not
-    # the statements that build one, so an alias whose only readers are
-    # annotations is still hashed as a statement: deleting it, renaming
-    # it or widening it moves the digest and fires a re-sync request
-    # with nothing to re-sync. Upstream's `ElementT` is exactly that
-    # shape. If you close this, delete these three assertions and
-    # rewrite the paragraph in `_shape` that discloses it.
+    # through this line: an alias whose only readers are annotations is
+    # still hashed as a statement, so deleting, renaming or widening it
+    # moves the digest and fires a re-sync request with nothing to
+    # re-sync. If you close this, delete these three assertions and the
+    # paragraph in `_shape` that discloses it.
     alias_deleted = modernised.replace("    ElementT = int | str\n", "")
     alias_renamed = modernised.replace("ElementT", "_Element")
     alias_widened = modernised.replace("ElementT = int | str", "ElementT = int | bytes")
@@ -456,40 +446,28 @@ def test_tie_break_fields_are_argument_position_ordinals(monkeypatch) -> None:
     assertion cannot guard this: restore upstream's `id()` and the
     winner of a tie is a comparison of two addresses, which lands on the
     order the fork produces often enough that the outcome test below
-    survived a reverted fork 8 to 20 times out of 20 across the six
-    configurations named in this file's docstring. This one was red 20
-    of 20 in every one of them, because it checks every tuple, from both
-    sites that build one (the O(n^2) sweep and the re-push after a
-    merge) — including the re-push site alone, which the outcome test
-    never caught at all (20 of 20 green, both scopes).
+    walks past a revert on most runs. This one checks every tuple, from
+    both sites that build one (the O(n^2) sweep and the re-push after a
+    merge) — including a revert at the re-push site alone, which the
+    outcome test never catches.
 
     The second half is why the same four boxes are grouped twice, in
     opposite orders. Dense 0-based fields are not the property; fields
     that follow the *document* are. `boxes = list(set(boxes))` inserted
     ahead of the sweep leaves every field a dense first-seen ordinal
-    (checked directly under that mutation) while handing the reading
-    order back to the allocator — the scene below came back in 6
-    distinct orders across 20 fresh processes, against 1 intact — and a
-    check that rebuilt its expectation from the same tuples the function
+    while handing the reading order back to the allocator, and a check
+    that rebuilt its expectation from the same tuples the function
     numbered from would agree with it. Grouping the identical objects
     twice in opposite orders removes that: an order computed from the
     boxes themselves — from their addresses, or their coordinates — is
     the same order in both calls, so it can match at most one of the two
-    arguments. `sorted(boxes, key=id)` is exactly that, and was red
-    20/20 in each of the eight configurations it was run in.
+    arguments.
 
     What this cannot see: a reorder that reproduces the argument order
     in both calls. Only something randomised per call can, and only by
-    coincidence, which is why `list(set(boxes))` — a set's iteration
-    order also moves with what was inserted into it when — is measured
-    here rather than argued: red 20/20 in each of its eight
-    configurations too, so the coincidence did not land once in 160
-    processes. The outcome test below does catch a reordering more often
-    than it catches a reverted tie-break, but not reliably: over those
-    16 configurations its greens ran from 0 to 17 out of 20. The scene
-    is also four synthetic boxes, not a corpus page; the corpus-scale
-    claim lives in `pdfminer_determinism`'s module docstring, measured,
-    not here.
+    coincidence. The scene is also four synthetic boxes, not a corpus
+    page; the corpus-scale claim lives in `pdfminer_determinism`'s
+    module docstring.
     """
     forward = _tied_scene()
     heap, groups = _record_heap_tuples(monkeypatch, forward)
@@ -535,9 +513,9 @@ def test_a_tied_page_merges_in_document_order() -> None:
 
     This is an illustration, not the guard. With the fork's edit
     reverted, upstream's `id()` tie-break still lands on this same order
-    8 to 20 times out of 20 fresh processes, depending on which tests
-    ran before it, so a revert walks past this assertion most runs. The
-    field test above is what catches it, every run.
+    on most runs — which run depends on what allocated before it — so a
+    revert walks past this assertion. The field test above is what
+    catches it, every run.
     """
     pdfminer_determinism.install()
     container = pdfminer_layout.LTLayoutContainer((0, 0, 300, 100))

@@ -383,23 +383,23 @@ describe('FHIR R4 — instruments are declared as withheld', () => {
     // in fhir-r4.ts left this test green and moved only the golden.
     // This bundle has three omissions; one was guarded.
     const claims = result.omissions.flatMap((entry) => ambulationSentences(entry.reasonZh));
-    // Every sentence in those reasons that talks about the walking state
-    // at all, in order, BY EXACT STRING. Two things turn this red: a
-    // new such sentence — 「基线行走状态没有单独的资源类型，但会作为
-    // Observation 写入本 Bundle。」 is the shape that has slipped past
-    // twice — and an edit to an approved one, including a clause hung
-    // off it with ，or ；. `expect.stringContaining` was what let the
-    // second through: it turns every entry here into a safe harbour,
-    // and 「…运动功能测量，基线行走状态也会随本次导出一并写出」 appended
-    // to the first entry satisfied it with the array unchanged.
+    // Every sentence in those reasons that names the walking state in
+    // one of AMBULATION_SUBJECT's words, in order, BY EXACT STRING. A
+    // claim written around every word off that list is not here — that
+    // bound is at AMBULATION_SUBJECT and pinned in reason-claims.test.ts.
+    //
+    // A new such sentence turns this red, and so does an edit to an
+    // approved one. BY EXACT STRING rather than `expect.stringContaining`,
+    // which turns every entry into a safe harbour: a clause hung off an
+    // approved sentence with ，or ；satisfies it with the array
+    // unchanged, and that is how 「基线行走状态没有单独的资源类型，但会
+    // 作为 Observation 写入本 Bundle。」 slipped past.
     //
     // The first two lines are the shared instrument prefix, which
-    // reaches this list because it names Vignos, 下肢功能 and 运动功能 —
-    // the grade the walking state is derived from and the name the
-    // TREAT-NMD section carrying `motor.ambulation` gives it. Neither
-    // makes a claim about the bundle; they are enumerated rather than
-    // filtered out, because every rule that would drop them is a rule a
-    // false claim can be written to satisfy.
+    // reaches this list because it names Vignos, 下肢功能 and 运动功能.
+    // Neither makes a claim about the bundle; they are enumerated
+    // rather than filtered out, because every rule that would drop them
+    // is a rule a false claim can be written to satisfy.
     expect(claims).toEqual([
       '本平台采集 Brooke 上肢功能分级与 Vignos 下肢功能分级（见 /me/instruments），但这两项尚未接入本导出所读取的档案结构，因此本次导出不含任何分级数值、施测时间或量表版本',
       '这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取',
@@ -410,8 +410,10 @@ describe('FHIR R4 — instruments are declared as withheld', () => {
     // No pointer into a document that has no sections at all. Scoped to
     // this reason rather than to every omission, because the LOINC one
     // legitimately points at `codingProvenance.emitted` / `.withheld`,
-    // which are places in this bundle — an enumeration those deserve
-    // and do not have.
+    // which are places on the envelope this bundle ships in — so a
+    // bogus pointer in the LOINC or Observation reason is unguarded
+    // here, and enumerating those the way the sentences above are
+    // enumerated is what would close it.
     expect(locatorsIn(reasonOf(result))).toEqual([]);
   });
 });

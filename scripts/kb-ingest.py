@@ -91,23 +91,21 @@ DEFAULT_BATCH_SIZE = int(os.getenv("KB_INGEST_BATCH_SIZE", "32"))
 #:
 #: The bump invalidates every file's SOURCE fingerprint, so all 235
 #: files under content/medical-kb/source are re-read, re-parsed and
-#: re-chunked. That is the bulk of the cost: 299 s wall clock on the
-#: laptop that ingests this corpus (298.8 s and 299.4 s on two runs),
-#: inside which 84 pages across 31 PDFs are rasterised at 300 DPI and
-#: run through tesseract — 30 of those, in 15 files, come back with
-#: enough text to replace the page, which is the `pages_via_ocr` the
-#: parser reports; the other 54 change nothing.
+#: re-chunked. That is the bulk of the cost: ~299 s wall clock on the
+#: laptop that ingests this corpus, inside which 84 pages across 31 PDFs
+#: are rasterised at 300 DPI and run through tesseract — 30 of those, in
+#: 15 files, come back with enough text to replace the page, which is
+#: the `pages_via_ocr` the parser reports; the other 54 change nothing.
 #:
 #: Re-embedding is no longer the bulk of it, but it is not nothing.
 #: `VectorBackend.reusable_embeddings` hands back the stored vector for
 #: every chunk whose text did not move. Measured against the live
-#: pgvector DB (2026-08-11) by re-chunking the corpus and looking each
-#: fingerprint up: the 211 indexed files chunk to 11,110 chunks, 10,064
-#: of which hit a stored vector and cost no embedding, and 1,046 of
-#: which are embedded. 890 of that remainder sit in 21 files whose
-#: stored row count does not match their chunk count at all — earlier
-#: partial ingests — and 156 sit in 15 files that are complete, 13 of
-#: them files this bump exists to make stable.
+#: pgvector DB (2026-08-11): the 211 indexed files chunk to 11,110
+#: chunks, 10,064 of which hit a stored vector and cost no embedding,
+#: and 1,046 of which are embedded. 890 of that remainder sit in 21
+#: files whose stored row count does not match their chunk count at all
+#: — earlier partial ingests — and 156 sit in 15 files that are
+#: complete.
 #:
 #: It is still the right lever: the alternative is a hand-written
 #: DELETE against one source_file, which leaves the backend holding
@@ -706,11 +704,11 @@ def ingest(
         # fix actually touched. On a 16 GB laptop that put the machine
         # into 12 GB of swap and took a batch from 3.8 seconds to 50
         # minutes. Re-parsing and re-chunking every file stays and is
-        # now most of the cost of a bump — 299 s for the 235 files in
-        # this corpus — while the embedder sees only the chunks whose
-        # text actually moved: 1,046 of the 11,110 chunks the corpus
-        # stored today produces, see PIPELINE_VERSION for where that
-        # remainder comes from.
+        # now most of the cost of a bump — 235 files in this corpus —
+        # while the embedder sees only the chunks whose text actually
+        # moved: 1,046 of the 11,110 chunks the corpus stored today
+        # produces, see PIPELINE_VERSION for where that remainder comes
+        # from.
         reused = backend.reusable_embeddings(
             [chunk.fingerprint for chunk in pending], embedder.model_name
         )

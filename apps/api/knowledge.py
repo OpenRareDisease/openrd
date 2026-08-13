@@ -273,28 +273,25 @@ _FLOOR_UNSET = object()
 # Every one of these moved when this branch re-chunked the corpus, and
 # they will move again on the next ingest.
 # scripts/kb_parsers/test_kb_corpus_census.py runs the query above and
-# compares it against this block row by row, and it fails on a REWORD as
-# loudly as on a drifted count — softening a row into prose is not a way
-# out of re-measuring it. The comparison needs a corpus, so it only runs
-# where DATABASE_URL reaches an ingested database; after an ingest, run
-# it with KB_CENSUS_REQUIRED=1 so a mistyped DSN cannot report a skip as
-# a pass. Every chunk and file count in this block goes through that
-# comparison — the seven category rows, the header's totals, the
-# _FOLDER_TIERS note, and the corpus size the penalty-sizing paragraph
-# below restates in its own shape — and a count added later without an
-# extractor fails the test rather than sitting here unread. The COSINE
-# figures in the penalty paragraph are a different kind of number and
-# are checked by nothing: reproducing them means re-running those two
-# queries by hand.
+# compares it against this block row by row, failing on a REWORD as
+# loudly as on a drifted count. The comparison needs a corpus, so it
+# only runs where DATABASE_URL reaches an ingested database; after an
+# ingest, run it with KB_CENSUS_REQUIRED=1 so a mistyped DSN cannot
+# report a skip as a pass.
 #
-# The measurement DATE is the one thing no query can check — nothing in
-# kb_chunks records when a comment was written. This block states it
-# THREE times: here, in the penalty-sizing paragraph below, and in the
-# _FOLDER_TIERS note under that. The test holds the three to each
-# other, so re-stamping one without the others goes red; re-stamping
-# all three together is a hand edit nothing can verify. Do all three in
-# the same pass, and do not trust a green run to mean the date is
-# right — only that the block agrees with itself.
+# WHAT IT READS HERE, and nothing else: the seven category rows, the
+# header's totals, the _FOLDER_TIERS note, the corpus size the
+# penalty-sizing paragraph below restates, and — by shape, so a drifted
+# value cannot hide — any CHUNK COUNT or measurement DATE added to this
+# block later. A FILE count written in a new shape is not read, and
+# neither are the cosine figures below; reproducing those means
+# re-running the two queries by hand.
+#
+# The measurement DATE is the one thing no query can check. This block
+# states it THREE times — here, in the penalty-sizing paragraph below,
+# and in the _FOLDER_TIERS note under that — and the test holds the
+# three to each other. Re-stamp all three in the same pass; a green run
+# means the block agrees with itself, not that the date is right.
 #
 # `penalty` is added to the cosine distance for RANKING ONLY — never for
 # the relevance floor, which must keep judging raw distance or the tier

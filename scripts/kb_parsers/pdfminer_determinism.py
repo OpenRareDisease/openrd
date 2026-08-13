@@ -135,12 +135,9 @@ def _group_textboxes_stable(
 
     `Plane.__iter__`'s order is not a third dependency, though it reads
     like one: every object the re-push loop takes out of the plane has
-    already been numbered by the sweep (measured: 0 unnumbered in 4,456
-    iterations of that loop over 400 random scenes), and `heapq` pops in
-    tuple order however the tuples were pushed. Checked rather than
-    argued — with `Plane.__iter__` reversed, and again with it sorted by
-    address, the reading order came back identical on all 800 random
-    tie-prone scenes.
+    already been numbered — the boxes by the sweep, the groups by an
+    earlier re-push — and `heapq` pops in tuple order however the tuples
+    were pushed.
     """
     from pdfminer.layout import (  # type: ignore
         LTTextBoxVertical,
@@ -161,16 +158,13 @@ def _group_textboxes_stable(
         That keying is sound only while nothing numbered here can be
         freed and have its address handed to something else, and nothing
         can: a box is held by `boxes` for the whole call; a group is
-        held by the local `group` name from the moment it is created —
-        which is the moment it is numbered — then by every tuple it is
-        pushed into, by `plane` from `plane.add` until it is merged, and
-        by the group it is merged into after that. No shipped test
-        checks this, and none usefully could: a test watching the
-        numbered objects would have to hold them, which is the very
-        condition that makes a recycle impossible. Measured instead, by
-        taking a weakref at each numbering and collecting just before
-        the return: over 400 random scenes, 0 of 3,482 numbered objects
-        had died while the table was still being read."""
+        held by the local `group` name from the moment it is created,
+        which is before it is numbered, then by every tuple it is pushed
+        into, by `plane` from `plane.add` until it is merged, and by the
+        group it is merged into after that. No shipped test checks this,
+        and none usefully could: a test watching the numbered objects
+        would have to hold them, which is the very condition that makes
+        a recycle impossible."""
         key = id(obj)
         if key not in ordinals:
             ordinals[key] = next(counter)

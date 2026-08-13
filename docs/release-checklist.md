@@ -45,7 +45,7 @@
 - [ ] `npm run lint` 通过。
 - [ ] `npm run format` 通过（**不要**跳过：仓库里没有 CRLF 问题，prettier 在 master 上是干净的）。
 - [ ] `npm test` 通过（API + 移动端两个 workspace）。
-- [ ] `python -m pytest apps/report-manager/tests scripts/kb_parsers` 通过，且 **pytest 真的收到了 19 个测试文件**：
+- [ ] `python -m pytest apps/report-manager/tests scripts/kb_parsers` 通过，且 **pytest 收到的测试文件数与 `.github/workflows/ci.yml` 里 Test step 上方注释记的那个数一致**：
 
       ```
       python -m pytest apps/report-manager/tests scripts/kb_parsers --collect-only -q | grep '::' | cut -d: -f1 | sort -u | wc -l
@@ -53,9 +53,9 @@
 
       这是 collection 的完整性检查，不是装饰：import-mode / conftest 一坏，`scripts/kb_parsers` 整个不被收集，pytest 照样打绿退出 0。
 
-      **不要用 `ls` 数文件**——这一条要抓的是「pytest 收没收」，而 `ls` 数的是「磁盘上有没有」，两回事。实测：往 `scripts/kb_parsers/` 放一个只有 `collect_ignore_glob = ["test_*.py"]` 的 conftest.py，`ls apps/report-manager/tests/test_*.py scripts/kb_parsers/test_*.py | wc -l` 在坏树和好树上都输出 19，`pytest -q` 退出 0，整条检查等于没做；上面那条命令好树 19、坏树 2。
+      **不要用 `ls` 数文件**——这一条要抓的是「pytest 收没收」，而 `ls` 数的是「磁盘上有没有」，两回事。实测：往 `scripts/kb_parsers/` 放一个只有 `collect_ignore_glob = ["test_*.py"]` 的 conftest.py，`ls` 在坏树和好树上数出来一样多，`pytest -q` 退出 0，整条检查等于没做；上面那条命令在坏树上只剩 2 个文件。
 
-      末尾的 `N tests collected` 一起看，对照 `.github/workflows/ci.yml` 里 Test step 上方注释记的那个数（**只此一份，不要在这里再抄一遍**——两份拷贝会各自漂）。加了测试就把 ci.yml 那个数一起改；对不上时先确认是不是自己刚加的用例，再怀疑 collection。文件数 19 同理，是手工维护的，没有测试在盯着它。
+      末尾的 `N tests collected` 一起看，同样对照 ci.yml 那条注释。**测试数和文件数都只此一份，都在 ci.yml，不要在这里再抄**——两份拷贝会各自漂。两个数都是手工维护的，没有测试在盯着它们：加了测试就把 ci.yml 那两个数一起改；对不上时先确认是不是自己刚加的用例，再怀疑 collection。
 
       「依赖二进制或依赖语料的用例会自行 skip」只对**开发机**成立。CI 上 `CI=true`，test_docx_parser.py 的 `_CONVERTER_REQUIRED` 和 test_pgvector_reusable_embeddings.py 的 `_DB_REQUIRED` 会把这些 skip 变成 fail——故意的，免得 runner 丢了 LibreOffice 或 pgvector 容器还报绿。语料相关的 census 用例在两边都 skip（语料 gitignore，没有 job ingest 过），除非显式设 `KB_CENSUS_REQUIRED=1`。
 

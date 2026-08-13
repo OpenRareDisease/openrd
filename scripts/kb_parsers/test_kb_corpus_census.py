@@ -19,8 +19,8 @@ runs EVERYWHERE, CI included, and turns red the moment an ENUMERATED
 claim is deleted or reworded past its pattern — one parametrised case
 per claim, so the failure names which one went missing. Repeated claims
 are counted per file and pinned exactly, so a surplus match in one file
-cannot pay for a missing statement in another, and a claim that spreads
-to an extra site is a failure too.
+cannot pay for a missing statement in another, and a claim restated an
+extra time inside one of the enumerated files is a failure too.
 
 WHAT THAT HALF CANNOT DO, stated here because the sentence it replaces
 claimed otherwise: the table below is a list of literal patterns for
@@ -28,11 +28,10 @@ sentences someone already wrote. A census number written LATER, in a
 shape nobody enumerated, is invisible to it — there is no general
 "looks like a corpus claim" detector here and a pattern matcher over
 prose could not be one. The boundary is pinned for one region:
-`test_every_corpus_total_and_date_in_the_authority_block_is_enumerated`
-fails if a corpus total or a measurement date appears anywhere in
-knowledge.py's AUTHORITY_TIERS block without an entry reading it. That
-comment block and nothing else; the list above that test names what
-stays uncovered.
+`test_every_chunk_count_and_date_in_the_authority_block_is_enumerated`
+scans knowledge.py's AUTHORITY_TIERS block for chunk counts and
+measurement dates BY SHAPE, and fails if one sits there with no entry
+reading it. That comment block and nothing else.
 
 COMPARING that claim against the corpus needs the corpus. Those tests
 skip when DATABASE_URL is unset or `kb_chunks` is absent, which is what
@@ -260,10 +259,11 @@ _SINGLE_CLAIMS.update(
 )
 
 #: what -> (pattern, {file: exactly how many times that file states it}).
-#: Claims the bump-cost files repeat, read with `_all`. A file missing
-#: from the mapping must state the claim zero times, so a claim that
-#: spreads to a fourth site is a failure too — the whole point is that
-#: every site of one number is enumerated, not that some floor is met.
+#: Claims the bump-cost files repeat, read with `_all`. Only the three
+#: files in `_COST_CLAIM_FILES` are scanned: within those three, a file
+#: missing from the mapping must state the claim zero times, so a claim
+#: that spreads to the third file is a failure too. The same claim
+#: appearing in a FOURTH file is invisible here.
 _REPEATED_CLAIMS: Dict[str, Tuple[str, Dict[Path, int]]] = {
     "rasterised-page count": (
         r"([\d,]+) pages\b(?:[^.]{0,30}?across ([\d,]+))?[^.]{0,40}?rasterised at 300 DPI",
@@ -369,27 +369,13 @@ def test_the_two_halves_of_the_authority_block_agree_with_each_other() -> None:
 # Everything above is a literal pattern for a claim someone already
 # wrote. That catches a reworded claim and a deleted one; it cannot
 # catch a claim WRITTEN LATER in a shape nobody enumerated. The test
-# below closes that for one region and one pair of numbers — the
-# authority block, the corpus total and the measurement date — because
-# that is the block whose prose tells a reader what is and is not
-# enforced, so a fourth unenforced restatement appearing inside it
-# would make that prose wrong.
+# below closes that for ONE region and TWO kinds of number: knowledge.py's
+# AUTHORITY_TIERS block, chunk counts and measurement dates.
 #
-# What it does NOT cover, named rather than implied:
-#   * anything outside the region below. knowledge.py restates the
-#     corpus total at least four more times — the ingest-label note
-#     near the top, the relevance-floor probe block, the
-#     guideline-filename note's「N of M chunks」and the authority_tier
-#     backfill note near the bottom. Two of those are enumerated in
-#     _SINGLE_CLAIMS by their own patterns; the other two are not
-#     checked by this file at all.
-#   * any number in the region that is neither the corpus total nor a
-#     date — the per-category rows, the penalty spread, the distance
-#     band, the four-decimal cosine figures. The rows have their own
-#     entries; the rest are unchecked.
-#   * every other file. medical-kb.ts, search-medical-kb.ts,
-#     kb-ingest.py and the two bump-cost files are covered only by the
-#     literal patterns above.
+# Nothing else. Chunk counts knowledge.py states outside that region, any
+# other kind of number inside it (file counts, the penalty spread, the
+# cosine figures), and every other file are covered only by the literal
+# patterns above — i.e. only where someone wrote a pattern for them.
 
 #: The region: the AUTHORITY_TIERS census block through the end of the
 #: `_FOLDER_TIERS` note, which is the block the census prose in
@@ -397,9 +383,12 @@ def test_the_two_halves_of_the_authority_block_agree_with_each_other() -> None:
 _AUTHORITY_BLOCK_START = "# The corpus directory structure already encodes"
 _AUTHORITY_BLOCK_END = '_ROOT_TIER = "literature"'
 
-#: A date any of these comments could carry, and the corpus total in
-#: both spellings the file uses (`10,241` and `10241`).
+#: What the scan looks for: a measurement date, and a chunk count in any
+#: shape. By SHAPE, never by the header's current value — a restatement
+#: added later with an ALREADY-DRIFTED number is the case this test
+#: exists for, and searching for the value cannot see it.
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_CHUNK_COUNT_RE = re.compile(r"\d[\d,]*(?=[ \t]*(?:chunks|块)|-chunk)")
 
 #: How many of each the region holds. Pinned, because the check below
 #: only walks what the region contains: moving either marker inward
@@ -408,7 +397,7 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: reads the new one has to land in `_SINGLE_CLAIMS` in the same diff
 #: or the check itself fails.
 _AUTHORITY_BLOCK_DATES = 3
-_AUTHORITY_BLOCK_TOTALS = 2
+_AUTHORITY_BLOCK_CHUNK_COUNTS = 4
 
 
 def _authority_block_bounds(source: str) -> Tuple[int, int]:
@@ -416,19 +405,20 @@ def _authority_block_bounds(source: str) -> Tuple[int, int]:
     return start, source.index(_AUTHORITY_BLOCK_END, start)
 
 
-def test_every_corpus_total_and_date_in_the_authority_block_is_enumerated() -> None:
+def test_every_chunk_count_and_date_in_the_authority_block_is_enumerated() -> None:
     """A number added to the block later is enumerated, or this fails.
 
-    The rest of this file matches claims that already exist, so a
-    reader could reasonably read「the census block is checked」and add a
-    fifth restatement of the total to it that nothing reads. This is
-    the boundary: inside the region, every corpus total and every date
-    has to sit inside the span of a pattern in `_SINGLE_CLAIMS`.
+    The rest of this file matches claims that already exist, so a reader
+    could reasonably read「the census block is checked」and add a
+    restatement to it that nothing reads. This is the boundary: inside
+    the region, every date and every chunk count has to sit inside the
+    span of a pattern in `_SINGLE_CLAIMS`.
 
-    It is a boundary and not a widening — see the list above for what
-    stays uncovered. If a future change narrows the region or drops a
-    pattern, the numbers it stops covering surface here rather than
-    going quiet.
+    What it reads: a number written next to `chunks` / `块`, plus any
+    restatement of the header's own total in any shape. NOT a bare
+    number in a new census row — those go unread the way file counts
+    do, which is why the rows themselves are enumerated in
+    `_NAMED_CATEGORY_ROWS` rather than left to this scan.
     """
     source = _source(_KNOWLEDGE_PY)
     start, end = _authority_block_bounds(source)
@@ -439,14 +429,23 @@ def test_every_corpus_total_and_date_in_the_authority_block_is_enumerated() -> N
             continue
         covered.extend(m.span() for m in re.finditer(pattern, source))
 
-    total = _stated("knowledge.py authority census header").group(1)
-    spellings = {total, total.replace(",", "")}
     dates = [(m.start(), m.group(0)) for m in _DATE_RE.finditer(source)]
-    totals = [
-        (m.start(), spelling)
-        for spelling in spellings
-        for m in re.finditer(re.escape(spelling), source)
-    ]
+    # Shape UNION value, not shape instead of value. The shape scan
+    # catches a figure written next to 「chunks」/「块」; the value scan
+    # catches a restatement of the header's own total written in some
+    # other shape, which is what the shape scan alone let through.
+    # Keyed by offset so a hit both find is counted once.
+    total = _one(
+        r"the live corpus \(([\d,]+) chunks",
+        source,
+        "knowledge.py authority census header",
+    ).group(1)
+    by_offset = {m.start(): m.group(0) for m in _CHUNK_COUNT_RE.finditer(source)}
+    for spelling in {total, total.replace(",", "")}:
+        for match in re.finditer(re.escape(spelling), source):
+            by_offset.setdefault(match.start(), spelling)
+    counts = sorted(by_offset.items())
+
     def inside(found: List[Tuple[int, str]]) -> List[Tuple[int, str]]:
         return [(offset, text) for offset, text in found if start <= offset < end]
 
@@ -458,13 +457,13 @@ def test_every_corpus_total_and_date_in_the_authority_block_is_enumerated() -> N
         "markers moved and this check has quietly stopped looking at part of "
         "the block"
     )
-    assert len(inside(totals)) == _AUTHORITY_BLOCK_TOTALS, (
-        f"the AUTHORITY_TIERS region states the corpus total "
-        f"{len(inside(totals))} times, not {_AUTHORITY_BLOCK_TOTALS} — same "
-        "two possibilities as above"
+    assert len(inside(counts)) == _AUTHORITY_BLOCK_CHUNK_COUNTS, (
+        f"the AUTHORITY_TIERS region states {len(inside(counts))} chunk "
+        f"counts, not {_AUTHORITY_BLOCK_CHUNK_COUNTS} — same two "
+        "possibilities as above"
     )
 
-    for offset, text in inside(dates) + inside(totals):
+    for offset, text in inside(dates) + inside(counts):
         assert any(lo <= offset < hi for lo, hi in covered), (
             f"knowledge.py line {source.count(chr(10), 0, offset) + 1} states "
             f"{text!r} inside the AUTHORITY_TIERS block, and no pattern in "

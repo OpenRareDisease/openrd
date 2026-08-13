@@ -12,7 +12,7 @@
  * close, one level down.
  */
 
-import { accessibleText } from '../__testutils__/accessible-text';
+import { accessibleText, reachesAccessibilityTreeFrom } from '../__testutils__/accessible-text';
 
 const render = (html: string): HTMLElement => {
   const host = document.createElement('div');
@@ -60,21 +60,11 @@ describe('accessibleText', () => {
 });
 
 /**
- * The edge of the helper, written down as assertions.
- *
- * `accessible-text.ts` says in prose that it is「a deliberately small
- * subset of the accessible-name computation」and not an accname
- * implementation. That sentence is only worth having if the edge is
- * somewhere a reader can see it, so the two name sources it does NOT
- * model are pinned here. Both are shapes a real screen reader handles
- * and this helper does not, which means a chip built either way is a
- * FALSE RED in the two citation suites — the fix then is to extend the
- * helper, not to loosen those tests back to a document-wide read.
- *
- * These are also the tripwire for a widening that quietly narrows: if
- * someone teaches the helper `aria-labelledby`, this file fails and the
- * paragraph above has to be re-read rather than left standing as a
- * stale disclaimer.
+ * The two name sources the helper does NOT model, pinned so its prose
+ * disclaimer cannot go stale: a real screen reader handles both, so a
+ * chip built either way is a FALSE RED in the citation suites and the
+ * fix is to extend the helper, not to loosen those tests back to a
+ * document-wide read. Teaching it `aria-labelledby` turns this red.
  */
 describe('accessibleText 明确没有做的部分', () => {
   it('aria-labelledby 不解析 —— 读到的是节点自己的字', () => {
@@ -104,5 +94,57 @@ describe('accessibleText 明确没有做的部分', () => {
         render('<span style="position: absolute; width: 1px; overflow: hidden">文献</span>'),
       ),
     ).toBe('文献');
+  });
+});
+
+/**
+ * `accessibleText(chip)` starts AT the chip, so it cannot see an
+ * ancestor that took the whole subtree out of the tree. The citation
+ * suites read the chip and then ask this, which is the half of the
+ * old document-wide read that anchoring gave up.
+ */
+describe('reachesAccessibilityTreeFrom', () => {
+  const chipIn = (host: HTMLElement): Element => host.querySelector('.chip')!;
+
+  it('没有祖先挡着就读得到', () => {
+    const host = render('<div><span class="chip">指南/共识</span></div>');
+    expect(reachesAccessibilityTreeFrom(host, chipIn(host))).toBe(true);
+  });
+
+  it('祖先 aria-hidden —— 自己的字还在，但读屏够不到', () => {
+    const host = render('<div aria-hidden="true"><span class="chip">指南/共识</span></div>');
+    // This is the mutation the anchored read alone is blind to.
+    expect(accessibleText(chipIn(host))).toBe('指南/共识');
+    expect(reachesAccessibilityTreeFrom(host, chipIn(host))).toBe(false);
+  });
+
+  it('祖先带 aria-label —— 顶替掉整棵子树，等级读不出来', () => {
+    const host = render('<div aria-label="引用"><span class="chip">指南/共识</span></div>');
+    expect(accessibleText(chipIn(host))).toBe('指南/共识');
+    expect(accessibleText(host)).toBe('引用');
+    expect(reachesAccessibilityTreeFrom(host, chipIn(host))).toBe(false);
+  });
+
+  it('祖先 display:none / hidden 同样够不到', () => {
+    const none = render('<div style="display: none"><span class="chip">文献</span></div>');
+    expect(reachesAccessibilityTreeFrom(none, chipIn(none))).toBe(false);
+    const hidden = render('<div hidden><span class="chip">文献</span></div>');
+    expect(reachesAccessibilityTreeFrom(hidden, chipIn(hidden))).toBe(false);
+  });
+
+  it('只看 root 以下的祖先 —— root 自己不算', () => {
+    // The suites pass their own render container as `root`; whatever
+    // the harness wrapped that container in is not the screen's doing.
+    const host = render('<div aria-hidden="true"><span class="chip">病友经验</span></div>');
+    const inner = host.firstElementChild as HTMLElement;
+    expect(reachesAccessibilityTreeFrom(inner, chipIn(host))).toBe(true);
+  });
+
+  it('节点自己 aria-hidden 由 accessibleText 管，不是这里', () => {
+    // The two assertions are complementary, not redundant: this one
+    // never looks at the node itself.
+    const host = render('<div><span class="chip" aria-hidden="true">文献</span></div>');
+    expect(reachesAccessibilityTreeFrom(host, chipIn(host))).toBe(true);
+    expect(accessibleText(chipIn(host))).toBe('');
   });
 });

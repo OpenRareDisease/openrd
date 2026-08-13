@@ -292,26 +292,19 @@ jobs:
       # from here; scripts/kb_parsers bootstraps apps/api itself. 327 tests
       # across 19 files (`pytest apps/report-manager/tests scripts/kb_parsers
       # --collect-only -q`, and the same piped through
-      # `grep '::' | cut -d: -f1 | sort -u | wc -l` for the file count),
-      # ~2s on a developer machine. This is the only copy of that number —
-      # docs/release-checklist.md points here rather than restating it.
-      # The old「181 assertions, ~6s」was
-      # both the wrong unit and a figure this job no longer has: the runtime
-      # here is now dominated by the headless LibreOffice conversions in
-      # scripts/kb_parsers/test_docx_parser.py.
+      # `grep '::' | cut -d: -f1 | sort -u | wc -l` for the file count).
+      # BOTH numbers live here and nowhere else — docs/release-checklist.md
+      # points at this comment rather than restating either, because two
+      # hand-maintained copies drift apart. Nothing tests them; update them
+      # here when you add a test file.
       #
-      # FIVE real converter processes, not two, and the cost is paid five
-      # times rather than once. Measured by wrapping `subprocess.run` for a
-      # run of that file: 7 spawns, of which 2 are the fake-soffice shell
-      # stub two tests monkeypatch in (free) and 5 are the machine's real
-      # converter — 2 from the test file's own `_make_legacy_doc`, which
-      # runs the converter backwards to make an OLE2 fixture, and 3 from
-      # `docx_parser._convert_legacy_doc` parsing one. Both call sites pass
-      # their own `-env:UserInstallation` temp profile (docx_parser.py says
-      # why: concurrent soffice processes sharing a profile deadlock), so
-      # the ~20 s first-run profile build is NOT amortised across the five.
-      # If this job's wall clock is the thing you are trying to cut, that is
-      # where it is.
+      # Wall clock is dominated by headless LibreOffice in
+      # scripts/kb_parsers/test_docx_parser.py: five real converter
+      # processes, each paying its own ~20 s first-run profile build,
+      # because both call sites pass their own `-env:UserInstallation` temp
+      # profile (docx_parser.py says why: concurrent soffice processes
+      # sharing a profile deadlock). If this job's runtime is what you are
+      # trying to cut, that is where it is.
       #
       # DATABASE_URL points at the service container above. GitHub sets
       # CI=true for every job, and the pgvector cache tests turn that into
@@ -322,16 +315,14 @@ jobs:
       # That container is EMPTY of `kb_chunks` and stays that way: the 547 MB
       # medical corpus is gitignored and no job ingests it. So the corpus
       # census in test_kb_corpus_census.py splits in two here — the half that
-      # reads each ENUMERATED census claim back out of the source runs (and
-      # fails if one was deleted, reworded, or restated an extra time), the
+      # reads each ENUMERATED census claim back out of the source runs, the
       # half that compares it against the corpus skips. Enumerated is the
-      # load-bearing word: that half is a table of literal patterns for
-      # sentences that already exist, so a census number written later in an
-      # unenumerated shape is invisible to it everywhere, CI included. The
-      # module docstring names the one region where that boundary is pinned.
-      # The split is still the whole point of the file: while both halves sat
-      # behind the same fixture, deleting a census claim from knowledge.py
-      # produced「9 skipped」and a green job.
+      # load-bearing word: a census number written later in a shape nobody
+      # wrote a pattern for is invisible everywhere, CI included, outside
+      # the one region the module docstring names. The split is the whole
+      # point of the file: while both halves sat behind the same fixture,
+      # deleting a census claim from knowledge.py produced「9 skipped」and a
+      # green job.
       - name: Test
         run: pytest apps/report-manager/tests scripts/kb_parsers
         env:
