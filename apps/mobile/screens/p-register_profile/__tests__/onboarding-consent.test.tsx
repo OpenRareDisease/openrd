@@ -262,6 +262,51 @@ describe('p-register_profile — Art. 29 consent is asked about real data', () =
     expect(mockEnsureSensitiveDataConsent).not.toHaveBeenCalled();
   });
 
+  /**
+   * D4Z4 was the one clinical field that could not be erased.
+   *
+   * Its payload line fell back to the stored value when the box was
+   * empty, so clearing it re-sent the old number and the PUT wrote it
+   * back — worse than the 分型 case above, where the write was merely
+   * skipped. The erase test above passes with the old code because its
+   * fixture leaves d4z4 null, which is exactly how the regression would
+   * come back on the one field carrying a genetic measurement.
+   */
+  it('sends the erase when D4Z4 is the field being cleared', async () => {
+    mockGetMyPatientProfile.mockReset().mockResolvedValue({
+      id: 'p-1',
+      fullName: '张三',
+      dateOfBirth: '1988-03-12',
+      gender: 'male',
+      baseline: {
+        foundation: { fullName: '张三', birthYear: 1988, diagnosisYear: null, regionLabel: null },
+        diseaseBackground: {
+          diagnosisLadder: null,
+          diagnosisType: null,
+          d4z4: '4/22',
+          onsetRegion: null,
+          familyHistory: null,
+        },
+        currentStatus: { independentlyAmbulatory: null, assistiveDevices: [] },
+      },
+    });
+
+    const tree = await renderScreen();
+    await fillMinimalFields(tree);
+    await act(async () => {
+      byAccessibilityLabel(tree, 'set-region').props.onPress();
+    });
+    await act(async () => {
+      byPlaceholder(tree, '例如：4/22（留空则以基因报告的识别结果为准）').props.onChangeText('');
+    });
+    await pressSave(tree);
+
+    expect(mockUpdateMyBaseline).toHaveBeenCalledTimes(1);
+    expect(mockUpdateMyBaseline.mock.calls[0][0]).toMatchObject({
+      diseaseBackground: { d4z4: null },
+    });
+  });
+
   it('stores nothing when the patient declines on a payload that carries health data', async () => {
     mockEnsureSensitiveDataConsent.mockResolvedValue(false);
     const tree = await renderScreen();

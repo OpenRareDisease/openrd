@@ -366,7 +366,25 @@ const RegisterProfileScreen: React.FC = () => {
         // saying opposite things on disk.
         diagnosisLadder: form.diagnosisLadder || null,
         diagnosisType: form.diagnosisType.trim() || null,
-        d4z4: form.d4z4.trim() || existingBaseline?.diseaseBackground?.d4z4 || null,
+        // `|| null` like its four siblings, with no fallback to the
+        // stored value. The fallback meant an emptied box resolved to
+        // what was already there and the PUT wrote it straight back, so
+        // this was the one clinical field on the form a patient could
+        // not erase — and it is the one carrying a genetic measurement.
+        // A D4Z4 repeat count is prognostic: 3 versus 8 is a different
+        // conversation about severity, and it flows on into the
+        // TREAT-NMD export a clinician receives and into the context the
+        // AI answers the patient's own questions from.
+        //
+        // What clearing it does NOT do is override an uploaded report.
+        // `applyGeneticReportAutofill` re-derives this field at read time
+        // from a parsed genetic report, so where one is on file the
+        // report's reading comes back. That is the right precedence —
+        // the report is the evidence and the box is not — and the
+        // placeholder now says so rather than promising a correction it
+        // cannot make. Erasing works where the value has no report
+        // behind it: hand-typed, or from a report since removed.
+        d4z4: form.d4z4.trim() || null,
         onsetRegion: form.onsetRegion.trim() || null,
         familyHistory: form.familyHistory.trim() || null,
       },
@@ -676,7 +694,7 @@ const RegisterProfileScreen: React.FC = () => {
                     <Text style={styles.inputLabel}>D4Z4 重复数（如有基因报告）</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="例如：4/22（报告识别有误时可在此修正）"
+                      placeholder="例如：4/22（留空则以基因报告的识别结果为准）"
                       placeholderTextColor={COLOR.inkFaint}
                       value={form.d4z4}
                       onChangeText={(text) => setForm((prev) => ({ ...prev, d4z4: text }))}
