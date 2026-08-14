@@ -283,7 +283,7 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
    * Reached here through `stored`, because a marker on 甲基化 is a
    * marker on disk rather than one this platform can be made to write.
    */
-  it('does not promise self-service on a value the patient has no box for', () => {
+  it('gives each value the correction route that exists for it, not one that is half true', () => {
     const step = buildClinicalPassportSummary(
       base({
         baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
@@ -296,12 +296,95 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     // Both values are on the page and both are marked.
     expect(step?.description).toContain('分型（管理员代填）');
     expect(step?.description).toContain('甲基化（管理员代填）');
-    // 分型 has a box; 甲基化 does not, and the two get opposite
-    // instructions rather than one that is half true.
+    // 分型 has a box on the patient's own form. 甲基化 does not, and is
+    // corrected on the report it was read from. Both routes are real
+    // and they are different, so the step names them separately rather
+    // than giving one instruction that is right for half the values.
     expect(step?.description).toContain('分型如果不对，你可以在「我的 → 编辑资料」里自己改');
-    expect(step?.description).toContain('App 里没有给你填甲基化的地方');
-    expect(step?.description).toContain('《隐私政策》第 1 条');
-    expect(step?.description).not.toContain('甲基化如果不对，你可以');
+    expect(step?.description).toContain('甲基化在「编辑资料」里没有这一栏');
+    expect(step?.description).toContain('识别有误？手动修正');
+  });
+
+  /**
+   * THE HALF WITH NO BOX GETS NO ADDRESS TO WRITE TO.
+   *
+   * 甲基化 is outside `ADMIN_WRITABLE_BASELINE_FIELDS`, so
+   * `applyAdminBaselineWrite` refuses both a write and a clear of it —
+   * the sibling test below runs that refusal rather than asserting it
+   * from a list. Nobody at this platform can type the value, so a
+   * sentence sending the patient to an inbox or a phone number asks
+   * them to request something no one here can perform, about a value a
+   * clinician is reading off the same page.
+   */
+  it('sends the patient to the correction that exists, not to the inbox or a re-upload', () => {
+    const step = buildClinicalPassportSummary(
+      base({
+        baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
+          'diseaseBackground.diagnosisType',
+          'diseaseBackground.methylation',
+        ]),
+      }),
+    ).nextSteps.find((item) => item.title === '补充基因检测报告');
+
+    // Not the inbox: nobody there can write this field, so the phone
+    // number was an answer that goes nowhere.
+    for (const route of ['找我们', '《隐私政策》第 1 条', '邮箱', '电话']) {
+      expect(step?.description).not.toContain(route);
+    }
+    // And not 「upload another report」 either. The value already came
+    // off a report the patient uploaded; what it needs is a correction
+    // to that report's reading, which 报告详情 offers by that name and
+    // ocrFieldsPatchSchema accepts for this field.
+    expect(step?.description).toContain('识别有误？手动修正');
+    expect(step?.description).not.toContain('重新上传');
+    // The marker is not offered along with it. The row in 字段来源 is
+    // written off the baseline field, which correcting a report's
+    // reading does not touch.
+    expect(step?.description).toContain('「字段来源」里已经记下的那一条会留在那里');
+  });
+
+  it('refuses the back-office write and the back-office clear of 甲基化', () => {
+    for (const next of [
+      { diseaseBackground: { methylation: '30%' } },
+      { diseaseBackground: { methylation: null } },
+    ]) {
+      expect(() =>
+        applyAdminBaselineWrite({ diseaseBackground: { methylation: '25%' } }, next, {
+          adminUserId: ADMIN_ID,
+          at: AT,
+        }),
+      ).toThrow('甲基化');
+    }
+  });
+
+  /**
+   * The upload the sentence above offers, carried out.
+   *
+   * `methylationFromReport` wins over the baseline, so the printed value
+   * and its bracket both change — and with the value no longer the
+   * patient's to correct by hand, the whole no-box sentence drops off
+   * the step. The 字段来源 row is written off the baseline field, which
+   * the upload leaves alone, so it stays exactly as the sentence says.
+   */
+  it('keeps the offer it makes: a report carrying 甲基化 changes the printed value', () => {
+    const summary = buildClinicalPassportSummary(
+      base({
+        baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
+          'diseaseBackground.diagnosisType',
+          'diseaseBackground.methylation',
+        ]),
+        documents: [geneticReport({ methylationValue: '31%' })],
+      } as never),
+    );
+
+    expect(summary.diagnosis.methylationValue).toBe('31%');
+    expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('report');
+
+    const step = summary.nextSteps.find((item) => item.title === '补充基因检测报告');
+    expect(step?.description).toContain('甲基化（报告读取）');
+    expect(step?.description).not.toContain('甲基化没有可以填的地方');
+
+    expect(summary.fieldOrigins.map((field) => field.labelZh)).toContain('甲基化');
   });
 
   it('says nothing about self-service when every marked value has a box', () => {

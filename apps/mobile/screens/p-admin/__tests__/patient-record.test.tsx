@@ -301,18 +301,60 @@ describe('a genetic result has no box, and the screen says why', () => {
     expect(rowFor(tree, 'D4Z4 重复数')).toContain('4/22');
 
     for (const label of GENETIC_LABELS) {
-      const row = rowFor(tree, label);
-      expect(row).toContain('基因结果进入这个系统只有一条路：患者上传的基因报告');
-      expect(row).toContain('要更正，请让患者上传报告');
       // Refused for being a measurement, not for being self-report.
       // Told a D4Z4 is 患者对自己身体的回答, an operator reading it off a
-      // laboratory report takes the refusal for a bug.
-      expect(row).not.toContain('这是患者对自己身体的回答');
+      // laboratory report takes the refusal for a bug. What each group
+      // says instead is pinned per group below.
+      expect(rowFor(tree, label)).not.toContain('这是患者对自己身体的回答');
     }
 
     // The patient-only fields keep their own reason, on their own rows.
     expect(rowFor(tree, '足下垂')).toContain('这是患者对自己身体的回答');
     expect(rowFor(tree, '足下垂')).not.toContain('基因报告');
+  });
+
+  it('sends the operator to the patient’s own form for the ones he can type', async () => {
+    // 分型 and D4Z4 have a box on p-register_profile, reached from
+    // 我的 → 编辑资料, and what the patient types there is what the PUT
+    // carries. A row that offers only 「让他上传报告」 sends an operator
+    // to re-upload a laboratory report for a value the patient could
+    // retype in a minute.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+
+    for (const label of ['FSHD 分型', 'D4Z4 重复数']) {
+      const row = rowFor(tree, label);
+      expect(row).toContain('编辑资料');
+      // Still no box HERE, and still for the reason it was refused: the
+      // number is a measurement, not something a phone call produces.
+      expect(row).toContain('这一项后台不能填');
+    }
+  });
+
+  it('routes the ones with no box to the correction that exists', async () => {
+    // 单倍型 and 甲基化 have no box on this screen and none on the
+    // patient's form, and the server refuses them from an
+    // administrator. But they are read off a report, and the patient
+    // can correct that reading himself — 报告详情 has a 手动修正 control
+    // and the server's editable-OCR allowlist takes both fields. So the
+    // row must not send the operator to promise a back-office fix, and
+    // must not send the patient to upload the report over again.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+
+    for (const label of ['单倍型', '甲基化']) {
+      const row = rowFor(tree, label);
+      expect(row).toContain('识别有误？手动修正');
+      // Says a re-upload is NOT needed. Asserting on the bare word would
+      // fail against the sentence that rules it out.
+      expect(row).toContain('不用让他重新上传');
+      expect(row).not.toContain('请他上传新的报告');
+      // The remedy that works for the other pair does not work here:
+      // pointing at 编辑资料 is pointing at a screen with no box.
+      expect(row).not.toContain('请他自己在编辑资料里改');
+    }
   });
 
   it('still shows a stored marker on a field it cannot type', async () => {
@@ -341,6 +383,82 @@ describe('a genetic result has no box, and the screen says why', () => {
     expect(screen).toContain('管理员代填');
     expect(screen).toContain('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(screen).toContain('4/22');
+  });
+});
+
+describe('an empty genetic row does not say the patient left it blank', () => {
+  /**
+   * This page shows the STORED column. The patient's own screens and
+   * the export do not — `applyGeneticReportAutofill` fills a missing
+   * genetic result out of his latest report on the way out. So a
+   * genetic field is routinely empty here and printed on his passport
+   * at the same time, and for 单倍型 and 甲基化, which nothing writes
+   * into the column, that is the ordinary case.
+   *
+   * 未填 is a claim about the patient. An operator reading it off this
+   * row tells him he never filled in a value he is looking at.
+   */
+  const missingGenetics = () =>
+    recordBody({
+      baseline: {
+        foundation: { fullName: '张三', birthYear: 1988 },
+        diseaseBackground: {},
+      },
+      documents: [
+        {
+          id: 'doc-1',
+          title: '基因检测报告',
+          documentType: 'genetic_report',
+          status: 'parsed',
+          uploadedAt: '2026-07-20T02:00:00.000Z',
+        },
+      ],
+    });
+
+  it('says the baseline has none, not that the patient filed none', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(missingGenetics()));
+    const tree = await render();
+
+    for (const label of ['FSHD 分型', 'D4Z4 重复数', '单倍型', '甲基化']) {
+      const row = rowFor(tree, label);
+      expect(row).toContain('基线里没有');
+      expect(row).not.toContain('未填');
+      // And where to look before saying anything to the patient.
+      expect(row).toContain('先看这一页的报告列表');
+    }
+  });
+
+  it('leaves 未填 on the answers the patient really did not give', async () => {
+    // Nothing fills in a self-report field behind the patient's back,
+    // so an empty one means what it says. Replacing 未填 everywhere
+    // would trade one false sentence for another.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(missingGenetics()));
+    const tree = await render();
+
+    expect(rowFor(tree, '足下垂')).toContain('未填');
+    expect(rowFor(tree, '足下垂')).not.toContain('基线里没有');
+  });
+
+  it('still prints a stored genetic value when the column has one', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+
+    const row = rowFor(tree, 'D4Z4 重复数');
+    expect(row).toContain('4/22');
+    // The empty-row note is about an empty row. On a filled one it
+    // reads as a warning against a value that is right there.
+    expect(row).not.toContain('基线里没有');
+  });
+
+  it('draws the 报告 list it tells the operator to look at', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(missingGenetics()));
+    const screen = textContent((await render()).root);
+
+    expect(screen).toContain('基因检测报告');
   });
 });
 

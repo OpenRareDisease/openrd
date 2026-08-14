@@ -57,8 +57,8 @@ import styles from './styles';
  * WHY THE FORM CAN REFUSE TO OPEN.
  *
  * The payload the patient app reads has been through
- * `applyGeneticReportAutofill`, which fills a missing D4Z4 or
- * diagnosis year out of the patient's latest genetic report at read
+ * `applyGeneticReportAutofill`, which fills a missing genetic result
+ * or diagnosis year out of the patient's latest genetic report at read
  * time. Editing on top of that merge and saving it would persist the
  * inferred diagnosis year into the column under an administrator's
  * name, and would send back genetic values nobody typed — which the
@@ -138,60 +138,127 @@ const EDITABLE_FIELDS: EditableField[] = [
 ];
 
 /**
- * Why a genetic result has no box, said to the operator standing in
- * front of the missing box.
+ * A read-only field's group: why it has no box here, and what an
+ * empty one means.
+ *
+ * `absent` exists because 未填 is a claim about the patient, and it is
+ * the wrong claim for a genetic result. See `GENETIC_ABSENT_NOTE`.
+ */
+interface ReadonlyGroup {
+  reason: string;
+  /** The value line when nothing is stored. `null` keeps 未填 — the
+   *  patient was asked and did not answer, which is what 未填 says. */
+  absent: string | null;
+  /** Printed under `absent`, when there is more to an empty row than
+   *  the value line can hold. */
+  absentNote?: string;
+}
+
+/**
+ * Why a genetic result has no box here, said to the operator standing
+ * in front of the missing box.
  *
  * The value they would type comes off a phone call or a photo, and
  * once it is in the column it is a number a clinical recommendation
- * reads — there is nothing left in it to say a person dictated it. So
- * the sentence names where such a value does come from instead of
- * only refusing.
+ * reads — there is nothing left in it to say a person dictated it.
+ * That refusal covers every genetic field alike, and one sentence
+ * would say it for all of them.
+ *
+ * THE REMEDY IS WHAT SPLITS THEM, and a remedy is what the operator
+ * came for. 分型 and D4Z4 have a box on the patient's own form, so the
+ * fix is a minute of his time on a screen he already has. 单倍型 and
+ * 甲基化 have a box nowhere — not here, not there — and a new report
+ * is the only thing that moves them. One sentence over both has to
+ * pick one of those remedies, and it is then wrong about the group it
+ * did not pick: it either sends an operator to re-upload a laboratory
+ * report for a value the patient could retype, or lets them offer a
+ * correction that nobody, this office included, can carry out.
  */
-const REPORT_ONLY_REASON =
-  '基因结果进入这个系统只有一条路：患者上传的基因报告。电话里听来、照片上认出来的数字，看着像化验结果但不是，所以这里没有输入框。要更正，请让患者上传报告。';
+const PATIENT_CAN_TYPE_IT_REASON =
+  '这一项后台不能填：电话里听来、照片上认出来的数字，看着像化验结果但不是。' +
+  '但不是没人能改——患者自己在「我的 → 编辑资料」里有这一项的输入框，上传基因报告也能带进来。' +
+  '要更正，通常请他自己在编辑资料里改最快。';
 
-/** Why a patient's answer about their own body has no box. */
-const SELF_REPORT_REASON = '这是患者对自己身体的回答，后台替他填等于替他自述。';
+const NOBODY_CAN_TYPE_IT_REASON =
+  '这一项后台没有输入框，患者的「我的 → 编辑资料」里也没有——它是从他上传的基因报告里读出来的。' +
+  '但读错了他自己能改：让他打开那份报告，点「识别有误？手动修正」，改完保存。' +
+  '不用让他重新上传一份。';
 
 /**
- * Shown but not editable here, each with the reason it is not.
+ * What an EMPTY genetic row means, which is not what 未填 means.
  *
- * `reason` is printed under the value, per field, because the two
- * reasons are different and a block heading covering both would leave
- * the operator to work out which one they are looking at. It is the
- * answer to 「为什么这里没有框」 given where the missing box is.
+ * This page shows the stored column. The patient's own screens and the
+ * export do not: `applyGeneticReportAutofill` fills a missing genetic
+ * result out of his latest genetic report on the way out of
+ * `getProfileByUserId` and `getBaselineByUserId`. So a genetic field
+ * can be empty here and printed on his passport at the same time —
+ * and for 单倍型 and 甲基化, where nothing writes the column, that is
+ * the ordinary case rather than the odd one.
  *
- * The value is formatted below; `reason` is the only prose.
+ * An operator reading 未填 off this row tells the patient he never
+ * filled it in, about a value he is looking at.
  */
-const READONLY_FIELDS: Array<{ path: string; label: string; reason: string }> = [
+const GENETIC_ABSENT_NOTE =
+  '这不代表患者那边也是空的：患者端和导出会用他最近一份基因报告里的值补上缺的基因结果，' +
+  '这一页只显示基线里存的那一份。所以别在电话里说「你没填」——先看这一页的报告列表。';
+
+const GENETIC_PATIENT_CAN_TYPE: ReadonlyGroup = {
+  reason: PATIENT_CAN_TYPE_IT_REASON,
+  absent: '基线里没有',
+  absentNote: GENETIC_ABSENT_NOTE,
+};
+
+const GENETIC_NOBODY_CAN_TYPE: ReadonlyGroup = {
+  reason: NOBODY_CAN_TYPE_IT_REASON,
+  absent: '基线里没有',
+  absentNote: GENETIC_ABSENT_NOTE,
+};
+
+/** Why a patient's answer about their own body has no box. An
+ *  unanswered one really is 未填: nothing else fills it in. */
+const SELF_REPORT: ReadonlyGroup = {
+  reason: '这是患者对自己身体的回答，后台替他填等于替他自述。',
+  absent: null,
+};
+
+/**
+ * Shown but not editable here, each with the group it belongs to.
+ *
+ * The group's `reason` is printed under the value, per field, rather
+ * than as a heading over the block: the reasons differ from row to
+ * row, and a heading covering them all leaves the operator to work out
+ * which one they are looking at. It is the answer to
+ * 「为什么这里没有框」 given where the missing box is.
+ */
+const READONLY_FIELDS: Array<{ path: string; label: string; group: ReadonlyGroup }> = [
   {
     path: 'diseaseBackground.diagnosisType',
     label: 'FSHD 分型',
-    reason: REPORT_ONLY_REASON,
+    group: GENETIC_PATIENT_CAN_TYPE,
   },
-  { path: 'diseaseBackground.d4z4', label: 'D4Z4 重复数', reason: REPORT_ONLY_REASON },
-  { path: 'diseaseBackground.haplotype', label: '单倍型', reason: REPORT_ONLY_REASON },
-  { path: 'diseaseBackground.methylation', label: '甲基化', reason: REPORT_ONLY_REASON },
-  { path: 'diseaseBackground.diagnosisLadder', label: '诊断进展', reason: SELF_REPORT_REASON },
+  { path: 'diseaseBackground.d4z4', label: 'D4Z4 重复数', group: GENETIC_PATIENT_CAN_TYPE },
+  { path: 'diseaseBackground.haplotype', label: '单倍型', group: GENETIC_NOBODY_CAN_TYPE },
+  { path: 'diseaseBackground.methylation', label: '甲基化', group: GENETIC_NOBODY_CAN_TYPE },
+  { path: 'diseaseBackground.diagnosisLadder', label: '诊断进展', group: SELF_REPORT },
   {
     path: 'currentStatus.independentlyAmbulatory',
     label: '独立行走',
-    reason: SELF_REPORT_REASON,
+    group: SELF_REPORT,
   },
-  { path: 'currentStatus.armRaiseDifficulty', label: '抬臂困难', reason: SELF_REPORT_REASON },
-  { path: 'currentStatus.facialWeakness', label: '面部无力', reason: SELF_REPORT_REASON },
-  { path: 'currentStatus.footDrop', label: '足下垂', reason: SELF_REPORT_REASON },
-  { path: 'currentStatus.breathingSymptoms', label: '呼吸症状', reason: SELF_REPORT_REASON },
-  { path: 'currentStatus.assistiveDevices', label: '辅具', reason: SELF_REPORT_REASON },
-  { path: 'currentChallenges.fatigue', label: '疲劳', reason: SELF_REPORT_REASON },
-  { path: 'currentChallenges.pain', label: '疼痛', reason: SELF_REPORT_REASON },
-  { path: 'currentChallenges.stairs', label: '上楼梯', reason: SELF_REPORT_REASON },
-  { path: 'currentChallenges.dressing', label: '穿衣', reason: SELF_REPORT_REASON },
-  { path: 'currentChallenges.reachingUp', label: '上举', reason: SELF_REPORT_REASON },
+  { path: 'currentStatus.armRaiseDifficulty', label: '抬臂困难', group: SELF_REPORT },
+  { path: 'currentStatus.facialWeakness', label: '面部无力', group: SELF_REPORT },
+  { path: 'currentStatus.footDrop', label: '足下垂', group: SELF_REPORT },
+  { path: 'currentStatus.breathingSymptoms', label: '呼吸症状', group: SELF_REPORT },
+  { path: 'currentStatus.assistiveDevices', label: '辅具', group: SELF_REPORT },
+  { path: 'currentChallenges.fatigue', label: '疲劳', group: SELF_REPORT },
+  { path: 'currentChallenges.pain', label: '疼痛', group: SELF_REPORT },
+  { path: 'currentChallenges.stairs', label: '上楼梯', group: SELF_REPORT },
+  { path: 'currentChallenges.dressing', label: '穿衣', group: SELF_REPORT },
+  { path: 'currentChallenges.reachingUp', label: '上举', group: SELF_REPORT },
   {
     path: 'currentChallenges.walkingStability',
     label: '行走稳定性',
-    reason: SELF_REPORT_REASON,
+    group: SELF_REPORT,
   },
 ];
 
@@ -235,6 +302,15 @@ const isEditableValue = (raw: unknown): boolean =>
   raw === undefined ||
   typeof raw === 'string' ||
   (typeof raw === 'number' && Number.isFinite(raw));
+
+/** Nothing is stored under this path. A blank string counts: it is
+ *  what a cleared box leaves behind, and printing it renders a row
+ *  with no value and no explanation of why. */
+const isAbsentValue = (raw: unknown): boolean =>
+  raw === null ||
+  raw === undefined ||
+  (typeof raw === 'string' && raw.trim() === '') ||
+  (Array.isArray(raw) && raw.length === 0);
 
 /** A read-only baseline value in words. Booleans become 是/否 rather
  *  than true/false, and an absent value is 未填 — never 否. */
@@ -291,12 +367,17 @@ const RecordLine = ({
   value,
   first,
   origin,
+  note,
   reason,
 }: {
   label: string;
   value: string;
   first?: boolean;
   origin?: AdminFieldOrigin;
+  /** What the value line means, when it does not mean the obvious
+   *  thing. Printed above `reason`: the operator's question about an
+   *  empty row is 「是空的吗」 before it is 「为什么没有框」. */
+  note?: string;
   reason?: string;
 }) => (
   <View style={[styles.stat, first ? null : styles.statDivider]}>
@@ -305,6 +386,7 @@ const RecordLine = ({
       {origin ? <AdminOriginChip origin={origin} /> : null}
     </View>
     <Text style={styles.stateText}>{value}</Text>
+    {note ? <Text style={styles.statDetail}>{note}</Text> : null}
     {reason ? <Text style={styles.statDetail}>{reason}</Text> : null}
     {origin ? <OriginNote origin={origin} /> : null}
   </View>
@@ -652,7 +734,7 @@ const AdminPatientRecordScreen = () => {
             title="这份基线不能在这里编辑"
             message={
               '服务端没有说明它给出的 baseline 是数据库里那一列本身。' +
-              '患者端读到的那份经过了基因报告自动补全（D4Z4、单倍型、确诊年份会从最近一份报告里补上），' +
+              '患者端读到的那份经过了基因报告自动补全（缺的基因结果和确诊年份会从最近一份报告里补上），' +
               '在那份上面改再存回去，等于把推断出来的值以管理员的名义写进库里。所以这里只读。'
             }
           />
@@ -717,16 +799,25 @@ const AdminPatientRecordScreen = () => {
         note="这些字段后台只能看。每一条下面写了它为什么不能在这里改。服务端也会拒绝：改动它们的请求会被 400 挡回来，并且会点名是哪几个字段——挡住它们的不是这一页没画输入框。"
         state="ready"
       >
-        {READONLY_FIELDS.map((field, index) => (
-          <RecordLine
-            key={field.path}
-            first={index === 0}
-            label={field.label}
-            value={formatReadonly(field.path, readPath(baseline, field.path))}
-            origin={originFor(field.path)}
-            reason={field.reason}
-          />
-        ))}
+        {READONLY_FIELDS.map((field, index) => {
+          const stored = readPath(baseline, field.path);
+          const absent = isAbsentValue(stored);
+          return (
+            <RecordLine
+              key={field.path}
+              first={index === 0}
+              label={field.label}
+              value={
+                absent && field.group.absent !== null
+                  ? field.group.absent
+                  : formatReadonly(field.path, stored)
+              }
+              note={absent ? field.group.absentNote : undefined}
+              origin={originFor(field.path)}
+              reason={field.group.reason}
+            />
+          );
+        })}
       </AdminBlock>
 
       <AdminBlock title="报告" state="ready">
@@ -849,8 +940,7 @@ const AdminPatientRecordScreen = () => {
               {/* What an operator has to have before handing one of
                   these to a hospital or a registry. */}
               <Text style={styles.blockNote}>
-                文件里的基线字段是患者端读到的那一份：缺的
-                D4Z4、单倍型、确诊年份会从他最近一份基因报告里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
+                文件里的基线字段是患者端读到的那一份：缺的基因结果和确诊年份会从他最近一份基因报告里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
               </Text>
               <Text style={styles.blockNote}>
                 三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。文件里的

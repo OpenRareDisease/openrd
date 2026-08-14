@@ -41,10 +41,22 @@ Two feature areas and the consent the second one obliges us to ask for.
   单倍型 and 甲基化 are laboratory results; read out over the phone and typed into a back
   office, what lands is a number that looks like laboratory data and is nobody's
   measurement, and it reads as one everywhere downstream — a clinical recommendation, a
-  registry export — with nothing in the value to say otherwise. They reach a baseline
-  from an uploaded report or from the patient's own registration form, and an
-  administrator sees them without being able to type them. The passport, the share page,
-  the PDF and the referral pack print a patient-entered one with 本人填写 beside it.
+  registry export — with nothing in the value to say otherwise. The back office draws no
+  box for them and the server refuses the write with a 400 that names the field —
+  clearing one counts as a change and is refused too.
+- **What that restricts is who may TYPE a genetic value, not where one comes from**, and
+  the fields split in two. 分型 and D4Z4 重复数 have a box on the patient's own 编辑资料
+  form as well as arriving from an uploaded genetic report; the report fills only a field
+  left empty, so a patient corrects a wrong one by retyping it, or empties the box to let
+  the report's reading take over. 单倍型 and 甲基化 arrive from an uploaded report and
+  nowhere else — no form anywhere draws them — so the only correction is a corrected
+  report and nobody can type one in on the patient's behalf. The passport brackets each
+  printed value with where it came from: 本人填写 where no report could have supplied it,
+  报告读取 where one did, 管理员代填 where our own staff typed it. The consequence is
+  recorded rather than papered over: once a value sits in the baseline no later report
+  replaces it, and the patient saving 编辑资料 posts back the 单倍型 and 甲基化 the form
+  had read — so a wrong one can reach a state nobody can correct. See the runbook's §3.4
+  before promising a patient a fix.
 - **Reads are audited, not just writes.** In a back office, 「谁看了谁的档案」 is the
   event that matters. The audit row is written _before_ the handler and a failed audit
   write is a 503 — an un-loggable read does not happen. The role cannot be self-granted

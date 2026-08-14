@@ -2134,10 +2134,24 @@ const PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH: Record<PassportDiagnosisValueKey, stri
  * patient's own PUT changes that leaf path, so the promise holds for
  * exactly the paths the 建档表单 posts — and that form
  * (apps/mobile/screens/p-register_profile) draws boxes for 分型, D4Z4
- * 重复数 and 确诊年份 and none for 甲基化 or 单倍型. No sequence of taps
- * puts 甲基化 in the changed set, so a patient sent to go fix it goes
- * looking for a control that is not there and comes back with the same
- * bracket still on the page a clinician reads.
+ * 重复数 and 确诊年份 and none for 甲基化 or 单倍型. The form spreads the
+ * baseline it loaded, so 甲基化 round-trips through a save untouched:
+ * no sequence of taps puts it in the changed set, and a patient sent to
+ * go fix it goes looking for a control that is not there and comes back
+ * with the same bracket still on the page a clinician reads.
+ *
+ * THE OTHER DESK IS NOT A FALLBACK. 甲基化 is not in
+ * `ADMIN_WRITABLE_BASELINE_FIELDS`, and `applyAdminBaselineWrite`
+ * refuses a write that changes it — a clear counts as a change, so the
+ * back office cannot empty the field either. Nobody at this platform
+ * can type this value, which makes 「找我们改」 a promise no one here is
+ * able to keep, made to a patient about their own record. What does
+ * move it is an uploaded report: the printed value takes
+ * `methylationFromReport` ahead of the baseline, so a report carrying
+ * 甲基化 changes both the number and its bracket. The marker on the
+ * baseline field survives that and keeps its row in 字段来源, so the
+ * sentence written for this half offers the upload and does not offer
+ * to lift the marker.
  *
  * A `Record` over every printed value, not a list of the false ones: a
  * value added to the diagnosis block fails the build until somebody has
@@ -2149,7 +2163,7 @@ const PATIENT_CAN_REWRITE_DIAGNOSIS_VALUE: Record<PassportDiagnosisValueKey, boo
   /** `diseaseBackground.d4z4` — 「D4Z4 重复数」 on the form. */
   d4z4Repeats: true,
   /** `diseaseBackground.methylation` — no control anywhere in the
-   *  patient's app. */
+   *  patient's app, and none in the back office either. */
   methylationValue: false,
   /** `foundation.diagnosisYear` — 「确诊年份」 on the form, and the field
    *  `upsertBaseline` mirrors into `patient_profiles.diagnosis_date`. */
@@ -2515,9 +2529,17 @@ export const buildClinicalPassportSummary = (
                   `${patientRewritableLabels.join('、')}如果不对，你可以在「我的 → 编辑资料」里自己改；改过之后那一项就记回你名下。`,
                 ]
               : []),
+            // The other half, and the reason it does not get an address
+            // to write to. No box in the patient's app, none in the back
+            // office, and `applyAdminBaselineWrite` refuses the write —
+            // so a sentence pointing at a phone number would send a
+            // patient to ask for something nobody on this side can do,
+            // about a value a clinician is reading. The one thing that
+            // does move it is offered instead, and the marker is
+            // described as staying because it does.
             ...(noPatientControlLabels.length > 0
               ? [
-                  `App 里没有给你填${noPatientControlLabels.join('、')}的地方 —— 在 App 内改不了，也去不掉来源标记；要改值或者去掉标记，请按《隐私政策》第 1 条里的邮箱或电话找我们。`,
+                  `${noPatientControlLabels.join('、')}在「编辑资料」里没有这一栏，本平台的后台也不能代填 —— 它是从你上传的基因报告里读出来的。读错了你自己能改：打开那份报告，点「识别有误？手动修正」，改完保存，护照就跟着改。「字段来源」里已经记下的那一条会留在那里。`,
                 ]
               : []),
             '上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。',
