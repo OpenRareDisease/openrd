@@ -592,11 +592,13 @@ export interface AdminPatientRecord {
    * `applyGeneticReportAutofill` at READ time, which fills a missing
    * D4Z4 / haplotype / diagnosis year out of the patient's latest
    * genetic report. Editing on top of that merge and PUTting it back
-   * would persist those inferred values into the column AND — because
-   * `applyAdminBaselineWrite` derives the changed set by diffing —
-   * stamp 管理员代填 on values no administrator typed. So this field
-   * has to be the column, and `readAdminPatientRecord` refuses a
-   * response that does not distinguish it (see `baselineIsStored`).
+   * would persist the inferred diagnosis year into the column and —
+   * because `applyAdminBaselineWrite` derives the changed set by
+   * diffing — stamp 管理员代填 on a value no administrator typed, while
+   * the genetic ones would come back as a 400 naming fields the
+   * operator never touched. So this field has to be the column, and
+   * `readAdminPatientRecord` refuses a response that does not
+   * distinguish it (see `baselineIsStored`).
    */
   baseline: BaselineProfilePayload | null;
   /**

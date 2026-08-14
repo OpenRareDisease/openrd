@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { locatorsIn } from './__fixtures__/reason-claims.js';
 import { classifyDiagnosisType, normaliseSource } from './export-source.js';
-import { applyAdminBaselineWrite } from '../baseline-provenance.js';
+import { applyAdminBaselineWrite, BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
 import { buildTreatNmdExport, type TreatNmdSection } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
@@ -335,16 +335,22 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
   const adminEditedProfile = (): PatientProfileDTO => {
     const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
     const disease = stored.diseaseBackground as Record<string, unknown>;
+    const marker = { source: 'admin_entered', adminUserId: ADMIN_ID, at: AT.toISOString() };
     return {
       ...EXPORT_FIXTURE_PROFILE,
-      baseline: applyAdminBaselineWrite(
-        stored,
-        {
-          ...stored,
-          diseaseBackground: { ...disease, diagnosisType: 'FSHD2', d4z4: '9 个重复单元' },
+      // // Written into the block by hand, and that is the fixture's point: the
+      // helper refuses every genetic path now, so this marker can no longer
+      // be created — but profiles written before that carry one, and an
+      // exporter that dropped it would be a silent regression against real
+      // stored data.
+      baseline: {
+        ...stored,
+        diseaseBackground: { ...disease, diagnosisType: 'FSHD2', d4z4: '9 个重复单元' },
+        [BASELINE_PROVENANCE_KEY]: {
+          'diseaseBackground.diagnosisType': marker,
+          'diseaseBackground.d4z4': marker,
         },
-        { adminUserId: ADMIN_ID, at: AT },
-      ),
+      },
     } as PatientProfileDTO;
   };
 

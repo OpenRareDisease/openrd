@@ -73,9 +73,8 @@ export const LEGAL_DOCUMENT_SECTIONS = {
  * against the incoming one and releases exactly the leaf paths that
  * differ. The patient's baseline reaches the server through
  * `updateMyBaseline`, and the form behind it copies
- * `foundation.preferredName`, `diseaseBackground.haplotype`,
- * `diseaseBackground.methylation` and `notes` forward from the stored
- * baseline verbatim, because it draws no control for any of them.
+ * `foundation.preferredName` and `notes` forward from the stored
+ * baseline verbatim, because it draws no control for either of them.
  * Those paths therefore cannot enter the changed set, however many
  * times the patient saves — so 「你自己再改一次那一个字段」 is not an
  * instruction they can carry out for them, and a re-consent screen
@@ -98,9 +97,10 @@ export const LEGAL_DOCUMENT_SECTIONS = {
  * keeps the clause true: while those two controls sit where they were
  * loaded, the stored value is carried forward untouched.
  *
- * `label` is the back office's own label for the field (`EDITABLE_FIELDS`
- * on the patient-record screen) and `path` is the leaf path the
- * server's `ADMIN_WRITABLE_BASELINE_FIELDS` admits.
+ * `path` is the leaf path the server's `ADMIN_WRITABLE_BASELINE_FIELDS`
+ * admits; `label` is what the server's `BASELINE_FIELD_LABELS_ZH` calls
+ * that path, which is also the label the back office draws its box with
+ * (`EDITABLE_FIELDS` on the patient-record screen).
  *
  * KEEPING IT IN STEP: __tests__/admin-filled-fields.test.tsx renders
  * the back office and the patient's form and fails when this list
@@ -108,7 +108,12 @@ export const LEGAL_DOCUMENT_SECTIONS = {
  * and this list omits, a field marked editable that the patient's save
  * cannot reach, one marked uneditable that the copy does not name, or
  * a save that releases a marker the patient never opened the control
- * for.
+ * for. Those are two screens; the boundary is neither of them.
+ * __tests__/admin-filled-fields-parity.test.ts reads
+ * `ADMIN_WRITABLE_BASELINE_FIELDS` out of the API source and fails when
+ * `path` here and the allowlist there disagree, so a field the server
+ * would refuse cannot go on being described to a patient as one an
+ * administrator may fill in.
  */
 export interface AdminFilledBaselineField {
   path: string;
@@ -125,10 +130,6 @@ export const ADMIN_FILLED_BASELINE_FIELDS: AdminFilledBaselineField[] = [
   { path: 'foundation.regionLabel', label: '所在地区', patientEditable: true },
   { path: 'foundation.birthYear', label: '出生年份', patientEditable: true },
   { path: 'foundation.diagnosisYear', label: '确诊年份', patientEditable: true },
-  { path: 'diseaseBackground.diagnosisType', label: 'FSHD 分型', patientEditable: true },
-  { path: 'diseaseBackground.d4z4', label: 'D4Z4 重复数', patientEditable: true },
-  { path: 'diseaseBackground.haplotype', label: '单倍型', patientEditable: false },
-  { path: 'diseaseBackground.methylation', label: '甲基化', patientEditable: false },
   { path: 'diseaseBackground.familyHistory', label: '家族史', patientEditable: true },
   { path: 'diseaseBackground.onsetRegion', label: '起病部位', patientEditable: true },
   { path: 'notes', label: '备注', patientEditable: false },
@@ -179,9 +180,9 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         // followups / falls / instruments。报告原件与 OCR 文本不在这个
         // 响应里（没有 storageUri，也没有 ocrPayload）。
         '管理员打开你的档案后能看到：你的手机号与账号信息、基线临床字段、随访事件、跌倒记录、量表结果，以及你上传的报告清单（标题、类型、状态、上传时间）。报告文件本身不在那个页面上。',
-        // ADMIN_WRITABLE_BASELINE_FIELDS（baseline-provenance.ts）是这
-        // 十二项；applyAdminBaselineWrite 对名单以外的改动直接 400。
-        '管理员可以代你填写十二项基线字段：姓名、称呼、地区、出生年份、确诊年份、分型、D4Z4、单倍型、甲基化、家族史、起病部位、备注。你对自己身体的那些回答——诊断进展、能不能独立行走、各项困难评分——后台只能看，服务端会拒绝代填。',
+        // ADMIN_WRITABLE_BASELINE_FIELDS（baseline-provenance.ts）就是这
+        // 份名单；applyAdminBaselineWrite 对名单以外的改动直接 400。
+        '管理员可以代你填写这些基线字段：姓名、称呼、所在地区、出生年份、确诊年份、家族史、起病部位、备注。你对自己身体的那些回答——诊断进展、能不能独立行走、各项困难评分——后台只能看，服务端会拒绝代填。',
         // §B3。标记随值一起存在 baseline_payload 里，护照与三种导出都
         // 单独列出来；patient 自己再写同一个字段时标记按字段移除 ——
         // 能被 p-register_profile 的 payload 写到的那些字段才行，见
@@ -222,7 +223,7 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         // 旧文本可在 git 里核对：HEAD~1 的 GUARDIAN_CONSENT_SECTIONS
         // 第 4 条写的是「我们的运维人员不会主动查阅具体患儿的报告」。
         '第 4 条以前写的是「我们的运维人员不会主动查阅具体患儿的报告」。管理员后台上线后这句话不再成立，我们把它改掉了，而不是留在那里。',
-        '管理员能看到的、能代填的十二项，与成年患者完全相同；患儿对自己身体的那些回答，后台只能看，服务端会拒绝代填。',
+        '管理员能看到的、能代填的字段，与成年患者完全相同；患儿对自己身体的那些回答，后台只能看，服务端会拒绝代填。',
         '代填过的字段会标成「管理员代填」；监护人在「我的 → 编辑资料」里自己再改一次那一个字段，标记就消失、回到监护人名下。' +
           ADMIN_FILLED_FIELDS_WITHOUT_PATIENT_INPUT +
           '这几项 App 里没有给监护人填的地方，改不了，也去不掉它们的标记，请按《隐私政策》第 1 条的邮箱或电话找我们。',

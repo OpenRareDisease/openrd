@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyAdminBaselineWrite } from './baseline-provenance.js';
+import { BASELINE_PROVENANCE_KEY } from './baseline-provenance.js';
 import { applyGeneticReportAutofill } from './profile.autofill.js';
 import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
@@ -213,21 +213,21 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
   });
 
   /**
-   * THE INVARIANT, AT THE FOUR STATES A REPEAT COUNT CAN REACH THIS
-   * PAGE IN.
+   * THE INVARIANT, AT EVERY STATE A REPEAT COUNT CAN REACH THIS PAGE
+   * IN.
    *
    * A value that was not read out of an uploaded report may be
    * displayed, with its origin beside it. It may never decide a
    * recommendation, a threshold, a guideline citation or a screening
-   * interval. Three of the four states below print a number this
-   * platform never read off a report, and one of them prints 3 — the
-   * middle of the range the guideline calls a large deletion. Only the
-   * fourth may earn 「问一次眼底检查」.
+   * interval. Every state below except the report's prints a number
+   * this platform never read off a report, and each of them prints 3 —
+   * the middle of the range the guideline calls a large deletion. Only
+   * the report's may earn 「问一次眼底检查」.
    *
-   * What each state must ALSO do is say so. Dropping the step in the
-   * first three would leave the page showing the number and silently
-   * withholding the one recommendation keyed to it, which a reader
-   * takes for 「不适用」.
+   * What each of the others must ALSO do is say so. Dropping the step
+   * would leave the page showing the number and silently withholding
+   * the one recommendation keyed to it, which a reader takes for
+   * 「不适用」.
    */
   describe('这个数是从哪来的，决定它能不能作数', () => {
     const SIZING_REPORT_AT = '2025-02-01T00:00:00.000Z';
@@ -246,18 +246,20 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
     const retinaStep = (profile: PatientProfileDTO) =>
       buildClinicalPassportSummary(profile).nextSteps.find((step) => step.title.includes('眼底'));
 
-    it('管理员转述的重复数：显示，带来源，但换不来眼底检查那一条', () => {
-      // Somebody read a report to us over the phone. Nobody here has
-      // opened it.
+    it('压着来源记录的重复数：显示，带来源，但换不来眼底检查那一条', () => {
+      // The count sits in the archive under a back-office marker, and
+      // nobody here has opened a report for it.
       const profile = base({
-        baseline: applyAdminBaselineWrite(
-          null,
-          { diseaseBackground: { d4z4: '3' } },
-          {
-            adminUserId: ADMIN_ID,
-            at: new Date('2026-05-01T00:00:00.000Z'),
+        baseline: {
+          diseaseBackground: { d4z4: '3' },
+          [BASELINE_PROVENANCE_KEY]: {
+            'diseaseBackground.d4z4': {
+              source: 'admin_entered',
+              adminUserId: ADMIN_ID,
+              at: '2026-05-01T00:00:00.000Z',
+            },
           },
-        ) as never,
+        } as never,
       });
       const summary = buildClinicalPassportSummary(profile);
 
@@ -272,6 +274,24 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       expect(step?.description).not.toContain('属于指南所说的大片段缺失');
       // Names what would change it.
       expect(step?.description).toContain('上传');
+      expect(step?.description).toContain('报告原件');
+    });
+
+    it('患者自己填进登记表的重复数：显示，标「本人填写」，同样换不来那一条', () => {
+      // The state the registration form actually produces: a number in
+      // the baseline, no document anywhere, so nothing for the read-time
+      // autofill to have copied it out of.
+      const profile = base({ baseline: { diseaseBackground: { d4z4: '3' } } as never });
+      const summary = buildClinicalPassportSummary(profile);
+
+      expect(summary.diagnosis.d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('patient');
+      expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+
+      const step = retinaStep(profile);
+      expect(step?.title).toBe('眼底检查这一条要看报告原件');
+      expect(step?.description).toContain('3（本人填写）');
+      expect(step?.description).not.toContain('属于指南所说的大片段缺失');
       expect(step?.description).toContain('报告原件');
     });
 

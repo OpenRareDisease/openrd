@@ -1599,13 +1599,19 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
   const AT = new Date('2026-08-13T04:11:07.912Z');
 
   /** What is actually on disk after an administrator filled two fields
-   *  in: the values plus the provenance block. */
+   *  in: the values plus the provenance block.
+   *
+   *  One of the two is 起病部位 rather than a genetic value. That is not
+   *  cosmetic: `applyAdminBaselineWrite` refuses every genetic path now,
+   *  so a fixture built on one would be asserting reclaim over a marker
+   *  the system can no longer produce. Reclaim is the same code for
+   *  every marked path, and this pair is reachable. */
   const storedWithTwoMarkers = () =>
     applyAdminBaselineWrite(
       { foundation: { fullName: '张三' }, currentChallenges: { pain: 2 } },
       {
         foundation: { fullName: '张三', regionLabel: '广东 深圳' },
-        diseaseBackground: { d4z4: '5 个重复单元' },
+        diseaseBackground: { onsetRegion: '面部' },
         currentChallenges: { pain: 2 },
       },
       { adminUserId: ADMIN_ID, at: AT },
@@ -1697,7 +1703,7 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
     await controller.updateMyBaseline(
       reqWith({
         foundation: { fullName: '张三', regionLabel: '广东 深圳' },
-        diseaseBackground: { d4z4: '5 个重复单元' },
+        diseaseBackground: { onsetRegion: '面部' },
         currentChallenges: { pain: 4 },
       }),
       fakeRes(),
@@ -1705,7 +1711,7 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
 
     const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
     expect(listBaselineFieldOrigins(written).map((row) => row.path)).toEqual([
-      'diseaseBackground.d4z4',
+      'diseaseBackground.onsetRegion',
       'foundation.regionLabel',
     ]);
   });
@@ -1715,7 +1721,7 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
     await controller.updateMyBaseline(
       reqWith({
         foundation: { fullName: '张三', regionLabel: '广东 佛山' },
-        diseaseBackground: { d4z4: '5 个重复单元' },
+        diseaseBackground: { onsetRegion: '面部' },
         currentChallenges: { pain: 2 },
       }),
       fakeRes(),
@@ -1725,7 +1731,7 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
     expect(readBaselineFieldOrigin(written, 'foundation.regionLabel')).toEqual({
       state: 'patient',
     });
-    expect(readBaselineFieldOrigin(written, 'diseaseBackground.d4z4')).toMatchObject({
+    expect(readBaselineFieldOrigin(written, 'diseaseBackground.onsetRegion')).toMatchObject({
       state: 'admin_entered',
       adminUserId: ADMIN_ID,
     });

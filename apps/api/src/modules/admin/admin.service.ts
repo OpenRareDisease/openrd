@@ -102,14 +102,17 @@ export interface AdminAccountDTO {
  * what §B3 protects:
  *
  *   * the administrator's form would be pre-filled with values that
- *     are not in the column, and PUTting it back would PERSIST those
- *     inferred values as though someone had entered them — after
- *     which correcting or deleting the report leaves the stale
+ *     are not in the column, and PUTting it back would PERSIST the
+ *     inferred diagnosis year as though someone had entered it —
+ *     after which correcting or deleting the report leaves the stale
  *     inference behind, attributed to the patient;
- *   * and `applyAdminBaselineWrite` derives the changed set by
- *     diffing, so an administrator who edited one unrelated field
- *     would be stamping 管理员代填 across every field the autofill had
- *     supplied.
+ *   * `applyAdminBaselineWrite` derives the changed set by diffing, so
+ *     an administrator who edited one unrelated field would be
+ *     stamping 管理员代填 across every field the autofill had supplied;
+ *   * and the genetic fields the merge supplies are not admin-writable
+ *     at all, so echoing them back is a refused write: an operator who
+ *     came to fix a 备注 would be told they may not fill in a D4Z4
+ *     they never typed. Asserted in admin.controller.test.ts.
  *
  * So the edit form and the provenance diff work off this, and the
  * response says so with `baselineIsStored`.

@@ -82,7 +82,7 @@ jest.mock('../../../contexts/LegalConsentContext', () => ({
 
 import { ApiError } from '../../../lib/api';
 import { LEGAL_DOCUMENTS } from '../../../lib/legal-content';
-import { buildConsentAsks } from '../../../lib/legal-updates';
+import { ADMIN_FILLED_BASELINE_FIELDS, buildConsentAsks } from '../../../lib/legal-updates';
 import LegalUpdateScreen from '../index';
 
 const textContent = (node: ReactTestInstance | string | number | null): string => {
@@ -160,6 +160,19 @@ describe('它告诉患者改的是什么，而不只是版本号变了', () => {
     expect(screen).toContain('你上次同意的是 2026-08-02 版，现在是 2026-08-13 版。');
     expect(screen).toContain('管理员代填');
     expect(screen).toContain('服务端会拒绝代填');
+  });
+
+  it('reads out every field the back office may fill in, on the card itself', async () => {
+    // The sentence a patient is being asked to consent to. Held on the
+    // rendered tree rather than on LEGAL_VERSION_NOTES, because what
+    // was consented to is what the screen put in front of them — and
+    // held against ADMIN_FILLED_BASELINE_FIELDS, which
+    // lib/__tests__/admin-filled-fields-parity.test.ts holds against
+    // the allowlist the server enforces. So the chain runs from
+    // `applyAdminBaselineWrite`'s 400 to this card with no hand-copied
+    // link in it.
+    const screen = textContent((await render()).root);
+    for (const field of ADMIN_FILLED_BASELINE_FIELDS) expect(screen).toContain(field.label);
   });
 
   it('keeps the full text one press away rather than on the page by default', async () => {

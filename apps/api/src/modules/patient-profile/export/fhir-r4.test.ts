@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
-import { applyAdminBaselineWrite } from '../baseline-provenance.js';
+import { applyAdminBaselineWrite, BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
 import { applyGeneticReportAutofill } from '../profile.autofill.js';
 import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
 import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
@@ -541,19 +541,35 @@ const adminEdited = (): Partial<PatientProfileDTO> => {
   const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
   const disease = stored.diseaseBackground as Record<string, unknown>;
   const foundation = stored.foundation as Record<string, unknown>;
+  // 确诊年份 goes through the real helper, because an administrator can
+  // still write it. The 分型 marker is written into the block by hand,
+  // and that is the point of the fixture rather than a shortcut:
+  // `applyAdminBaselineWrite` now refuses every genetic path, so this
+  // marker can no longer be created — but profiles written before that
+  // carry one, and an exporter that mishandled them would be shipping a
+  // silent regression against real stored data.
+  const withYear = applyAdminBaselineWrite(
+    stored,
+    { ...stored, foundation: { ...foundation, diagnosisYear: 2016 } },
+    {
+      adminUserId: '11111111-2222-3333-4444-555555555555',
+      at: new Date('2026-08-13T04:11:07.912Z'),
+    },
+  );
+  const block = withYear[BASELINE_PROVENANCE_KEY] as Record<string, unknown>;
   return {
-    baseline: applyAdminBaselineWrite(
-      stored,
-      {
-        ...stored,
-        foundation: { ...foundation, diagnosisYear: 2016 },
-        diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+    baseline: {
+      ...withYear,
+      diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+      [BASELINE_PROVENANCE_KEY]: {
+        ...block,
+        'diseaseBackground.diagnosisType': {
+          source: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-13T04:11:07.912Z',
+        },
       },
-      {
-        adminUserId: '11111111-2222-3333-4444-555555555555',
-        at: new Date('2026-08-13T04:11:07.912Z'),
-      },
-    ),
+    },
   };
 };
 

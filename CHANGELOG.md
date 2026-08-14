@@ -32,10 +32,19 @@ Two feature areas and the consent the second one obliges us to ask for.
   who typed what.** Provenance is stored per field, and only a write by our own staff
   records one — so an unmarked field means nobody here wrote it, which is not the same
   as the patient having typed it. Nothing is backfilled, so no
-  existing record is retroactively relabelled. Twelve fields are admin-writable,
-  deny-by-default, and every export format carries the origin through. The clinical
+  existing record is retroactively relabelled. What an administrator may write is
+  identity and history — 姓名, 称呼, 所在地区, 出生年份, 确诊年份, 家族史, 起病部位,
+  备注 — deny-by-default, and every export format carries the origin through. The clinical
   passport prints 基因确诊 / 自述 / 管理员代填 as different things because a neurologist
   reads them differently.
+- **No administrator can type a genetic value into a record.** FSHD 分型, D4Z4 重复数,
+  单倍型 and 甲基化 are laboratory results; read out over the phone and typed into a back
+  office, what lands is a number that looks like laboratory data and is nobody's
+  measurement, and it reads as one everywhere downstream — a clinical recommendation, a
+  registry export — with nothing in the value to say otherwise. They reach a baseline
+  from an uploaded report or from the patient's own registration form, and an
+  administrator sees them without being able to type them. The passport, the share page,
+  the PDF and the referral pack print a patient-entered one with 本人填写 beside it.
 - **Reads are audited, not just writes.** In a back office, 「谁看了谁的档案」 is the
   event that matters. The audit row is written _before_ the handler and a failed audit
   write is a 503 — an un-loggable read does not happen. The role cannot be self-granted
@@ -50,7 +59,7 @@ Two feature areas and the consent the second one obliges us to ask for.
 ### Fixes
 
 - 转诊资料 printed 「本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述与自测」 over an
-  administrator-entered diagnosis, four lines above that diagnosis's own date. The
+  administrator-entered 确诊年份, four lines above that diagnosis's own date. The
   four-state enum is now a `switch` with an exhaustiveness guard, so a fifth state fails
   typecheck instead of silently landing in the 「no record」 wording.
 - A patient clearing a baseline field that is also mirrored into a column of its own could

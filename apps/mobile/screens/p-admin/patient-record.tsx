@@ -59,10 +59,13 @@ import styles from './styles';
  * The payload the patient app reads has been through
  * `applyGeneticReportAutofill`, which fills a missing D4Z4 or
  * diagnosis year out of the patient's latest genetic report at read
- * time. Editing on top of that merge and saving it would persist
- * inferred values into the column under an administrator's name. So
- * the form only opens when the server states that what it sent is the
- * stored column (`baselineIsStored`), and says why when it does not.
+ * time. Editing on top of that merge and saving it would persist the
+ * inferred diagnosis year into the column under an administrator's
+ * name, and would send back genetic values nobody typed — which the
+ * server refuses outright, so an operator who came to fix a 备注 would
+ * be told they may not fill in a D4Z4. So the form only opens when the
+ * server states that what it sent is the stored column
+ * (`baselineIsStored`), and says why when it does not.
  */
 
 const YEAR_MIN = 1900;
@@ -87,9 +90,9 @@ interface EditableField {
    * happens without it: zod refuses the whole PUT with
    * `{error:'Validation failed'}`, the shared error handler filters the
    * per-field `details` out of the body, and the operator is told
-   * 「请求失败 / Validation failed」 with no idea which of twelve boxes
-   * is at fault. Year fields have no entry: they are bounded by value
-   * (1900..今年), not by length, and that check names its own field.
+   * 「请求失败 / Validation failed」 with no idea which box is at fault.
+   * Year fields have no entry: they are bounded by value (1900..今年),
+   * not by length, and that check names its own field.
    */
   maxLength?: number;
 }
@@ -97,13 +100,17 @@ interface EditableField {
 /**
  * What an administrator may type here, and why it is only this much.
  *
- * These are the fields that actually get transcribed off a phone call
- * or a photo of a discharge summary. The rest of the baseline —
- * 诊断阶梯, the 现状 booleans, the 困难 scores — is a form the patient
- * answers about their own body, and a back office filling those in
- * would be inventing self-report. They are shown further down, read
- * only, with that said on screen rather than left to be inferred from
- * a missing text box.
+ * Identity and history: what the person is called, where they live,
+ * which years they were born and diagnosed in, who else in the family
+ * has it, where the weakness started, and a free note. That is what
+ * actually gets transcribed off a phone call or a photo of a discharge
+ * summary, and it is the whole of what an operator is in a position to
+ * know second-hand.
+ *
+ * Nothing measured is here. The genetic results and the patient's
+ * answers about their own body are shown further down, read only, each
+ * with its own reason printed beside it rather than left to be
+ * inferred from a missing text box.
  *
  * THIS LIST IS A COPY, NOT THE BOUNDARY. `ADMIN_WRITABLE_BASELINE_FIELDS`
  * in apps/api/src/modules/patient-profile/baseline-provenance.ts is the
@@ -125,55 +132,67 @@ const EDITABLE_FIELDS: EditableField[] = [
   },
   { path: 'foundation.birthYear', label: '出生年份', hint: '四位数字', kind: 'year' },
   { path: 'foundation.diagnosisYear', label: '确诊年份', hint: '四位数字', kind: 'year' },
-  {
-    path: 'diseaseBackground.diagnosisType',
-    label: 'FSHD 分型',
-    hint: '例如：FSHD1',
-    kind: 'text',
-    maxLength: 40,
-  },
-  {
-    path: 'diseaseBackground.d4z4',
-    label: 'D4Z4 重复数',
-    hint: '例如：4/22',
-    kind: 'text',
-    maxLength: 80,
-  },
-  {
-    path: 'diseaseBackground.haplotype',
-    label: '单倍型',
-    hint: '例如：4qA',
-    kind: 'text',
-    maxLength: 40,
-  },
-  {
-    path: 'diseaseBackground.methylation',
-    label: '甲基化',
-    hint: '例如：12%',
-    kind: 'text',
-    maxLength: 80,
-  },
   { path: 'diseaseBackground.familyHistory', label: '家族史', kind: 'text', maxLength: 255 },
   { path: 'diseaseBackground.onsetRegion', label: '起病部位', kind: 'text', maxLength: 120 },
   { path: 'notes', label: '备注', kind: 'multiline', maxLength: 2000 },
 ];
 
-/** Shown but not editable here. Label only — the value is formatted
- *  below. */
-const READONLY_FIELDS: Array<{ path: string; label: string }> = [
-  { path: 'diseaseBackground.diagnosisLadder', label: '诊断进展' },
-  { path: 'currentStatus.independentlyAmbulatory', label: '独立行走' },
-  { path: 'currentStatus.armRaiseDifficulty', label: '抬臂困难' },
-  { path: 'currentStatus.facialWeakness', label: '面部无力' },
-  { path: 'currentStatus.footDrop', label: '足下垂' },
-  { path: 'currentStatus.breathingSymptoms', label: '呼吸症状' },
-  { path: 'currentStatus.assistiveDevices', label: '辅具' },
-  { path: 'currentChallenges.fatigue', label: '疲劳' },
-  { path: 'currentChallenges.pain', label: '疼痛' },
-  { path: 'currentChallenges.stairs', label: '上楼梯' },
-  { path: 'currentChallenges.dressing', label: '穿衣' },
-  { path: 'currentChallenges.reachingUp', label: '上举' },
-  { path: 'currentChallenges.walkingStability', label: '行走稳定性' },
+/**
+ * Why a genetic result has no box, said to the operator standing in
+ * front of the missing box.
+ *
+ * The value they would type comes off a phone call or a photo, and
+ * once it is in the column it is a number a clinical recommendation
+ * reads — there is nothing left in it to say a person dictated it. So
+ * the sentence names where such a value does come from instead of
+ * only refusing.
+ */
+const REPORT_ONLY_REASON =
+  '基因结果进入这个系统只有一条路：患者上传的基因报告。电话里听来、照片上认出来的数字，看着像化验结果但不是，所以这里没有输入框。要更正，请让患者上传报告。';
+
+/** Why a patient's answer about their own body has no box. */
+const SELF_REPORT_REASON = '这是患者对自己身体的回答，后台替他填等于替他自述。';
+
+/**
+ * Shown but not editable here, each with the reason it is not.
+ *
+ * `reason` is printed under the value, per field, because the two
+ * reasons are different and a block heading covering both would leave
+ * the operator to work out which one they are looking at. It is the
+ * answer to 「为什么这里没有框」 given where the missing box is.
+ *
+ * The value is formatted below; `reason` is the only prose.
+ */
+const READONLY_FIELDS: Array<{ path: string; label: string; reason: string }> = [
+  {
+    path: 'diseaseBackground.diagnosisType',
+    label: 'FSHD 分型',
+    reason: REPORT_ONLY_REASON,
+  },
+  { path: 'diseaseBackground.d4z4', label: 'D4Z4 重复数', reason: REPORT_ONLY_REASON },
+  { path: 'diseaseBackground.haplotype', label: '单倍型', reason: REPORT_ONLY_REASON },
+  { path: 'diseaseBackground.methylation', label: '甲基化', reason: REPORT_ONLY_REASON },
+  { path: 'diseaseBackground.diagnosisLadder', label: '诊断进展', reason: SELF_REPORT_REASON },
+  {
+    path: 'currentStatus.independentlyAmbulatory',
+    label: '独立行走',
+    reason: SELF_REPORT_REASON,
+  },
+  { path: 'currentStatus.armRaiseDifficulty', label: '抬臂困难', reason: SELF_REPORT_REASON },
+  { path: 'currentStatus.facialWeakness', label: '面部无力', reason: SELF_REPORT_REASON },
+  { path: 'currentStatus.footDrop', label: '足下垂', reason: SELF_REPORT_REASON },
+  { path: 'currentStatus.breathingSymptoms', label: '呼吸症状', reason: SELF_REPORT_REASON },
+  { path: 'currentStatus.assistiveDevices', label: '辅具', reason: SELF_REPORT_REASON },
+  { path: 'currentChallenges.fatigue', label: '疲劳', reason: SELF_REPORT_REASON },
+  { path: 'currentChallenges.pain', label: '疼痛', reason: SELF_REPORT_REASON },
+  { path: 'currentChallenges.stairs', label: '上楼梯', reason: SELF_REPORT_REASON },
+  { path: 'currentChallenges.dressing', label: '穿衣', reason: SELF_REPORT_REASON },
+  { path: 'currentChallenges.reachingUp', label: '上举', reason: SELF_REPORT_REASON },
+  {
+    path: 'currentChallenges.walkingStability',
+    label: '行走稳定性',
+    reason: SELF_REPORT_REASON,
+  },
 ];
 
 /**
@@ -257,18 +276,28 @@ const OriginNote = ({ origin }: { origin: AdminFieldOrigin }) => {
   return null;
 };
 
-/** A read-only label/value line, optionally carrying a provenance
- *  marker. */
+/**
+ * A read-only label/value line, optionally carrying a provenance
+ * marker and the reason the field has no box.
+ *
+ * When an origin is passed it brings `OriginNote` with it. A marked
+ * field must say who and when wherever it is shown — a field that is
+ * read-only here can still carry a marker from a profile written
+ * earlier, and showing the chip without the administrator behind it
+ * answers 「是不是本人填的」 without answering 「谁填的」.
+ */
 const RecordLine = ({
   label,
   value,
   first,
   origin,
+  reason,
 }: {
   label: string;
   value: string;
   first?: boolean;
   origin?: AdminFieldOrigin;
+  reason?: string;
 }) => (
   <View style={[styles.stat, first ? null : styles.statDivider]}>
     <View style={styles.fieldHead}>
@@ -276,6 +305,8 @@ const RecordLine = ({
       {origin ? <AdminOriginChip origin={origin} /> : null}
     </View>
     <Text style={styles.stateText}>{value}</Text>
+    {reason ? <Text style={styles.statDetail}>{reason}</Text> : null}
+    {origin ? <OriginNote origin={origin} /> : null}
   </View>
 );
 
@@ -683,7 +714,7 @@ const AdminPatientRecordScreen = () => {
 
       <AdminBlock
         title="其余基线字段（只读）"
-        note="这些是患者对自己身体的回答。后台代填它们等于替患者自述，所以这里只显示。服务端也会拒绝：改动这些字段的请求会被 400 挡回来，不是靠这一页没画输入框。"
+        note="这些字段后台只能看。每一条下面写了它为什么不能在这里改。服务端也会拒绝：改动它们的请求会被 400 挡回来，并且会点名是哪几个字段——挡住它们的不是这一页没画输入框。"
         state="ready"
       >
         {READONLY_FIELDS.map((field, index) => (
@@ -693,6 +724,7 @@ const AdminPatientRecordScreen = () => {
             label={field.label}
             value={formatReadonly(field.path, readPath(baseline, field.path))}
             origin={originFor(field.path)}
+            reason={field.reason}
           />
         ))}
       </AdminBlock>

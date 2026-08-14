@@ -4,7 +4,11 @@ import {
   LEGAL_EFFECTIVE_DATE,
   type LegalDocumentId,
 } from '../legal-content';
-import { LEGAL_VERSION_NOTES, buildConsentAsks } from '../legal-updates';
+import {
+  ADMIN_FILLED_BASELINE_FIELDS,
+  LEGAL_VERSION_NOTES,
+  buildConsentAsks,
+} from '../legal-updates';
 
 /**
  * The re-consent ask.
@@ -51,9 +55,11 @@ describe('每一个改过版本的文件都要说出改了什么', () => {
     expect(text).toContain('管理员');
     expect(text).toContain('管理员代填');
     expect(text).toContain('180 天');
-    // 十二项 by name — the same allowlist ADMIN_WRITABLE_BASELINE_FIELDS
-    // enforces server-side.
-    expect(text).toContain('D4Z4');
+    // Every writable field by name, rather than 「一部分字段」. The list
+    // is held to the allowlist the server enforces in
+    // admin-filled-fields-parity.test.ts, so this reads out to the
+    // patient exactly what applyAdminBaselineWrite would accept.
+    for (const field of ADMIN_FILLED_BASELINE_FIELDS) expect(text).toContain(field.label);
     // The thing a patient would most want to be told is refused.
     expect(text).toContain('服务端会拒绝代填');
   });

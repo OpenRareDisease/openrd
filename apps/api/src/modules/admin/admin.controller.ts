@@ -240,15 +240,16 @@ export class AdminController {
    * is not a simplification — it is the property going away:
    *
    * 0. The write is REFUSED, 400, if it changes any field outside
-   *    `ADMIN_WRITABLE_BASELINE_FIELDS` — the ladder, the 现状
-   *    booleans, the 困难 scores. `baselineProfileSchema` accepts the
-   *    whole baseline (it has to: the client sends the column back
-   *    whole), so before that refusal existed this endpoint would
-   *    happily stamp 管理员代填 on a patient's answer about their own
-   *    body, and the only thing withholding it was which text boxes
-   *    the back office drew. The refusal lives in
-   *    `applyAdminBaselineWrite`; the test that this ENDPOINT answers
-   *    400 for one is in admin.controller.test.ts.
+   *    `ADMIN_WRITABLE_BASELINE_FIELDS`: the patient's answers about
+   *    their own body — the ladder, the 现状 booleans, the 困难 scores
+   *    — and the genetic results, which are laboratory measurements
+   *    and not something a back office can be the source of.
+   *    `baselineProfileSchema` accepts the whole baseline (it has to:
+   *    the client sends the column back whole), so a body reaching
+   *    this endpoint says nothing about where it came from and every
+   *    field in it would otherwise be stamped 管理员代填. The refusal
+   *    lives in `applyAdminBaselineWrite`; the test that this ENDPOINT
+   *    answers 400 for one is in admin.controller.test.ts.
    *
    * 1. The body goes through `baselineProfileSchema`, a plain Zod
    *    object, so a caller that posts its own `fieldProvenance` block
@@ -453,27 +454,34 @@ export class AdminController {
    * document in as many words (「本导出中的绝大多数内容为患者自述或自评
    * ……每个条目的 provenanceZh 写明了来源」).
    *
-   * Every builder in `PORTABLE_EXPORT_FORMATS` carried it on 2026-08-13.
+   * Every builder in `PORTABLE_EXPORT_FORMATS` carried it on 2026-08-14.
    * Measured by calling `buildPortableExport` for each format on
    * `export/__fixtures__/profile.fixture.ts`'s profile with ONE
    * `fieldProvenance` entry added to its baseline, once per
    * `ADMIN_WRITABLE_BASELINE_FIELDS` path, and searching the serialised
    * document for `admin_entered`: present in every combination
-   * (treat-nmd 7,629 bytes, phenopacket 4,470, fhir-r4
-   * 15,540 for the `diseaseBackground.d4z4` case). Before that landed,
-   * this endpoint refused every marked profile — the refusal was
-   * written first and did not have to be taken out afterwards, which is
-   * the point of checking it this way.
+   * (treat-nmd 11,501 bytes, phenopacket 6,325, fhir-r4 19,228 for the
+   * `diseaseBackground.onsetRegion` case).
+   *
+   * A MARKER ON A PATH THE ALLOWLIST DOES NOT ADMIT SURVIVES THE SAME
+   * WAY. Nothing on this path consults the allowlist, and that is
+   * right: the allowlist governs what may be written, while a stored
+   * marker is a fact about a value that is in the column now. Dropping
+   * one would hand the document to a registry with a transcription in
+   * it and nothing saying so. Same measurement on 2026-08-14 with the
+   * entry keyed on `diseaseBackground.d4z4`: all three documents carry
+   * `admin_entered` (treat-nmd 11,624 bytes, phenopacket 6,322, fhir-r4
+   * 19,225).
    *
    * AN `unreadable` ENTRY IS CHECKED AGAINST A DIFFERENT WORD, because
    * the document says a different thing about it. Re-measuring the same
-   * way on 2026-08-13 with the d4z4 entry made unparseable (`{ source:
+   * way on 2026-08-14 with the entry made unparseable (`{ source:
    * 'admin_entered' }`, no `adminUserId`): no document contains
    * `admin_entered` — nothing was admin-entered — and every one of them
    * carries `"state":"unreadable"` on the envelope plus 「此项的来源
    * 记录读不出来（…），只能确定不是患者本人填写」 beside the value
-   * (treat-nmd 7,591 bytes, phenopacket 4,437, fhir-r4 15,507). Checking
-   * the states together therefore refused a document that WAS honest
+   * (treat-nmd 11,468 bytes, phenopacket 6,292, fhir-r4 19,195).
+   * Checking the states together would refuse a document that IS honest
    * about the field, in a sentence calling it 管理员代填 — which is the
    * one rendering baseline-provenance.ts says an `unreadable` entry must
    * never be given.

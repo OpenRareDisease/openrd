@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyAdminBaselineWrite } from './baseline-provenance.js';
+import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
 import {
   buildPassportSharePage,
   buildPickupFormPage,
@@ -375,6 +375,24 @@ const ADMIN_AT = new Date('2026-08-13T04:11:07.912Z');
  *  instead of passing them. */
 const adminEdited = (previous: Record<string, unknown>, next: Record<string, unknown>) =>
   applyAdminBaselineWrite(previous, next, { adminUserId: ADMIN_ID, at: ADMIN_AT });
+
+/** A baseline that already carries a back-office marker on the paths
+ *  named, written literally. `applyAdminBaselineWrite` refuses the
+ *  genetic paths, so a marker on one of them is what is on disk rather
+ *  than something a request can produce — and this page still has to
+ *  say who is on it. */
+const storedMarkers = (
+  baseline: Record<string, unknown>,
+  paths: readonly string[],
+): Record<string, unknown> => ({
+  ...baseline,
+  [BASELINE_PROVENANCE_KEY]: Object.fromEntries(
+    paths.map((path) => [
+      path,
+      { source: 'admin_entered', adminUserId: ADMIN_ID, at: ADMIN_AT.toISOString() },
+    ]),
+  ),
+});
 
 describe('诊断这一段：每一行印自己的来源，一行都不靠推断', () => {
   it('报告里只读到分型时，标「报告读取」，不是「本人填写」', () => {
@@ -798,25 +816,33 @@ describe('取件码失败页 —— 一种页面回答所有失败', () => {
 });
 
 /**
- * 后台代填的基因数值，在医生扫码打开的这一页上。
+ * 基线里的基因数值，在医生扫码打开的这一页上。
  *
  * 这一页的下半部分就是 §B3 那份 「这些字段不是患者本人填的」 清单，用的
  * 词是 「D4Z4 重复数」「甲基化」 —— 和上面那两行的标签一模一样。上面印
  * 「—」、下面点名同一个字段，是同一屏之内自相矛盾。
  */
 describe('基线里的基因数值印在分享页上', () => {
+  /** 三个基因数值上都压着后台的来源记录的那种档案。 */
   const genetics = (over: Partial<PatientProfileDTO> = {}) =>
     profile({
       diagnosisDate: '2019-01-01',
-      baseline: adminEdited(null as unknown as Record<string, unknown>, {
-        foundation: { diagnosisYear: 2019 },
-        diseaseBackground: {
-          d4z4: '6',
-          haplotype: '4qA',
-          methylation: '25%',
-          diagnosisType: 'FSHD1',
+      baseline: storedMarkers(
+        {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: {
+            d4z4: '6',
+            haplotype: '4qA',
+            methylation: '25%',
+            diagnosisType: 'FSHD1',
+          },
         },
-      }),
+        [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.methylation',
+          'diseaseBackground.diagnosisType',
+        ],
+      ),
       ...over,
     });
 
@@ -880,9 +906,10 @@ describe('基线里的基因数值印在分享页上', () => {
   it('横幅不把来源列成一张漏项的单子', () => {
     const html = rendered(
       profile({
-        baseline: adminEdited(null as unknown as Record<string, unknown>, {
-          diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' },
-        }),
+        baseline: storedMarkers({ diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.diagnosisType',
+        ]),
       }),
     );
 

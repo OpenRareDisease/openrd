@@ -29,10 +29,10 @@
  *     "foundation": { ... },
  *     "diseaseBackground": { ... },
  *     "fieldProvenance": {
- *       "foundation.fullName":      { "source": "admin_entered",
- *                                     "adminUserId": "<uuid>",
- *                                     "at": "2026-08-13T04:11:07.912Z" },
- *       "diseaseBackground.d4z4":   { ... }
+ *       "foundation.fullName":              { "source": "admin_entered",
+ *                                             "adminUserId": "<uuid>",
+ *                                             "at": "2026-08-13T04:11:07.912Z" },
+ *       "diseaseBackground.onsetRegion":    { ... }
  *     }
  *   }
  *
@@ -115,14 +115,23 @@
  *
  * `ADMIN_WRITABLE_BASELINE_FIELDS` below is an ALLOWLIST, and
  * `applyAdminBaselineWrite` REFUSES a write that changes anything
- * outside it. The rest of the baseline — the ladder, the 现状
- * booleans, the 困难 scores — is the patient's account of their own
- * body, and a back office filling those in is inventing self-report.
- * The privacy policy says so in §10（四）, and until this list existed
- * that sentence was enforced only by which text boxes a screen chose
- * to draw. A refusal is loud (HTTP 400 naming the field) rather than a
- * silent drop, because an administrator who typed something and was
- * told nothing would assume it landed.
+ * outside it. Two different things sit outside it, for two different
+ * reasons.
+ *
+ * The ladder, the 现状 booleans, the 困难 scores are the patient's
+ * account of their own body, and a back office filling those in is
+ * inventing self-report. The privacy policy says so in §10（四）.
+ *
+ * The genetic results — FSHD 分型, D4Z4 重复数, 单倍型, 甲基化 — are
+ * outside for the opposite reason: they are nobody's account of
+ * anything, they are measurements, and a measurement dictated over a
+ * phone call arrives here indistinguishable from one a laboratory
+ * produced. There is no marker strong enough to fix that downstream,
+ * because the number is what a clinical recommendation reads.
+ *
+ * A refusal is loud (HTTP 400 naming the field) rather than a silent
+ * drop, because an administrator who typed something and was told
+ * nothing would assume it landed.
  *
  *
  * WHAT CLEARING A FIELD MEANS
@@ -145,12 +154,26 @@ export const BASELINE_PROVENANCE_KEY = 'fieldProvenance';
 /**
  * The baseline fields an administrator may write, and the ONLY ones.
  *
- * These are what actually gets transcribed off a phone call or a photo
- * of a discharge summary. Deny-by-default is the point of the shape: a
+ * Every one of them is identity or history — what a person is called,
+ * where they live, which years they were born and diagnosed in, who
+ * else in the family has it, where the weakness started, and a free
+ * note. That is what an operator on a phone call is actually in a
+ * position to take down. Deny-by-default is the point of the shape: a
  * baseline field added next year is patient-only until someone adds it
  * here and changes the policy paragraph that enumerates this list.
  *
- * The back office renders text boxes for exactly these twelve
+ * NO MEASUREMENT IS ON THIS LIST, and the genetic ones are why the
+ * rule is worth stating rather than leaving to taste. FSHD 分型,
+ * D4Z4 重复数, 单倍型 and 甲基化 are laboratory results; read out over
+ * the phone and typed into a back office, what lands is a number that
+ * LOOKS like laboratory data and is nobody's measurement. It then
+ * reads as one everywhere downstream — a clinical recommendation, a
+ * registry export — with nothing in the value to say otherwise. So a
+ * genetic value gets into a baseline from an uploaded report
+ * (`applyGeneticReportAutofill` in profile.autofill.ts), and an
+ * administrator sees it without being able to type it.
+ *
+ * The back office renders text boxes for the fields on this list
  * (`EDITABLE_FIELDS` in apps/mobile/screens/p-admin/patient-record.tsx)
  * and §10（四）of the privacy policy enumerates them in Chinese. Those
  * two are copies for a reader; THIS one is the one that is enforced.
@@ -161,16 +184,33 @@ export const ADMIN_WRITABLE_BASELINE_FIELDS = [
   'foundation.regionLabel',
   'foundation.birthYear',
   'foundation.diagnosisYear',
-  'diseaseBackground.diagnosisType',
-  'diseaseBackground.d4z4',
-  'diseaseBackground.haplotype',
-  'diseaseBackground.methylation',
   'diseaseBackground.familyHistory',
   'diseaseBackground.onsetRegion',
   'notes',
 ] as const;
 
 const ADMIN_WRITABLE = new Set<string>(ADMIN_WRITABLE_BASELINE_FIELDS);
+
+/**
+ * The genetic results, kept apart from the rest of what an
+ * administrator may not write so the REFUSAL can tell the truth about
+ * which one it is refusing.
+ *
+ * One sentence over both would have to pick a reason, and the reasons
+ * are opposites: a 困难评分 is refused because it is the patient's
+ * account of themselves and ours to leave alone; a 甲基化 is refused
+ * because it is nobody's account of anything — it is a measurement,
+ * and the operator holding a phone is not where one comes from. An
+ * operator told 「这是患者对自己身体的回答」 about a D4Z4 they are
+ * reading off a laboratory report would reasonably conclude the
+ * refusal is a mistake.
+ */
+const GENETIC_BASELINE_FIELDS = new Set<string>([
+  'diseaseBackground.diagnosisType',
+  'diseaseBackground.d4z4',
+  'diseaseBackground.haplotype',
+  'diseaseBackground.methylation',
+]);
 
 /**
  * How a baseline field is named to a human — on the passport a
@@ -180,7 +220,10 @@ const ADMIN_WRITABLE = new Set<string>(ADMIN_WRITABLE_BASELINE_FIELDS);
  * Keyed on every path `baselineProfileSchema` accepts, not only the
  * admin-writable ones: `applyAdminBaselineWrite` renders its refusal
  * through this map, and a refused path is by construction outside the
- * allowlist.
+ * allowlist. The genetic paths are the ones to be careful with — they
+ * are the refusal an operator is most likely to meet, and 「管理员不能
+ * 代填 diseaseBackground.d4z4」 names nothing they can see on their own
+ * screen.
  *
  * A path with no label falls back to the dotted path itself rather
  * than to a guess: a marker on an unlabelled field still has to be
@@ -372,7 +415,8 @@ const changedLeafPaths = (previous: unknown, next: Record<string, unknown>): Set
  * source for nothing. See WHAT CLEARING A FIELD MEANS at the top.
  *
  * REFUSES, with a 400, a write that changes any field outside
- * `ADMIN_WRITABLE_BASELINE_FIELDS`. The refusal is what makes the
+ * `ADMIN_WRITABLE_BASELINE_FIELDS` — the patient's answers about their
+ * own body, and the genetic results. The refusal is what makes the
  * policy sentence 「你对自己身体的那些回答……后台只能看，不能替你填」
  * true of the server rather than of one screen's markup: the whole
  * `baselineProfileSchema` is accepted by the admin endpoint's body
@@ -408,9 +452,20 @@ export const applyAdminBaselineWrite = (
     // 400 is `isOperational` so the same handler does not log it
     // either. A machine-readable list attached here would reach no
     // client and no log — so every offending field is named in the
-    // sentence the operator actually sees.
+    // sentence the operator actually sees, under the reason that
+    // actually applies to it.
+    const names = (paths: string[]) => paths.map(baselineFieldLabelZh).join('、');
+    const genetic = refused.filter((path) => GENETIC_BASELINE_FIELDS.has(path));
+    const selfReported = refused.filter((path) => !GENETIC_BASELINE_FIELDS.has(path));
     throw new AppError(
-      `管理员不能代填这些字段：${refused.map(baselineFieldLabelZh).join('、')}。这些是患者对自己身体的回答，后台只能查看。`,
+      [
+        genetic.length > 0
+          ? `管理员不能代填这些基因结果：${names(genetic)}。基因结果只能来自患者上传的基因报告——电话里听来的数字存进去之后，和化验读出来的就分不出来了。`
+          : '',
+        selfReported.length > 0
+          ? `管理员不能代填这些字段：${names(selfReported)}。这些是患者对自己身体的回答，后台只能查看。`
+          : '',
+      ].join(''),
       400,
     );
   }
@@ -421,10 +476,10 @@ export const applyAdminBaselineWrite = (
       delete block[path];
       continue;
     }
-    // `path` is one of the twelve literals in
-    // ADMIN_WRITABLE_BASELINE_FIELDS — the refusal above returned for
-    // everything else — so this is the one assignment in the module
-    // that uses a dotted string as a key, and its key set is closed.
+    // `path` is one of the literals in ADMIN_WRITABLE_BASELINE_FIELDS
+    // — the refusal above returned for everything else — so this is the
+    // one assignment in the module that uses a dotted string as a key,
+    // and its key set is closed.
     block[path] = { source: 'admin_entered', adminUserId: by.adminUserId, at };
   }
 

@@ -339,24 +339,39 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
 });
 
 /**
- * 后台照着基因报告代填的数值，落在这张纸上。
+ * 基线里的基因数值，落在这张纸上。
  *
  * 拿着这张纸的是罕见病诊疗协作网的神经内科医生，他十秒钟之内没有办法
  * 跟患者核对任何一行。只读上传报告的话，这一节会同时印着 「结论：…… 本
  * 资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段」 和四行之下的 「D4Z4
- * 重复数：本平台管理员于 …… 代为录入」，而同一份档案的 TREAT-NMD 导出
- * 里带着 6 和 4qA —— 确诊 FSHD1 的那一对。国内能做长片段检测的中心只有
- * 几家，那句假话的代价是一次重测或一次错过的入组转诊。
+ * 重复数：—」，而同一份档案的 TREAT-NMD 导出里带着 6 和 4qA —— 确诊
+ * FSHD1 的那一对。国内能做长片段检测的中心只有几家，那句假话的代价是
+ * 一次重测或一次错过的入组转诊。
  */
-describe('后台代填的基因数值印在转诊资料上', () => {
+describe('基线里的基因数值印在转诊资料上', () => {
   const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
   const AT = new Date('2026-08-01T02:03:04.000Z');
 
-  const adminTypedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
+  /** 三个基因数值上都压着后台的来源记录。`applyAdminBaselineWrite` 不收
+   *  这几条路径，所以这个块是照着盘上的样子写死的 —— 而这张纸仍然要把
+   *  记录上的名字印出来。 */
+  const storedMarkers = (
+    baseline: Record<string, unknown>,
+    paths: readonly string[],
+  ): Record<string, unknown> => ({
+    ...baseline,
+    [BASELINE_PROVENANCE_KEY]: Object.fromEntries(
+      paths.map((path) => [
+        path,
+        { source: 'admin_entered', adminUserId: ADMIN_ID, at: AT.toISOString() },
+      ]),
+    ),
+  });
+
+  const markedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
     base({
       diagnosisDate: '2019-01-01',
-      baseline: applyAdminBaselineWrite(
-        null,
+      baseline: storedMarkers(
         {
           foundation: { diagnosisYear: 2019 },
           diseaseBackground: {
@@ -366,13 +381,17 @@ describe('后台代填的基因数值印在转诊资料上', () => {
             diagnosisType: 'FSHD1',
           },
         },
-        { adminUserId: ADMIN_ID, at: AT },
+        [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.methylation',
+          'diseaseBackground.diagnosisType',
+        ],
       ),
       ...over,
     } as Partial<PatientProfileDTO>);
 
   it('值印出来，每一行后面写着是谁填的', () => {
-    const result = pack(adminTypedGenetics());
+    const result = pack(markedGenetics());
 
     expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
     expect(result.markdown).toContain('- 甲基化：25%（管理员代填）');
@@ -381,9 +400,10 @@ describe('后台代填的基因数值印在转诊资料上', () => {
   });
 
   it('结论说的是没有报告可读，不是「这份资料里没有这个数」', () => {
-    const result = pack(adminTypedGenetics());
+    const result = pack(markedGenetics());
 
-    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    // `confirmation` 只看 确诊年份 那一个标记，这份档案上它没有。
+    expect(result.diagnosis.confirmation).toBe('self_reported');
     expect(result.diagnosis.statement).toContain('没有从基因报告里读出来的');
     expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
     // 这句话与三行之下的 「D4Z4 重复数：6（管理员代填）」 直接矛盾。
@@ -395,7 +415,7 @@ describe('后台代填的基因数值印在转诊资料上', () => {
    * 而值那一行印着 「—」，是同一页纸自己跟自己打架。
    */
   it('§B3 清单里点名的字段，上面都印着值', () => {
-    const result = pack(adminTypedGenetics());
+    const result = pack(markedGenetics());
     const section = result.markdown.split('## 二、')[0];
 
     expect(section).toContain('### 这些字段不是本人填写的');
@@ -423,7 +443,7 @@ describe('后台代填的基因数值印在转诊资料上', () => {
 
   it('报告里有数时印报告那个，标「报告读取」', () => {
     const result = pack(
-      adminTypedGenetics({
+      markedGenetics({
         documents: [geneticReport({ d4z4Repeats: '4' })],
       } as unknown as Partial<PatientProfileDTO>),
     );
@@ -447,11 +467,10 @@ describe('后台代填的基因数值印在转诊资料上', () => {
   it('给患者的提示不把来源列成一张漏项的单子', () => {
     const result = pack(
       base({
-        baseline: applyAdminBaselineWrite(
-          null,
-          { diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } },
-          { adminUserId: ADMIN_ID, at: AT },
-        ),
+        baseline: storedMarkers({ diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.d4z4',
+          'diseaseBackground.diagnosisType',
+        ]),
       } as Partial<PatientProfileDTO>),
     );
 
@@ -464,7 +483,7 @@ describe('后台代填的基因数值印在转诊资料上', () => {
 
   it('结论里的重复数只写报告读出来的那个', () => {
     const result = pack(
-      adminTypedGenetics({
+      markedGenetics({
         documents: [geneticReport({ haplotype: '4qA' })],
       } as unknown as Partial<PatientProfileDTO>),
     );
@@ -505,7 +524,7 @@ describe('第四种来源 — a value our own back office typed', () => {
         { foundation: { fullName: '张三' } },
         {
           foundation: { fullName: '张三', diagnosisYear: 2014 },
-          diseaseBackground: { diagnosisType: 'FSHD1' },
+          diseaseBackground: { familyHistory: '母亲也有类似症状' },
         },
         { adminUserId: ADMIN_ID, at: AT },
       ),
@@ -555,7 +574,11 @@ describe('第四种来源 — a value our own back office typed', () => {
 
     expect(result.markdown).toContain('### 这些字段不是本人填写的');
     expect(result.markdown).toContain('确诊年份');
-    expect(result.markdown).toContain('FSHD 分型');
+    // 家族史 has no row of its own anywhere in 一、诊断依据, so the list
+    // is the only place a reader meets it — which is the entry that
+    // would go missing if the section were derived from the printed
+    // rows instead of from the provenance block.
+    expect(result.markdown).toContain('家族史');
     expect(result.markdown).toContain(ADMIN_ID);
     expect(result.markdown).toContain(AT.toISOString());
 

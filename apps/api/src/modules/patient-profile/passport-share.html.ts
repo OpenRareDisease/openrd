@@ -90,11 +90,11 @@ const day = (value: string | null | undefined): string => {
  * report in the patient's hands.
  *
  * 「从基因报告里读出来的」 IS NOT PADDING. The 诊断信息 rows below can
- * carry a D4Z4 重复数 or a 甲基化 an administrator transcribed off a
- * phone call, each with 「管理员代填」 in brackets, and the bare 「没有可
- * 作确诊依据的基因结果」 would then sit above a number the clinician can
- * read. The qualifier is still a claim about this page and not about
- * the patient's other reports.
+ * carry a D4Z4 重复数 or a 甲基化 the patient typed into the
+ * registration form, each with its own source in brackets, and the bare
+ * 「没有可作确诊依据的基因结果」 would then sit above a number the
+ * clinician can read. The qualifier is still a claim about this page
+ * and not about the patient's other reports.
  */
 const CONFIRMATION_BANNER: Record<
   ClinicalPassportSummaryDTO['diagnosis']['confirmation'],
@@ -112,8 +112,9 @@ const CONFIRMATION_BANNER: Record<
   },
   // The fourth source (baseline-provenance.ts). The title names the
   // FIELD, because the field is all the marker covers: this state is
-  // derived from 确诊年份's provenance entry alone, and the block below
-  // holds values an administrator has no way to write.
+  // derived from 确诊年份's provenance entry alone, and the 分型, D4Z4
+  // 重复数 and 甲基化 rows below each carry their own source in their
+  // own bracket.
   admin_entered: {
     tone: 'warn',
     title: '未经基因确诊 —— 档案里的「确诊年份」由本平台工作人员代填',

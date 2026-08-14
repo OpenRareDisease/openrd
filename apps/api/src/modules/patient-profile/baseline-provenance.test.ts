@@ -69,10 +69,10 @@ describe('applyAdminBaselineWrite', () => {
 
     const changed = applyAdminBaselineWrite(
       baseline(),
-      baseline({ diseaseBackground: { d4z4: '5 个重复单元' } }),
+      baseline({ diseaseBackground: { onsetRegion: '肩带' } }),
       { adminUserId: ADMIN_ID, at: AT },
     );
-    expect(Object.keys(block(changed)!)).toEqual(['diseaseBackground.d4z4']);
+    expect(Object.keys(block(changed)!)).toEqual(['diseaseBackground.onsetRegion']);
   });
 
   it('does not mark a field it clears, because there is no value to attribute', () => {
@@ -151,6 +151,106 @@ describe('applyAdminBaselineWrite', () => {
         { adminUserId: ADMIN_ID, at: AT },
       ),
     ).toThrow(/诊断进展/);
+  });
+
+  it('refuses a write that changes a genetic result, and names it in Chinese', () => {
+    // A genetic result is a laboratory measurement. Dictated over a
+    // phone call it arrives here as a number that reads like one and is
+    // not, and nothing downstream can tell the difference. The operator
+    // has to be told which field they may not fill in, in the words
+    // their own screen uses for it.
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ diagnosisType: 'FSHD1' }, /FSHD 分型/],
+      [{ d4z4: '4/22' }, /D4Z4 重复数/],
+      [{ haplotype: '4qA' }, /单倍型/],
+      [{ methylation: '12%' }, /甲基化/],
+    ];
+    for (const [diseaseBackground, named] of cases) {
+      expect(() =>
+        applyAdminBaselineWrite(baseline(), baseline({ diseaseBackground }), {
+          adminUserId: ADMIN_ID,
+          at: AT,
+        }),
+      ).toThrow(named);
+    }
+
+    // And a genetic value the read-time autofill supplied, echoed back
+    // in an otherwise ordinary save, is refused the same way: the whole
+    // baseline goes on the wire, so this is what an administrator
+    // editing 备注 on an autofilled payload actually sends.
+    let thrown: unknown;
+    try {
+      applyAdminBaselineWrite(
+        baseline(),
+        baseline({ diseaseBackground: { d4z4: '4/22' }, notes: '电话里说的' }),
+        { adminUserId: ADMIN_ID, at: AT },
+      );
+    } catch (caught) {
+      thrown = caught;
+    }
+    expect((thrown as AppError).statusCode).toBe(400);
+    expect((thrown as AppError).message).toContain('D4Z4 重复数');
+    // The reason has to be the one that applies. An operator reading a
+    // laboratory report, told a D4Z4 is 「患者对自己身体的回答」, would
+    // take the refusal for a bug.
+    expect((thrown as AppError).message).not.toContain('患者对自己身体的回答');
+    expect((thrown as AppError).message).toContain('基因报告');
+  });
+
+  it('gives each refused field the reason that applies to it, in one message', () => {
+    let thrown: unknown;
+    try {
+      applyAdminBaselineWrite(
+        baseline(),
+        baseline({
+          diseaseBackground: { d4z4: '4/22' },
+          currentChallenges: { pain: 3 },
+        }),
+        { adminUserId: ADMIN_ID, at: AT },
+      );
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    const message = (thrown as AppError).message;
+    // Two refusals for two different reasons, and the operator has to
+    // be able to tell which field each reason is about.
+    expect(message).toMatch(/基因结果：D4Z4 重复数/);
+    expect(message).toMatch(/不能代填这些字段：疼痛/);
+  });
+
+  it('carries a stored marker forward on a field the allowlist does not admit', () => {
+    // Profiles carry such markers, and the value they describe is still
+    // in the column. An admin write that touches something else must
+    // neither refuse (nothing changed there) nor drop the entry (the
+    // value it describes is still there).
+    const previous = baseline({
+      diseaseBackground: { d4z4: '4/22' },
+      [BASELINE_PROVENANCE_KEY]: {
+        'diseaseBackground.d4z4': {
+          source: 'admin_entered',
+          adminUserId: ADMIN_ID,
+          at: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    });
+
+    const stored = applyAdminBaselineWrite(
+      previous,
+      baseline({ diseaseBackground: { d4z4: '4/22' }, notes: '电话里说的' }),
+      { adminUserId: OTHER_ADMIN_ID, at: AT },
+    );
+
+    expect(readBaselineFieldOrigin(stored, 'diseaseBackground.d4z4')).toEqual({
+      state: 'admin_entered',
+      adminUserId: ADMIN_ID,
+      at: '2026-01-01T00:00:00.000Z',
+    });
+    // And it is still in the list every §B3 surface renders from.
+    expect(listBaselineFieldOrigins(stored).map((row) => row.path)).toEqual([
+      'diseaseBackground.d4z4',
+      'notes',
+    ]);
   });
 
   it('refuses with a 400 and names every offending field, and writes nothing', () => {
@@ -284,6 +384,30 @@ describe('applyPatientBaselineWrite', () => {
     );
 
     expect(Object.keys(block(edited)!)).toEqual(['diseaseBackground.onsetRegion']);
+  });
+
+  it('releases a stored marker on a field the allowlist does not admit', () => {
+    // The way such a marker leaves. The patient's write has no
+    // allowlist — they answer for themselves — so a value they correct
+    // in their own app comes back to them, whatever the back office may
+    // type.
+    const marked = baseline({
+      diseaseBackground: { d4z4: '4/22' },
+      [BASELINE_PROVENANCE_KEY]: {
+        'diseaseBackground.d4z4': {
+          source: 'admin_entered',
+          adminUserId: ADMIN_ID,
+          at: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    });
+
+    const edited = applyPatientBaselineWrite(
+      marked,
+      baseline({ diseaseBackground: { d4z4: '3/22' } }),
+    );
+
+    expect(readBaselineFieldOrigin(edited, 'diseaseBackground.d4z4')).toEqual({ state: 'patient' });
   });
 
   it('releases a field whose whole section an older client did not send', () => {

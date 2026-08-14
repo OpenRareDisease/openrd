@@ -751,12 +751,9 @@ const collectMriDocuments = (documents: PatientDocumentDTO[]) => {
  * The three genetics answers a baseline can hold, trimmed, with empty
  * read as absent.
  *
- * These are the paths `ADMIN_WRITABLE_BASELINE_FIELDS` admits and the
- * paths the registration form posts, so a value here is either an
- * administrator's transcription of a report they were read over the
- * phone or the patient's own typing. WHICH of the two is not decided
- * here: it is the provenance marker's answer, and the passport asks
- * for it by path in `resolveValueOrigin`.
+ * These are paths the registration form posts. WHO a value here came
+ * from is not decided in this function: it is the provenance marker's
+ * answer, and the passport asks for it by path in `resolveValueOrigin`.
  *
  * Deliberately not `haplotype`: nothing on the passport family renders
  * a 单倍型 value, so reading one here would produce a string with no
@@ -818,15 +815,14 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   // slot that supplied it are built from the same expression here so
   // they cannot disagree.
   //
-  // THE BASELINE IS A SOURCE FOR 分型, D4Z4 重复数 and 甲基化. An
-  // administrator transcribing a genetic report over the phone writes
-  // `diseaseBackground.{diagnosisType,d4z4,methylation}`, and the
-  // patient's own registration form writes the same three paths. A
-  // renderer that read the report alone printed 「—」 for values this
-  // platform holds and sends out in the portable exports, on the same
-  // page whose 字段来源 list names those fields by their Chinese
-  // labels. Which source won is carried on the slot, so the bracket
-  // beside the number names it.
+  // THE BASELINE IS A SOURCE FOR 分型, D4Z4 重复数 and 甲基化. The
+  // patient's own registration form posts
+  // `diseaseBackground.{diagnosisType,d4z4,methylation}`. A renderer
+  // that reads the report alone prints 「—」 for values this platform
+  // holds and sends out in the portable exports, on the same page whose
+  // 字段来源 list names those fields by their Chinese labels. Which
+  // source won is carried on the slot, so the bracket beside the number
+  // names it.
   const disease = readBaselineDiseaseBackground(profile.baseline);
   const geneticTypeFromReport = geneticRecord.geneticType;
   const geneticTypeFromBaseline = geneticTypeFromReport ? null : disease.diagnosisType;
@@ -1452,12 +1448,11 @@ declare const REPORT_READ: unique symbol;
  * screening interval.
  *
  * The printed `d4z4Repeats` is a merged value — `buildReportInsights`
- * resolves it from a report OR from the baseline, where an
- * administrator's transcription of a report read out over the phone
- * lands beside the patient's own typing. Both are `string`, so nothing
- * but a rule in someone's head kept the merged one out of the branch
- * that tells a patient to go pay for a dilated fundus exam, and the
- * rule did not hold. The brand is that rule expressed as a type:
+ * resolves it from a report OR from the baseline, where a number the
+ * patient typed into the registration form lands. Both are `string`, so
+ * nothing but a rule in someone's head keeps the merged one out of the
+ * branch that tells a patient to go pay for a dilated fundus exam. The
+ * brand is that rule expressed as a type:
  * `buildGeneticRecord` is the only expression that mints one, out of an
  * uploaded document's OCR fields, so a future merge cannot be handed to
  * `isLargeD4Z4Deletion` without an `as` cast that shows up in a diff.
@@ -2141,8 +2136,8 @@ const PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH: Record<PassportDiagnosisValueKey, stri
  * (apps/mobile/screens/p-register_profile) draws boxes for 分型, D4Z4
  * 重复数 and 确诊年份 and none for 甲基化 or 单倍型. No sequence of taps
  * puts 甲基化 in the changed set, so a patient sent to go fix it goes
- * looking for a control that is not there and comes back with the
- * marker still on the page a clinician reads.
+ * looking for a control that is not there and comes back with the same
+ * bracket still on the page a clinician reads.
  *
  * A `Record` over every printed value, not a list of the false ones: a
  * value added to the diagnosis block fails the build until somebody has
@@ -2262,14 +2257,13 @@ export const buildClinicalPassportSummary = (
   // value in `valueOrigins` below rather than assumed here.
   //
   // READ OFF `geneticRecord`, NOT off the printed strings. Those
-  // strings also carry the baseline, where an administrator's
-  // transcription of a phoned-in report lands. Grading a transcription
-  // as 基因确诊 would put 「基因确诊」 on a referral pack over a number
-  // nobody at this platform has seen a report for — the one direction
-  // this whole record exists to prevent. `geneticRecord` reads
-  // document fields and nothing else, so this stays a claim about a
-  // report; who supplied the printed value is answered per value in
-  // `valueOrigins`.
+  // strings also carry the baseline, where a number the patient typed
+  // into the registration form lands. Grading that as 基因确诊 would put
+  // 「基因确诊」 on a referral pack over a number nobody at this platform
+  // has seen a report for — the one direction this whole record exists
+  // to prevent. `geneticRecord` reads document fields and nothing else,
+  // so this stays a claim about a report; who supplied the printed
+  // value is answered per value in `valueOrigins`.
   const geneticallyConfirmed =
     hasMeaningfulValue(reportInsights.geneticRecord.d4z4?.raw) ||
     hasMeaningfulValue(reportInsights.geneticRecord.haplotype) ||
@@ -2512,10 +2506,10 @@ export const buildClinicalPassportSummary = (
               : []),
             // 「你可以自己改」 is a claim about a text box, so it is
             // written about exactly the values that have one. 甲基化 is
-            // admin-writable and printed here and the patient's form
-            // draws no control for it, so the old single sentence sent
-            // its owner looking for a box that does not exist and left
-            // the marker standing on the page a clinician reads.
+            // printed here and the patient's form draws no control for
+            // it, so one sentence covering every value sends its owner
+            // looking for a box that does not exist and leaves the
+            // bracket standing on the page a clinician reads.
             ...(patientRewritableLabels.length > 0
               ? [
                   `${patientRewritableLabels.join('、')}如果不对，你可以在「我的 → 编辑资料」里自己改；改过之后那一项就记回你名下。`,
@@ -2625,9 +2619,9 @@ export const buildClinicalPassportSummary = (
     // clinician holding the printout.
     //
     // Fires on the count regardless of what it is: gating this on
-    // whether the transcribed number falls in 1–4 would put the
+    // whether the archived number falls in 1–4 would put the
     // guideline's classification back on the page, decided by the same
-    // untrusted value, with only the wording changed.
+    // unverified value, with only the wording changed.
     nextSteps.push({
       title: '眼底检查这一条要看报告原件',
       kind: 'clinical',

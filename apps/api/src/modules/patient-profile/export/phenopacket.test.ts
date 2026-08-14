@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
-import { applyAdminBaselineWrite } from '../baseline-provenance.js';
+import { BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -214,19 +214,25 @@ const adminEdited = (): Partial<PatientProfileDTO> => {
   const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
   const disease = stored.diseaseBackground as Record<string, unknown>;
   const foundation = stored.foundation as Record<string, unknown>;
+  const marker = {
+    source: 'admin_entered',
+    adminUserId: '11111111-2222-3333-4444-555555555555',
+    at: '2026-08-13T04:11:07.912Z',
+  };
+  // 确诊年份 stays reachable through the back office; the 分型 marker is
+  // written by hand because the helper refuses every genetic path now.
+  // Profiles written before that carry one, and an exporter that dropped
+  // it would be a silent regression against real stored data.
   return {
-    baseline: applyAdminBaselineWrite(
-      stored,
-      {
-        ...stored,
-        foundation: { ...foundation, diagnosisYear: 2016 },
-        diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+    baseline: {
+      ...stored,
+      foundation: { ...foundation, diagnosisYear: 2016 },
+      diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+      [BASELINE_PROVENANCE_KEY]: {
+        'foundation.diagnosisYear': marker,
+        'diseaseBackground.diagnosisType': marker,
       },
-      {
-        adminUserId: '11111111-2222-3333-4444-555555555555',
-        at: new Date('2026-08-13T04:11:07.912Z'),
-      },
-    ),
+    },
   };
 };
 

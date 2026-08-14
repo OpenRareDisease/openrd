@@ -12,6 +12,7 @@ import {
   USER_AGREEMENT_TEXT,
   GUARDIAN_CONSENT_SECTIONS,
 } from '../legal-content';
+import { ADMIN_FILLED_BASELINE_FIELDS } from '../legal-updates';
 
 /**
  * These are compliance assertions, not style ones. Each names a
@@ -141,7 +142,7 @@ describe('legal-content: the administrator back office (§10)', () => {
       'that the app itself lists the marked fields, not only the exports',
       '你的临床护照（App 里、导出的 PDF、以及你分享给医生的那个网页）会把这些字段单独列出来',
     ],
-    ['which twelve fields are writable', '一共这十二项'],
+    ['that the writable set is closed', '管理员只能编辑这些基线临床字段'],
     ['that the boundary is the server, not the form', '请求会被直接拒绝'],
     ['that reclaiming is per field', '是按字段算的'],
     ['that clearing leaves no marker', '清空，则不会留下「管理员代填」标记'],
@@ -154,6 +155,25 @@ describe('legal-content: the administrator back office (§10)', () => {
     ['how to ask who looked', '15 个工作日内答复'],
   ])('states %s', (_label, needle) => {
     expect(PRIVACY_POLICY_TEXT).toContain(needle);
+  });
+
+  it.each([
+    ['隐私政策 §10', () => PRIVACY_POLICY_SECTIONS, '10.'],
+    ['儿童规则 §4', () => GUARDIAN_CONSENT_SECTIONS, '4.'],
+  ])('%s names every field the back office may fill in', (_label, sections, prefix) => {
+    // An enumeration is the sentence that goes wrong quietly: a field
+    // joins ADMIN_FILLED_BASELINE_FIELDS — and with it the server's
+    // allowlist, which admin-filled-fields-parity.test.ts holds it to —
+    // while the paragraph that promises 「只有这些」 keeps the list it
+    // was written with. Held against the clause that makes the promise
+    // rather than the whole document, so a field named somewhere else
+    // (§3's inventory, §5's AI bullet) cannot stand in for it.
+    const section = sections().find((item) => item.title.startsWith(prefix));
+    if (!section)
+      throw new Error(`no section starting ${prefix} — this test's finder, not the app`);
+    for (const field of ADMIN_FILLED_BASELINE_FIELDS) {
+      expect(section.body).toContain(field.label);
+    }
   });
 
   it('does not tell a patient the exported file is the record page in another notation', () => {

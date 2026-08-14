@@ -377,9 +377,9 @@ describe('名单说患者能自己收回的，患者的表单上真的写得到'
    * A save that rebuilt them from the controls would post a value the
    * patient never entered, `applyPatientBaselineWrite` would count the
    * leaf path as changed, and the 「管理员代填」 marker would come off a
-   * field they never opened — on a save about 分型, or about nothing.
+   * field they never opened — on a save about 家族史, or about nothing.
    */
-  it('什么都没动的那一次保存，十二项一项都没被改写', async () => {
+  it('什么都没动的那一次保存，名单上的字段一项都没被改写', async () => {
     mockGetMyPatientProfile.mockResolvedValue(storedProfile());
 
     const tree = await render(<RegisterProfileScreen />);

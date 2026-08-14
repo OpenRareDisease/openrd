@@ -47,8 +47,8 @@ const AdminAuditBanner = () => (
  * The per-field part of a zod 400, if the body carried one.
  *
  * `ZodError.flatten()` keys `fieldErrors` by the FIRST path segment
- * only, so a `diseaseBackground.diagnosisType` that is too long arrives
- * as `{ diseaseBackground: ['String must contain at most 40
+ * only, so a `diseaseBackground.familyHistory` that is too long arrives
+ * as `{ diseaseBackground: ['String must contain at most 255
  * character(s)'] }` — the section, not the box, and in zod's English.
  * It is reproduced verbatim rather than translated or mapped onto this
  * screen's labels: a mapping would be a second copy of the schema, and
@@ -134,9 +134,10 @@ export const describeAdminError = (error: unknown): { title: string; message: st
       // 'Validation failed' from error-handler.ts, and puts the useful
       // part in `details` — which for a ZodError is `flatten()` sent
       // through UNFILTERED (the CLIENT_SAFE_DETAIL_KEYS projection only
-      // applies to AppError.details). So the breakdown is on the wire
-      // and nothing was reading it: the operator saw 「请求失败 /
-      // Validation failed」 with no idea which of twelve boxes to fix.
+      // applies to AppError.details). So the breakdown is on the wire,
+      // and reading it is the difference between naming a section to
+      // look in and telling the operator 「请求失败 / Validation failed」
+      // with every box a candidate.
       const detail = describeValidationDetails(error.data);
       if (detail) {
         return {

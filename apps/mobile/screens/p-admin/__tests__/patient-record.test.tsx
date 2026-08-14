@@ -93,6 +93,7 @@ jest.mock('../download', () => {
 });
 
 import AdminPatientRecordScreen from '../patient-record';
+import styles from '../styles';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -102,6 +103,26 @@ const textContent = (node: ReactTestInstance | string | number | null): string =
   const children = Array.isArray(node.children) ? node.children : [node.children];
   return children.map((child) => textContent(child as ReactTestInstance)).join('');
 };
+
+/**
+ * The text of ONE read-only field's row, so a per-field assertion
+ * cannot be satisfied by a sentence printed somewhere else on the
+ * page — which is the whole question here, since the two reasons a
+ * field can be read-only are both on this screen.
+ *
+ * Matched on `styles.stat`, the style `RecordLine` puts on its own
+ * root: text alone cannot separate a row from the block that contains
+ * it.
+ */
+const rowFor = (tree: TestRenderer.ReactTestRenderer, label: string): string =>
+  tree.root
+    .findAll(
+      (node) =>
+        Array.isArray(node.props?.style) &&
+        node.props.style.includes(styles.stat) &&
+        textContent(node).startsWith(label),
+    )
+    .map((node) => textContent(node))[0] ?? '';
 
 const flush = async () => {
   await Promise.resolve();
@@ -251,24 +272,100 @@ describe('provenance is rendered, not flattened', () => {
   });
 });
 
+describe('a genetic result has no box, and the screen says why', () => {
+  const GENETIC_LABELS = ['FSHD 分型', 'D4Z4 重复数', '单倍型', '甲基化'];
+
+  it('draws no text box for any of them', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+
+    const editable = tree.root
+      .findAll((node) => typeof node.props?.onChangeText === 'function')
+      .map((node) => String(node.props.accessibilityLabel ?? ''));
+    // The boxes an operator does get are there, so this is not passing
+    // on a screen that failed to render a form at all.
+    expect(editable.some((label) => label.startsWith('姓名'))).toBe(true);
+    for (const label of GENETIC_LABELS) {
+      expect(editable.some((candidate) => candidate.startsWith(label))).toBe(false);
+    }
+  });
+
+  it('shows the stored value and the reason it cannot be typed', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+
+    // Seeing the value is the point — an operator on the phone has to be
+    // able to read back what is on file.
+    expect(rowFor(tree, 'D4Z4 重复数')).toContain('4/22');
+
+    for (const label of GENETIC_LABELS) {
+      const row = rowFor(tree, label);
+      expect(row).toContain('基因结果进入这个系统只有一条路：患者上传的基因报告');
+      expect(row).toContain('要更正，请让患者上传报告');
+      // Refused for being a measurement, not for being self-report.
+      // Told a D4Z4 is 患者对自己身体的回答, an operator reading it off a
+      // laboratory report takes the refusal for a bug.
+      expect(row).not.toContain('这是患者对自己身体的回答');
+    }
+
+    // The patient-only fields keep their own reason, on their own rows.
+    expect(rowFor(tree, '足下垂')).toContain('这是患者对自己身体的回答');
+    expect(rowFor(tree, '足下垂')).not.toContain('基因报告');
+  });
+
+  it('still shows a stored marker on a field it cannot type', async () => {
+    // Such a profile exists. The value is in the column and the marker
+    // is on it, and the screen whose job is to mark it must go on
+    // marking it — with who and when, not just a chip.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(
+      actual.readAdminPatientRecord(
+        recordBody({
+          fieldOrigins: [
+            {
+              path: 'diseaseBackground.d4z4',
+              origin: {
+                state: 'admin_entered',
+                adminUserId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                at: '2026-08-13T04:11:07.912Z',
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const screen = textContent((await render()).root);
+
+    expect(screen).toContain('管理员代填');
+    expect(screen).toContain('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(screen).toContain('4/22');
+  });
+});
+
 describe('saving', () => {
   it('sends the whole baseline, not just the edited field', async () => {
     const actual = jest.requireActual('../../../lib/admin-api');
     mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
     const tree = await render();
 
-    await typeInto(tree, 'D4Z4 重复数', '3/22');
+    await typeInto(tree, '起病部位', '肩带');
     await pressByLabel(tree, '保存 1 处改动');
 
     expect(mockConfirm).toHaveBeenCalled();
     // The third argument is the version these boxes were filled from.
     // It becomes If-Match, and it is what lets the server refuse a
     // whole-baseline payload built before the patient's own edit.
+    //
+    // `d4z4` rides along untouched. It has no box on this screen, and
+    // it still has to be in the payload: `upsertBaseline` replaces the
+    // column, so leaving it out is an erase.
     expect(mockUpdateBaseline).toHaveBeenCalledWith(
       USER_ID,
       {
         foundation: { fullName: '张三', birthYear: 1988 },
-        diseaseBackground: { d4z4: '3/22' },
+        diseaseBackground: { d4z4: '4/22', onsetRegion: '肩带' },
       },
       '2026-08-01T02:00:00.000Z',
     );
@@ -308,7 +405,7 @@ describe('saving', () => {
     mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
     const tree = await render();
 
-    await typeInto(tree, 'D4Z4 重复数', '3/22');
+    await typeInto(tree, '起病部位', '肩带');
     await pressByLabel(tree, '保存 1 处改动');
 
     const message = String(mockConfirm.mock.calls.at(-1)?.[0]?.message ?? '');
@@ -419,7 +516,7 @@ describe('the save path reports the server\u2019s refusal, not a rewritten one',
     mockUpdateBaseline.mockRejectedValue(conflict);
 
     const tree = await render();
-    await typeInto(tree, 'D4Z4 重复数', '3/22');
+    await typeInto(tree, '起病部位', '肩带');
     await pressByLabel(tree, '保存 1 处改动');
 
     const screen = textContent(tree.root);
@@ -432,8 +529,8 @@ describe('the save path reports the server\u2019s refusal, not a rewritten one',
 describe('a value longer than the column takes', () => {
   it('names the field instead of sending a PUT that comes back Validation failed', async () => {
     const actual = jest.requireActual('../../../lib/admin-api');
-    // 41 characters against `nullableText(40)` on
-    // diseaseBackground.diagnosisType. Reachable in practice because a
+    // 121 characters against `nullableText(120)` on
+    // diseaseBackground.onsetRegion. Reachable in practice because a
     // value stored before that cap arrived is shown in full, and the
     // box's own maxLength does not shorten what is already there.
     mockGetRecord.mockResolvedValue(
@@ -441,18 +538,18 @@ describe('a value longer than the column takes', () => {
         recordBody({
           baseline: {
             foundation: { fullName: '张三' },
-            diseaseBackground: { diagnosisType: 'F'.repeat(41) },
+            diseaseBackground: { onsetRegion: '肩'.repeat(121) },
           },
         }),
       ),
     );
     const tree = await render();
-    await typeInto(tree, 'FSHD 分型', `${'F'.repeat(40)}X`);
+    await typeInto(tree, '起病部位', `${'肩'.repeat(120)}带`);
     await pressByLabel(tree, '保存 1 处改动');
 
     expect(mockUpdateBaseline).not.toHaveBeenCalled();
     const screen = textContent(tree.root);
-    expect(screen).toContain('「FSHD 分型」最多 40 个字，现在是 41 个');
+    expect(screen).toContain('「起病部位」最多 120 个字，现在是 121 个');
   });
 
   it('caps the box at the number the server accepts', async () => {
@@ -462,10 +559,10 @@ describe('a value longer than the column takes', () => {
     const box = tree.root.find(
       (node) =>
         typeof node.props?.accessibilityLabel === 'string' &&
-        String(node.props.accessibilityLabel).startsWith('FSHD 分型') &&
+        String(node.props.accessibilityLabel).startsWith('起病部位') &&
         typeof node.props?.onChangeText === 'function',
     );
-    expect(box.props.maxLength).toBe(40);
+    expect(box.props.maxLength).toBe(120);
   });
 });
 

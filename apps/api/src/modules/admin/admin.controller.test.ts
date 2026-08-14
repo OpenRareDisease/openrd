@@ -323,6 +323,110 @@ describe('AdminController.updatePatientBaseline', () => {
     expect(profiles.upsertBaseline).not.toHaveBeenCalled();
   });
 
+  it('refuses to write a genetic result, and names it the way the screen does', async () => {
+    // The case this endpoint exists to make impossible: a laboratory
+    // result dictated over a phone call, landing in the column as a
+    // number indistinguishable from one a laboratory produced. A
+    // clinical recommendation downstream reads the number, not the
+    // marker.
+    //
+    // The payload here is also what an ordinary save looks like when
+    // the form was filled from an autofilled read: the whole baseline
+    // goes back, so the genetic value the merge supplied is in the body
+    // even though the operator only touched 备注. The refusal has to
+    // name the field for them to have any idea what happened.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ foundation: { fullName: '张三' } }),
+      profiles,
+    });
+    const { res } = fakeResponse();
+
+    const refused = await controller
+      .updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: {
+            foundation: { fullName: '张三' },
+            diseaseBackground: {
+              diagnosisType: 'FSHD1',
+              d4z4: '4/22',
+              haplotype: '4qA',
+              methylation: '12%',
+            },
+            notes: '电话里说的',
+          },
+          method: 'PUT',
+        }),
+        res,
+      )
+      .then(
+        () => new Error('the write was accepted'),
+        (caught: unknown) => caught as Error,
+      );
+
+    expect(refused).toMatchObject({ statusCode: 400 });
+    expect(refused.message).toContain('FSHD 分型');
+    expect(refused.message).toContain('D4Z4 重复数');
+    expect(refused.message).toContain('单倍型');
+    expect(refused.message).toContain('甲基化');
+    expect(refused.message).not.toMatch(/[a-zA-Z]+\.[a-zA-Z]+/);
+    // 备注 was a legitimate edit in the same body and it does not land
+    // either — a refused write writes nothing.
+    expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stored marker on a field the allowlist does not admit', async () => {
+    // Profiles carry such markers, and the value they describe is still
+    // in the column. The §B3 list this endpoint answers with is what the
+    // back office renders its 管理员代填 chips from, so dropping the
+    // entry would turn an administrator's transcription into an unmarked
+    // value on the screen whose whole job is to mark it.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({
+        foundation: { fullName: '张三' },
+        diseaseBackground: { d4z4: '4/22' },
+        [BASELINE_PROVENANCE_KEY]: {
+          'diseaseBackground.d4z4': {
+            source: 'admin_entered',
+            adminUserId: ADMIN_ID,
+            at: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+      profiles,
+    });
+    const { res, captured } = fakeResponse();
+
+    await controller.updatePatientBaseline(
+      request({
+        params: { userId: PATIENT_ID },
+        body: {
+          foundation: { fullName: '张三丰' },
+          // Echoed back unchanged, which is not a write to it.
+          diseaseBackground: { d4z4: '4/22' },
+        },
+        method: 'PUT',
+      }),
+      res,
+    );
+
+    expect(captured.statusCode).toBe(200);
+    expect(block(writtenPayload(profiles))['diseaseBackground.d4z4']).toMatchObject({
+      adminUserId: ADMIN_ID,
+      at: '2026-01-01T00:00:00.000Z',
+    });
+    expect(captured.body).toMatchObject({
+      fieldOrigins: expect.arrayContaining([
+        expect.objectContaining({
+          path: 'diseaseBackground.d4z4',
+          origin: expect.objectContaining({ state: 'admin_entered' }),
+        }),
+      ]),
+    });
+  });
+
   it('still accepts the fields an administrator does transcribe', async () => {
     const profiles = profileWriter();
     const controller = makeController({
@@ -404,7 +508,7 @@ describe('AdminController.updatePatientBaseline', () => {
     // who never opened that box.
     const profiles = profileWriter();
     const controller = makeController({
-      admin: storedProfile({ diseaseBackground: { d4z4: '3/22' } }),
+      admin: storedProfile({ diseaseBackground: { onsetRegion: '肩带' } }),
       profiles,
     });
     const { res } = fakeResponse();
@@ -413,7 +517,7 @@ describe('AdminController.updatePatientBaseline', () => {
       controller.updatePatientBaseline(
         request({
           params: { userId: PATIENT_ID },
-          body: { diseaseBackground: { d4z4: '4/22' } },
+          body: { diseaseBackground: { onsetRegion: '面部' } },
           method: 'PUT',
           header: (name: string) =>
             name.toLowerCase() === 'if-match' ? '2026-08-12T00:00:00.000Z' : undefined,

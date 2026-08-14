@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyAdminBaselineWrite } from './baseline-provenance.js';
+import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
 import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 
@@ -69,6 +69,30 @@ const geneticReport = (fields: Record<string, string>) => ({
   checksum: null,
   submissionId: null,
   ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+});
+
+/**
+ * A baseline that already carries a back-office marker on the paths
+ * named, written literally rather than through
+ * `applyAdminBaselineWrite`.
+ *
+ * The helper refuses the genetic paths, so a marker on one of them is
+ * something on disk rather than something a request can be made to
+ * produce. The renderers still have to say who is on it, which is what
+ * the tests reached through here pin.
+ */
+const storedMarkers = (
+  baseline: Record<string, unknown>,
+  paths: readonly string[],
+  by: { adminUserId: string; at: Date },
+): Record<string, unknown> => ({
+  ...baseline,
+  [BASELINE_PROVENANCE_KEY]: Object.fromEntries(
+    paths.map((path) => [
+      path,
+      { source: 'admin_entered', adminUserId: by.adminUserId, at: by.at.toISOString() },
+    ]),
+  ),
 });
 
 describe('护照的诊断确认状态', () => {
@@ -148,6 +172,9 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
   const adminEdited = (previous: Record<string, unknown>, next: Record<string, unknown>) =>
     applyAdminBaselineWrite(previous, next, { adminUserId: ADMIN_ID, at: AT });
 
+  const stored = (baseline: Record<string, unknown>, paths: readonly string[]) =>
+    storedMarkers(baseline, paths, { adminUserId: ADMIN_ID, at: AT });
+
   const adminTypedDiagnosis = () =>
     base({
       // The column `upsertBaseline` mirrors `foundation.diagnosisYear`
@@ -157,7 +184,7 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
         { foundation: { fullName: '测试' } },
         {
           foundation: { fullName: '测试', diagnosisYear: 2014 },
-          diseaseBackground: { diagnosisType: 'FSHD1' },
+          diseaseBackground: { familyHistory: '母亲也有类似症状' },
         },
       ),
     });
@@ -198,8 +225,8 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
 
     expect(summary.fieldOrigins).toEqual([
       {
-        path: 'diseaseBackground.diagnosisType',
-        labelZh: 'FSHD 分型',
+        path: 'diseaseBackground.familyHistory',
+        labelZh: '家族史',
         state: 'admin_entered',
         adminUserId: ADMIN_ID,
         at: '2026-08-13T04:11:07.912Z',
@@ -215,10 +242,13 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
       },
     ]);
 
-    // §B3 again: 「不能只在 App 里区分而导出里抹平」.
+    // §B3 again: 「不能只在 App 里区分而导出里抹平」. 家族史 has no row
+    // in the diagnosis block, so the list is the only place it is named
+    // — which is the case that would go missing if the section were
+    // derived from the printed rows instead of from the block.
     const markdown = buildClinicalPassportExport(summary).markdown;
     expect(markdown).toContain('这些字段不是本人填写的');
-    expect(markdown).toContain('FSHD 分型');
+    expect(markdown).toContain('家族史');
     expect(markdown).toContain(ADMIN_ID);
   });
 
@@ -232,11 +262,12 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     expect(step?.description).not.toContain('由本人填写');
     expect(step?.description).toContain('诊断日期（管理员代填）');
     expect(step?.description).toContain('管理员代你录入');
-    // 分型 and 确诊年份 both have a box on 建档表单, so the promise is
-    // about them by name.
-    expect(step?.description).toContain(
-      '分型、诊断日期如果不对，你可以在「我的 → 编辑资料」里自己改',
-    );
+    // 确诊年份 has a box on 建档表单, so the promise names that value and
+    // nothing else. 家族史 is marked on this profile too and is not
+    // named: it has no row in the diagnosis block for the sentence to
+    // be about.
+    expect(step?.description).toContain('诊断日期如果不对，你可以在「我的 → 编辑资料」里自己改');
+    expect(step?.description).not.toContain('家族史');
   });
 
   /**
@@ -244,21 +275,21 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
    *
    * `applyPatientBaselineWrite` releases a marker when the patient's own
    * PUT changes that leaf path, so the promise holds only for the paths
-   * 建档表单 posts. 甲基化 is admin-writable, is printed in this block,
-   * and has no control anywhere in the patient's app — so the sentence
-   * that covered every marked value sent its owner hunting for a box
-   * that does not exist, and the marker stayed on the page a clinician
-   * reads.
+   * 建档表单 posts. 甲基化 is printed in this block and has no control
+   * anywhere in the patient's app, so a sentence covering every value
+   * sends its owner hunting for a box that does not exist and leaves
+   * the bracket on the page a clinician reads.
+   *
+   * Reached here through `stored`, because a marker on 甲基化 is a
+   * marker on disk rather than one this platform can be made to write.
    */
   it('does not promise self-service on a value the patient has no box for', () => {
     const step = buildClinicalPassportSummary(
       base({
-        baseline: adminEdited(
-          {},
-          {
-            diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' },
-          },
-        ),
+        baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
+          'diseaseBackground.diagnosisType',
+          'diseaseBackground.methylation',
+        ]),
       }),
     ).nextSteps.find((item) => item.title === '补充基因检测报告');
 
@@ -276,7 +307,9 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
   it('says nothing about self-service when every marked value has a box', () => {
     const step = buildClinicalPassportSummary(
       base({
-        baseline: adminEdited({}, { diseaseBackground: { diagnosisType: 'FSHD1' } }),
+        baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.diagnosisType',
+        ]),
       }),
     ).nextSteps.find((item) => item.title === '补充基因检测报告');
 
@@ -526,29 +559,34 @@ describe('每个诊断值自带来源', () => {
 /**
  * 基线里的基因数值 —— 报告之外的第二个来源。
  *
- * `diseaseBackground.{d4z4,methylation,diagnosisType}` 有两个写入方：
- * 后台（`ADMIN_WRITABLE_BASELINE_FIELDS` 收了这三条，运营照着患者电话里
- * 念的基因报告代填），和患者自己的登记表。这三个值都印在诊断证据这一节
- * 里，而这一节的下面就是 §B3 那份「这些字段不是本人填的」清单 —— 清单用
- * 的正是 「D4Z4 重复数」「甲基化」 这两个词。
+ * `diseaseBackground.{d4z4,methylation,diagnosisType}` 由患者自己的登记
+ * 表写入。这三个值都印在诊断证据这一节里，而这一节的下面就是 §B3 那份
+ * 「这些字段不是本人填的」清单 —— 清单用的正是 「D4Z4 重复数」「甲基化」
+ * 这两个词。
  *
- * 只读报告的话，同一页会同时写着 「D4Z4 重复数：—」 和 「D4Z4 重复数：本平台
- * 管理员代为录入」，而同一次调用生成的 TREAT-NMD 导出里带着 6 和 4qA ——
- * 确诊 FSHD1 的那一对。拿着转诊资料的神经内科医生据此判断要不要重测。
+ * 只读报告的话，同一页会同时写着 「D4Z4 重复数：—」 和一份带着 6 和 4qA
+ * 的 TREAT-NMD 导出 —— 确诊 FSHD1 的那一对，出自同一次调用。拿着转诊资
+ * 料的神经内科医生据此判断要不要重测。
  */
 describe('基线里的基因数值：印出来，并且印明是谁填的', () => {
   const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
   const AT = new Date('2026-08-01T02:03:04.000Z');
   const GENETICS = { d4z4: '6', haplotype: '4qA', methylation: '25%', diagnosisType: 'FSHD1' };
+  const GENETIC_PATHS = [
+    'diseaseBackground.d4z4',
+    'diseaseBackground.methylation',
+    'diseaseBackground.diagnosisType',
+  ];
 
-  /** 后台代填过基因数值、且一份报告都没传的档案。`diagnosisDate` 是
-   *  `upsertBaseline` 把 `foundation.diagnosisYear` 镜像进去的那一列。 */
-  const adminTypedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
+  /** 基线里三个基因数值上都压着后台的来源记录，一份报告都没传。
+   *  `diagnosisDate` 是 `upsertBaseline` 把 `foundation.diagnosisYear`
+   *  镜像进去的那一列。 */
+  const markedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
     base({
       diagnosisDate: '2019-01-01',
-      baseline: applyAdminBaselineWrite(
-        null,
+      baseline: storedMarkers(
         { foundation: { diagnosisYear: 2019 }, diseaseBackground: { ...GENETICS } },
+        GENETIC_PATHS,
         { adminUserId: ADMIN_ID, at: AT },
       ),
       ...over,
@@ -561,8 +599,8 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
       baseline: { foundation: { diagnosisYear: 2019 }, diseaseBackground: { ...GENETICS } },
     });
 
-  it('后台代填的数值印在护照上，每一个都带「管理员代填」', () => {
-    const summary = buildClinicalPassportSummary(adminTypedGenetics());
+  it('压着来源记录的数值印在护照上，每一个都带「管理员代填」', () => {
+    const summary = buildClinicalPassportSummary(markedGenetics());
 
     expect(summary.diagnosis.d4z4Repeats).toBe('6');
     expect(summary.diagnosis.methylationValue).toBe('25%');
@@ -579,13 +617,15 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
 
   /**
    * 印出来不等于升级成证据。`confirmation` 是证据等级，靠的是本平台从
-   * 上传的报告里读到的 D4Z4 / 单倍型 / EcoRI 片段；照着电话代填的数字不
-   * 是报告。这一条要是反了，转诊资料上会直接写「基因确诊」。
+   * 上传的报告里读到的 D4Z4 / 单倍型 / EcoRI 片段；档案里的一个数字不是
+   * 报告。这一条要是反了，转诊资料上会直接写「基因确诊」。
    */
   it('代填的数值不会把诊断升级成基因确诊', () => {
-    const summary = buildClinicalPassportSummary(adminTypedGenetics());
+    const summary = buildClinicalPassportSummary(markedGenetics());
 
-    expect(summary.diagnosis.confirmation).toBe('admin_entered');
+    // `confirmation` 只看 确诊年份 那一个标记，这份档案上它没有 —— 三个
+    // 基因值上的标记既不把这一档升上去，也不把它拉下来。
+    expect(summary.diagnosis.confirmation).toBe('self_reported');
     expect(summary.diagnosis.ready).toBe(false);
   });
 
@@ -601,7 +641,7 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
 
   it('报告和基线都有值时，印报告的那个，标「报告读取」', () => {
     const summary = buildClinicalPassportSummary(
-      adminTypedGenetics({
+      markedGenetics({
         documents: [geneticReport({ d4z4Repeats: '4', methylationValue: '10%' })],
       } as never),
     );
@@ -621,7 +661,7 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
    */
   it('报告只够确诊、数字来自基线时，数字仍标「管理员代填」', () => {
     const summary = buildClinicalPassportSummary(
-      adminTypedGenetics({ documents: [geneticReport({ haplotype: '4qA' })] } as never),
+      markedGenetics({ documents: [geneticReport({ haplotype: '4qA' })] } as never),
     );
 
     expect(summary.diagnosis.confirmation).toBe('genetic');
@@ -639,9 +679,9 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
     const summary = buildClinicalPassportSummary(
       base({
         geneticMutation: '我猜是 FSHD1',
-        baseline: applyAdminBaselineWrite(
-          null,
+        baseline: storedMarkers(
           { diseaseBackground: { diagnosisType: 'FSHD2' } },
+          ['diseaseBackground.diagnosisType'],
           { adminUserId: ADMIN_ID, at: AT },
         ),
         documents: [geneticReport({ d4z4Repeats: '4' })],
@@ -671,7 +711,7 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
 
   it('导出的 markdown 上，值和来源印在同一行', () => {
     const markdown = buildClinicalPassportExport(
-      buildClinicalPassportSummary(adminTypedGenetics()),
+      buildClinicalPassportSummary(markedGenetics()),
     ).markdown;
 
     expect(markdown).toContain('- D4Z4 重复数：6（管理员代填）');
@@ -684,12 +724,14 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
    * 打架了。这句话要说的一直是「没有从报告里读出来的证据」。
    */
   it('概览那句话说的是报告，不是「这页上没有这个数」', () => {
-    const card = buildClinicalPassportSummary(adminTypedGenetics()).summaryCards.find(
-      (item) => item.key === 'diagnosis',
-    );
+    for (const profile of [patientTypedGenetics(), markedGenetics()]) {
+      const card = buildClinicalPassportSummary(profile).summaryCards.find(
+        (item) => item.key === 'diagnosis',
+      );
 
-    expect(card?.summary).toContain('没有从基因报告里读出来的');
-    expect(card?.summary).not.toContain('本护照内没有 D4Z4 重复数');
+      expect(card?.summary).toContain('没有从基因报告里读出来的');
+      expect(card?.summary).not.toContain('本护照内没有 D4Z4 重复数');
+    }
   });
 });
 

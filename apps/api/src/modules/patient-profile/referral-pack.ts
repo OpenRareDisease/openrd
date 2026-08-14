@@ -399,11 +399,11 @@ const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
  * document holds and hands the reader the question to ask instead.
  *
  * WHAT IT DENIES IS A REPORT, NOT A VALUE. The rows below can print a
- * D4Z4 重复数 or a 甲基化 that an administrator transcribed off a phone
- * call, each carrying 「管理员代填」 in brackets, and the flat 「本资料里
- * 没有 D4Z4 重复数」 would then contradict a number three lines under
- * it — in front of the one reader who acts on the difference. Missing
- * is a report this platform read the value off, which is exactly what
+ * D4Z4 重复数 or a 甲基化 the patient typed into the registration form,
+ * each carrying its own source in brackets, and the flat 「本资料里没有
+ * D4Z4 重复数」 would then contradict a number three lines under it —
+ * in front of the one reader who acts on the difference. Missing is a
+ * report this platform read the value off, which is exactly what
  * `confirmation` grades.
  *
  * The wording is longer than the passport's because this reader can
@@ -463,10 +463,10 @@ const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisD
   // ONLY A REPORT'S NUMBER GOES INTO THE 结论. `confirmation` is
   // 'genetic' as soon as an uploaded report carries any one of D4Z4 /
   // 单倍型 / EcoRI 片段, and the printed 重复数 may have come from the
-  // baseline instead — an administrator's transcription. Setting that
-  // number after 「基因确诊；」 would hand it the report's authority
-  // without the bracket that says whose it is. The row below prints it
-  // either way, with its own source.
+  // baseline instead — the patient's own typing. Setting that number
+  // after 「基因确诊；」 would hand it the report's authority without the
+  // bracket that says whose it is. The row below prints it either way,
+  // with its own source.
   const repeats =
     diagnosis.valueOrigins.d4z4Repeats.kind === 'report' && hasText(diagnosis.d4z4Repeats)
       ? diagnosis.d4z4Repeats
@@ -903,7 +903,7 @@ export const buildReferralPack = (
     // Per value, because these four do not share one source: 分型 and
     // 诊断日期 each fall back to a profile column the patient may have
     // typed and the OCR autofill may have written, while D4Z4 and 甲基化
-    // come only off an uploaded report.
+    // come off an uploaded report or off the baseline behind it.
     `- 基因类型：${withValueOrigin(escapeMarkdown(diagnosis.geneticType), diagnosis.valueOrigins.geneticType)}`,
     `- D4Z4 重复数：${withValueOrigin(escapeMarkdown(diagnosis.d4z4Repeats), diagnosis.valueOrigins.d4z4Repeats)}`,
     `- 甲基化：${withValueOrigin(escapeMarkdown(diagnosis.methylationValue), diagnosis.valueOrigins.methylationValue)}`,
