@@ -1,4 +1,5 @@
 import {
+  buildReportInsights,
   getSystemPanelHeroMetrics,
   getSystemPanelSectionTabs,
   type SystemInsightPanel,
@@ -119,5 +120,39 @@ describe('report insights blood section tabs', () => {
     ]);
 
     expect(getSystemPanelHeroMetrics(panel, 'all', 'all')).toEqual([]);
+  });
+});
+
+describe('诊断与分型 面板不把档案里的分型说成报告读出来的', () => {
+  // The panel prints its summary directly under `latestDate`, which is
+  // the genetic report's upload date. `geneticType` falls back to
+  // `profile.geneticMutation` — free text the patient maintains — so
+  // without a marker that fallback reads as a value the report carried.
+  const geneticReport = (fields: Record<string, unknown>) => ({
+    id: 'doc-genetic',
+    documentType: 'genetic_report',
+    status: 'parsed',
+    uploadedAt: '2026-03-01T00:00:00.000Z',
+    ocrPayload: { fields },
+  });
+
+  const diagnosisPanel = (docs: unknown[], profile: unknown) =>
+    buildReportInsights(docs as never, profile as never).diagnosisPanel;
+
+  it('marks a 分型 that came from the profile column', () => {
+    const panel = diagnosisPanel([geneticReport({ d4z4Repeats: '4' })], {
+      geneticMutation: '我猜是 FSHD1',
+    });
+    expect(panel?.summary).toContain('我猜是 FSHD1');
+    expect(panel?.summary).toContain('不是这份报告读出来的');
+  });
+
+  it('does not mark a 分型 the report itself carried', () => {
+    const panel = diagnosisPanel([geneticReport({ diagnosisType: 'FSHD1', d4z4Repeats: '4' })], {
+      geneticMutation: '我猜是 FSHD2',
+    });
+    expect(panel?.summary).toContain('FSHD1');
+    expect(panel?.summary).not.toContain('FSHD2');
+    expect(panel?.summary).not.toContain('不是这份报告读出来的');
   });
 });

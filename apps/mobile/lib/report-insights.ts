@@ -585,15 +585,26 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
   ]);
 
   const geneticFields = latestGenetic?.ocrPayload?.fields ?? fallbackGeneticDoc?.ocrPayload?.fields;
-  const geneticType =
-    pickField(geneticFields, [
-      'diagnosisType',
-      'geneticType',
-      'geneType',
-      'diagnosis_type',
-      'genetic_type',
-    ]) ||
-    (profile?.geneticMutation ?? undefined);
+  const geneticTypeFromReport = pickField(geneticFields, [
+    'diagnosisType',
+    'geneticType',
+    'geneType',
+    'diagnosis_type',
+    'genetic_type',
+  ]);
+  // Which side of the fallback won, kept rather than discarded. The
+  // 诊断与分型 panel prints its summary directly under that panel's
+  // `latestDate`, which is the genetic report's upload date — so a
+  // 分型 the patient typed into their profile would appear to have been
+  // read off that report. `profile.geneticMutation` is free text the
+  // patient maintains, and `applyGeneticReportAutofill` can also fill
+  // it from OCR without recording that it did, so 「came from the
+  // column」 is not the same claim as 「the patient typed it」 and this
+  // says only the first.
+  const geneticTypeFromProfile = geneticTypeFromReport
+    ? undefined
+    : (profile?.geneticMutation ?? undefined);
+  const geneticType = geneticTypeFromReport || geneticTypeFromProfile;
   const haplotype = pickField(geneticFields, ['haplotype', 'haplotype4q', 'haplotype_4q']);
   const ecoRIFragment = pickField(geneticFields, [
     'ecoRIFragment',
@@ -1052,7 +1063,14 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
   const diagnosisPanel: ReportInsightPanel = {
     key: 'diagnosis',
     title: '诊断与分型',
-    summary: compactText(geneEvidence || geneticType, '暂无可直接展示的诊断证据'),
+    summary: compactText(
+      geneEvidence
+        ? geneticTypeFromProfile
+          ? `${geneEvidence}（分型来自档案，不是这份报告读出来的）`
+          : geneEvidence
+        : geneticType,
+      '暂无可直接展示的诊断证据',
+    ),
     latestDate: formatDate(latestGenetic?.uploadedAt ?? null) ?? '—',
     metrics: diagnosisPanelMetrics,
   };
