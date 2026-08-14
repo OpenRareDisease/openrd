@@ -85,6 +85,7 @@ const TOKEN = 'lJ8Qm3Zt7bF0xR2cN6vY1sK4hW9dA5pG-eU_TnC8oI0';
 const summary = {
   patientName: '张三',
   generatedAt: '2026-08-05T00:00:00Z',
+  fieldOrigins: [],
   diagnosis: {
     confirmation: 'self_reported' as const,
     geneticType: 'FSHD1',

@@ -73,6 +73,15 @@ const CONFIRMATION_BANNER: Record<
     title: '未经基因确诊 —— 以下诊断为患者本人填写',
     body: '本平台尚未收到该患者的基因检测报告。下面的分型和日期是患者自己在应用里填的，不构成诊断依据。FSHD 的误诊率很高，请勿据此锚定。',
   },
+  // The fourth source (baseline-provenance.ts). It says 不是患者本人填写
+  // in the title rather than only in the body, because the whole risk
+  // is a reader who takes 「本人填写」 as 「the patient told us this」 and
+  // then treats our staff's transcription as the patient's own account.
+  admin_entered: {
+    tone: 'warn',
+    title: '未经基因确诊 —— 以下诊断由本平台工作人员代填，不是患者本人填写',
+    body: '本平台尚未收到该患者的基因检测报告。下面的诊断信息是本平台管理员根据患者的电话或消息代为录入的转述，患者本人可能没有看过这段文字，也没有核对过。它既不是检测结果，也不是患者的自述原话。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
+  },
   none: {
     tone: 'warn',
     title: '本平台尚无诊断依据记录',
@@ -94,13 +103,35 @@ export const buildPassportSharePage = (
     pairs.map(([k, v]) => `<div class="row"><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('');
 
   /** A diagnosis field that may have been typed rather than extracted.
-   *  Marked at the value, not only in the banner above it. */
+   *  Marked at the value, not only in the banner above it — and marked
+   *  with WHICH of the two typists, because 「本人填写」 over a value the
+   *  patient never saw is the one sentence this page must not print. */
   const selfReported = (field: 'geneticType' | 'diagnosisDate'): string => {
     const value = dash(summary.diagnosis[field]);
     if (value === '—') return value;
     if (summary.diagnosis.confirmation === 'genetic') return value;
-    return `<span class="reported">${value}（本人填写）</span>`;
+    const who = summary.diagnosis.confirmation === 'admin_entered' ? '管理员代填' : '本人填写';
+    return `<span class="reported">${value}（${who}）</span>`;
   };
+
+  /** §B3 in the document a clinician reads: every baseline field on
+   *  this page that somebody other than the patient entered, named,
+   *  with when. Rendered only when there is something to render — an
+   *  empty section reading 「无」 would train readers to skip the
+   *  heading. */
+  const origins = summary.fieldOrigins
+    .map(
+      (origin) => `
+      <li>
+        <strong>${esc(origin.labelZh)}</strong>
+        <span>${
+          origin.state === 'admin_entered'
+            ? `本平台管理员于 ${day(origin.at)} 代为录入，不是患者本人填写。`
+            : `这一项的来源记录读不出来（${esc(origin.detail ?? '原因未记录')}），只能确定它不是患者本人填写的。`
+        }</span>
+      </li>`,
+    )
+    .join('');
 
   const monitoring = summary.monitoring.items
     .map(
@@ -267,6 +298,13 @@ ${rows([
 
 <h2 class="sec">检查结果</h2>
 <div class="slots">${monitoring}</div>
+
+${
+  origins
+    ? `<h2 class="sec">这些字段不是患者本人填的</h2>
+<ul class="adv">${origins}</ul>`
+    : ''
+}
 
 ${
   clinical

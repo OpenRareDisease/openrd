@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
+import { applyAdminBaselineWrite } from '../baseline-provenance.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -204,5 +205,49 @@ describe('Phenopacket v2 — held-but-unemitted instruments are declared', () =>
     ]);
     // And no locator may point into a document that has no sections.
     expect(locatorsIn(reason)).toEqual([]);
+  });
+});
+
+/** The provenance block an administrator's edit actually leaves on
+ *  disk, built with the real write helper. */
+const adminEdited = (): Partial<PatientProfileDTO> => {
+  const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+  const disease = stored.diseaseBackground as Record<string, unknown>;
+  const foundation = stored.foundation as Record<string, unknown>;
+  return {
+    baseline: applyAdminBaselineWrite(
+      stored,
+      {
+        ...stored,
+        foundation: { ...foundation, diagnosisYear: 2016 },
+        diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+      },
+      {
+        adminUserId: '11111111-2222-3333-4444-555555555555',
+        at: new Date('2026-08-13T04:11:07.912Z'),
+      },
+    ),
+  };
+};
+
+/**
+ * Contract §B3. A Phenopacket is protobuf-with-a-JSON-mapping and has
+ * no message field for 「this answer was typed by our staff」, so the
+ * marker rides the envelope rather than being dropped or smuggled into
+ * the document as a non-conformant key.
+ */
+describe('Phenopacket — §B3：管理员代填的值要跟着导出走', () => {
+  it('信封逐条列出代填的字段', () => {
+    const marked = build(adminEdited());
+    expect(marked.fieldOrigins.map((origin) => origin.path)).toEqual([
+      'diseaseBackground.diagnosisType',
+      'foundation.diagnosisYear',
+    ]);
+    expect(marked.notes.字段来源).toContain('确诊年份');
+  });
+
+  it('没有标记时说的是「没有代填」，不是沉默', () => {
+    expect(build().fieldOrigins).toEqual([]);
+    expect(build().notes.字段来源).toContain('没有本平台工作人员代填');
   });
 });

@@ -1,0 +1,291 @@
+import React from 'react';
+import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
+
+/**
+ * 全量导出 — §B4「全量导出是最危险的一个动作……必须有二次确认」.
+ *
+ * WHAT THIS FILE PINS IS THAT THE CONFIRMATION IS A GATE.
+ *
+ * A second confirmation that a tired operator can clear by tapping OK
+ * is not a second confirmation, so the assertions below are about the
+ * refusals: nothing is requested before the phrase is typed, a phrase
+ * that is one character off does not enable the button, and the box is
+ * empty again afterwards so a screen left open cannot be replayed.
+ *
+ * It also pins the platform check happening BEFORE the request. The
+ * server writes an `admin.export` audit row and reads every profile in
+ * the database on the way to sending those bytes; discovering only
+ * afterwards that this client cannot save a file leaves a trail saying
+ * somebody exported the cohort when nobody received it.
+ */
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: () => Promise.resolve(null),
+  setItem: () => Promise.resolve(),
+  removeItem: () => Promise.resolve(),
+  multiRemove: () => Promise.resolve(),
+}));
+
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: () => Promise.resolve(null),
+  setItemAsync: () => Promise.resolve(),
+  deleteItemAsync: () => Promise.resolve(),
+  isAvailableAsync: () => Promise.resolve(false),
+}));
+
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn() }),
+}));
+
+jest.mock('react-native-safe-area-context', () => {
+  const ReactLocal = require('react');
+  return {
+    SafeAreaView: ({ children }: { children: React.ReactNode }) =>
+      ReactLocal.createElement('SafeAreaView', null, children),
+  };
+});
+
+jest.mock('../../common/ScreenHeader', () => {
+  const ReactLocal = require('react');
+  return { __esModule: true, default: () => ReactLocal.createElement('ScreenHeader') };
+});
+
+jest.mock('@expo/vector-icons/Ionicons', () => 'Ionicons');
+
+const mockRequest = jest.fn();
+
+jest.mock('../../../lib/admin-api', () => {
+  const actual = jest.requireActual('../../../lib/admin-api');
+  return { ...actual, requestAdminFullPatientCsv: (...args: unknown[]) => mockRequest(...args) };
+});
+
+const mockSave = jest.fn();
+const mockSupported = jest.fn(() => true);
+
+jest.mock('../download', () => {
+  const actual = jest.requireActual('../download');
+  return {
+    ...actual,
+    isDownloadSupported: () => mockSupported(),
+    saveBlobInBrowser: (...args: unknown[]) => mockSave(...args),
+  };
+});
+
+import AdminFullExportScreen from '../full-export';
+
+const PHRASE = '确认导出全部 35 位患者的完整数据 2026-08-13';
+
+const textContent = (node: ReactTestInstance | string | number | null): string => {
+  if (node == null) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  const children = Array.isArray(node.children) ? node.children : [node.children];
+  return children.map((child) => textContent(child as ReactTestInstance)).join('');
+};
+
+const flush = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+const render = async () => {
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = TestRenderer.create(<AdminFullExportScreen />);
+    await flush();
+  });
+  return tree;
+};
+
+const findByLabel = (tree: TestRenderer.ReactTestRenderer, label: string) =>
+  tree.root.find(
+    (candidate) =>
+      candidate.props?.accessibilityLabel === label &&
+      typeof candidate.props?.onPress === 'function',
+  );
+
+const press = async (tree: TestRenderer.ReactTestRenderer, label: string) => {
+  const node = findByLabel(tree, label);
+  await act(async () => {
+    node.props.onPress();
+    await flush();
+  });
+};
+
+const type = async (tree: TestRenderer.ReactTestRenderer, text: string) => {
+  const input = tree.root.find(
+    (candidate) => candidate.props?.accessibilityLabel === '全量导出确认口令',
+  );
+  await act(async () => {
+    input.props.onChangeText(text);
+    await flush();
+  });
+};
+
+const confirmationRequired = {
+  state: 'confirmation_required' as const,
+  requiredConfirmation: PHRASE,
+  patientCount: 35,
+  notes: ['这份文件包含全部患者的姓名、手机号、所在地区与全部基线临床字段，请只在需要时导出。'],
+};
+
+const downloaded = {
+  state: 'downloaded' as const,
+  download: {
+    blob: { size: 4096 } as unknown as Blob,
+    fileName: 'openrd-patients-20260813T041107Z-by-a1.csv',
+  },
+};
+
+beforeEach(() => {
+  mockRequest.mockReset();
+  mockSave.mockReset();
+  mockSupported.mockReset().mockReturnValue(true);
+});
+
+describe('nothing happens until a human asks for it', () => {
+  it('requests nothing on mount', async () => {
+    await render();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it('asks for the size with no confirmation attached', async () => {
+    mockRequest.mockResolvedValue(confirmationRequired);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    expect(mockRequest).toHaveBeenCalledWith(undefined);
+    const screen = textContent(tree.root);
+    expect(screen).toContain('35 位患者');
+    expect(screen).toContain(PHRASE);
+    // The server's own caveats, verbatim. A paraphrase here drifts
+    // milder than the file.
+    expect(screen).toContain('这份文件包含全部患者的姓名、手机号');
+  });
+});
+
+describe('the phrase has to be typed, exactly', () => {
+  it('leaves the export button disabled while the box is empty', async () => {
+    mockRequest.mockResolvedValue(confirmationRequired);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    expect(findByLabel(tree, '确认导出全部患者').props.disabled).toBe(true);
+  });
+
+  it('leaves it disabled for a phrase that is one character off, and says so', async () => {
+    mockRequest.mockResolvedValue(confirmationRequired);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    // 34 instead of 35: the count is IN the phrase precisely so that a
+    // remembered one from yesterday does not work.
+    await type(tree, '确认导出全部 34 位患者的完整数据 2026-08-13');
+    expect(findByLabel(tree, '确认导出全部患者').props.disabled).toBe(true);
+    expect(textContent(tree.root)).toContain('还对不上');
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the phrase back and saves the file under the server name', async () => {
+    mockRequest.mockResolvedValueOnce(confirmationRequired).mockResolvedValueOnce(downloaded);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    await type(tree, PHRASE);
+    await press(tree, '确认导出全部患者');
+
+    expect(mockRequest).toHaveBeenLastCalledWith(PHRASE);
+    expect(mockSave).toHaveBeenCalledWith(
+      downloaded.download.blob,
+      'openrd-patients-20260813T041107Z-by-a1.csv',
+    );
+    expect(textContent(tree.root)).toContain('已下载 openrd-patients-20260813T041107Z-by-a1.csv');
+  });
+
+  it('does not leave a typed phrase in the box for the next person', async () => {
+    mockRequest.mockResolvedValueOnce(confirmationRequired).mockResolvedValueOnce(downloaded);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    await type(tree, PHRASE);
+    await press(tree, '确认导出全部患者');
+    await press(tree, '再导一次');
+    mockRequest.mockResolvedValue(confirmationRequired);
+    await press(tree, '查看规模并取确认口令');
+    expect(findByLabel(tree, '确认导出全部患者').props.disabled).toBe(true);
+  });
+});
+
+describe('a stale phrase is a new confirmation, not a failure', () => {
+  it('shows the new phrase and says the old one lapsed', async () => {
+    mockRequest.mockResolvedValueOnce(confirmationRequired).mockResolvedValueOnce({
+      state: 'confirmation_required',
+      requiredConfirmation: '确认导出全部 36 位患者的完整数据 2026-08-14',
+      patientCount: 36,
+      notes: [],
+    });
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    await type(tree, PHRASE);
+    await press(tree, '确认导出全部患者');
+
+    const screen = textContent(tree.root);
+    expect(screen).toContain('你上一次确认已经失效了');
+    expect(screen).toContain('确认导出全部 36 位患者的完整数据 2026-08-14');
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+});
+
+describe('the file name is the server’s, or the screen says it is not', () => {
+  it('names the fallback as a fallback instead of passing it off as the real one', async () => {
+    mockRequest.mockResolvedValueOnce(confirmationRequired).mockResolvedValueOnce({
+      state: 'downloaded',
+      download: { blob: { size: 4096 } as unknown as Blob, fileName: null },
+    });
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    await type(tree, PHRASE);
+    await press(tree, '确认导出全部患者');
+
+    const screen = textContent(tree.root);
+    expect(screen).toContain('服务端文件名未收到');
+    expect(screen).toContain('浏览器没有把服务端给的文件名交给页面');
+    // §B4 wants the operator in the filename. This one cannot carry it,
+    // and the screen says where the real name is instead.
+    expect(screen).toContain('审计记录');
+  });
+});
+
+describe('a client that cannot save a file does not spend an export getting there', () => {
+  it('requests nothing at all', async () => {
+    mockSupported.mockReturnValue(false);
+    const tree = await render();
+    expect(textContent(tree.root)).toContain('这个客户端不能保存文件');
+    expect(findByLabel(tree, '查看规模并取确认口令').props.disabled).toBe(true);
+    await act(async () => {
+      findByLabel(tree, '查看规模并取确认口令').props.onPress();
+      await flush();
+    });
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('a real failure is reported as one', () => {
+  it('renders the 409 wording and offers the safe step again', async () => {
+    const { ApiError } = jest.requireActual('../../../lib/api');
+    const conflict = new ApiError(
+      '患者数量在你确认之后发生了变化（确认时 35 位，现在 36 位），请重新确认。',
+    );
+    conflict.status = 409;
+    mockRequest.mockResolvedValueOnce(confirmationRequired).mockRejectedValueOnce(conflict);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    await type(tree, PHRASE);
+    await press(tree, '确认导出全部患者');
+
+    const screen = textContent(tree.root);
+    expect(screen).toContain('数据在你操作期间变了');
+    expect(screen).toContain('现在 36 位');
+    expect(mockSave).not.toHaveBeenCalled();
+
+    // 重试 re-asks for the phrase; it never re-sends a confirmed export.
+    mockRequest.mockResolvedValue(confirmationRequired);
+    await press(tree, '重试');
+    expect(mockRequest).toHaveBeenLastCalledWith(undefined);
+  });
+});

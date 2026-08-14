@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildClinicalPassportSummary } from './profile.passport.js';
+import { applyAdminBaselineWrite } from './baseline-provenance.js';
+import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 
 /**
@@ -129,5 +130,154 @@ describe('护照的诊断确认状态', () => {
     const none = buildClinicalPassportSummary(base());
     const claimed = buildClinicalPassportSummary(base({ geneticMutation: 'FSHD1' } as never));
     expect(claimed.completion.completed).toBe(none.completion.completed);
+  });
+});
+
+describe('the fourth source — a value our own back office typed (§B3)', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** What an administrator's edit actually leaves on disk: the values
+   *  plus the provenance block, exactly as `applyAdminBaselineWrite`
+   *  writes it. Built with the real helper rather than hand-rolled, so
+   *  a reshape of the block breaks this test instead of passing it. */
+  const adminEdited = (previous: Record<string, unknown>, next: Record<string, unknown>) =>
+    applyAdminBaselineWrite(previous, next, { adminUserId: ADMIN_ID, at: AT });
+
+  const adminTypedDiagnosis = () =>
+    base({
+      // The column `upsertBaseline` COALESCEs out of
+      // `foundation.diagnosisYear`, which is what puts a date on the
+      // passport at all.
+      diagnosisDate: '2014-01-01',
+      baseline: adminEdited(
+        { foundation: { fullName: '测试' } },
+        {
+          foundation: { fullName: '测试', diagnosisYear: 2014 },
+          diseaseBackground: { diagnosisType: 'FSHD1' },
+        },
+      ),
+    });
+
+  it('does not print 本人填写 over a diagnosis an administrator typed', () => {
+    const summary = buildClinicalPassportSummary(adminTypedDiagnosis());
+
+    expect(summary.diagnosis.confirmation).toBe('admin_entered');
+    const card = summary.summaryCards.find((item) => item.key === 'diagnosis');
+    // The sentence this replaced, verbatim. It said the patient wrote
+    // something they have never seen.
+    expect(card?.summary).not.toContain('以下为本人填写');
+    expect(card?.summary).toContain('管理员代填');
+    expect(card?.summary).toContain('不是患者本人填写');
+  });
+
+  it('still says 本人填写 when the patient really did type it', () => {
+    const summary = buildClinicalPassportSummary(
+      base({
+        diagnosisDate: '2014-01-01',
+        baseline: { foundation: { diagnosisYear: 2014 } },
+      }),
+    );
+
+    expect(summary.diagnosis.confirmation).toBe('self_reported');
+    expect(summary.summaryCards.find((item) => item.key === 'diagnosis')?.summary).toContain(
+      '本人填写',
+    );
+  });
+
+  it('names every marked field, with who and when, on the passport and in the export', () => {
+    const summary = buildClinicalPassportSummary(adminTypedDiagnosis());
+
+    expect(summary.fieldOrigins).toEqual([
+      {
+        path: 'diseaseBackground.diagnosisType',
+        labelZh: 'FSHD 分型',
+        state: 'admin_entered',
+        adminUserId: ADMIN_ID,
+        at: '2026-08-13T04:11:07.912Z',
+        detail: null,
+      },
+      {
+        path: 'foundation.diagnosisYear',
+        labelZh: '确诊年份',
+        state: 'admin_entered',
+        adminUserId: ADMIN_ID,
+        at: '2026-08-13T04:11:07.912Z',
+        detail: null,
+      },
+    ]);
+
+    // §B3 again: 「不能只在 App 里区分而导出里抹平」.
+    const markdown = buildClinicalPassportExport(summary).markdown;
+    expect(markdown).toContain('这些字段不是本人填写的');
+    expect(markdown).toContain('FSHD 分型');
+    expect(markdown).toContain(ADMIN_ID);
+  });
+
+  it('does not tell the PATIENT they filled in a diagnosis our staff typed', () => {
+    // 待补项 is read by the patient, and this is the reader most likely
+    // not to know the value is in their record at all.
+    const step = buildClinicalPassportSummary(adminTypedDiagnosis()).nextSteps.find(
+      (item) => item.title === '补充基因检测报告',
+    );
+
+    expect(step?.description).not.toContain('由本人填写');
+    expect(step?.description).toContain('管理员代你录入');
+  });
+
+  it('leaves an unmarked profile with an empty list and no extra section', () => {
+    const summary = buildClinicalPassportSummary(
+      base({ baseline: { foundation: { diagnosisYear: 2014 } } }),
+    );
+
+    expect(summary.fieldOrigins).toEqual([]);
+    expect(buildClinicalPassportExport(summary).markdown).not.toContain('这些字段不是本人填写的');
+  });
+
+  it('renders a marker it cannot parse as 来源不明, never as the patient’s', () => {
+    // A hand-written UPDATE, or a half-applied future shape. The
+    // tempting fallback — treat it as no entry — is the one that puts
+    // an administrator's value in the patient's mouth.
+    const summary = buildClinicalPassportSummary(
+      base({
+        diagnosisDate: '2014-01-01',
+        baseline: {
+          foundation: { diagnosisYear: 2014 },
+          fieldProvenance: { 'foundation.diagnosisYear': { source: 'who knows' } },
+        },
+      }),
+    );
+
+    expect(summary.diagnosis.confirmation).toBe('admin_entered');
+    expect(summary.fieldOrigins[0]).toMatchObject({ state: 'unreadable', adminUserId: null });
+    expect(buildClinicalPassportExport(summary).markdown).toContain('只能确定不是本人填写');
+  });
+
+  it('dates the ladder line by its actual origin instead of asserting 本人填写', () => {
+    const patient = buildClinicalPassportSummary(
+      base({ baseline: { diseaseBackground: { diagnosisLadder: 'clinical_only' } } }),
+    );
+    expect(patient.diagnosis.ladderOriginZh).toBe('本人填写');
+    expect(buildClinicalPassportExport(patient).markdown).toContain('诊断进度（本人填写）');
+
+    // The ladder is not in ADMIN_WRITABLE_BASELINE_FIELDS, so no admin
+    // write can mark it. A hand-written UPDATE can, and the markdown
+    // line used to assert 本人填写 with nothing behind the claim.
+    const tampered = buildClinicalPassportSummary(
+      base({
+        baseline: {
+          diseaseBackground: { diagnosisLadder: 'clinical_only' },
+          fieldProvenance: {
+            'diseaseBackground.diagnosisLadder': {
+              source: 'admin_entered',
+              adminUserId: ADMIN_ID,
+              at: AT.toISOString(),
+            },
+          },
+        },
+      }),
+    );
+    expect(tampered.diagnosis.ladderOriginZh).toBe('管理员代填');
+    expect(buildClinicalPassportExport(tampered).markdown).toContain('诊断进度（管理员代填）');
   });
 });

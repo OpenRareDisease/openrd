@@ -4,6 +4,11 @@ import { Readable } from 'node:stream';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  applyAdminBaselineWrite,
+  listBaselineFieldOrigins,
+  readBaselineFieldOrigin,
+} from './baseline-provenance.js';
 import { EXPORT_FIXTURE_PROFILE } from './export/__fixtures__/profile.fixture.js';
 import { DOCUMENT_TYPES } from './profile.constants.js';
 import {
@@ -1586,5 +1591,83 @@ describe('GET /me/data-export?format= — the local-only gate, over HTTP', () =>
 
     expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
     expect((await request(app).get(url).set('Authorization', token)).status).toBe(200);
+  });
+});
+
+describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** What is actually on disk after an administrator filled two fields
+   *  in: the values plus the provenance block. */
+  const storedWithTwoMarkers = () =>
+    applyAdminBaselineWrite(
+      { foundation: { fullName: '张三' }, currentChallenges: { pain: 2 } },
+      {
+        foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+        diseaseBackground: { d4z4: '5 个重复单元' },
+        currentChallenges: { pain: 2 },
+      },
+      { adminUserId: ADMIN_ID, at: AT },
+    );
+
+  const buildController = (stored: Record<string, unknown>) => {
+    const upsertBaseline = vi.fn().mockResolvedValue({ baseline: {} });
+    const service = {
+      getStoredBaselinePayload: vi.fn().mockResolvedValue({ payload: stored }),
+      upsertBaseline,
+    } as unknown as PatientProfileService;
+    const controller = new PatientProfileController(
+      service,
+      { save: vi.fn() } as unknown as StorageProvider,
+      { parse: vi.fn() } as unknown as OcrProvider,
+    );
+    return { controller, upsertBaseline };
+  };
+
+  const reqWith = (body: unknown) =>
+    ({ user: { id: 'user-1' }, body }) as unknown as AuthenticatedRequest;
+
+  it('keeps every marker when the patient saves a field they did not touch', async () => {
+    // The form posts the WHOLE baseline on every save, so this is the
+    // ordinary case. Before this controller merged, it wiped both
+    // markers and the passport then said 「本人填写」 over two values an
+    // administrator typed.
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+    await controller.updateMyBaseline(
+      reqWith({
+        foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+        diseaseBackground: { d4z4: '5 个重复单元' },
+        currentChallenges: { pain: 4 },
+      }),
+      fakeRes(),
+    );
+
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect(listBaselineFieldOrigins(written).map((row) => row.path)).toEqual([
+      'diseaseBackground.d4z4',
+      'foundation.regionLabel',
+    ]);
+  });
+
+  it('gives back ONLY the field the patient re-edited', async () => {
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+    await controller.updateMyBaseline(
+      reqWith({
+        foundation: { fullName: '张三', regionLabel: '广东 佛山' },
+        diseaseBackground: { d4z4: '5 个重复单元' },
+        currentChallenges: { pain: 2 },
+      }),
+      fakeRes(),
+    );
+
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect(readBaselineFieldOrigin(written, 'foundation.regionLabel')).toEqual({
+      state: 'patient',
+    });
+    expect(readBaselineFieldOrigin(written, 'diseaseBackground.d4z4')).toMatchObject({
+      state: 'admin_entered',
+      adminUserId: ADMIN_ID,
+    });
   });
 });

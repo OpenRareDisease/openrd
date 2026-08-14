@@ -9,6 +9,7 @@ import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { ProfileProvider, useProfileContext } from '../contexts/ProfileContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { ADMIN_ROUTES, isAdminRole } from '../lib/admin-access';
 
 LogBox.ignoreLogs([
   "TurboModuleRegistry.getEnforcing(...): 'RNMapsAirModule' could not be found",
@@ -62,16 +63,51 @@ const ONBOARDING_EXEMPT_ROUTES = new Set([
   'p-pregnancy',
 ]);
 
+/**
+ * The back office is exempt too, and for a reason unlike the others.
+ *
+ * An administrator is an `app_users` row with `role = 'admin'`; nothing
+ * says they also built a patient profile for themselves, and most will
+ * not have. Without this, the first operator to open /p-admin would be
+ * walked to 「补全你的健康档案」 — the onboarding form, asking the
+ * back-office operator for their own diagnosis year before they may
+ * look at a parse queue.
+ */
+for (const route of ADMIN_ROUTES) ONBOARDING_EXEMPT_ROUTES.add(route);
+
 function AppNavigator() {
   const navigationState = useRootNavigationState();
   const router = useRouter();
   const segments = useSegments();
-  const { token, isHydrated } = useAuth();
+  const { token, user, isHydrated } = useAuth();
   const { profileStatus } = useProfileContext();
   const currentRoute = segments[0] ?? '';
   const isGuestRoute = GUEST_ROUTES.has(currentRoute);
   const isSignedOutOnlyRoute = SIGNED_OUT_ONLY_ROUTES.has(currentRoute);
   const isOnboardingExempt = ONBOARDING_EXEMPT_ROUTES.has(currentRoute);
+  /**
+   * A back-office route opened by someone whose cached role is not
+   * 'admin'.
+   *
+   * This is a DRAWING decision, not the access control — lib/admin-access.ts
+   * says at length why, and the short version is that `requireAdmin`
+   * re-reads the role from the database on every request, so a forged
+   * local role buys a screen on which everything answers 403. What this
+   * buys is that a patient who types /p-admin into WeChat's address bar
+   * never sees a back-office shell paint at all, which §B4 asks for:
+   * the entry point is not merely unlinked, it is not rendered.
+   *
+   * `user` is null for a moment after `isHydrated` while the stored
+   * user JSON is parsed, but the gate below only runs once `isHydrated`
+   * is true and both values are restored in the same hydration pass, so
+   * an admin is not bounced off their own screen on a cold open. A
+   * stored user JSON that fails to parse leaves `user` null with a
+   * token present; that session is treated as non-admin here and has to
+   * sign in again, which is already true of every other screen that
+   * reads `user`.
+   */
+  const isAdminRouteForNonAdmin =
+    ADMIN_ROUTES.has(currentRoute) && Boolean(token) && !isAdminRole(user?.role);
   // The gate fires ONLY on a confirmed 404 ('missing'). 'error' is
   // fail-open by design — see ProfileContext's status semantics.
   const needsOnboarding = Boolean(token) && profileStatus === 'missing' && !isOnboardingExempt;
@@ -122,6 +158,13 @@ function AppNavigator() {
       return;
     }
 
+    // Before the onboarding gate: a non-admin on a back-office route
+    // should land on 今天, not on 「补全你的健康档案」.
+    if (isAdminRouteForNonAdmin) {
+      router.replace('/p-home');
+      return;
+    }
+
     // Onboarding gate: a logged-in user whose profile row is
     // confirmed missing is walked to the minimal setup screen before
     // anything else — previously they landed on an empty home screen
@@ -136,12 +179,23 @@ function AppNavigator() {
     // observe a stale copy of them. Listing them is redundant rather
     // than safer, which is why the warning is left standing instead of
     // being disabled.
-  }, [isHydrated, navigationState?.key, router, segments, token, needsOnboarding]);
+  }, [
+    isHydrated,
+    navigationState?.key,
+    router,
+    segments,
+    token,
+    needsOnboarding,
+    isAdminRouteForNonAdmin,
+  ]);
 
   const shouldBlockRender =
     isHydrated &&
     Boolean(navigationState?.key) &&
-    ((!token && !isGuestRoute) || (token && isSignedOutOnlyRoute) || needsOnboarding);
+    ((!token && !isGuestRoute) ||
+      (token && isSignedOutOnlyRoute) ||
+      isAdminRouteForNonAdmin ||
+      needsOnboarding);
 
   if (shouldBlockRender) {
     return null;
@@ -202,6 +256,23 @@ function AppNavigator() {
         <Stack.Screen name="p-rare_disease_status" options={{ title: '罕见病身份与权益页' }} />
         <Stack.Screen name="p-referral" options={{ title: '协作网转诊包页' }} />
         <Stack.Screen name="p-falls" options={{ title: '跌倒记录页' }} />
+        {/* The back office. Declared here like every other route —
+            app/__tests__/route-registry.test.ts asserts that every file
+            in app/ has an entry, and a missing one loses the route's
+            title after hydration. Declaring them does NOT make them
+            reachable: the gate above replaces them with /p-home for
+            anyone whose cached role is not 'admin', and the server
+            refuses every request behind them regardless. */}
+        <Stack.Screen name="p-admin" options={{ title: '后台运维概览页' }} />
+        <Stack.Screen name="p-admin_patients" options={{ title: '后台患者列表页' }} />
+        <Stack.Screen name="p-admin_patient" options={{ title: '后台患者档案页' }} />
+        <Stack.Screen name="p-admin_export" options={{ title: '后台全量导出页' }} />
+        {/* Not a rename of p-trial_square, which stays where it is: that
+            one is the pre-launch「试验匹配」placeholder behind
+            EXPO_PUBLIC_ENABLE_EXPLORE and still opens an
+            UnavailableScreen. This one lists what the registries
+            actually say, with the date we copied it. */}
+        <Stack.Screen name="p-trials" options={{ title: '临床试验页' }} />
       </Stack>
     </AppDialogProvider>
   );

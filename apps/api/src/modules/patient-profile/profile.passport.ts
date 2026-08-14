@@ -1,4 +1,10 @@
 import {
+  baselineFieldLabelZh,
+  listBaselineFieldOrigins,
+  readBaselineFieldOrigin,
+  type BaselineFieldOrigin,
+} from './baseline-provenance.js';
+import {
   DIAGNOSIS_LADDER_LABELS,
   DIAGNOSIS_LADDER_STATES,
   type DiagnosisLadderState,
@@ -79,6 +85,15 @@ export interface PassportSummaryCardDTO {
  *   a majority misdiagnosed along the way, so the realistic holder of
  *   an unconfirmed passport is someone carrying「可能是肌病」or an
  *   outright wrong label.
+ * `admin_entered` — one of our own administrators typed it into the
+ *   back office on the patient's behalf, off a phone call or a photo
+ *   of a discharge summary. This is a THIRD thing: not evidence, and
+ *   not the patient's own account of themselves either. It is our
+ *   staff's transcription of something they believe the patient said,
+ *   and the patient may never have seen it. Folding it into
+ *   `self_reported` would put our own typing in the patient's mouth on
+ *   the page a neurologist reads; folding it into `none` would hide a
+ *   value that is on the page. See baseline-provenance.ts.
  * `none` — nothing yet.
  *
  * The distinction is the whole point. This document is designed to be
@@ -88,7 +103,34 @@ export interface PassportSummaryCardDTO {
  * place. A passport must never present a patient's own guess in the
  * same visual register as a genetic result.
  */
-export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'none';
+export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'admin_entered' | 'none';
+
+/**
+ * One baseline field that somebody other than the patient put here.
+ *
+ * ABSENCE IS THE PATIENT (baseline-provenance.ts), so this list holds
+ * only the marked fields and an empty list means every baseline value
+ * on this passport is the patient's own or came off one of their
+ * reports. There is no `patient` member: a row per unmarked field
+ * would be a list of everything, which is a list of nothing.
+ *
+ * `unreadable` is carried rather than dropped. A marker that exists
+ * and cannot be parsed is NOT the patient's — dropping it here is
+ * exactly how an administrator's value would end up printed as
+ * 「本人填写」 on a page a clinician acts on.
+ */
+export interface PassportFieldOriginDTO {
+  /** Dotted baseline path — the provenance block's own key. */
+  path: string;
+  labelZh: string;
+  state: 'admin_entered' | 'unreadable';
+  /** `app_users.id` of the administrator, or null when unreadable. */
+  adminUserId: string | null;
+  /** ISO 8601, or null when unreadable. */
+  at: string | null;
+  /** Why the entry could not be read, or null when it could. */
+  detail: string | null;
+}
 
 export interface PassportDiagnosisDTO {
   ready: boolean;
@@ -105,6 +147,10 @@ export interface PassportDiagnosisDTO {
    *  the passport shows both rather than reconciling them. */
   ladder: DiagnosisLadderState | null;
   ladderLabel: string | null;
+  /** Who put the ladder answer there, in one word — 本人填写 /
+   *  管理员代填 / 来源不明. Rendered instead of a hardcoded 「本人填写」,
+   *  which was a claim the renderer had no way to check. */
+  ladderOriginZh: string | null;
   latestSourceDate: string | null;
   latestDocumentId: string | null;
   freshness: PassportFreshnessDTO;
@@ -218,6 +264,16 @@ export interface ClinicalPassportSummaryDTO {
   };
   metrics: PassportMetricDTO[];
   summaryCards: PassportSummaryCardDTO[];
+  /**
+   * Every baseline field on this passport that somebody other than the
+   * patient entered — §B3's 「导出也带上这个来源，不能只在 App 里区分」
+   * applied to the document a clinician actually reads.
+   *
+   * Sorted by path, so a re-render of an unchanged profile is
+   * byte-identical. Empty means nothing is marked, which is a claim
+   * (see PassportFieldOriginDTO) and not a shrug.
+   */
+  fieldOrigins: PassportFieldOriginDTO[];
   diagnosis: PassportDiagnosisDTO;
   motor: PassportMotorDTO;
   imaging: PassportImagingDTO;
@@ -1617,6 +1673,37 @@ const buildGeneticEvidence = (
  *  null. Validated against the enum rather than cast: `baseline` is an
  *  untyped JSONB column, and rows predating migration-free rollout of
  *  the ladder simply do not have the key. */
+/**
+ * One word for who put a value here, for a page a clinician reads.
+ *
+ * `unreadable` is 「来源不明」 and never 「本人填写」 — the fallback that
+ * looks harmless is the one that puts our own typing in the patient's
+ * mouth. See BaselineFieldOrigin in baseline-provenance.ts.
+ */
+const passportOriginLabelZh = (origin: BaselineFieldOrigin): string => {
+  switch (origin.state) {
+    case 'admin_entered':
+      return '管理员代填';
+    case 'unreadable':
+      return '来源不明';
+    default:
+      return '本人填写';
+  }
+};
+
+/** The marked baseline fields, flattened for the wire. Sorted by path
+ *  because `listBaselineFieldOrigins` sorts, so a re-render of an
+ *  unchanged profile is byte-identical. */
+const collectPassportFieldOrigins = (baseline: unknown): PassportFieldOriginDTO[] =>
+  listBaselineFieldOrigins(baseline).map(({ path, origin }) => ({
+    path,
+    labelZh: baselineFieldLabelZh(path),
+    state: origin.state === 'admin_entered' ? 'admin_entered' : 'unreadable',
+    adminUserId: origin.state === 'admin_entered' ? origin.adminUserId : null,
+    at: origin.state === 'admin_entered' ? origin.at : null,
+    detail: origin.state === 'unreadable' ? origin.detail : null,
+  }));
+
 const readDiagnosisLadder = (profile: PatientProfileDTO): DiagnosisLadderState | null => {
   const baseline = profile.baseline;
   if (!baseline || typeof baseline !== 'object') return null;
@@ -1698,12 +1785,38 @@ export const buildClinicalPassportSummary = (
   const diagnosisClaimed =
     hasMeaningfulValue(reportInsights.geneticType) ||
     hasMeaningfulValue(reportInsights.diagnosisDate);
+  // WHO PUT THE BASELINE VALUES ON THIS PAGE. Absence is the patient,
+  // so this is empty for the overwhelming majority of profiles.
+  const fieldOrigins = collectPassportFieldOrigins(profile.baseline);
+  // The one baseline field the diagnosis block above actually rests
+  // on, and the inference is narrow on purpose. `reportInsights
+  // .diagnosisDate` prefers `profile.diagnosisDate`, the column that
+  // `upsertBaseline` fills by COALESCE from `foundation.diagnosisYear`
+  // — so an administrator who typed the year is who put the date on
+  // this page whenever the column was empty before them. It is NOT
+  // proof the printed date is theirs: COALESCE leaves an existing
+  // column value alone, in which case the year they typed is stored in
+  // the baseline and the date shown came from elsewhere. Both cases
+  // make 「以下为本人填写」 false, which is what this state is for; the
+  // per-field truth is in `fieldOrigins` beside it rather than guessed
+  // at here.
+  //
+  // `!== 'patient'` and not `=== 'admin_entered'`: an entry that
+  // exists and cannot be parsed is still not the patient's, and the
+  // one thing this page may never do is fall back to their name.
+  const diagnosisYearOrigin = readBaselineFieldOrigin(profile.baseline, 'foundation.diagnosisYear');
   const diagnosisConfirmation: PassportDiagnosisConfirmation = geneticallyConfirmed
     ? 'genetic'
     : diagnosisClaimed
-      ? 'self_reported'
+      ? diagnosisYearOrigin.state !== 'patient'
+        ? 'admin_entered'
+        : 'self_reported'
       : 'none';
   const diagnosisLadder = readDiagnosisLadder(profile);
+  const diagnosisLadderOrigin = readBaselineFieldOrigin(
+    profile.baseline,
+    'diseaseBackground.diagnosisLadder',
+  );
   const geneticEvidence = buildGeneticEvidence(reportInsights.geneticRecord, diagnosisLadder);
   // Completion counts confirmed diagnoses only — a progress ring that
   // fills on a self-entered date teaches the patient the document is
@@ -1805,9 +1918,16 @@ export const buildClinicalPassportSummary = (
     nextSteps.push({
       title: diagnosisClaimed ? '补充基因检测报告' : '补充基因或诊断依据',
       kind: 'record',
-      description: diagnosisClaimed
-        ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
-        : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
+      // Read by the PATIENT, so the 「由本人填写」 half has to be true of
+      // them specifically. It is not, when our own back office typed
+      // the diagnosis in on their behalf — and that is the reader most
+      // likely not to know a value is sitting in their record at all.
+      description:
+        diagnosisConfirmation === 'admin_entered'
+          ? '目前的诊断信息是本平台管理员代你录入的（在护照的字段来源里能看到是谁、什么时候），尚无基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
+          : diagnosisClaimed
+            ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
+            : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
     });
   }
   if (geneticEvidence.grade === 'method_right_incomplete') {
@@ -1906,9 +2026,11 @@ export const buildClinicalPassportSummary = (
       summary:
         diagnosisConfirmation === 'genetic'
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
-          : diagnosisConfirmation === 'self_reported'
-            ? '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证'
-            : '缺少可直接展示的基因或诊断证据',
+          : diagnosisConfirmation === 'admin_entered'
+            ? '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写，尚无基因报告佐证'
+            : diagnosisConfirmation === 'self_reported'
+              ? '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证'
+              : '缺少可直接展示的基因或诊断证据',
       meta: `诊断日期 ${reportInsights.diagnosisDate}`,
     },
     {
@@ -1998,6 +2120,7 @@ export const buildClinicalPassportSummary = (
       },
     ],
     summaryCards,
+    fieldOrigins,
     diagnosis: {
       ready: diagnosisReady,
       latestSourceDate: reportInsights.latestGeneticDate,
@@ -2005,6 +2128,7 @@ export const buildClinicalPassportSummary = (
       confirmation: diagnosisConfirmation,
       ladder: diagnosisLadder,
       ladderLabel: diagnosisLadder ? DIAGNOSIS_LADDER_LABELS[diagnosisLadder] : null,
+      ladderOriginZh: diagnosisLadder ? passportOriginLabelZh(diagnosisLadderOrigin) : null,
       geneticEvidence,
       freshness: getFreshness(reportInsights.latestGeneticDate),
       geneticType: reportInsights.geneticType,
@@ -2070,10 +2194,34 @@ export const buildClinicalPassportExport = (
     `- 甲基化值：${summary.diagnosis.methylationValue}`,
     `- 诊断日期：${summary.diagnosis.diagnosisDate}`,
     `- 证据摘要：${summary.diagnosis.geneEvidence}`,
+    // 「本人填写的诊断进度」 was hardcoded here. The renderer had no way
+    // to check it, and it is exactly the claim baseline-provenance.ts
+    // exists to stop being made blind.
     ...(summary.diagnosis.ladderLabel
-      ? [`- 本人填写的诊断进度：${summary.diagnosis.ladderLabel}`]
+      ? [
+          `- 诊断进度（${summary.diagnosis.ladderOriginZh ?? '本人填写'}）：${
+            summary.diagnosis.ladderLabel
+          }`,
+        ]
       : []),
     '',
+    // §B3: the export must carry the source too, not only the app. The
+    // section is emitted only when something is marked — a 「无」 under a
+    // standing heading is how a reader learns to skip the heading.
+    ...(summary.fieldOrigins.length > 0
+      ? [
+          '### 这些字段不是本人填写的',
+          '',
+          ...summary.fieldOrigins.map((origin) =>
+            origin.state === 'admin_entered'
+              ? `- ${origin.labelZh}：本平台管理员于 ${origin.at ?? '未记录时间'} 代为录入（管理员账号 ${
+                  origin.adminUserId ?? '未记录'
+                }）`
+              : `- ${origin.labelZh}：来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是本人填写`,
+          ),
+          '',
+        ]
+      : []),
     // The grade and the request note are the reason this export exists.
     // A neurologist reading the page needs to know not just what the
     // report said but whether the method could have said it — a

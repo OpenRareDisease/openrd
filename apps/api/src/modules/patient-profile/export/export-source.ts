@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import type { ExportOmission } from './envelope.js';
+import type { ExportFieldOrigin, ExportOmission } from './envelope.js';
+import { baselineFieldLabelZh, listBaselineFieldOrigins } from '../baseline-provenance.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import { decodeFirstYear, type YearAnswer } from './year-value.js';
 import type { PatientDocumentDTO, PatientProfileDTO } from '../profile.service.js';
@@ -128,7 +129,41 @@ export interface NormalisedSource {
   readonly milestones: readonly MilestoneEvent[];
   readonly followupEvents: readonly FollowupEvent[];
   readonly reportFields: readonly ReportField[];
+  /**
+   * Contract §B3: which baseline fields somebody other than the patient
+   * entered. Read ONCE here, like everything else in this file, so the
+   * three serialisers cannot disagree about who typed a value.
+   *
+   * Empty for the overwhelming majority of profiles, and empty is a
+   * claim — see PortableExportEnvelope.fieldOrigins.
+   */
+  readonly fieldOrigins: readonly ExportFieldOrigin[];
 }
+
+/**
+ * The one sentence a serialiser appends beside a value that somebody
+ * other than the patient typed, or `null` when the patient typed it.
+ *
+ * Takes the baseline PATH rather than an item key, because the path is
+ * what the provenance block is keyed by; a serialiser that invented its
+ * own key would be free to get the mapping wrong in the one direction
+ * that matters.
+ */
+export const originNoteZh = (source: NormalisedSource, fieldPath: string): string | null => {
+  const origin = source.fieldOrigins.find((entry) => entry.path === fieldPath);
+  if (!origin) return null;
+  return origin.state === 'admin_entered'
+    ? `；此项由本平台管理员于 ${origin.at ?? '未记录时间'} 代患者录入，不是患者本人填写，患者可能未核对过`
+    : `；此项的来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是患者本人填写`;
+};
+
+/** `originNoteZh` folded onto a provenance string, so every call site
+ *  reads the same and none of them can forget the separator. */
+export const withOriginNote = (
+  source: NormalisedSource,
+  fieldPath: string,
+  provenanceZh: string,
+): string => `${provenanceZh}${originNoteZh(source, fieldPath) ?? ''}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -408,6 +443,14 @@ export const normaliseSource = (
       })
       .filter((entry): entry is { key: string; labelZh: string; score: number } => entry !== null),
     milestones,
+    fieldOrigins: listBaselineFieldOrigins(baseline).map(({ path, origin }) => ({
+      path,
+      labelZh: baselineFieldLabelZh(path),
+      state: origin.state === 'admin_entered' ? 'admin_entered' : 'unreadable',
+      adminUserId: origin.state === 'admin_entered' ? origin.adminUserId : null,
+      at: origin.state === 'admin_entered' ? origin.at : null,
+      detail: origin.state === 'unreadable' ? origin.detail : null,
+    })),
     followupEvents: profile.followupEvents
       .filter((event) => !(event.eventType in MILESTONE_EVENTS))
       .map((event) => ({

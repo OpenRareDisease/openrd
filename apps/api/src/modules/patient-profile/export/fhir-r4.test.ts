@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
+import { applyAdminBaselineWrite } from '../baseline-provenance.js';
 import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
 import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -104,7 +105,10 @@ describe('FHIR R4 — Condition tells the truth about confirmation', () => {
     expect(
       (selfReported.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
     ).toBe('unconfirmed');
-    expect((selfReported.verificationStatus as { text: string }).text).toContain('患者自述诊断');
+    // 「患者自述诊断」 was the literal here. It is now conditional on the
+    // diagnosis type carrying no admin marker — see §B3 — so what this
+    // pins is the patient half of that branch.
+    expect((selfReported.verificationStatus as { text: string }).text).toContain('由患者本人填写');
   });
 
   it('puts the OMIM number inside human-readable text, never as a coding', () => {
@@ -524,5 +528,60 @@ describe('FHIR R4 — documents', () => {
     expect(attachment.hash).toBeUndefined();
     expect(JSON.stringify(build().document)).not.toContain('local://uploads');
     expect(JSON.stringify(build().document)).not.toContain('sha256:deadbeef');
+  });
+});
+
+/** The provenance block an administrator's edit actually leaves on
+ *  disk, built with the real write helper. */
+const adminEdited = (): Partial<PatientProfileDTO> => {
+  const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+  const disease = stored.diseaseBackground as Record<string, unknown>;
+  const foundation = stored.foundation as Record<string, unknown>;
+  return {
+    baseline: applyAdminBaselineWrite(
+      stored,
+      {
+        ...stored,
+        foundation: { ...foundation, diagnosisYear: 2016 },
+        diseaseBackground: { ...disease, diagnosisType: 'FSHD2' },
+      },
+      {
+        adminUserId: '11111111-2222-3333-4444-555555555555',
+        at: new Date('2026-08-13T04:11:07.912Z'),
+      },
+    ),
+  };
+};
+
+/**
+ * Contract §B3. A FHIR validator rejects unknown fields, so there is no
+ * conformant slot for a per-field 「our staff typed this」 — the envelope
+ * carries the list, and the two diagnosis-facing ones also go into the
+ * Condition's own `note`, which IS conformant and is where a receiver
+ * that never opens the envelope will look.
+ */
+describe('FHIR R4 — §B3：管理员代填的值不能记成患者自述', () => {
+  it('Condition 不再无条件说「患者自述诊断」', () => {
+    const marked = build({ ...adminEdited(), documents: [] });
+    const condition = resourcesOf(marked, 'Condition')[0];
+    const text = (condition.verificationStatus as { text: string }).text;
+
+    expect(text).not.toContain('由患者本人填写');
+    expect(text).toContain('不是患者本人填写');
+  });
+
+  it('确诊年份的来源进 Condition.note，而不是只在信封上', () => {
+    const condition = resourcesOf(build({ ...adminEdited(), documents: [] }), 'Condition')[0];
+    expect(JSON.stringify(condition.note)).toContain('不是患者本人填写');
+  });
+
+  it('信封逐条列出，并且没有标记时明说没有代填', () => {
+    expect(build(adminEdited()).fieldOrigins.map((origin) => origin.path)).toEqual([
+      'diseaseBackground.diagnosisType',
+      'foundation.diagnosisYear',
+    ]);
+    expect(build(adminEdited()).notes.字段来源).toContain('FSHD 分型');
+    expect(build().fieldOrigins).toEqual([]);
+    expect(build().notes.字段来源).toContain('没有本平台工作人员代填');
   });
 });

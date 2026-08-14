@@ -14,5 +14,16 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "node_modules", "dist"]
+  // __fixtures__ holds test-only modules that are not named *.test.ts, so
+  // neither this exclusion list nor the Dockerfile's `find dist -name
+  // '*.test.js' -delete` caught them: src/modules/trials/__fixtures__/
+  // fixtures.ts compiled to a 4,370-byte dist/modules/trials/__fixtures__/
+  // fixtures.js in the runtime image (measured with `tsc -p tsconfig.json
+  // --outDir /tmp/dist-check`), while the .html/.json captures it reads are
+  // not copied — so every export in it would ENOENT. Nothing imports it
+  // outside tests, so it was inert; it is also exactly what the Dockerfile's
+  // sweep exists to keep out of the container that holds patient records.
+  // tsconfig.test.json still typechecks these files: its exclude is only
+  // node_modules and dist.
+  "exclude": ["src/**/*.test.ts", "src/**/__fixtures__/**", "node_modules", "dist"]
 }

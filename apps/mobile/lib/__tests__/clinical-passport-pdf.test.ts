@@ -123,3 +123,102 @@ describe('监测槽位的适应症说明进 PDF', () => {
     expect(buildClinicalPassportPdfHtml(bare)).not.toContain('monitor-note"');
   });
 });
+
+/**
+ * §B3 on paper. The PDF is the artefact a clinician actually reads, so
+ * a value our own back office typed must not reach it wearing the
+ * patient's name.
+ */
+describe('管理员代填的字段要印在 PDF 上', () => {
+  const withDiagnosis = (over: Record<string, unknown>) =>
+    ({
+      generatedAt: '2026-08-05T00:00:00.000Z',
+      passportId: 'FSHD-TEST',
+      patientName: '测试',
+      hasRecordedData: true,
+      latestUpdatedAt: null,
+      completion: { completed: 1, total: 4 },
+      metrics: [],
+      summaryCards: [],
+      diagnosis: {
+        ready: false,
+        confirmation: 'self_reported',
+        latestSourceDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        geneticType: 'FSHD1',
+        d4z4Repeats: '—',
+        methylationValue: '—',
+        diagnosisDate: '2014-01-01',
+        geneEvidence: '—',
+      },
+      motor: {
+        ready: false,
+        average: '—',
+        latestMeasurementAt: null,
+        latestActivityAt: null,
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+        activitySummary: '—',
+      },
+      imaging: {
+        ready: false,
+        latestMriDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+      },
+      monitoring: { ready: false, items: [] },
+      nextSteps: [],
+      timeline: [],
+      ...over,
+    }) as unknown as Parameters<typeof buildClinicalPassportPdfHtml>[0];
+
+  it('第四种来源有自己的警示条，不写成「患者本人填写」', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withDiagnosis({
+        diagnosis: {
+          ...(withDiagnosis({}) as { diagnosis: Record<string, unknown> }).diagnosis,
+          confirmation: 'admin_entered',
+        },
+        fieldOrigins: [],
+      }),
+    );
+    expect(html).toContain('不是患者本人填写');
+    expect(html).not.toContain('本节内容由患者本人填写');
+  });
+
+  it('逐条列出代填的字段，带日期', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withDiagnosis({
+        fieldOrigins: [
+          {
+            path: 'diseaseBackground.diagnosisType',
+            labelZh: 'FSHD 分型',
+            state: 'admin_entered',
+            adminUserId: '11111111-2222-3333-4444-555555555555',
+            at: '2026-08-13T04:11:07.912Z',
+            detail: null,
+          },
+        ],
+      }),
+    );
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(html).toContain('FSHD 分型');
+  });
+
+  it('没有标记就不印这一节', () => {
+    expect(buildClinicalPassportPdfHtml(withDiagnosis({ fieldOrigins: [] }))).not.toContain(
+      '这些字段不是患者本人填的',
+    );
+  });
+
+  it('服务端没回这一项时说没回，不当成「都是本人填的」', () => {
+    // 新前端 + 还没升级的后端。默认成空数组正好是这一整块要防的假话。
+    const html = buildClinicalPassportPdfHtml(withDiagnosis({}));
+    expect(html).toContain('服务端这一版没有返回字段来源');
+  });
+});

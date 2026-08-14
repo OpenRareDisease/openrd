@@ -896,6 +896,39 @@ export class PatientProfileService {
    * genetic report, so a baseline built without them would show blanks
    * the full profile fills in. The other seven tables it never touched.
    */
+  /**
+   * `baseline_payload` as it is ON DISK — no autofill, no merge.
+   *
+   * Exists for one caller, `ProfileController.updateMyBaseline`, and
+   * the reason it cannot use `getBaselineByUserId` is the reason
+   * `AdminService.getStoredProfile` exists on the other side: that
+   * method applies `applyGeneticReportAutofill`, which fills a missing
+   * D4Z4 / haplotype / diagnosis year out of the patient's latest
+   * genetic report at READ time. `applyPatientBaselineWrite` derives
+   * the patient's changed set by diffing against what it is given, so
+   * diffing against the merged payload would report every autofilled
+   * field as unchanged when it is not even stored — and, worse,
+   * whenever the report later changes, as changed by the patient.
+   *
+   * Returns `null` for an account with no profile row, which is not
+   * the same as a profile whose column is NULL (`{ payload: null }`).
+   * The caller does not need the distinction today — `upsertBaseline`
+   * creates the row — but collapsing it here would mean a future
+   * caller could not get it back.
+   */
+  async getStoredBaselinePayload(
+    userId: string,
+  ): Promise<{ payload: Record<string, unknown> | null } | null> {
+    const result = await this.pool.query<{ baseline_payload: unknown }>(
+      'SELECT baseline_payload FROM patient_profiles WHERE user_id = $1',
+      [userId],
+    );
+    if (!result.rowCount) {
+      return null;
+    }
+    return { payload: asRecord(result.rows[0].baseline_payload) };
+  }
+
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
     const profileResult = await this.pool.query<PatientProfileRecord>(
       `SELECT id, full_name, preferred_name, diagnosis_date, genetic_mutation,

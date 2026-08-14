@@ -39,12 +39,34 @@
  * Gated on there being prior turns, because without them there is no
  * antecedent for 这些 to refer to and the phrase is just a topic.
  *
+ * The trials rule
+ * ---------------
+ * **A question about clinical trials must reach the live registry
+ * cache.** The knowledge base answers trial questions today out of one
+ * saved ClinicalTrials.gov results page from 2025-03-31, whose status
+ * words are machine-translated (「招聘」 for Recruiting) and which shows
+ * ten of the twenty-four studies that were listed that day. The
+ * retriever now stamps that page with its date wherever it is quoted
+ * (retrievers/medical-kb.ts), but a dated wrong answer is still a wrong
+ * answer; the right one lives in `trial_records`, which the refresh
+ * keeps current and `list_clinical_trials` reads.
+ *
+ * So a trial-shaped question adds that call. Unlike the two rules above
+ * this one does not require the plan to contain anything first — it
+ * fires on an EMPTY plan too, and that is the case it exists for: a
+ * model that answers 「哪些试验在招募」 without calling a tool is
+ * answering it from its training data, and its training data has NCT
+ * numbers in it. Adding the call turns that into a tool round, so the
+ * answer is composed from rows with fetch dates on them instead.
+ *
  * Only ever *adds*. It cannot remove or rewrite what the model asked
- * for, so the worst case is one extra retrieval — and neither companion
- * can widen what a given patient's consent already allows:
- * `search_medical_kb` has no consent minimum, and `get_my_reports` is
- * only added when the registry already advertised it for this consent
- * level, which is the same gate the planner itself passed through.
+ * for, so the worst case is one extra retrieval — and none of the three
+ * companions can widen what a given patient's consent already allows:
+ * `search_medical_kb` and `list_clinical_trials` have no consent
+ * minimum (neither reads anything belonging to a patient), and
+ * `get_my_reports` is only added when the registry already advertised
+ * it for this consent level, which is the same gate the planner itself
+ * passed through.
  */
 
 import type { LlmToolCall } from '../llm/base.js';
@@ -84,6 +106,36 @@ const PERSONAL_TOOLS: ReadonlySet<string> = new Set([
  */
 const DEMONSTRATIVE = /(这|那|上面|前面|刚才|之前)[些个几]?/;
 const OWN_RECORD_NOUN = /(报告|检查|化验|数值|指标|结果|记录|片子|影像)/;
+
+const TRIALS_TOOL = 'list_clinical_trials';
+
+/**
+ * Is this a question about clinical trials?
+ *
+ * Two ways in. The first is a term that can only mean a trial —
+ * 临床试验, 临床研究, an NCT number, the English. The second is the
+ * shape the canonical question actually takes, 「哪些试验在招募」: a word
+ * for the thing plus a word for joining it. Requiring both halves in
+ * that branch is what keeps 试验 out of the way of 实验室检查 and keeps
+ * 招募 out of the way of the platform's own 甲基化筛查项目招募 — one
+ * without the other is not a trial question.
+ *
+ * Deliberately generous inside those two shapes, because the cost of a
+ * false positive is one indexed read of a 92-row table (026's header)
+ * whose result the tool describes honestly whatever it contains, and
+ * the cost of a false negative is a patient being told which trials are
+ * recruiting from a 2025 web page.
+ */
+const TRIAL_TERM = /(临床试验|临床研究|药物试验|试验登记|clinical\s+trials?|NCT\s*\d)/i;
+const TRIAL_THING = /(试验|临床研究)/;
+const TRIAL_JOIN = /(招募|在招|入组|报名|参加|加入|符合条件)/;
+
+export const refersToClinicalTrials = (question: string): boolean => {
+  const q = question.trim();
+  if (!q) return false;
+  if (TRIAL_TERM.test(q)) return true;
+  return TRIAL_THING.test(q) && TRIAL_JOIN.test(q);
+};
 
 export const refersToOwnRecords = (question: string, hasHistory: boolean): boolean => {
   const q = question.trim();
@@ -141,6 +193,22 @@ export const withCompanionToolCalls = (
       argumentsJson: '{}',
     });
     added.push(REPORTS_TOOL);
+  }
+
+  // No gate on what the plan already contains: see the trials rule in
+  // the header for why an empty plan is the case this exists for.
+  if (!names.has(TRIALS_TOOL) && available.has(TRIALS_TOOL) && refersToClinicalTrials(question)) {
+    toolCalls.push({
+      id: 'server-companion-trials',
+      name: TRIALS_TOOL,
+      // No arguments. A status filter would be the server guessing at
+      // which statuses the patient meant, and the tool's own default
+      // returns every cached trial with its status word on it — which
+      // is the thing the model needs in order to answer either
+      //「哪些在招募」or「这个还在做吗」.
+      argumentsJson: '{}',
+    });
+    added.push(TRIALS_TOOL);
   }
 
   // The same array back when nothing was added — callers rely on the

@@ -1,0 +1,888 @@
+{
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT01596803",
+          "briefTitle": "Effects Antioxidants Supplementation on Muscular Function Patients Facioscapulohumeral Dystrophy (FSHD)",
+          "officialTitle": "Effects of Antioxidants Supplementation on Muscular Function of Patients Affected by Facioscapulohumeral Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2020-02-12" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "University Hospital, Montpellier" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "France" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT03123913",
+          "briefTitle": "Study of Testosterone and rHGH in FSHD",
+          "officialTitle": "Study of Testosterone and rHGH in FSHD (STARFISH): A Proof-of-Concept Study"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-05-16" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "University of Rochester" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1"] },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04004000",
+          "briefTitle": "Evaluation of Safety, Tolerability, and Changes in Biomarker and Clinical Outcome Assessments of Losmapimod for FSHD1 With Extension",
+          "officialTitle": "An Open-Label Pilot Study of Losmapimod to Evaluate the Safety, Tolerability, and Changes in Biomarker and Clinical Outcome Assessments in Subjects With Facioscapulohumeral Muscular Dystrophy 1 (FSHD1) With Extension"
+        },
+        "statusModule": {
+          "overallStatus": "TERMINATED",
+          "lastUpdatePostDateStruct": { "date": "2025-12-02" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Fulcrum Therapeutics" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE2"] },
+        "contactsLocationsModule": { "locations": [{ "country": "Netherlands" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05812144",
+          "briefTitle": "New Clinical Outcome Measures to Remotely Evaluate Patients With FacioScapuloHumeral Muscular Dystrophy",
+          "officialTitle": "New Clinical Outcome Measures to Remotely Evaluate Patients With FacioScapuloHumeral Muscular Dystrophy - PROGRESS FSHD"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2026-02-11" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Centre Hospitalier Universitaire de Nice" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "France" }, { "country": "France" }, { "country": "France" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT07435129",
+          "briefTitle": "Phase 2 Study Evaluating Apitegromab for the Treatment of FSHD",
+          "officialTitle": "A Phase 2, Randomized, Double-Blind, Placebo-Controlled, Multicenter, 52-Week Study Evaluating the Efficacy and Safety of Apitegromab in Participants With Facioscapulohumeral Muscular Dystrophy (FORGE)"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-08-11" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Scholar Rock, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE2"] },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT03458832",
+          "briefTitle": "Clinical Trial Readiness to Solve Barriers to Drug Development in FSHD",
+          "officialTitle": "Clinical Trial Readiness to Solve Barriers to Drug Development in FSHD"
+        },
+        "statusModule": {
+          "overallStatus": "ACTIVE_NOT_RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-04-13" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "University of Kansas Medical Center" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "France" },
+            { "country": "France" },
+            { "country": "Germany" },
+            { "country": "Italy" },
+            { "country": "Netherlands" },
+            { "country": "United Kingdom" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06425445",
+          "briefTitle": "Quantitative Assessment of Orofacial Muscle Function in FSHD",
+          "officialTitle": "Development of a New Clinical Tool for the Assessment of Orofacial Muscles in Patients Affected by Facioscapulohumeral Muscular Dystrophy: a Preliminary Study."
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2026-02-27" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "University of Mons" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "Belgium" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02239224",
+          "briefTitle": "Safety, Tolerability, Pharmacokinetics, and Biological Activity of ATYR1940 in Adult Participants With Muscular Dystrophy",
+          "officialTitle": "A Placebo-Controlled, Randomized, Multiple Ascending Dose Study to Evaluate the Safety, Tolerability, Pharmacokinetics (PK), and Biological Activity of ATYR1940 in Adult Patients With Molecularly Defined Genetic Muscular Dystrophies"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2021-08-11" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "aTyr Pharma, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "France" },
+            { "country": "Italy" },
+            { "country": "Netherlands" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02603562",
+          "briefTitle": "Evaluate Safety and Biological Activity of ATYR1940 in Participants With Early Onset Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "An Open-Label, Intrapatient Dose-Escalation Study to Evaluate the Safety, Tolerability, Immunogenicity, and Biological Activity of ATYR1940 in Patients With Early Onset and Other Pediatric Onset Facioscapulohumeral Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-10-19" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "aTyr Pharma, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "France" },
+            { "country": "France" },
+            { "country": "Italy" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02531217",
+          "briefTitle": "Safety, Tolerability, Pharmacokinetics (PK), and Activity of ATYR1940 in Participants With Muscular Dystrophy - Study Extension",
+          "officialTitle": "An Open-Label Extension Study to Evaluate the Long-Term Safety, Tolerability, Biological Activity, and Systemic Exposure of ATYR1940 in Adult Patients With Fascioscapulohumeral Muscular Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-08-18" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "aTyr Pharma, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "Italy" },
+            { "country": "Netherlands" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05982119",
+          "briefTitle": "Assessments in Patients With Muscular Pathology and in Control Subjects : The ActiLiège Next Study",
+          "officialTitle": "Gait Analysis Parameter, Stair Climbing and Upper Limb Evaluation in Patients With Muscular Pathology and in Control Subjects: The ActiLiège Next Study"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2025-05-20" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Centre Hospitalier Universitaire de Liege" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "Belgium" },
+            { "country": "Czechia" },
+            { "country": "Egypt" },
+            { "country": "Hungary" },
+            { "country": "Poland" },
+            { "country": "Romania" },
+            { "country": "Romania" },
+            { "country": "Slovenia" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT00004685",
+          "briefTitle": "Randomized Study of Albuterol in Patients With Facioscapulohumeral Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2015-03-25" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Ohio State University" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": {}
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04154098",
+          "briefTitle": "Evaluation of a Textile Scapula Orthosis",
+          "officialTitle": "Evaluation of a Method to Support Unstable Shoulders by Means of a Textile Scapula Orthosis"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2020-12-16" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Swiss Federal Institute of Technology" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "Germany" }, { "country": "Switzerland" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT00104078",
+          "briefTitle": "Study Evaluating MYO-029 in Adult Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2007-12-28" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Wyeth is now a wholly owned subsidiary of Pfizer" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06911190",
+          "briefTitle": "Ten Year Follow-up in FSHD: the FOCUS 3 Study",
+          "officialTitle": "Ten Year Follow-up in FSHD; the FOCUS-3 Study"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2025-04-04" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Radboud University Medical Center" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Netherlands" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04001582",
+          "briefTitle": "The United Kingdom Facioscapulohumeral Muscular Dystrophy Patient Registry",
+          "officialTitle": "The UK Facioscapulohumeral Muscular Dystrophy Patient Registry"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2024-05-09" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Newcastle University" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "United Kingdom" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT07478172",
+          "briefTitle": "Effects of Whole-body Electrical Muscle Stimulation Exercise on Adults With Neuromuscular Disease",
+          "officialTitle": "Effects of Whole-body Electrical Muscle Stimulation Exercise on Adults withNeuromuscular Disease"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-03-17" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "University of Missouri-Columbia" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02579239",
+          "briefTitle": "Evaluate Safety and Biological Activity of ATYR1940 in Participants With Limb Girdle Muscular Dystrophy 2B (LGMD2B) and Facioscapulohumeral Muscular Dystrophy (FSHD)",
+          "officialTitle": "An Open-Label, Intrapatient Dose Escalation Study to Evaluate the Safety, Tolerability, Immunogenicity, and Biological Activity of ATYR1940 in Patients With Limb Girdle and Facioscapulohumeral Muscular Dystrophies"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-10-19" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "aTyr Pharma, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Denmark" },
+            { "country": "France" },
+            { "country": "France" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT01671865",
+          "briefTitle": "Magnetic Resonance Imaging and Spectroscopy Biomarkers for Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "Magnetic Resonance Imaging and Spectroscopy Biomarkers for Facioscapulohumeral Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "ACTIVE_NOT_RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-08-05" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Hugo W. Moser Research Institute at Kennedy Krieger, Inc." }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT01970735",
+          "briefTitle": "Clinical, Genetic and Epigenetic Characterization of Patients With FSHD Type 1 and FSHD Type 2",
+          "officialTitle": "Clinical, Genetic and Epigenetic Characterization of Patients With FSHD Type 1 and FSHD Type 2"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-11-14" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Centre Hospitalier Universitaire de Nice" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "France" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02159612",
+          "briefTitle": "1 Year MRI Followup in Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "Disease Progression in Facioscapulohumeral Muscular Dystrophy - 1 Year MRI Follow-up"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2015-05-14" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Grete Andersen, MD" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Denmark" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04369209",
+          "briefTitle": "A Registered Cohort Study on FSHD1",
+          "officialTitle": "A Registered Observational Cohort Study of Facioscapulohumeral Muscular Dystrophy Type 1"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2024-08-26" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Ning Wang, MD., PhD." } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "China" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02789059",
+          "briefTitle": "Muscle Oxygenation in Effort in Neuromuscular Diseases",
+          "officialTitle": "Muscle Oxygenation Modification During Effort in 4 Groups of Neuromuscular Diseases Compared to Healthy Controls, and Mitochondrial Function and Phenotype Assessment"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2026-04-22" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "University Hospital, Lille" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "France" }, { "country": "France" }, { "country": "France" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT07331025",
+          "briefTitle": "Ultrasound Detection of Early Facial Muscle Changes in FSHD: Thickness and Echo Intensity Findings",
+          "officialTitle": "Ultrasound Detection of Early Facial Muscle Changes in FSHD: Thickness and Echo Intensity Findings - A Cross-Sectional Comparison With Healthy Adults"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2026-01-09" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Koç University" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Turkey (Türkiye)" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05022355",
+          "briefTitle": "Examination of Operative Approach in pwFSHD (Patient With Facioscapulohumeral Muscular Dystrophy)",
+          "officialTitle": "The Comparison of the Effects of Scapulothoracic Arthrodesis Surgery Versus Usual Care on Balance and Gait Parameters in Patients With Fascioscapulohumeral Dystrophy: One-Blind Study"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2022-11-08" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Istanbul University - Cerrahpasa" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Turkey (Türkiye)" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06096441",
+          "briefTitle": "FSHD Molecular Characterization",
+          "officialTitle": "Clinical and Molecular Characterization of Facioscapulohumeral Muscular Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "TERMINATED",
+          "lastUpdatePostDateStruct": { "date": "2025-09-18" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Nationwide Children's Hospital" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT00004769",
+          "briefTitle": "Study of Muscle Wasting and Altered Metabolism in Patients With Myotonic Dystrophy",
+          "officialTitle": "Myotonic Dystrophy:Muscle Wasting and Altered Metabolism"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2013-01-28" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "University of Rochester" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {}
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT01990976",
+          "briefTitle": "Study of Morphology and Functional Magnetic Resonance Imaging (MRI) Muscle Patients With Muscular Dystrophy Type FSHD Benefiting a Physical Training Introduced.",
+          "officialTitle": "Study of Morphology and Functional Magnetic Resonance Imaging (MRI) Muscle Patients With Muscular Dystrophy Type FSHD Benefiting a Physical Training Introduced."
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2015-07-28" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Centre Hospitalier Universitaire de Saint Etienne" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "France" }, { "country": "France" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05239520",
+          "briefTitle": "Understanding Control and Mechanisms of Shoulder Instability in FSHD",
+          "officialTitle": "Understanding Control and Mechanisms of Shoulder Instability in Patients With Facioscapulohumeral Muscular Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-02-01" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "University of Liverpool" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "United Kingdom" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04907162",
+          "briefTitle": "Musculoskeletal Nociceptive Pain in Participants With Neuromuscular Disorders",
+          "officialTitle": "Nociceptive Pain in Neuromuscular Disorders - Low Interventional Pilot Study to Assess Musculoskeletal Pain in Neuromuscular Disorders (NMD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2022-08-24" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "LMU Klinikum" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Germany" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06847282",
+          "briefTitle": "Motor Outcomes to Validate Evaluations in Pediatric FSHD (MOVE Peds)",
+          "officialTitle": "Motor Outcomes to Validate Evaluations in Pediatric FSHD (MOVE Peds)"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-02-25" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "University of Kansas Medical Center" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Australia" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02541292",
+          "briefTitle": "Muscle Inflammation and Fat Infiltration in Patients Affected by FSHD",
+          "officialTitle": "Muscle Inflammation and Fat Infiltration in Patients Affected by FSHD"
+        },
+        "statusModule": {
+          "overallStatus": "UNKNOWN",
+          "lastUpdatePostDateStruct": { "date": "2018-09-04" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Rigshospitalet, Denmark" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "Denmark" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT06907875",
+          "briefTitle": "A First-in-human Study of EPI-321 in Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "A Phase 1/2 Open-label Dose-escalation Study to Evaluate the Safety, Tolerability, and Biological Activity of EPI-321, an AAVrh74-delivered Epigenetic Editing Therapy in Adult FSHD Patients"
+        },
+        "statusModule": {
+          "overallStatus": "ACTIVE_NOT_RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-07-20" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Epicrispr Biotechnologies, Inc." }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Australia" },
+            { "country": "New Zealand" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT04003974",
+          "briefTitle": "Efficacy and Safety of Losmapimod in Subjects With Facioscapulohumeral Muscular Dystrophy (FSHD)",
+          "officialTitle": "A Phase 2, Randomized, Double-Blind, Placebo-Controlled, 48-Week, Parallel-Group Study of the Efficacy and Safety of Losmapimod in Treating Subjects With Facioscapulohumeral Muscular Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2024-07-10" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Fulcrum Therapeutics" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Canada" },
+            { "country": "Canada" },
+            { "country": "France" },
+            { "country": "Spain" },
+            { "country": "Spain" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02927080",
+          "briefTitle": "Study of ACE-083 in Patients With Facioscapulohumeral Muscular Dystrophy (FSHD)",
+          "officialTitle": "A Phase 2 Randomized, Double-Blind, Placebo-Controlled Study of ACE-083 in Patients With Facioscapulohumeral Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "TERMINATED",
+          "lastUpdatePostDateStruct": { "date": "2022-09-26" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": {
+            "name": "Acceleron Pharma, Inc., a wholly-owned subsidiary of Merck & Co., Inc., Rahway, NJ USA"
+          }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Canada" },
+            { "country": "Canada" },
+            { "country": "Canada" },
+            { "country": "Spain" },
+            { "country": "Spain" },
+            { "country": "Spain" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05747924",
+          "briefTitle": "Phase 1/2 Study of AOC 1020 in Participants With Facioscapulohumeral Muscular Dystrophy (FSHD)",
+          "officialTitle": "A Randomized, Double-blind, Placebo-controlled, Phase 1/2 Study to Evaluate the Safety, Tolerability, Pharmacokinetics, Pharmacodynamics, and Exploratory Efficacy of AOC 1020 Administered Intravenously to Participants With Facioscapulohumeral Muscular Dystrophy (FSHD)"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2026-07-16" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Avidity Biosciences, Inc." } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["PHASE1", "PHASE2"] },
+        "contactsLocationsModule": {
+          "locations": [
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "United States" },
+            { "country": "Canada" },
+            { "country": "United Kingdom" },
+            { "country": "United Kingdom" }
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02159963",
+          "briefTitle": "High Intensity Training in Patients With Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "High Intensity Interval Training in Patients With Facioscapulohumeral Muscular Dystrophy"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2016-04-25" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "Grete Andersen, MD" } },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "Denmark" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT05453461",
+          "briefTitle": "ADVANCED FSHD-COM: New Clinical Outcome Measures to Evaluate Non-ambulant FSHD Patients, a Pilot Study",
+          "officialTitle": "ADVANCED FSHD-COM: New Clinical Outcome Measures to Evaluate Non-ambulant FSHD Patients, a Pilot Study"
+        },
+        "statusModule": {
+          "overallStatus": "ACTIVE_NOT_RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2025-09-25" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Centre Hospitalier Universitaire de Nice" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "France" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02766985",
+          "briefTitle": "Rasch-analysis of Clinical Severity in FSHD",
+          "officialTitle": "Rasch-analysis of Clinical Severity in FSHD"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2018-04-12" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "University of Kansas Medical Center" }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "United States" }, { "country": "United States" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02948244",
+          "briefTitle": "Effect of Creatine Monohydrate on Functional Muscle Strength in Children With FSHD",
+          "officialTitle": "Effect of Creatine Monohydrate on Functional Muscle Strength and Muscle Mass in Children With FSHD: a Multi-centre, Randomised, Double-blind Placebo-controlled Crossover Trial"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2023-02-08" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Murdoch Childrens Research Institute" }
+        },
+        "designModule": { "studyType": "INTERVENTIONAL", "phases": ["NA"] },
+        "contactsLocationsModule": { "locations": [{ "country": "Australia" }] }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT02413190",
+          "briefTitle": "Bone Health in Facioscapulohumeral Muscular Dystrophy",
+          "officialTitle": "Bone Health in Facioscapulohumeral Muscular Dystrophy: A Cross-sectional Study"
+        },
+        "statusModule": {
+          "overallStatus": "COMPLETED",
+          "lastUpdatePostDateStruct": { "date": "2019-11-05" }
+        },
+        "sponsorCollaboratorsModule": {
+          "leadSponsor": { "name": "Hugo W. Moser Research Institute at Kennedy Krieger, Inc." }
+        },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": {
+          "locations": [{ "country": "United States" }, { "country": "Australia" }]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT07409142",
+          "briefTitle": "BetterLife FSHD: A Patient-driven Health and Research Platform",
+          "officialTitle": "BetterLife FSHD: A Patient-driven Health and Research Platform"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "lastUpdatePostDateStruct": { "date": "2026-02-20" }
+        },
+        "sponsorCollaboratorsModule": { "leadSponsor": { "name": "FSHD Society" } },
+        "designModule": { "studyType": "OBSERVATIONAL" },
+        "contactsLocationsModule": { "locations": [{ "country": "United States" }] }
+      }
+    }
+  ]
+}

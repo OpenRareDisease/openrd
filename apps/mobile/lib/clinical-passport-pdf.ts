@@ -146,6 +146,37 @@ export const buildClinicalPassportPdfHtml = (
     `
     : '';
 
+  /**
+   * 契约 §B3 在这张纸上的落点：基线里不是患者本人填的字段，逐条列出。
+   *
+   * 三种情况分开处理，`undefined` 不当成「没有标记」。这一项是新加的，
+   * 而这个 App 是 web export，微信浏览器会缓存好几天——新前端配上还没升
+   * 级的后端时字段就是 undefined。把它读成「都是本人填的」，恰好就是这
+   * 整块代码要防的那句假话，所以那种情况直接说服务端没给。
+   */
+  const origins = summary.fieldOrigins;
+  const fieldOriginsBlock =
+    origins === undefined
+      ? `<div class="note">
+          <p class="note-title">字段来源</p>
+          <p class="info-value">服务端这一版没有返回字段来源，无法确认本节的值是否都由患者本人填写。</p>
+        </div>`
+      : origins.length === 0
+        ? ''
+        : `<div class="note">
+          <p class="note-title">这些字段不是患者本人填的</p>
+          <ul>${origins
+            .map(
+              (origin) =>
+                `<li>${escapeHtml(origin.labelZh)}：${
+                  origin.state === 'admin_entered'
+                    ? `「肌愈通」管理员于 ${safeDate(origin.at, '未记录时间')} 代为录入，不是患者本人填写。`
+                    : `来源记录读不出来（${escapeHtml(origin.detail ?? '原因未记录')}），只能确定不是患者本人填写。`
+                }</li>`,
+            )
+            .join('')}</ul>
+        </div>`;
+
   const summaryCards = summary.summaryCards
     .map(
       (card) => `
@@ -526,7 +557,12 @@ export const buildClinicalPassportPdfHtml = (
                 : `<p class="unconfirmed-banner">${
                     summary.diagnosis.confirmation === 'self_reported'
                       ? '⚠ 未经基因确诊：本节内容由患者本人填写，尚无基因检测报告佐证，请勿据此确认诊断。'
-                      : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
+                      : summary.diagnosis.confirmation === 'admin_entered'
+                        ? // 契约 §B3 的第四种来源。以前只有三个分支，管理员
+                          // 代填的值落进 self_reported，这张纸就告诉医生
+                          // 「患者本人填写」——而患者可能没见过那段字。
+                          '⚠ 未经基因确诊：本节内容由「肌愈通」管理员根据患者电话或消息代为录入，不是患者本人填写，患者可能未核对过，尚无基因检测报告佐证，请勿据此确认诊断。'
+                        : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
                   }</p>`
             }
           </div>
@@ -554,6 +590,7 @@ export const buildClinicalPassportPdfHtml = (
           <p class="note-title">证据摘要</p>
           <p class="info-value">${safeText(summary.diagnosis.geneEvidence)}</p>
         </div>
+        ${fieldOriginsBlock}
       </section>
 
       <section class="section">

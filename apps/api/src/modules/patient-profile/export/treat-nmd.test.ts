@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/profile.fixture.js';
 import { locatorsIn } from './__fixtures__/reason-claims.js';
 import { classifyDiagnosisType, normaliseSource } from './export-source.js';
+import { applyAdminBaselineWrite } from '../baseline-provenance.js';
 import { buildTreatNmdExport, type TreatNmdSection } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
@@ -313,5 +314,113 @@ describe('classifyDiagnosisType', () => {
     // 「FSHD2」 contains 「FSHD」; a naive FSHD1-first test would have
     // to be right by luck.
     expect(classifyDiagnosisType('FSHD2 型')).toBe('FSHD2');
+  });
+});
+
+/**
+ * Contract §B3 in this format.
+ *
+ * TREAT-NMD is the one of the three with a per-item provenance slot, so
+ * it gets both: the item's own `provenanceZh` says who typed the value,
+ * and the envelope carries the full list for a receiver that reads the
+ * envelope rather than the items.
+ */
+describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** Built with the real write helper rather than a hand-rolled block,
+   *  so a reshape of the provenance record breaks this test instead of
+   *  sliding past it. */
+  const adminEditedProfile = (): PatientProfileDTO => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    return {
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: applyAdminBaselineWrite(
+        stored,
+        {
+          ...stored,
+          diseaseBackground: { ...disease, diagnosisType: 'FSHD2', d4z4: '9 个重复单元' },
+        },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+    } as PatientProfileDTO;
+  };
+
+  it('把来源写进条目自己的 provenanceZh 里', () => {
+    const diagnosis = sectionOf(build(adminEditedProfile()), 'diagnosis');
+
+    expect(itemOf(diagnosis, 'diagnosis.type')?.provenanceZh).toContain('不是患者本人填写');
+    expect(itemOf(diagnosis, 'diagnosis.d4z4')?.provenanceZh).toContain('管理员');
+    // The fields the administrator did NOT touch keep their old string
+    // exactly — a blanket disclaimer would be the same lie in reverse.
+    expect(itemOf(diagnosis, 'diagnosis.haplotype')?.provenanceZh).toBe(
+      '基线问卷或基因报告结构化解析',
+    );
+  });
+
+  it('信封上逐条列出，带管理员账号和时间', () => {
+    expect(build(adminEditedProfile()).fieldOrigins).toEqual([
+      {
+        path: 'diseaseBackground.d4z4',
+        labelZh: 'D4Z4 重复数',
+        state: 'admin_entered',
+        adminUserId: ADMIN_ID,
+        at: '2026-08-13T04:11:07.912Z',
+        detail: null,
+      },
+      {
+        path: 'diseaseBackground.diagnosisType',
+        labelZh: 'FSHD 分型',
+        state: 'admin_entered',
+        adminUserId: ADMIN_ID,
+        at: '2026-08-13T04:11:07.912Z',
+        detail: null,
+      },
+    ]);
+  });
+
+  it('数据性质那一句不再笼统说「都是患者自述」', () => {
+    const marked = build(adminEditedProfile());
+    expect(marked.notes.数据性质).toContain('不是患者本人填写的');
+    // And it says the opposite, explicitly, when nothing is marked —
+    // an empty list is a claim, not a shrug.
+    expect(build().notes.数据性质).toContain('没有代填');
+    expect(build().fieldOrigins).toEqual([]);
+  });
+
+  it('姓名也标出来 —— upsertBaseline 会把它 COALESCE 进 full_name 列', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const foundation = stored.foundation as Record<string, unknown>;
+    const profile = {
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: applyAdminBaselineWrite(
+        stored,
+        { ...stored, foundation: { ...foundation, fullName: '张雨' } },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+    } as PatientProfileDTO;
+
+    const local = build(profile, true).document.localOnly;
+    expect(local?.items.find((item) => item.key === 'local.fullName')?.provenanceZh).toContain(
+      '不是患者本人填写',
+    );
+  });
+
+  it('读不出来的标记按「不是本人填写」处理，不退回成本人填写', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const result = build({
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: {
+        ...stored,
+        fieldProvenance: { 'diseaseBackground.diagnosisType': { source: '?' } },
+      },
+    } as PatientProfileDTO);
+
+    expect(result.fieldOrigins[0]).toMatchObject({ state: 'unreadable', adminUserId: null });
+    expect(itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.type')?.provenanceZh).toContain(
+      '不是患者本人填写',
+    );
   });
 });

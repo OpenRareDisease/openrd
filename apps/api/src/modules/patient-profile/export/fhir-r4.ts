@@ -3,6 +3,7 @@ import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   deterministicUuid,
   instrumentOmission,
+  originNoteZh,
   resourceUuid,
   type NormalisedSource,
 } from './export-source.js';
@@ -275,18 +276,33 @@ export const buildFhirExport = (
           code: source.geneticEvidence.hasGeneticReport ? 'confirmed' : 'unconfirmed',
         },
       ],
+      // 「患者自述诊断」 is a claim about WHO SAID IT, and it stopped
+      // being automatically true when a back office gained the ability
+      // to type the diagnosis in on the patient's behalf (contract §B3).
       text: source.geneticEvidence.hasGeneticReport
         ? '患者已上传基因检测报告（报告内容未经本平台人工复核）'
-        : '患者自述诊断，未上传基因检测报告',
+        : `未上传基因检测报告；诊断信息来自档案记录${
+            originNoteZh(source, 'diseaseBackground.diagnosisType') ?? '，由患者本人填写'
+          }`,
     },
     code: codeableText(conditionText),
     subject: { reference: patientRef },
     ...(source.diagnosisYear.kind === 'year'
       ? { recordedDate: String(source.diagnosisYear.year) }
       : {}),
-    ...(source.diagnosisYear.kind === 'unknown'
-      ? { note: [{ text: '确诊年份：患者记不清了（已问过，不是未采集）。' }] }
-      : {}),
+    // `note` is the one conformant slot on a Condition for a sentence a
+    // human has to read. Both facts belong in it, so a receiver that
+    // never opens the envelope still sees them.
+    ...(() => {
+      const yearOrigin = originNoteZh(source, 'foundation.diagnosisYear');
+      const notes = [
+        ...(source.diagnosisYear.kind === 'unknown'
+          ? ['确诊年份：患者记不清了（已问过，不是未采集）。']
+          : []),
+        ...(yearOrigin ? [`确诊年份${yearOrigin}。`] : []),
+      ];
+      return notes.length > 0 ? { note: notes.map((text) => ({ text })) } : {};
+    })(),
   });
 
   // ------------------------------------------- DocumentReference first
@@ -739,7 +755,21 @@ export const buildFhirExport = (
     generatedAt: options.generatedAt,
     document: bundle,
     omissions,
+    fieldOrigins: source.fieldOrigins,
     notes: {
+      // §B3. FHIR validators reject unknown fields, so there is no
+      // conformant place inside the Bundle for a per-field 「our staff
+      // typed this, not the patient」 — which is exactly why the
+      // envelope exists (envelope.ts). The Condition carries the two
+      // diagnosis-facing ones in `note`; the full list is here.
+      字段来源:
+        source.fieldOrigins.length === 0
+          ? '本次导出的基线字段全部由患者本人填写或来自其上传的报告，没有本平台工作人员代填。'
+          : `本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来）：${source.fieldOrigins
+              .map((origin) => origin.labelZh)
+              .join(
+                '、',
+              )}。逐条见信封的 fieldOrigins。FHIR 的资源结构里没有可以承载这一区分的合规位置，所以它在信封上而不在 Bundle 里；把这些值当作患者自述会记错。`,
       编码: hasExternalCodings
         ? `本 Bundle 中出现的 system，除已核对来源的第三方术语（${codedSystemsZh}）之外，均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category）。哪些是第三方术语、各自的核对来源，见 codingProvenance.emitted。`
         : '本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。',

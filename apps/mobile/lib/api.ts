@@ -792,17 +792,35 @@ export interface ClinicalPassportSummary {
     summary: string;
     meta: string;
   }>;
+  /**
+   * 基线里不是患者本人填的那些字段（契约 §B3）。没有标记就是空数组——
+   * 「没有条目」本身是一个结论，不是「不知道」：只有管理员写入才会留下
+   * 条目，患者自己改回同一个字段条目就被删掉。
+   */
+  fieldOrigins?: Array<{
+    path: string;
+    labelZh: string;
+    state: 'admin_entered' | 'unreadable';
+    adminUserId: string | null;
+    at: string | null;
+    detail: string | null;
+  }>;
   diagnosis: {
     ready: boolean;
-    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的。
+    /** 'genetic' 才是基因报告佐证过的；'self_reported' 是患者自己填的；
+     *  'admin_entered' 是本平台管理员在后台代填的——那既不是证据，也不是
+     *  患者自己的说法，患者本人可能根本没见过那段文字。
      *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
-     *  医生手里，患者的自述不能和基因结果长得一样。 */
-    confirmation: 'genetic' | 'self_reported' | 'none';
+     *  医生手里，患者的自述不能和基因结果长得一样，我们自己敲进去的字
+     *  更不能写成患者的自述。 */
+    confirmation: 'genetic' | 'self_reported' | 'admin_entered' | 'none';
     /** 患者自己在建档表上答的那一级，没答过就是 null。和 `confirmation`
      *  回答的不是同一个问题（「你怎么说」 vs 「报告怎么写」），护照两个
      *  都显示，不做调和。 */
     ladder?: DiagnosisLadderState | null;
     ladderLabel?: string | null;
+    /** 那一级是谁填的：本人填写 / 管理员代填 / 来源不明。 */
+    ladderOriginZh?: string | null;
     latestSourceDate: string | null;
     latestDocumentId: string | null;
     freshness: PassportFreshness;

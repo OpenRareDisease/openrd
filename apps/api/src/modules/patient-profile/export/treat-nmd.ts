@@ -1,6 +1,11 @@
 import { buildCodingProvenance, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
-import { instrumentOmission, type MilestoneEvent, type NormalisedSource } from './export-source.js';
+import {
+  instrumentOmission,
+  withOriginNote,
+  type MilestoneEvent,
+  type NormalisedSource,
+} from './export-source.js';
 import {
   AMBULATION_LABELS,
   FOLLOWUP_EVENT_LABELS,
@@ -149,16 +154,23 @@ export const buildTreatNmdExport = (
         key: 'diagnosis.type',
         labelZh: 'FSHD 分型',
         value: source.diagnosisType,
-        provenanceZh:
+        provenanceZh: withOriginNote(
+          source,
+          'diseaseBackground.diagnosisType',
           source.diagnosisTypeRawZh === null
             ? '未采集到分型；unspecified 表示「未确定是哪一型」，不是默认为 1 型'
             : `患者档案记录为「${source.diagnosisTypeRawZh}」`,
+        ),
       },
       {
         key: 'diagnosis.year',
         labelZh: '确诊年份',
         value: serialiseYear(source.diagnosisYear),
-        provenanceZh: '基线问卷的确诊年份，缺失时回退到确诊日期的年份部分',
+        provenanceZh: withOriginNote(
+          source,
+          'foundation.diagnosisYear',
+          '基线问卷的确诊年份，缺失时回退到确诊日期的年份部分',
+        ),
       },
       {
         key: 'diagnosis.geneticallyConfirmed',
@@ -170,19 +182,19 @@ export const buildTreatNmdExport = (
         'diagnosis.d4z4',
         'D4Z4 重复单元数',
         source.geneticEvidence.d4z4,
-        '基线问卷或基因报告结构化解析',
+        withOriginNote(source, 'diseaseBackground.d4z4', '基线问卷或基因报告结构化解析'),
       ),
       textItem(
         'diagnosis.haplotype',
         '4q 单倍型',
         source.geneticEvidence.haplotype,
-        '基线问卷或基因报告结构化解析',
+        withOriginNote(source, 'diseaseBackground.haplotype', '基线问卷或基因报告结构化解析'),
       ),
       textItem(
         'diagnosis.methylation',
         '甲基化',
         source.geneticEvidence.methylation,
-        '基线问卷或基因报告结构化解析',
+        withOriginNote(source, 'diseaseBackground.methylation', '基线问卷或基因报告结构化解析'),
       ),
     ]),
     noteZh: null,
@@ -202,7 +214,11 @@ export const buildTreatNmdExport = (
             'familyHistory.statement',
             '患者对自身家族史的陈述',
             source.familyHistoryStatement,
-            '患者自述。这是患者关于其亲属的陈述，不是亲属本人的病历，也未经亲属本人确认',
+            withOriginNote(
+              source,
+              'diseaseBackground.familyHistory',
+              '患者自述。这是患者关于其亲属的陈述，不是亲属本人的病历，也未经亲属本人确认',
+            ),
           ),
         ]),
         noteZh:
@@ -425,12 +441,21 @@ export const buildTreatNmdExport = (
         titleZh: '仅本地留存（直接身份信息）',
         collected: true,
         items: compact([
-          textItem('local.fullName', '姓名', profile.fullName, '患者本人填写'),
+          // `patient_profiles.full_name` is COALESCEd out of
+          // `foundation.fullName` by `upsertBaseline`, so an
+          // administrator's edit lands in this column too. 「患者本人填写」
+          // is therefore a claim that has to be checked, not asserted.
+          textItem(
+            'local.fullName',
+            '姓名',
+            profile.fullName,
+            withOriginNote(source, 'foundation.fullName', '患者本人填写'),
+          ),
           textItem(
             'local.preferredName',
             '希望被称呼的名字',
             profile.preferredName,
-            '患者本人填写',
+            withOriginNote(source, 'foundation.preferredName', '患者本人填写'),
           ),
           textItem(
             'local.diagnosingPhysician',
@@ -475,13 +500,21 @@ export const buildTreatNmdExport = (
       codingProvenance: buildCodingProvenance([]),
     },
     omissions,
+    fieldOrigins: source.fieldOrigins,
     notes: {
       年份字段:
         '所有年份字段都有三种答案：已知 / 记不清了 / 未采集。「记不清了」是一个真实答案，表示问过而患者记不清，不要与「未采集」合并处理。',
       日期精度:
         '里程碑事件的日期来自一个只能存完整时间点的字段。请阅读每条事件的 occurrence.noteZh，不要把它当作精确到天的观察。',
+      // The 数据性质 line used to end at 「每个条目的 provenanceZh 写明了
+      // 来源」 in every case — including the case where some of those
+      // values were typed by our own staff and the provenance strings
+      // said 患者自述. Both halves are now true: the strings carry the
+      // annotation, and this note points at the list.
       数据性质:
-        '本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。',
+        source.fieldOrigins.length === 0
+          ? '本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。本次导出的基线字段全部由患者本人填写，没有代填。'
+          : `本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。注意：本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来），逐条列在信封的 fieldOrigins 中，相关条目的 provenanceZh 也各自标注了。不要把这些值当作患者自述来统计。`,
     },
   };
 };

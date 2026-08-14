@@ -10,6 +10,7 @@ import type { AppEnv } from '../config/env.js';
 import type { AppLogger } from '../config/logger.js';
 import { getPool } from '../db/pool.js';
 import { isShuttingDown } from '../lifecycle.js';
+import { createAdminRouter } from '../modules/admin/admin.routes.js';
 import { createAuthRouter } from '../modules/auth/auth.routes.js';
 import { createLegalRouter } from '../modules/legal/legal.routes.js';
 import {
@@ -17,6 +18,7 @@ import {
   createPublicPassportRouter,
 } from '../modules/patient-profile/passport-share.routes.js';
 import { createPatientProfileRouter } from '../modules/patient-profile/profile.routes.js';
+import { createTrialsRouter } from '../modules/trials/trials.routes.js';
 import { OCR_PROCESSOR_DISCLOSURES } from '../services/ocr/ocr-provider.js';
 import { asyncHandler } from '../utils/async-handler.js';
 
@@ -451,11 +453,21 @@ export const registerRoutes = (app: Express, context: RouteContext) => {
     }),
   );
 
+  // The back-office. Every route inside goes through `requireAdmin`,
+  // which reads the role from the database and writes one audit row per
+  // request — reads included. `getHealthSummary` is handed in rather
+  // than imported by that module, because it lives here and this module
+  // imports that one.
+  apiRouter.use(
+    '/admin',
+    createAdminRouter(context, { healthSummary: () => getHealthSummary(context) }),
+  );
   apiRouter.use('/auth', createAuthRouter(context));
   apiRouter.use('/ai', createAiChatRoutes(context));
   apiRouter.use('/legal', createLegalRouter(context));
   apiRouter.use('/profiles', createPatientProfileRouter(context));
   apiRouter.use('/passport-shares', createPassportShareRouter(context));
+  apiRouter.use('/trials', createTrialsRouter(context));
 
   app.use('/api', apiRouter);
 

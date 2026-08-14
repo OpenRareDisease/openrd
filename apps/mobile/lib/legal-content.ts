@@ -97,7 +97,13 @@ export const LEGAL_DOCUMENTS = {
 
 export type LegalDocumentId = (typeof LEGAL_DOCUMENTS)[keyof typeof LEGAL_DOCUMENTS];
 
-/** Effective date shown inside the documents themselves. */
+/**
+ * Effective date of the document set as first published.
+ *
+ * Still exported and still what three of the four documents carry: none
+ * of them has been revised since. A document that IS revised gets its
+ * own date in LEGAL_EFFECTIVE_DATES below — see why there.
+ */
 export const LEGAL_EFFECTIVE_DATE = '2026-08-02';
 
 /**
@@ -108,9 +114,38 @@ export const LEGAL_EFFECTIVE_DATE = '2026-08-02';
  */
 export const LEGAL_DOCUMENT_VERSIONS: Record<LegalDocumentId, string> = {
   [LEGAL_DOCUMENTS.userAgreement]: '2026-08-02',
-  [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-02',
+  // Revised when the administrator back office landed: §10 is a new
+  // recipient and a new processing purpose (see PRIVACY_POLICY_SECTIONS).
+  [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-13',
   [LEGAL_DOCUMENTS.sensitiveData]: '2026-08-02',
-  [LEGAL_DOCUMENTS.guardianConsent]: '2026-08-02',
+  // Same revision: §4 of the guardian rules used to say our operations
+  // staff do not read a child's record, and the back office makes that
+  // false.
+  [LEGAL_DOCUMENTS.guardianConsent]: '2026-08-13',
+};
+
+/**
+ * Effective date OF EACH DOCUMENT, which is not one date any more.
+ *
+ * It used to be a single constant, which was right while all four
+ * documents were published together and none had been revised. The
+ * moment one is revised on its own, one constant forces a choice
+ * between two wrong things: leave it, and the revised text reads
+ * 「版本 2026-08-13，生效日期 2026-08-02」 — a revision that took effect
+ * eleven days before it was written; or move it, and the three
+ * documents nobody touched silently change their own text without a
+ * version bump, which is exactly the drift the file header forbids.
+ *
+ * So the date moves per document, with the version. A document's
+ * version IS its effective date here, and the two are asserted equal in
+ * legal-content.test.ts — a revision that took effect on some other day
+ * would need a reason, and there is no such reason yet.
+ */
+export const LEGAL_EFFECTIVE_DATES: Record<LegalDocumentId, string> = {
+  [LEGAL_DOCUMENTS.userAgreement]: LEGAL_EFFECTIVE_DATE,
+  [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-13',
+  [LEGAL_DOCUMENTS.sensitiveData]: LEGAL_EFFECTIVE_DATE,
+  [LEGAL_DOCUMENTS.guardianConsent]: '2026-08-13',
 };
 
 export const USER_AGREEMENT_TITLE = '用户协议';
@@ -132,7 +167,7 @@ const VERSION_LINE = (documentId: LegalDocumentId) =>
   '版本 ' +
   LEGAL_DOCUMENT_VERSIONS[documentId] +
   '，生效日期 ' +
-  LEGAL_EFFECTIVE_DATE +
+  LEGAL_EFFECTIVE_DATES[documentId] +
   '。本文本的每一次修订都会更新版本号；你在注册或首次上传报告时同意的版本号会被记录，可在「隐私设置」中查看。';
 
 /**
@@ -164,7 +199,7 @@ export const GUARDIAN_CONSENT_SECTIONS: LegalSection[] = [
   },
   {
     title: '4. 谁能看到',
-    body: '只有登录该账号的人。我们的运维人员不会主动查阅具体患儿的报告；因排障确需接触时会有操作记录。第三方大模型服务的处理需要监护人在首次上传报告前另行单独同意，未同意则报告不会离开我们的服务器。',
+    body: '登录该账号的人，以及我们的管理员账号。这一条在 2026-08-13 这一版改过：以前它写的是「我们的运维人员不会主动查阅具体患儿的报告」，管理员后台上线后这句话不再成立。管理员可以查阅这位患儿的档案，也可以代填基线临床字段（姓名、称呼、地区、出生与确诊年份、分型、D4Z4、单倍型、甲基化、家族史、起病部位、备注这十二项）；患儿对自己身体的那些回答，后台只能看，服务端会拒绝代填。代填过的字段会标注「管理员代填」，临床护照和三种导出文件里都单独列出来，不会写成「本人填写」；监护人自己再改一次那一个字段，标记就消失、回到监护人名下。管理员把某个字段清空则不留标记——那里已经没有值可以标了，但清空这个动作记在访问记录里。每一次查阅和修改都会留下带时间的记录，保存 180 天，监护人可以按《隐私政策》第 1 条的方式来问是谁看过。管理员权限不能自助获取，只能由能登录我们服务器的人在命令行上授予。详见《隐私政策》第 10 条。第三方大模型服务的处理需要监护人在首次上传报告前另行单独同意，未同意则报告不会离开我们的服务器。',
   },
   {
     title: '5. 保存多久',
@@ -310,12 +345,14 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
       '· 其他患者——仅限你自己在社区主动发布的内容。',
       '· 司法与监管机关——在法律法规明确要求时，按法定程序提供。',
       '',
+      '还有一种访问不在上面这份名单里，因为它不是「向第三方提供」：我们自己的管理员账号可以查阅你的档案，也可以代你填写基线临床字段。他们是我们的人，不是另一个接收方，但那同样是有人看了你的病历。这件事单列在第 10 条——谁能看、为什么看、留下了什么记录、你怎么问。',
+      '',
       '除上述情形外，我们不向境外提供你的个人信息，也没有境外接收方。',
     ].join('\n'),
   },
   {
     title: '6. 我们如何保护这些信息',
-    body: '传输使用 HTTPS；密码使用加盐哈希存储，我们无法还原你的原始密码；报告文件存放在权限受限的对象存储中，仅能通过你本人登录后的接口取回；智能问答的提示词在送出前经过姓名、手机号、身份证号的脱敏处理；每一次同意的开启与关闭都有带时间戳的记录。我们的团队规模有限，无法承诺绝对安全；一旦发生个人信息泄露、篡改或丢失，我们会按《个人信息保护法》第 57 条立即采取补救措施，并通过 App 内提示、短信或第 1 条的联系方式通知你与监管部门。',
+    body: '传输使用 HTTPS；密码使用加盐哈希存储，我们无法还原你的原始密码；报告文件存放在权限受限的对象存储中，只能通过登录后的接口取回，猜地址下载不到；除你本人以外，能通过接口访问你档案的只有第 10 条所说的管理员账号，而且每一次都留痕；智能问答的提示词在送出前经过姓名、手机号、身份证号的脱敏处理；每一次同意的开启与关闭都有带时间戳的记录。我们的团队规模有限，无法承诺绝对安全；一旦发生个人信息泄露、篡改或丢失，我们会按《个人信息保护法》第 57 条立即采取补救措施，并通过 App 内提示、短信或第 1 条的联系方式通知你与监管部门。',
   },
   {
     title: '7. 你的权利以及在哪里行使',
@@ -325,6 +362,7 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
       '· 删除——单份报告在「报告管理」中删除；单条随访记录在记录详情中撤回；全部数据随账号注销一并删除。',
       '· 撤回同意——「隐私设置」中的每一个开关都可随时关闭，包括 AI 授权三项与临床试验、数据捐赠、医院同步、社区分享四项。关闭立即生效，不影响关闭前已完成的处理。',
       '· 查看我们对你数据的 AI 使用记录——「隐私设置 → 查看 AI 调用记录」。',
+      '· 知道谁看过你的档案——见第 10 条。这一项 App 里还没有自助入口（「查看 AI 调用记录」只覆盖 AI 调用，不含后台查阅），请通过第 1 条的联系方式提出，我们会按第 1 条的承诺答复，能查到的范围是最近 180 天。',
       '· 注销账号——「我的 → 注销账号」。申请后进入 7 天冷静期，期间可随时撤销；冷静期结束后系统自动删除你的账号、档案、测试记录与报告文件。为了证明删除确已执行，我们会保留一条不含你健康信息的注销记录。',
       '· 解释说明——对本政策或我们的处理活动有疑问，可通过第 1 条的联系方式要求解释。',
       '',
@@ -338,6 +376,41 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
   {
     title: '9. 本政策的更新',
     body: '本政策修订后会更新版本号与生效日期。涉及处理目的、处理方式、信息种类或接收方实质变更的，我们会在 App 内重新征得你的同意；仅文字表述调整的，会在本页更新并保留历史版本供你索取。',
+  },
+  {
+    title: '10. 我们自己的人什么时候会看到你的档案',
+    body: [
+      '这一条是 2026-08-13 这一版新加的，因为我们上线了一个管理员后台。在此之前这份政策没提过这件事。',
+      '',
+      '（一）谁能看',
+      '只有角色被设为「管理员」的账号。这个角色不能自己给自己：注册页上没有这个选项，只能由能登录我们服务器的人在命令行上授予，授予时要把对方的手机号完整敲一遍确认，这次授予本身也会被记录下来。收回同样是一条命令，收回后立刻生效——服务端每次请求都重新去数据库读一遍角色，不看登录时发的令牌。',
+      '',
+      '（二）为什么看',
+      '为了处理你自己解决不了的事：报告一直解析不出来、账号进不去，或者你打电话、发消息请我们代为更正、补充档案里的字段。不用于其它目的，不用于统计以外的分析，也不会拿去做推荐或排序。',
+      '',
+      '（三）能看到什么',
+      '· 患者列表上，姓名和手机号是打码的（张〇 / 139****0001）。搜索能匹配到完整的姓名和手机号，但返回给屏幕的仍然是打码的。',
+      '· 要看到完整信息，必须打开你这一个人的档案——那一次会单独记一条。打开后能看到：你的手机号与账号信息、基线临床字段、随访事件、跌倒记录、量表结果，以及你上传的报告清单（报告标题、类型、状态、上传时间）。报告标题是你自己起的，里面可能带医院或人名，管理员会看到你写的那一行；报告文件本身和识别出的文字不在这个页面上。',
+      '· 管理员还可以把你这一份档案导成一个文件（FHIR / Phenopacket / TREAT-NMD 三种研究与医院系统常用的格式），内容与上一条能看到的范围相同，只是换成机器可读的写法。导出同样会单独记一条。这个文件不含你上传的报告原件。',
+      '· 我们内部另有一个把全部患者导成一张表的操作，用于统计与迁移。它需要在后台把一句确认语完整敲一遍，会单独记一条，文件名里带操作时间和操作者。这张表里含姓名、手机号与所在地区，没有打码。',
+      '· 后台能看到的范围如果扩大，我们会先改这一条并更新版本号。',
+      '',
+      '（四）能改什么，以及改过的会被标出来',
+      '管理员只能编辑基线临床字段（姓名、称呼、地区、出生与确诊年份、分型、D4Z4、单倍型、甲基化、家族史、起病部位、备注），一共这十二项。你对自己身体的那些回答——诊断进展、能不能独立行走、各项困难评分——后台只能看，不能替你填。这不是「后台页面上没做输入框」：服务端有一份这十二项的名单，改动名单以外的任何字段，请求会被直接拒绝并告诉操作者拒绝了哪几项。',
+      '被管理员填过的字段会单独标一个「管理员代填」，标记跟值一起存在你的档案里。你的临床护照（App 里、导出的 PDF、以及你分享给医生的那个网页）会把这些字段单独列出来，写明是管理员在什么时候代填的；三种导出文件（FHIR / Phenopacket / TREAT-NMD）也各自带着这份清单。这些地方都不会写成「本人填写」。',
+      '你自己再改一次同一个字段，这个标记就消失，这个字段回到你名下——是按字段算的，你改哪一个就只放开哪一个，其它字段的标记不受影响；你打开表单看一眼、原样保存，什么都不会放开。',
+      '管理员把某个字段清空，则不会留下「管理员代填」标记：那里已经没有值了，一个标着来源却没有值的字段只会让人误会。清空这个动作本身记在访问记录里（见下一条）。',
+      '',
+      '（五）留下了什么记录',
+      '每一次访问都记一条，包括只是打开看看、什么都没改。记录里有：哪个管理员账号、什么时间、访问了哪个后台接口、看的是谁。不记录他为什么看，也不记录他在屏幕上具体读到了哪几行。搜索框里输入的内容（比如你的名字）不会写进这条记录。',
+      '如果这条记录写不进去，服务端会直接拒绝这次访问，而不是先让人看、事后补记——宁可管理员看不成，也不留下一次没有记录的查阅。',
+      '',
+      '（六）保存多久',
+      '和第 3 条（五）里其它审计日志一样，保存 180 天后自动删除。这句话反过来也是真的：超过 180 天以前谁看过你的档案，我们答不上来。',
+      '',
+      '（七）你怎么问',
+      'App 里目前没有自助查询入口。请通过第 1 条的邮箱或电话提出，我们会按第 1 条的承诺在 15 个工作日内答复，能答复的范围是最近 180 天。如果你发现有人在没有正当理由的情况下看了你的档案，也请通过同样的方式告诉我们，或者按第 1 条所说向网信部门投诉。',
+    ].join('\n'),
   },
 ];
 

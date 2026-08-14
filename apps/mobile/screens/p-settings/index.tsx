@@ -15,6 +15,7 @@ import {
   type AccountDeletionStatus,
 } from '../../lib/api';
 import { COLOR } from '../../lib/design';
+import { isAdminRole } from '../../lib/admin-access';
 import { isFeatureEnabled } from '../../lib/feature-flags';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import ListGroup, { Row } from '../common/ListGroup';
@@ -311,6 +312,26 @@ const SettingsScreen = () => {
             detail="按指南，结合你已录入的信息，哪些检查值得和医生确认"
             onPress={() => router.push('/p-surveillance')}
           />
+          {/* 临床试验 sits in this group and not in 探索 · 即将上线,
+              which is where a page about trials would be expected to
+              go. The distinction that group encodes is whether the page
+              is finished and sourced: 临床试验广场 in there is still an
+              UnavailableScreen, while this one shows what
+              ClinicalTrials.gov actually says with the date we copied
+              it on every screenful. Putting it behind the 即将上线
+              badge would cost it its readership, which is the failure
+              this group's header comment already describes.
+
+              The「· 在中国」half of the group title earns it too: the
+              one thing this page has to tell a mainland reader is that
+              the list does NOT cover trials registered only with
+              药物临床试验登记与信息公示平台, and where to go instead. */}
+          <Row
+            icon="flask-vial"
+            label="临床试验"
+            detail="注册库上登记的 FSHD 试验，以及这份名单是哪天抄下来的"
+            onPress={() => router.push('/p-trials')}
+          />
           <Row
             icon="clipboard-list"
             label="残疾评定准备"
@@ -440,6 +461,27 @@ const SettingsScreen = () => {
                 }
               />
             ))}
+          </ListGroup>
+        ) : null}
+
+        {/* 后台 — the ONLY door into the back office, and it does not
+            exist for a patient.
+
+            Not `disabled`, not a 「无权限」 notice: §B4 asks for an entry
+            point that is invisible to a patient, so a non-admin renders
+            nothing at all here and the routes themselves are replaced
+            with /p-home by the gate in app/_layout.tsx. This is a
+            drawing decision made from the role cached at sign-in —
+            lib/admin-access.ts says why that is allowed to be stale,
+            and why it is not the access control. */}
+        {isAdminRole(user?.role) ? (
+          <ListGroup title="后台" footnote="这里看到的每一页都会记进审计，包括只是打开看看。">
+            <Row
+              icon="file-shield"
+              label="运维与患者档案"
+              detail="健康检查、解析失败队列、语料状态、AI 调用量，以及患者列表"
+              onPress={() => router.push('/p-admin')}
+            />
           </ListGroup>
         ) : null}
 

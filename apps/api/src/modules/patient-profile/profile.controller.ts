@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
+import { applyPatientBaselineWrite } from './baseline-provenance.js';
 import {
   buildPortableExport,
   isPortableExportFormat,
@@ -31,6 +32,7 @@ import {
   submissionListQuerySchema,
   updateProfileSchema,
 } from './profile.schema.js';
+import type { BaselineProfileInput } from './profile.schema.js';
 import type { PatientProfileService } from './profile.service.js';
 import { buildReferralPack } from './referral-pack.js';
 import type { AppLogger } from '../../config/logger.js';
@@ -688,9 +690,47 @@ export class PatientProfileController {
     res.status(200).json(result);
   };
 
+  /**
+   * The patient's own baseline write — and the other half of §B3.
+   *
+   * `baselineProfileSchema` is a plain Zod object, so the parse above
+   * STRIPS `fieldProvenance`, and `upsertBaseline` writes its argument
+   * over the whole `baseline_payload` column. Without the merge below,
+   * one patient saving one unrelated field erased every 管理员代填
+   * marker on the profile — including on fields they never touched —
+   * and the passport, the exports and the privacy policy all then said
+   * 「本人填写」 over values an administrator typed.
+   *
+   * `applyPatientBaselineWrite` carries the block forward and drops the
+   * entry for exactly the fields this write CHANGES. That is §B3's
+   * 「患者自己后续再改同一个字段时，标记回到本人填写」, per field, which
+   * is what §10（四）of the privacy policy promises in those words.
+   *
+   * `previous` must be the STORED column, not `getBaselineByUserId`'s
+   * read-time merge — see `getStoredBaselinePayload` for why.
+   *
+   * The read and the write are two statements rather than one
+   * transaction, exactly as on the administrator's side. Two saves for
+   * the same patient racing can only lose a marker (the later write
+   * diffs against a payload that predates the earlier one), never
+   * invent one; a lost marker degrades a value to 「本人填写」, which is
+   * the wrong direction, so this is a real if small hazard and it is
+   * written down rather than implied. Closing it needs
+   * `upsertBaseline` to do the merge inside its own UPDATE, which
+   * would change the admin path too and belongs with that lane.
+   */
   updateMyBaseline = async (req: AuthenticatedRequest, res: Response) => {
     const payload = baselineProfileSchema.parse(req.body);
-    const result = await this.service.upsertBaseline(req.user.id, payload);
+    const stored = await this.service.getStoredBaselinePayload(req.user.id);
+    const merged = applyPatientBaselineWrite(stored?.payload ?? null, payload);
+    // The cast is the point of the call. `BaselineProfileInput` has no
+    // `fieldProvenance` member — the schema strips it — while
+    // `upsertBaseline` writes its argument into the jsonb column
+    // verbatim, so the extra key has to survive the parameter.
+    const result = await this.service.upsertBaseline(
+      req.user.id,
+      merged as unknown as BaselineProfileInput,
+    );
     res.status(200).json(result);
   };
 

@@ -46,9 +46,15 @@ export const LEGAL_DOCUMENTS = {
  */
 export const LEGAL_DOCUMENT_VERSIONS: Record<LegalDocumentId, string> = {
   [LEGAL_DOCUMENTS.userAgreement]: '2026-08-02',
-  [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-02',
+  // 2026-08-13: the privacy policy gained §10 (「我们自己的人什么时候会看到
+  // 你的档案」) and the guardian rules' §4 was rewritten, both because the
+  // administrator back office is a new recipient and a new processing
+  // purpose. Bumping here is what makes `outstanding` report the debt —
+  // every account that accepted the older privacy policy now owes a
+  // re-acceptance. Keep in step with apps/mobile/lib/legal-content.ts.
+  [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-13',
   [LEGAL_DOCUMENTS.sensitiveData]: '2026-08-02',
-  [LEGAL_DOCUMENTS.guardianConsent]: '2026-08-02',
+  [LEGAL_DOCUMENTS.guardianConsent]: '2026-08-13',
 };
 
 /**

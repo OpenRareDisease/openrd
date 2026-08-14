@@ -30,6 +30,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
     completion: { completed: 2, total: 4 },
     metrics: [],
     summaryCards: [],
+    fieldOrigins: [],
     diagnosis: {
       ready: true,
       confirmation: 'genetic',
@@ -206,6 +207,45 @@ describe('确诊状态必须在数值之前出现', () => {
       diagnosis: { ...summary().diagnosis, confirmation: 'self_reported' },
     });
     expect(html).toContain('（本人填写）');
+  });
+
+  it('管理员代填的诊断不能印成「本人填写」', () => {
+    // §B3's fourth source. The banner used to have three branches, so
+    // an administrator's transcription landed in `self_reported` and
+    // this page told a neurologist the patient wrote it.
+    const html = page({
+      diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
+    });
+
+    const banner = html.indexOf('未经基因确诊');
+    expect(banner).toBeGreaterThan(-1);
+    expect(banner).toBeLessThan(html.indexOf('FSHD1'));
+    expect(html).toContain('不是患者本人填写');
+    expect(html).toContain('（管理员代填）');
+    expect(html).not.toContain('（本人填写）');
+  });
+
+  it('逐个列出不是本人填写的字段，带管理员账号和时间', () => {
+    const html = page({
+      fieldOrigins: [
+        {
+          path: 'diseaseBackground.diagnosisType',
+          labelZh: 'FSHD 分型',
+          state: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-13T04:11:07.912Z',
+          detail: null,
+        },
+      ],
+    });
+
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(html).toContain('FSHD 分型');
+    expect(html).toContain('2026-08-13');
+  });
+
+  it('没有标记时不印那一节 —— 一个写着「无」的标题会教人跳过它', () => {
+    expect(page({})).not.toContain('这些字段不是患者本人填的');
   });
 
   it('自填的值渲染出来就和化验读出来的不一样 —— 不是「带了个 class」', () => {

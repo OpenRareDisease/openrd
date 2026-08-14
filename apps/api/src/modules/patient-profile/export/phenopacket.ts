@@ -230,7 +230,20 @@ export const buildPhenopacketExport = (
     generatedAt: options.generatedAt,
     document,
     omissions,
+    fieldOrigins: source.fieldOrigins,
     notes: {
+      // §B3. A Phenopacket is protobuf-with-a-JSON-mapping; there is no
+      // field on any of its messages for 「this particular answer was
+      // typed by our staff rather than by the patient」, and inventing
+      // one would make the document non-conformant. So it rides the
+      // envelope — see envelope.ts on why that is the honest place
+      // rather than a hidden one.
+      字段来源:
+        source.fieldOrigins.length === 0
+          ? '本次导出的基线字段全部由患者本人填写或来自其上传的报告，没有本平台工作人员代填。'
+          : `本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来）：${source.fieldOrigins
+              .map((origin) => origin.labelZh)
+              .join('、')}。逐条见信封的 fieldOrigins。不要把这些值当作患者自述来统计。`,
       本体项:
         'Phenopacket 的多数字段要求本体项（id + label），没有「知道是什么但没有编码」的位置。本导出不会为了让文件更完整而填入未经核对的本体 id。',
       文件路径:
