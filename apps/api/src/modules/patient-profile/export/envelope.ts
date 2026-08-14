@@ -70,14 +70,11 @@ export interface PortableExportEnvelope<T> {
    * Contract §B3: 「导出（FHIR / Phenopacket / TREAT-NMD）也带上这个来源，
    * 不能只在 App 里区分而导出里抹平。」
    *
-   * ALWAYS PRESENT, and an empty array is a claim, not a shrug: ABSENCE
-   * IS THE PATIENT (baseline-provenance.ts), so `[]` says every baseline
-   * value in this document is the patient's own or came off one of
-   * their reports. That claim is only true because both baseline write
-   * paths carry the marker block forward — see
-   * `ProfileController.updateMyBaseline` and
-   * `AdminController.updatePatientBaseline`. Sorted by path, so a
-   * re-export of an unchanged profile is byte-identical.
+   * ALWAYS PRESENT, and an empty array is a claim, not a shrug: `[]`
+   * says no baseline value in this document carries a provenance marker
+   * (baseline-provenance.ts). It does not say the patient authored the
+   * values. Sorted by path, so a re-export of an unchanged profile is
+   * byte-identical.
    */
   readonly fieldOrigins: readonly ExportFieldOrigin[];
   readonly notes: Record<string, string>;

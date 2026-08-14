@@ -5,7 +5,12 @@ import {
   type CodingProvenance,
 } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
-import { instrumentOmission, resourceUuid, type NormalisedSource } from './export-source.js';
+import {
+  instrumentOmission,
+  resourceUuid,
+  NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
+  type NormalisedSource,
+} from './export-source.js';
 
 /**
  * GA4GH Phenopacket v2.
@@ -240,7 +245,7 @@ export const buildPhenopacketExport = (
       // rather than a hidden one.
       字段来源:
         source.fieldOrigins.length === 0
-          ? '本次导出的基线字段全部由患者本人填写或来自其上传的报告，没有本平台工作人员代填。'
+          ? NO_ADMIN_FIELD_ORIGIN_NOTE_ZH
           : `本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来）：${source.fieldOrigins
               .map((origin) => origin.labelZh)
               .join('、')}。逐条见信封的 fieldOrigins。不要把这些值当作患者自述来统计。`,

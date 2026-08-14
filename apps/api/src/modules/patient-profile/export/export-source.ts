@@ -182,6 +182,23 @@ export const withOriginNote = (
   return `${whenMarkedZh ?? provenanceZh}${note}`;
 };
 
+/**
+ * What an EMPTY `fieldOrigins` is allowed to claim, in one sentence the
+ * three serialisers share.
+ *
+ * The claim is about the marker block and nothing else.
+ * `fieldProvenance` records administrator writes
+ * (baseline-provenance.ts), so a baseline field without an entry is not
+ * thereby the patient's own: values reach the baseline along paths that
+ * neither the patient typed into that field nor this block marks. The
+ * sentence therefore says what is absent from the record and claims
+ * nothing about who authored the rest.
+ *
+ * Shared rather than copied into three files: three copies of one claim
+ * are three chances for one of them to be the stronger one.
+ */
+export const NO_ADMIN_FIELD_ORIGIN_NOTE_ZH = '本次导出的基线字段没有本平台工作人员代填的记录。';
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 

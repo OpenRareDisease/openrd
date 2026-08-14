@@ -757,7 +757,7 @@
   ],
   "fieldOrigins": [],
   "notes": {
-    "字段来源": "本次导出的基线字段全部由患者本人填写或来自其上传的报告，没有本平台工作人员代填。",
+    "字段来源": "本次导出的基线字段没有本平台工作人员代填的记录。",
     "编码": "本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。",
     "文件": "DocumentReference 只给出本平台的 API 路径，不含文件内容，也不含对象存储的内部地址。",
     "日期": "里程碑事件若在来源中正好落在某一年的第一毫秒，会以「YYYY」输出而不是「YYYY-01-01」——FHIR 的 date/dateTime 允许只写年份，这样才不会凭空给出一个 1 月 1 日。报告自动解析出的项目只在报告本身写明日期时才带 effectiveDateTime；没写明的一律不给日期，也不用上传时间顶替。"

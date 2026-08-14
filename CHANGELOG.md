@@ -14,14 +14,20 @@ Two feature areas and the consent the second one obliges us to ask for.
   招的试验」 out of the corpus — documents ingested at build time, right about mechanism
   and wrong about recruitment. `trial_records` now holds 92 real FSHD studies from
   ClinicalTrials.gov v2, refreshed by a host cron job that never touches the request
-  path, so an upstream slowdown cannot become a slow answer. Eligibility criteria are
-  **not** machine-translated — a mistranslated exclusion criterion sends a patient to a
-  site that will turn them away — and `fetched_at` is displayed rather than a snapshot
-  being quietly served as current.
+  path, so an upstream slowdown cannot become a slow answer. A record carries the
+  registry's own id, title, status and last-changed date, plus the sponsor, phase and
+  sites the registry filled in — present when it gave them, absent when it did not,
+  never supplied by us. It carries **no eligibility criteria and
+  no results**: `CTGOV_FIELDS` never requests them, so they are not in
+  `trial_records.raw` either, and the page states above the list that it judges neither.
+  Nothing of the registry's own text is translated except its fixed enum vocabularies,
+  through hand-written maps — the study's title, sponsor and sites are carried verbatim,
+  and a value no map covers renders as the registry wrote it. `fetched_at` is displayed
+  rather than a snapshot being quietly served as current.
 - **The domestic registry's zero is recorded as a zero.** chinadrugtrials.org.cn is wired
   and genuinely lists no FSHD trials (202 anti-bot, then 200 with 共 0 条记录). 「我们没
-  找到」 and 「我们没能查」 are distinguishable in the data and render differently, because
-  to a patient they are not the same sentence.
+  找到」 and 「我们没能查」 are distinguishable in the data, because to a patient they are
+  not the same sentence.
 - **A back office over patient records, whose whole design is that it cannot lie about
   who typed what.** Provenance is stored per field; absence means the patient, so no
   existing record is retroactively relabelled. Twelve fields are admin-writable,
@@ -45,14 +51,14 @@ Two feature areas and the consent the second one obliges us to ask for.
   administrator-entered diagnosis, four lines above that diagnosis's own date. The
   four-state enum is now a `switch` with an exhaustiveness guard, so a fifth state fails
   typecheck instead of silently landing in the 「no record」 wording.
-- A patient could not erase their own 姓名 / 确诊年份 / 所在地区: `upsertBaseline`
-  COALESCEd, so present-and-null read as absent. Now gated on presence.
+- A patient clearing a baseline field that is also mirrored into a column of its own could
+  not erase the old value: `upsertBaseline` COALESCEd, so present-and-null read as absent.
+  Now gated on presence.
 - The Art. 29 单独同意 was being bundled into the app-entry re-consent gate for accounts
   that had never given it — which is precisely what 单独 forbids. It stays in its own
   flow at first upload.
-- 我的's footer said 「FSHD-openrd v1.0.0 · © 2024」: the repository's name, a version a
-  year and a half stale, and a year two calendar years wrong. All three now derived, from
-  the same single definition 关于我们 uses.
+- 我的's footer showed the repository's name, a version a year and a half stale, and a year
+  two calendar years wrong. All three are now derived rather than typed into the screen.
 - `scripts/admin-role.mjs` ships in the runtime image. Granting the first administrator
   happens on a running stack, and the alternative was a runbook telling the operator to
   UPDATE `app_users` in psql — skipping the `audit_logs` row the script writes in the
@@ -61,8 +67,8 @@ Two feature areas and the consent the second one obliges us to ask for.
 
 ### Ops
 
-- **Migrations 021 through 027**, each with a `_down`. 026 and 027 carry the trial cache
-  and the audit index, but the batch also includes the tables patients type into —
+- **Migrations 021 through 027**, each with a `_down`. 026 and 027 are the two this
+  release adds, but the batch also includes the tables patients type into —
   `passport_share_links` (021), the instrument tables (022), `patient_falls` (023),
   `passport_pickup_codes` (024) — whose `_down` scripts are `DROP TABLE`, plus 022's
   rewrite of `independentlyAmbulatory` back to a boolean, which cannot be undone from the

@@ -384,9 +384,13 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
   it('数据性质那一句不再笼统说「都是患者自述」', () => {
     const marked = build(adminEditedProfile());
     expect(marked.notes.数据性质).toContain('不是患者本人填写的');
-    // And it says the opposite, explicitly, when nothing is marked —
-    // an empty list is a claim, not a shrug.
-    expect(build().notes.数据性质).toContain('没有代填');
+    // And it says something, explicitly, when nothing is marked — an
+    // empty list is a claim, not a shrug. The whole sentence is pinned,
+    // not just its tail: it may claim only that no administrator write
+    // is on record, because an unmarked field is not thereby the
+    // patient's own. The three formats say this in the same words
+    // (export-source.ts).
+    expect(build().notes.数据性质).toContain('本次导出的基线字段没有本平台工作人员代填的记录。');
     expect(build().fieldOrigins).toEqual([]);
   });
 

@@ -79,17 +79,13 @@
  * from here; it is why both helpers are named for the caller rather
  * than for what they do.
  *
- * Both callers are wired: `AdminController.updatePatientBaseline`
- * (admin.controller.ts) and `ProfileController.updateMyBaseline`
- * (profile.controller.ts). They are the writers that REPLACE the whole
- * column — that property, not their number, is what the guarantee
- * rests on. One other place writes `baseline_payload` and touches
- * neither helper: `InstrumentsService.applyVignosToBaseline`
- * (instruments/instruments.service.ts) sets
- * `currentStatus.independentlyAmbulatory` with a nested `jsonb_set`
- * over the stored value, so it MERGES and leaves this module's
- * reserved key standing. That is why it is safe, and it is the reason
- * the audit has to be over the COLUMN rather than over the helper:
+ * The guarantee rests on a property, not on a list: a writer that
+ * REPLACES the whole column must go through one of these helpers, and
+ * a writer that MERGES into the stored jsonb leaves this module's
+ * reserved key standing either way. `InstrumentsService`'s Vignos
+ * write is of the second kind — a nested `jsonb_set` — which is why it
+ * needs no helper. Audit the COLUMN rather than the helper, because a
+ * raw-SQL writer is invisible to a grep for the helper's name:
  * `grep -rn 'baseline_payload' apps/api/src --include='*.ts' | grep -v '\.test\.'`
  * Every hit that assigns the column must either go through
  * `upsertBaseline` (hence through one of the two helpers) or merge
@@ -223,13 +219,11 @@ export type BaselineFieldOrigin =
   | { state: 'unreadable'; detail: string };
 
 /**
- * There used to be a regexp here rejecting `__proto__` and friends as
- * marker keys. `ADMIN_WRITABLE_BASELINE_FIELDS` replaced it: the only
- * assignment in this module that takes a dotted string as a key now
- * draws that key from those twelve literals, so the key set is closed
- * and a pattern that filtered it would be an unreachable branch. Every
- * other use of a path here is a READ (`valueAtPath`), which cannot
- * pollute anything.
+ * No pattern filters marker keys, and `ADMIN_WRITABLE_BASELINE_FIELDS`
+ * is why one would be an unreachable branch: the only assignment in
+ * this module that takes a dotted string as a key draws that key from
+ * those literals, so the key set is closed and `__proto__` cannot
+ * reach it.
  */
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

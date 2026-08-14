@@ -1,4 +1,5 @@
 import {
+  readPassportValueOrigin,
   readPassportValueOrigins,
   type ClinicalPassportSummary,
   type PassportValueOrigin,
@@ -182,7 +183,7 @@ export const buildClinicalPassportPdfHtml = (
         </div>`;
 
   /**
-   * 逐项来源：`diagnosisCard` 把它印成值下面单独的一行
+   * 逐项来源：`originLine` 把它印成值下面单独的一行
    * （`.value-origin`），不是只写在横幅里。
    *
    * `confirmation` 是证据等级，本节各个值的来源互不相同（见
@@ -195,21 +196,32 @@ export const buildClinicalPassportPdfHtml = (
    * 防的假话。和本文件 `fieldOriginsBlock` 一样：undefined 不是「没有」。
    */
   const valueOrigins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  /**
+   * 证据摘要那一行的来源。`valueOrigins` 那张表里没有它——证据摘要是几个
+   * 值拼出来的，服务端挨着分量单独定，作为 `geneEvidenceOrigin` 发过来。
+   */
+  const geneEvidenceOrigin = readPassportValueOrigin(summary.diagnosis.geneEvidenceOrigin);
+  // `absent` 的值下面不印小字：那一栏本来就没有内容，「—（未填）」是同一件
+  // 事说两遍。
+  const originLine = (origin: PassportValueOrigin | null) =>
+    origin && origin.kind !== 'absent'
+      ? `<p class="value-origin">${escapeHtml(origin.labelZh)}</p>`
+      : '';
   const diagnosisCard = (label: string, value: string, origin: PassportValueOrigin | null) => `
           <article class="info-card">
             <p class="info-label">${escapeHtml(label)}</p>
             <p class="info-value">${safeText(value)}</p>
-            ${
-              origin && origin.kind !== 'absent'
-                ? `<p class="value-origin">${escapeHtml(origin.labelZh)}</p>`
-                : ''
-            }
+            ${originLine(origin)}
           </article>`;
-  const valueOriginsFallback = valueOrigins
-    ? ''
-    : `<div class="note">
+  // 说的是「没发全」而不是「一条都没发」：服务端可能给了那张表却没给证据摘
+  // 要的来源，那种情况下这一节里有的值带着小字、有的没有，而这句话对两边都
+  // 是真的。
+  const valueOriginsFallback =
+    valueOrigins && geneEvidenceOrigin
+      ? ''
+      : `<div class="note">
           <p class="note-title">逐项来源</p>
-          <p class="info-value">服务端这一版没有返回逐项来源，本节每一个值是从报告里读出来的还是谁填进去的，本平台无法说明。</p>
+          <p class="info-value">服务端这一版没有把本节的逐项来源发全，本节中没有标注来源的值是从报告里读出来的还是谁填进去的，本平台无法说明。</p>
         </div>`;
 
   const summaryCards = summary.summaryCards
@@ -609,7 +621,8 @@ export const buildClinicalPassportPdfHtml = (
                * 解析出 diagnosisType 的报告不足以基因确诊，那一行却是系统
                * 从报告里读出来的。
                *
-               * 逐项来源印在下面每个值自己下面那一行，见 「diagnosisCard」。
+               * 逐项来源印在下面每个值自己下面那一行，证据摘要也一样，
+               * 见 「originLine」。
                */
               summary.diagnosis.confirmation === 'genetic'
                 ? ''
@@ -637,6 +650,7 @@ export const buildClinicalPassportPdfHtml = (
         <div class="note">
           <p class="note-title">证据摘要</p>
           <p class="info-value">${safeText(summary.diagnosis.geneEvidence)}</p>
+          ${originLine(geneEvidenceOrigin)}
         </div>
         ${valueOriginsFallback}
         ${fieldOriginsBlock}

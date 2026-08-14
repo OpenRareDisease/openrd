@@ -885,7 +885,7 @@ export class PatientProfileService {
   /**
    * `baseline_payload` as it is ON DISK — no autofill, no merge.
    *
-   * Exists for one caller, `ProfileController.updateMyBaseline`, and
+   * Exists for one caller, `PatientProfileController.updateMyBaseline`, and
    * the reason it cannot use `getBaselineByUserId` is the reason
    * `AdminService.getStoredProfile` exists on the other side: that
    * method applies `applyGeneticReportAutofill`, which fills a missing

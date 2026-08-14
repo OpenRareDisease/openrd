@@ -4,6 +4,7 @@ import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/pro
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
 import { applyAdminBaselineWrite } from '../baseline-provenance.js';
+import { applyGeneticReportAutofill } from '../profile.autofill.js';
 import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
 import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -105,10 +106,13 @@ describe('FHIR R4 — Condition tells the truth about confirmation', () => {
     expect(
       (selfReported.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
     ).toBe('unconfirmed');
-    // 「患者自述诊断」 was the literal here. It is now conditional on the
-    // diagnosis type carrying no admin marker — see §B3 — so what this
-    // pins is the patient half of that branch.
-    expect((selfReported.verificationStatus as { text: string }).text).toContain('由患者本人填写');
+    // The text says what evidence is missing and where the value sits.
+    // It names nobody: an unmarked field is not thereby the patient's,
+    // so any 「本人填写」 here would be an author invented out of an
+    // absence. See the §B3 block below and the autofill case with it.
+    const selfReportedText = (selfReported.verificationStatus as { text: string }).text;
+    expect(selfReportedText).toContain('未上传基因检测报告');
+    expect(selfReportedText).not.toContain('患者本人填写');
   });
 
   it('puts the OMIM number inside human-readable text, never as a coding', () => {
@@ -554,6 +558,42 @@ const adminEdited = (): Partial<PatientProfileDTO> => {
 };
 
 /**
+ * The other way a value arrives without the patient typing it: nothing
+ * in the baseline, one uploaded report carrying the field, and
+ * `applyGeneticReportAutofill` copying it in on the way out of
+ * `getProfileByUserId`. It leaves no marker, so the profile handed to
+ * this exporter is indistinguishable from one the patient filled in —
+ * which is why an author cannot be read off the absence of a marker.
+ */
+const ocrAutofilled = (): Partial<PatientProfileDTO> => {
+  const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+  const disease = { ...(stored.diseaseBackground as Record<string, unknown>) };
+  delete disease.diagnosisType;
+  // Not a `genetic_report`: that document type is what flips the
+  // Condition to confirmed, and this case has to reach the other branch.
+  const documents: PatientProfileDTO['documents'] = [
+    {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      documentType: 'other',
+      ocrPayload: { fields: { diagnosisType: 'FSHD1' } },
+    },
+  ];
+  const autoFilled = applyGeneticReportAutofill(
+    {
+      diagnosisDate: EXPORT_FIXTURE_PROFILE.diagnosisDate,
+      geneticMutation: EXPORT_FIXTURE_PROFILE.geneticMutation,
+      baseline: { ...stored, diseaseBackground: disease },
+    },
+    documents,
+  );
+  return {
+    baseline: autoFilled.baseline,
+    geneticMutation: autoFilled.geneticMutation,
+    documents,
+  };
+};
+
+/**
  * Contract §B3. A FHIR validator rejects unknown fields, so there is no
  * conformant slot for a per-field 「our staff typed this」 — the envelope
  * carries the list, and the two diagnosis-facing ones also go into the
@@ -561,6 +601,18 @@ const adminEdited = (): Partial<PatientProfileDTO> => {
  * that never opens the envelope will look.
  */
 describe('FHIR R4 — §B3：管理员代填的值不能记成患者自述', () => {
+  it('报告里读来的分型不会被 Condition 说成患者本人填写', () => {
+    const overrides = ocrAutofilled();
+    const disease = (overrides.baseline as { diseaseBackground: Record<string, unknown> })
+      .diseaseBackground;
+    // The value did arrive off the report — this is not a missing field.
+    expect(disease.diagnosisType).toBe('FSHD1');
+    expect(build(overrides).fieldOrigins).toEqual([]);
+
+    const condition = resourcesOf(build(overrides), 'Condition')[0];
+    expect((condition.verificationStatus as { text: string }).text).not.toContain('患者本人填写');
+  });
+
   it('Condition 不再无条件说「患者自述诊断」', () => {
     const marked = build({ ...adminEdited(), documents: [] });
     const condition = resourcesOf(marked, 'Condition')[0];

@@ -3,6 +3,7 @@ import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   instrumentOmission,
   withOriginNote,
+  NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type MilestoneEvent,
   type NormalisedSource,
 } from './export-source.js';
@@ -445,29 +446,24 @@ export const buildTreatNmdExport = (
         titleZh: '仅本地留存（直接身份信息）',
         collected: true,
         items: compact([
-          // `patient_profiles.full_name` is mirrored out of
-          // `foundation.fullName` by `upsertBaseline`, so an
-          // administrator's edit lands in this column too. 「患者本人填写」
-          // is therefore a claim that has to be checked, not asserted —
-          // and where the check fails the claim is REPLACED, not
-          // qualified: 「患者本人填写」 followed by 「不是患者本人填写」 is
-          // one field saying both.
+          // These two say where the value is kept, not who put it
+          // there. `fieldProvenance` marks administrator writes and
+          // nothing else, so an unmarked field is not thereby the
+          // patient's own — arguing otherwise means arguing from a list
+          // of writers, and this file is downstream of every one of
+          // them. Where a marker IS present the note is appended, which
+          // is the one authorship statement the export can make.
           textItem(
             'local.fullName',
             '姓名',
             profile.fullName,
-            withOriginNote(source, 'foundation.fullName', '患者本人填写', '本平台档案中记录的姓名'),
+            withOriginNote(source, 'foundation.fullName', '本平台档案中记录的姓名'),
           ),
           textItem(
             'local.preferredName',
             '希望被称呼的名字',
             profile.preferredName,
-            withOriginNote(
-              source,
-              'foundation.preferredName',
-              '患者本人填写',
-              '本平台档案中记录的称呼',
-            ),
+            withOriginNote(source, 'foundation.preferredName', '本平台档案中记录的称呼'),
           ),
           textItem(
             'local.diagnosingPhysician',
@@ -518,14 +514,14 @@ export const buildTreatNmdExport = (
         '所有年份字段都有三种答案：已知 / 记不清了 / 未采集。「记不清了」是一个真实答案，表示问过而患者记不清，不要与「未采集」合并处理。',
       日期精度:
         '里程碑事件的日期来自一个只能存完整时间点的字段。请阅读每条事件的 occurrence.noteZh，不要把它当作精确到天的观察。',
-      // The 数据性质 line used to end at 「每个条目的 provenanceZh 写明了
-      // 来源」 in every case — including the case where some of those
-      // values were typed by our own staff and the provenance strings
-      // said 患者自述. Both halves are now true: the strings carry the
-      // annotation, and this note points at the list.
+      // The 来源 half of this line is the shared sentence, not a wording
+      // of its own: this format, the FHIR bundle and the Phenopacket
+      // describe the same empty `fieldOrigins`, and a receiver holding
+      // two of the three must not find one of them making the stronger
+      // claim about who typed the values.
       数据性质:
         source.fieldOrigins.length === 0
-          ? '本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。本次导出的基线字段全部由患者本人填写，没有代填。'
+          ? `本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。${NO_ADMIN_FIELD_ORIGIN_NOTE_ZH}`
           : `本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。注意：本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来），逐条列在信封的 fieldOrigins 中，相关条目的 provenanceZh 也各自标注了。不要把这些值当作患者自述来统计。`,
     },
   };

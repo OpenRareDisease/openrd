@@ -825,6 +825,36 @@ export type PassportDiagnosisValueKey = (typeof PASSPORT_DIAGNOSIS_VALUE_KEYS)[n
 export type PassportValueOrigins = Record<PassportDiagnosisValueKey, PassportValueOrigin>;
 
 /**
+ * ONE origin, unwrapped and shape-checked.
+ *
+ * Exported because not every printed origin arrives inside
+ * `valueOrigins`: 证据摘要 is those values joined, so the API resolves
+ * its origin beside them and sends it as `diagnosis.geneEvidenceOrigin`.
+ * A renderer that prints that line has to check the bytes the same way,
+ * and a second copy of this parser would be free to drift from the map's.
+ *
+ * Null means nothing printable came back — including a `labelZh` that is
+ * missing or blank, since `labelZh` is the phrase that gets printed and
+ * a caption cannot be invented here. An unrecognised `kind` is NOT null;
+ * see `readPassportValueOrigins` for why it falls to `indeterminate`.
+ */
+export const readPassportValueOrigin = (raw: unknown): PassportValueOrigin | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const origin = raw as Record<string, unknown>;
+  if (typeof origin.labelZh !== 'string' || origin.labelZh.trim().length === 0) return null;
+  return {
+    kind: PASSPORT_VALUE_ORIGIN_KINDS.includes(origin.kind as PassportValueOriginKind)
+      ? (origin.kind as PassportValueOriginKind)
+      : 'indeterminate',
+    labelZh: origin.labelZh,
+    documentId: typeof origin.documentId === 'string' ? origin.documentId : null,
+    adminUserId: typeof origin.adminUserId === 'string' ? origin.adminUserId : null,
+    at: typeof origin.at === 'string' ? origin.at : null,
+    detail: typeof origin.detail === 'string' ? origin.detail : null,
+  };
+};
+
+/**
  * `diagnosis.valueOrigins`, unwrapped and shape-checked.
  *
  * Same reason as `readPassportGeneticEvidence` above:
@@ -855,23 +885,10 @@ export const readPassportValueOrigins = (raw: unknown): PassportValueOrigins | n
   const record = raw as Record<string, unknown>;
   const origins = {} as PassportValueOrigins;
   for (const key of PASSPORT_DIAGNOSIS_VALUE_KEYS) {
-    const entry = record[key];
-    if (!entry || typeof entry !== 'object') return null;
-    const origin = entry as Record<string, unknown>;
-    // `labelZh` is the phrase that gets printed. Without it there is
-    // nothing to say about this value, and a caption cannot be invented
-    // here — so the whole map fails rather than one row going silent.
-    if (typeof origin.labelZh !== 'string' || origin.labelZh.trim().length === 0) return null;
-    origins[key] = {
-      kind: PASSPORT_VALUE_ORIGIN_KINDS.includes(origin.kind as PassportValueOriginKind)
-        ? (origin.kind as PassportValueOriginKind)
-        : 'indeterminate',
-      labelZh: origin.labelZh,
-      documentId: typeof origin.documentId === 'string' ? origin.documentId : null,
-      adminUserId: typeof origin.adminUserId === 'string' ? origin.adminUserId : null,
-      at: typeof origin.at === 'string' ? origin.at : null,
-      detail: typeof origin.detail === 'string' ? origin.detail : null,
-    };
+    const origin = readPassportValueOrigin(record[key]);
+    // The whole map fails rather than one row going silent.
+    if (!origin) return null;
+    origins[key] = origin;
   }
   return origins;
 };
@@ -946,6 +963,16 @@ export interface ClinicalPassportSummary {
      */
     valueOrigins?: unknown;
     geneEvidence: string;
+    /**
+     * 证据摘要那一行的来源。
+     *
+     * 不在 `valueOrigins` 那张表里：证据摘要是上面几个值拼出来的，服务端
+     * 挨着分量单独定它的来源，再作为 `geneEvidenceOrigin` 发过来。
+     *
+     * Typed as `unknown` for the same reason as `valueOrigins` above, and
+     * read with `readPassportValueOrigin`.
+     */
+    geneEvidenceOrigin?: unknown;
     /**
      * 对基因证据的分级读法，外加可以递给医生的《检查申请说明》。
      *

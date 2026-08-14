@@ -488,30 +488,21 @@ const lastSuccessClause = (status: TrialSourceStatus | null): string => {
 /**
  * What to say about the mainland half.
  *
- * Five states, and the difference between them is the whole reason
- * `trial_fetch_runs` is part of the feature rather than a log:
+ * The sentence has to be true about the list the reader is looking at,
+ * and that depends on two things at once — whether any mainland rows
+ * reached the screen, and whether the fetch that was supposed to put
+ * them there worked. Needing the second is the whole reason
+ * `trial_fetch_runs` is part of the feature rather than a log.
  *
- *  - no records and no run on record → the fixed A5 sentence: this
- *    list is ClinicalTrials.gov only, here is where to look for the
- *    rest. True, and the state this ships in.
- *  - no records and the last run failed → say the fetch is failing and
- *    when it last worked. A short list presented in silence is the
- *    failure this whole table exists to prevent: the reader would take
- *    「没有国内试验」 from a page that simply could not reach the
- *    registry.
- *  - no records and the last run has not come back → same sentence,
- *    worded so it is true whether the run died or is still going.
- *    Migration 026 makes `ok = true` with a null `finished_at`
- *    unwritable, so「还没有返回结果」covers both without claiming which.
- *  - records present, last run ok → the fixed sentence would now be
- *    false about the list on screen, so it is replaced by one that is
- *    true: where the mainland rows came from, and that they may be
- *    incomplete.
- *  - records present, last run NOT ok → the rows on screen are the
- *    survivors of an older run and nothing says the registry still
- *    agrees with them. Showing them under the calm sentence above would
- *    be the silent-staleness version of the same failure, so this one
- *    warns and names the day the mainland half stopped being refreshed.
+ * Both failures this guards against are silent ones. A short list
+ * presented calmly lets the reader take 「没有国内试验」 from a page that
+ * simply could not reach the registry; rows presented calmly let them
+ * take the survivors of an older run for what the registry says today.
+ * So a fetch that failed, or that has not come back, is named along
+ * with the day the mainland half last refreshed — and migration 026
+ * makes `ok = true` with a null `finished_at` unwritable, which is why
+ *「还没有返回结果」can cover a run that died and a run still going
+ * without claiming which.
  */
 export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice => {
   const status = sourceStatusOf(snapshot, 'chinadrugtrials');

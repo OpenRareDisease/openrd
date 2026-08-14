@@ -306,13 +306,16 @@ describe('逐项来源印在值下面', () => {
         d4z4Repeats: '—',
         methylationValue: '—',
         diagnosisDate: '2014-01-01',
-        geneEvidence: '—',
+        geneEvidence: 'FSHD1',
         valueOrigins: {
           geneticType: origin('report', '报告读取'),
           d4z4Repeats: origin('absent', '未填'),
           methylationValue: origin('absent', '未填'),
           diagnosisDate: origin('indeterminate', '来源无法确定'),
         },
+        // 证据摘要的来源不在上面那张表里。给它一个只有它会印的措辞，
+        // 这样断言不会和四张卡片的来源混起来。
+        geneEvidenceOrigin: origin('patient', '本人填写'),
         ...((over.diagnosis as Record<string, unknown>) ?? {}),
       },
       motor: {
@@ -356,9 +359,19 @@ describe('逐项来源印在值下面', () => {
     );
   });
 
+  it('证据摘要那一行也印着自己的来源', () => {
+    // 一句 self_reported 的档案里，基因类型下面印着来源、证据摘要下面
+    // 空着，是同一页纸上两种待遇：读者学会「有小字＝有来源」之后，那句
+    // 空着的摘要就被读成从报告里读出来的。
+    const html = buildClinicalPassportPdfHtml(withOrigins({}));
+    expect(html).toContain('<p class="value-origin">本人填写</p>');
+  });
+
   it('服务端没给逐项来源时说没给，不读成「都是报告读出来的」', () => {
-    const html = buildClinicalPassportPdfHtml(withOrigins({ diagnosis: { valueOrigins: null } }));
-    expect(html).toContain('服务端这一版没有返回逐项来源');
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({ diagnosis: { valueOrigins: null, geneEvidenceOrigin: null } }),
+    );
+    expect(html).toContain('服务端这一版没有把本节的逐项来源发全');
     expect(html).not.toContain('class="value-origin"');
   });
 
@@ -371,16 +384,37 @@ describe('逐项来源印在值下面', () => {
             d4z4Repeats: origin('absent', '未填'),
             methylationValue: origin('absent', '未填'),
           },
+          geneEvidenceOrigin: null,
         },
       }),
     );
-    expect(html).toContain('服务端这一版没有返回逐项来源');
+    expect(html).toContain('服务端这一版没有把本节的逐项来源发全');
     expect(html).not.toContain('class="value-origin"');
   });
 
+  it('只漏了证据摘要的来源时也说没发全 —— 那一行不能空着装成报告读取', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({ diagnosis: { geneEvidenceOrigin: null } }),
+    );
+    expect(html).toContain('服务端这一版没有把本节的逐项来源发全');
+    // 那张表是给了的，所以四个值的小字照印。
+    expect(html).toContain('<p class="value-origin">报告读取</p>');
+    expect(html).not.toContain('本人填写');
+  });
+
+  it('证据摘要没有来源可归时不印小字，也不说服务端没发', () => {
+    // `absent` 是服务端给出的答复，不是没答复。
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({ diagnosis: { geneEvidenceOrigin: origin('absent', '未填') } }),
+    );
+    expect(html).not.toContain('服务端这一版没有把本节的逐项来源发全');
+    expect(html).not.toContain('未填');
+  });
+
   it('认不出来的 kind 不把整块作废 —— 服务端确实给了，就照它的措辞印', () => {
-    // The cache cuts both ways: a newer API adding a seventh kind must
-    // not make this page claim the server sent nothing.
+    // The cache cuts both ways: a newer API adding a kind this bundle
+    // has never heard of must not make this page claim the server sent
+    // nothing.
     const html = buildClinicalPassportPdfHtml(
       withOrigins({
         diagnosis: {
@@ -393,7 +427,7 @@ describe('逐项来源印在值下面', () => {
         },
       }),
     );
-    expect(html).not.toContain('服务端这一版没有返回逐项来源');
+    expect(html).not.toContain('服务端这一版没有把本节的逐项来源发全');
     expect(html).toContain('<p class="value-origin">登记处导入</p>');
   });
 

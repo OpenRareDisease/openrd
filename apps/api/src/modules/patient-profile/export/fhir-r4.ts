@@ -5,6 +5,8 @@ import {
   instrumentOmission,
   originNoteZh,
   resourceUuid,
+  withOriginNote,
+  NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type NormalisedSource,
 } from './export-source.js';
 import {
@@ -276,14 +278,23 @@ export const buildFhirExport = (
           code: source.geneticEvidence.hasGeneticReport ? 'confirmed' : 'unconfirmed',
         },
       ],
-      // 「患者自述诊断」 is a claim about WHO SAID IT, and it stopped
-      // being automatically true when a back office gained the ability
-      // to type the diagnosis in on the patient's behalf (contract §B3).
+      // This text says what evidence backs the status and where the
+      // value sits. It names no author, because nothing here can:
+      // `fieldProvenance` records administrator writes, so its absence
+      // is not a signature, and `applyGeneticReportAutofill` fills
+      // `diseaseBackground.diagnosisType` and its fallback column
+      // `patient_profiles.genetic_mutation` off an uploaded report, at
+      // read time, before this exporter is handed the profile, leaving
+      // nothing behind that says it did. Who typed a baseline value, as
+      // far as it can be known, rides the envelope — `fieldOrigins` and
+      // notes.字段来源 (contract §B3).
       text: source.geneticEvidence.hasGeneticReport
         ? '患者已上传基因检测报告（报告内容未经本平台人工复核）'
-        : `未上传基因检测报告；诊断信息来自档案记录${
-            originNoteZh(source, 'diseaseBackground.diagnosisType') ?? '，由患者本人填写'
-          }`,
+        : withOriginNote(
+            source,
+            'diseaseBackground.diagnosisType',
+            '未上传基因检测报告；诊断信息来自档案记录',
+          ),
     },
     code: codeableText(conditionText),
     subject: { reference: patientRef },
@@ -760,11 +771,10 @@ export const buildFhirExport = (
       // §B3. FHIR validators reject unknown fields, so there is no
       // conformant place inside the Bundle for a per-field 「our staff
       // typed this, not the patient」 — which is exactly why the
-      // envelope exists (envelope.ts). The Condition carries the two
-      // diagnosis-facing ones in `note`; the full list is here.
+      // envelope exists (envelope.ts).
       字段来源:
         source.fieldOrigins.length === 0
-          ? '本次导出的基线字段全部由患者本人填写或来自其上传的报告，没有本平台工作人员代填。'
+          ? NO_ADMIN_FIELD_ORIGIN_NOTE_ZH
           : `本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来）：${source.fieldOrigins
               .map((origin) => origin.labelZh)
               .join(

@@ -814,33 +814,16 @@ const AdminPatientRecordScreen = () => {
               </View>
             ))}
             <View style={[styles.field, styles.statDivider]}>
-              {/* Three facts an operator has to have before handing one
-                  of these to a hospital or a registry. Each was read out
-                  of the code that builds the file, not assumed:
-                  - exportPatient feeds buildPortableExport the profile
-                    from getProfileByUserId, which applies
-                    applyGeneticReportAutofill at read time;
-                  - it always passes includeLocalOnly: false;
-                  - fhir-r4.ts never emits Patient.name/telecom/address
-                    at all, phenopacket carries no direct identifier, and
-                    treat-nmd puts them in a localOnly section this route
-                    never asks for.
-                  Which of them SAYS SO in `omissions` was read the same
-                  way and is not the same set: treat-nmd records both
-                  `localOnly` and `sections.familyHistory` (treat-nmd.ts
-                  :426, :233); fhir-r4 records the identifiers only
-                  (:234) and never mentions family history at all; and
-                  phenopacket records neither — its omissions are the
-                  missing-ontology ones. 「文件里会逐条写明哪些没发」 was
-                  true of one format out of three. */}
+              {/* What an operator has to have before handing one of
+                  these to a hospital or a registry. */}
               <Text style={styles.blockNote}>
                 文件里的基线字段是患者端读到的那一份：缺的
                 D4Z4、单倍型、确诊年份会从他最近一份基因报告里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
               </Text>
               <Text style={styles.blockNote}>
-                三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。这两项为什么没写，只有
-                TREAT-NMD 在文件的 omissions 里都写明了；FHIR 只写明身份信息那一项，Phenopacket
-                两项都没写——它的 omissions 记的是缺本体项的部分。
+                三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。文件里的
+                omissions
+                是写给接收方看的「这个位置为什么是空的」，但三种格式不是都为这两项写了说明，所以别指望接收方能从文件本身看出它们是按规则不发、而不是这个人没有——需要的话请你另行说明。
               </Text>
             </View>
             {exportNotice ? <Text style={styles.stateText}>{exportNotice}</Text> : null}
