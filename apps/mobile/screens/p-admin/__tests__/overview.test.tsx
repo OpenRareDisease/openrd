@@ -155,6 +155,41 @@ describe('取不到的那一项会说自己取不到，不会显示 0', () => {
     const screen = textContent((await render()).root);
     expect(screen).toContain('0/0 不是 0%');
     expect(screen).not.toContain('0.0%');
+    // `failureRate: null` here is the server's ANSWER, not a field it
+    // failed to send. Printing 「服务端没有返回这一项」 over the sentence
+    // that explains the measurement is the page contradicting itself.
+    expect(screen).not.toContain('服务端没有返回这一项');
+    expect(screen).toContain('窗口内没有可计入的调用');
+  });
+
+  it('separates a failureRate the server omitted from a measured 0/0', async () => {
+    // Same `null` on the wire, opposite facts. A build whose server does
+    // not compute the rate would otherwise have the page assert 「窗口内
+    // 没有成功也没有失败的调用」 about a window holding 120 calls.
+    const actual = readAll();
+    mockAiUsage.mockResolvedValue(actual.readAdminAiUsage({ ...AI_USAGE, failureRate: undefined }));
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('服务端没有返回这一项');
+    expect(screen).not.toContain('0/0 不是 0%');
+    expect(screen).toContain('这一项是没到');
+  });
+
+  it('reads a window of nothing but consent_denied as 0/0, not as a missing field', async () => {
+    // `attempted = totalCalls - consent_denied`, so the server answers
+    // null here too — and it is measured. The count is what tells this
+    // case apart from the one above.
+    const actual = readAll();
+    mockAiUsage.mockResolvedValue(
+      actual.readAdminAiUsage({
+        ...AI_USAGE,
+        totalCalls: 9,
+        byStatus: [{ status: 'consent_denied', calls: 9, avgLatencyMs: 12 }],
+        failureRate: null,
+      }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('窗口内没有可计入的调用');
+    expect(screen).not.toContain('服务端没有返回这一项');
   });
 
   it('still prints a real zero as a number', async () => {

@@ -45,6 +45,24 @@ const PERSONAL_SOURCES = new Set([
 const PERSONAL_TOOLS = new Set(['get_my_profile', 'get_my_reports', 'get_my_records']);
 
 /**
+ * The trial registry cache — a third subsystem, and one whose failures
+ * used to be reported as the knowledge base's.
+ *
+ * `list_clinical_trials` and its retriever both refuse to throw, and
+ * that is not enough on its own: the executor's wall-clock timeout
+ * rejects AROUND the promise the retriever's try/catch sits inside, so
+ * a `readTrialSnapshot` that hangs rather than rejects escapes every
+ * guard either file has and arrives here as a bare `call.error`.
+ * Classified as `corpus` it printed 「资料库检索没有跑成功」 — a
+ * sentence about the MEDICAL KNOWLEDGE BASE, which had not failed and
+ * whose chunks were sitting in the same prompt. Reproduced with a
+ * never-resolving snapshot read and a 30 ms tool timeout; pinned here
+ * and at the executor seam in ../tools/list-clinical-trials.test.ts.
+ */
+const TRIALS_TOOLS = new Set(['list_clinical_trials']);
+const TRIALS_SOURCES = new Set(['clinical_trials']);
+
+/**
  * Which kind of source could not be reached.
  *
  * These are genuinely different events for the patient and must not be
@@ -60,20 +78,34 @@ const PERSONAL_TOOLS = new Set(['get_my_profile', 'get_my_reports', 'get_my_reco
  *                  could not be read. Nothing about FSHD is wrong here;
  *                  what is missing is *their* data, and the answer must
  *                  say so rather than guess at their numbers.
+ *   - `trials`   — the cached trial registry could not be read. The
+ *                  corpus is a different subsystem, usually up while
+ *                  this one is down, and its chunks are in the same
+ *                  prompt; and「取不到试验列表」is not「没有试验在招募」.
+ *                  Saying either of those with the corpus sentence is
+ *                  two false statements at once.
  */
-export type RetrievalFailureKind = 'corpus' | 'personal';
+export type RetrievalFailureKind = 'corpus' | 'personal' | 'trials';
 
 /**
- * Stable machine-readable codes. They travel two ways on purpose:
- *   1. into the tool message, so a future RAG eval can grep for the
- *      case without depending on the human-readable Chinese text;
- *   2. onto `OrchestratorRunResult.retrievalFailure`, so the client
- *      renders a degraded-answer state instead of pattern-matching
- *      prose it does not control.
+ * Stable machine-readable codes, so a RAG eval can grep for the case
+ * without depending on the human-readable Chinese text.
+ *
+ * `corpus` and `personal` also travel onto
+ * `OrchestratorRunResult.retrievalFailure`, where the client turns them
+ * into a degraded-answer banner it does not have to pattern-match prose
+ * for. `trials` does NOT, and that is a real gap rather than an
+ * oversight: `BuiltContext.failures` and the client-facing state are
+ * run.ts's shape, so raising a third flag is that lane's change. Today
+ * a trials failure is carried by the tool message alone — the same
+ * standing the retriever's own `cache_unreadable` branch has always
+ * had, and the reason both of them state the failure in hard
+ * requirements rather than leaving it for the model to notice.
  */
 export const RETRIEVAL_FAILURE_CODES: Record<RetrievalFailureKind, string> = {
   corpus: 'retrieval_failed',
   personal: 'personal_data_unavailable',
+  trials: 'trials_unavailable',
 };
 
 export interface ToolMessagePayload {
@@ -92,7 +124,11 @@ export interface BuiltContext {
   fieldsUsed: string[];
   usedPersonalData: boolean;
   /** Which classes of retrieval could not run in this batch. Both flags
-   *  false is the normal case. */
+   *  false is the normal case.
+   *
+   *  There is deliberately no `trials` flag: a trial-cache failure is
+   *  reported to the model in the tool message and nowhere else. See
+   *  RETRIEVAL_FAILURE_CODES. */
   failures: { corpus: boolean; personal: boolean };
 }
 
@@ -261,6 +297,27 @@ const readAuthorityLabel = (
  */
 const failureInstruction = (kind: RetrievalFailureKind, reason: string): string => {
   const code = RETRIEVAL_FAILURE_CODES[kind];
+  if (kind === 'trials') {
+    // Deliberately not a variant of the corpus text. The sentences it
+    // has to keep apart are 「平台取不到试验列表」 and 「没有试验在招
+    // 募」 — and what the model would fill the gap with here need not
+    // be its own priors at all. When `search_medical_kb` ran in the
+    // same round, the 2025 ClinicalTrials.gov page saved in the corpus
+    // can be sitting in this very prompt, machine-translated
+    // (`Recruiting` →「招聘」) and carrying no date anywhere in its
+    // text (measured in ../retrievers/clinical-trials.ts's header). So
+    // that document is named outright; 「不要凭记忆」 does not cover a
+    // snapshot the model can see.
+    return [
+      `[error_code:${code}] 试验数据没有取到（原因：${reason}）。`,
+      '注意：出问题的是本平台缓存的临床试验登记数据，不是医学知识库——知识库如果这次取到了，照常可用。这也不等于「没有试验在招募」，两者不能混为一谈。',
+      '硬性要求：',
+      '- **不要**用知识库里那份 ClinicalTrials.gov 网页快照代替它，也不要凭记忆列出任何 NCT 号、试验名称或招募状态。',
+      '- 直接告诉用户：试验列表这次没能取到，请过一会儿再看，或者直接查 ClinicalTrials.gov。',
+      '- 问题里不依赖试验列表的部分可以照常回答。',
+      '- 结尾必须写一句：是否参加临床试验，请和你的主诊医生商量。',
+    ].join('\n');
+  }
   if (kind === 'personal') {
     return [
       `[error_code:${code}] 读取用户本人资料失败（原因：${reason}）。`,
@@ -405,8 +462,16 @@ export const buildContext = (
           'tool execution failed; redacted message will be sent to LLM',
         );
       }
-      const kind: RetrievalFailureKind = PERSONAL_TOOLS.has(call.toolName) ? 'personal' : 'corpus';
-      failures[kind] = true;
+      const kind: RetrievalFailureKind = TRIALS_TOOLS.has(call.toolName)
+        ? 'trials'
+        : PERSONAL_TOOLS.has(call.toolName)
+          ? 'personal'
+          : 'corpus';
+      // No flag for `trials`: the tool message below is the whole of
+      // what is reported. Raising `corpus` here instead would put a
+      // server-written banner about the medical knowledge base over an
+      // answer whose knowledge-base chunks are in the same prompt.
+      if (kind !== 'trials') failures[kind] = true;
       toolMessages.push({
         toolCallId: call.toolCallId,
         toolName: call.toolName,
@@ -446,10 +511,19 @@ export const buildContext = (
     }
 
     const reason = retrievalFailureReason(call.retrieval);
-    const kind: RetrievalFailureKind = PERSONAL_SOURCES.has(call.retrieval.retrieverId)
-      ? 'personal'
-      : 'corpus';
-    if (reason) failures[kind] = true;
+    // Classified by retriever id here and by tool name above, on
+    // purpose: the same subsystem must get the same sentence whether it
+    // returned a reasoned empty result or threw. `clinical_trials` has
+    // no reason in RETRIEVAL_FAILURE_REASONS today — `cache_unreadable`
+    // is deliberately kept out of that set, because membership routes
+    // straight back onto `corpus` — so this branch is what keeps a
+    // reason added later from silently reprinting the KB sentence.
+    const kind: RetrievalFailureKind = TRIALS_SOURCES.has(call.retrieval.retrieverId)
+      ? 'trials'
+      : PERSONAL_SOURCES.has(call.retrieval.retrieverId)
+        ? 'personal'
+        : 'corpus';
+    if (reason && kind !== 'trials') failures[kind] = true;
 
     // Read the RAW metadata reason, not the failure-filtered one:
     // `no_relevant_results` is deliberately excluded from

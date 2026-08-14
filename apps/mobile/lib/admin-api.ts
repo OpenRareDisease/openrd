@@ -6,6 +6,7 @@ import {
   apiRequest,
   dispatchUnauthorized,
   extractApiErrorMessage,
+  extractRetryAfterSeconds,
   getAuthToken,
   type BaselineProfilePayload,
 } from './api';
@@ -903,6 +904,15 @@ const adminFetchFile = async (path: string, options: RequestInit = {}): Promise<
     const error = new ApiError(extractApiErrorMessage(payload) ?? '导出失败');
     error.status = response.status;
     error.data = payload;
+    // The same extraction `apiRequest` runs, for the same reason: the
+    // only 429 on this router is the full export's 10/min limiter, and
+    // it is reached through THIS function. `createRateLimitMiddleware`
+    // throws `AppError(message, 429, { retryAfterSeconds, rateLimitKey })`
+    // (apps/api/src/middleware/rate-limit.ts:72-80) and
+    // `retryAfterSeconds` is in CLIENT_SAFE_DETAIL_KEYS, so the body is
+    // `{error, details:{retryAfterSeconds}}` and the countdown branch of
+    // `describeAdminError` was dead without this line.
+    error.retryAfterSeconds = extractRetryAfterSeconds(payload);
     // Same reason apiRequest does it: a stale token on any admin route
     // has to clear the local session, or the operator keeps looking at
     // a shell that will 401 every request.

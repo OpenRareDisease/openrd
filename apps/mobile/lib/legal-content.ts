@@ -100,9 +100,11 @@ export type LegalDocumentId = (typeof LEGAL_DOCUMENTS)[keyof typeof LEGAL_DOCUME
 /**
  * Effective date of the document set as first published.
  *
- * Still exported and still what three of the four documents carry: none
- * of them has been revised since. A document that IS revised gets its
- * own date in LEGAL_EFFECTIVE_DATES below — see why there.
+ * Still exported and still what TWO of the four documents carry —
+ * userAgreement and sensitiveData, the two nothing has revised. The
+ * other two were revised on 2026-08-13 when the administrator back
+ * office landed and carry their own date in LEGAL_EFFECTIVE_DATES
+ * below; see why there.
  */
 export const LEGAL_EFFECTIVE_DATE = '2026-08-02';
 
@@ -391,7 +393,7 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
       '（三）能看到什么',
       '· 患者列表上，姓名和手机号是打码的（张〇 / 139****0001）。搜索能匹配到完整的姓名和手机号，但返回给屏幕的仍然是打码的。',
       '· 要看到完整信息，必须打开你这一个人的档案——那一次会单独记一条。打开后能看到：你的手机号与账号信息、基线临床字段、随访事件、跌倒记录、量表结果，以及你上传的报告清单（报告标题、类型、状态、上传时间）。报告标题是你自己起的，里面可能带医院或人名，管理员会看到你写的那一行；报告文件本身和识别出的文字不在这个页面上。',
-      '· 管理员还可以把你这一份档案导成一个文件（FHIR / Phenopacket / TREAT-NMD 三种研究与医院系统常用的格式），内容与上一条能看到的范围相同，只是换成机器可读的写法。导出同样会单独记一条。这个文件不含你上传的报告原件。',
+      '· 管理员还可以把你这一份档案导成一个文件（FHIR / Phenopacket / TREAT-NMD 三种研究与医院系统常用的格式）。这个文件的范围和上一条不一样，两个方向都不一样。窄的一头：它不写你的姓名、电话、住址，也不含家族史。宽的一头，也是更要紧的一头：它比后台页面上看得到的多——你自己记录的肌力测量、功能测试、症状评分与日常影响会写进 FHIR 文件（TREAT-NMD 写其中的功能测试与症状评分），你上传的报告里被识别出来的那些数值也会作为观察项写进 FHIR 文件，而这些在后台的患者档案页上一项都不显示。你的报告清单（标题、类型、上传时间）也在文件里。报告原件不在里面。三种格式各自收多少不一样。导出同样会单独记一条。',
       '· 我们内部另有一个把全部患者导成一张表的操作，用于统计与迁移。它需要在后台把一句确认语完整敲一遍，会单独记一条，文件名里带操作时间和操作者。这张表里含姓名、手机号与所在地区，没有打码。',
       '· 后台能看到的范围如果扩大，我们会先改这一条并更新版本号。',
       '',

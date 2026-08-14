@@ -750,6 +750,96 @@ describe('AdminController.exportPatient', () => {
     expect(String(captured.body)).toContain('admin_entered');
   });
 
+  /** A profile whose only provenance entry cannot be parsed —
+   *  `adminUserId` is missing, so `listBaselineFieldOrigins` answers
+   *  `{ state: 'unreadable' }`. Only a hand-written UPDATE or a
+   *  half-applied future shape produces one. */
+  const unreadableMarkerProfile = () => ({
+    getStoredProfile: vi.fn(async () => ({
+      profileId: 'profile-1',
+      fullName: null,
+      preferredName: null,
+      patientCode: null,
+      regionLabel: null,
+      updatedAt: '2026-08-13T00:00:00.000Z',
+      baselinePayload: {
+        diseaseBackground: { d4z4: '4/22' },
+        [BASELINE_PROVENANCE_KEY]: {
+          'diseaseBackground.d4z4': { source: 'admin_entered' },
+        },
+      },
+    })),
+  });
+
+  it('exports an unreadable marker, because that is what the three formats carry for one', async () => {
+    // The document the real builders produce for this profile: the
+    // envelope's `fieldOrigins` carries `state: 'unreadable'`
+    // (export-source.ts) and each serialiser appends 「此项的来源记录读不
+    // 出来（…），只能确定不是患者本人填写」 beside the value. The origin is
+    // in the bytes; the word `admin_entered` is not, because nothing
+    // here was admin-entered — the entry is unparseable, which is a
+    // different fact. Checking the whole refusal against that one word
+    // refused this document and told the operator it had 1 个字段是管理员
+    // 代填的, which is the claim baseline-provenance.ts says a reader
+    // must not make about an `unreadable` entry.
+    buildPortableExportMock.mockReturnValueOnce({
+      format: 'FHIR R4',
+      document: { resourceType: 'Bundle' },
+      fieldOrigins: [
+        {
+          path: 'diseaseBackground.d4z4',
+          labelZh: 'D4Z4 重复数',
+          state: 'unreadable',
+          adminUserId: null,
+          at: null,
+          detail: 'adminUserId is not a user id',
+        },
+      ],
+    } as never);
+    const controller = makeController({
+      admin: unreadableMarkerProfile(),
+      profiles: { getProfileByUserId: vi.fn(async () => ({ id: 'profile-1' })) },
+    });
+    const { res, captured } = fakeResponse();
+
+    await controller.exportPatient(
+      request({ params: { userId: PATIENT_ID }, query: { format: 'fhir-r4' } }),
+      res,
+    );
+
+    expect(captured.statusCode).toBe(200);
+    expect(String(captured.body)).toContain('unreadable');
+  });
+
+  it('refuses a document that dropped an unreadable marker, without calling it 代填', async () => {
+    // Same shape as the `admin_entered` refusal above and a different
+    // sentence, because the two states are different facts: one says an
+    // administrator typed the value, the other says we cannot tell who
+    // did — 「a reader that renders it as anything other than 来源不明 is
+    // wrong」 (baseline-provenance.ts).
+    const controller = makeController({
+      admin: unreadableMarkerProfile(),
+      profiles: { getProfileByUserId: vi.fn(async () => ({ id: 'profile-1' })) },
+    });
+    const { res } = fakeResponse();
+
+    await expect(
+      controller.exportPatient(
+        request({ params: { userId: PATIENT_ID }, query: { format: 'fhir-r4' } }),
+        res,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining('读不出来'),
+    });
+    await expect(
+      controller.exportPatient(
+        request({ params: { userId: PATIENT_ID }, query: { format: 'fhir-r4' } }),
+        res,
+      ),
+    ).rejects.toMatchObject({ message: expect.not.stringContaining('代填') });
+  });
+
   it('rejects an unknown format instead of picking one', async () => {
     const controller = makeController({
       profiles: { getProfileByUserId: vi.fn(async () => ({ id: 'profile-1' })) },

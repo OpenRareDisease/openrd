@@ -8,10 +8,13 @@ import { PORTABLE_EXPORT_FORMATS } from '../patient-profile/export/index.js';
  * reaches a query.
  *
  * `userId` is a UUID here as well as in `requireAdmin`, which also
- * checks it — and the middleware runs FIRST, so for the four routes
- * that declare `targetParam: 'userId'` today it is the middleware's
- * 400 that a mistyped id gets, and this parse never sees one.
- * Measured through the real router:
+ * checks it — and the middleware runs FIRST, so for the three routes
+ * that declare `targetParam: 'userId'` today (`GET /patients/:userId`,
+ * `PUT /patients/:userId/baseline`, `GET /patients/:userId/export` —
+ * `grep -n targetParam apps/api/src/modules/admin/admin.routes.ts` on
+ * 2026-08-13 returns those three plus two comment lines) it is the
+ * middleware's 400 that a mistyped id gets, and this parse never sees
+ * one. Measured through the real router:
  * `GET /api/admin/patients/not-a-uuid` → 400, asserted in
  * admin.routes.test.ts.
  *

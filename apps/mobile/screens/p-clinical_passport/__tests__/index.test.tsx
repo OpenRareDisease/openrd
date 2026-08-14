@@ -446,6 +446,55 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
     expect(text).not.toContain('证据摘要');
   });
 
+  it('管理员代填时标题说是管理员填的，不说是本人填的', async () => {
+    // §B3's fourth source. This heading had two branches, so
+    // `admin_entered` fell into the else and printed 「本人填写的诊断
+    // 信息」 over values an administrator typed — on the screen the
+    // PATIENT reads, and directly under the summary card's own 「以下由
+    // 本平台管理员代填」. clinical-passport-pdf.ts and
+    // passport-share.html.ts branched on all four already.
+    const adminNotice = '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写';
+    const renderer = await render(
+      summary({
+        summaryCards: [
+          {
+            key: 'diagnosis',
+            title: '诊断证据',
+            ready: false,
+            summary: adminNotice,
+            meta: '诊断日期 2023-05-01',
+          },
+        ],
+        diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain(adminNotice);
+    expect(text).toContain('管理员代填的诊断信息');
+    expect(text).not.toContain('本人填写的诊断信息');
+    expect(text).not.toContain('证据摘要');
+  });
+
+  it('confirmation 为 none 时也不说是本人填的 —— 没有人填过', async () => {
+    const renderer = await render(
+      summary({
+        summaryCards: [
+          {
+            key: 'diagnosis',
+            title: '诊断证据',
+            ready: false,
+            summary: '缺少可直接展示的基因或诊断证据',
+            meta: '诊断日期 —',
+          },
+        ],
+        diagnosis: { ...summary().diagnosis, confirmation: 'none' },
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain('诊断信息');
+    expect(text).not.toContain('本人填写的诊断信息');
+  });
+
   it('提示不是第四块琥珀色 —— 那个颜色在这个产品里只说一件事', async () => {
     // Amber is already spent on the PDF's unconfirmed banner. A second
     // one here makes it a decoration in both places.
@@ -475,6 +524,92 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
  * server against the version the patient answered, and the screen has
  * no fallback wording of its own to reach for.
  */
+describe('§B3：这一页要说出哪些字段不是患者自己填的', () => {
+  const ADMIN_ORIGIN = {
+    path: 'diseaseBackground.d4z4',
+    labelZh: 'D4Z4 重复数',
+    state: 'admin_entered' as const,
+    adminUserId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    at: '2026-08-13T04:11:07.912Z',
+    detail: null,
+  };
+
+  it('诊断进度那一格说的是服务端给的那个来源，不是写死的「本人填写」', async () => {
+    const renderer = await render(
+      summary({
+        diagnosis: {
+          ...summary().diagnosis,
+          ladder: 'confirmed',
+          ladderLabel: '已确诊',
+          ladderOriginZh: '管理员代填',
+        },
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain('管理员代填的诊断进度');
+    expect(text).not.toContain('本人填写的诊断进度');
+  });
+
+  it('服务端没给来源时才回落到「本人填写」—— 那是 §B3 之前的接口', async () => {
+    const renderer = await render(
+      summary({
+        diagnosis: { ...summary().diagnosis, ladder: 'confirmed', ladderLabel: '已确诊' },
+      }),
+    );
+    expect(allText(renderer)).toContain('本人填写的诊断进度');
+  });
+
+  it('逐条列出被代填的字段，带上是谁、什么时候 —— PDF 和分享页早就列了', async () => {
+    // §10（四）of the privacy policy names 「App 里」 by name. Until this
+    // block the screen showed only the aggregate sentence, so the one
+    // surface where a patient learns WHICH of their fields was typed
+    // for them was a PDF they had to export first.
+    const renderer = await render(summary({ fieldOrigins: [ADMIN_ORIGIN] }));
+    const text = allText(renderer);
+    expect(text).toContain('这些字段不是你本人填的');
+    expect(text).toContain('D4Z4 重复数：「肌愈通」管理员于 2026-08-13 代为录入，不是你本人填写。');
+  });
+
+  it('读不出来的标记说自己读不出来，不借用患者的名义', async () => {
+    const renderer = await render(
+      summary({
+        fieldOrigins: [
+          {
+            ...ADMIN_ORIGIN,
+            state: 'unreadable',
+            adminUserId: null,
+            at: null,
+            detail: 'adminUserId is not a user id',
+          },
+        ],
+      }),
+    );
+    const text = allText(renderer);
+    expect(text).toContain(
+      'D4Z4 重复数：来源记录读不出来（adminUserId is not a user id），只能确定不是你本人填写。',
+    );
+  });
+
+  it('一条标记都没有时整块不出现 —— 一个写着「无」的标题只会教人跳过它', async () => {
+    const renderer = await render(summary({ fieldOrigins: [] }));
+    const text = allText(renderer);
+    expect(text).not.toContain('这些字段不是你本人填的');
+    expect(text).not.toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
+  });
+
+  it('服务端这一版没给这个字段时说没给，不读成「都是本人填的」', async () => {
+    // A cached WeChat bundle talking to an API build that predates the
+    // field gets `undefined`, and reading that as an empty list is
+    // exactly the false sentence this block exists to prevent.
+    const renderer = await render(summary());
+    expect(allText(renderer)).toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
+  });
+});
+
 describe('功能分级：一个数字必须带着它的那句话', () => {
   const BROOKE_KEY = 'brooke_upper_extremity';
   const BROOKE_L3 = '手举不到头顶上方，但能把一杯约 240 毫升（8 盎司）的水端到嘴边。';

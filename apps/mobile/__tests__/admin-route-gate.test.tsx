@@ -67,6 +67,22 @@ jest.mock('../contexts/ProfileContext', () => ({
   useProfileContext: () => ({ profileStatus: 'missing' }),
 }));
 
+jest.mock('../contexts/LegalConsentContext', () => ({
+  LegalConsentProvider: ({ children }: { children?: unknown }) => children,
+  // 'pending' would send the operator to /p-legal_update; the back
+  // office is exempt from that gate for the same reason it is exempt
+  // from onboarding, and the case is covered in route-gate.test.tsx.
+  // What this mock is here for is that a real provider would reach for
+  // the network from a test about routing.
+  useLegalConsentContext: () => ({
+    status: 'ready',
+    asks: [],
+    deferred: false,
+    defer: jest.fn(),
+    refresh: jest.fn(),
+  }),
+}));
+
 jest.mock('../screens/common/feedback/AppDialog', () => ({
   AppDialogProvider: ({ children }: { children?: unknown }) => children,
 }));

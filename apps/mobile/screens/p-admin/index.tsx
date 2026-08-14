@@ -7,6 +7,7 @@ import {
   getAdminCorpusStatus,
   getAdminHealth,
   getAdminParseFailureQueue,
+  type AdminAiStatusCount,
 } from '../../lib/admin-api';
 import {
   AdminBlock,
@@ -39,6 +40,37 @@ import styles from './styles';
  *  block answers is 「现在是不是坏的」; the retention line beside it says
  *  how far back the table can be asked at all. */
 const AI_WINDOW_DAYS = 7;
+
+/**
+ * 「服务端算过，答案是没得算」 vs 「服务端没给这一项」, told apart.
+ *
+ * `failureRate` arrives as `null` in both cases — `asFiniteOrNull` maps
+ * an absent field and an explicit null onto the same value — and the
+ * two are opposite facts. Rendering both as 「服务端没有返回这一项」 lied
+ * about the first; rendering both as 「窗口内没有调用」 would assert an
+ * empty window over one that may hold five hundred calls.
+ *
+ * The discriminator is the server's own denominator, reconstructed from
+ * two numbers it also sends: `AdminService.getAiUsage` computes
+ * `attempted = totalCalls - consent_denied` and returns
+ * `failureRate: attempted === 0 ? null : …` (admin.service.ts:791-799).
+ * So `failureRate === null` with `attempted === 0` is the measured 0/0,
+ * and `failureRate === null` with anything else is a field that did not
+ * arrive.
+ *
+ * This is NOT a second failure rate. Nothing here divides — the reason
+ * `AdminAiUsage.failureRate` says the client must not recompute the
+ * quotient stands, and this only picks which sentence to print. Returns
+ * `null` when `totalCalls` is missing too: without it there is no
+ * denominator to reconstruct and the honest answer is that we cannot
+ * tell.
+ */
+const attemptedCalls = (usage: { totalCalls: number | null; byStatus: AdminAiStatusCount[] }) => {
+  if (usage.totalCalls === null) return null;
+  const consentDenied =
+    usage.byStatus.find((entry) => entry.status === 'consent_denied')?.calls ?? 0;
+  return usage.totalCalls - consentDenied;
+};
 
 const AdminOverviewScreen = () => {
   const router = useRouter();
@@ -285,18 +317,31 @@ const AdminOverviewScreen = () => {
                   : `ai_prompt_audit 保留 ${aiData.retentionDays} 天，再往前的调用已经被清掉了——窗口拉长也看不到。`
               }
             />
-            <AdminStat
-              label="失败率"
-              value={
-                aiData.failureRate === null ? null : `${(aiData.failureRate * 100).toFixed(1)}%`
-              }
-              alert={(aiData.failureRate ?? 0) > 0.05}
-              detail={
-                aiData.failureRate === null
-                  ? '窗口内没有成功也没有失败的调用，0/0 不是 0%。'
-                  : '分母只算成功和失败两种。consent_denied 不在里面：那是同意闸门在正常工作，算进失败率会让一个隐私控制看起来像故障。'
-              }
-            />
+            {(() => {
+              // 0/0 is an answer and 「这一项没到」 is not, so they get
+              // different words. See `attemptedCalls`.
+              const noAttempts = aiData.failureRate === null && attemptedCalls(aiData) === 0;
+              return (
+                <AdminStat
+                  label="失败率"
+                  value={
+                    aiData.failureRate === null
+                      ? noAttempts
+                        ? '窗口内没有可计入的调用'
+                        : null
+                      : `${(aiData.failureRate * 100).toFixed(1)}%`
+                  }
+                  alert={(aiData.failureRate ?? 0) > 0.05}
+                  detail={
+                    aiData.failureRate === null
+                      ? noAttempts
+                        ? '窗口内没有成功也没有失败的调用，0/0 不是 0%。consent_denied 不计入分母，所以窗口里只有它的时候也落在这里。'
+                        : '服务端这次没有给失败率，而窗口里有计入分母的调用——这一项是没到，不是 0，也不是「没有失败」。'
+                      : '分母只算成功和失败两种。consent_denied 不在里面：那是同意闸门在正常工作，算进失败率会让一个隐私控制看起来像故障。'
+                  }
+                />
+              );
+            })()}
             {aiData.byStatus.map((entry) => (
               <AdminStat
                 key={entry.status}

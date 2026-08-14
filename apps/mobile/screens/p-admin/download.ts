@@ -48,6 +48,34 @@ export const saveBlobInBrowser = (blob: Blob, fileName: string) => {
 };
 
 /**
+ * Which of the two exports is asking, because the two do not leave the
+ * same trail and the fallback notice used to claim they did.
+ *
+ * `recordFullExportAudit` (apps/api/src/modules/admin/admin.service.ts)
+ * is the ONLY writer that puts `fileName` in an audit payload, and it
+ * is called only from `exportAllPatientsCsv`. The single-patient export
+ * leaves `requireAdmin`'s row alone, whose payload is fixed at
+ * `{adminUserId, targetUserId, path, method}`
+ * (apps/api/src/middleware/require-admin.ts:281-286) — no file name in
+ * it, and no second row either.
+ */
+export type AdminDownloadKind = 'full_export' | 'patient_export';
+
+const FALLBACK_PREFIX =
+  '浏览器没有把服务端给的文件名交给页面（跨域部署时会这样），所以这个文件用的是本机生成的名字，' +
+  '里面没有服务端记录的操作者。';
+
+const FALLBACK_NOTICE: Record<AdminDownloadKind, string> = {
+  full_export:
+    FALLBACK_PREFIX +
+    '服务端那个名字写在这次全量导出单独记的那条 admin.export 审计记录里（payload 的 fileName）。',
+  patient_export:
+    FALLBACK_PREFIX +
+    '这一次导出的服务端文件名没有留在任何地方：单个患者的导出只写一条 admin.export 审计记录，' +
+    '里面是操作者、患者和时间，没有文件名。要把这个文件对回去，用那条记录的患者 ID 和时间。',
+};
+
+/**
  * The name we fall back to, and the sentence that goes with it.
  *
  * `fallbackName` carries a UTC stamp this client generated and NOTHING
@@ -55,21 +83,16 @@ export const saveBlobInBrowser = (blob: Blob, fileName: string) => {
  * `app_users.id` — the API does, and it is what the server's own name
  * carries. So the fallback is not a lookalike: it says in the name
  * itself that the server's name was not received, and the caller shows
- * `notice`. The real name is still recoverable — it is in the second
- * `admin.export` audit row, which the server writes before it sends a
- * byte.
+ * `notice`. What the notice then tells the operator to look up depends
+ * on which export this was — see `AdminDownloadKind`.
  */
 export const describeDownloadName = (
   download: AdminDownload,
   fallbackName: string,
+  kind: AdminDownloadKind,
 ): { fileName: string; notice: string | null } => {
   if (download.fileName) return { fileName: download.fileName, notice: null };
-  return {
-    fileName: fallbackName,
-    notice:
-      '浏览器没有把服务端给的文件名交给页面（跨域部署时会这样），所以这个文件用的是本机生成的名字，' +
-      '里面没有服务端记录的操作者。服务端那个名字写在这次导出的审计记录里。',
-  };
+  return { fileName: fallbackName, notice: FALLBACK_NOTICE[kind] };
 };
 
 /** A UTC stamp in the same basic ISO 8601 form the server uses, so a

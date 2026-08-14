@@ -99,6 +99,46 @@ const formatVisitPrepTimestamp = (value: string | null) => {
   return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
+/**
+ * The heading over 诊断证据's summary paragraph, per `confirmation`.
+ *
+ * FOUR states, because §B3 added a fourth and this heading had two
+ * branches. `admin_entered` used to fall into the else and print
+ * 「本人填写的诊断信息」 over values an administrator typed — on the
+ * screen the PATIENT reads, and directly under the summary card's own
+ * 「以下由本平台管理员代填，不是患者本人填写」, so one screen said both.
+ * The same four branches are in clinical-passport-pdf.ts:554-567 and
+ * passport-share.html.ts's CONFIRMATION_BANNER; a `Record` rather than
+ * a ternary chain so a fifth state added to the union fails to compile
+ * here too. The caller still writes `?? '诊断信息'` for the other
+ * direction, which the compiler cannot cover: `confirmation` is an
+ * unchecked assertion off the wire, so a NEWER API can hand this
+ * bundle a word this table has never heard of, and a lookup miss must
+ * not render as `undefined` under the values.
+ *
+ * `none` is not 「本人填写」 either: nobody filled it, the block is
+ * empty, and the notice above it already says so.
+ */
+const DIAGNOSIS_NOTE_TITLE: Record<ClinicalPassportSummary['diagnosis']['confirmation'], string> = {
+  genetic: '证据摘要',
+  self_reported: '本人填写的诊断信息',
+  admin_entered: '管理员代填的诊断信息',
+  none: '诊断信息',
+};
+
+/** An ISO timestamp as 2026-08-13 for the provenance list. Returns the
+ *  raw string when it will not parse and null when there is none, so a
+ *  marker never prints 「Invalid Date」 and never silently loses its
+ *  date. */
+const formatOriginDate = (value: string | null) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
 const escapeHtml = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -947,12 +987,24 @@ const ClinicalPassportScreen = () => {
                         「what does the evidence show」 — and the passport
                         shows both rather than reconciling them, which
                         is also why this cell never takes metric type:
-                        it is a self-report by construction, whatever
-                        the uploaded reports say. Absent, not 「—」, when
-                        the question was never answered. */}
+                        it is not evidence, whatever the uploaded
+                        reports say. Absent, not 「—」, when the question
+                        was never answered.
+
+                        WHO filled it comes from the server. It used to
+                        read 「本人填写的诊断进度」 unconditionally, which
+                        an administrator writing this field makes false
+                        — the API now ships `ladderOriginZh` (本人填写 /
+                        管理员代填 / 来源不明) for this line and the
+                        markdown export already reads it
+                        (profile.passport.ts:2200-2206). `?? '本人填写'`
+                        is the pre-§B3 API build, where no field could
+                        have any other source. */}
                     {ladderLabel ? (
                       <View style={styles.infoCell}>
-                        <Text style={styles.infoLabel}>本人填写的诊断进度</Text>
+                        <Text style={styles.infoLabel}>
+                          {`${passport.diagnosis.ladderOriginZh ?? '本人填写'}的诊断进度`}
+                        </Text>
                         <Text style={styles.infoValueSelfReported}>{ladderLabel}</Text>
                       </View>
                     ) : null}
@@ -960,10 +1012,46 @@ const ClinicalPassportScreen = () => {
 
                   <View style={styles.noteCard}>
                     <Text style={styles.noteTitle}>
-                      {diagnosisConfirmed ? '证据摘要' : '本人填写的诊断信息'}
+                      {DIAGNOSIS_NOTE_TITLE[passport.diagnosis.confirmation] ?? '诊断信息'}
                     </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
                   </View>
+
+                  {/* §B3 on the screen the PATIENT reads, and the last
+                      surface to get it: the printed PDF, the share page
+                      and the markdown export all list these, and
+                      §10（四）of the privacy policy promises 「App 里」
+                      by name. The aggregate sentence above says a value
+                      was typed for them; this says WHICH.
+
+                      `undefined` is not 「nothing is marked」. This app
+                      is a web export and WeChat caches a bundle for
+                      days, so a new front end talking to an API build
+                      that predates the field gets `undefined` — reading
+                      that as an empty list is exactly the false
+                      sentence this block exists to prevent, so it says
+                      the server did not send it. Same three-way split
+                      as clinical-passport-pdf.ts:157-178. */}
+                  {!Array.isArray(passport.fieldOrigins) ? (
+                    <View style={styles.noteCard}>
+                      <Text style={styles.noteTitle}>字段来源</Text>
+                      <Text style={styles.noteText}>
+                        服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。
+                      </Text>
+                    </View>
+                  ) : passport.fieldOrigins.length === 0 ? null : (
+                    <View style={styles.noteCard}>
+                      <Text style={styles.noteTitle}>这些字段不是你本人填的</Text>
+                      {passport.fieldOrigins.map((origin) => (
+                        <Text key={origin.path} style={styles.noteText}>
+                          {origin.labelZh}：
+                          {origin.state === 'admin_entered'
+                            ? `「肌愈通」管理员于 ${formatOriginDate(origin.at) ?? '未记录时间'} 代为录入，不是你本人填写。`
+                            : `来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是你本人填写。`}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
 
                   {/* The graded read of the genetic evidence.
                       Deliberately below the values it is about, and

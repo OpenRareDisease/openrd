@@ -343,9 +343,24 @@ export class AdminService {
    * row is written (deliberately — audit_logs is the table
    * identity-masking.ts exists to keep names out of). The trail
    * therefore records that this administrator listed patients at that
-   * moment, not what they typed. The property that holds is the bulk
-   * one: the roster cannot be enumerated, and every name actually read
-   * names its patient in the trail.
+   * moment, not what they typed. The property that holds is about THIS
+   * method: nothing it returns is an unmasked name or phone number —
+   * paging through every account yields 张〇 and 139****0001 — so a name
+   * still has to be READ one patient at a time, and that costs an
+   * `admin.record_read` row naming them.
+   *
+   * IT IS NOT A PROPERTY OF THE MODULE. `POST /api/admin/exports/
+   * patients.csv` enumerates the whole roster — full names, phone
+   * numbers and regions, `listExportRows` below — and neither of its two
+   * audit rows names a patient: `requireAdmin`'s carries
+   * `targetUserId: null` because the route declares no `targetParam`
+   * (it is about every patient, so there is no single one to record),
+   * and `recordFullExportAudit`'s carries the cohort as a whole
+   * (`scope: 'all_patients'` + `patientCount` + the filename). That path
+   * is audited by its size and its operator rather than by whose names
+   * were in it, which is the trade §B4 makes explicit; the typed
+   * confirmation and the per-operator rate limit are what stand in front
+   * of it.
    */
   async listPatients(options: {
     q?: string;

@@ -346,11 +346,16 @@ describe('an account that never opened the baseline form', () => {
     expect(boxes).toHaveLength(0);
   });
 
-  it('says why, instead of leaving the 404 to explain it wrongly', async () => {
-    // Saving would reach `upsertBaseline` → `ensureProfileForUser` →
-    // 404「Patient profile not found」, which `describeAdminError`
-    // renders as 「这个账号可能已经注销，或者链接里的 ID 不对」. Both halves
-    // of that sentence are false about this account.
+  it('says why, instead of leaving the server to explain it wrongly', async () => {
+    // `AdminController.updateBaseline` now answers this account with its
+    // own 409 before `upsertBaseline` is reached — 「这个账号注册后还没有
+    // 建过健康档案，后台不能替他建」 (admin.controller.ts:299). The gate
+    // here is what keeps the operator from meeting it at all. Reaching
+    // `ensureProfileForUser`'s 404「Patient profile not found」 from this
+    // screen now means the profile row disappeared mid-edit, and
+    // `describeAdminError` still renders that as 「这个账号可能已经注销」 —
+    // which is why the form must not open on an account that never had
+    // one.
     mockGetRecord.mockResolvedValue(noProfile());
     const screen = textContent((await render()).root);
     expect(screen).toContain('这个账号还没有健康档案');
@@ -368,6 +373,32 @@ describe('an account that never opened the baseline form', () => {
     );
     expect(exportButtons).toHaveLength(0);
     expect(textContent(tree.root)).toContain('没有可导出的内容');
+  });
+});
+
+describe('the save path reports the server\u2019s refusal, not a rewritten one', () => {
+  it('renders a 409 verbatim instead of telling the operator to try again', async () => {
+    // The account HAS a profile row when the screen loads and loses it
+    // (or the request races an account deletion) by the time the PUT
+    // lands. Whatever the reason, this 409 is not fixed by retrying, and
+    // the screen used to append 「重新来一遍即可」 to every one of them.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const { ApiError } = jest.requireActual('../../../lib/api');
+    const conflict = new ApiError(
+      '这个账号注册后还没有建过健康档案，后台不能替他建。请让患者本人在 App 里先保存一次基线，或者确认这个用户 ID 是不是拿错了。',
+    );
+    conflict.status = 409;
+    mockUpdateBaseline.mockRejectedValue(conflict);
+
+    const tree = await render();
+    await typeInto(tree, 'D4Z4 重复数', '3/22');
+    await pressByLabel(tree, '保存 1 处改动');
+
+    const screen = textContent(tree.root);
+    expect(screen).toContain('请让患者本人在 App 里先保存一次基线');
+    expect(screen).not.toContain('重新来一遍');
+    expect(screen).not.toContain('数据在你操作期间变了');
   });
 });
 
@@ -455,6 +486,22 @@ describe('§B4 导出：单个患者', () => {
     await pressByLabel(tree, '导出 Phenopacket');
     expect(mockSave).not.toHaveBeenCalled();
     expect(textContent(tree.root)).toContain('找不到这条记录');
+  });
+
+  it('does not tell the operator to look up a file name nobody recorded', async () => {
+    // `recordFullExportAudit` is the only writer that puts `fileName` in
+    // an audit payload and it runs only for the FULL csv. This export
+    // leaves `requireAdmin`'s row, whose payload is fixed at
+    // {adminUserId, targetUserId, path, method}.
+    ready();
+    mockExport.mockResolvedValue({ blob: { size: 2048 } as unknown as Blob, fileName: null });
+    const tree = await render();
+    await pressByLabel(tree, '导出 TREAT-NMD');
+
+    const screen = textContent(tree.root);
+    expect(screen).toContain('服务端文件名未收到');
+    expect(screen).toContain('没有留在任何地方');
+    expect(screen).not.toContain('payload 的 fileName');
   });
 
   it('says the exported baseline is not the one in the boxes above', async () => {

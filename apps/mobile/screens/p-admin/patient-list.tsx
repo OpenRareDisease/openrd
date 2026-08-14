@@ -127,7 +127,14 @@ const AdminPatientListScreen = () => {
     // Re-submitting the same term must still re-fetch (the operator
     // pressed the button because they want fresh data), and setting
     // state to the same value would not re-run the effect.
-    if (next === term) load(1, next);
+    //
+    // `page === 1` is the other half, and it is not a micro-optimisation:
+    // off page 1 the `setPage(1)` above ALREADY re-runs the effect with
+    // the same arguments, so without this guard one press of 搜索 fires
+    // two identical requests and `requireAdmin` writes two `admin.list`
+    // audit rows for it — the exact cost this file's header cites as the
+    // reason `draft` is kept out of the effect deps.
+    if (next === term && page === 1) load(1, next);
   };
 
   const described = state === 'error' ? describeAdminError(error) : null;

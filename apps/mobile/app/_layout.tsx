@@ -8,6 +8,7 @@ import { AuthProvider } from '../contexts/AuthContext';
 import { AppDialogProvider } from '../screens/common/feedback/AppDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { ProfileProvider, useProfileContext } from '../contexts/ProfileContext';
+import { LegalConsentProvider, useLegalConsentContext } from '../contexts/LegalConsentContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { ADMIN_ROUTES, isAdminRole } from '../lib/admin-access';
 
@@ -75,16 +76,60 @@ const ONBOARDING_EXEMPT_ROUTES = new Set([
  */
 for (const route of ADMIN_ROUTES) ONBOARDING_EXEMPT_ROUTES.add(route);
 
+/**
+ * Routes the re-consent gate lets through.
+ *
+ * The gate sends a patient whose accepted document version is older
+ * than this build's to /p-legal_update, because 隐私政策 §9 promises
+ * 「我们会在 App 内重新征得你的同意」 for a change of this kind and the
+ * back office is one. These are the routes where redirecting would do
+ * more harm than the ask does good:
+ *
+ *  - p-legal_update itself, or the gate replaces its own destination.
+ *  - p-settings — 导出我的数据 and 注销账号 live there, and they are
+ *    exactly what the consent screen tells a patient who does not want
+ *    to agree to go and use. A gate that bounced them off that screen
+ *    would make the offer a lie.
+ *  - p-privacy_settings — the 授权记录 ledger and every withdrawal
+ *    control, for the same reason.
+ *  - p-about_us — the full legal texts.
+ *  - p-login_register — a signed-in user is already bounced off it.
+ *  - p-genetics_family / p-pregnancy — reading pages that call no API
+ *    and are readable signed OUT. Interrupting only the signed-in
+ *    reader would be arbitrary, the same argument that exempts them
+ *    from the onboarding gate.
+ *  - the back office — an administrator is an app_users row like any
+ *    other and may owe a consent on their own patient account; that is
+ *    not a reason to shut the parse queue.
+ */
+const RECONSENT_EXEMPT_ROUTES = new Set([
+  'p-legal_update',
+  'p-login_register',
+  'p-settings',
+  'p-privacy_settings',
+  'p-about_us',
+  'p-genetics_family',
+  'p-pregnancy',
+]);
+
+for (const route of ADMIN_ROUTES) RECONSENT_EXEMPT_ROUTES.add(route);
+
 function AppNavigator() {
   const navigationState = useRootNavigationState();
   const router = useRouter();
   const segments = useSegments();
   const { token, user, isHydrated } = useAuth();
   const { profileStatus } = useProfileContext();
+  const { status: legalConsentStatus, deferred: legalConsentDeferred } = useLegalConsentContext();
   const currentRoute = segments[0] ?? '';
   const isGuestRoute = GUEST_ROUTES.has(currentRoute);
   const isSignedOutOnlyRoute = SIGNED_OUT_ONLY_ROUTES.has(currentRoute);
   const isOnboardingExempt = ONBOARDING_EXEMPT_ROUTES.has(currentRoute);
+  // Every segment, not just the first: 我的 is app/(tabs)/p-settings.tsx,
+  // so on that screen `segments[0]` is the group name '(tabs)' and a
+  // `segments[0]` test would silently fail to exempt the one screen the
+  // consent prompt sends a refusing patient to.
+  const isReconsentExempt = segments.some((segment) => RECONSENT_EXEMPT_ROUTES.has(segment));
   /**
    * A back-office route opened by someone whose cached role is not
    * 'admin'.
@@ -111,6 +156,26 @@ function AppNavigator() {
   // The gate fires ONLY on a confirmed 404 ('missing'). 'error' is
   // fail-open by design — see ProfileContext's status semantics.
   const needsOnboarding = Boolean(token) && profileStatus === 'missing' && !isOnboardingExempt;
+  /**
+   * A returning patient who accepted an older version of a document
+   * this build has revised.
+   *
+   * Fires only on 'pending' — a confirmed answer from
+   * `GET /legal/acceptances`. 'error' is fail-open for a reason the
+   * onboarding gate does not have: an API we cannot read is an API we
+   * cannot record an acceptance against either, so bouncing an offline
+   * patient here would park them on a screen whose only button is
+   * guaranteed to fail. See LegalConsentContext's status semantics.
+   *
+   * `deferred` is what keeps 暂不同意 from becoming a lockout: the ask
+   * is real, but a refusal must leave the patient inside their own
+   * record. It is memory-only, so a fresh visit asks again.
+   */
+  const needsReconsent =
+    Boolean(token) &&
+    legalConsentStatus === 'pending' &&
+    !legalConsentDeferred &&
+    !isReconsentExempt;
 
   // NOTE: there used to be a useEffect here that fired
   // `window.parent.postMessage({ type: 'chux-path-change', pathname,
@@ -165,6 +230,16 @@ function AppNavigator() {
       return;
     }
 
+    // Re-consent gate, ahead of onboarding: a revision that changes
+    // who may read the record has to be answered before we ask the
+    // patient for more of it. The consent screen's own 暂不同意 sets
+    // `deferred`, so a refusal falls through to whatever gate is next
+    // rather than looping here.
+    if (needsReconsent) {
+      router.replace('/p-legal_update');
+      return;
+    }
+
     // Onboarding gate: a logged-in user whose profile row is
     // confirmed missing is walked to the minimal setup screen before
     // anything else — previously they landed on an empty home screen
@@ -186,6 +261,7 @@ function AppNavigator() {
     segments,
     token,
     needsOnboarding,
+    needsReconsent,
     isAdminRouteForNonAdmin,
   ]);
 
@@ -195,6 +271,7 @@ function AppNavigator() {
     ((!token && !isGuestRoute) ||
       (token && isSignedOutOnlyRoute) ||
       isAdminRouteForNonAdmin ||
+      needsReconsent ||
       needsOnboarding);
 
   if (shouldBlockRender) {
@@ -239,6 +316,9 @@ function AppNavigator() {
         <Stack.Screen name="p-trial_square" options={{ title: '临床试验广场页' }} />
         <Stack.Screen name="p-expert_consult" options={{ title: '专家咨询页' }} />
         <Stack.Screen name="p-privacy_settings" options={{ title: '隐私设置页' }} />
+        {/* The re-consent §9 promises. Reached by the gate above, not
+            by a link from anywhere. */}
+        <Stack.Screen name="p-legal_update" options={{ title: '隐私政策更新页' }} />
         <Stack.Screen name="p-about_us" options={{ title: '关于我们页' }} />
         <Stack.Screen name="p-clinical_passport" options={{ title: 'FSHD临床护照页' }} />
         <Stack.Screen name="p-data_donation" options={{ title: '数据捐赠页' }} />
@@ -289,7 +369,14 @@ export default function RootLayout() {
       <ErrorBoundary>
         <AuthProvider>
           <ProfileProvider>
-            <AppNavigator />
+            {/* Inside ProfileProvider so both gates read one hydrated
+                token, and outside AppNavigator because the consent
+                screen it gates needs the same instance — a second read
+                would let the screen record an acceptance the gate never
+                learns about. */}
+            <LegalConsentProvider>
+              <AppNavigator />
+            </LegalConsentProvider>
           </ProfileProvider>
         </AuthProvider>
       </ErrorBoundary>

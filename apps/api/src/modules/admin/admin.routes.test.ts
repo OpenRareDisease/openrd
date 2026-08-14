@@ -364,6 +364,23 @@ describe('the single-patient export asks for a format and never picks one', () =
       expect(message).toContain(format);
     }
   });
+
+  it('names the three for an unknown format too, which is Zod own enum message', async () => {
+    // The other half of the claim in admin.schema.ts. The formatless
+    // case needed a `required_error` to name them; this one has always
+    // named them, and「always」was the part nothing checked — a
+    // `z.string()` here, or an `errorMap` that replaced the default
+    // message, would take the list away silently.
+    const response = await request(app)
+      .get(`/api/admin/patients/${PATIENT_ID}/export?format=csv`)
+      .set('authorization', adminToken());
+
+    expect(response.status).toBe(400);
+    const message = JSON.stringify(response.body);
+    for (const format of ['treat-nmd', 'phenopacket', 'fhir-r4']) {
+      expect(message).toContain(format);
+    }
+  });
 });
 
 describe('§B3 end to end: the marker leaves with the document', () => {

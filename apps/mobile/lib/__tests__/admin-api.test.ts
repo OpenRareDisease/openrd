@@ -435,6 +435,27 @@ describe('one patient, as a document', () => {
     expect(download.fileName).toBeNull();
   });
 
+  it('carries the 429 countdown the limiter put in the body', async () => {
+    // `createRateLimitMiddleware` throws AppError(msg, 429,
+    // {retryAfterSeconds, rateLimitKey}) and `retryAfterSeconds` is in
+    // CLIENT_SAFE_DETAIL_KEYS, so the body reaches this client. Without
+    // the extraction the 429 branch of `describeAdminError` reads
+    // `error.retryAfterSeconds` off an error that never carries one —
+    // dead code on the only 429 this router has.
+    mockFetch().mockResolvedValue(
+      fakeResponse({
+        ok: false,
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+        body: { error: '全量导出过于频繁，请稍后再试', details: { retryAfterSeconds: 42 } },
+      }),
+    );
+    await expect(requestAdminFullPatientCsv()).rejects.toMatchObject({
+      status: 429,
+      retryAfterSeconds: 42,
+    });
+  });
+
   it('does not retry a failed export', async () => {
     // apiRequest retries a transport-failed GET once. Here that would
     // be a second admin.export audit row against this patient for one

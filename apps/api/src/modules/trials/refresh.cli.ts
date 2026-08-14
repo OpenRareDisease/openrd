@@ -44,7 +44,8 @@ import { fileURLToPath } from 'node:url';
 
 import { Client } from 'pg';
 
-import { refreshTrials } from './refresh.js';
+import { CDT_KEYWORDS } from './chinadrugtrials.fetcher.js';
+import { refreshTrials, type RefreshSourceSuccess } from './refresh.js';
 import type { TrialsDb } from './trials.repository.js';
 import { loadAppEnv } from '../../config/env.js';
 import { createLogger } from '../../config/logger.js';
@@ -59,6 +60,35 @@ const asTrialsDb = (client: Client): TrialsDb => ({
     return { rows: result.rows as Array<Record<string, unknown>>, rowCount: result.rowCount };
   },
 });
+
+/**
+ * How the run's own count is said out loud — and the two sources do not
+ * get the same sentence, because their numbers are not the same kind of
+ * number.
+ *
+ * ctgov ran ONE query and `totalCount` is the registry's own count of
+ * the studies matching it, so it can be quoted as the registry's.
+ *
+ * chinadrugtrials ran one search per keyword in CDT_KEYWORDS and
+ * `sourceReportedTotal` is the SUM of their 共 N 条记录. A trial
+ * registered as 面肩肱型肌营养不良（FSHD）matches two of the three
+ * keywords, so it is counted twice in that sum and written once — the
+ * fetcher test 「reports the registry own counts even when two keywords
+ * return the same trials」 pins a page that answers 9 for two keywords
+ * producing 18 here with 9 records. Printing that as 「registry
+ * reported 18 matching, 9 written」 would be our arithmetic wearing the
+ * registry's name, and would read to the operator as a scraper dropping
+ * records. So the sum is attributed to the searches, with the
+ * double-count named in the line itself.
+ */
+const reportedPhrase = (outcome: RefreshSourceSuccess): string => {
+  switch (outcome.source) {
+    case 'ctgov':
+      return `registry reported ${outcome.sourceReportedTotal} matching`;
+    case 'chinadrugtrials':
+      return `${CDT_KEYWORDS.length} keyword searches reported ${outcome.sourceReportedTotal} matching between them (a trial matching two of them counts twice here and is written once)`;
+  }
+};
 
 export const main = async (): Promise<void> => {
   const env = loadAppEnv();
@@ -75,15 +105,16 @@ export const main = async (): Promise<void> => {
 
     for (const outcome of outcomes) {
       if (outcome.ok) {
-        // The registry's own count is in the line, not just ours. This
+        // The source's own count is in the line, not just ours. This
         // output is what cron mails to an operator, and
         // 「0 record(s) written」 on its own reads as a broken scraper;
-        // 「the registry reported 0 matching」 is the registry
+        // 「the search came back saying 0 matching」 is the registry
         // answering. They are the two sentences the whole feature is
         // built to keep apart — see refresh.ts's header and migration
-        // 027.
+        // 027. What that count may and may not be attributed to is
+        // reportedPhrase's problem, above.
         process.stdout.write(
-          `trials:refresh ${outcome.source}: ok, registry reported ${outcome.sourceReportedTotal} matching, ${outcome.recordsUpserted} record(s) written, ${outcome.recordsDeleted} removed\n`,
+          `trials:refresh ${outcome.source}: ok, ${reportedPhrase(outcome)}, ${outcome.recordsUpserted} record(s) written, ${outcome.recordsDeleted} removed\n`,
         );
       } else {
         process.stderr.write(`trials:refresh ${outcome.source}: FAILED — ${outcome.error}\n`);

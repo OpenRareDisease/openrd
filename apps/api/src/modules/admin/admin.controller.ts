@@ -17,9 +17,9 @@ import type { HealthSummary } from '../../routes/index.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   applyAdminBaselineWrite,
-  BASELINE_FIELD_SOURCES,
   listBaselineFieldOrigins,
 } from '../patient-profile/baseline-provenance.js';
+import type { ExportFieldOrigin } from '../patient-profile/export/envelope.js';
 import { buildPortableExport } from '../patient-profile/export/index.js';
 import type { FallsService } from '../patient-profile/falls/falls.service.js';
 import type { InstrumentsService } from '../patient-profile/instruments/instruments.service.js';
@@ -52,12 +52,29 @@ export interface AdminControllerDeps {
 }
 
 /**
- * The token an export has to carry for a marked profile to leave this
- * endpoint. Taken from the provenance module's own vocabulary rather
- * than written out here, so a renamed source cannot leave the guard
- * looking for a word nothing writes any more.
+ * The two tokens an export has to carry for a marked profile to leave
+ * this endpoint, one per origin STATE.
+ *
+ * Typed as `ExportFieldOrigin['state']` rather than written out as bare
+ * strings, so a renamed state cannot leave the guard looking for a word
+ * nothing writes any more. It is the EXPORT's vocabulary and not
+ * `BASELINE_FIELD_SOURCES`, because what is searched for is what the
+ * document says, and the two lists are different: the source is the
+ * word stored in the profile, the state is what a reader made of it.
+ *
+ * `BaselineFieldOrigin` collapses every member of
+ * `BASELINE_FIELD_SOURCES` onto the one `admin_entered` state
+ * (`parseEntry` in baseline-provenance.ts accepts any member and
+ * returns that state), so a second source added there — the clinician
+ * or registry import that module anticipates — arrives here as this
+ * state and is covered by this check. It would also be DESCRIBED as
+ * 管理员代填 by the sentence below, which is that collapse and not
+ * something this guard can undo: a second source needs its own state
+ * in baseline-provenance.ts before anything downstream can tell the two
+ * apart.
  */
-const ADMIN_ENTERED_SOURCE = BASELINE_FIELD_SOURCES[0];
+const ADMIN_ENTERED_STATE: ExportFieldOrigin['state'] = 'admin_entered';
+const UNREADABLE_STATE: ExportFieldOrigin['state'] = 'unreadable';
 
 /**
  * Today in Asia/Shanghai, as `YYYY-MM-DD`.
@@ -284,9 +301,15 @@ export class AdminController {
       // record endpoint's `identity: null`.
       //
       // 409 rather than 404 so the client cannot fold it into the
-      // 「查无此人」 case, and Chinese because `describeAdminError` shows
-      // the server's message verbatim for a status it does not
-      // special-case.
+      // 「查无此人」 case, and Chinese because THE SENTENCE IS THE WHOLE
+      // ANSWER: `describeAdminError`'s 409 branch (apps/mobile/screens/
+      // p-admin/common.tsx) prints the server's message and adds nothing
+      // to it, because the four 409s this router throws — this one, the
+      // export whose document lost its markers, the cohort over the cap,
+      // and the cohort that moved under a confirmation — have four
+      // different remedies and only the last one is fixed by trying
+      // again. So each of the four has to say, by itself, what the
+      // operator should do next.
       //
       // The back office does NOT create the row. A `patient_profiles`
       // row is what the patient's own onboarding writes (`createProfile`
@@ -369,6 +392,19 @@ export class AdminController {
    * written first and did not have to be taken out afterwards, which is
    * the point of checking it this way.
    *
+   * AN `unreadable` ENTRY IS CHECKED AGAINST A DIFFERENT WORD, because
+   * the document says a different thing about it. Re-measuring the same
+   * way on 2026-08-13 with the d4z4 entry made unparseable (`{ source:
+   * 'admin_entered' }`, no `adminUserId`): none of the three documents
+   * contains `admin_entered` — nothing was admin-entered — and all
+   * three carry `"state":"unreadable"` on the envelope plus 「此项的来源
+   * 记录读不出来（…），只能确定不是患者本人填写」 beside the value
+   * (treat-nmd 7,591 bytes, phenopacket 4,437, fhir-r4 15,507). One
+   * check for both states therefore refused a document that WAS honest
+   * about the field, in a sentence calling it 管理员代填 — which is the
+   * one rendering baseline-provenance.ts says an `unreadable` entry must
+   * never be given.
+   *
    * So the check is a REGRESSION GUARD on the bytes this endpoint
    * sends, not a list of formats to keep up to date: a builder that
    * stops emitting the origin — or a fourth format that never did —
@@ -388,11 +424,16 @@ export class AdminController {
     // and whether that merge preserves the provenance block is not a
     // property this endpoint should have to depend on.
     const stored = await this.deps.admin.getStoredProfile(userId);
-    const marked = listBaselineFieldOrigins(stored?.baselinePayload ?? null).filter(
-      // `unreadable` counts too: a marker this build cannot parse is
-      // still a statement that the patient did not write the value.
-      (entry) => entry.origin.state !== 'patient',
-    );
+    const origins = listBaselineFieldOrigins(stored?.baselinePayload ?? null);
+    // TWO STATES, CHECKED SEPARATELY, because the document says two
+    // different things about them and one check for both was wrong
+    // about each: it refused a document that carried the `unreadable`
+    // origin (which never contains the word `admin_entered`, because
+    // nothing was admin-entered) and told the operator those fields
+    // were 管理员代填 — the one rendering baseline-provenance.ts says an
+    // `unreadable` entry must not be given.
+    const adminEntered = origins.filter((entry) => entry.origin.state === 'admin_entered');
+    const unreadable = origins.filter((entry) => entry.origin.state === 'unreadable');
 
     const at = new Date();
     const document = JSON.stringify(
@@ -402,13 +443,23 @@ export class AdminController {
       }),
     );
 
-    if (marked.length > 0 && !document.includes(ADMIN_ENTERED_SOURCE)) {
+    const pathsOf = (entries: typeof origins) => entries.map((entry) => entry.path).join('、');
+
+    if (adminEntered.length > 0 && !document.includes(ADMIN_ENTERED_STATE)) {
       throw new AppError(
-        `这份档案里有 ${marked.length} 个字段是管理员代填的（${marked
-          .map((entry) => entry.path)
-          .join(
-            '、',
-          )}），但这次生成的 ${format} 文档里没有出现来源标记，发出去会被当成患者自述。已拒绝导出，请把这个情况报给维护者。` +
+        `这份档案里有 ${adminEntered.length} 个字段是管理员代填的（${pathsOf(
+          adminEntered,
+        )}），但这次生成的 ${format} 文档里没有出现来源标记，发出去会被当成患者自述。已拒绝导出，请把这个情况报给维护者。` +
+          '这些字段的来源可以在后台的患者档案页上逐条看到。',
+        409,
+      );
+    }
+
+    if (unreadable.length > 0 && !document.includes(UNREADABLE_STATE)) {
+      throw new AppError(
+        `这份档案里有 ${unreadable.length} 个字段的来源记录读不出来（${pathsOf(
+          unreadable,
+        )}），只能确定不是患者本人填写；但这次生成的 ${format} 文档里没有写明这一点，发出去会被当成患者自述。已拒绝导出，请把这个情况报给维护者。` +
           '这些字段的来源可以在后台的患者档案页上逐条看到。',
         409,
       );

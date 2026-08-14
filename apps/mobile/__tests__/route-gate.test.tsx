@@ -21,6 +21,8 @@ const mockReplace = jest.fn();
 let mockSegments: string[] = [];
 let mockToken: string | null = null;
 let mockProfileStatus: 'ready' | 'missing' | 'error' | 'unknown' = 'ready';
+let mockConsentStatus: 'loading' | 'ready' | 'pending' | 'error' = 'ready';
+let mockConsentDeferred = false;
 
 jest.mock('expo-router', () => {
   const React = require('react');
@@ -56,6 +58,17 @@ jest.mock('../contexts/ProfileContext', () => ({
   useProfileContext: () => ({ profileStatus: mockProfileStatus }),
 }));
 
+jest.mock('../contexts/LegalConsentContext', () => ({
+  LegalConsentProvider: ({ children }: { children?: unknown }) => children,
+  useLegalConsentContext: () => ({
+    status: mockConsentStatus,
+    asks: [],
+    deferred: mockConsentDeferred,
+    defer: jest.fn(),
+    refresh: jest.fn(),
+  }),
+}));
+
 jest.mock('../screens/common/feedback/AppDialog', () => ({
   AppDialogProvider: ({ children }: { children?: unknown }) => children,
 }));
@@ -65,12 +78,19 @@ jest.mock('../components/ErrorBoundary', () => ({
 }));
 
 const renderAt = (
-  route: string,
-  { token = null as string | null, profileStatus = 'ready' as typeof mockProfileStatus } = {},
+  route: string | string[],
+  {
+    token = null as string | null,
+    profileStatus = 'ready' as typeof mockProfileStatus,
+    consentStatus = 'ready' as typeof mockConsentStatus,
+    consentDeferred = false,
+  } = {},
 ) => {
-  mockSegments = [route];
+  mockSegments = Array.isArray(route) ? route : [route];
   mockToken = token;
   mockProfileStatus = profileStatus;
+  mockConsentStatus = consentStatus;
+  mockConsentDeferred = consentDeferred;
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
     tree = TestRenderer.create(<RootLayout />);
@@ -124,5 +144,87 @@ describe('root route gate', () => {
   it('still walks a profile-less user to onboarding from a gated route', () => {
     renderAt('p-manage', { token: 'token-123', profileStatus: 'missing' });
     expect(mockReplace).toHaveBeenCalledWith('/p-register_profile?mode=onboarding');
+  });
+});
+
+/**
+ * The re-consent gate.
+ *
+ * 隐私政策 §9 promises 「涉及处理目的、处理方式、信息种类或接收方实质变更
+ * 的，我们会在 App 内重新征得你的同意」. The back office is such a change,
+ * so the two documents describing it were revised and every existing
+ * account now owes an acceptance. Without this gate the promise had no
+ * code behind it: `outstanding` was on the wire and nothing read it.
+ *
+ * The other half of the property is that a refusal is not a lockout —
+ * hence the deferral case and the two exempt screens, which are where
+ * the export and the deletion the policy promises actually live.
+ */
+describe('re-consent gate', () => {
+  beforeEach(() => {
+    mockReplace.mockClear();
+  });
+
+  it('sends a patient who owes a re-consent to the update screen', () => {
+    const tree = renderAt(['(tabs)', 'p-home'], {
+      token: 'token-123',
+      consentStatus: 'pending',
+    });
+    expect(mockReplace).toHaveBeenCalledWith('/p-legal_update');
+    expect(stackIsOnScreen(tree)).toBe(false);
+  });
+
+  it('does not bounce anyone off the update screen itself', () => {
+    renderAt('p-legal_update', { token: 'token-123', consentStatus: 'pending' });
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('lets a patient who owes a re-consent reach 我的, where 导出 and 注销 are', () => {
+    // 我的 is app/(tabs)/p-settings.tsx, so `segments[0]` here is the
+    // group name. A gate that only looked at the first segment would
+    // bounce the patient off the one screen the consent page tells
+    // them to use if they do not want to agree.
+    renderAt(['(tabs)', 'p-settings'], { token: 'token-123', consentStatus: 'pending' });
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('lets them reach 隐私设置, where the ledger and the withdrawals are', () => {
+    renderAt('p-privacy_settings', { token: 'token-123', consentStatus: 'pending' });
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('stops asking once the patient has said 暂不同意 in this session', () => {
+    const tree = renderAt(['(tabs)', 'p-home'], {
+      token: 'token-123',
+      consentStatus: 'pending',
+      consentDeferred: true,
+    });
+    expect(mockReplace).not.toHaveBeenCalled();
+    expect(stackIsOnScreen(tree)).toBe(true);
+  });
+
+  it('does not ask when the ledger could not be read', () => {
+    // Fail-open, deliberately: an API we cannot read is an API that
+    // cannot record the acceptance either, so this would park an
+    // offline patient on a screen whose only button always fails.
+    renderAt(['(tabs)', 'p-home'], { token: 'token-123', consentStatus: 'error' });
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('asks before onboarding, not after', () => {
+    // A revision about who may READ the record has to be answered
+    // before we ask the patient to type more of it in.
+    renderAt(['(tabs)', 'p-home'], {
+      token: 'token-123',
+      profileStatus: 'missing',
+      consentStatus: 'pending',
+    });
+    expect(mockReplace).toHaveBeenCalledWith('/p-legal_update');
+    expect(mockReplace).not.toHaveBeenCalledWith('/p-register_profile?mode=onboarding');
+  });
+
+  it('does not ask a signed-out visitor', () => {
+    renderAt('p-genetics_family', { consentStatus: 'pending' });
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });

@@ -466,6 +466,7 @@ const AdminPatientRecordScreen = () => {
       const { fileName, notice } = describeDownloadName(
         download,
         `openrd-${format}-${userId}-${downloadStamp()}-服务端文件名未收到.json`,
+        'patient_export',
       );
       saveBlobInBrowser(download.blob, fileName);
       // The browser's own download indicator is a one-frame toast in
@@ -513,16 +514,29 @@ const AdminPatientRecordScreen = () => {
    * THE EDIT FORM MUST NOT OPEN ON IT. `baselineIsStored` is `true` on
    * that branch (correctly — a null baseline IS the stored column), so
    * on that flag alone every box and the 保存 button render, and the
-   * save then fails inside `upsertBaseline` → `ensureProfileForUser`,
-   * which raises 404「Patient profile not found」. `describeAdminError`
-   * renders that as 「这个账号可能已经注销，或者链接里的 ID 不对」 — two
-   * sentences that are both false about an account that is neither
-   * deleted nor mistyped, on a screen already saying 「这个账号注册后没
-   * 有建过档案」 two blocks above.
+   * save comes back 409 from `AdminController.updateBaseline`
+   * (admin.controller.ts:277-300): 「这个账号注册后还没有建过健康档案，
+   * 后台不能替他建。请让患者本人在 App 里先保存一次基线」. That sentence
+   * is true, and it is still the wrong place to meet it — the screen
+   * already says 「这个账号注册后没有建过档案」 two blocks above, so the
+   * form would be offering an edit the same screen has said cannot be
+   * made. Reaching `ensureProfileForUser`'s 404「Patient profile not
+   * found」 from here now means the profile row disappeared between the
+   * read and the write, and `describeAdminError` renders THAT as 「这个
+   * 账号可能已经注销」 — which for that case is right.
    *
    * The back office cannot create the profile either: `upsertBaseline`
    * only ever ensures an EXISTING row, and the row is created when the
    * patient first opens their own form.
+   *
+   * `identity`, NOT `baseline`, is the flag. `getPatientRecord` builds
+   * `identity` from the profile row and sends `identity: null` on
+   * exactly the branch where there is none (admin.controller.ts:150-160,
+   * :170-178), so `identity !== null` is the same condition the 409
+   * tests. `baseline !== null` is a different question: a patient who
+   * opened onboarding and never saved a baseline HAS a row, and an
+   * administrator transcribing that person's first values off a phone
+   * call is the case this screen exists for.
    */
   const hasProfile = identity !== null;
   const canEditBaseline = record.baselineIsStored && hasProfile;
@@ -784,13 +798,23 @@ const AdminPatientRecordScreen = () => {
                   - fhir-r4.ts never emits Patient.name/telecom/address
                     at all, phenopacket carries no direct identifier, and
                     treat-nmd puts them in a localOnly section this route
-                    never asks for. */}
+                    never asks for.
+                  Which of them SAYS SO in `omissions` was read the same
+                  way and is not the same set: treat-nmd records both
+                  `localOnly` and `sections.familyHistory` (treat-nmd.ts
+                  :426, :233); fhir-r4 records the identifiers only
+                  (:234) and never mentions family history at all; and
+                  phenopacket records neither — its omissions are the
+                  missing-ontology ones. 「文件里会逐条写明哪些没发」 was
+                  true of one format out of three. */}
               <Text style={styles.blockNote}>
                 文件里的基线字段是患者端读到的那一份：缺的
                 D4Z4、单倍型、确诊年份会从他最近一份基因报告里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
               </Text>
               <Text style={styles.blockNote}>
-                三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。文件里会逐条写明哪些没发、为什么。
+                三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。这两项为什么没写，只有
+                TREAT-NMD 在文件的 omissions 里都写明了；FHIR 只写明身份信息那一项，Phenopacket
+                两项都没写——它的 omissions 记的是缺本体项的部分。
               </Text>
             </View>
             {exportNotice ? <Text style={styles.stateText}>{exportNotice}</Text> : null}

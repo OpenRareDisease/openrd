@@ -112,6 +112,14 @@ describe('ListClinicalTrialsTool.parseArgs', () => {
     expect(tool.parseArgs('{"status":42}').notes[0]).toContain('不是一个状态词');
     expect(tool.parseArgs('{"limit":"twelve"}').notes[0]).toContain('limit 不是数字');
     expect(tool.parseArgs('{"status":42}').status).toBeUndefined();
+    // …including a string that is not JSON at all. `safeParseJson`
+    // throws on this one, and a truncated tool call is how it arrives:
+    // siliconflow.ts forwards the provider's `arguments` unvalidated
+    // and run.ts concatenates streamed fragments, so a `length` stop
+    // delivers a half-written object here.
+    expect(tool.parseArgs('{"status":"RECRUITING"').notes[0]).toContain('不是合法的 JSON');
+    expect(tool.parseArgs('{"status":"RECRUITING"').status).toBeUndefined();
+    expect(tool.parseArgs('not json at all').notes[0]).toContain('不是合法的 JSON');
   });
 
   it('clamps limit into range', () => {
@@ -190,6 +198,40 @@ describe('ListClinicalTrialsTool display', () => {
     const { tool } = toolWith(result(snapshotMeta()));
     const { display } = await tool.execute({ notes: [] }, ctx);
     expect(display).toContain('不含只在国内登记的试验');
+    expect(display).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('says the 国内 half may be incomplete once it does contribute rows', async () => {
+    // §A5's sentence is conditional, here and on the screen: 「不含只在
+    // 国内登记的试验」 is a claim about the list, and it is false the
+    // day a mainland row is in it. What must not vary is that the
+    // patient is never left reading this list as complete for China —
+    // so the branch that drops the fixed sentence has to say something
+    // stronger, not nothing.
+    const { tool } = toolWith(
+      result(
+        snapshotMeta({
+          sources: [
+            SOURCES[0],
+            {
+              source: 'chinadrugtrials' as const,
+              recordCount: 2,
+              fetchedAt: '2026-08-14T04:00:05Z',
+              lastRun: {
+                startedAt: '2026-08-14T04:00:00Z',
+                finishedAt: '2026-08-14T04:00:11Z',
+                ok: true,
+              },
+              lastSuccessAt: '2026-08-14T04:00:11Z',
+            },
+          ],
+        }),
+      ),
+    );
+    const { display } = await tool.execute({ notes: [] }, ctx);
+    expect(display).not.toContain('不含只在国内登记的试验');
+    expect(display).toContain('没有公开接口');
+    expect(display).toContain('可能不完整');
     expect(display).toContain('chinadrugtrials.org.cn');
   });
 
@@ -335,10 +377,11 @@ describe('what the model is told when the trial cache fails', () => {
     return registry;
   };
 
-  const messageFor = async (argumentsJson: string) => {
+  const messageFor = async (argumentsJson: string, timeoutMs?: number) => {
     const executed = await new Executor(registryWith()).executeAll(
       [{ id: 't1', name: 'list_clinical_trials', argumentsJson }],
       ctx,
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
     const built = buildContext(executed, { mode: 'strict', logger: silentLogger });
     return { text: built.toolMessages[0].content, failures: built.failures };
@@ -386,6 +429,44 @@ describe('what the model is told when the trial cache fails', () => {
 
     expect(text).not.toContain('资料库检索没有跑成功');
     expect(text).toContain('NCT-INV');
+    expect(failures.corpus).toBe(false);
+  });
+
+  it('answers a truncated tool call instead of reporting a broken knowledge base', async () => {
+    // A `length`-stopped tool call delivers a half-written JSON object
+    // (siliconflow.ts:121 forwards `arguments` unvalidated,
+    // run.ts:934 concatenates the streamed fragments). That used to
+    // throw out of `parseArgs` and reach the patient as
+    // 「资料库检索没有跑成功」.
+    snapshotMock.mockReset();
+    snapshotMock.mockResolvedValue({ trials: [], sources: SOURCES });
+    const { text, failures } = await messageFor('{"status":"RECRUITING"');
+
+    expect(text).not.toContain('资料库检索没有跑成功');
+    expect(text).toContain('不是合法的 JSON');
+    // And it answered, unfiltered, rather than ending the call.
+    expect(text).toContain('clinical_trials: 返回 0 条');
+    expect(failures.corpus).toBe(false);
+  });
+
+  it('names the trial cache when the read hangs past the tool timeout', async () => {
+    // The retriever's try/catch is INSIDE the promise `withTimeout`
+    // rejects around (executor.ts), so a `readTrialSnapshot` that hangs
+    // rather than rejects escapes every guard this tool has. It reaches
+    // context-builder as a bare `call.error`, which is why the
+    // classification there — not the tool's carefulness — is what keeps
+    // the knowledge-base sentence off the page.
+    snapshotMock.mockReset();
+    snapshotMock.mockImplementation(() => new Promise(() => {}));
+    const { text, failures } = await messageFor('{}', 30);
+
+    expect(text).not.toContain('资料库检索没有跑成功');
+    expect(text).toContain('[error_code:trials_unavailable]');
+    expect(text).toContain('不是医学知识库');
+    expect(text).toContain('不等于「没有试验在招募」');
+    // The 2025 snapshot in the corpus is in the same prompt and is what
+    // the model would otherwise reach for.
+    expect(text).toContain('不要**用知识库里那份 ClinicalTrials.gov 网页快照代替它');
     expect(failures.corpus).toBe(false);
   });
 });

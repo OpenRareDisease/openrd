@@ -157,6 +157,37 @@ describe('_parseSearchList', () => {
     expect(page.rows[0]?.plainTitle).toBe('HSK45030分散片•I期临床研究');
   });
 
+  it('names the source and the step when a numeric escape is not a storable character', () => {
+    // One case over from the entity above. Each of these three was
+    // measured by splicing it into this same title on 2026-08-14:
+    // `&#999999999;` made String.fromCodePoint throw a bare
+    // 「RangeError: Invalid code point 999999999」; `&#xD800;` and
+    // `&#0;` parsed fine and then died at the database — the surrogate
+    // as 「invalid input syntax for type json」 on the `raw` column
+    // (`SELECT $1::jsonb`), NUL as 「invalid byte sequence for encoding
+    // "UTF8": 0x00」 on `title` itself.
+    //
+    // So the run already failed in all three; what it could not do was
+    // say which page it was reading. That is what these assertions are
+    // about — `trial_fetch_runs.error` is read by an operator, and a
+    // driver message from two layers down does not tell them the scrape
+    // hit a title it could not decode.
+    const cases: Array<[string, string]> = [
+      ['&#999999999;', 'above U+10FFFF'],
+      ['&#xD800;', 'an unpaired surrogate'],
+      ['&#0;', 'NUL'],
+    ];
+    for (const [entity, reason] of cases) {
+      const spliced = cdtRowsPage().replace(
+        'HSK45030分散片在健康受试者中的I期临床研究',
+        `HSK45030分散片${entity}I期临床研究`,
+      );
+      expect(() => _parseSearchList(spliced, 'search page 1')).toThrow(
+        `search page 1: HTML numeric entity ${entity} is ${reason}`,
+      );
+    }
+  });
+
   it('fails the run on an escaped entity rather than decoding it twice into markup', () => {
     // `&amp;lt;` is the site writing the literal text `&lt;`. The
     // ampersand is decoded LAST, so it becomes `&lt;` and never `<`;

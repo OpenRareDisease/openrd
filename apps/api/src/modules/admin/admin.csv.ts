@@ -173,11 +173,19 @@ export const FULL_EXPORT_COLUMNS: CsvColumn[] = [
    * strips the block and `upsertBaseline` writes over the whole column
    * — one save from a writer that calls neither erases every marker on
    * the profile, including for fields it did not touch. Both writers
-   * are wired today (`grep -rn 'upsertBaseline(' apps/api/src` on
-   * 2026-08-13: `profile.controller.ts:730` via
-   * `applyPatientBaselineWrite`, `admin.controller.ts:316` via
-   * `applyAdminBaselineWrite`, plus the method itself), and a third
-   * one added without a helper would empty this column silently.
+   * are wired today. `grep -rn 'upsertBaseline(' apps/api/src` on
+   * 2026-08-13 returns five lines: the method itself
+   * (`profile.service.ts:1055`), its two callers —
+   * `profile.controller.ts:730` via `applyPatientBaselineWrite` and
+   * `admin.controller.ts:350` via `applyAdminBaselineWrite` — and two
+   * comments quoting the same command, this one and the one in
+   * baseline-provenance.ts. A third caller added without a helper would
+   * empty this column silently. Nothing in this file tests that: what
+   * pins it is `PatientProfileController.updateMyBaseline — §B3
+   * per-field reclaim` in profile.controller.test.ts (the patient's
+   * write carrying another administrator's marker forward) and
+   * `carries an existing marker forward when the write touches a
+   * different field` in admin.controller.test.ts.
    *
    * The two columns are separate because
    * `unreadable` is not「no marker」: it is a marker this code could

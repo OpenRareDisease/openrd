@@ -111,8 +111,11 @@ describe('legal-content: the administrator back office (§10)', () => {
    *    confirmation state and the marked-field list),
    *    passport-share.html.test.ts (the page a doctor opens),
    *    export/{treat-nmd,fhir-r4,phenopacket}.test.ts (all three
-   *    documents), and lib/__tests__/clinical-passport-pdf.test.ts (the
-   *    printed passport, which IS in this package);
+   *    documents), lib/__tests__/clinical-passport-pdf.test.ts (the
+   *    printed passport) and
+   *    screens/p-clinical_passport/__tests__/index.test.tsx (the passport
+   *    IN THE APP, which is the surface §10（四）names first and the last
+   *    one to get the itemised list) — the last two are in this package;
    *  · the admin-writable set is enforced server-side, not by which
    *    boxes a screen draws (ADMIN_WRITABLE_BASELINE_FIELDS);
    *  · clearing a field leaves NO marker, and the policy says so
@@ -134,16 +137,34 @@ describe('legal-content: the administrator back office (§10)', () => {
     ['what falls outside it', '我们答不上来'],
     ['the provenance marker', '管理员代填'],
     ['and what it is not', '不会写成「本人填写」'],
+    [
+      'that the app itself lists the marked fields, not only the exports',
+      '你的临床护照（App 里、导出的 PDF、以及你分享给医生的那个网页）会把这些字段单独列出来',
+    ],
     ['which twelve fields are writable', '一共这十二项'],
     ['that the boundary is the server, not the form', '请求会被直接拒绝'],
     ['that reclaiming is per field', '是按字段算的'],
     ['that clearing leaves no marker', '清空，则不会留下「管理员代填」标记'],
     ['that the marker travels into the exports', 'FHIR / Phenopacket / TREAT-NMD'],
     ['that an admin can export one patient', '导成一个文件'],
+    ['what the export drops', '它不写你的姓名、电话、住址，也不含家族史'],
+    ['what the export ADDS over the record page', '而这些在后台的患者档案页上一项都不显示'],
     ['that a full-database CSV exists', '把全部患者导成一张表'],
     ['how to ask who looked', '15 个工作日内答复'],
   ])('states %s', (_label, needle) => {
     expect(PRIVACY_POLICY_TEXT).toContain(needle);
+  });
+
+  it('does not tell a patient the exported file is the record page in another notation', () => {
+    // It is not, in either direction. `AdminController.exportPatient`
+    // runs `buildPortableExport` off `getProfileByUserId`, so the FHIR
+    // document carries measurements, function tests, symptom scores,
+    // daily impacts and the values OCR read out of the reports — none of
+    // which `getPatientRecord` sends to the back-office screen at all.
+    // §10 itself promises 「后台能看到的范围如果扩大，我们会先改这一条」,
+    // and a sentence equating the two is how that promise gets kept on
+    // paper and broken in the file.
+    expect(PRIVACY_POLICY_TEXT).not.toContain('内容与上一条能看到的范围相同');
   });
 
   it('does not leave §5 claiming the third-party list is the whole story', () => {

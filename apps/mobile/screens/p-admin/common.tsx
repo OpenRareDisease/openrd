@@ -94,8 +94,17 @@ export const describeValidationDetails = (data: unknown): string | null => {
  *    pasted or mistyped id), and for any zod refusal.
  *  - 500 only for a `targetParam` that is ABSENT — a route mounted
  *    wrong, which is our fault and not the operator's.
- *  - 409 from the full export when the cohort changed under a
- *    confirmation, or is larger than FULL_EXPORT_MAX_ROWS.
+ *  - 409 for a refusal this router makes on purpose. `grep -cE '^ +409,$'
+ *    apps/api/src/modules/admin/admin.controller.ts` answers 5 on
+ *    2026-08-13, and they do NOT share a remedy: the cohort
+ *    changed under a confirmation (retry), the cohort is larger than
+ *    FULL_EXPORT_MAX_ROWS (use npm run db:backup), the account has no
+ *    `patient_profiles` row (the patient has to save a baseline
+ *    first), and — two of them — an export whose document did not
+ *    carry the field's origin, one for `admin_entered` and one for
+ *    `unreadable` (report it to the maintainer). Each writes its own
+ *    Chinese sentence; see the branch for why this function adds
+ *    nothing to them.
  *  - 429 from the 10/min budget on the full export.
  *
  * 428 is not here: it is the full export's FIRST step rather than a
@@ -157,10 +166,17 @@ export const describeAdminError = (error: unknown): { title: string; message: st
       return { title: '服务端不接受这次请求的内容', message: error.message };
     }
     if (error.status === 409) {
-      return {
-        title: '数据在你操作期间变了',
-        message: `${error.message}（这次什么都没有导出、也没有写入，重新来一遍即可。）`,
-      };
+      // NOTHING IS ADDED TO THE SERVER'S SENTENCE HERE, and that is the
+      // whole content of this branch. It used to say 「数据在你操作期间
+      // 变了……重新来一遍即可」, which is true of exactly one of the four
+      // 409s above — the cohort that changed under a confirmation. For
+      // the other three nothing changed and retrying reproduces the
+      // same refusal forever, and for the marker refusal 「重新来一遍
+      // 即可」 contradicts the server's own 「请把这个情况报给维护者」 in
+      // the same paragraph. All four already carry a complete Chinese
+      // sentence naming what to do; the only honest generalisation
+      // across them is that the server refused.
+      return { title: '服务端拒绝了这次操作', message: error.message };
     }
     if (error.status === 429) {
       return {

@@ -27,18 +27,30 @@
  *
  * WHY NOTHING HERE THROWS
  *
- * `parseArgs` accepts whatever the model sent and reports what it did
- * with it in `display`. It is not leniency: a `ToolValidationError`
- * leaves the executor with `call.error` and no retrieval, and
- * context-builder classifies that by tool name — `clinical_trials` is
- * not in its PERSONAL_TOOLS set, so it lands in `corpus` and the
- * patient is told 「资料库检索没有跑成功」 about the MEDICAL KNOWLEDGE
- * BASE, which did not fail and whose chunks are in the same prompt.
- * The tool has no required argument, so there is no argument error that
- * should stop it answering; anything unusable is dropped, named in
- * `display`, and the model can correct itself with the census in front
- * of it. The retriever refuses to throw for the same reason (see its
- * cache_unreadable branch).
+ * `parseArgs` accepts whatever the model sent — including a string
+ * that is not valid JSON — and reports what it did with it in
+ * `display`. It is not leniency. A `ToolValidationError` leaves the
+ * executor with `call.error` and no retrieval, and context-builder
+ * classifies that by tool name; while `list_clinical_trials` was
+ * unclassified it landed in `corpus` and the patient was told 「资料库
+ * 检索没有跑成功」 about the MEDICAL KNOWLEDGE BASE, which had not
+ * failed and whose chunks were sitting in the same prompt. Malformed
+ * arguments are the reachable case, not a hypothetical:
+ * `llm/siliconflow.ts:121` forwards the provider's `arguments`
+ * unvalidated and `orchestrator/run.ts:934` concatenates streamed
+ * fragments, so a `length`-truncated tool call hands a half-written
+ * JSON object straight to `parseArgs`.
+ *
+ * Two things hold that shut and both are needed. Here: the tool has no
+ * required argument, so no argument error should stop it answering —
+ * anything unusable is dropped, named in `display`, and the model can
+ * correct itself with the results in front of it. And in
+ * `orchestrator/context-builder.ts`: `list_clinical_trials` is in its
+ * TRIALS_TOOLS set, so the failures this file cannot catch — chiefly
+ * the executor's wall-clock timeout around `execute`, which fires
+ * OUTSIDE the retriever's own try/catch — name the trial cache
+ * instead of the knowledge base. The retriever refuses to throw for
+ * the same reason (see its cache_unreadable branch).
  */
 
 import type { ITool, ToolContext, ToolExecutionResult } from './base.js';
@@ -156,14 +168,28 @@ const validate = (raw: unknown): ListClinicalTrialsArgs => {
  */
 const describeSource = (status: TrialSourceStatus): string => {
   const name = TRIAL_SOURCE_LABELS[status.source];
-  // Two different facts and the line has to carry both, because they
-  // can be days apart: `lastSuccessAt` is when a RUN finished,
-  // `fetchedAt` is when the ROWS we are about to render were read. A
-  // successful run that upserts nothing — which is what
-  // chinadrugtrials does on every run today — moves the first and not
-  // the second, and a line that printed only the run's date would date
-  // those rows by juxtaposition. `null` when the source has no rows,
-  // and then there is nothing to date.
+  // Two different facts and the line carries both, because they are
+  // facts about different things — not because they drift apart.
+  // `lastSuccessAt` is when a RUN reported finishing; `fetchedAt` is
+  // the instant stamped on the ROWS this answer is about to render.
+  // `replaceTrialRecords` (../../trials/trials.repository.ts) re-stamps
+  // every surviving row with its own run's instant inside that run's
+  // transaction, so for a source that HAS rows the two are one run's
+  // duration apart and no more. Measured on the dev database on
+  // 2026-08-14:
+  //
+  //   select (select max(finished_at) from trial_fetch_runs f
+  //            where f.source = r.source and f.ok) - max(r.fetched_at)
+  //     from trial_records r group by r.source;
+  //   -- ctgov | 00:00:00.000946
+  //
+  // What they are not is interchangeable. A source can have a
+  // successful run and no rows at all — an empty record list DELETEs
+  // the lot, which is what chinadrugtrials does on every run today —
+  // and then `fetchedAt` is null, there is no read time to print, and
+  // the parenthetical is omitted rather than filled in from the run.
+  // Printing only the run's date would date rows by juxtaposition,
+  // including in the case where there are none.
   const cached = status.fetchedAt
     ? `缓存 ${status.recordCount} 条（这些记录读取于 ${status.fetchedAt}）`
     : `缓存 ${status.recordCount} 条`;
@@ -273,13 +299,28 @@ const describeRetrieval = (retrieval: RetrieveResult, notes: string[] = []): str
   }
 
   // The cache is not a source of truth about which registries exist; it
-  // is a source of truth about what we managed to read. When the 国内
-  // registry has contributed nothing, that has to be said in the answer
-  // rather than left as an absence — §A5's fixed sentence.
+  // is a source of truth about what we managed to read. So the mainland
+  // half is stated in the answer rather than left as an absence.
+  //
+  // §A5 words this as a fixed sentence and it is conditional here, as
+  // it is on the screen (apps/mobile/lib/trials.ts,
+  // `describeChinaCoverage`). The reason is 铁律 1: 「不含只在国内登记的
+  // 试验」 is a claim about the list being rendered, and it turns false
+  // the day one mainland row is in that list. What §A5 is holding up is
+  // that a patient must never read this list as complete for China, and
+  // both branches carry that — one says the mainland registry
+  // contributed nothing and where to go instead, the other says which
+  // platform the mainland rows came from and that scraping a site with
+  // no public API cannot be assumed complete. Neither branch is silent,
+  // and the two surfaces must keep saying the same thing.
   const cn = meta.sources.find((s) => s.source === 'chinadrugtrials');
   if (!cn || cn.recordCount === 0) {
     lines.push(
       `- 必须说明：这份名单来自 ${TRIAL_SOURCE_LABELS.ctgov}，不含只在国内登记的试验；国内的请查${TRIAL_SOURCE_LABELS.chinadrugtrials}（chinadrugtrials.org.cn）。`,
+    );
+  } else {
+    lines.push(
+      `- 必须说明：这份名单里国内登记的那部分来自${TRIAL_SOURCE_LABELS.chinadrugtrials}；该平台没有公开接口，只能按页面抓取，可能不完整，国内的请以 chinadrugtrials.org.cn 上的原始记录为准。`,
     );
   }
 
@@ -333,7 +374,22 @@ export class ListClinicalTrialsTool implements ITool {
   constructor(private readonly retriever: ClinicalTrialsRetriever) {}
 
   parseArgs(rawJson: string): ListClinicalTrialsArgs {
-    return validate(safeParseJson(rawJson));
+    let raw: unknown;
+    try {
+      raw = safeParseJson(rawJson);
+    } catch {
+      // `safeParseJson` throws `ToolValidationError` on a string that
+      // does not parse, and the executor turns that into `call.error`.
+      // Nothing about a malformed argument string means the trials
+      // cannot be listed: there is no required argument, so the whole
+      // of the correct response is「ignore it and answer unfiltered」,
+      // said out loud rather than swallowed. See the file header for
+      // how a truncated tool call reaches this line.
+      return {
+        notes: ['注意：这次调用的参数不是合法的 JSON，已全部忽略，下面是不带筛选的结果。'],
+      };
+    }
+    return validate(raw);
   }
 
   async execute(args: unknown, ctx: ToolContext): Promise<ToolExecutionResult> {

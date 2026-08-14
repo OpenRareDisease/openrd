@@ -388,6 +388,57 @@ describe('retrieval failure is a refusal, not a licence to improvise', () => {
     // And the thrown error still never reaches the prompt.
     expect(personalContent).not.toContain('13800001234');
   });
+
+  it('does not report a trial-cache failure as a knowledge-base failure', () => {
+    // `list_clinical_trials` and its retriever both refuse to throw,
+    // but two failures escape them anyway: a ToolValidationError out of
+    // parseArgs, and the executor's wall-clock timeout, which rejects
+    // around the promise the retriever's own try/catch sits inside.
+    // Both land here as a bare `call.error`. Classified as `corpus`
+    // they printed 「资料库检索没有跑成功」 about a medical knowledge
+    // base that had not failed and whose chunks were in this same
+    // prompt.
+    const built = buildContext(
+      [
+        {
+          toolCallId: 'tc3',
+          toolName: 'list_clinical_trials',
+          display: 'list_clinical_trials: error',
+          error: 'Tool list_clinical_trials timed out after 30000ms',
+          latencyMs: 30_000,
+        },
+      ],
+      { mode: 'precise', logger: silentLogger },
+    );
+    const content = built.toolMessages[0].content;
+    expect(content).not.toContain('资料库检索没有跑成功');
+    expect(content).toContain('[error_code:trials_unavailable]');
+    expect(content).toContain('不是医学知识库');
+    // 「取不到试验列表」 and 「没有试验在招募」 are different sentences
+    // and only one of them is true.
+    expect(content).toContain('不等于「没有试验在招募」');
+    // No corpus flag either: it drives a server-written banner over the
+    // whole answer saying the knowledge base could not be reached.
+    expect(built.failures).toEqual({ corpus: false, personal: false });
+  });
+
+  it('classifies the trials retriever the same way when it returns a reason instead of throwing', () => {
+    // The tool-name map and the retriever-id map have to agree, or the
+    // same subsystem gets two different sentences depending on how it
+    // failed. `clinical_trials` has no reason in
+    // RETRIEVAL_FAILURE_REASONS today — `cache_unreadable` is kept out
+    // of that set precisely because membership routes back onto
+    // `corpus` — so this pins the branch that keeps a reason added
+    // later from silently reprinting the knowledge-base sentence.
+    const built = buildContext(
+      [failing('tc4', 'list_clinical_trials', 'clinical_trials', 'not_implemented')],
+      { mode: 'precise', logger: silentLogger },
+    );
+    const content = built.toolMessages[0].content;
+    expect(content).not.toContain('资料库检索没有跑成功');
+    expect(content).toContain('[error_code:trials_unavailable]');
+    expect(built.failures).toEqual({ corpus: false, personal: false });
+  });
 });
 
 describe('personal-data flagging', () => {

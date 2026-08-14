@@ -42,12 +42,21 @@
  *
  * `records_upserted = 0` alone says only that we wrote nothing, which
  * is true of both. Do not render 「没有相关记录」 off `ok` and a row
- * count; read the column the registry's own number is in (migration
+ * count; read the column the source's own number is in (migration
  * 027).
  *
- * ctgov never reaches that state: its fetcher refuses a totalCount of
- * 0 outright, because zero from a registry that published 92 matching
- * studies is our query having broken, not an empty registry.
+ * Read it for the ZERO, and only for the zero. ctgov's value is one
+ * query's `totalCount`; chinadrugtrials' is the sum of 共 N 条记录 over
+ * three keyword searches, and a trial matching two of them is in that
+ * sum twice. So `= 0` means 「every search we ran came back empty」 for
+ * both sources, and that is a fact about the registry — but a positive
+ * value is not a number of trials for chinadrugtrials and must never be
+ * shown as one.
+ *
+ * ctgov never reaches the first of the two rows above: its fetcher
+ * refuses a totalCount of 0 outright, because zero from a registry that
+ * published 92 matching studies is our query having broken, not an
+ * empty registry.
  *
  * `trial_records.phase` holds the REGISTRY's own token and the two
  * registries do not share a vocabulary — ctgov says `PHASE1`,
@@ -83,11 +92,19 @@ export interface RefreshSourceSuccess {
   recordsUpserted: number;
   recordsDeleted: number;
   /**
-   * What the REGISTRY said matched. `0` here alongside
+   * What the SOURCE said matched. `0` here alongside
    * `recordsUpserted: 0` is the registry's own 「nothing matches」, and
    * it is the only form of 「没有相关记录」 anything is allowed to
    * render — see TrialFetchResult.sourceReportedTotal and migration
    * 027.
+   *
+   * Only the 0 is a count of trials for both sources. For ctgov the
+   * number is `totalCount`, the registry's own count for one query; for
+   * chinadrugtrials it is the SUM of 共 N 条记录 over the CDT_KEYWORDS
+   * searches, which counts a trial matching two keywords twice. A
+   * positive value therefore may not be printed as 「the registry says
+   * N trials」 — refresh.cli.ts's reportedPhrase is where that is
+   * spelled out, and it is the sentence to copy.
    */
   sourceReportedTotal: number;
   error: null;

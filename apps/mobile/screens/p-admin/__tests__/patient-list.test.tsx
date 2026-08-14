@@ -225,6 +225,36 @@ describe('searching', () => {
     expect(mockList).toHaveBeenLastCalledWith({ page: 1, q: '张三', pageSize: 20 });
   });
 
+  it('re-fetches an unchanged term on page 1, because the operator asked for fresh data', async () => {
+    mockList.mockResolvedValue({ page: 1, pageSize: 20, total: 3, items: [row({})] });
+    const tree = await render();
+    expect(mockList).toHaveBeenCalledTimes(1);
+    await pressByLabel(tree, '搜索');
+    expect(mockList).toHaveBeenCalledTimes(2);
+    expect(mockList).toHaveBeenLastCalledWith({ page: 1, q: '', pageSize: 20 });
+  });
+
+  it('spends one request, and one audit row, on one press of 搜索', async () => {
+    // From page 2 with the term unchanged, `setPage(1)` re-runs the
+    // effect with exactly the arguments the explicit `load` would use.
+    // Firing both writes two `admin.list` rows for one press — two
+    // records of an operator looking at the roster when they looked
+    // once.
+    mockList.mockResolvedValue({
+      page: 1,
+      pageSize: 20,
+      total: 60,
+      items: Array.from({ length: 20 }, (_, index) => row({ userId: `u-${index}` })),
+    });
+    const tree = await render();
+    await pressByLabel(tree, '下一页');
+    expect(mockList).toHaveBeenCalledTimes(2);
+
+    await pressByLabel(tree, '搜索');
+    expect(mockList).toHaveBeenCalledTimes(3);
+    expect(mockList).toHaveBeenLastCalledWith({ page: 1, q: '', pageSize: 20 });
+  });
+
   it('says what the search does and does not match when it finds nobody', async () => {
     mockList.mockResolvedValue({ page: 1, pageSize: 20, total: 0, items: [] });
     const tree = await render();

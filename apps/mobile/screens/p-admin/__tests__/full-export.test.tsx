@@ -231,6 +231,25 @@ describe('a stale phrase is a new confirmation, not a failure', () => {
   });
 });
 
+describe('the phrase cannot be pasted in one gesture', () => {
+  it('renders the phrase with selectable={false}', async () => {
+    // §B4's 二次确认 rests on this on the web export, which is the only
+    // platform §C ships. react-native-web attaches `user-select: none`
+    // only for `selectable={false}` (dist/exports/Text/index.js:115,
+    // 183-188); with the prop absent the browser default lets the
+    // phrase be long-pressed, selected and pasted, and the typing gate
+    // becomes a copy button with extra steps.
+    mockRequest.mockResolvedValueOnce(confirmationRequired);
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+
+    const phrase = tree.root.find(
+      (node) => node.props?.selectable !== undefined && textContent(node) === PHRASE,
+    );
+    expect(phrase.props.selectable).toBe(false);
+  });
+});
+
 describe('the file name is the server’s, or the screen says it is not', () => {
   it('names the fallback as a fallback instead of passing it off as the real one', async () => {
     mockRequest.mockResolvedValueOnce(confirmationRequired).mockResolvedValueOnce({
@@ -246,8 +265,10 @@ describe('the file name is the server’s, or the screen says it is not', () => 
     expect(screen).toContain('服务端文件名未收到');
     expect(screen).toContain('浏览器没有把服务端给的文件名交给页面');
     // §B4 wants the operator in the filename. This one cannot carry it,
-    // and the screen says where the real name is instead.
-    expect(screen).toContain('审计记录');
+    // and the screen says where the real name is instead. THIS export
+    // is the only one that can say so: `recordFullExportAudit` is the
+    // only writer that puts `fileName` in an audit payload.
+    expect(screen).toContain('admin.export 审计记录里（payload 的 fileName）');
   });
 });
 
@@ -279,8 +300,12 @@ describe('a real failure is reported as one', () => {
     await press(tree, '确认导出全部患者');
 
     const screen = textContent(tree.root);
-    expect(screen).toContain('数据在你操作期间变了');
-    expect(screen).toContain('现在 36 位');
+    // The server's own sentence, with nothing appended: three of this
+    // router's four 409s are not fixed by retrying. See errors.test.ts.
+    expect(screen).toContain(
+      '患者数量在你确认之后发生了变化（确认时 35 位，现在 36 位），请重新确认。',
+    );
+    expect(screen).not.toContain('重新来一遍');
     expect(mockSave).not.toHaveBeenCalled();
 
     // 重试 re-asks for the phrase; it never re-sends a confirmed export.

@@ -28,6 +28,36 @@ const silentLogger = {
   debug: () => undefined,
 } as unknown as AppLogger;
 
+/**
+ * A logger that keeps what it was given, for the one test that is about
+ * a branch NOT writing a line.
+ *
+ * The 400 for a mistyped patient id is deliberately silent: it is the
+ * caller's typo rather than a fault, and it is a line any authenticated
+ * administrator can produce on demand — i.e. one somebody can flood the
+ * error log with, ahead of the rows they would rather nobody read.
+ * Nothing pinned that until this existed: putting the `logger.error`
+ * back into the branch left the whole suite green.
+ */
+const recordingLogger = () => {
+  const errors: unknown[][] = [];
+  const warns: unknown[][] = [];
+  return {
+    errors,
+    warns,
+    logger: {
+      info: () => undefined,
+      debug: () => undefined,
+      warn: (...args: unknown[]) => {
+        warns.push(args);
+      },
+      error: (...args: unknown[]) => {
+        errors.push(args);
+      },
+    } as unknown as AppLogger,
+  };
+};
+
 interface RecordedQuery {
   sql: string;
   values: unknown[];
@@ -73,8 +103,9 @@ const run = async (
   spec: AdminAuditSpec,
   pool: { query: (sql: string, values?: unknown[]) => Promise<unknown> },
   req: Partial<Request> & { headers: Record<string, string> },
+  logger: AppLogger = silentLogger,
 ) => {
-  const handlers = requireAdmin({ env, logger: silentLogger }, spec, {
+  const handlers = requireAdmin({ env, logger }, spec, {
     pool: pool as never,
   });
   const request = {
@@ -245,12 +276,18 @@ describe('requireAdmin', () => {
     // misconfigured, and wrote a `logger.error` any authenticated
     // administrator could produce at will.
     const { calls, pool } = fakePool({ account: { role: 'admin', is_active: true } });
-    const result = await run({ event: 'admin.record_write', targetParam: 'userId' }, pool, {
-      headers: bearer({ sub: ADMIN_ID, role: 'admin' }),
-      params: { userId: 'P-00417' },
-      method: 'PATCH',
-      originalUrl: '/api/admin/patients/P-00417',
-    });
+    const recorded = recordingLogger();
+    const result = await run(
+      { event: 'admin.record_write', targetParam: 'userId' },
+      pool,
+      {
+        headers: bearer({ sub: ADMIN_ID, role: 'admin' }),
+        params: { userId: 'P-00417' },
+        method: 'PATCH',
+        originalUrl: '/api/admin/patients/P-00417',
+      },
+      recorded.logger,
+    );
 
     expect(result.error).toMatchObject({ statusCode: 400 });
     expect((result.error as { message: string }).message).not.toContain('misconfigured');
@@ -258,6 +295,10 @@ describe('requireAdmin', () => {
     // the 403.
     expect(auditCalls(calls)).toHaveLength(0);
     expect(result.reached).toBe(false);
+    // And nothing is logged. Half of why this branch stopped being a
+    // 500 was the `logger.error` every mistyped id used to write.
+    expect(recorded.errors).toEqual([]);
+    expect(recorded.warns).toEqual([]);
   });
 
   it('leaves audit_logs.user_id unset, matching every other insert site', async () => {

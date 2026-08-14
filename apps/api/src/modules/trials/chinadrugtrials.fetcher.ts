@@ -157,6 +157,55 @@ const RESIDUAL_ENTITY_PATTERN = /&[a-zA-Z#][a-zA-Z0-9]{0,8};/;
 
 // --------------------------------------------------------------- HTML
 
+/** The highest code point there is. Above it, `String.fromCodePoint`
+ *  throws rather than returning a character. */
+const MAX_CODE_POINT = 0x10ffff;
+
+/**
+ * One numeric entity, or a failure that says where it came from.
+ *
+ * `String.fromCodePoint` is not total, and not every string it does
+ * return can be stored. Three forms, each spliced into the title on the
+ * real 9-row results page and driven through `_parseSearchList` on
+ * 2026-08-14, then through `SELECT $1::text` and `SELECT $1::jsonb` on
+ * the dev database for the two that survived the parse:
+ *
+ *   &#999999999;  fromCodePoint threw 「RangeError: Invalid code point
+ *                 999999999」 — no source, no step, no CTR number.
+ *   &#xD800;      decoded to a lone surrogate. `title` reached Postgres
+ *                 as U+FFFD, and the same character inside the `raw`
+ *                 jsonb was rejected —「invalid input syntax for type
+ *                 json」 — so the transaction fails on a driver message
+ *                 two layers from the page that caused it.
+ *   &#0;          decoded to NUL, which Postgres refuses in text at all
+ *                 —「invalid byte sequence for encoding "UTF8": 0x00」.
+ *
+ * None of the three is a silent wrong answer, so the run does fail
+ * either way. What they lacked is a label: every other failure in this
+ * file names the source and the step, and these arrived in
+ * `trial_fetch_runs.error` as a bare RangeError or driver string.
+ */
+const decodeNumericEntity = (
+  entity: string,
+  digits: string,
+  radix: number,
+  label: string,
+): string => {
+  const codePoint = Number.parseInt(digits, radix);
+  const unusable =
+    codePoint > MAX_CODE_POINT
+      ? 'above U+10FFFF, the highest code point there is'
+      : codePoint >= 0xd800 && codePoint <= 0xdfff
+        ? 'an unpaired surrogate'
+        : codePoint === 0
+          ? 'NUL, which Postgres refuses in text'
+          : null;
+  if (unusable !== null) {
+    throw new Error(`${label}: HTML numeric entity ${entity} is ${unusable}`);
+  }
+  return String.fromCodePoint(codePoint);
+};
+
 /**
  * The entities this site actually emits, plus numeric escapes.
  *
@@ -171,19 +220,23 @@ const RESIDUAL_ENTITY_PATTERN = /&[a-zA-Z#][a-zA-Z0-9]{0,8};/;
  * `&#8226;` is decoded by the numeric branches below and comes out as
  * the bullet character itself. Both halves of that are pinned by tests
  * that splice each form into a real title: the named one fails the run,
- * the numeric one becomes 「•」.
+ * the numeric one becomes 「•」. A numeric escape that is not a storable
+ * character fails too, with the source and the step named — see
+ * decodeNumericEntity.
  */
-const decodeEntities = (value: string): string =>
+const decodeEntities = (value: string, label: string): string =>
   value
     .replace(/&nbsp;/g, ' ')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&#x([0-9a-fA-F]+);/g, (_match, hex: string) =>
-      String.fromCodePoint(Number.parseInt(hex, 16)),
+    .replace(/&#x([0-9a-fA-F]+);/g, (entity: string, hex: string) =>
+      decodeNumericEntity(entity, hex, 16, label),
     )
-    .replace(/&#(\d+);/g, (_match, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&#(\d+);/g, (entity: string, dec: string) =>
+      decodeNumericEntity(entity, dec, 10, label),
+    )
     // Last, so `&amp;lt;` decodes to the literal `&lt;` and not to `<`
     // — and then FAILS THE RUN, because `&lt;` is entity-shaped and
     // textOf's residual check throws on it. Measured, by splicing it
@@ -209,7 +262,7 @@ const decodeEntities = (value: string): string =>
  * registry's word, verbatim」 means 进行中 尚未招募, not that.
  */
 const textOf = (fragment: string, label: string): string => {
-  const decoded = decodeEntities(fragment.replace(/<[^>]*>/g, ' '));
+  const decoded = decodeEntities(fragment.replace(/<[^>]*>/g, ' '), label);
   const residual = RESIDUAL_ENTITY_PATTERN.exec(decoded);
   if (residual) {
     throw new Error(`${label}: undecoded HTML entity ${residual[0]} in extracted text`);

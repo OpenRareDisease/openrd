@@ -37,7 +37,7 @@
  * because 已终止 and 已完成 are not the same fact about a drug and a
  * group header must not be the only place that difference is recorded.
  *
- * The other 40 are open on arrival, INCLUDING 其他状态. That group is
+ * The other 32 are open on arrival, INCLUDING 其他状态. That group is
  * the 10 rows whose registry word §A4 gives us no Chinese for, and
  * three of them are `ENROLLING_BY_INVITATION` — studies still taking
  * participants, by the registry's own definition. Not translating a

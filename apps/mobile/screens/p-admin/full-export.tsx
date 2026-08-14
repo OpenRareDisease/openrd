@@ -29,11 +29,20 @@ import styles from './styles';
  *     nothing yet. It carries the row count, so it cannot be typed
  *     without having been shown how many patients are in the file.
  *  2. It is typed, not tapped. There is deliberately no copy button and
- *     the phrase is not `selectable`: a phrase you can paste in one
- *     gesture is a second OK button with more steps.
- *  3. The box starts empty on every visit and is cleared after a
- *     download, so a screen left open cannot be re-submitted by
- *     somebody who did not read it.
+ *     the phrase carries `selectable={false}`: a phrase you can paste
+ *     in one gesture is a second OK button with more steps. The prop is
+ *     load-bearing on the only platform this ships to — react-native-web
+ *     emits `user-select: none` ONLY for `selectable={false}`
+ *     (node_modules/react-native-web/dist/exports/Text/index.js:115,
+ *     183-188) and sets no global reset, so with the prop absent the
+ *     browser default applies and the phrase long-presses and pastes.
+ *  3. The box starts empty on every visit, and every phrase this screen
+ *     shows arrives through `apply`'s `confirmation_required` branch,
+ *     which clears it. So a screen left open cannot be re-submitted by
+ *     somebody who did not read the phrase in front of them. The
+ *     download branch does not clear it and does not need to: the box
+ *     is not rendered in the 已下载 state, and 再导一次 goes back to the
+ *     server for a new phrase, through the branch that does.
  *  4. The comparison is exact. The phrase carries today's date in
  *     Asia/Shanghai and the row count, both of which go stale — and a
  *     stale phrase comes back as another 428 with the new one, which
@@ -83,6 +92,7 @@ const AdminFullExportScreen = () => {
     const { fileName, notice } = describeDownloadName(
       result.download,
       `openrd-patients-${downloadStamp()}-服务端文件名未收到.csv`,
+      'full_export',
     );
     saveBlobInBrowser(result.download.blob, fileName);
     setState({ kind: 'done', fileName, notice });
@@ -180,8 +190,11 @@ const AdminFullExportScreen = () => {
             ))}
             <View style={styles.field}>
               <Text style={styles.statLabel}>把下面这句话完整敲进输入框</Text>
-              {/* Not `selectable`, on purpose — see the header. */}
-              <Text style={styles.statValue}>{state.requiredConfirmation}</Text>
+              {/* `selectable={false}` on purpose — see 2 in the header.
+                  Absent, this is selectable on the web export. */}
+              <Text style={styles.statValue} selectable={false}>
+                {state.requiredConfirmation}
+              </Text>
               <TextInput
                 style={[styles.input, styles.multilineInput]}
                 value={typed}
