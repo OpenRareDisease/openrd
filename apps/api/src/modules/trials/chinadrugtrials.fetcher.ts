@@ -51,6 +51,9 @@
  *    `trial_fetch_runs.source_reported_total` — so 「the registry said
  *    zero」 is a number in the table rather than an inference from the
  *    absence of one. Migration 027 is the column and the reasoning.
+ *    Nothing SELECTs that column yet, so the distinction now dies one
+ *    boundary later, at the API rather than at the database; refresh.ts's
+ *    header says what would have to change to carry it further.
  *
  *
  * WHAT WE SEARCH FOR, AND WHAT WE DELIBERATELY DO NOT

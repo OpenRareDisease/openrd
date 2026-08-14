@@ -124,3 +124,60 @@ describe('getBaselineByUserId', () => {
     expect(documentSql).not.toContain('aiExtraction');
   });
 });
+
+/**
+ * The four columns `upsertBaseline` mirrors out of `foundation`.
+ *
+ * These pin the UPDATE's PARAMETERS, not its effect — there is no
+ * database in this suite, so what is asserted is that a present-and-
+ * null key is sent as an erase and an absent key is sent as「this write
+ * says nothing about the column」. The two used to be indistinguishable
+ * (COALESCE), which made the back office's 「会被清空」 confirmation
+ * false for `full_name` / `preferred_name` / `diagnosis_date` /
+ * `region_city`: only `baseline_payload` was actually cleared.
+ */
+describe('upsertBaseline mirrors the foundation fields', () => {
+  const captureWrite = async (foundation: Record<string, unknown>) => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes('patient_documents')) return { rowCount: 0, rows: [] };
+      return { rowCount: 1, rows: [profileRow] };
+    });
+    const service = serviceFor({ query, connect: vi.fn() } as never);
+    await service.upsertBaseline('user-1', { foundation } as never);
+    const update = calls.find((call) => call.sql.includes('UPDATE patient_profiles'));
+    if (!update) throw new Error('no UPDATE was issued');
+    return update;
+  };
+
+  it('sends an explicit null as an erase', async () => {
+    const { sql, params } = await captureWrite({
+      fullName: null,
+      preferredName: null,
+      diagnosisYear: null,
+      regionLabel: null,
+    });
+    // [payload, setsFullName, fullName, setsPreferredName, preferredName,
+    //  setsDiagnosisYear, diagnosisYear, setsRegionLabel, regionLabel, id]
+    expect(params[1]).toBe(true);
+    expect(params[2]).toBeNull();
+    expect(params[3]).toBe(true);
+    expect(params[4]).toBeNull();
+    expect(params[5]).toBe(true);
+    expect(params[6]).toBeNull();
+    expect(params[7]).toBe(true);
+    // NULLIF turns the empty string into NULL inside the statement.
+    expect(params[8]).toBe('');
+    expect(sql).not.toContain('COALESCE');
+  });
+
+  it('leaves a column alone when the write does not mention it', async () => {
+    const { params } = await captureWrite({ fullName: '张三' });
+    expect(params[1]).toBe(true);
+    expect(params[2]).toBe('张三');
+    expect(params[3]).toBe(false);
+    expect(params[5]).toBe(false);
+    expect(params[7]).toBe(false);
+  });
+});

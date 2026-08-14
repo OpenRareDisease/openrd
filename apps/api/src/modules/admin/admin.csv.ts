@@ -167,20 +167,22 @@ export const FULL_EXPORT_COLUMNS: CsvColumn[] = [
    * `admin_entered` marker in the stored payload. That is all this
    * column reports; it does not certify the rest.
    *
-   * 「Empty means the patient entered every value」 holds only while
-   * every writer of `baseline_payload` goes through one of the two
-   * helpers in baseline-provenance.ts, because `baselineProfileSchema`
-   * strips the block and `upsertBaseline` writes over the whole column
-   * — one save from a writer that calls neither erases every marker on
-   * the profile, including for fields it did not touch. Both writers
-   * are wired today. `grep -rn 'upsertBaseline(' apps/api/src` on
-   * 2026-08-13 returns five lines: the method itself
-   * (`profile.service.ts:1055`), its two callers —
-   * `profile.controller.ts:730` via `applyPatientBaselineWrite` and
-   * `admin.controller.ts:350` via `applyAdminBaselineWrite` — and two
-   * comments quoting the same command, this one and the one in
-   * baseline-provenance.ts. A third caller added without a helper would
-   * empty this column silently. Nothing in this file tests that: what
+   * 「Empty means the patient entered every value」 holds only while no
+   * writer REPLACES `baseline_payload` outside the two helpers in
+   * baseline-provenance.ts, because `baselineProfileSchema` strips the
+   * block and `upsertBaseline` writes over the whole column — one save
+   * from a replacing writer that calls neither erases every marker on
+   * the profile, including for fields it did not touch. The helper
+   * callers are `PatientProfileController.updateMyBaseline` via
+   * `applyPatientBaselineWrite` and `AdminController.updatePatientBaseline`
+   * via `applyAdminBaselineWrite`. `InstrumentsService.applyVignosToBaseline`
+   * (instruments/instruments.service.ts) also writes the column, by
+   * `jsonb_set` into `currentStatus`, which merges and so preserves the
+   * block. Audit with
+   * `grep -rn 'baseline_payload' apps/api/src --include='*.ts' | grep -v '\.test\.'`
+   * — grepping for `upsertBaseline(` would miss a raw-SQL writer. A
+   * replacing writer added without a helper would empty this column
+   * silently. Nothing in this file tests that: what
    * pins it is `PatientProfileController.updateMyBaseline — §B3
    * per-field reclaim` in profile.controller.test.ts (the patient's
    * write carrying another administrator's marker forward) and

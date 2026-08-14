@@ -103,12 +103,103 @@ describe('buildConsentAsks', () => {
   });
 
   it('still asks when the ledger holds nothing at all, and admits it has nothing to diff', () => {
-    // The registration write that never landed — the case
-    // p-login_register documents as self-healing into a re-ask.
+    // No live row for a document the server says is owed. Three things
+    // land here identically — never asked, withdrawn by the patient, a
+    // registration write that never landed — and the payload does not
+    // say which, so the ask carries a null acceptedVersion and no note
+    // rather than a story about why.
     const asks = buildConsentAsks(summary({ acceptances: [] }));
     expect(asks).toHaveLength(1);
     expect(asks[0].acceptedVersion).toBeNull();
     expect(asks[0].notes).toEqual([]);
+  });
+
+  it('does not ask for the Art. 29 单独同意 at app entry when it was never given', () => {
+    // PIPL Art. 29 wants 敏感个人信息 consent SEPARATE, which is why
+    // legal.constants.ts keeps it out of REGISTRATION_DOCUMENTS and
+    // SensitiveDataConsentGate asks at the first report upload. The
+    // server reports it outstanding for every brand-new account (it is
+    // not in CONDITIONAL_DOCUMENTS), so without this the re-consent
+    // gate would stop every new patient at app entry — ahead of
+    // onboarding — and collect it next to the privacy policy, which is
+    // the bundling the article forbids.
+    expect(
+      buildConsentAsks({ acceptances: [], outstanding: [LEGAL_DOCUMENTS.sensitiveData] }),
+    ).toEqual([]);
+  });
+
+  it('does not re-ask the sensitive-data consent the patient just withdrew', () => {
+    // 隐私设置 offers 撤回敏感信息处理同意, and the document promises it
+    // 「同意后可随时在「隐私设置」中撤回」. The server keeps the row but
+    // hides it (withdrawn_at IS NOT NULL), so the document comes back
+    // as outstanding with no acceptance — indistinguishable from never
+    // having been asked. Re-asking at the next app open would take the
+    // right the document grants and undo it on the way in.
+    expect(
+      buildConsentAsks({
+        acceptances: [
+          {
+            document: LEGAL_DOCUMENTS.privacyPolicy,
+            version: '2026-08-13',
+            acceptedAt: '2026-08-13',
+          },
+        ],
+        outstanding: [LEGAL_DOCUMENTS.sensitiveData],
+      }),
+    ).toEqual([]);
+  });
+
+  it('still asks when a sensitive-data consent already given has been revised', () => {
+    // The other direction: a live row at an older version is a
+    // revision of a consent this account DID give, which is what §9
+    // promises to re-ask. Only the first ask belongs elsewhere.
+    const asks = buildConsentAsks({
+      acceptances: [
+        { document: LEGAL_DOCUMENTS.sensitiveData, version: 'v1', acceptedAt: '2026-08-07' },
+      ],
+      outstanding: [LEGAL_DOCUMENTS.sensitiveData],
+    });
+    expect(asks.map((ask) => ask.document)).toEqual([LEGAL_DOCUMENTS.sensitiveData]);
+    expect(asks[0].acceptedVersion).toBe('v1');
+  });
+
+  it('keeps the summary for a ledger row whose version is not a date', () => {
+    // The ledger's version column is free-form: migration 019 allows
+    // any 1..32-char string and legal.schema.ts deliberately does not
+    // pin it, so old rows carry 'v1'. `'2026-08-13' > 'v1'` is false,
+    // so a raw string compare would drop the note that says an
+    // administrator can now read and edit the record — and the screen
+    // would then tell the patient no summary was written.
+    const asks = buildConsentAsks(
+      summary({
+        acceptances: [
+          { document: LEGAL_DOCUMENTS.privacyPolicy, version: 'v1', acceptedAt: '2026-08-07' },
+        ],
+      }),
+    );
+    expect(asks).toHaveLength(1);
+    expect(asks[0].acceptedVersion).toBe('v1');
+    expect(asks[0].notes.map((note) => note.version)).toEqual(['2026-08-13']);
+  });
+
+  it('prefers the most recently accepted row when the payload carries two', () => {
+    // Defensive: the server sends one row per document today. If it
+    // ever sends two, the newer one is the one the patient accepted —
+    // and 「newer」 has to be read off acceptedAt, because the version
+    // column is free-form and 'v1' sorts after every date.
+    const asks = buildConsentAsks(
+      summary({
+        acceptances: [
+          { document: LEGAL_DOCUMENTS.privacyPolicy, version: 'v1', acceptedAt: '2026-07-01' },
+          {
+            document: LEGAL_DOCUMENTS.privacyPolicy,
+            version: '2026-08-02',
+            acceptedAt: '2026-08-02',
+          },
+        ],
+      }),
+    );
+    expect(asks[0].acceptedVersion).toBe('2026-08-02');
   });
 
   it('skips a document this build does not carry the text of', () => {

@@ -14,6 +14,7 @@ import {
   ApiError,
   type AccountDeletionStatus,
 } from '../../lib/api';
+import { APP_NAME, readAppVersion } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
 import { isAdminRole } from '../../lib/admin-access';
 import { isFeatureEnabled } from '../../lib/feature-flags';
@@ -45,6 +46,7 @@ const downloadJsonInBrowser = (payload: unknown, filename: string) => {
 
 const SettingsScreen = () => {
   const router = useRouter();
+  const appVersion = readAppVersion();
   const { confirm, notify } = useAppDialog();
   const [isExporting, setIsExporting] = useState(false);
   const [deletion, setDeletion] = useState<AccountDeletionStatus | null>(null);
@@ -429,12 +431,25 @@ const SettingsScreen = () => {
           )}
         </ListGroup>
 
-        {/* 探索 · 即将上线 — five placeholder destinations that shipped
-            nothing yet. Listing them next to privacy, audit history and
-            account deletion made the whole page read as equally real,
-            so they now sit behind EXPO_PUBLIC_ENABLE_EXPLORE: the
-            screens and routes stay, only the discoverability is gated.
-            Flip the flag per-build as each one actually launches. */}
+        {/* 探索 · 即将上线 — five destinations that still render
+            UnavailableScreen. Listing them next to privacy, audit
+            history and account deletion made the whole page read as
+            equally real, so they sit behind EXPO_PUBLIC_ENABLE_EXPLORE:
+            the screens and routes stay, only the discoverability is
+            gated.
+
+            An earlier version of this comment said 「flip the flag per
+            build as each one actually launches」. That is not something
+            this flag can do — it is ONE flag over FIVE rows, so
+            flipping it for the one that launched would also surface the
+            four that had not. The first launch proved it: when 临床试验
+            became real it got its own row above (see
+            __tests__/trials-entry.test.tsx, which pins both ways of
+            getting this wrong) and 临床试验广场 stayed here as a
+            placeholder. Whichever of these five ships next, do the same
+            — a real page earns a real row, and this group shrinks by
+            one. Splitting the flag would only be worth it to ship two
+            of them dark at once, which has not come up. */}
         {isFeatureEnabled('explore') ? (
           <ListGroup title="探索 · 即将上线">
             {(
@@ -498,9 +513,26 @@ const SettingsScreen = () => {
         />
 
         {/* 版本信息 */}
+        {/* Three separate untruths lived in these two lines. The name
+            was the repository's, not the product's — a patient reading
+            this back to us would name a GitHub org. The version was
+            typed as 1.0.0 against app.json's 2.5.0, one and a half
+            years of releases apart, which points a bug report at the
+            wrong build. And the year was 2024 on a screen rendered in
+            2026. All three are now derived: none can go stale without
+            the thing they describe changing too.
+
+            The version renders only when the Expo config can be read.
+            A version we cannot read is not one to guess at here — 关于
+            我们 made the same call for the same reason. */}
         <View style={styles.versionInfo}>
-          <Text style={styles.versionText}>FSHD-openrd v1.0.0</Text>
-          <Text style={styles.copyrightText}>© 2024 FSHD-openrd. 保留所有权利</Text>
+          <Text style={styles.versionText}>
+            {APP_NAME}
+            {appVersion ? ` v${appVersion}` : ''}
+          </Text>
+          <Text style={styles.copyrightText}>
+            © {new Date().getFullYear()} {APP_NAME}. 保留所有权利
+          </Text>
         </View>
       </ScrollView>
 

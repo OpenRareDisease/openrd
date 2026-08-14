@@ -94,6 +94,20 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
     ...over,
   }) as unknown as ClinicalPassportSummaryDTO;
 
+/**
+ * The one <div class="row"> whose <dt> is `label`, so an assertion can
+ * name the row it means. Page-wide `toContain` was how the aggregated
+ * authorship bug hid: 「（管理员代填）appears somewhere」 was true whether
+ * it sat on the field the administrator wrote or on the one they could
+ * not have.
+ */
+const rowOf = (html: string, label: string): string => {
+  const rows = html.match(/<div class="row">[\s\S]*?<\/div>/g) ?? [];
+  const row = rows.find((candidate) => candidate.includes(`<dt>${label}</dt>`));
+  if (row === undefined) throw new Error(`no row labelled ${label}`);
+  return row;
+};
+
 const page = (over: Record<string, unknown> = {}) =>
   buildPassportSharePage(summary(over), { expiresAt: '2026-08-12T12:00:00.000Z' });
 
@@ -215,14 +229,92 @@ describe('确诊状态必须在数值之前出现', () => {
     // this page told a neurologist the patient wrote it.
     const html = page({
       diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
+      // The marker the confirmation is derived from. It has to be here:
+      // 「管理员代填」 is printed off a marker that names an
+      // administrator, not off the confirmation alone.
+      fieldOrigins: [
+        {
+          path: 'foundation.diagnosisYear',
+          labelZh: '确诊年份',
+          state: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-13T04:11:07.912Z',
+          detail: null,
+        },
+      ],
     });
 
     const banner = html.indexOf('未经基因确诊');
     expect(banner).toBeGreaterThan(-1);
     expect(banner).toBeLessThan(html.indexOf('FSHD1'));
     expect(html).toContain('不是患者本人填写');
-    expect(html).toContain('（管理员代填）');
-    expect(html).not.toContain('（本人填写）');
+    // Per row, not per page. 诊断日期 renders `diagnosis_date`, which
+    // the back office writes; 分型 renders `genetic_mutation`, which no
+    // admin route touches, so it stays the patient's — asserting
+    // 「本人填写 appears nowhere」 would pin the aggregation this fix
+    // removed.
+    expect(rowOf(html, '诊断日期')).toContain('（管理员代填）');
+    expect(rowOf(html, '诊断日期')).not.toContain('（本人填写）');
+    expect(rowOf(html, '分型')).toContain('（本人填写）');
+  });
+
+  it('来源读不出来的时候不说是管理员填的 —— 只说不是本人填的', () => {
+    // `admin_entered` is also the state for a marker that exists and
+    // cannot be parsed (PassportDiagnosisConfirmation). Printing the
+    // administrator banner for one of those invents a person, and the
+    // 字段来源 list at the bottom of the SAME page says 读不出来.
+    const html = page({
+      diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
+      fieldOrigins: [
+        {
+          path: 'foundation.diagnosisYear',
+          labelZh: '确诊年份',
+          state: 'unreadable',
+          adminUserId: null,
+          at: null,
+          detail: 'at is not a timestamp',
+        },
+      ],
+    });
+
+    expect(html).toContain('来源记录读不出来');
+    expect(rowOf(html, '诊断日期')).toContain('（非本人填写，来源不明）');
+    expect(rowOf(html, '诊断日期')).not.toContain('（管理员代填）');
+    expect(rowOf(html, '诊断日期')).not.toContain('（本人填写）');
+    expect(html).not.toContain('根据患者的电话或消息代为录入');
+  });
+
+  it('另一个字段的来源读得出来，也不能替读不出来的那个署名', () => {
+    // The guard used to be aggregated over both diagnosis-facing paths,
+    // so a readable marker on 分型 turned the unreadable one on 确诊年份
+    // into an administrator's name — while the 字段来源 list at the
+    // bottom of the SAME page said 读不出来 about 确诊年份.
+    const html = page({
+      diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
+      fieldOrigins: [
+        {
+          path: 'diseaseBackground.diagnosisType',
+          labelZh: 'FSHD 分型',
+          state: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-13T04:11:07.912Z',
+          detail: null,
+        },
+        {
+          path: 'foundation.diagnosisYear',
+          labelZh: '确诊年份',
+          state: 'unreadable',
+          adminUserId: null,
+          at: null,
+          detail: 'at is not a timestamp',
+        },
+      ],
+    });
+
+    expect(html).toContain('来源记录读不出来');
+    expect(html).toContain('（非本人填写，来源不明）');
+    expect(html).not.toContain('（管理员代填）');
+    expect(html).not.toContain('根据患者的电话或消息代为录入');
   });
 
   it('逐个列出不是本人填写的字段，带管理员账号和时间', () => {

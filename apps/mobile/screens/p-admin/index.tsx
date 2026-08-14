@@ -53,10 +53,12 @@ const AI_WINDOW_DAYS = 7;
  * The discriminator is the server's own denominator, reconstructed from
  * two numbers it also sends: `AdminService.getAiUsage` computes
  * `attempted = totalCalls - consent_denied` and returns
- * `failureRate: attempted === 0 ? null : …` (admin.service.ts:791-799).
+ * `failureRate: attempted === 0 ? null : …` (the two lines at the end
+ * of that method in apps/api/src/modules/admin/admin.service.ts — named
+ * rather than numbered, because this pointer has drifted once already).
  * So `failureRate === null` with `attempted === 0` is the measured 0/0,
- * and `failureRate === null` with anything else is a field that did not
- * arrive.
+ * and `failureRate === null` with a positive `attempted` is a field
+ * that did not arrive.
  *
  * This is NOT a second failure rate. Nothing here divides — the reason
  * `AdminAiUsage.failureRate` says the client must not recompute the
@@ -318,9 +320,13 @@ const AdminOverviewScreen = () => {
               }
             />
             {(() => {
-              // 0/0 is an answer and 「这一项没到」 is not, so they get
-              // different words. See `attemptedCalls`.
-              const noAttempts = aiData.failureRate === null && attemptedCalls(aiData) === 0;
+              // Three cases, not two: 0/0 is an answer, 「这一项没到」 is
+              // not, and 「连分母都没到」 is a third — `attemptedCalls`
+              // returns null when `totalCalls` itself is missing, and
+              // saying 「窗口里有计入分母的调用」 there would assert a
+              // number the block above just said it did not receive.
+              const attempted = aiData.failureRate === null ? attemptedCalls(aiData) : null;
+              const noAttempts = attempted === 0;
               return (
                 <AdminStat
                   label="失败率"
@@ -336,7 +342,9 @@ const AdminOverviewScreen = () => {
                     aiData.failureRate === null
                       ? noAttempts
                         ? '窗口内没有成功也没有失败的调用，0/0 不是 0%。consent_denied 不计入分母，所以窗口里只有它的时候也落在这里。'
-                        : '服务端这次没有给失败率，而窗口里有计入分母的调用——这一项是没到，不是 0，也不是「没有失败」。'
+                        : attempted === null
+                          ? '服务端这次既没有给失败率，也没有给调用总数，所以本页连分母是不是 0 都判断不了——这一项是没到，不能读成 0，也不能读成「没有失败」。'
+                          : '服务端这次没有给失败率，而窗口里有计入分母的调用——这一项是没到，不是 0，也不是「没有失败」。'
                       : '分母只算成功和失败两种。consent_denied 不在里面：那是同意闸门在正常工作，算进失败率会让一个隐私控制看起来像故障。'
                   }
                 />

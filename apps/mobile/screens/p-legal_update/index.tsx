@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -59,6 +59,41 @@ const LegalUpdateScreen = () => {
   const [error, setError] = useState<string | null>(null);
   const [fullTextOpen, setFullTextOpen] = useState(false);
 
+  /** True until this mount's own read of the ledger comes back. */
+  const [rereading, setRereading] = useState(true);
+
+  /**
+   * Re-read the ledger before asking anything.
+   *
+   * THIS SCREEN HAS TWO ENTRIES, and only one of them arrives fresh.
+   * The gate in app/_layout replaces the route on entry, off
+   * LegalConsentContext's list; 「看看改了什么」 in 隐私设置 pushes it at
+   * an arbitrary later time, off that screen's own fetch. On the second
+   * entry the context's list can be stale in either direction: holding
+   * a document already accepted (accept one of two, press 暂不同意, and
+   * it still holds both), or missing one the ledger has since put back
+   * into `outstanding`. 隐私设置 read the ledger a moment ago; this
+   * screen must not answer that patient out of an older list. So: read,
+   * then render the read.
+   */
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        await refresh();
+      } catch {
+        // The provider already turns a failed probe into status
+        // 'error', which this screen renders as 「读不到」 rather than
+        // 「没有」. Nothing to do here but stop waiting.
+      } finally {
+        if (alive) setRereading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [refresh]);
+
   const remaining = asks.filter((item) => !answered.includes(item.document));
   const ask = remaining[0] ?? null;
 
@@ -100,22 +135,40 @@ const LegalUpdateScreen = () => {
     }
   };
 
-  if (!ask) {
+  // Nothing is asked from a snapshot: while this mount's own read is in
+  // flight the screen says it is reading, rather than answering a
+  // question it has not asked the server yet.
+  const reading = rereading || status === 'loading';
+
+  if (!ask || reading) {
     return (
       <SafeAreaView style={styles.container}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          {status === 'loading' ? (
-            <View style={styles.emptyBlock}>
-              <ActivityIndicator color={COLOR.accent} />
-              <Text style={styles.emptyText}>正在读取你的授权记录…</Text>
-            </View>
-          ) : answered.length > 0 ? (
+          {answered.length > 0 ? (
             <View style={styles.emptyBlock}>
               <Text style={styles.emptyTitle}>已经记下来了</Text>
               <Text style={styles.emptyText}>
                 谢谢你读完。你同意的版本号和时间都存下来了，可以在「隐私设置 →
                 授权记录」里看到。正在带你回首页。
               </Text>
+            </View>
+          ) : reading ? (
+            <View style={styles.emptyBlock}>
+              <ActivityIndicator color={COLOR.accent} />
+              <Text style={styles.emptyText}>正在读取你的授权记录…</Text>
+              {/* The read is a network round trip, and on the gate
+                  entry this route is where the patient is put back if
+                  they navigate away without deferring. So the exit is
+                  on this branch too, and it defers exactly as 暂不同意
+                  does — otherwise the wait is a screen with no way off
+                  it. */}
+              <Button
+                label="先回首页"
+                variant="plain"
+                fullWidth
+                onPress={() => leaveTo('/p-home')}
+                accessibilityHint="先不确认，回到你的记录；下次打开时我们会再问一次"
+              />
             </View>
           ) : status === 'error' ? (
             // NOT 「没有需要重新确认的条款」. The read failed, so we do
@@ -162,17 +215,20 @@ const LegalUpdateScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* No back control, and no home control. Not to trap anyone —
-          暂不同意 below is one press and always available — but because
-          a back arrow here would land on a route the gate immediately
-          replaces with this screen, i.e. a button that looks like an
-          exit and behaves like a bounce. */}
+      {/* No back control, and no home control. On the GATE entry (a
+          `replace` from app/_layout) a back arrow would land on a
+          route the gate immediately replaces with this screen: a
+          button that looks like an exit and behaves like a bounce.
+          暂不同意 below is the exit instead — it defers first, so it
+          works on both entries. */}
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* 「更新了」 only when there is something to have updated from.
-            An account whose ledger holds no acceptance of this document
-            is not looking at a revision, it is missing a record — and
-            telling that person 「文件更新了」 would be the screen's very
-            first sentence being false. */}
+            An account whose ledger holds no LIVE acceptance of this
+            document is not looking at a revision, and telling that
+            person 「文件更新了」 would be the screen's very first
+            sentence being false. The payload does not say why the row
+            is missing (see ConsentAsk.acceptedVersion), so the copy
+            below names no cause. */}
         {ask.acceptedVersion ? (
           <>
             <Text style={styles.pageTitle} accessibilityRole="header">
@@ -189,7 +245,7 @@ const LegalUpdateScreen = () => {
               《{ask.title}》还差你一次确认
             </Text>
             <Text style={styles.pageLead}>
-              这不是新条款，是我们这边少了一条你同意过的记录。补上它以后，你什么时候同意的、同意的是哪一版，都能自己查到。
+              我们这边现在没有你对这份文件的有效同意记录，所以要请你确认一次。记下来以后，你什么时候同意的、同意的是哪一版，都能自己查到。
             </Text>
           </>
         )}
@@ -207,8 +263,7 @@ const LegalUpdateScreen = () => {
             </Text>
           ) : (
             <Text style={styles.versionText}>
-              我们这里没有你同意这份文件的记录——可能是注册那一次没有存上。这一版是{' '}
-              {ask.currentVersion}，请读一遍再决定。
+              我们这里没有你同意这份文件的有效记录。这一版是 {ask.currentVersion}，请读一遍再决定。
             </Text>
           )}
         </View>
@@ -232,12 +287,16 @@ const LegalUpdateScreen = () => {
             </Text>
           </View>
         ) : ask.acceptedVersion ? (
-          // A revision with no note. It happens for a document revised
-          // before these notes existed — the ledger's oldest rows carry
-          // a 'v1' version string from that era. Saying so is better
-          // than an empty space where 「改了什么」 should be: the patient
-          // then knows the summary is missing rather than assuming the
-          // change was too small to describe.
+          // A revision this build has no note for. Two ways in:
+          // LEGAL_VERSION_NOTES carries none for this document at all
+          // (用户协议 and 敏感个人信息处理单独同意 today), or none newer
+          // than the version this account accepted. What does NOT empty
+          // the list is a version this build cannot order — the
+          // ledger's oldest rows carry 'v1' — because buildConsentAsks
+          // shows every note for those rather than none. Saying so is
+          // better than an empty space where 「改了什么」 should be: the
+          // patient then knows the summary is missing rather than
+          // assuming the change was too small to describe.
           <Text style={styles.changeCardFoot}>
             这一次改动我们没有写下摘要，所以这一页说不出改了哪几句。请展开下面的全文自己读一遍再决定。
           </Text>

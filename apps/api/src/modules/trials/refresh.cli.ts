@@ -22,8 +22,10 @@
  *   17 * * * * cd /srv/openrd && flock -n /tmp/openrd-trials.lock docker compose exec -T api node dist/modules/trials/refresh.cli.js >> /var/log/openrd/trials.log 2>&1
  *
  * Exit code is 0 only when EVERY source succeeded. A partial refresh
- * exits 1 with the reason on stderr and in `trial_fetch_runs.error`, so
- * cron mail and the ops page say the same thing.
+ * exits 1 with the reason on stderr, which under the crontab above
+ * lands in /var/log/openrd/trials.log. Read it there: what reaches
+ * `trial_fetch_runs.error` is neither guaranteed to exist for a given
+ * failure nor to be the same string.
  *
  * A `pg.Client`, not the API's pool: this is a one-shot process, and
  * `refreshTrials` issues BEGIN/COMMIT as statements, which needs one
@@ -105,8 +107,7 @@ export const main = async (): Promise<void> => {
 
     for (const outcome of outcomes) {
       if (outcome.ok) {
-        // The source's own count is in the line, not just ours. This
-        // output is what cron mails to an operator, and
+        // The source's own count is in the line, not just ours.
         // 「0 record(s) written」 on its own reads as a broken scraper;
         // 「the search came back saying 0 matching」 is the registry
         // answering. They are the two sentences the whole feature is

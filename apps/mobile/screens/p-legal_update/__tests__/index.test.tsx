@@ -6,11 +6,13 @@ import { MIN_TOUCH_TARGET } from '../../../lib/a11y';
 /**
  * 隐私政策更新 — the screen that keeps §9's promise.
  *
- * THE FOUR PROPERTIES PINNED HERE, in the order they matter to the
+ * THE FIVE PROPERTIES PINNED HERE, in the order they matter to the
  * person reading the screen:
  *
  * 1. It says WHAT CHANGED, in the sentence a patient can act on —
- *    「管理员可以查阅你的档案」 — not just a version number.
+ *    「管理员可以查阅你的档案」 — not just a version number. And where
+ *    it cannot know something, it does not assert it: a missing
+ *    acceptance is stated as missing, without a story about why.
  * 2. Accepting writes the ledger through the one writer
  *    (`recordLegalAcceptance`), at the version this build displayed.
  * 3. A write that fails does NOT walk the patient onward. An
@@ -18,6 +20,9 @@ import { MIN_TOUCH_TARGET } from '../../../lib/a11y';
  * 4. Declining is not a lockout: it defers, it returns the patient to
  *    their own records, and the screen names the export and the
  *    deletion the privacy policy already promises.
+ * 5. It answers off its own read of the ledger, not off the snapshot
+ *    LegalConsentContext took at app open — 隐私设置 can push this
+ *    screen much later, after a withdrawal that snapshot never saw.
  */
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -171,12 +176,30 @@ describe('它告诉患者改的是什么，而不只是版本号变了', () => {
       outstanding: [LEGAL_DOCUMENTS.privacyPolicy],
     });
     const screen = textContent((await render()).root);
-    expect(screen).toContain('没有你同意这份文件的记录');
+    expect(screen).toContain('没有你同意这份文件的有效记录');
     expect(screen).not.toContain('你上次同意的是');
     // 「更新了」 would be false for an account that never accepted it:
     // nothing updated, a record is missing.
     expect(screen).not.toContain('更新了，想先跟你说一声');
     expect(screen).toContain('还差你一次确认');
+  });
+
+  it('does not tell the patient why the record is missing', async () => {
+    // The payload carries no reason. Blaming our own lost write is
+    // false for someone who withdrew on purpose — it re-presents a
+    // right they exercised as our clerical accident — and naming a
+    // withdrawal is false for an account that was never asked. So the
+    // screen states the absence and stops.
+    mockAsks = buildConsentAsks({
+      acceptances: [],
+      outstanding: [LEGAL_DOCUMENTS.privacyPolicy],
+    });
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('没有你同意这份文件的有效记录');
+    expect(screen).not.toContain('注册那一次没有存上');
+    expect(screen).not.toContain('少了一条你同意过的记录');
+    expect(screen).not.toContain('撤回');
+    expect(screen).not.toContain('从来没有确认过');
   });
 
   it('admits it when a revision has no summary rather than showing an empty card', async () => {
@@ -212,9 +235,12 @@ describe('同意走的是原来那条账本，不是一个新的开关', () => {
     failure.status = 500;
     mockRecord.mockRejectedValue(failure);
     const tree = await render();
+    // Mounting re-reads the ledger (see below); a failed write must not
+    // add a read on top of that one, and must not navigate.
+    const readsBeforePress = mockRefresh.mock.calls.length;
     await press(tree, '我读完了，同意这一版');
     expect(mockReplace).not.toHaveBeenCalled();
-    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockRefresh).toHaveBeenCalledTimes(readsBeforePress);
     expect(textContent(tree.root)).toContain('保存失败');
   });
 
@@ -350,5 +376,57 @@ describe('直接打开这个地址时不装样子', () => {
     mockAsks = [];
     const screen = textContent((await render()).root);
     expect(screen).toContain('没有需要重新确认的条款');
+  });
+
+  it('re-reads the ledger on mount instead of trusting the session snapshot', async () => {
+    await render();
+    expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it('says it is reading, not 「没有需要重新确认的条款」, while that read is in flight', async () => {
+    // The state 隐私设置 pushes this screen from: the context answered
+    // at app open and has not looked since, so its list is empty while
+    // the ledger may already say otherwise.
+    mockStatus = 'ready';
+    mockAsks = [];
+    const gate: { release: () => void } = { release: () => undefined };
+    mockRefresh.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          gate.release = resolve;
+        }),
+    );
+    const tree = await render();
+    expect(textContent(tree.root)).toContain('正在读取你的授权记录');
+    expect(textContent(tree.root)).not.toContain('没有需要重新确认的条款');
+    // And the wait is not a screen with no way off it: the gate puts
+    // the patient back here unless leaving defers first.
+    await press(tree, '先回首页');
+    expect(mockDefer).toHaveBeenCalled();
+    expect(mockReplace).toHaveBeenCalledWith('/p-home');
+    await act(async () => {
+      gate.release();
+      await flush();
+    });
+    expect(textContent(tree.root)).toContain('没有需要重新确认的条款');
+  });
+
+  it('asks about a document the session snapshot did not know was outstanding', async () => {
+    // The ledger can change after the context's one probe — a version
+    // bumped by a deploy, an acceptance withdrawn through the API —
+    // and 隐私设置 fetches fresh, so it can offer 看看改了什么 for a
+    // document the context's list does not contain. Landing on a page
+    // that says nothing is owed would contradict the sentence the
+    // patient just tapped.
+    mockStatus = 'ready';
+    mockAsks = [];
+    mockRefresh.mockImplementation(() => {
+      mockStatus = 'pending';
+      mockAsks = privacyAsk();
+      return Promise.resolve();
+    });
+    const screen = textContent((await render()).root);
+    expect(screen).not.toContain('没有需要重新确认的条款');
+    expect(screen).toContain('《隐私政策》更新了');
   });
 });

@@ -74,17 +74,28 @@
  * database attributed to the patient — and there is no way to notice
  * that from the outside afterwards.
  *
- * A BASELINE WRITE THAT CALLS NEITHER ERASES EVERY MARKER. That is not
- * a guarantee this module can enforce from here; it is why both
- * helpers are named for the caller rather than for what they do.
+ * A BASELINE WRITE THAT REPLACES THE COLUMN AND CALLS NEITHER HELPER
+ * ERASES EVERY MARKER. That is not a guarantee this module can enforce
+ * from here; it is why both helpers are named for the caller rather
+ * than for what they do.
  *
  * Both callers are wired: `AdminController.updatePatientBaseline`
  * (admin.controller.ts) and `ProfileController.updateMyBaseline`
- * (profile.controller.ts). Those two are the only writers of
- * `baseline_payload` in the tree:
- * `grep -rn 'upsertBaseline(' apps/api/src | grep -v '\.test\.'`
- * returns four lines — those two call sites, the method's own
- * definition in profile.service.ts, and a comment in admin.csv.ts.
+ * (profile.controller.ts). They are the writers that REPLACE the whole
+ * column — that property, not their number, is what the guarantee
+ * rests on. One other place writes `baseline_payload` and touches
+ * neither helper: `InstrumentsService.applyVignosToBaseline`
+ * (instruments/instruments.service.ts) sets
+ * `currentStatus.independentlyAmbulatory` with a nested `jsonb_set`
+ * over the stored value, so it MERGES and leaves this module's
+ * reserved key standing. That is why it is safe, and it is the reason
+ * the audit has to be over the COLUMN rather than over the helper:
+ * `grep -rn 'baseline_payload' apps/api/src --include='*.ts' | grep -v '\.test\.'`
+ * Every hit that assigns the column must either go through
+ * `upsertBaseline` (hence through one of the two helpers) or merge
+ * into the existing jsonb instead of overwriting it. Grepping for
+ * `upsertBaseline(` cannot see a raw-SQL writer at all, and one such
+ * writer already exists.
  *
  *
  * WHAT AN ADMIN MAY WRITE AT ALL
@@ -360,10 +371,16 @@ export const applyAdminBaselineWrite = (
   // names every field at fault rather than the first one.
   const refused = [...changed].filter((path) => !ADMIN_WRITABLE.has(path)).sort();
   if (refused.length > 0) {
+    // The message carries the whole refusal, because nothing else can:
+    // `AppError.details` is projected through CLIENT_SAFE_DETAIL_KEYS
+    // in middleware/error-handler.ts, which has no `fields` key, and a
+    // 400 is `isOperational` so the same handler does not log it
+    // either. A machine-readable list attached here would reach no
+    // client and no log — so every offending field is named in the
+    // sentence the operator actually sees.
     throw new AppError(
       `管理员不能代填这些字段：${refused.map(baselineFieldLabelZh).join('、')}。这些是患者对自己身体的回答，后台只能查看。`,
       400,
-      { fields: refused },
     );
   }
 

@@ -883,20 +883,6 @@ export class PatientProfileService {
   }
 
   /**
-   * Four scalars, and it used to read eight tables to get them.
-   *
-   * `getProfileByUserId` loads the patient's entire history — every
-   * measurement, function test, symptom score, daily impact, follow-up
-   * event, activity log, medication and document — and this method
-   * discarded all of it but the name and the baseline. The baseline
-   * screen polls this on every open.
-   *
-   * It does genuinely need the documents: `applyGeneticReportAutofill`
-   * fills a missing diagnosis date or D4Z4 result from the most recent
-   * genetic report, so a baseline built without them would show blanks
-   * the full profile fills in. The other seven tables it never touched.
-   */
-  /**
    * `baseline_payload` as it is ON DISK — no autofill, no merge.
    *
    * Exists for one caller, `ProfileController.updateMyBaseline`, and
@@ -912,9 +898,11 @@ export class PatientProfileService {
    *
    * Returns `null` for an account with no profile row, which is not
    * the same as a profile whose column is NULL (`{ payload: null }`).
-   * The caller does not need the distinction today — `upsertBaseline`
-   * creates the row — but collapsing it here would mean a future
-   * caller could not get it back.
+   * The caller does not act on the distinction today — it passes
+   * `stored?.payload ?? null` either way, and `upsertBaseline` answers
+   * the no-row case with `ensureProfileForUser`'s 404 rather than
+   * creating one — but collapsing it here would mean a future caller
+   * could not get it back.
    */
   async getStoredBaselinePayload(
     userId: string,
@@ -929,6 +917,21 @@ export class PatientProfileService {
     return { payload: asRecord(result.rows[0].baseline_payload) };
   }
 
+  /**
+   * Four scalars and the baseline, and it used to read eight tables to
+   * get them.
+   *
+   * `getProfileByUserId` loads the patient's entire history — every
+   * measurement, function test, symptom score, daily impact, follow-up
+   * event, activity log, medication and document — and this method
+   * discarded all of it but the name and the baseline. The baseline
+   * screen polls this on every open.
+   *
+   * It does genuinely need the documents: `applyGeneticReportAutofill`
+   * fills a missing diagnosis date or D4Z4 result from the most recent
+   * genetic report, so a baseline built without them would show blanks
+   * the full profile fills in. The other seven tables it never touched.
+   */
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
     const profileResult = await this.pool.query<PatientProfileRecord>(
       `SELECT id, full_name, preferred_name, diagnosis_date, genetic_mutation,
@@ -1060,20 +1063,44 @@ export class PatientProfileService {
     const regionLabel =
       typeof foundation.regionLabel === 'string' ? foundation.regionLabel.trim() : '';
 
+    // 「The key is absent」 and 「the key is present and null」 are
+    // different writes, and only the second one is an erase. COALESCE
+    // collapsed them: a SET propagated to the mirrored column and a
+    // CLEAR never did, so a cleared 姓名 emptied `baseline_payload` and
+    // left `full_name` standing — while the back office's confirm
+    // dialog (apps/mobile/screens/p-admin/patient-record.tsx) promised
+    // the operator the field 「会被清空」, and the same stale column
+    // went on feeding the page header, the masked patient list and the
+    // full-cohort CSV. These four fields are all `.optional()
+    // .nullable()` in `baselineProfileSchema` (profile.schema.ts), so a
+    // parsed payload keeps an explicit null rather than stripping it —
+    // the distinction survives the wire, and these four flags carry it
+    // into the SQL. `undefined`
+    // rather than `in`: JSON has no undefined, so an absent key is the
+    // only way to get one, whichever way Zod represents it.
+    const setsFullName = foundation.fullName !== undefined;
+    const setsPreferredName = foundation.preferredName !== undefined;
+    const setsDiagnosisYear = foundation.diagnosisYear !== undefined;
+    const setsRegionLabel = foundation.regionLabel !== undefined;
+
     await this.pool.query(
       `UPDATE patient_profiles
        SET baseline_payload = $1,
-           full_name = COALESCE($2, full_name),
-           preferred_name = COALESCE($3, preferred_name),
-           diagnosis_date = COALESCE($4::date, diagnosis_date),
-           region_city = COALESCE(NULLIF($5, ''), region_city),
+           full_name = CASE WHEN $2::boolean THEN $3::text ELSE full_name END,
+           preferred_name = CASE WHEN $4::boolean THEN $5::text ELSE preferred_name END,
+           diagnosis_date = CASE WHEN $6::boolean THEN $7::date ELSE diagnosis_date END,
+           region_city = CASE WHEN $8::boolean THEN NULLIF($9::text, '') ELSE region_city END,
            updated_at = NOW()
-       WHERE id = $6`,
+       WHERE id = $10`,
       [
         payload,
+        setsFullName,
         foundation.fullName ?? null,
+        setsPreferredName,
         foundation.preferredName ?? null,
+        setsDiagnosisYear,
         diagnosisYear,
+        setsRegionLabel,
         regionLabel,
         profileId,
       ],

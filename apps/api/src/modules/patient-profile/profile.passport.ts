@@ -85,15 +85,24 @@ export interface PassportSummaryCardDTO {
  *   a majority misdiagnosed along the way, so the realistic holder of
  *   an unconfirmed passport is someone carrying「可能是肌病」or an
  *   outright wrong label.
- * `admin_entered` — one of our own administrators typed it into the
- *   back office on the patient's behalf, off a phone call or a photo
- *   of a discharge summary. This is a THIRD thing: not evidence, and
- *   not the patient's own account of themselves either. It is our
- *   staff's transcription of something they believe the patient said,
- *   and the patient may never have seen it. Folding it into
- *   `self_reported` would put our own typing in the patient's mouth on
- *   the page a neurologist reads; folding it into `none` would hide a
- *   value that is on the page. See baseline-provenance.ts.
+ * `admin_entered` — the diagnosis field carries a provenance marker,
+ *   so it is NOT the patient's own account of themselves. In the
+ *   ordinary case the marker parses and names an administrator who
+ *   typed it into the back office on the patient's behalf, off a phone
+ *   call or a photo of a discharge summary: a THIRD thing, not
+ *   evidence and not self-report, that the patient may never have
+ *   seen. Folding that into `self_reported` would put our own typing
+ *   in the patient's mouth on the page a neurologist reads; folding it
+ *   into `none` would hide a value that is on the page.
+ *
+ *   A marker that EXISTS AND CANNOT BE PARSED lands in this state too,
+ *   because the remaining three all say something false about it and
+ *   the one that is unsurvivable is 「本人填写」. So this state means
+ *   「不是本人填写」 and no more than that: A RENDERER MAY NOT ASSERT WHO
+ *   TYPED IT off `confirmation` alone. Who and when — or that neither
+ *   could be read — is per field in `fieldOrigins`, and the strings
+ *   this file builds for this state check the year's own origin before
+ *   naming an administrator. See baseline-provenance.ts.
  * `none` — nothing yet.
  *
  * The distinction is the whole point. This document is designed to be
@@ -1788,22 +1797,13 @@ export const buildClinicalPassportSummary = (
   // WHO PUT THE BASELINE VALUES ON THIS PAGE. Absence is the patient,
   // so this is empty for the overwhelming majority of profiles.
   const fieldOrigins = collectPassportFieldOrigins(profile.baseline);
-  // The one baseline field the diagnosis block above actually rests
-  // on, and the inference is narrow on purpose. `reportInsights
-  // .diagnosisDate` prefers `profile.diagnosisDate`, the column that
-  // `upsertBaseline` fills by COALESCE from `foundation.diagnosisYear`
-  // — so an administrator who typed the year is who put the date on
-  // this page whenever the column was empty before them. It is NOT
-  // proof the printed date is theirs: COALESCE leaves an existing
-  // column value alone, in which case the year they typed is stored in
-  // the baseline and the date shown came from elsewhere. Both cases
-  // make 「以下为本人填写」 false, which is what this state is for; the
-  // per-field truth is in `fieldOrigins` beside it rather than guessed
-  // at here.
-  //
   // `!== 'patient'` and not `=== 'admin_entered'`: an entry that
   // exists and cannot be parsed is still not the patient's, and the
-  // one thing this page may never do is fall back to their name.
+  // one thing this page may never do is fall back to their name. What
+  // that costs is that `admin_entered` cannot by itself be read as
+  // 「an administrator typed this」 — see the type's doc comment, and
+  // the strings below, which branch on this origin before they name
+  // anybody. The per-field truth is in `fieldOrigins` beside it.
   const diagnosisYearOrigin = readBaselineFieldOrigin(profile.baseline, 'foundation.diagnosisYear');
   const diagnosisConfirmation: PassportDiagnosisConfirmation = geneticallyConfirmed
     ? 'genetic'
@@ -1924,7 +1924,13 @@ export const buildClinicalPassportSummary = (
       // likely not to know a value is sitting in their record at all.
       description:
         diagnosisConfirmation === 'admin_entered'
-          ? '目前的诊断信息是本平台管理员代你录入的（在护照的字段来源里能看到是谁、什么时候），尚无基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
+          ? diagnosisYearOrigin.state === 'admin_entered'
+            ? '目前的诊断信息是本平台管理员代你录入的（在护照的字段来源里能看到是谁、什么时候），尚无基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
+            : // The marker exists but does not parse, so we know it is
+              // not this patient's own entry and we do NOT know who
+              // made it. Naming an administrator here would be inventing
+              // one.
+              '目前的诊断信息不是你自己填的——档案里记着它是从后台录进来的，但那条来源记录本平台读不出来（原因写在护照的字段来源里），也还没有基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
           : diagnosisClaimed
             ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
             : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
@@ -2027,7 +2033,9 @@ export const buildClinicalPassportSummary = (
         diagnosisConfirmation === 'genetic'
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
           : diagnosisConfirmation === 'admin_entered'
-            ? '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写，尚无基因报告佐证'
+            ? diagnosisYearOrigin.state === 'admin_entered'
+              ? '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写，尚无基因报告佐证'
+              : '未经基因确诊 —— 以下不是患者本人填写，来源记录读不出来，尚无基因报告佐证'
             : diagnosisConfirmation === 'self_reported'
               ? '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证'
               : '缺少可直接展示的基因或诊断证据',

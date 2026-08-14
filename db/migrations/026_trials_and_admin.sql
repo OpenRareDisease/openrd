@@ -94,7 +94,13 @@
 --
 --   CREATE INDEX (event_type, occurred_at)      728.5 ms   (\timing)
 --
--- and the query the back-office runs against it,
+-- and the 「谁在什么时候看了谁」 query this index is for. No code path
+-- runs it: the back-office only INSERTs into audit_logs
+-- (require-admin.ts, admin.service.ts) and none of its endpoints read
+-- the trail, so an operator runs this by hand in psql. The one shipped
+-- query that does use the index is the revoke lookup in
+-- scripts/admin-role.mjs (event_type = 'admin.grant' ORDER BY
+-- occurred_at DESC LIMIT 1), on the same leading column.
 -- EXPLAIN (ANALYZE, BUFFERS), warm:
 --
 --   SELECT id, event_payload, occurred_at FROM ...
@@ -163,12 +169,14 @@ CREATE TABLE IF NOT EXISTS trial_records (
   -- When WE last read it. Shown on the page and in AI answers; see the
   -- header.
   fetched_at        TIMESTAMPTZ NOT NULL,
-  -- The whole response object for this study. Kept so a disagreement
-  -- between what a patient sees and what the registry says can be
-  -- settled against what the registry actually returned at fetch time,
-  -- rather than against our parser's memory of it. Also the only way a
-  -- field we did not think to extract can be recovered without
-  -- re-fetching history we no longer have.
+  -- What the fetcher KEPT for this study, not the registry's whole
+  -- record. ctgov asks the API for nine leaf paths and stores exactly
+  -- those (CTGOV_FIELDS in ctgov.fetcher.ts); chinadrugtrials builds an
+  -- allowlist object by hand rather than storing the ~66 KB detail
+  -- page, which carries a named investigator's mobile number, email and
+  -- postal address. It cannot answer a question about a field the
+  -- fetcher never asked for; recovering one of those needs a re-fetch,
+  -- and the history is not here.
   raw               JSONB NOT NULL,
   PRIMARY KEY (source, source_id)
 );
@@ -215,9 +223,13 @@ COMMENT ON TABLE trial_fetch_runs IS
 
 -- Both request-path questions are 「the latest row for this source」,
 -- with the successful-only variant filtering on `ok` afterwards. One
--- index serves both: at two sources times a cron tick the table grows
--- by a few thousand rows a year, so the recheck on `ok` costs nothing
--- worth a second, partial index.
+-- index serves both. What bounds the recheck on `ok` is not the table
+-- size but the failure streak: the scan stops at the first successful
+-- entry, so it reads one entry per source while a source is healthy
+-- and walks back over every failed run since the last success while a
+-- source is broken -- at the hourly cron below, ~8,760 entries for a
+-- source down for a year, on every /api/trials load. That is the
+-- number to size a second, partial index on `ok` against.
 --
 -- Nothing deletes from this table. That is intentional and it is
 -- affordable: the rows carry no personal data and an hourly cron on

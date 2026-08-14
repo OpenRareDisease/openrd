@@ -390,7 +390,7 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     expect(build().fieldOrigins).toEqual([]);
   });
 
-  it('姓名也标出来 —— upsertBaseline 会把它 COALESCE 进 full_name 列', () => {
+  it('姓名也标出来 —— upsertBaseline 会把它写进 full_name 列', () => {
     const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
     const foundation = stored.foundation as Record<string, unknown>;
     const profile = {
@@ -403,9 +403,12 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     } as PatientProfileDTO;
 
     const local = build(profile, true).document.localOnly;
-    expect(local?.items.find((item) => item.key === 'local.fullName')?.provenanceZh).toContain(
-      '不是患者本人填写',
-    );
+    const provenance = local?.items.find((item) => item.key === 'local.fullName')?.provenanceZh;
+    expect(provenance).toContain('不是患者本人填写');
+    // And it does not ALSO claim the patient typed it. The marker used
+    // to be appended to 「患者本人填写」, so one field asserted both.
+    expect(provenance).not.toContain('患者本人填写；');
+    expect(provenance?.startsWith('患者本人填写')).toBe(false);
   });
 
   it('读不出来的标记按「不是本人填写」处理，不退回成本人填写', () => {

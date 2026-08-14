@@ -61,6 +61,16 @@ const usage = `Usage:
 
 Both commands ask for confirmation on a terminal and write an
 audit_logs row in the same transaction as the role change.
+
+On a production stack, run it inside the api container, which has this
+file (apps/api/Dockerfile copies it), the pg dependency, and the
+database credentials already in its environment:
+
+  docker compose exec api node /app/scripts/admin-role.mjs grant <phone>
+
+Note 「exec」 and not 「exec -T」: -T takes the terminal away, and
+this refuses to run without one — it checks before opening a
+transaction, so a -T invocation changes nothing.
 `;
 
 const fail = (message, code = 1) => {
@@ -161,7 +171,8 @@ const confirm = async (question, expected) => {
     // flag that skips the prompt is how it ends up in a deploy script.
     fail(
       'stdin is not a terminal, so the confirmation cannot be asked for. ' +
-        'Run this from an interactive shell on the host.',
+        'Run it from an interactive shell — on a production stack that is ' +
+        'docker compose exec api (no -T).',
     );
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });

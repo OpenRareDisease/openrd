@@ -89,6 +89,26 @@ const CONFIRMATION_BANNER: Record<
   },
 };
 
+/**
+ * `admin_entered` is also the state for a marker this platform could
+ * not parse (PassportDiagnosisConfirmation, profile.passport.ts), and
+ * for those we know only that the value is not the patient's own. The
+ * banner above names an administrator and their phone call, which
+ * would be invented for such a profile — and the 字段来源 list further
+ * down the same page would say 「读不出来」 about the same field.
+ */
+const UNREADABLE_ORIGIN_BANNER = {
+  tone: 'warn',
+  title: '未经基因确诊 —— 以下诊断不是患者本人填写的，来源记录读不出来',
+  body: '本平台尚未收到该患者的基因检测报告。下面的诊断信息在本平台的档案里带着一条「非本人填写」的来源记录，但那条记录本平台读不出来（原因见下方「字段来源」），所以只能确定它不是患者自己填的，无法说明是谁录入、什么时候录入的。它既不是检测结果，也不是患者的自述原话。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
+};
+
+/** The baseline field `confirmation` is derived from
+ *  (profile.passport.ts). A marker on any OTHER field says nothing
+ *  about who entered this one, and the set that used to hold both let a
+ *  readable marker on the other vouch for an unreadable one here. */
+const DIAGNOSIS_ORIGIN_PATH = 'foundation.diagnosisYear';
+
 export const buildPassportSharePage = (
   summary: ClinicalPassportSummaryDTO,
   /* A union, not an optional flag beside a required date. A pickup
@@ -97,20 +117,56 @@ export const buildPassportSharePage = (
    * the caller invent one. */
   meta: { viaPickup: true } | { viaPickup?: false; expiresAt: string },
 ): string => {
-  const banner = CONFIRMATION_BANNER[summary.diagnosis.confirmation];
+  /** True when the only thing this page can prove about the diagnosis
+   *  is that the patient did not type it: the marker `confirmation` was
+   *  derived from does not name anybody. The 字段来源 section below
+   *  prints that field's own state, which is what the banner points
+   *  at. */
+  const diagnosisOriginUnreadable =
+    summary.diagnosis.confirmation === 'admin_entered' &&
+    summary.fieldOrigins.find((origin) => origin.path === DIAGNOSIS_ORIGIN_PATH)?.state !==
+      'admin_entered';
+  const banner = diagnosisOriginUnreadable
+    ? UNREADABLE_ORIGIN_BANNER
+    : CONFIRMATION_BANNER[summary.diagnosis.confirmation];
 
   const rows = (pairs: Array<[string, string]>): string =>
     pairs.map(([k, v]) => `<div class="row"><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('');
 
   /** A diagnosis field that may have been typed rather than extracted.
-   *  Marked at the value, not only in the banner above it — and marked
-   *  with WHICH of the two typists, because 「本人填写」 over a value the
-   *  patient never saw is the one sentence this page must not print. */
+   *  Marked at the value, not only in the banner above it, because
+   *  「本人填写」 over a value the patient never saw is the one sentence
+   *  this page must not print.
+   *
+   *  The label comes from the ONE field the page can actually prove
+   *  authorship for. 诊断日期 renders `patient_profiles.diagnosis_date`,
+   *  which the back office writes through `foundation.diagnosisYear`,
+   *  so that path's provenance entry answers for it. 分型 renders
+   *  `patient_profiles.genetic_mutation`, and no admin route writes
+   *  that column — `PUT /admin/patients/:userId/baseline` is the only
+   *  admin write, and `upsertBaseline` touches `baseline_payload` plus
+   *  full_name / preferred_name / diagnosis_date / region_city. In the
+   *  non-genetic branch it is therefore the patient's own, full stop.
+   *
+   *  Both rows used to be labelled off `confirmation`, which is derived
+   *  from 确诊年份 alone — so an administrator correcting the year also
+   *  stamped 「管理员代填」 onto a 分型 they could not have written. One
+   *  field's authorship is not evidence about another's, and keeping
+   *  them apart is this page's whole job. */
   const selfReported = (field: 'geneticType' | 'diagnosisDate'): string => {
     const value = dash(summary.diagnosis[field]);
     if (value === '—') return value;
     if (summary.diagnosis.confirmation === 'genetic') return value;
-    const who = summary.diagnosis.confirmation === 'admin_entered' ? '管理员代填' : '本人填写';
+    if (field === 'geneticType') return `<span class="reported">${value}（本人填写）</span>`;
+    const origin = summary.fieldOrigins.find((entry) => entry.path === DIAGNOSIS_ORIGIN_PATH);
+    // No entry means the patient: `fieldProvenance` records only what
+    // somebody else wrote, so absence is the ordinary case.
+    const who =
+      origin === undefined
+        ? '本人填写'
+        : origin.state === 'admin_entered'
+          ? '管理员代填'
+          : '非本人填写，来源不明';
     return `<span class="reported">${value}（${who}）</span>`;
   };
 

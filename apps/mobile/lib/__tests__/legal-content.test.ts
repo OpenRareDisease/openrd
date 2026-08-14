@@ -146,6 +146,7 @@ describe('legal-content: the administrator back office (§10)', () => {
     ['that reclaiming is per field', '是按字段算的'],
     ['that clearing leaves no marker', '清空，则不会留下「管理员代填」标记'],
     ['that the marker travels into the exports', 'FHIR / Phenopacket / TREAT-NMD'],
+    ['and into the referral sheet', '你带给医生的转诊资料'],
     ['that an admin can export one patient', '导成一个文件'],
     ['what the export drops', '它不写你的姓名、电话、住址，也不含家族史'],
     ['what the export ADDS over the record page', '而这些在后台的患者档案页上一项都不显示'],

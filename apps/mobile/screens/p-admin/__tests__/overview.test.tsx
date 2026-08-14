@@ -174,6 +174,22 @@ describe('取不到的那一项会说自己取不到，不会显示 0', () => {
     expect(screen).toContain('这一项是没到');
   });
 
+  it('does not claim there were calls in the window when the count is missing too', async () => {
+    // Both fields absent. The page used to print 「服务端没有返回这一项」
+    // for 调用总数 and, two lines down, 「窗口里有计入分母的调用」 for the
+    // failure rate — one block saying it did not receive the count and
+    // the next one asserting what the count was.
+    const actual = readAll();
+    mockAiUsage.mockResolvedValue(
+      actual.readAdminAiUsage({ ...AI_USAGE, totalCalls: undefined, failureRate: undefined }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('服务端没有返回这一项');
+    expect(screen).toContain('连分母是不是 0 都判断不了');
+    expect(screen).not.toContain('窗口里有计入分母的调用');
+    expect(screen).not.toContain('0/0 不是 0%');
+  });
+
   it('reads a window of nothing but consent_denied as 0/0, not as a missing field', async () => {
     // `attempted = totalCalls - consent_denied`, so the server answers
     // null here too — and it is measured. The count is what tells this

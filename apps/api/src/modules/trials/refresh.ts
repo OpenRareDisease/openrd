@@ -42,8 +42,28 @@
  *
  * `records_upserted = 0` alone says only that we wrote nothing, which
  * is true of both. Do not render 「没有相关记录」 off `ok` and a row
- * count; read the column the source's own number is in (migration
- * 027).
+ * count.
+ *
+ * AND NOTHING CAN RENDER IT OFF THE RIGHT COLUMN EITHER, TODAY, so the
+ * honest answer for that state is neither sentence. `completeFetchRun`
+ * writes `source_reported_total` (trials.repository.ts) and no SELECT
+ * in this tree reads it back: `SOURCE_STATUS_SQL` in trials.service.ts
+ * is the only request-path read of `trial_fetch_runs` and it does not
+ * select the column, `TrialSourceStatus` has no field for it, so
+ * /api/trials cannot carry it and no client can hold it. A screen
+ * saying 「没有相关记录」 is therefore a screen that inferred it from
+ * `ok` and a row count, which is the inference this note exists to
+ * forbid.
+ *
+ * Where the number does surface: refresh.cli.ts prints each run's
+ * value on stdout — from the fetch result in memory, not from the
+ * column — and the column itself is readable in psql. To put it in
+ * front of a patient instead, widen the
+ * successful-run LATERAL in `SOURCE_STATUS_SQL`, add the field to
+ * `TrialSourceStatus` and `toSourceStatus`, and decode it in the
+ * client. Whatever does that has to read NULL as 「we cannot say」:
+ * migration 027's `trial_fetch_runs_ok_reported_total_check` is NOT
+ * VALID, so a successful run written before 027 still has NULL there.
  *
  * Read it for the ZERO, and only for the zero. ctgov's value is one
  * query's `totalCount`; chinadrugtrials' is the sum of 共 N 条记录 over
@@ -94,9 +114,8 @@ export interface RefreshSourceSuccess {
   /**
    * What the SOURCE said matched. `0` here alongside
    * `recordsUpserted: 0` is the registry's own 「nothing matches」, and
-   * it is the only form of 「没有相关记录」 anything is allowed to
-   * render — see TrialFetchResult.sourceReportedTotal and migration
-   * 027.
+   * it is the only fact 「没有相关记录」 may be rendered from. See the
+   * header, TrialFetchResult.sourceReportedTotal and migration 027.
    *
    * Only the 0 is a count of trials for both sources. For ctgov the
    * number is `totalCount`, the registry's own count for one query; for

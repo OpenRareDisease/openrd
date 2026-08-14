@@ -90,7 +90,9 @@ export interface TrialFetchRun {
 
 export interface TrialSourceStatus {
   source: TrialSourceKey;
-  /** How many rows of `trial_records` this source currently has. */
+  /** How many rows of `trial_records` this source currently has — the
+   *  server's own count, or, when it arrives unreadable, the number of
+   *  records that survived parsing (lib/trials-api.ts). */
   recordCount: number;
   /** Newest `fetched_at` across this source's rows, ISO 8601. */
   fetchedAt: string | null;
@@ -475,8 +477,11 @@ export interface CoverageNotice {
   text: string;
 }
 
+const lastSuccessDay = (status: TrialSourceStatus | null): string | null =>
+  formatInstantAsDay(status?.lastSuccessAt ?? null);
+
 const lastSuccessClause = (status: TrialSourceStatus | null): string => {
-  const day = formatInstantAsDay(status?.lastSuccessAt ?? null);
+  const day = lastSuccessDay(status);
   return day ? `上次成功抓取：${day}` : '到目前为止还没有成功抓取过';
 };
 
@@ -576,9 +581,33 @@ export const describeCtgovStaleness = (snapshot: TrialsSnapshot): CoverageNotice
 /**
  * When there is nothing to show at all, why.
  *
- * Never「暂无试验」. An empty list produced by a failed fetch and an
- * empty list produced by an empty registry are different facts, and
- * only one of them is about FSHD.
+ * Never「暂无试验」, and — the harder half — never「注册库没有相关记
+ * 录」either. This function has four states and NONE of them is a
+ * statement about what FSHD research exists:
+ *
+ *  - no run on record → we have not looked yet.
+ *  - the last run failed, or has not come back → we could not read the
+ *    registry, plus the day we last could.
+ *  - the run succeeded and some source still reports a non-zero
+ *    `recordCount` → none of those records reached the screen:
+ *    `asTrialRecord` dropped every element, or `trials` came back
+ *    missing or not an array (lib/trials-api.ts).
+ *  - the run succeeded and no source reports any row → still ours,
+ *    though we cannot say where. ctgov's fetcher refuses a
+ *    `totalCount` of 0 outright (a zero from that endpoint means our
+ *    query stopped meaning FSHD, not that the archive emptied — see
+ *    apps/api ctgov.fetcher.ts), and the refresh writes the rows and
+ *    flips `ok = TRUE` inside one transaction, so a ctgov run that
+ *    reached `ok` did write at least one row. Reading none of them
+ *    back is a break somewhere on our side — hence 「平台」 for this
+ *    one and 「本应用」 for the branch above.
+ *
+ * The registry's own zero would be a different sentence, and the only
+ * thing that could carry it is `source_reported_total` (migration
+ * 027), which is server-side: no field of `TrialSourceStatus` above
+ * holds it. Deriving it instead from `ok` plus an empty list is
+ * exactly the inference apps/api/src/modules/trials/refresh.ts
+ * forbids, and it is the sentence a patient would act on.
  */
 export const describeEmptyList = (snapshot: TrialsSnapshot): string => {
   const status = sourceStatusOf(snapshot, 'ctgov');
@@ -589,5 +618,12 @@ export const describeEmptyList = (snapshot: TrialsSnapshot): string => {
   if (!lastRun.ok) {
     return `注册库这次没有取到（${lastSuccessClause(status)}）。请稍后再打开，或直接到 clinicaltrials.gov 上查询。`;
   }
-  return '最近一次抓取成功了，但注册库这次没有返回任何 FSHD 相关的记录。请到 clinicaltrials.gov 上再确认一次。';
+  if (snapshot.sources.some((entry) => entry.recordCount > 0)) {
+    return '这一次没有一条记录能完整读出来 —— 这是本应用这边的问题，不是注册库上没有 FSHD 试验。请稍后重试，或直接到 clinicaltrials.gov 上查询。';
+  }
+  // Not `lastSuccessClause`: its no-success wording (「到目前为止还没有
+  // 成功抓取过」) would end up inside 「抓取本身报的是成功（…）」.
+  const successDay = lastSuccessDay(status);
+  const when = successDay ? `（上次成功抓取：${successDay}）` : '';
+  return `抓取本身报的是成功${when}，但这里一条记录都没有 —— 这是平台这边的问题，不是注册库上没有 FSHD 试验。请直接到 clinicaltrials.gov 上查询。`;
 };

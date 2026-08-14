@@ -334,14 +334,20 @@ const AdminPatientRecordScreen = () => {
   useEffect(load, [load]);
 
   const originByPath = useMemo(() => {
+    if (!record?.fieldOrigins) return null;
     const map = new Map<string, AdminFieldOrigin>();
-    for (const entry of record?.fieldOrigins ?? []) map.set(entry.path, entry.origin);
+    for (const entry of record.fieldOrigins) map.set(entry.path, entry.origin);
     return map;
   }, [record]);
 
-  /** Absence is the patient — see baseline-provenance.ts. */
+  /** An absent ENTRY is the patient — see baseline-provenance.ts. An
+   *  absent LIST is not: a build that does not send the section tells
+   *  us nothing about who typed these values, and 「本人填写」 is the
+   *  one answer we may not guess. */
   const originFor = (path: string): AdminFieldOrigin =>
-    originByPath.get(path) ?? { state: 'patient' };
+    originByPath === null
+      ? { state: 'unreadable', detail: '服务端这一版没有返回字段来源' }
+      : (originByPath.get(path) ?? { state: 'patient' });
 
   const changedPaths = useMemo(() => {
     if (!record) return [];
@@ -398,6 +404,20 @@ const AdminPatientRecordScreen = () => {
       edits[field.path] = raw;
     }
 
+    // The version these boxes were filled from. It rides along as
+    // If-Match so the server can refuse a save built on a copy the
+    // patient has changed since — this payload is the WHOLE baseline,
+    // so without that check their newer answer would be written back to
+    // the value this page loaded and stamped 管理员代填. Absent means
+    // this page cannot name what it is overwriting; the server refuses
+    // an unversioned PUT too, so refusing here just says why in words
+    // an operator can act on.
+    const expectedUpdatedAt = record.identity?.updatedAt ?? null;
+    if (!expectedUpdatedAt) {
+      setSaveError('这一页没有拿到这份档案的版本号，服务端会拒绝这次保存。请刷新这一页再改一次。');
+      return;
+    }
+
     const labels = EDITABLE_FIELDS.filter((field) => changedPaths.includes(field.path)).map(
       (field) => field.label,
     );
@@ -429,7 +449,11 @@ const AdminPatientRecordScreen = () => {
     setSaving(true);
     setSaveError(null);
     try {
-      await updateAdminPatientBaseline(userId, buildAdminBaselineWrite(record.baseline, edits));
+      await updateAdminPatientBaseline(
+        userId,
+        buildAdminBaselineWrite(record.baseline, edits),
+        expectedUpdatedAt,
+      );
       // Re-read rather than patching local state: the markers and the
       // stored values on screen after a save must be the server's, not
       // this screen's guess about what the server did with them.
@@ -514,9 +538,10 @@ const AdminPatientRecordScreen = () => {
    * THE EDIT FORM MUST NOT OPEN ON IT. `baselineIsStored` is `true` on
    * that branch (correctly — a null baseline IS the stored column), so
    * on that flag alone every box and the 保存 button render, and the
-   * save comes back 409 from `AdminController.updateBaseline`
-   * (admin.controller.ts:277-300): 「这个账号注册后还没有建过健康档案，
-   * 后台不能替他建。请让患者本人在 App 里先保存一次基线」. That sentence
+   * save comes back 409 from `AdminController.updatePatientBaseline`
+   * (its `if (!stored)` branch in admin.controller.ts): 「这个账号注册后
+   * 还没有建过健康档案，后台不能替他建。请让患者本人在 App 里先保存一次
+   * 基线」. That sentence
    * is true, and it is still the wrong place to meet it — the screen
    * already says 「这个账号注册后没有建过档案」 two blocks above, so the
    * form would be offering an edit the same screen has said cannot be
@@ -531,9 +556,10 @@ const AdminPatientRecordScreen = () => {
    *
    * `identity`, NOT `baseline`, is the flag. `getPatientRecord` builds
    * `identity` from the profile row and sends `identity: null` on
-   * exactly the branch where there is none (admin.controller.ts:150-160,
-   * :170-178), so `identity !== null` is the same condition the 409
-   * tests. `baseline !== null` is a different question: a patient who
+   * exactly the branch where there is none — both endpoints key off the
+   * same `this.deps.admin.getStoredProfile(userId)` returning null, so
+   * `identity !== null` is the same condition the 409 tests.
+   * `baseline !== null` is a different question: a patient who
    * opened onboarding and never saved a baseline HAS a row, and an
    * administrator transcribing that person's first values off a phone
    * call is the case this screen exists for.

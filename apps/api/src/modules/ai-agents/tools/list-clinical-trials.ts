@@ -9,12 +9,12 @@
  *
  * §A5 draws two lines the model must not cross: it must not judge
  * whether a patient is eligible, and it must not state what a trial
- * found. Those are not asks in a prompt here. `readTrialSnapshot` never
- * selects `trial_records.raw`, so the eligibility text and the results
- * section that ClinicalTrials.gov publishes are not in the retriever's
- * output, not in this tool's chunks, and not in the prompt — there is
- * no wording the model could choose that would surface them, because
- * the process never read them. The `display` text below still tells the
+ * found. Those are not asks in a prompt here. The eligibility text and
+ * the results section that ClinicalTrials.gov publishes are not in the
+ * retriever's output, not in this tool's chunks, and not in the prompt
+ * — there is no wording the model could choose that would surface
+ * them. What keeps them out is in the retriever's header
+ * (retrievers/clinical-trials.ts). The `display` text below still tells the
  * model both rules, for the case it tries to answer them from its own
  * priors instead; that half is a request, and it is labelled as one.
  *
@@ -215,11 +215,10 @@ const describeSource = (status: TrialSourceStatus): string => {
   }
 };
 
-/** The §A5 boundaries, restated to the model every call. The two about
- *  eligibility and results are also structurally impossible — the
- *  process never loads either (see the file header) — so those two
- *  lines exist only to stop the model answering from its own memory.
- *  The other three are requests, and are the only thing holding them. */
+/** The §A5 boundaries, restated to the model every call. Neither the
+ *  eligibility text nor the results section is in the chunks (see the
+ *  file header), so those two lines exist only to stop the model
+ *  answering from its own memory. The other three are requests. */
 const BOUNDARY_RULES = [
   '硬性要求：',
   '- 只能陈述上面列出的事实：登记号、状态、期别、申办方、国家、登记库最后更新日期、链接。',

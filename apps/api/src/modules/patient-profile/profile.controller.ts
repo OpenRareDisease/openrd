@@ -710,14 +710,19 @@ export class PatientProfileController {
    * read-time merge — see `getStoredBaselinePayload` for why.
    *
    * The read and the write are two statements rather than one
-   * transaction, exactly as on the administrator's side. Two saves for
-   * the same patient racing can only lose a marker (the later write
-   * diffs against a payload that predates the earlier one), never
-   * invent one; a lost marker degrades a value to 「本人填写」, which is
-   * the wrong direction, so this is a real if small hazard and it is
-   * written down rather than implied. Closing it needs
-   * `upsertBaseline` to do the merge inside its own UPDATE, which
-   * would change the admin path too and belongs with that lane.
+   * transaction. On THIS side two saves racing can only lose a marker
+   * (the later write diffs against a payload that predates the earlier
+   * one), never invent one; a lost marker degrades a value to
+   * 「本人填写」, which is the wrong direction, so this is a real if
+   * small hazard and it is written down rather than implied. Closing it
+   * needs `upsertBaseline` to do the merge inside its own UPDATE.
+   *
+   * The administrator's side is NOT symmetric and is not held by the
+   * diff's direction: its body is the whole baseline as the form
+   * loaded it, so a field the patient changed while that page sat open
+   * would read as changed by the administrator and gain a marker
+   * nobody earned. What holds it there is the `If-Match` precondition
+   * on `AdminController.updatePatientBaseline`, not this argument.
    */
   updateMyBaseline = async (req: AuthenticatedRequest, res: Response) => {
     const payload = baselineProfileSchema.parse(req.body);

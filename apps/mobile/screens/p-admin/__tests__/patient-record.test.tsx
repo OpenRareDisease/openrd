@@ -230,6 +230,25 @@ describe('provenance is rendered, not flattened', () => {
     expect(fieldRow).toBe('姓名（来源不明）');
     expect(textContent(tree.root)).toContain('它不等于「本人填写」');
   });
+
+  it('chips 来源不明 on every field when the server sent no fieldOrigins at all', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    const body = recordBody() as Record<string, unknown>;
+    // A back-office bundle talking to a build that does not send the
+    // section — the same skew lib/clinical-passport-pdf.ts handles for
+    // the patient's own passport. An absent LIST is not an empty one:
+    // 「no entry for this path」 means the patient typed it only when
+    // the list itself arrived.
+    delete body.fieldOrigins;
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(body));
+    const tree = await render();
+    const labels = tree.root
+      .findAll((node) => typeof node.props?.accessibilityLabel === 'string')
+      .map((node) => String(node.props.accessibilityLabel));
+    expect(labels).toContain('姓名（来源不明）');
+    expect(labels.some((label) => label.includes('（本人填写）'))).toBe(false);
+    expect(textContent(tree.root)).toContain('服务端这一版没有返回字段来源');
+  });
 });
 
 describe('saving', () => {
@@ -242,10 +261,17 @@ describe('saving', () => {
     await pressByLabel(tree, '保存 1 处改动');
 
     expect(mockConfirm).toHaveBeenCalled();
-    expect(mockUpdateBaseline).toHaveBeenCalledWith(USER_ID, {
-      foundation: { fullName: '张三', birthYear: 1988 },
-      diseaseBackground: { d4z4: '3/22' },
-    });
+    // The third argument is the version these boxes were filled from.
+    // It becomes If-Match, and it is what lets the server refuse a
+    // whole-baseline payload built before the patient's own edit.
+    expect(mockUpdateBaseline).toHaveBeenCalledWith(
+      USER_ID,
+      {
+        foundation: { fullName: '张三', birthYear: 1988 },
+        diseaseBackground: { d4z4: '3/22' },
+      },
+      '2026-08-01T02:00:00.000Z',
+    );
     // Re-read after the write: the markers on screen have to be the
     // server's, not this screen's guess about what it did.
     expect(mockGetRecord).toHaveBeenCalledTimes(2);
@@ -347,9 +373,10 @@ describe('an account that never opened the baseline form', () => {
   });
 
   it('says why, instead of leaving the server to explain it wrongly', async () => {
-    // `AdminController.updateBaseline` now answers this account with its
-    // own 409 before `upsertBaseline` is reached — 「这个账号注册后还没有
-    // 建过健康档案，后台不能替他建」 (admin.controller.ts:299). The gate
+    // `AdminController.updatePatientBaseline` now answers this account
+    // with its own 409 before `upsertBaseline` is reached — 「这个账号注册
+    // 后还没有建过健康档案，后台不能替他建」, thrown from that method's
+    // `if (!stored)` branch in admin.controller.ts. The gate
     // here is what keeps the operator from meeting it at all. Reaching
     // `ensureProfileForUser`'s 404「Patient profile not found」 from this
     // screen now means the profile row disappeared mid-edit, and

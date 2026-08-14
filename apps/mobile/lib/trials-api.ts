@@ -66,8 +66,7 @@ import {
  *    refuse to draw the list. An undated cache presented as current is
  *    the one failure this feature cannot ship with.
  *  - `recordCount` that is not a number becomes the number of records
- *    actually received for that source — not 0. The screen never says
- *    「没有国内试验」off a count it did not read.
+ *    actually received for that source.
  *  - A run whose `ok` is not a boolean is treated as NOT ok. The
  *    cautious reading of an unreadable run is the one that warns.
  */

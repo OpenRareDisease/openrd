@@ -280,6 +280,17 @@ export class AdminController {
    * would mean「patient cleared a field」and「admin cleared a field」
    * take different paths through the provenance diff, and only one of
    * them would be tested.
+   *
+   * 4. AND BECAUSE IT REPLACES THE WHOLE BASELINE, THE BODY HAS TO BE
+   *    BUILT ON THE VERSION THIS REQUEST IS DIFFED AGAINST. `If-Match`
+   *    carries `identity.updatedAt` from the record read that filled
+   *    the form, and a mismatch is refused below. Without it the diff
+   *    is fresh-stored against a page-load-old body: a field the
+   *    PATIENT changed while the form sat open reads as changed by the
+   *    administrator, so their newer answer is written back to the
+   *    older value AND stamped 管理员代填 under an administrator who
+   *    never opened that box. That is not a race between two requests
+   *    — the window is however long the page stayed open.
    */
   updatePatientBaseline = async (req: AuthenticatedRequest, res: Response) => {
     const { userId } = adminUserIdParamsSchema.parse(req.params);
@@ -303,13 +314,11 @@ export class AdminController {
       // 409 rather than 404 so the client cannot fold it into the
       // 「查无此人」 case, and Chinese because THE SENTENCE IS THE WHOLE
       // ANSWER: `describeAdminError`'s 409 branch (apps/mobile/screens/
-      // p-admin/common.tsx) prints the server's message and adds nothing
-      // to it, because the four 409s this router throws — this one, the
-      // export whose document lost its markers, the cohort over the cap,
-      // and the cohort that moved under a confirmation — have four
-      // different remedies and only the last one is fixed by trying
-      // again. So each of the four has to say, by itself, what the
-      // operator should do next.
+      // p-admin/common.tsx) prints the server's message and adds
+      // nothing to it. The 409s this router throws have different
+      // remedies — some want a reload, some a different tool, some
+      // nothing an operator can do — so each has to say, by itself,
+      // what to do next.
       //
       // The back office does NOT create the row. A `patient_profiles`
       // row is what the patient's own onboarding writes (`createProfile`
@@ -319,6 +328,34 @@ export class AdminController {
       // nobody has made.
       throw new AppError(
         '这个账号注册后还没有建过健康档案，后台不能替他建。请让患者本人在 App 里先保存一次基线，或者确认这个用户 ID 是不是拿错了。',
+        409,
+      );
+    }
+
+    // THE FORM MUST HAVE BEEN BUILT ON WHAT IS STORED NOW. `If-Match`
+    // is `identity.updatedAt` from the record read that filled it. The
+    // token rides in the header rather than the body because
+    // `baselineProfileSchema` is a plain Zod object and would strip an
+    // extra key silently — the same stripping this endpoint relies on
+    // for `fieldProvenance`.
+    //
+    // Absent and mismatched are both refused, and they are refused with
+    // DIFFERENT sentences. They used to share one, which said the record
+    // had been edited — true of a mismatch, and not something an absent
+    // header shows at all. The operator would go looking for an edit
+    // that never happened.
+    const expectedUpdatedAt = req.header('if-match');
+    if (expectedUpdatedAt === undefined) {
+      throw new AppError(
+        '这一页没有带上它打开时的档案版本，所以后台没法确认你看到的还是不是现在存的。请刷新这一页再试；如果刷新之后还是这样，是这一版后台的问题，别绕过去直接改。',
+        409,
+      );
+    }
+    if (expectedUpdatedAt !== stored.updatedAt) {
+      // Says the version moved, not which fields moved: `updated_at` is
+      // bumped by writers that touch no baseline field at all.
+      throw new AppError(
+        '现在存的这份档案，已经不是你打开这一页时的那一版了。请刷新这一页，看清现在存的是什么，再决定要不要改。',
         409,
       );
     }

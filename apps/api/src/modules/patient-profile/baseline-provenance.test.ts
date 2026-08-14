@@ -174,9 +174,12 @@ describe('applyAdminBaselineWrite', () => {
 
     expect(thrown).toBeInstanceOf(AppError);
     expect((thrown as AppError).statusCode).toBe(400);
-    expect((thrown as AppError).details).toEqual({
-      fields: ['currentChallenges.pain', 'currentStatus.footDrop'],
-    });
+    // The message is the only thing that reaches the operator — the
+    // error handler's CLIENT_SAFE_DETAIL_KEYS drops any `details`
+    // payload this throw could attach — so both offending fields have
+    // to be in it.
+    expect((thrown as AppError).message).toContain('currentChallenges.pain');
+    expect((thrown as AppError).message).toContain('currentStatus.footDrop');
   });
 
   it('lets an admin clear a field they may write, and drops its marker', () => {

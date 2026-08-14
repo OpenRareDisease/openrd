@@ -78,10 +78,12 @@ describe('readTrialSnapshot', () => {
   });
 
   it('never selects trial_records.raw', () => {
-    // The §A5 boundary is this SELECT list and nothing else: `raw` holds
-    // ClinicalTrials.gov's eligibilityCriteria and resultsSection, and
-    // the tool that feeds the model cannot disclose what the process
-    // never loaded. See list-clinical-trials.ts.
+    // `raw` is the fetcher's pinned-field object, not the full study —
+    // ClinicalTrials.gov's eligibilityCriteria and resultsSection are
+    // never requested, so they are in no row (see ctgov.fetcher.ts's
+    // header). This SELECT list is the second layer of the §A5
+    // boundary: it keeps the fields that ARE in `raw` out of the
+    // prompt, and it holds even if the pinned field list grows.
     const { pool, queries } = clientWith({});
     return readTrialSnapshot(pool).then(() => {
       const trialsSql = queries.find((q) => q.includes('FROM trial_records\n')) as string;

@@ -172,7 +172,7 @@ describe('provenance: an entry we cannot read is never the patient', () => {
       fieldOrigins: [{ origin: { state: 'admin_entered', adminUserId: 'a1', at: 'x' } }],
     });
     expect(record.fieldOrigins).toHaveLength(1);
-    expect(record.fieldOrigins[0].origin.state).toBe('admin_entered');
+    expect(record.fieldOrigins?.[0].origin.state).toBe('admin_entered');
   });
 });
 
@@ -189,6 +189,15 @@ describe('「服务端没返回这一节」 and 「这个患者没有」 stay di
     const record = readAdminPatientRecord({ ...base, documents: [], falls: [] });
     expect(record.documents).toEqual([]);
     expect(record.falls).toEqual([]);
+  });
+
+  it('holds for fieldOrigins too — an omitted list is null, not 「没有标记」', () => {
+    // This is the section where the distinction picks a WORD: with `[]`
+    // every unlisted path resolves to 「本人填写」, so a build that does
+    // not send the list would tell the operator the patient typed
+    // values an administrator typed.
+    expect(readAdminPatientRecord(base).fieldOrigins).toBeNull();
+    expect(readAdminPatientRecord({ ...base, fieldOrigins: [] }).fieldOrigins).toEqual([]);
   });
 
   it('leaves a fall with no 是否受伤 answer as null, not 没受伤', () => {
@@ -291,12 +300,23 @@ describe('the wire calls', () => {
     expect(result.items[0].maskedPhone).toBe('139****0001');
   });
 
-  it('PUTs the baseline to the user-id-keyed path', async () => {
+  it('PUTs the baseline to the user-id-keyed path, with the version it was built on', async () => {
     apiRequest.mockResolvedValue({});
-    await updateAdminPatientBaseline('11111111-1111-4111-8111-111111111111', { notes: 'x' });
+    await updateAdminPatientBaseline(
+      '11111111-1111-4111-8111-111111111111',
+      { notes: 'x' },
+      '2026-08-01T02:00:00.000Z',
+    );
+    // If-Match, not a body key: the server parses the body with a plain
+    // Zod object, which would strip an unknown field and leave the
+    // comparison reading `undefined` forever.
     expect(apiRequest).toHaveBeenCalledWith(
       '/admin/patients/11111111-1111-4111-8111-111111111111/baseline',
-      { method: 'PUT', body: JSON.stringify({ notes: 'x' }) },
+      {
+        method: 'PUT',
+        headers: { 'If-Match': '2026-08-01T02:00:00.000Z' },
+        body: JSON.stringify({ notes: 'x' }),
+      },
     );
   });
 

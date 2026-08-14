@@ -4,13 +4,12 @@ import { CDT_KEYWORDS } from './chinadrugtrials.fetcher.js';
 import type { RefreshSourceOutcome } from './refresh.js';
 
 /**
- * What cron mails an operator.
+ * What the refresh job prints.
  *
- * This file exists because the CLI's two lines ARE the ops interface:
- * nothing else tells the person who gets the mail whether the domestic
- * scrape came back with the registry's own zero or with nothing at all.
- * A sentence with no test is a sentence that drifts, and this one drifts
- * into a claim about what a government registry said.
+ * This file exists because those two lines are what an operator reads
+ * to tell the domestic registry's own zero from a scrape that came back
+ * with nothing. A sentence with no test is a sentence that drifts, and
+ * this one drifts into a claim about what a government registry said.
  *
  * Everything below the process boundary is stubbed — `refreshTrials`,
  * `pg.Client`, the env and the logger — because none of it is what is

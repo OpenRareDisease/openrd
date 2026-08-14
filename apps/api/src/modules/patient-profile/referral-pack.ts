@@ -2,6 +2,7 @@ import {
   buildClinicalPassportSummary,
   type ClinicalPassportSummaryDTO,
   type PassportDiagnosisConfirmation,
+  type PassportFieldOriginDTO,
 } from './profile.passport.js';
 import type { PatientFollowupEventDTO, PatientProfileDTO } from './profile.service.js';
 
@@ -29,12 +30,14 @@ import type { PatientFollowupEventDTO, PatientProfileDTO } from './profile.servi
  *
  * WHAT THIS FILE IS NOT
  * ---------------------
- * It is not a medical record and it does not claim to be one. Every
- * value in it was either typed by the patient or read by an OCR
- * pipeline out of a photograph of a report. The header the markdown
- * prints says exactly that, and it is not optional decoration: a
- * well-typeset page handed to a busy clinician is believed at the
- * weight of its typesetting.
+ * It is not a medical record and it does not claim to be one. Nothing
+ * in it was verified by anyone: a value here was typed by the patient,
+ * read by an OCR pipeline out of a photograph of a report, or — since
+ * `baseline-provenance.ts` — typed by one of our own administrators on
+ * the patient's behalf, which the patient may never have seen. The
+ * header the markdown prints names all three, and it is not optional
+ * decoration: a well-typeset page handed to a busy clinician is
+ * believed at the weight of its typesetting.
  *
  * THREE STATES, NOT TWO — EVERYWHERE
  * ----------------------------------
@@ -368,23 +371,73 @@ const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
 /* Diagnosis                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One line per member of `PassportDiagnosisConfirmation`, and a
+ * `switch` rather than a ternary chain on purpose.
+ *
+ * This used to be a two-test ternary written when the union had three
+ * members. When `admin_entered` was added to it, this file was not
+ * updated and the new state fell into the last arm: the pack told the
+ * neurologist 「本平台尚无任何诊断依据记录」 four lines above a 诊断日期
+ * one of our administrators had typed.
+ *
+ * `admin_entered` also covers a marker that exists and cannot be
+ * parsed, and this function is handed only `confirmation` — so the
+ * line it returns says 「不是患者本人填写」 and does not name whoever did
+ * type the value. Who and when is per field, in the 字段来源 list at
+ * the end of 一、诊断依据.
+ *
+ * The wording is longer than the passport's because this reader can
+ * act on the difference: an unconfirmed patient in front of a 协作网
+ * neurologist is a patient who may still be able to get confirmed.
+ */
+const buildDiagnosisStatement = (
+  confirmation: PassportDiagnosisConfirmation,
+  repeats: string | null,
+): string => {
+  switch (confirmation) {
+    case 'genetic':
+      return repeats
+        ? `面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 ${repeats}`
+        : '面肩肱型肌营养不良症（FSHD），基因确诊';
+    case 'self_reported':
+      return '面肩肱型肌营养不良症（FSHD）—— 本人填报，本平台未收到基因报告，请勿按已确诊处理';
+    case 'admin_entered':
+      return '面肩肱型肌营养不良症（FSHD）—— 不是患者本人填写，患者可能未核对过，本平台未收到基因报告，请勿按已确诊处理';
+    case 'none':
+      return '本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述与自测，不构成诊断';
+    default: {
+      const _never: never = confirmation;
+      return _never;
+    }
+  }
+};
+
+/** A `switch` for the same reason `buildDiagnosisStatement` has one: a
+ *  third state added to `PassportFieldOriginDTO` has to fail the build
+ *  rather than print 「来源记录读不出来」 about itself. */
+const formatFieldOriginLine = (origin: PassportFieldOriginDTO): string => {
+  const label = escapeMarkdown(origin.labelZh);
+  switch (origin.state) {
+    case 'admin_entered':
+      return `- ${label}：本平台管理员于 ${origin.at ?? '未记录时间'} 代为录入（管理员账号 ${
+        origin.adminUserId ?? '未记录'
+      }）`;
+    case 'unreadable':
+      return `- ${label}：来源记录读不出来（${escapeMarkdown(
+        origin.detail ?? '原因未记录',
+      )}），只能确定不是本人填写`;
+    default: {
+      const _never: never = origin.state;
+      return _never;
+    }
+  }
+};
+
 const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisDTO => {
   const { diagnosis } = summary;
   const repeats = hasText(diagnosis.d4z4Repeats) ? diagnosis.d4z4Repeats : null;
-
-  // Same three states, same refusal to flatten them, as the anesthesia
-  // card — see PassportDiagnosisConfirmation. The wording here is longer
-  // because this reader can act on the difference: an unconfirmed
-  // patient in front of a 协作网 neurologist is a patient who may still
-  // be able to get confirmed.
-  const statement =
-    diagnosis.confirmation === 'genetic'
-      ? repeats
-        ? `面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 ${repeats}`
-        : '面肩肱型肌营养不良症（FSHD），基因确诊'
-      : diagnosis.confirmation === 'self_reported'
-        ? '面肩肱型肌营养不良症（FSHD）—— 本人填报，本平台未收到基因报告，请勿按已确诊处理'
-        : '本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述与自测，不构成诊断';
+  const statement = buildDiagnosisStatement(diagnosis.confirmation, repeats);
 
   return {
     confirmation: diagnosis.confirmation,
@@ -689,6 +742,41 @@ export const REFERRAL_QUESTION_PROMPTS: readonly ReferralQuestionPromptDTO[] = [
   },
 ];
 
+/**
+ * The hint under 「我这个诊断确定吗？」, which is read by the PATIENT.
+ *
+ * `genetic` is excluded from the parameter rather than given a branch:
+ * the question is not asked at all for a confirmed patient, and a
+ * string nobody can reach is a string nobody keeps true. The `never`
+ * default still fails the build on a fifth confirmation state — this
+ * hint had the same hole as the 结论 line above, one `=== 'self_reported'`
+ * test deciding between three possible states.
+ */
+const buildConfirmDiagnosisHint = (
+  confirmation: Exclude<PassportDiagnosisConfirmation, 'genetic'>,
+): string => {
+  switch (confirmation) {
+    case 'self_reported':
+      return '本平台没有收到你的基因报告，所以本资料把诊断标为「本人填报」。如果你其实做过，把报告带上或上传，这一行就会改。';
+    // Telling this reader 「本平台没有任何诊断依据记录」 would hide the
+    // very lines the neurologist is reading on the same sheet.
+    //
+    // It points at the 「这些字段不是本人填写的」 list rather than naming
+    // a field or a person: the state proves only that 确诊年份 is not
+    // this patient's own entry. That list is non-empty whenever this
+    // hint is shown — the state is derived from an entry in the same
+    // provenance block the list prints.
+    case 'admin_entered':
+      return '本资料第一节里有诊断信息不是你自己填的（具体哪几项，列在第一节末尾），本平台也没有收到你的基因报告。你可能没见过那几行字，医生却会看到 —— 当面核对一遍，不对的地方现在就说；做过基因检测的话，把报告带上或上传。';
+    case 'none':
+      return '本平台没有任何诊断依据记录。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
+    default: {
+      const _never: never = confirmation;
+      return _never;
+    }
+  }
+};
+
 const buildQuestions = (
   diagnosis: ReferralDiagnosisDTO,
   functionTests: ReferralFunctionTestSeriesDTO[],
@@ -700,14 +788,12 @@ const buildQuestions = (
   // neurologist is the one situation where the ten-year odyssey has a
   // short way out, and it is the question people are most likely to
   // assume has already been settled.
-  if (diagnosis.confirmation !== 'genetic') {
+  const { confirmation } = diagnosis;
+  if (confirmation !== 'genetic') {
     questions.push({
       id: 'confirm-diagnosis',
       prompt: '我这个诊断确定吗？要不要做基因检测？在哪做、大概多少钱、能不能报销？',
-      hint:
-        diagnosis.confirmation === 'self_reported'
-          ? '本平台没有收到你的基因报告，所以本资料把诊断标为「本人填报」。如果你其实做过，把报告带上或上传，这一行就会改。'
-          : '本平台没有任何诊断依据记录。这一问放在最前面，是因为后面所有问题的答案都取决于它。',
+      hint: buildConfirmDiagnosisHint(confirmation),
       source: '本页自拟的提问，不是检测建议',
     });
   }
@@ -732,13 +818,21 @@ const buildQuestions = (
 /**
  * The paragraph at the top of the printed page.
  *
- * It is first, and it is not collapsible, because everything after it
- * is patient-supplied and a clinician who reads the tables without
- * reading this will over-trust them. This app has no way to verify a
- * single number below it.
+ * It is first, and it is not collapsible, because a clinician who
+ * reads the tables without reading it will over-trust them: this app
+ * has no way to verify a single number below it.
+ *
+ * It used to say the contents were the patient's uploads and the
+ * patient's own entries, full stop. That stopped being true when
+ * `baseline-provenance.ts` let an administrator type into a patient's
+ * baseline, so the note now names that third source and points at the
+ * 「这些字段不是本人填写的」 list, which `buildReferralPack` emits at the
+ * end of 一、诊断依据 whenever `summary.fieldOrigins` is non-empty. If
+ * that list is ever dropped from the markdown, this sentence has to
+ * lose the clause with it.
  */
 export const REFERRAL_PROVENANCE_NOTE =
-  '本资料由患者本人在自助管理平台上生成，内容来自患者上传的报告与自行填写的记录，未经医疗机构核对，不是病历，也不构成诊断。凡写「本平台未能读出」或「本平台没有记录」的条目，都只说明本平台的记录状态，不能推断该项检查没有做过。';
+  '本资料由患者本人在自助管理平台上生成，内容来自患者上传的报告、患者自行填写的记录，以及本平台管理员代为录入的字段（若有，逐条列在第一节末尾），未经医疗机构核对，不是病历，也不构成诊断。凡写「本平台未能读出」或「本平台没有记录」的条目，都只说明本平台的记录状态，不能推断该项检查没有做过。';
 
 const questionBlankLine = '　我的情况 / 想问的：______________________________________';
 
@@ -776,6 +870,15 @@ export const buildReferralPack = (
     `- 诊断日期：${escapeMarkdown(diagnosis.diagnosisDate)}`,
     `- 证据摘要：${escapeMarkdown(diagnosis.geneEvidence)}`,
     `- 最近一份诊断相关报告：${formatDate(diagnosis.latestSourceDate) ?? '本平台无记录'}`,
+    // The 字段来源 list the passport, the share page, the PDF and all
+    // three portable envelopes already carry (§B3), on the one document
+    // that is physically handed across a desk. Emitted only when
+    // something is marked: a standing heading over 「无」 teaches the
+    // reader to skip the heading, and the note at the top of the page
+    // says 「若有」 for exactly that reason.
+    ...(summary.fieldOrigins.length > 0
+      ? ['', '### 这些字段不是本人填写的', '', ...summary.fieldOrigins.map(formatFieldOriginLine)]
+      : []),
     '',
     '## 二、功能测试（按时间）',
     '',

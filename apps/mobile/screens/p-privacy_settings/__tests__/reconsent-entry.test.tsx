@@ -5,9 +5,11 @@
  * the session. Without a way back, a patient who wanted to think about
  * it would have to close and reopen the app to be asked again — and the
  * ledger this screen already prints is exactly where they would look.
- * This row reads the same `outstanding` the gate reads, off the fetch
- * this screen was already making, so the two cannot disagree about what
- * is owed.
+ * This row runs the same computation the gate runs (`buildConsentAsks`)
+ * over this screen's OWN fetch — a different read from the gate's,
+ * whose context probes once per session. The two can therefore
+ * disagree, which is why 看看改了什么 goes to a screen that re-reads the
+ * ledger on mount rather than answering from the session snapshot.
  */
 
 import React from 'react';
@@ -136,6 +138,26 @@ it('does not call a missing record a change', async () => {
   expect(screen).toContain('有条款等你确认');
   expect(screen).not.toContain('改过一处实质变更');
   expect(screen).toContain('还等你确认一次');
+});
+
+it('does not park the withdrawn sensitive-data consent in 待确认', async () => {
+  // 撤回敏感信息处理同意 lives on this same screen, and the confirm
+  // dialog promises 「需要时可以再次同意」 — at the point the data is
+  // needed, which is where SensitiveDataConsentGate asks (p-data_entry,
+  // p-falls, p-register_profile). The server reports the withdrawn
+  // document as outstanding again, so without the guard in
+  // buildConsentAsks this section would ask for it back the moment the
+  // withdrawal finished.
+  mockGetAcceptances.mockResolvedValue({
+    acceptances: [
+      { document: LEGAL_DOCUMENTS.privacyPolicy, version: '2026-08-13', acceptedAt: '2026-08-13' },
+    ],
+    current: { [LEGAL_DOCUMENTS.privacyPolicy]: '2026-08-13' },
+    outstanding: [LEGAL_DOCUMENTS.sensitiveData],
+  });
+  const screen = textContent((await render()).root);
+  expect(screen).not.toContain('有条款等你确认');
+  expect(screen).not.toContain('敏感个人信息处理单独同意》还等你确认');
 });
 
 it('says nothing when nothing is outstanding', async () => {

@@ -11,6 +11,7 @@
  * Three places have to agree and are edited at different times: the
  * document shell, the root layout's title sync, and the about screen.
  */
+import Constants from 'expo-constants';
 
 /** The product's name to a patient. NOT the repository name — the login
  *  screen used to render 「FSHD-openrd」 as its largest element. */
@@ -33,3 +34,19 @@ export const APP_LANG = 'zh-Hans-CN';
  *  file (and its react-native-web deps) to read one hex string would
  *  drag the whole design system into the HTML build. */
 export const APP_THEME_COLOR = '#FBF8F3';
+
+/**
+ * The build's version, read from the Expo config rather than typed in.
+ *
+ * Lives here, next to APP_NAME, because both are answers to «what is
+ * this thing called and which one is it» and both were previously
+ * typed by hand into individual screens. 设置 said 「FSHD-openrd
+ * v1.0.0」 while app.json said 2.5.0 — one and a half years of releases
+ * apart, on the screen a patient is told to read back when reporting a
+ * problem. A version string that is wrong is worse than absent: it
+ * sends the person reading it to the wrong build.
+ *
+ * Returns undefined rather than a placeholder when the config is
+ * unreadable. A version we cannot read is not one we may guess at.
+ */
+export const readAppVersion = (): string | undefined => Constants.expoConfig?.version ?? undefined;

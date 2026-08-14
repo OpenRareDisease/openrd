@@ -157,13 +157,30 @@ export const originNoteZh = (source: NormalisedSource, fieldPath: string): strin
     : `；此项的来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是患者本人填写`;
 };
 
-/** `originNoteZh` folded onto a provenance string, so every call site
- *  reads the same and none of them can forget the separator. */
+/**
+ * `originNoteZh` folded onto a provenance string, so every call site
+ * reads the same and none of them can forget the separator.
+ *
+ * `whenMarkedZh` exists because concatenation alone can produce a
+ * self-contradicting sentence: a `provenanceZh` that CLAIMS THE PATIENT
+ * TYPED THE VALUE (「患者本人填写」, 「患者自述」) followed by the marker's
+ * 「不是患者本人填写」 says both things in one field, and a receiver has
+ * no way to tell which half is current. A call site whose base sentence
+ * makes that claim passes the sentence to use instead when the field
+ * carries a marker; one whose base sentence says only WHERE the value
+ * sits (「基线问卷」, 「基因报告结构化解析」) stays true either way and
+ * omits it.
+ */
 export const withOriginNote = (
   source: NormalisedSource,
   fieldPath: string,
   provenanceZh: string,
-): string => `${provenanceZh}${originNoteZh(source, fieldPath) ?? ''}`;
+  whenMarkedZh?: string,
+): string => {
+  const note = originNoteZh(source, fieldPath);
+  if (!note) return provenanceZh;
+  return `${whenMarkedZh ?? provenanceZh}${note}`;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);

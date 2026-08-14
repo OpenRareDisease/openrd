@@ -79,7 +79,7 @@ ALTER TABLE trial_fetch_runs
   ADD COLUMN IF NOT EXISTS source_reported_total INT;
 
 COMMENT ON COLUMN trial_fetch_runs.source_reported_total IS
-  'What the REGISTRY said matched our query (ctgov totalCount; chinadrugtrials the sum of 共 N 条记录 across keywords), as opposed to records_upserted, which is what we wrote. 0 on a successful run means the source itself answered 「nothing matches」 — the one thing that distinguishes 「注册库没有相关记录」 from 「我们没写进去」.';
+  'What the REGISTRY said matched our query (ctgov totalCount; chinadrugtrials the sum of 共 N 条记录 across keywords), as opposed to records_upserted, which is what we wrote. 0 on a successful run means the source itself answered 「nothing matches」. Recorded only: no query in the application selects this column, so nothing renders it (refresh.ts).';
 
 -- Non-negative: it is a count from someone else's page and the parser
 -- that reads it is a regular expression over HTML.

@@ -316,8 +316,13 @@ function AppNavigator() {
         <Stack.Screen name="p-trial_square" options={{ title: '临床试验广场页' }} />
         <Stack.Screen name="p-expert_consult" options={{ title: '专家咨询页' }} />
         <Stack.Screen name="p-privacy_settings" options={{ title: '隐私设置页' }} />
-        {/* The re-consent §9 promises. Reached by the gate above, not
-            by a link from anywhere. */}
+        {/* The re-consent §9 promises. Two ways in: the gate above,
+            which `replace`s onto it, and 「看看改了什么」 in 隐私设置,
+            which `push`es onto it for a patient who already said
+            暂不同意. The second can mount it long after
+            LegalConsentContext's one probe per session, which is why
+            the screen re-reads the ledger on mount instead of trusting
+            the ask list it is handed. */}
         <Stack.Screen name="p-legal_update" options={{ title: '隐私政策更新页' }} />
         <Stack.Screen name="p-about_us" options={{ title: '关于我们页' }} />
         <Stack.Screen name="p-clinical_passport" options={{ title: 'FSHD临床护照页' }} />

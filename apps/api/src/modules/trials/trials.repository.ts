@@ -27,11 +27,14 @@ export interface TrialsDb {
 /**
  * How much of a failure reason is kept.
  *
- * `trial_fetch_runs.error` is TEXT and this string is read by a human
- * on an ops screen. The fetchers' messages are one line by
- * construction, but a driver error carrying a query and a stack is not,
- * and neither is whatever a future source throws. Truncation is marked
- * so a reader knows they are looking at a fragment.
+ * `trial_fetch_runs.error` is TEXT and nothing SELECTs it — no route,
+ * no ops endpoint (see trials.routes.ts). The cap is here to bound an
+ * unbounded TEXT write, not to fit a screen: the fetchers' messages are
+ * one line by construction, but a driver error carrying a query and a
+ * stack is not, and neither is whatever a future source throws. The
+ * whole reason is already on the refresh job's stderr and log line
+ * (refresh.cli.ts, refresh.ts); this column is the copy someone reads
+ * out of psql later, so the truncation is marked rather than silent.
  */
 export const MAX_RUN_ERROR_CHARS = 2_000;
 
@@ -74,10 +77,13 @@ export const startFetchRun = async (db: TrialsDb, source: TrialSource): Promise<
  * that reads nothing.
  *
  * `sourceReportedTotal` is not optional and has no default. It is the
- * registry's own count (migration 027), and it is what separates 「the
- * registry says there is nothing」 from 「we wrote nothing」 — a
- * successful run that did not record it would put those two back into
- * the same row. The table refuses one anyway
+ * registry's own count (migration 027), and it is the only thing that
+ * COULD separate 「the registry says there is nothing」 from 「we wrote
+ * nothing」 — a successful run that did not record it would put those
+ * two back into the same row. Nothing selects the column back out yet,
+ * so today the separation exists in the table and not on any screen;
+ * refresh.ts's header says what would have to change. The table
+ * refuses an unrecorded one anyway
  * (trial_fetch_runs_ok_reported_total_check), which is deliberate
  * belt-and-braces: this signature is what a caller reads, the
  * constraint is what a caller cannot get around.

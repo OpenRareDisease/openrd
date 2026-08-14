@@ -95,16 +95,17 @@ export const describeValidationDetails = (data: unknown): string | null => {
  *  - 500 only for a `targetParam` that is ABSENT — a route mounted
  *    wrong, which is our fault and not the operator's.
  *  - 409 for a refusal this router makes on purpose. `grep -cE '^ +409,$'
- *    apps/api/src/modules/admin/admin.controller.ts` answers 5 on
+ *    apps/api/src/modules/admin/admin.controller.ts` answers 6 on
  *    2026-08-13, and they do NOT share a remedy: the cohort
  *    changed under a confirmation (retry), the cohort is larger than
  *    FULL_EXPORT_MAX_ROWS (use npm run db:backup), the account has no
  *    `patient_profiles` row (the patient has to save a baseline
- *    first), and — two of them — an export whose document did not
- *    carry the field's origin, one for `admin_entered` and one for
- *    `unreadable` (report it to the maintainer). Each writes its own
- *    Chinese sentence; see the branch for why this function adds
- *    nothing to them.
+ *    first), the edit form was built on a version of the record that
+ *    has since changed (reload the page, then edit again), and — two of
+ *    them — an export whose document did not carry the field's origin,
+ *    one for `admin_entered` and one for `unreadable` (report it to the
+ *    maintainer). Each writes its own Chinese sentence; see the branch
+ *    for why this function adds nothing to them.
  *  - 429 from the 10/min budget on the full export.
  *
  * 428 is not here: it is the full export's FIRST step rather than a
@@ -168,12 +169,15 @@ export const describeAdminError = (error: unknown): { title: string; message: st
     if (error.status === 409) {
       // NOTHING IS ADDED TO THE SERVER'S SENTENCE HERE, and that is the
       // whole content of this branch. It used to say 「数据在你操作期间
-      // 变了……重新来一遍即可」, which is true of exactly one of the four
-      // 409s above — the cohort that changed under a confirmation. For
-      // the other three nothing changed and retrying reproduces the
-      // same refusal forever, and for the marker refusal 「重新来一遍
-      // 即可」 contradicts the server's own 「请把这个情况报给维护者」 in
-      // the same paragraph. All four already carry a complete Chinese
+      // 变了……重新来一遍即可」, which is true of exactly one of the six
+      // 409s above — the cohort that changed under a confirmation. The
+      // stale edit form is the near miss: retrying the same PUT
+      // reproduces the refusal, because what has to happen first is a
+      // RELOAD, and the server's own sentence says so. For the other
+      // four nothing changed and retrying reproduces the refusal
+      // forever, and for the two marker refusals among them 「重新来一
+      // 遍即可」 contradicts the server's own 「请把这个情况报给维护者」
+      // in the same paragraph. All six already carry a complete Chinese
       // sentence naming what to do; the only honest generalisation
       // across them is that the server refused.
       return { title: '服务端拒绝了这次操作', message: error.message };

@@ -109,7 +109,10 @@ export interface TrialFetchResult {
    * is readable: `ok = TRUE, records_upserted = 0,
    * source_reported_total = 0` is the registry answering 「nothing
    * matches」, which is a different sentence from 「we wrote nothing」
-   * and is the only one a patient may be shown.
+   * and is the only one a patient may be shown. Nothing shows a
+   * patient either sentence today — the column has no reader on the
+   * request path, and refresh.ts's header lists what would have to
+   * change for it to get one.
    *
    * Both fetchers verify their record count against this number before
    * returning, so on this type they always agree except for the

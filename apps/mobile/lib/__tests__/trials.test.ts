@@ -457,10 +457,76 @@ describe('一条都没有时', () => {
     }
   });
 
-  it('抓取成功但注册库返回零条时，说的是注册库返回零条', () => {
-    expect(describeEmptyList(snapshot([], [sourceStatus({ recordCount: 0 })]))).toContain(
-      '没有返回任何 FSHD 相关的记录',
+  it('抓取报成功却一条都没有时，说的是平台出了问题，不替注册库回答「没有试验」', () => {
+    // `ok = TRUE` 加一份空名单，推不出「注册库没有 FSHD 试验」：
+    // ctgov 的抓取器遇到 totalCount 为 0 直接报错，写行和 ok 又在同一
+    // 个事务里，所以一次成功的抓取必定写进过记录。注册库自己报的零
+    // 只在 source_reported_total 里，那一列不上线路。
+    const text = describeEmptyList(snapshot([], [sourceStatus({ recordCount: 0 })]));
+    expect(text).toContain('平台这边的问题');
+    expect(text).toContain('不是注册库上没有 FSHD 试验');
+    expect(text).not.toContain('没有返回任何 FSHD 相关的记录');
+    expect(text).toContain('上次成功抓取：');
+  });
+
+  it('服务端还有记录、却一条都没能读出来时，认的是自己的解析问题', () => {
+    // asTrialRecord（lib/trials-api.ts）会丢掉缺 id / 标题 / 状态词或
+    // URL 不是 http(s) 的记录。服务端换了个字段名，92 条就能一条不剩
+    // 地被丢掉，而 recordCount 仍然是 92。
+    const text = describeEmptyList(snapshot([], [sourceStatus({ recordCount: 92 })]));
+    expect(text).toContain('没有一条记录能完整读出来');
+    expect(text).toContain('本应用这边的问题');
+    expect(text).not.toContain('没有返回任何 FSHD 相关的记录');
+    // 这一支也覆盖 trials 整个没回来的情形（lib/trials-api.ts 用 [] 顶
+    // 替不是数组的 body.trials），那时候并没有名单读回来。
+    expect(text).not.toContain('名单读回来了');
+  });
+
+  it('抓取报成功、上次成功时间又读不出来时，不在同一句里说自己没成功过', () => {
+    const text = describeEmptyList(
+      snapshot([], [sourceStatus({ recordCount: 0, lastSuccessAt: null })]),
     );
+    expect(text).toContain('抓取本身报的是成功');
+    expect(text).not.toContain('还没有成功抓取过');
+    expect(text).not.toContain('上次成功抓取');
+    expect(text).toContain('平台这边的问题');
+  });
+
+  it('国内那半边还有记录时也算本应用的问题，不只看 ctgov', () => {
+    const text = describeEmptyList(
+      snapshot(
+        [],
+        [
+          sourceStatus({ recordCount: 0 }),
+          sourceStatus({ source: 'chinadrugtrials', recordCount: 3 }),
+        ],
+      ),
+    );
+    expect(text).toContain('没有一条记录能完整读出来');
+  });
+
+  it('四种空名单说的是四句不同的话，没有一句在替注册库回答', () => {
+    const neverRun = describeEmptyList(snapshot([], [sourceStatus({ lastRun: null })]));
+    const failed = describeEmptyList(
+      snapshot(
+        [],
+        [
+          sourceStatus({
+            lastRun: { startedAt: '2026-08-12T02:00:00.000Z', finishedAt: null, ok: false },
+            lastSuccessAt: null,
+          }),
+        ],
+      ),
+    );
+    const nothingWritten = describeEmptyList(snapshot([], [sourceStatus({ recordCount: 0 })]));
+    const allDropped = describeEmptyList(snapshot([], [sourceStatus({ recordCount: 92 })]));
+    const sentences = [neverRun, failed, nothingWritten, allDropped];
+    expect(new Set(sentences).size).toBe(4);
+    for (const sentence of sentences) {
+      expect(sentence).not.toContain('暂无');
+      expect(sentence).not.toContain('没有返回任何 FSHD 相关的记录');
+      expect(sentence).toContain('clinicaltrials.gov');
+    }
   });
 });
 

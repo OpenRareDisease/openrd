@@ -146,9 +146,8 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
 
   const adminTypedDiagnosis = () =>
     base({
-      // The column `upsertBaseline` COALESCEs out of
-      // `foundation.diagnosisYear`, which is what puts a date on the
-      // passport at all.
+      // The column `upsertBaseline` mirrors `foundation.diagnosisYear`
+      // into, which is what puts a date on the passport at all.
       diagnosisDate: '2014-01-01',
       baseline: adminEdited(
         { foundation: { fullName: '测试' } },

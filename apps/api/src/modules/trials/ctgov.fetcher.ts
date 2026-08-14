@@ -59,8 +59,9 @@ export const CTGOV_API_URL = 'https://clinicaltrials.gov/api/v2/studies';
  */
 export const CTGOV_QUERY_COND = 'facioscapulohumeral muscular dystrophy';
 
-/** See the header. Every one of these is read below; there are no
- *  fields here 「for later」. */
+/** See the header. Eight of the nine feed a column below.
+ *  `designModule.studyType` is the exception: it is requested and it
+ *  lands in `raw`, and nothing in this repo reads it. */
 export const CTGOV_FIELDS = [
   'protocolSection.identificationModule.nctId',
   'protocolSection.identificationModule.briefTitle',
@@ -331,10 +332,19 @@ export const fetchCtgovTrials = async (deps: CtgovFetcherDeps): Promise<TrialFet
     for (const study of parsed.studies) {
       const record = _toTrialRecord(study);
       if (seenIds.has(record.sourceId)) {
-        // The upsert below sends every row in one statement, and
-        // Postgres rejects an ON CONFLICT DO UPDATE that would touch a
-        // row twice ("cannot affect row a second time"). Catching it
-        // here names the study; catching it there names nothing.
+        // The only guard against a repeated NCT; nothing downstream
+        // repeats it. replaceTrialRecords issues one single-row
+        // INSERT ... ON CONFLICT DO UPDATE per record
+        // (trials.repository.ts), so the second copy silently updates
+        // the row the first one wrote — Postgres raises "cannot affect
+        // row a second time" only for a duplicate WITHIN one multi-row
+        // statement, and we never send one. The completeness check at
+        // the bottom is not a substitute either: it counts the
+        // duplicate, so it usually reports this as a pagination
+        // mismatch naming no study, and it goes quiet altogether when
+        // the same run drops another study — the totals then balance
+        // and a real FSHD trial is missing from a list the page
+        // presents as the registry's complete answer.
         throw new Error(`ctgov: ${record.sourceId} appeared twice across pages`);
       }
       seenIds.add(record.sourceId);

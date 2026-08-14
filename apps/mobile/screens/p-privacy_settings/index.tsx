@@ -97,9 +97,14 @@ const PrivacySettingsScreen = () => {
    */
   const [acceptances, setAcceptances] = useState<LegalAcceptanceSummary | null>(null);
   const [withdrawing, setWithdrawing] = useState(false);
-  /** Documents whose text this build has revised since the version
-   *  this account accepted — the same computation the entry gate runs,
-   *  so the two surfaces cannot disagree about what is owed. */
+  /** Documents this build can ask about, off the fetch above.
+   *  `buildConsentAsks` is the same computation the entry gate runs,
+   *  but NOT the same read: the gate reads LegalConsentContext, which
+   *  probes once per session, while this is a fetch on mount and again
+   *  after a withdrawal. The two can therefore disagree about what is
+   *  owed, which is why 看看改了什么 below goes to a screen that
+   *  re-reads the ledger on mount rather than trusting the context's
+   *  list. */
   const pendingConsents = buildConsentAsks(acceptances);
 
   const loadAcceptances = useCallback(() => {
@@ -1215,19 +1220,22 @@ const PrivacySettingsScreen = () => {
             The gate in app/_layout asks on entry, and 暂不同意 defers it
             for the session; without this row the only way to reconsider
             would be to close and reopen the app. It reads the same
-            `outstanding` the gate does, off the fetch this screen was
-            already making. */}
+            `outstanding` the gate does, off this screen's own fetch —
+            see the note on `pendingConsents` for why those two reads
+            can differ. */}
         {pendingConsents.length > 0 ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>有条款等你确认</Text>
             <Text style={styles.settingDescription}>
               {pendingConsents.map((ask) => `《${ask.title}》`).join('、')}
               {/* 「改过」 is only true of a document this account did
-                  accept once. An account whose ledger holds no row for
-                  it — a registration write that never landed — is not
-                  looking at a revision, and saying so here would be a
-                  false sentence in the one place a patient checks what
-                  they agreed to. */}
+                  accept once. An account whose ledger holds no live row
+                  for it is not looking at a revision, and saying so
+                  here would be a false sentence in the one place a
+                  patient checks what they agreed to. Why the row is
+                  missing — never asked, withdrawn, a write that never
+                  landed — is not in this payload, so neither branch
+                  names a cause. */}
               {pendingConsents.every((ask) => ask.acceptedVersion)
                 ? '改过一处实质变更，按《隐私政策》第 9 条要重新征得你的同意。'
                 : '还等你确认一次。'}

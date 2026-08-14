@@ -2,6 +2,78 @@
 
 All notable release-level changes for FSHD-openrd are tracked here.
 
+## v2.6.0 - 2026-08-13
+
+Release line: the `v2.6.0` annotated tag on `master`.
+
+Two feature areas and the consent the second one obliges us to ask for.
+
+### Highlights
+
+- **The assistant can see a trial that opened this year.** It used to answer 「有没有在
+  招的试验」 out of the corpus — documents ingested at build time, right about mechanism
+  and wrong about recruitment. `trial_records` now holds 92 real FSHD studies from
+  ClinicalTrials.gov v2, refreshed by a host cron job that never touches the request
+  path, so an upstream slowdown cannot become a slow answer. Eligibility criteria are
+  **not** machine-translated — a mistranslated exclusion criterion sends a patient to a
+  site that will turn them away — and `fetched_at` is displayed rather than a snapshot
+  being quietly served as current.
+- **The domestic registry's zero is recorded as a zero.** chinadrugtrials.org.cn is wired
+  and genuinely lists no FSHD trials (202 anti-bot, then 200 with 共 0 条记录). 「我们没
+  找到」 and 「我们没能查」 are distinguishable in the data and render differently, because
+  to a patient they are not the same sentence.
+- **A back office over patient records, whose whole design is that it cannot lie about
+  who typed what.** Provenance is stored per field; absence means the patient, so no
+  existing record is retroactively relabelled. Twelve fields are admin-writable,
+  deny-by-default, and every export format carries the origin through. The clinical
+  passport prints 基因确诊 / 自述 / 管理员代填 as different things because a neurologist
+  reads them differently.
+- **Reads are audited, not just writes.** In a back office, 「谁看了谁的档案」 is the
+  event that matters. The audit row is written _before_ the handler and a failed audit
+  write is a 503 — an un-loggable read does not happen. The role cannot be self-granted
+  and is read from the database per request, so a revoke takes effect on the next call
+  rather than the next token.
+- **The re-consent §9 promised.** Adding administrator access to medical records is a
+  material change of recipients, so the policy version moved and every account is asked
+  again — a screen, not a modal, leading with what changed rather than with a version
+  number. It does not claim that refusing stops administrator access, because it does
+  not; that question is recorded for counsel rather than papered over.
+
+### Fixes
+
+- 转诊资料 printed 「本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述与自测」 over an
+  administrator-entered diagnosis, four lines above that diagnosis's own date. The
+  four-state enum is now a `switch` with an exhaustiveness guard, so a fifth state fails
+  typecheck instead of silently landing in the 「no record」 wording.
+- A patient could not erase their own 姓名 / 确诊年份 / 所在地区: `upsertBaseline`
+  COALESCEd, so present-and-null read as absent. Now gated on presence.
+- The Art. 29 单独同意 was being bundled into the app-entry re-consent gate for accounts
+  that had never given it — which is precisely what 单独 forbids. It stays in its own
+  flow at first upload.
+- 我的's footer said 「FSHD-openrd v1.0.0 · © 2024」: the repository's name, a version a
+  year and a half stale, and a year two calendar years wrong. All three now derived, from
+  the same single definition 关于我们 uses.
+- `scripts/admin-role.mjs` ships in the runtime image. Granting the first administrator
+  happens on a running stack, and the alternative was a runbook telling the operator to
+  UPDATE `app_users` in psql — skipping the `audit_logs` row the script writes in the
+  same transaction. The one unaudited action would have been the one that creates the
+  reader.
+
+### Ops
+
+- **Migrations 026 and 027**, both with `_down`. See
+  [`docs/runbooks/v2.6.0-deploy.md`](docs/runbooks/v2.6.0-deploy.md) — it is a delta on
+  the v2.5.0 runbook, not a replacement.
+- **New host cron job** for the trial refresh. Without it the data ages in place (the
+  page says so; it does not pretend otherwise).
+- **The reverse proxy must pass `/s/*`.** The passport share page is mounted outside
+  `/api`, so a config with only `handle /api/*` sends patients to the front-end router's
+  「这个链接打不开了」.
+- **Every active account sees a consent screen on next open.** Expected, not a fault.
+  Ship the web export and the API together: the loop where the server calls a version
+  current that the shipped bundle cannot display is guarded, but the guard is not a
+  reason to stagger the deploy.
+
 ## v2.5.0 - 2026-08-03
 
 Release line: the `v2.5.0` tag (there is no `release/v2.5.0` branch; since v2.4.0 the

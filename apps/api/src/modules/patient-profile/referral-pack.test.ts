@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
 import type { PatientProfileDTO } from './profile.service.js';
 import {
   REFERRAL_MAX_POINTS_PER_SERIES,
@@ -234,6 +235,134 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
 
     const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
+  });
+});
+
+/**
+ * The fourth source (§B3, baseline-provenance.ts). It was added to
+ * `PassportDiagnosisConfirmation` without this file being told, and
+ * referral-pack.ts dropped it into the last arm of the branches that
+ * had only ever seen three: the 结论 printed 「本平台尚无任何诊断依据
+ * 记录 —— 以下内容仅为患者自述与自测」 four lines above the 诊断日期 an
+ * administrator had typed, and the 提问清单 told the patient 「本平台
+ * 没有任何诊断依据记录」 about lines the neurologist was reading on the
+ * same sheet.
+ *
+ * The `never` defaults that replaced those ternaries fail the build on
+ * a fifth state; these tests are the other half — they fail if someone
+ * adds the branch and gives it the `none` wording anyway.
+ */
+describe('第四种来源 — a value our own back office typed', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-13T04:11:07.912Z');
+
+  /** Built with the real helper rather than a hand-written provenance
+   *  block, so a reshape of that block breaks this test instead of
+   *  passing it. */
+  const adminTypedDiagnosis = () =>
+    base({
+      // What makes the passport consider a diagnosis claimed at all.
+      diagnosisDate: '2014-01-01',
+      baseline: applyAdminBaselineWrite(
+        { foundation: { fullName: '张三' } },
+        {
+          foundation: { fullName: '张三', diagnosisYear: 2014 },
+          diseaseBackground: { diagnosisType: 'FSHD1' },
+        },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+    } as Partial<PatientProfileDTO>);
+
+  it('does not print 尚无任何诊断依据记录 over a diagnosis an administrator typed', () => {
+    const result = pack(adminTypedDiagnosis());
+
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    // The two sentences the old else arm printed, verbatim. Both were
+    // false about this patient, and the second attributed our own
+    // staff's transcription to them.
+    expect(result.diagnosis.statement).not.toContain('尚无任何诊断依据记录');
+    expect(result.diagnosis.statement).not.toContain('患者自述与自测');
+    expect(result.markdown).not.toContain('尚无任何诊断依据记录');
+
+    expect(result.diagnosis.statement).toContain('不是患者本人填写');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // Not 「管理员代为录入」: `confirmation` alone cannot prove who
+    // typed the value. Who and when is the 字段来源 list below.
+    expect(result.diagnosis.statement).not.toContain('管理员');
+    expect(result.markdown).toContain(result.diagnosis.statement);
+  });
+
+  it('tells the patient the diagnosis lines are there and are not theirs', () => {
+    const result = pack(adminTypedDiagnosis());
+    const hint = result.questions[0];
+
+    expect(hint?.id).toBe('confirm-diagnosis');
+    // 「本平台没有任何诊断依据记录」 would hide from the patient the very
+    // lines the neurologist is reading on the same sheet.
+    expect(hint?.hint).not.toContain('本平台没有任何诊断依据记录');
+    expect(hint?.hint).toContain('不是你自己填的');
+    expect(hint?.hint).not.toContain('管理员');
+    // The hint sends the patient to a list. It has to be on the page.
+    expect(hint?.hint).toContain('列在第一节末尾');
+    expect(result.markdown).toContain('### 这些字段不是本人填写的');
+  });
+
+  it('lists the marked fields in 一、诊断依据, with who and when', () => {
+    const result = pack(adminTypedDiagnosis());
+
+    expect(result.markdown).toContain('### 这些字段不是本人填写的');
+    expect(result.markdown).toContain('确诊年份');
+    expect(result.markdown).toContain('FSHD 分型');
+    expect(result.markdown).toContain(ADMIN_ID);
+    expect(result.markdown).toContain(AT.toISOString());
+
+    // The note at the top promises the list is 「在第一节末尾」. It has to
+    // be there, not after 功能测试.
+    const listIndex = result.markdown.indexOf('### 这些字段不是本人填写的');
+    expect(listIndex).toBeGreaterThan(result.markdown.indexOf('## 一、诊断依据'));
+    expect(listIndex).toBeLessThan(result.markdown.indexOf('## 二、功能测试'));
+  });
+
+  /**
+   * The other half of `admin_entered`: a marker that is there and does
+   * not parse. `applyAdminBaselineWrite` cannot produce one, so this
+   * fixture writes the block by hand — the only way it happens in
+   * production too (a hand-written UPDATE, a half-applied shape).
+   */
+  const unreadableDiagnosisMarker = () =>
+    base({
+      diagnosisDate: '2014-01-01',
+      baseline: {
+        foundation: { fullName: '张三', diagnosisYear: 2014 },
+        [BASELINE_PROVENANCE_KEY]: {
+          'foundation.diagnosisYear': {
+            source: 'admin_entered',
+            adminUserId: 'not-a-user-id',
+            at: AT.toISOString(),
+          },
+        },
+      },
+    } as Partial<PatientProfileDTO>);
+
+  it('names nobody when the marker is there and cannot be read', () => {
+    const result = pack(unreadableDiagnosisMarker());
+
+    // Same state — the one thing it may never fall back to is 「本人填写」.
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    // And here the platform cannot say who typed it. The 字段来源 list
+    // at the end of the same section says 「读不出来」 about this very
+    // field, so a 结论 naming an administrator would contradict it
+    // across one sheet of paper handed to one neurologist.
+    expect(result.diagnosis.statement).not.toContain('管理员');
+    expect(result.questions[0]?.hint).not.toContain('管理员');
+    expect(result.markdown).toContain('确诊年份：来源记录读不出来');
+  });
+
+  it('prints no such heading for a patient whose baseline nobody else touched', () => {
+    const result = pack(base({ baseline: { foundation: { diagnosisYear: 2014 } } } as never));
+
+    expect(result.markdown).not.toContain('这些字段不是本人填写的');
+    expect(result.markdown).not.toContain(ADMIN_ID);
   });
 });
 

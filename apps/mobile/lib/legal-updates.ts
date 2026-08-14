@@ -63,8 +63,12 @@ export const LEGAL_DOCUMENT_SECTIONS = {
 } satisfies Record<LegalDocumentId, LegalSection[]>;
 
 export interface LegalVersionNote {
-  /** The version this note describes. Same date string the ledger
-   *  stores, so 「newer than what you accepted」 is a string compare. */
+  /** The version this note describes, always YYYY-MM-DD — same shape as
+   *  LEGAL_DOCUMENT_VERSIONS. The LEDGER's version is not: migration 019
+   *  stores any 1..32-char string and legal.schema.ts deliberately does
+   *  not pin the format. So 「newer than what you accepted」 is a string
+   *  compare only against a version this build can order — see
+   *  DATE_VERSION. */
   version: string;
   /** One sentence: what happened. Shown as the heading of the note. */
   headline: string;
@@ -176,9 +180,10 @@ export interface ConsentAsk {
   /** The version this build displays and would record. */
   currentVersion: string;
   /** What the ledger says this account last accepted, or null when it
-   *  holds nothing for this document — a registration write that never
-   *  landed, which the register screen documents as self-healing into
-   *  exactly this re-ask. */
+   *  holds no LIVE row for this document. The payload does not say why
+   *  there is none, so copy keyed off this field must name no cause:
+   *  it would be guessing, in front of the one person who knows the
+   *  answer. */
   acceptedVersion: string | null;
   /** Notes for every version newer than `acceptedVersion`, newest
    *  first. Empty when there is nothing to diff against. */
@@ -203,12 +208,22 @@ interface AcceptanceSummaryLike {
   outstanding?: string[];
 }
 
+/** The shape every version in LEGAL_VERSION_NOTES has. The ledger is
+ *  NOT limited to it: migration 019 stores any 1..32-char string,
+ *  legal.schema.ts deliberately refuses to pin the format, and the
+ *  oldest rows carry 'v1'. `'2026-08-13' > 'v1'` is false, so a raw
+ *  `>` against such a row drops every note and the screen then says no
+ *  summary was written. A version this build cannot order counts as
+ *  older than every note instead, so all of them are shown: a summary
+ *  the patient may already have read is recoverable, silently dropping
+ *  the one that says who can now read their record is not. */
+const DATE_VERSION = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
  * Turn `GET /legal/acceptances` into the list of documents this build
  * can actually ask about.
  *
- * TWO THINGS ARE DELIBERATELY DROPPED, and both are the difference
- * between a prompt and a loop:
+ * THREE THINGS ARE DELIBERATELY DROPPED:
  *
  * 1. A document id this build does not know. The server decides
  *    `outstanding`; a bundle older than the API can be told about a
@@ -225,17 +240,28 @@ interface AcceptanceSummaryLike {
  *    and the screen would come straight back. The patient sees nothing
  *    until the export catches up, which is the failure mode that
  *    leaves them able to use their own app.
+ *
+ * 3. A FIRST ask for 《敏感个人信息处理单独同意》. See the guard below:
+ *    PIPL Art. 29 wants that consent separate and in context, which is
+ *    the first health-data write, not a re-consent screen at app entry.
+ *
+ * The first two are the difference between a prompt and a loop; the
+ * third is the difference between a separate consent and a bundled one.
  */
 export const buildConsentAsks = (summary: AcceptanceSummaryLike | null): ConsentAsk[] => {
   if (!summary) return [];
   const outstanding = new Set(summary.outstanding ?? []);
-  const accepted = new Map<string, string>();
+  const accepted = new Map<string, { version: string; acceptedAt: string }>();
   for (const item of summary.acceptances ?? []) {
     // The server returns the latest acceptance per document, but a
-    // duplicate here must not silently pick the older one.
+    // duplicate here must not silently pick the older one. Ordered on
+    // `acceptedAt` — the server writes an ISO timestamp there — and not
+    // on `version`, which the ledger does not constrain: 'v1' sorts
+    // after every date, so a version compare would prefer the oldest
+    // row it can find.
     const existing = accepted.get(item.document);
-    if (existing === undefined || item.version > existing) {
-      accepted.set(item.document, item.version);
+    if (existing === undefined || item.acceptedAt > existing.acceptedAt) {
+      accepted.set(item.document, { version: item.version, acceptedAt: item.acceptedAt });
     }
   }
 
@@ -243,13 +269,25 @@ export const buildConsentAsks = (summary: AcceptanceSummaryLike | null): Consent
   for (const document of ASK_ORDER) {
     if (!outstanding.has(document)) continue;
     const currentVersion = LEGAL_DOCUMENT_VERSIONS[document];
-    const acceptedVersion = accepted.get(document) ?? null;
+    const acceptedVersion = accepted.get(document)?.version ?? null;
+    // The FIRST ask for the Art. 29 单独同意 belongs at the first
+    // health-data write (SensitiveDataConsentGate), not here.
+    // legal.constants.ts keeps that document out of
+    // REGISTRATION_DOCUMENTS because collecting it beside the general
+    // consent is the bundling the article forbids — and this screen is
+    // reached from the app-entry gate, ahead of onboarding, which is
+    // the same bundling one screen later. The server reports it
+    // outstanding for every account that has not uploaded a report yet;
+    // that is a consent not yet due, not a debt. A STALE row still
+    // reaches the ask below: that is a revision of a consent already
+    // given, which §9 does promise to re-ask here.
+    if (acceptedVersion === null && document === LEGAL_DOCUMENTS.sensitiveData) continue;
     if (acceptedVersion === currentVersion) continue; // stale bundle — see above
     const notes =
       acceptedVersion === null
         ? []
         : LEGAL_VERSION_NOTES[document]
-            .filter((note) => note.version > acceptedVersion)
+            .filter((note) => !DATE_VERSION.test(acceptedVersion) || note.version > acceptedVersion)
             .sort((a, b) => b.version.localeCompare(a.version));
     asks.push({
       document,

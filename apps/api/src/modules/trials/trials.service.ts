@@ -253,6 +253,19 @@ const TRIALS_SQL = `
  * `started_at` down to the microsecond only if something starts them
  * concurrently, and picking the older of the two would report a stale
  * outcome as the current one.
+ *
+ * WHAT IT DOES NOT SELECT, AND WHAT THAT COSTS. `error`, on purpose —
+ * see trials.routes.ts. And `source_reported_total`, the registry's
+ * own count (migration 027), which no query in this tree selects, so
+ * every successful run writes it and nothing reads it. The sentence
+ * 027 exists to make sayable — 「登记库自己说没有相关记录」, as opposed
+ * to 「我们没写进去」 — is therefore sayable on no surface fed from
+ * here, and neither may be rendered off `ok` plus `record_count`
+ * (refresh.ts's header). Putting it on the wire means widening the
+ * `ok_run` LATERAL, `RunRow`, `TrialSourceStatus` and `toSourceStatus`
+ * together, and reading NULL as 「we cannot say」: the 027 CHECK that
+ * requires the value on a successful run is NOT VALID, so a run
+ * written before 027 still has NULL there.
  */
 const SOURCE_STATUS_SQL = `
   SELECT s.source,

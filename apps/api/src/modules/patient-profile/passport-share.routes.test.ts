@@ -255,8 +255,14 @@ describe('还没进 handler 就失败的，也得是一张页', () => {
     const flood = '203.0.113.7';
     queryMock.mockResolvedValue({ rows: [], rowCount: 0 });
 
+    // 61 requests is exactly the budget (60/60s) plus one, which left
+    // no margin: a window that rolls over mid-loop resets the counter
+    // and the 429 never arrives, so this test failed roughly once a
+    // run. The bound is now well above one full budget, which makes a
+    // single rollover harmless — the requests after it refill the
+    // window on their own.
     let res = await request(app).get(`/s/passport/${TOKEN}`).set('x-forwarded-for', flood);
-    for (let i = 0; i < 60 && res.status !== 429; i += 1) {
+    for (let i = 0; i < 200 && res.status !== 429; i += 1) {
       res = await request(app).get(`/s/passport/${TOKEN}`).set('x-forwarded-for', flood);
     }
 

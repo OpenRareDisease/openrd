@@ -32,17 +32,28 @@
  * question reaches this retriever whether or not the model thought to
  * ask.
  *
- * THE §A5 BOUNDARY IS THE SELECT LIST
+ * THE §A5 BOUNDARY IS THE FIELD LIST, THEN THE SELECT LIST
  *
- * `trial_records` holds the registry's whole response in `raw`, which
- * for ClinicalTrials.gov includes `eligibilityModule.eligibilityCriteria`
- * (the inclusion/exclusion text) and, for finished studies,
- * `resultsSection`. Neither may reach a patient through this product:
- * we do not judge whether someone qualifies and we do not state what a
- * trial found. That is not enforced by asking the model nicely. It is
- * enforced by `readTrialSnapshot` never selecting `raw` at all, so
- * there is no code path from those fields to a prompt — the tool cannot
- * disclose what it never loads.
+ * §A5: we do not judge whether someone qualifies and we do not state
+ * what a trial found. So `eligibilityModule.eligibilityCriteria` (the
+ * inclusion/exclusion text) and `resultsSection` may not reach a
+ * patient through this product.
+ *
+ * `trial_records.raw` is NOT the registry's whole response, and that is
+ * the first and stronger layer. `ctgov.fetcher.ts` pins `CTGOV_FIELDS`
+ * — nine leaf paths, all of them inside five modules of
+ * `protocolSection` — on every request, so neither of those two is ever
+ * fetched and neither is ever stored; the committed capture in
+ * `../../trials/__fixtures__/ctgov.page1.json` has 50 studies and
+ * carries neither word. chinadrugtrials' `raw` is an allowlist of the
+ * labelled values its fetcher pulled out, not the page. The text is
+ * not in our database to leak.
+ *
+ * The second layer is that `readTrialSnapshot` never selects `raw` at
+ * all. That is what keeps the fields which ARE in there out of every
+ * prompt — chinadrugtrials' 试验范围 and 首次公示信息日期, ctgov's
+ * `designModule.studyType` — and it is what keeps the boundary
+ * standing if the pinned field list ever grows.
  *
  * Public data, no redaction. `renderChunkForPrompt` passes an unknown
  * source's `content` through unchanged (security/render.ts,

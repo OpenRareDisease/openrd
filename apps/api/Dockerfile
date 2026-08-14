@@ -94,6 +94,24 @@ COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY apps/report-manager ./apps/report-manager
 COPY db ./db
 
+# One script, not scripts/. Granting the first administrator has to
+# happen on a running production stack, and the alternative to shipping
+# this file is a runbook telling the operator to UPDATE app_users in
+# psql — which skips the audit_logs row admin-role.mjs writes in the
+# same transaction as the role change. In a back office whose whole
+# design is that reads are audited, the one unaudited action would be
+# the one that creates the reader.
+#
+# It grants no privilege that exec access does not already carry: a
+# shell in this container can reach the same database with the same
+# credentials. Its dependency (`pg`) is already here from npm ci.
+#
+# Deliberately not `COPY scripts ./scripts`: that directory also holds
+# the KB ingest tooling and the GitHub App helper that reads a private
+# key off the maintainer's disk. Neither belongs in an image that runs
+# on a host serving patients.
+COPY scripts/admin-role.mjs ./scripts/admin-role.mjs
+
 WORKDIR /app/apps/api
 ENV NODE_ENV=production
 ENV OCR_PYTHON_BIN=python3

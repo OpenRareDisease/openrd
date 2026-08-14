@@ -20,13 +20,13 @@ import { asyncHandler } from '../../utils/async-handler.js';
  *
  * WHAT IS NOT IN THE PAYLOAD
  *
- *   `raw`             The whole registry response per study. It is in
- *                     the table so a disagreement can be settled
- *                     against what the registry actually returned; it
- *                     is not something to ship to a phone, and it is
- *                     where eligibility criteria and result summaries
- *                     live. See list-clinical-trials.ts for why those
- *                     two in particular never leave the database.
+ *   `raw`             What the fetcher kept, not the whole registry
+ *                     response: for ctgov the study object cut to the
+ *                     nine pinned `CTGOV_FIELDS` (ctgov.fetcher.ts),
+ *                     for chinadrugtrials an allowlist of the labelled
+ *                     values that fetcher pulled out. Not something to
+ *                     ship to a phone; what it holds and why is on the
+ *                     column in migration 026.
  *
  *   `trial_fetch_runs.error`
  *                     The failure state reaches the client; the error
@@ -36,8 +36,16 @@ import { asyncHandler } from '../../utils/async-handler.js';
  *                     logged-in patient can call. Same discipline as
  *                     routes/index.ts's `projectPublicSummary`, which
  *                     exists because /healthz was handing out the pg
- *                     connection detail. An operator reads the error in
- *                     the ops view, which is admin-gated.
+ *                     connection detail. Nothing reads the column back
+ *                     out: the back office's ops endpoints
+ *                     (admin.routes.ts, /api/admin/ops/*) have no
+ *                     trials block, and `SOURCE_STATUS_SQL` in
+ *                     trials.service.ts — the only request-path read of
+ *                     that table — takes `started_at`, `finished_at`
+ *                     and `ok` from it and nothing else. An operator
+ *                     gets the reason from the refresh job instead —
+ *                     untruncated on its stderr (refresh.cli.ts) — or
+ *                     out of psql.
  *
  * NO PAGINATION. The whole table is read and the whole table is
  * returned. That is the shape migration 026 was designed for — it gives

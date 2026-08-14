@@ -15,6 +15,7 @@ jest.mock('../api', () => ({
   apiRequest: (...args: unknown[]) => mockApiRequest(...args),
 }));
 
+import { describeEmptyList } from '../trials';
 import { asTrialRecord, listTrials } from '../trials-api';
 
 const rawTrial = (overrides: Record<string, unknown> = {}) => ({
@@ -162,8 +163,6 @@ describe('抓取状态', () => {
   });
 
   it('读不出的 recordCount 退回实际收到的条数，而不是 0', async () => {
-    // 0 would let the page say「国内没有登记的试验」off a number it
-    // never read.
     mockApiRequest.mockResolvedValue({
       trials: [
         rawTrial({
@@ -180,6 +179,21 @@ describe('抓取状态', () => {
       sources: [rawSource({ source: 'chinadrugtrials', recordCount: 'lots' })],
     });
     expect((await listTrials()).sources[0].recordCount).toBe(2);
+  });
+
+  it('整批记录都被丢掉时，recordCount 还是服务端的数，页面据此认自己的问题', async () => {
+    // 服务端换个字段名或改成 scheme-relative 的 URL，92 条能一条不剩
+    // 地死在 asTrialRecord 里，而 sources 仍然报 92。
+    mockApiRequest.mockResolvedValue({
+      trials: [rawTrial({ url: '//clinicaltrials.gov/study/NCT1' }), rawTrial({ title: '' })],
+      sources: [rawSource({ recordCount: 92 })],
+    });
+    const snapshot = await listTrials();
+    expect(snapshot.trials).toEqual([]);
+    expect(snapshot.sources[0].recordCount).toBe(92);
+    const text = describeEmptyList(snapshot);
+    expect(text).toContain('没有一条记录能完整读出来');
+    expect(text).not.toContain('没有返回任何 FSHD 相关的记录');
   });
 
   it('来源名不认识的那一块整块丢掉', async () => {

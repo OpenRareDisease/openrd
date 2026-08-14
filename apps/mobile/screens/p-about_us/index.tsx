@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Pressable, Modal, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Constants from 'expo-constants';
 import Icon from '../common/Icon';
 import ListGroup, { Row } from '../common/ListGroup';
+import { APP_NAME, readAppVersion } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
 import { isFeatureEnabled } from '../../lib/feature-flags';
 import styles from './styles';
@@ -12,30 +12,19 @@ import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
 
 /**
- * The product's name to a patient. 「FSHD青年社区患者平台」was the old
- * working name and 「FSHD-openrd」is the repository — neither is what
- * this is called. Both used to appear on this page, in the app's
- * largest type, on the screen a patient opens to find out what they
- * are actually using.
- */
-export const APP_NAME = '肌愈通';
-
-/**
- * The version to show, read from the Expo config rather than typed in
- * again. The hardcoded 「版本 1.0.0」on this page had drifted four
- * minor versions behind app.json's 2.5.0, which makes it useless for
- * the one thing a version string is for: a patient reading it back to
- * us when something is wrong.
+ * Both re-exported rather than redefined. This page used to own its own
+ * copy of the name and its own copy of the version, and 设置 owned a
+ * third and a fourth — which is how 设置 came to say 「FSHD-openrd
+ * v1.0.0」 while this page said 「肌愈通 · 版本 2.5.0」. Two screens
+ * describing the same build, disagreeing about both its name and its
+ * number.
  *
- * Returns undefined when the config is unreadable, and the caller then
- * renders nothing at all rather than a placeholder. A version we
- * cannot read is not a version we are allowed to guess at on a page a
- * patient may be quoting to us over the phone.
- *
- * Read per render, not once at module load, so a test can exercise
- * both branches without juggling module registries.
+ * Kept as re-exports because this module's tests import them from here
+ * and because a reader landing on the copyright line below should be
+ * able to follow the name one hop. The single definition is in
+ * lib/app-identity.ts.
  */
-export const readAppVersion = (): string | undefined => Constants.expoConfig?.version ?? undefined;
+export { APP_NAME, readAppVersion } from '../../lib/app-identity';
 
 /**
  * 用户协议 / 隐私政策 in a sheet.

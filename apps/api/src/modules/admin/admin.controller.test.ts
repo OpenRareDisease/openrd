@@ -19,6 +19,9 @@ const { BASELINE_PROVENANCE_KEY } = await import('../patient-profile/baseline-pr
 
 const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
 const PATIENT_ID = '99999999-8888-7777-6666-555555555555';
+/** `patient_profiles.updated_at` as the stored-profile stubs report it,
+ *  and therefore what a form built on them sends back in `If-Match`. */
+const STORED_UPDATED_AT = '2026-08-13T00:00:00.000Z';
 
 const logger = {
   fatal: vi.fn(),
@@ -66,6 +69,11 @@ const request = (overrides: Record<string, unknown> = {}) =>
     body: {},
     method: 'GET',
     originalUrl: '/api/admin/patients',
+    // The baseline PUT reads `If-Match`. The default is the version the
+    // stored-profile stubs report, i.e. a form that was filled from the
+    // record as it is now; a test about the stale-form refusal passes
+    // its own `header`.
+    header: (name: string) => (name.toLowerCase() === 'if-match' ? STORED_UPDATED_AT : undefined),
     ...overrides,
   }) as never;
 
@@ -371,6 +379,78 @@ describe('AdminController.updatePatientBaseline', () => {
         res,
       ),
     ).rejects.toMatchObject({ message: expect.not.stringContaining('注销') });
+    expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('refuses a save built on a version of the record that has since changed', async () => {
+    // The body is the whole baseline as the FORM loaded it, and the
+    // diff is against the column as it is NOW. Without this refusal a
+    // field the patient corrected while the page sat open reads as
+    // changed by the administrator: their newer answer is written back
+    // to the older value and stamped 管理员代填 under an administrator
+    // who never opened that box.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ diseaseBackground: { d4z4: '3/22' } }),
+      profiles,
+    });
+    const { res } = fakeResponse();
+
+    await expect(
+      controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { diseaseBackground: { d4z4: '4/22' } },
+          method: 'PUT',
+          header: (name: string) =>
+            name.toLowerCase() === 'if-match' ? '2026-08-12T00:00:00.000Z' : undefined,
+        }),
+        res,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining('刷新'),
+    });
+    expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('refuses a save that carries no version at all, and does not call it an edit', async () => {
+    // Refused like a stale one — but NOT with the stale one's sentence.
+    // 「已经不是你打开这一页时的那一版了」 asserts somebody changed the
+    // record, which an absent header shows nothing about; an operator
+    // reading it would go hunting for an edit that never happened.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ foundation: { fullName: '张三' } }),
+      profiles,
+    });
+    const { res } = fakeResponse();
+
+    await expect(
+      controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { foundation: { fullName: '张三丰' } },
+          method: 'PUT',
+          header: () => undefined,
+        }),
+        res,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining('没有带上'),
+    });
+    await expect(
+      controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { foundation: { fullName: '张三丰' } },
+          method: 'PUT',
+          header: () => undefined,
+        }),
+        fakeResponse().res,
+      ),
+    ).rejects.not.toMatchObject({ message: expect.stringContaining('已经不是') });
     expect(profiles.upsertBaseline).not.toHaveBeenCalled();
   });
 

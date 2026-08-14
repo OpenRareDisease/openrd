@@ -353,8 +353,9 @@ describe('fetchChinaDrugTrials — the anti-bot gate', () => {
   it('does not put the response body into the message that reaches trial_fetch_runs.error', async () => {
     const impl = vi.fn(async () => html(cdtChallengePage(), 202, CHALLENGE_COOKIES));
 
-    // That string is read by a human off an ops screen, and the body it
-    // would otherwise carry is 25 KB of anti-bot script.
+    // That string goes to the refresh job's stderr, its log line and a
+    // psql prompt, and the body it would otherwise carry is 25 KB of
+    // anti-bot script.
     // `.then(throw, catch)` rather than `.catch(cast)`: the latter
     // leaves TrialFetchResult in the union, so `error.message` does not
     // typecheck (three TS2339s under `npm run typecheck`, which vitest

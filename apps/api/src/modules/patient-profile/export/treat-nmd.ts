@@ -218,6 +218,10 @@ export const buildTreatNmdExport = (
               source,
               'diseaseBackground.familyHistory',
               '患者自述。这是患者关于其亲属的陈述，不是亲属本人的病历，也未经亲属本人确认',
+              // 患者自述 is dropped rather than qualified when the field
+              // is marked: the rest of the sentence is still true of an
+              // administrator's transcription, that half is not.
+              '这是关于患者亲属的陈述，不是亲属本人的病历，也未经亲属本人确认',
             ),
           ),
         ]),
@@ -441,21 +445,29 @@ export const buildTreatNmdExport = (
         titleZh: '仅本地留存（直接身份信息）',
         collected: true,
         items: compact([
-          // `patient_profiles.full_name` is COALESCEd out of
+          // `patient_profiles.full_name` is mirrored out of
           // `foundation.fullName` by `upsertBaseline`, so an
           // administrator's edit lands in this column too. 「患者本人填写」
-          // is therefore a claim that has to be checked, not asserted.
+          // is therefore a claim that has to be checked, not asserted —
+          // and where the check fails the claim is REPLACED, not
+          // qualified: 「患者本人填写」 followed by 「不是患者本人填写」 is
+          // one field saying both.
           textItem(
             'local.fullName',
             '姓名',
             profile.fullName,
-            withOriginNote(source, 'foundation.fullName', '患者本人填写'),
+            withOriginNote(source, 'foundation.fullName', '患者本人填写', '本平台档案中记录的姓名'),
           ),
           textItem(
             'local.preferredName',
             '希望被称呼的名字',
             profile.preferredName,
-            withOriginNote(source, 'foundation.preferredName', '患者本人填写'),
+            withOriginNote(
+              source,
+              'foundation.preferredName',
+              '患者本人填写',
+              '本平台档案中记录的称呼',
+            ),
           ),
           textItem(
             'local.diagnosingPhysician',

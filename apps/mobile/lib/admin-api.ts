@@ -599,8 +599,16 @@ export interface AdminPatientRecord {
    * account for.
    */
   baselineIsStored: boolean;
-  /** One entry per MARKED field. An absent path is the patient's own. */
-  fieldOrigins: AdminFieldOriginEntry[];
+  /**
+   * One entry per MARKED field; an absent path inside a PRESENT list is
+   * the patient's own. `null` means the server did not send the list at
+   * all — the same distinction as the sections below, and it matters
+   * more here, because this is the one section that decides whether a
+   * value is labelled as the patient's. Collapsing it to `[]` would
+   * chip 「本人填写」 on every field of a record read from a build that
+   * does not send it.
+   */
+  fieldOrigins: AdminFieldOriginEntry[] | null;
   /**
    * `null` means the server did not send this section at all; `[]`
    * means it sent it and the patient has none. 「这个患者没有报告」 and
@@ -637,19 +645,26 @@ export const readAdminPatientRecord = (payload: unknown): AdminPatientRecord => 
   const userId = accountRecord ? asStringOrNull(accountRecord.userId) : null;
   if (!body || !accountRecord || !userId) throw new AdminResponseError('患者档案');
 
-  const fieldOrigins: AdminFieldOriginEntry[] = [];
-  for (const item of asArray(body.fieldOrigins) ?? []) {
-    const record = asRecord(item);
-    const path = record ? asStringOrNull(record.path) : null;
-    // An entry with no path cannot be attached to a field. Dropping it
-    // would leave whichever field it belonged to reading 「本人填写」,
-    // so it is surfaced as its own row instead.
-    fieldOrigins.push({
-      path: path ?? '（服务端未给出字段名）',
-      origin: record
-        ? asFieldOrigin(record.origin)
-        : { state: 'unreadable', detail: '条目不是对象' },
-    });
+  // `null` when the key is absent or unreadable, `[]` when the server
+  // sent an empty list. Only the second one licenses 「本人填写」 on a
+  // field with no entry; see the field's doc comment above.
+  const rawFieldOrigins = asArray(body.fieldOrigins);
+  let fieldOrigins: AdminFieldOriginEntry[] | null = null;
+  if (rawFieldOrigins) {
+    fieldOrigins = [];
+    for (const item of rawFieldOrigins) {
+      const record = asRecord(item);
+      const path = record ? asStringOrNull(record.path) : null;
+      // An entry with no path cannot be attached to a field. Dropping it
+      // would leave whichever field it belonged to reading 「本人填写」,
+      // so it is surfaced as its own row instead.
+      fieldOrigins.push({
+        path: path ?? '（服务端未给出字段名）',
+        origin: record
+          ? asFieldOrigin(record.origin)
+          : { state: 'unreadable', detail: '条目不是对象' },
+      });
+    }
   }
 
   const identityRecord = asRecord(body.identity);
@@ -772,6 +787,16 @@ export const buildAdminBaselineWrite = (
  *    「the administrator cleared these fields」 and stamps 管理员代填 on
  *     fields nobody touched.
  *
+ * `expectedUpdatedAt` IS THE VERSION THE PAYLOAD WAS BUILT ON —
+ * `identity.updatedAt` from the record read that filled the form — and
+ * it goes in `If-Match` rather than in the body, because the server
+ * parses the body with a plain Zod object that strips unknown keys and
+ * the comparison would then read `undefined` forever. The server
+ * answers 409 when it does not match what is stored: point 1 above is
+ * why that matters, since a stale whole-baseline payload reads as the
+ * administrator having changed every field the patient touched in the
+ * meantime.
+ *
  * Returns nothing on purpose: the caller re-fetches the record, so the
  * values and the provenance markers on screen afterwards are the ones
  * the server stored rather than the ones this client hoped it would.
@@ -779,9 +804,11 @@ export const buildAdminBaselineWrite = (
 export const updateAdminPatientBaseline = async (
   userId: string,
   baseline: BaselineProfilePayload,
+  expectedUpdatedAt: string,
 ): Promise<void> => {
   await apiRequest(ADMIN_ENDPOINTS.patientBaseline(userId), {
     method: 'PUT',
+    headers: { 'If-Match': expectedUpdatedAt },
     body: JSON.stringify(baseline),
   });
 };
