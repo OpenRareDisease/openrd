@@ -1,3 +1,12 @@
+// The builder reads `readPassportValueOrigins` out of api.ts, which
+// pulls in AsyncStorage through session-storage, and that has no native
+// module under jest. Same stub api-transport.test.ts uses.
+jest.mock('../session-storage', () => ({
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { _renderVisitPrepHtml, buildClinicalPassportPdfHtml } from '../clinical-passport-pdf';
 
 // The exported PDF is the one artefact that leaves the app and reaches
@@ -177,7 +186,11 @@ describe('管理员代填的字段要印在 PDF 上', () => {
       ...over,
     }) as unknown as Parameters<typeof buildClinicalPassportPdfHtml>[0];
 
-  it('第四种来源有自己的警示条，不写成「患者本人填写」', () => {
+  it('第四种来源的警示条只说「确诊年份」那一个字段', () => {
+    // `confirmation` is derived from `foundation.diagnosisYear`'s
+    // provenance entry alone (profile.passport.ts), so 「本节内容由管理员
+    // 代为录入」 was a claim about rows an administrator has no way to
+    // write — 分型 on this same sheet can be OCR off an uploaded report.
     const html = buildClinicalPassportPdfHtml(
       withDiagnosis({
         diagnosis: {
@@ -187,8 +200,41 @@ describe('管理员代填的字段要印在 PDF 上', () => {
         fieldOrigins: [],
       }),
     );
-    expect(html).toContain('不是患者本人填写');
+    expect(html).toContain('档案里的「确诊年份」不是患者本人填写的');
     expect(html).not.toContain('本节内容由患者本人填写');
+    expect(html).not.toContain('本节内容由「肌愈通」管理员根据患者电话或消息代为录入');
+  });
+
+  it('未经基因确诊的警示条不再宣称本节是患者本人填的', () => {
+    // A report parsed to `diagnosisType` alone lands in
+    // `self_reported`, and the 基因类型 card then shows a value OCR
+    // read off that report — under a banner that said the patient
+    // wrote this section.
+    const html = buildClinicalPassportPdfHtml(withDiagnosis({}));
+    expect(html).toContain('⚠ 未经基因确诊');
+    expect(html).not.toContain('本节内容由患者本人填写');
+    // A report that parsed to 分型 alone is on file in that state, so
+    // the banner may not say none was received either.
+    expect(html).not.toContain('尚未收到该患者的基因检测报告');
+  });
+
+  it('尚无诊断依据的警示条不说「本节为空」', () => {
+    // 甲基化 is in none of the three tests that earn 基因确诊 and is
+    // neither 分型 nor 诊断日期, so a report parsed to a methylation
+    // value alone reaches this state with that card filled in.
+    const html = buildClinicalPassportPdfHtml(
+      withDiagnosis({
+        diagnosis: {
+          ...(withDiagnosis({}) as { diagnosis: Record<string, unknown> }).diagnosis,
+          confirmation: 'none',
+          geneticType: '—',
+          diagnosisDate: '—',
+          methylationValue: '32%',
+        },
+      }),
+    );
+    expect(html).toContain('⚠ 尚无诊断依据');
+    expect(html).not.toContain('本节为空');
   });
 
   it('逐条列出代填的字段，带日期', () => {
@@ -220,5 +266,155 @@ describe('管理员代填的字段要印在 PDF 上', () => {
     // 新前端 + 还没升级的后端。默认成空数组正好是这一整块要防的假话。
     const html = buildClinicalPassportPdfHtml(withDiagnosis({}));
     expect(html).toContain('服务端这一版没有返回字段来源');
+  });
+});
+
+/**
+ * 这张纸上各个诊断值的来源各不相同，横幅一句话说不了。
+ *
+ * A clinician who scrolled past the banner, or who kept only the page
+ * the values are on, still has to be able to tell a laboratory's number
+ * from a patient's account of themselves.
+ */
+describe('逐项来源印在值下面', () => {
+  const origin = (kind: string, labelZh: string) => ({
+    kind,
+    labelZh,
+    documentId: null,
+    adminUserId: null,
+    at: null,
+    detail: null,
+  });
+
+  const withOrigins = (over: Record<string, unknown>) =>
+    ({
+      generatedAt: '2026-08-05T00:00:00.000Z',
+      passportId: 'FSHD-TEST',
+      patientName: '测试',
+      hasRecordedData: true,
+      latestUpdatedAt: null,
+      completion: { completed: 1, total: 4 },
+      metrics: [],
+      summaryCards: [],
+      diagnosis: {
+        ready: false,
+        confirmation: 'self_reported',
+        latestSourceDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        geneticType: 'FSHD1',
+        d4z4Repeats: '—',
+        methylationValue: '—',
+        diagnosisDate: '2014-01-01',
+        geneEvidence: '—',
+        valueOrigins: {
+          geneticType: origin('report', '报告读取'),
+          d4z4Repeats: origin('absent', '未填'),
+          methylationValue: origin('absent', '未填'),
+          diagnosisDate: origin('indeterminate', '来源无法确定'),
+        },
+        ...((over.diagnosis as Record<string, unknown>) ?? {}),
+      },
+      motor: {
+        ready: false,
+        average: '—',
+        latestMeasurementAt: null,
+        latestActivityAt: null,
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+        activitySummary: '—',
+      },
+      imaging: {
+        ready: false,
+        latestMriDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+      },
+      monitoring: { ready: false, items: [] },
+      fieldOrigins: [],
+      nextSteps: [],
+      timeline: [],
+    }) as unknown as Parameters<typeof buildClinicalPassportPdfHtml>[0];
+
+  it('每个值下面印着自己的来源，同一节里可以是三种不同的来源', () => {
+    const html = buildClinicalPassportPdfHtml(withOrigins({}));
+    expect(html).toContain('<p class="value-origin">报告读取</p>');
+    expect(html).toContain('<p class="value-origin">来源无法确定</p>');
+  });
+
+  it('没有来源可归的值不印「未填」—— 「—（未填）」是同一件事说两遍', () => {
+    expect(buildClinicalPassportPdfHtml(withOrigins({}))).not.toContain('未填');
+  });
+
+  it('来源那一行有自己的样式，不跟着读数的字号走', () => {
+    expect(buildClinicalPassportPdfHtml(withOrigins({}))).toMatch(
+      /\.value-origin\s*\{[^}]*font-size/,
+    );
+  });
+
+  it('服务端没给逐项来源时说没给，不读成「都是报告读出来的」', () => {
+    const html = buildClinicalPassportPdfHtml(withOrigins({ diagnosis: { valueOrigins: null } }));
+    expect(html).toContain('服务端这一版没有返回逐项来源');
+    expect(html).not.toContain('class="value-origin"');
+  });
+
+  it('少一项就整块不认 —— 印三个来源、第四个空着，读者会把空着的当成报告读取', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({
+        diagnosis: {
+          valueOrigins: {
+            geneticType: origin('report', '报告读取'),
+            d4z4Repeats: origin('absent', '未填'),
+            methylationValue: origin('absent', '未填'),
+          },
+        },
+      }),
+    );
+    expect(html).toContain('服务端这一版没有返回逐项来源');
+    expect(html).not.toContain('class="value-origin"');
+  });
+
+  it('认不出来的 kind 不把整块作废 —— 服务端确实给了，就照它的措辞印', () => {
+    // The cache cuts both ways: a newer API adding a seventh kind must
+    // not make this page claim the server sent nothing.
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({
+        diagnosis: {
+          valueOrigins: {
+            geneticType: origin('registry_import', '登记处导入'),
+            d4z4Repeats: origin('absent', '未填'),
+            methylationValue: origin('absent', '未填'),
+            diagnosisDate: origin('absent', '未填'),
+          },
+        },
+      }),
+    );
+    expect(html).not.toContain('服务端这一版没有返回逐项来源');
+    expect(html).toContain('<p class="value-origin">登记处导入</p>');
+  });
+
+  it('只解析出甲基化值时，那个值下面照样印着「报告读取」', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withOrigins({
+        diagnosis: {
+          confirmation: 'none',
+          geneticType: '—',
+          diagnosisDate: '—',
+          methylationValue: '32%',
+          valueOrigins: {
+            geneticType: origin('absent', '未填'),
+            d4z4Repeats: origin('absent', '未填'),
+            methylationValue: origin('report', '报告读取'),
+            diagnosisDate: origin('absent', '未填'),
+          },
+        },
+      }),
+    );
+    expect(html).toContain('32%');
+    expect(html).toContain('<p class="value-origin">报告读取</p>');
   });
 });

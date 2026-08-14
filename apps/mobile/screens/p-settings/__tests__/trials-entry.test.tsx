@@ -132,6 +132,13 @@ describe('临床试验的入口', () => {
   it('这一行没有「即将上线」徽标 —— 它是做完的页面', () => {
     const tree = render();
     const row = rowByLabel(tree, '临床试验');
-    expect(collectText(row.props.children)).not.toContain('即将上线');
+    // `row`, not `row.props.children`. The latter is a list of
+    // UNRENDERED React elements, whose text hangs off `props.children`
+    // rather than `children` — `collectText` walks into nothing and
+    // returns '', so this assertion passed no matter what the row drew.
+    // Measured: the same expression over a row that DOES carry the
+    // badge also returned ''. A ReactTestInstance's `children` are the
+    // rendered ones, which is what makes this able to fail.
+    expect(collectText(row)).not.toContain('即将上线');
   });
 });

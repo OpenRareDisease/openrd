@@ -205,18 +205,116 @@ describe('转诊包 — the document itself', () => {
 
 describe('诊断依据 — a claim must never be typeset as evidence', () => {
   it('marks a self-reported diagnosis as such, in the printed line', () => {
-    // `geneticMutation` is the free-text box on the baseline form. The
-    // passport calls that `self_reported`; the pack must not upgrade it.
+    // `geneticMutation` is `patient_profiles.genetic_mutation`, a
+    // free-text column. The passport calls a profile with no genetic
+    // measurement `self_reported`; the pack must not upgrade it.
     const result = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(result.diagnosis.confirmation).toBe('self_reported');
     expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
     expect(result.markdown).toContain('请勿按已确诊处理');
   });
 
-  it('says there is no basis at all when nothing was recorded', () => {
+  it('speaks about this document, not about every report the patient uploaded', () => {
+    // `buildReportInsights` opens one genetic document — the most
+    // recently uploaded one — so a repeat count sitting in an EARLIER
+    // report is never read. 「未从任何上传的报告里读到 D4Z4 重复数」 is
+    // false about exactly this patient, and it is the sentence a
+    // neurologist decides on.
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4' }),
+            id: 'doc-old',
+            uploadedAt: '2019-05-03T12:00:00.000Z',
+          },
+          { ...geneticReport({ reportImpression: '未见异常' }), id: 'doc-new' },
+        ],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.diagnosis.d4z4Repeats).toBe('—');
+    expect(result.diagnosis.statement).not.toContain('任何上传的报告');
+    expect(result.diagnosis.statement).toContain('本资料里没有 D4Z4 重复数');
+    // And it hands the reader the question this document cannot answer.
+    expect(result.markdown).toContain('患者手里可能还有本平台没有读过的报告');
+  });
+
+  it('says what is missing, not that nothing was ever uploaded', () => {
     const result = pack(base());
     expect(result.diagnosis.confirmation).toBe('none');
-    expect(result.diagnosis.statement).toContain('本平台尚无任何诊断依据记录');
+    expect(result.diagnosis.statement).toContain('没有可展示的分型或诊断日期');
+  });
+
+  it('a methylation-only report still lands in none — so the line may not claim nothing was uploaded', () => {
+    // 甲基化 is in none of the three tests that earn 基因确诊, and it is
+    // neither 分型 nor 诊断日期, so this profile is `none` with a value
+    // from an uploaded report printed three lines below the 结论. The
+    // old line said 「本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述
+    // 与自测」 over exactly that.
+    const result = pack(base({ documents: [geneticReport({ methylationValue: '32%' })] } as never));
+
+    expect(result.diagnosis.confirmation).toBe('none');
+    expect(result.diagnosis.statement).not.toContain('仅为患者自述与自测');
+    expect(result.markdown).toContain('- 甲基化：32%（报告读取）');
+  });
+
+  it('prints each diagnosis value with its own source, not one sentence for the block', () => {
+    // The report carries 分型 and nothing else, so 分型 is the report's
+    // and 诊断日期 is the patient's — two sources, one section. The
+    // 结论 line used to say 「本人填报」 about both.
+    const result = pack(
+      base({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ diagnosisType: 'FSHD1' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.diagnosis.statement).not.toContain('本人填报');
+    // A genetic report IS on file — it just carried nothing that
+    // confirms — so the line may not say none was received.
+    expect(result.diagnosis.statement).not.toContain('本平台未收到基因报告');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
+    expect(result.markdown).toContain('- 诊断日期：2019-05-03（本人填写）');
+  });
+
+  it('an administrator marker lands on 诊断日期 alone and names the field it is on', () => {
+    const result = pack(
+      base({
+        diagnosisDate: '2014-01-01',
+        baseline: applyAdminBaselineWrite(
+          { foundation: { fullName: '张三' } },
+          { foundation: { fullName: '张三', diagnosisYear: 2014 } },
+          {
+            adminUserId: '11111111-2222-3333-4444-555555555555',
+            at: new Date('2026-08-13T04:11:07.912Z'),
+          },
+        ),
+        documents: [geneticReport({ diagnosisType: 'FSHD1' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    expect(result.diagnosis.statement).toContain('「确诊年份」不是患者本人填写的');
+    expect(result.markdown).toContain('- 诊断日期：2014-01-01（管理员代填）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
+  });
+
+  it('says 来源无法确定 when the column and an uploaded report both carry the date', () => {
+    // profile.autofill.ts writes an empty `patient_profiles.diagnosis_date`
+    // from a report at read time without recording that it did, so this
+    // value is equally consistent with either source.
+    const result = pack(
+      base({
+        diagnosisDate: '2019-05-03',
+        documents: [geneticReport({ diagnosisDate: '2019-05-03' })],
+      } as never),
+    );
+
+    expect(result.markdown).toContain('- 诊断日期：2019-05-03（来源无法确定）');
   });
 
   it('states the genetic result when there is one, and drops the warning', () => {
@@ -231,7 +329,9 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
   it('puts the confirmation question at the top of the sheet only when unconfirmed', () => {
     const unconfirmed = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(unconfirmed.questions[0]?.id).toBe('confirm-diagnosis');
-    expect(unconfirmed.questions[0]?.hint).toContain('本平台没有收到你的基因报告');
+    expect(unconfirmed.questions[0]?.hint).toContain(
+      '本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段',
+    );
 
     const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
@@ -302,8 +402,13 @@ describe('第四种来源 — a value our own back office typed', () => {
     expect(hint?.hint).not.toContain('本平台没有任何诊断依据记录');
     expect(hint?.hint).toContain('不是你自己填的');
     expect(hint?.hint).not.toContain('管理员');
-    // The hint sends the patient to a list. It has to be on the page.
-    expect(hint?.hint).toContain('列在第一节末尾');
+    // The hint sends the patient to a list. It has to be on the page —
+    // and it must not promise a name or a time, because this state also
+    // covers a marker that is present and unparseable, where the list
+    // says 来源记录读不出来 and no name exists to find.
+    expect(hint?.hint).toContain('第一节末尾');
+    expect(hint?.hint).not.toContain('是谁');
+    expect(hint?.hint).not.toContain('什么时候');
     expect(result.markdown).toContain('### 这些字段不是本人填写的');
   });
 

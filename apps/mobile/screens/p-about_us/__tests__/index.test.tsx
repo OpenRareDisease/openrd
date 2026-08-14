@@ -8,10 +8,13 @@
  *    versions behind app.json's 2.5.0 — useless for the only thing a
  *    version line is for, which is a patient reading it back to us.
  *  - 「© 2024」had been wrong for two calendar years.
- *  - It advertised 患者社区 as a 核心功能 and described the platform as
- *    offering 社区互助, while Settings had already stopped listing the
- *    community behind FEATURE_FLAGS.explore. The app was hiding the
- *    feature on one screen and promising it on another, one tap apart.
+ *  - It described a community this app does not have: a 患者社区
+ *    核心功能 offering 康复方法探讨与心理互助陪伴, plus a paragraph
+ *    offering 和其他病友交流经验. What ships is screens/p-community, a
+ *    shelf of narratives their authors published elsewhere — no
+ *    posting surface, nobody to reply to. Both now describe the shelf,
+ *    and neither is gated on FEATURE_FLAGS.explore: the page ships and
+ *    Settings gives it a row.
  */
 
 import TestRenderer, { act } from 'react-test-renderer';
@@ -132,24 +135,27 @@ describe('copyright year', () => {
   });
 });
 
-describe('患者社区 gating', () => {
+describe('病友经验', () => {
   afterEach(() => {
     mockExploreEnabled = false;
   });
 
-  it('does not advertise the community while the explore flag is off', () => {
-    mockExploreEnabled = false;
-    const text = renderedText();
-    expect(text).not.toContain('患者社区');
-    // The prose claim has to go with it — a paragraph promising
-    // 交流经验 is the same promise as the feature row.
-    expect(text).not.toContain('交流经验');
+  it('is advertised in either flag state, because the page ships', () => {
+    for (const enabled of [false, true]) {
+      mockExploreEnabled = enabled;
+      expect(renderedText()).toContain('病友经验');
+    }
   });
 
-  it('lists it again when the flag is on', () => {
-    mockExploreEnabled = true;
-    const text = renderedText();
-    expect(text).toContain('患者社区');
-    expect(text).toContain('交流经验');
+  it('promises reading rather than talking to anyone', () => {
+    // screens/p-community has no posting surface: the shelf carries
+    // narratives their authors published elsewhere. A 交流 promise
+    // here would send a patient looking for a forum that is not there.
+    for (const enabled of [false, true]) {
+      mockExploreEnabled = enabled;
+      const text = renderedText();
+      expect(text).not.toContain('交流');
+      expect(text).not.toContain('互助');
+    }
   });
 });

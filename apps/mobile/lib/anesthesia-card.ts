@@ -1,4 +1,4 @@
-import type { ClinicalPassportSummary } from './api';
+import { readPassportValueOrigins, type ClinicalPassportSummary } from './api';
 
 /**
  * The content of the anesthesia card, as data.
@@ -89,20 +89,41 @@ export const buildAnesthesiaCard = (
   summary: ClinicalPassportSummary,
   today: Date,
 ): AnesthesiaCardModel => {
-  const { confirmation, d4z4Repeats } = summary.diagnosis;
+  const { confirmation, d4z4Repeats, geneticType } = summary.diagnosis;
+  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
 
-  // The same distinction the passport itself draws. An anesthetist
-  // reading 「FSHD」 on a card will plan around FSHD; if nobody has
-  // actually confirmed that, they are entitled to know before they
-  // choose an airway plan on the strength of it.
+  /**
+   * The line an anesthetist plans an airway from. It says what this
+   * platform CHECKED, and it names no author it has not been told.
+   *
+   * A non-genetic `confirmation` says nothing about who filed anything
+   * and nothing about whether a genetic report exists: a report parsed
+   * to nothing but a 分型 lands in one of those states with that 分型
+   * read off the report by OCR. What `confirmation` does withhold is
+   * narrower, and is the thing that matters here: no D4Z4 repeat count,
+   * 4q haplotype or EcoRI fragment was read. `unconfirmedLine` says
+   * that and nothing more, which is true in every non-genetic state.
+   *
+   * D4Z4 is not bracketed in the confirmed branch: the API resolves that
+   * value off the genetic report or not at all, so a repeat count on
+   * this card is always a report's.
+   */
+  const unconfirmedLine =
+    '诊断：FSHD —— 未经基因确诊：本平台没有读到可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）';
+  // Whose 分型 it is, when the platform has been told. Without it the
+  // reader is left to assume, and 「the patient says FSHD1」 and 「we read
+  // FSHD1 off their report」 are different things to plan from.
+  const geneticTypeOrigin = origins?.geneticType ?? null;
+  const geneticTypeNote =
+    hasValue(geneticType) && geneticTypeOrigin && geneticTypeOrigin.kind !== 'absent'
+      ? `；档案里的分型为 ${geneticType}（${geneticTypeOrigin.labelZh}）`
+      : '';
   const diagnosisLine =
     confirmation === 'genetic'
       ? hasValue(d4z4Repeats)
         ? `诊断：FSHD，基因确诊（D4Z4 重复数 ${d4z4Repeats}）`
         : '诊断：FSHD，基因确诊'
-      : confirmation === 'self_reported'
-        ? '诊断：FSHD —— 本人填报，本平台尚未收到基因报告'
-        : '诊断：FSHD —— 本平台尚无诊断依据记录';
+      : `${unconfirmedLine}${geneticTypeNote}`;
 
   const patientLines = [
     diagnosisLine,

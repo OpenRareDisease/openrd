@@ -6,15 +6,15 @@
  *    「避免琥珀胆碱」, the type did not reflow at 200%, and nothing on it
  *    could be copied into WeChat to send a surgical team in advance.
  *
- * 2. The diagnosis cells are typeset according to
- *    `diagnosis.confirmation`. The API has carried that field for a
- *    while and the PDF honours it; this screen did not read it, so a
- *    diagnosis the patient typed into a text box was set in the same
- *    16.5pt/700/tabular-nums metric type as a D4Z4 repeat count off a
- *    genetics report, under a heading that said 证据摘要. This
- *    population lives through a ~10-year diagnostic odyssey with a
- *    majority misdiagnosed on the way; a well-set number is read as a
- *    measurement, and that is the mechanism.
+ * 2. Each diagnosis cell is typeset according to its OWN source, from
+ *    `diagnosis.valueOrigins`. `diagnosis.confirmation` is an evidence
+ *    grade and answers nothing about authorship, so it picks no
+ *    typography here: a 分型 the patient typed into a text box and a
+ *    D4Z4 repeat count off a genetics report can sit in the same block
+ *    under the same grade. This population lives through a ~10-year
+ *    diagnostic odyssey with a majority misdiagnosed on the way; a
+ *    well-set number is read as a measurement, and that is the
+ *    mechanism.
  */
 
 import React from 'react';
@@ -33,6 +33,7 @@ jest.mock('../../../lib/api', () => {
     // whole passport down, so a test that faked it would be asserting
     // against its own fiction.
     readPassportGeneticEvidence: jest.requireActual('../../../lib/api').readPassportGeneticEvidence,
+    readPassportValueOrigins: jest.requireActual('../../../lib/api').readPassportValueOrigins,
     ApiError,
     isConsentRequiredError: () => false,
     getClinicalPassportSummary: jest.fn(),
@@ -139,7 +140,29 @@ const asMock = <T,>(fn: T) => fn as unknown as jest.Mock;
 const flat = (style: unknown) =>
   StyleSheet.flatten(style as never) as unknown as Record<string, unknown>;
 
-const SELF_REPORTED_NOTICE = '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证';
+/** One `PassportValueOrigin`, worded the way the API words it. */
+const origin = (kind: string, labelZh: string) => ({
+  kind,
+  labelZh,
+  documentId: null,
+  adminUserId: null,
+  at: null,
+  detail: null,
+});
+
+/**
+ * THE FIXTURE THAT USED TO BE MISLABELLED, AND IS THE POINT.
+ *
+ * A genetics report parsed to nothing but a 分型 puts `confirmation` at
+ * `self_reported` with 分型 read off that report — nobody typed it. The
+ * screen printed 「本人填写的诊断信息」 over exactly this profile.
+ */
+const SELF_REPORTED_ORIGINS = {
+  geneticType: origin('report', '报告读取'),
+  d4z4Repeats: origin('absent', '未填'),
+  methylationValue: origin('absent', '未填'),
+  diagnosisDate: origin('patient', '本人填写'),
+};
 
 const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
   ({
@@ -155,7 +178,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
         key: 'diagnosis',
         title: '诊断证据',
         ready: false,
-        summary: SELF_REPORTED_NOTICE,
+        summary: '未经基因确诊（未读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— 分型（报告读取）',
         meta: '诊断日期 2023-05-01',
       },
     ],
@@ -169,6 +192,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
       d4z4Repeats: '—',
       methylationValue: '—',
       diagnosisDate: '2023-05-01',
+      valueOrigins: SELF_REPORTED_ORIGINS,
       geneEvidence: '暂无可直接展示的基因证据',
     },
     motor: {
@@ -239,6 +263,15 @@ const geneticSummary = () =>
       d4z4Repeats: '4',
       methylationValue: '25%',
       diagnosisDate: '2023-05-01',
+      // 基因确诊 is earned by the repeat count alone, so this profile
+      // is confirmed with a 分型 the patient typed and a date the OCR
+      // autofill may have written. Three different sources, one block.
+      valueOrigins: {
+        geneticType: origin('patient', '本人填写'),
+        d4z4Repeats: origin('report', '报告读取'),
+        methylationValue: origin('report', '报告读取'),
+        diagnosisDate: origin('indeterminate', '来源无法确定'),
+      },
       geneEvidence: 'FSHD1 · 4qA · 18kb · 4',
     },
   });
@@ -263,6 +296,12 @@ const readText = (node: ReactTestInstance): string => {
 
 const allText = (renderer: TestRenderer.ReactTestRenderer) =>
   renderer.root.findAllByType(Text).map(readText);
+
+/** Every `Text` run as one string, for asserting on a substring of a
+ *  sentence. `allText` stays the exact-match form: 「证据摘要」 is a note
+ *  TITLE, and it is also a word inside the section's own intro copy, so
+ *  asserting its absence has to compare whole runs. */
+const joinedText = (renderer: TestRenderer.ReactTestRenderer) => allText(renderer).join('\n');
 
 const nodeWithText = (renderer: TestRenderer.ReactTestRenderer, text: string) =>
   renderer.root.findAllByType(Text).find((node) => readText(node) === text);
@@ -317,7 +356,10 @@ describe('麻醉卡：同一份内容，两种载体', () => {
     // Both halves of the patient block, including the line item 1 of
     // this lane was about.
     expect(text).toContain('最近肺功能：未做过或未上传');
-    expect(text).toContain('诊断：FSHD —— 本人填报，本平台尚未收到基因报告');
+    // 本人填报 is gone from this line: this fixture's 分型 was read off a
+    // report, so nobody filed it and a genetic report IS on file.
+    expect(text).toContain('诊断：FSHD —— 未经基因确诊');
+    expect(text).toContain('档案里的分型为 FSHD1（报告读取）');
     // A literature summary must not travel without its disclaimer or
     // its sources.
     expect(text).toContain('不替代麻醉医师');
@@ -377,26 +419,62 @@ describe('麻醉卡：同一份内容，两种载体', () => {
   });
 });
 
-describe('三态诊断：自填的不能长得像测出来的', () => {
-  const DIAGNOSIS_VALUES = ['FSHD1', '2023-05-01'];
+describe('逐项来源：每个值按自己的来源排版，而不是按整块的证据等级', () => {
+  const styleOfValue = (renderer: TestRenderer.ReactTestRenderer, value: string) =>
+    StyleSheet.flatten(nodeWithText(renderer, value)!.props.style);
 
-  it('未确诊时四个诊断格降到正文字重，并且不用等宽数字', async () => {
-    const renderer = await render(summary());
-    DIAGNOSIS_VALUES.forEach((value) => {
-      const node = nodeWithText(renderer, value);
-      expect(node).toBeDefined();
-      const style = StyleSheet.flatten(node!.props.style);
-      expect(style.fontVariant).toBeUndefined();
-      expect(style.fontWeight).not.toBe('700');
-    });
+  it('报告读出来的那个值保持 metric，同一块里患者自己填的那个不保持', async () => {
+    // The fixture is genetically confirmed — earned by the repeat count
+    // alone — with a 分型 the patient typed. One block, two registers.
+    const renderer = await render(geneticSummary());
+    const repeats = styleOfValue(renderer, '4');
+    expect(repeats.fontWeight).toBe('700');
+    expect(repeats.fontVariant).toEqual(['tabular-nums']);
+
+    const geneticType = styleOfValue(renderer, 'FSHD1');
+    expect(geneticType.fontWeight).not.toBe('700');
+    expect(geneticType.fontVariant).toBeUndefined();
   });
 
-  it('基因确诊时保持 metric 字体', async () => {
-    const renderer = await render(geneticSummary());
-    const node = nodeWithText(renderer, '4');
-    const style = StyleSheet.flatten(node!.props.style);
+  it('「来源无法确定」不当成报告读取 —— 它可能就是患者的叙述', async () => {
+    const style = styleOfValue(await render(geneticSummary()), '2023-05-01');
+    expect(style.fontWeight).not.toBe('700');
+    expect(style.fontVariant).toBeUndefined();
+  });
+
+  it('报告里只读到分型时，那一格是报告读取，不降级', async () => {
+    // `confirmation` is `self_reported` on this fixture and the 分型
+    // still came off a report.
+    const style = styleOfValue(await render(summary()), 'FSHD1');
     expect(style.fontWeight).toBe('700');
     expect(style.fontVariant).toEqual(['tabular-nums']);
+  });
+
+  it('每个值下面印着它自己的来源', async () => {
+    const text = allText(await render(summary()));
+    expect(text).toContain('报告读取');
+    expect(text).toContain('本人填写');
+  });
+
+  it('没有来源可归的值不印「未填」两个字 —— 「—（未填）」是同一件事说两遍', async () => {
+    expect(joinedText(await render(summary()))).not.toContain('未填');
+  });
+
+  it('服务端没给逐项来源时说没给，不读成「都是报告读出来的」', async () => {
+    const renderer = await render(
+      summary({ diagnosis: { ...summary().diagnosis, valueOrigins: undefined } }),
+    );
+    expect(joinedText(renderer)).toContain('服务端这一版没有返回逐项来源');
+    // It names the diagnosis values it is about. 临床护照 ID is generated
+    // here and 诊断进度 is labelled with its own author, so neither is
+    // covered by this sentence.
+    expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值和诊断日期');
+    // And the notice above the grid stops pointing at captions that are
+    // not there.
+    expect(joinedText(renderer)).not.toContain('本平台能说明来源的值，来源就写在那个值下面');
+    // And nothing keeps the laboratory register on the strength of a
+    // field that never arrived.
+    expect(styleOfValue(renderer, 'FSHD1').fontVariant).toBeUndefined();
   });
 
   it('护照 ID 在任何状态下都保持 metric —— 它是系统生成的，不是谁声称的', async () => {
@@ -404,95 +482,79 @@ describe('三态诊断：自填的不能长得像测出来的', () => {
     const style = StyleSheet.flatten(nodeWithText(renderer, 'FSHD-A1B2C3D4E5')!.props.style);
     expect(style.fontVariant).toEqual(['tabular-nums']);
   });
+});
 
-  it('未确诊时标题不再叫「证据摘要」', async () => {
+describe('标题和提示只说证据，不说是谁填的', () => {
+  it('未确诊时标题不再叫「证据摘要」，也不认领一个作者', async () => {
     const renderer = await render(summary());
-    const text = allText(renderer);
-    expect(text).toContain('本人填写的诊断信息');
-    expect(text).not.toContain('证据摘要');
+    expect(allText(renderer)).toContain('诊断信息');
+    expect(allText(renderer)).not.toContain('证据摘要');
+    expect(joinedText(renderer)).not.toContain('本人填写的诊断信息');
   });
 
   it('基因确诊时标题仍然是「证据摘要」，也不出提示', async () => {
     const renderer = await render(geneticSummary());
-    const text = allText(renderer);
-    expect(text).toContain('证据摘要');
-    expect(text).not.toContain('本人填写的诊断信息');
-    expect(text).not.toContain(SELF_REPORTED_NOTICE);
+    expect(allText(renderer)).toContain('证据摘要');
+    expect(joinedText(renderer)).not.toContain('未经基因确诊');
   });
 
-  it('提示原样复用 summaryCards 的那句话，不另写一句', async () => {
-    // Two wordings for the same fact is two things to keep in step, and
-    // the PDF exported from this screen already prints one of them.
-    const renderer = await render(summary());
-    expect(allText(renderer)).toContain(SELF_REPORTED_NOTICE);
-  });
-
-  it('confirmation 为 none 时同样降级', async () => {
-    const none = summary({
-      summaryCards: [
-        {
-          key: 'diagnosis',
-          title: '诊断证据',
-          ready: false,
-          summary: '缺少可直接展示的基因或诊断证据',
-          meta: '诊断日期 —',
-        },
-      ],
-      diagnosis: { ...summary().diagnosis, confirmation: 'none' },
-    });
-    const renderer = await render(none);
-    const text = allText(renderer);
-    expect(text).toContain('缺少可直接展示的基因或诊断证据');
-    expect(text).not.toContain('证据摘要');
-  });
-
-  it('管理员代填时标题说是管理员填的，不说是本人填的', async () => {
-    // §B3's fourth source. This heading had two branches, so
-    // `admin_entered` fell into the else and printed 「本人填写的诊断
-    // 信息」 over values an administrator typed — on the screen the
-    // PATIENT reads, and directly under the summary card's own 「以下由
-    // 本平台管理员代填」. clinical-passport-pdf.ts and
-    // passport-share.html.ts branched on all four already.
-    const adminNotice = '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写';
-    const renderer = await render(
-      summary({
-        summaryCards: [
-          {
-            key: 'diagnosis',
-            title: '诊断证据',
-            ready: false,
-            summary: adminNotice,
-            meta: '诊断日期 2023-05-01',
-          },
-        ],
-        diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' },
-      }),
+  it('管理员代填时也不说是管理员填的整块 —— 那个标记只关于「确诊年份」一个字段', async () => {
+    // `confirmation` is derived from `foundation.diagnosisYear`'s
+    // provenance entry alone, and this block holds values an
+    // administrator has no way to write, so neither 「管理员代填的诊断
+    // 信息」 nor 「本人填写的诊断信息」 can be said of it.
+    const text = joinedText(
+      await render(
+        summary({ diagnosis: { ...summary().diagnosis, confirmation: 'admin_entered' } }),
+      ),
     );
-    const text = allText(renderer);
-    expect(text).toContain(adminNotice);
-    expect(text).toContain('管理员代填的诊断信息');
+    expect(text).not.toContain('管理员代填的诊断信息');
     expect(text).not.toContain('本人填写的诊断信息');
-    expect(text).not.toContain('证据摘要');
   });
 
-  it('confirmation 为 none 时也不说是本人填的 —— 没有人填过', async () => {
-    const renderer = await render(
-      summary({
-        summaryCards: [
-          {
-            key: 'diagnosis',
-            title: '诊断证据',
-            ready: false,
-            summary: '缺少可直接展示的基因或诊断证据',
-            meta: '诊断日期 —',
+  it('提示说的是被检查过的那三项，不是「本平台尚未收到基因报告」', async () => {
+    const text = joinedText(await render(summary()));
+    expect(text).toContain('未经基因确诊');
+    expect(text).toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+    expect(text).not.toContain('尚未收到');
+  });
+
+  it('只解析出甲基化值时，不说「没有可展示的证据」而下面正印着那个值', async () => {
+    // 甲基化 is in none of the three confirmation tests, so a genetics
+    // report that parsed to a methylation value and nothing else yields
+    // `confirmation: 'none'`. The notice may not say there is nothing
+    // to show while that report's own 甲基化值 is printed below it.
+    const text = joinedText(
+      await render(
+        summary({
+          summaryCards: [
+            {
+              key: 'diagnosis',
+              title: '诊断证据',
+              ready: false,
+              summary: '缺少可直接展示的基因或诊断证据',
+              meta: '诊断日期 —',
+            },
+          ],
+          diagnosis: {
+            ...summary().diagnosis,
+            confirmation: 'none',
+            geneticType: '—',
+            diagnosisDate: '—',
+            methylationValue: '35%',
+            valueOrigins: {
+              geneticType: origin('absent', '未填'),
+              d4z4Repeats: origin('absent', '未填'),
+              methylationValue: origin('report', '报告读取'),
+              diagnosisDate: origin('absent', '未填'),
+            },
           },
-        ],
-        diagnosis: { ...summary().diagnosis, confirmation: 'none' },
-      }),
+        }),
+      ),
     );
-    const text = allText(renderer);
-    expect(text).toContain('诊断信息');
-    expect(text).not.toContain('本人填写的诊断信息');
+    expect(text).toContain('35%');
+    expect(text).toContain('报告读取');
+    expect(text).not.toContain('缺少可直接展示的基因或诊断证据');
   });
 
   it('提示不是第四块琥珀色 —— 那个颜色在这个产品里只说一件事', async () => {

@@ -1,3 +1,4 @@
+import { APP_NAME } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
@@ -825,7 +826,14 @@ const LoginRegisterScreen: React.FC = () => {
                     <Icon name="heartbeat" size={24} style={styles.logoIcon} />
                   </View>
                 </Animated.View>
-                <Text style={styles.appName}>FSHD-openrd</Text>
+                {/* The constant, not a literal. This is the first screen
+                    an unauthenticated patient sees and it prints its
+                    text in the largest type on the page — it said
+                    「FSHD-openrd」, the GitHub repository, to someone who
+                    has no idea this product has one. 设置 and 关于我们
+                    were fixed for the same defect; this screen was
+                    missed. See __tests__/app-name.test.tsx. */}
+                <Text style={styles.appName}>{APP_NAME}</Text>
                 <Text style={styles.appSlogan}>智能FSHD管理平台</Text>
               </View>
             </View>

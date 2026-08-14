@@ -4,8 +4,8 @@
 # Split out because the image was single-stage: `npm ci` ran ten lines before
 # `ENV NODE_ENV=production`, so typescript, vitest, supertest, eslint and tsx
 # were installed, never pruned, and sat executable at runtime inside the
-# container that holds patient records — alongside the full src tree and 46
-# compiled test modules. None of that reaches the runtime stage now.
+# container that holds patient records — alongside the full src tree and every
+# compiled test module. None of that reaches the runtime stage now.
 # ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim AS builder
 
@@ -20,12 +20,12 @@ COPY apps/api ./apps/api
 
 RUN npm run build --workspace @openrd/api
 
-# apps/api/tsconfig.json is `include: ["src"]` with no test exclusion, so every
-# *.test.ts compiles into dist next to the served code. Those modules import
-# vitest and supertest, which the runtime stage deliberately does not install,
-# so shipping them would mean 46 permanently-unloadable files in the PHI
-# container. Deleting them here keeps the runtime image clean regardless of
-# whether tsconfig ever grows the `exclude` entry.
+# A backstop, and expected to delete nothing: apps/api/tsconfig.json now
+# excludes `src/**/*.test.ts`, so the build no longer emits them. It stays
+# because the failure it guards against is silent — test modules import vitest
+# and supertest, which the runtime stage deliberately does not install, so a
+# widened `include` or a dropped `exclude` would put permanently-unloadable
+# files in the container that holds patient records and nothing would say so.
 RUN find apps/api/dist -name '*.test.js' -delete \
     && find apps/api/dist -name '*.test.js.map' -delete \
     && find apps/api/dist -name '*.test.d.ts' -delete
@@ -34,10 +34,7 @@ RUN find apps/api/dist -name '*.test.js' -delete \
 # Runtime stage.
 #
 # Node runtime + the Python/Tesseract toolchain the embedded OCR parser shells
-# out to, production dependencies only, and just the three trees the process
-# actually reads: apps/api/dist (the build output), apps/report-manager (the
-# parser resolved from routes/index.ts as ../report-manager/embedded_parser.py)
-# and db (migrate.ts resolves ../../db/migrations from the /app/apps/api cwd).
+# out to, and production dependencies only.
 # ---------------------------------------------------------------------------
 FROM node:20-bookworm-slim
 
@@ -90,8 +87,13 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip3 install --break-system-packages --no-cache-dir \
       -i ${PIP_INDEX_URL} -r ./apps/api/requirements-embedded-report.txt
 
+# The build output — this is what CMD runs.
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
+# The OCR parser. routes/index.ts resolves it as
+# ../report-manager/embedded_parser.py from the /app/apps/api cwd.
 COPY apps/report-manager ./apps/report-manager
+# The migrations. migrate.ts resolves ../../db/migrations from the same cwd,
+# and the first half of CMD runs it.
 COPY db ./db
 
 # One script, not scripts/. Granting the first administrator has to

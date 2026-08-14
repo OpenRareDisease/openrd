@@ -454,6 +454,74 @@ describe('AdminController.updatePatientBaseline', () => {
     expect(profiles.upsertBaseline).not.toHaveBeenCalled();
   });
 
+  /**
+   * Runs the baseline write with `If-Match` set to `ifMatch` against a
+   * record stored at STORED_UPDATED_AT, and hands back the error it
+   * refused with. Fails if it did not refuse.
+   */
+  const refusalWithIfMatch = async (ifMatch: string | undefined) => {
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ foundation: { fullName: '张三' } }),
+      profiles,
+    });
+    try {
+      await controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { foundation: { fullName: '张三丰' } },
+          method: 'PUT',
+          header: (name: string) => (name.toLowerCase() === 'if-match' ? ifMatch : undefined),
+        }),
+        fakeResponse().res,
+      );
+    } catch (error) {
+      expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+      return error as { statusCode: number; message: string };
+    }
+    throw new Error('expected the write to be refused');
+  };
+
+  /**
+   * THE TWO REFUSALS HAVE TO BE TWO DIFFERENT SENTENCES, and this is
+   * the assertion that they are.
+   *
+   * The two tests above each pin one phrase out of their own message,
+   * which is not enough: 「请刷新这一页」 appears in both, so rewriting
+   * the mismatch message into the absent-header text leaves both of
+   * them green while the operator whose form went stale is told the
+   * version was never sent. Comparing the two messages is what fails.
+   */
+  it('says two different things about a missing version and a stale one', async () => {
+    const stale = await refusalWithIfMatch('2026-08-12T00:00:00.000Z');
+    const absent = await refusalWithIfMatch(undefined);
+
+    expect(stale.statusCode).toBe(409);
+    expect(absent.statusCode).toBe(409);
+    expect(stale.message).not.toBe(absent.message);
+    // Each says the thing that is true of its own case, and neither
+    // says the other's.
+    expect(stale.message).toContain('已经不是你打开这一页时的那一版');
+    expect(stale.message).not.toContain('没有带上');
+    expect(absent.message).toContain('没有带上它打开时的档案版本');
+    expect(absent.message).not.toContain('已经不是');
+  });
+
+  /**
+   * 「If-Match:」 with nothing after it. `req.header` answers '' rather
+   * than undefined, so the absent branch has to test the VALUE and not
+   * just its presence — otherwise the empty header falls through to the
+   * mismatch branch and asserts an edit that nobody made.
+   */
+  it('treats an If-Match with an empty value as no version at all', async () => {
+    for (const empty of ['', '   ']) {
+      const refusal = await refusalWithIfMatch(empty);
+      expect(refusal.statusCode).toBe(409);
+      expect(refusal.message).toContain('没有带上它打开时的档案版本');
+      expect(refusal.message).not.toContain('已经不是');
+    }
+  });
+
   it('answers 404 for a user id that belongs to no account', async () => {
     const controller = makeController({
       admin: { getAccount: vi.fn(async () => null) },

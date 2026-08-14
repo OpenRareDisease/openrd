@@ -334,6 +334,35 @@ const SettingsScreen = () => {
             detail="注册库上登记的 FSHD 试验，以及这份名单是哪天抄下来的"
             onPress={() => router.push('/p-trials')}
           />
+          {/* 病友经验 and 康复：辅具与运动 sit in this group for the
+              same reason 临床试验 does: each is a finished page, and an
+              即将上线 badge on a finished page costs it the readership
+              this group exists to protect. 病友经验 is the shelf of
+              published, bylined narratives in screens/p-community;
+              康复：辅具与运动 is the orthosis and walking-aid ladder plus
+              the six-month home-exercise plan in screens/p-rehab_share.
+
+              A row here is what makes either page findable. 探索 ·
+              即将上线 below sits behind EXPO_PUBLIC_ENABLE_EXPLORE —
+              one flag over that whole group, off by default — so a
+              finished page listed there instead gets no row in a
+              default build. The routes are not gated, so a deep link
+              into a web export still resolves; what the flag withholds
+              is the way to find the page. See the comment on that
+              group below, and
+              __tests__/finished-explore-entries.test.tsx. */}
+          <Row
+            icon="users"
+            label="病友经验"
+            detail="病友自己写下、已公开发表的经历；本页只放摘录和出处"
+            onPress={() => router.push('/p-community')}
+          />
+          <Row
+            icon="heart-pulse"
+            label="康复：辅具与运动"
+            detail="辅具与助行器怎么选，以及六个月的居家运动计划"
+            onPress={() => router.push('/p-rehab_share')}
+          />
           <Row
             icon="clipboard-list"
             label="残疾评定准备"
@@ -431,34 +460,30 @@ const SettingsScreen = () => {
           )}
         </ListGroup>
 
-        {/* 探索 · 即将上线 — five destinations that still render
-            UnavailableScreen. Listing them next to privacy, audit
-            history and account deletion made the whole page read as
-            equally real, so they sit behind EXPO_PUBLIC_ENABLE_EXPLORE:
-            the screens and routes stay, only the discoverability is
-            gated.
+        {/* 探索 · 即将上线 — the rows listed below, and only those. Each
+            one still opens an UnavailableScreen. Listing them next to
+            privacy, audit history and account deletion made the whole
+            page read as equally real, so they sit behind
+            EXPO_PUBLIC_ENABLE_EXPLORE: the screens and routes stay,
+            only the discoverability is gated.
 
-            An earlier version of this comment said 「flip the flag per
-            build as each one actually launches」. That is not something
-            this flag can do — it is ONE flag over FIVE rows, so
-            flipping it for the one that launched would also surface the
-            four that had not. The first launch proved it: when 临床试验
-            became real it got its own row above (see
-            __tests__/trials-entry.test.tsx, which pins both ways of
-            getting this wrong) and 临床试验广场 stayed here as a
-            placeholder. Whichever of these five ships next, do the same
-            — a real page earns a real row, and this group shrinks by
-            one. Splitting the flag would only be worth it to ship two
-            of them dark at once, which has not come up. */}
+            One flag covers the whole group, so it cannot be flipped
+            per destination as that destination launches — flipping it
+            for the one that is ready surfaces the ones that are not.
+            A page that becomes real leaves this list AND gets a row of
+            its own above: doing only the first leaves it with no entry
+            at all, and doing only the second leaves a duplicate row
+            that comes back whenever the flag is on. See
+            __tests__/trials-entry.test.tsx and
+            __tests__/finished-explore-entries.test.tsx, which pin both
+            ways of getting this wrong. */}
         {isFeatureEnabled('explore') ? (
           <ListGroup title="探索 · 即将上线">
             {(
               [
-                { title: '患者社区', icon: 'users', route: '/p-community' },
                 { title: '专家咨询', icon: 'user-doctor', route: '/p-expert_consult' },
                 { title: '临床试验广场', icon: 'flask-vial', route: '/p-trial_square' },
                 { title: '医疗资源地图', icon: 'map-location-dot', route: '/p-resource_map' },
-                { title: '康复经验分享', icon: 'heart-pulse', route: '/p-rehab_share' },
               ] as const
             ).map((item) => (
               <Row

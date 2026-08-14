@@ -344,8 +344,16 @@ export class AdminController {
     // had been edited — true of a mismatch, and not something an absent
     // header shows at all. The operator would go looking for an edit
     // that never happened.
-    const expectedUpdatedAt = req.header('if-match');
-    if (expectedUpdatedAt === undefined) {
+    //
+    // A header sent with an empty or blank value is ABSENT, not a
+    // mismatch. 「If-Match:」 with nothing after it reaches `req.header`
+    // as '', which is not `undefined` and is not `stored.updatedAt`
+    // either — so a bare `=== undefined` check sent the empty case down
+    // the mismatch branch and told the operator somebody had edited the
+    // record. Trimming also means a value padded with the whitespace
+    // HTTP allows around a field value is compared as the token it is.
+    const expectedUpdatedAt = req.header('if-match')?.trim();
+    if (!expectedUpdatedAt) {
       throw new AppError(
         '这一页没有带上它打开时的档案版本，所以后台没法确认你看到的还是不是现在存的。请刷新这一页再试；如果刷新之后还是这样，是这一版后台的问题，别绕过去直接改。',
         409,

@@ -92,6 +92,17 @@ const summary = {
     diagnosisDate: '2019-04-02',
     d4z4Repeats: null,
     methylationValue: null,
+    // Every diagnosis value the page prints carries its own source now
+    // (PassportValueOriginDTO). This file is about routing, so the
+    // shape is here only to keep the renderer fed; what the page does
+    // with each state is pinned in passport-share.html.test.ts, from
+    // profiles rather than from a literal.
+    valueOrigins: {
+      geneticType: { kind: 'patient', labelZh: '本人填写' },
+      d4z4Repeats: { kind: 'absent', labelZh: '未填' },
+      methylationValue: { kind: 'absent', labelZh: '未填' },
+      diagnosisDate: { kind: 'patient', labelZh: '本人填写' },
+    },
     geneEvidence: null,
   },
   motor: { summary: '上肢抬举受限', latestMeasurementAt: null, highlights: [] },

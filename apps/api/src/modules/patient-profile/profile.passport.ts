@@ -75,42 +75,42 @@ export interface PassportSummaryCardDTO {
 }
 
 /**
- * How the diagnosis on this passport is backed.
+ * HOW WELL BACKED the diagnosis on this passport is. NOT who typed it.
  *
  * `genetic` — a D4Z4 repeat count, 4q haplotype or EcoRI fragment was
- *   extracted from a report the patient uploaded. This is evidence.
- * `self_reported` — the patient typed a diagnosis or a date into the
- *   baseline form. This is a claim, and it is the commonest state:
- *   the literature puts the FSHD diagnostic odyssey near a decade with
- *   a majority misdiagnosed along the way, so the realistic holder of
- *   an unconfirmed passport is someone carrying「可能是肌病」or an
+ *   extracted from a report the patient uploaded. This is evidence, and
+ *   it is the only state on this list that is.
+ * `self_reported` — a 分型 or a 诊断日期 is on the page and no such
+ *   measurement is. That is the commonest state: the literature puts
+ *   the FSHD diagnostic odyssey near a decade with a majority
+ *   misdiagnosed along the way, so the realistic holder of an
+ *   unconfirmed passport is someone carrying 「可能是肌病」 or an
  *   outright wrong label.
- * `admin_entered` — the diagnosis field carries a provenance marker,
- *   so it is NOT the patient's own account of themselves. In the
- *   ordinary case the marker parses and names an administrator who
- *   typed it into the back office on the patient's behalf, off a phone
- *   call or a photo of a discharge summary: a THIRD thing, not
- *   evidence and not self-report, that the patient may never have
- *   seen. Folding that into `self_reported` would put our own typing
- *   in the patient's mouth on the page a neurologist reads; folding it
- *   into `none` would hide a value that is on the page.
- *
- *   A marker that EXISTS AND CANNOT BE PARSED lands in this state too,
- *   because the remaining three all say something false about it and
- *   the one that is unsurvivable is 「本人填写」. So this state means
- *   「不是本人填写」 and no more than that: A RENDERER MAY NOT ASSERT WHO
- *   TYPED IT off `confirmation` alone. Who and when — or that neither
- *   could be read — is per field in `fieldOrigins`, and the strings
- *   this file builds for this state check the year's own origin before
- *   naming an administrator. See baseline-provenance.ts.
+ * `admin_entered` — the same as `self_reported` on evidence, plus a
+ *   provenance marker on ONE baseline field, `foundation.diagnosisYear`
+ *   (see the derivation in `buildClinicalPassportSummary`). A marker
+ *   that exists and cannot be parsed lands here too, because the
+ *   fallback that looks harmless — treat it as no entry — is the one
+ *   that renders an administrator's typing as 「本人填写」.
  * `none` — nothing yet.
  *
- * The distinction is the whole point. This document is designed to be
- * handed to a neurologist who may see three FSHD patients in a career,
- * and a confident, well-typeset page headed FSHD anchors them — which
- * is the mechanism that produces those ten-year odysseys in the first
- * place. A passport must never present a patient's own guess in the
- * same visual register as a genetic result.
+ * WHAT THIS TYPE MAY NOT BE USED FOR
+ *
+ * Authorship. None of these four states says who put 分型, 甲基化 or
+ * 诊断日期 on the page: 分型 can be OCR off an uploaded report in the
+ * `self_reported` state, and can be the patient's own free text in the
+ * `genetic` state, because the measurement that earned `genetic` is a
+ * different field. Renderers that read authorship off this enum
+ * printed 「本人填写」 over values nobody typed. Per value, the answer is
+ * `PassportDiagnosisDTO.valueOrigins`; per baseline field, it is
+ * `fieldOrigins`.
+ *
+ * The evidence distinction is still the whole point of the document.
+ * This page is designed to be handed to a neurologist who may see three
+ * FSHD patients in a career, and a confident, well-typeset page headed
+ * FSHD anchors them — which is the mechanism that produces those
+ * ten-year odysseys in the first place. A passport must never present a
+ * patient's own guess in the same visual register as a genetic result.
  */
 export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'admin_entered' | 'none';
 
@@ -141,6 +141,74 @@ export interface PassportFieldOriginDTO {
   detail: string | null;
 }
 
+/**
+ * WHERE ONE PRINTED DIAGNOSIS VALUE CAME FROM.
+ *
+ * `fieldProvenance` (baseline-provenance.ts) records administrator
+ * writes to `baseline_payload` and nothing else, so its absence proves
+ * only 「no administrator wrote this baseline field」. Every renderer
+ * that read absence as 「本人填写」 was inventing an author, because the
+ * two values this block prints most — 分型 and 诊断日期 — are each
+ * assembled from more than one source:
+ *
+ *   `geneticType`   = report OCR (`diagnosisType` …) OR the free-text
+ *                     column `patient_profiles.genetic_mutation`
+ *   `diagnosisDate` = the column `patient_profiles.diagnosis_date` OR
+ *                     the report's own 诊断日期 field
+ *
+ * and profile.autofill.ts fills BOTH columns from OCR, at read time,
+ * before this file is handed the profile, leaving nothing behind that
+ * says it did. So the information is not missing — it is thrown away
+ * by the `||` that picks a source — and this record is what carries it
+ * instead. `indeterminate` is a real answer here, not a shrug: the
+ * string is equally consistent with the patient having typed it and
+ * with the autofill having copied it out of a report, and a renderer
+ * that picks one of those is guessing.
+ */
+export type PassportValueOriginKind =
+  /** OCR read it off a report the patient uploaded. */
+  | 'report'
+  /** A column only the patient's own screens write, with no
+   *  administrator marker against it and no report it could have been
+   *  autofilled from. */
+  | 'patient'
+  /** A provenance marker names an administrator. */
+  | 'admin_entered'
+  /** A marker exists and cannot be parsed. Not the patient's; no more
+   *  than that. */
+  | 'admin_unreadable'
+  /** Not attributable to one source: either two of them could have
+   *  produced the value and nothing stored tells them apart, or the
+   *  string is a join whose parts came from different places. See
+   *  `detail`. */
+  | 'indeterminate'
+  /** Nothing to attribute. */
+  | 'absent';
+
+export interface PassportValueOriginDTO {
+  kind: PassportValueOriginKind;
+  /** One phrase for a printed page, so four renderers do not each word
+   *  the same six states. */
+  labelZh: string;
+  /** The uploaded document OCR read the value off; null otherwise. */
+  documentId: string | null;
+  /** `app_users.id` from the marker, for `admin_entered` only. */
+  adminUserId: string | null;
+  /** ISO 8601 from the marker, for `admin_entered` only. */
+  at: string | null;
+  /** Why the marker could not be read, or why the source cannot be
+   *  narrowed. Null when `kind` already says everything. */
+  detail: string | null;
+}
+
+/** The diagnosis values this passport prints as their own rows, and
+ *  therefore the ones that need an origin beside them. */
+export type PassportDiagnosisValueKey =
+  | 'geneticType'
+  | 'd4z4Repeats'
+  | 'methylationValue'
+  | 'diagnosisDate';
+
 export interface PassportDiagnosisDTO {
   ready: boolean;
   /** Carried all the way to the printed page — see
@@ -167,7 +235,24 @@ export interface PassportDiagnosisDTO {
   d4z4Repeats: string;
   methylationValue: string;
   diagnosisDate: string;
+  /** Where each of the four values above came from. A `Record` and not
+   *  four optional fields: adding a printed row to the block should
+   *  fail the build until it has an origin. */
+  valueOrigins: Record<PassportDiagnosisValueKey, PassportValueOriginDTO>;
   geneEvidence: string;
+  /**
+   * Where `geneEvidence` came from.
+   *
+   * The string is 分型, 单倍型, EcoRI 片段 and D4Z4 重复数 joined. 单倍型,
+   * EcoRI 片段 and D4Z4 重复数 are read off an uploaded report and 分型
+   * falls back to `patient_profiles.genetic_mutation`, so the join can
+   * hold two sources at once. A field of its own rather than a
+   * `valueOrigins` entry: that record is keyed by
+   * `PassportDiagnosisValueKey`, which is the values this row is
+   * derived FROM. Resolved in `buildClinicalPassportSummary`, beside
+   * the components, rather than by each renderer separately.
+   */
+  geneEvidenceOrigin: PassportValueOriginDTO;
   /** The graded read of the genetic evidence, plus the 《检查申请说明》
    *  a patient can hand to a clinic. Always present — 未检测 and 未知
    *  are answers, not absences. */
@@ -299,6 +384,28 @@ export interface ClinicalPassportExportDTO {
   markdown: string;
 }
 
+/**
+ * Which slot supplied a printed diagnosis value — the half of the
+ * answer `buildReportInsights` can see.
+ *
+ * It knows which side of each `||` won and which documents are on
+ * file; it does not read `baseline_payload`'s provenance block. The two
+ * halves are folded together by `resolveValueOrigin`.
+ *
+ * `ocrCouldHaveFilled` is the autofill question, and it is answered
+ * coarsely on purpose: TRUE whenever any uploaded document carries a
+ * field of this kind at all. profile.autofill.ts normalises a report's
+ * date before writing it into the column, so comparing the printed
+ * value against the raw field would call 「2019年5月3日」 a mismatch and
+ * conclude the patient typed it — the one direction this whole record
+ * exists to prevent. A superset is only ever wrong towards
+ * `indeterminate`.
+ */
+type DiagnosisValueSlot =
+  | { slot: 'report'; documentId: string | null }
+  | { slot: 'profile_column'; ocrCouldHaveFilled: boolean }
+  | { slot: 'absent' };
+
 type ReportInsights = {
   /** The typed read of the latest genetic report. The four string
    *  fields below are the same values with 「—」 placeholders applied,
@@ -311,7 +418,12 @@ type ReportInsights = {
   d4z4Repeats: string;
   methylationValue: string;
   diagnosisDate: string;
+  diagnosisValueSlots: Record<PassportDiagnosisValueKey, DiagnosisValueSlot>;
   geneEvidence: string;
+  /** Whether `geneEvidence` holds a value only an uploaded report can
+   *  supply — 单倍型, EcoRI 片段 or D4Z4 重复数. What decides whether the
+   *  joined row can be attributed to one source. */
+  geneEvidenceFromReport: boolean;
   latestGeneticDate: string | null;
   latestGeneticDocumentId: string | null;
   latestMriDate: string | null;
@@ -383,11 +495,28 @@ const getTimestamp = (value?: string | null) => {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
+/**
+ * A calendar date with no time part.
+ *
+ * `patient_profiles.diagnosis_date` is a `date` column, so it arrives
+ * as `YYYY-MM-DD`. A report's 诊断日期 arrives as whatever the OCR read,
+ * which is why this is a test and not an assumption — anything that
+ * does not match falls through to the Date path below.
+ * `new Date('2019-05-03')` is UTC midnight, and `getFullYear` /
+ * `getMonth` / `getDate` then read it back in the SERVER's zone — so on
+ * any host west of Greenwich the passport printed 2019-05-02 for a
+ * diagnosis dated 2019-05-03, on the page a clinician reads and in
+ * every export built from it. A calendar date has no zone to convert
+ * between; the digits are the answer.
+ */
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 const formatDate = (value?: string | null) => {
   if (!value) return null;
+  const trimmed = value.trim();
+  if (DATE_ONLY.test(trimmed)) return trimmed;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    const trimmed = value.trim();
     return trimmed || null;
   }
   const year = date.getFullYear();
@@ -399,9 +528,12 @@ const formatDate = (value?: string | null) => {
 const formatDateLabel = (value?: string | null) => {
   const formatted = formatDate(value);
   if (!formatted) return '—';
-  const date = new Date(formatted);
-  if (Number.isNaN(date.getTime())) return formatted;
-  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  // Slice the string `formatDate` just built rather than re-parsing it:
+  // re-parsing is where the day was lost a second time, for the same
+  // reason it was lost the first time.
+  const parts = DATE_ONLY.exec(formatted);
+  if (!parts) return formatted;
+  return `${parts[2]}-${parts[3]}`;
 };
 
 const compactText = (value?: string | null, fallback = '暂无摘要', limit = 88) => {
@@ -588,6 +720,9 @@ const NO_STRUCTURED_RESULT = {
   cardiac: '暂无可自动读取的心脏检查结果',
 } as const;
 
+/** What `geneEvidence` says when none of its components parsed. */
+const NO_GENE_EVIDENCE = '暂无可直接展示的基因证据';
+
 const MRI_TEXT_PATTERNS = ['mri', '脂肪浸润', '前锯', 'hamstring', '臀肌', '胫前'];
 
 const collectMriDocuments = (documents: PatientDocumentDTO[]) => {
@@ -633,15 +768,49 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   // the placeholders are re-applied here because the string fields are
   // rendered directly and have always shown 「—」.
   const geneticRecord = buildGeneticRecord(geneticFields, geneticDoc?.id ?? null);
-  const geneticType = geneticRecord.geneticType || profile.geneticMutation || '—';
+  // Each of the next two values picks a source and, until this block
+  // existed, threw away which one it picked — the defect every renderer
+  // downstream then papered over by guessing. The picked value and the
+  // slot that supplied it are built from the same expression here so
+  // they cannot disagree.
+  const geneticTypeValue = geneticRecord.geneticType || profile.geneticMutation || null;
   const haplotype = geneticRecord.haplotype || '—';
   const ecoRIFragment = geneticRecord.ecoRIFragment || '—';
   const d4z4Repeats = geneticRecord.d4z4?.raw || '—';
   const methylationValue = geneticRecord.methylationValue || '—';
-  const diagnosisDate =
-    formatDate(profile.diagnosisDate) ||
-    formatDate(pickField(geneticFields, ['diagnosisDate', 'diagnosis_date'])) ||
-    '—';
+  const diagnosisDateFromColumn = formatDate(profile.diagnosisDate);
+  const diagnosisDateFromReport = formatDate(pickField(geneticFields, DIAGNOSIS_DATE_KEYS));
+  const diagnosisDateValue = diagnosisDateFromColumn || diagnosisDateFromReport || null;
+  const geneticType = geneticTypeValue || '—';
+  const diagnosisDate = diagnosisDateValue || '—';
+
+  const diagnosisValueSlots: Record<PassportDiagnosisValueKey, DiagnosisValueSlot> = {
+    geneticType: !geneticTypeValue
+      ? { slot: 'absent' }
+      : geneticRecord.geneticType
+        ? { slot: 'report', documentId: geneticRecord.documentId }
+        : {
+            slot: 'profile_column',
+            ocrCouldHaveFilled:
+              latestDocWithFields(documents, [...GENETIC_FIELD_KEYS.geneticType]) !== null,
+          },
+    // Both come off `geneticRecord`, which reads document fields and
+    // nothing else, so there is no second source to tell apart.
+    d4z4Repeats: geneticRecord.d4z4?.raw
+      ? { slot: 'report', documentId: geneticRecord.documentId }
+      : { slot: 'absent' },
+    methylationValue: geneticRecord.methylationValue
+      ? { slot: 'report', documentId: geneticRecord.documentId }
+      : { slot: 'absent' },
+    diagnosisDate: !diagnosisDateValue
+      ? { slot: 'absent' }
+      : diagnosisDateFromColumn
+        ? {
+            slot: 'profile_column',
+            ocrCouldHaveFilled: latestDocWithFields(documents, DIAGNOSIS_DATE_KEYS) !== null,
+          }
+        : { slot: 'report', documentId: geneticDoc?.id ?? null },
+  };
 
   const mriDoc = latestMri;
   const mriPayload = toPayload(mriDoc?.ocrPayload);
@@ -738,7 +907,18 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   const strengthPayload = toPayload(strengthDoc?.ocrPayload);
   const strengthSummary = buildStrengthSummary(strengthPayload?.fields);
 
-  const geneEvidence = [geneticType, haplotype, ecoRIFragment, d4z4Repeats]
+  // A JOIN, so the row can hold two sources at once: `haplotype`,
+  // `ecoRIFragment` and `d4z4Repeats` are read off `geneticRecord`,
+  // while `geneticType` falls back to
+  // `patient_profiles.genetic_mutation`. `geneEvidenceOrigin` on the
+  // summary is the bracket printed beside the joined string, and it is
+  // built from `geneEvidenceFromReport` rather than from a second
+  // reading of these values, so the bracket cannot describe a different
+  // string from the one printed.
+  const reportOnlyEvidence = [haplotype, ecoRIFragment, d4z4Repeats].filter(
+    (value) => value && value !== '—',
+  );
+  const geneEvidence = [geneticType, ...reportOnlyEvidence]
     .filter((value) => value && value !== '—')
     .join(' · ');
 
@@ -750,7 +930,9 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     d4z4Repeats,
     methylationValue,
     diagnosisDate,
-    geneEvidence: geneEvidence || '暂无可直接展示的基因证据',
+    diagnosisValueSlots,
+    geneEvidence: geneEvidence || NO_GENE_EVIDENCE,
+    geneEvidenceFromReport: reportOnlyEvidence.length > 0,
     latestGeneticDate: formatDate(geneticDoc?.uploadedAt ?? null),
     latestGeneticDocumentId: geneticDoc?.id ?? null,
     latestMriDate: formatDate(mriReportTime ?? mriDoc?.uploadedAt ?? null),
@@ -1275,6 +1457,12 @@ const GENETIC_FIELD_KEYS = {
   testMethod: ['geneticTestMethod', 'genetic_test_method'],
 } as const;
 
+/** The report keys a 诊断日期 can come off. The same two profile.autofill.ts
+ *  reads when it fills an empty `patient_profiles.diagnosis_date`, which is
+ *  what makes 「a report carries one」 the question worth asking about the
+ *  column's own value. */
+const DIAGNOSIS_DATE_KEYS = ['diagnosisDate', 'diagnosis_date'];
+
 /** Union of every genetic key, used to decide whether a document with no
  *  `classifiedType: genetic_report` still carries genetic evidence. */
 const GENETIC_EVIDENCE_KEYS: string[] = [
@@ -1700,6 +1888,110 @@ const passportOriginLabelZh = (origin: BaselineFieldOrigin): string => {
   }
 };
 
+const VALUE_ORIGIN_LABEL_ZH: Record<PassportValueOriginKind, string> = {
+  report: '报告读取',
+  patient: '本人填写',
+  admin_entered: '管理员代填',
+  admin_unreadable: '非本人填写，来源不明',
+  indeterminate: '来源无法确定',
+  absent: '未填',
+};
+
+/** Chinese for the state where the patient's own typing and the OCR
+ *  autofill are indistinguishable.
+ *
+ *  No surface prints `detail` today — the renderers show `labelZh` and
+ *  stop. It is written in Chinese anyway, and for a reader rather than
+ *  a maintainer, because the day one of them does show it there must be
+ *  nothing to translate first. */
+const AUTOFILL_INDETERMINATE_DETAIL =
+  '这位患者上传的报告里也有这一项，而本平台在读取档案时会用报告里的值补上空着的栏位，且不留记录 —— 所以本平台分不清这一栏是患者自己填的，还是系统从报告里读来的。';
+
+const valueOrigin = (
+  kind: PassportValueOriginKind,
+  extra: Partial<Omit<PassportValueOriginDTO, 'kind' | 'labelZh'>> = {},
+): PassportValueOriginDTO => ({
+  kind,
+  labelZh: VALUE_ORIGIN_LABEL_ZH[kind],
+  documentId: extra.documentId ?? null,
+  adminUserId: extra.adminUserId ?? null,
+  at: extra.at ?? null,
+  detail: extra.detail ?? null,
+});
+
+/**
+ * The slot plus the baseline marker, folded into one answer.
+ *
+ * `markerPath` is the baseline field whose provenance entry is about
+ * the COLUMN this value falls back to, or null when no marker can be:
+ *
+ *   `diagnosisDate` — 'foundation.diagnosisYear'. `upsertBaseline`
+ *     mirrors that field into `patient_profiles.diagnosis_date`
+ *     (profile.service.ts), so an administrator writing it is how a
+ *     marker and that column come to be about the same thing.
+ *   `geneticType` — null. Its fallback column is
+ *     `patient_profiles.genetic_mutation`, and the only statements that
+ *     write that column are `createProfile` and `updateProfile`, both
+ *     of which serve the patient's own endpoint. `upsertBaseline` does
+ *     not touch it, so the marker on `diseaseBackground.diagnosisType`
+ *     — a value an administrator CAN write — is about a baseline field
+ *     this row does not render, and using it here would stamp an
+ *     administrator's name onto the patient's own free text.
+ *
+ * A marker beats `ocrCouldHaveFilled`: both say 「not necessarily the
+ * patient」, and the marker is the one that names somebody.
+ */
+const resolveValueOrigin = (
+  slot: DiagnosisValueSlot,
+  markerPath: string | null,
+  baseline: unknown,
+): PassportValueOriginDTO => {
+  if (slot.slot === 'absent') return valueOrigin('absent');
+  if (slot.slot === 'report') return valueOrigin('report', { documentId: slot.documentId });
+
+  const marker = markerPath ? readBaselineFieldOrigin(baseline, markerPath) : null;
+  if (marker?.state === 'admin_entered') {
+    return valueOrigin('admin_entered', { adminUserId: marker.adminUserId, at: marker.at });
+  }
+  if (marker?.state === 'unreadable') {
+    return valueOrigin('admin_unreadable', { detail: marker.detail });
+  }
+  if (slot.ocrCouldHaveFilled) {
+    return valueOrigin('indeterminate', { detail: AUTOFILL_INDETERMINATE_DETAIL });
+  }
+  return valueOrigin('patient');
+};
+
+/** A printed value with its own source in brackets. Values with
+ *  nothing to attribute are left alone — 「—（未填）」 is two ways of
+ *  saying one thing.
+ *
+ *  Exported so the markdown export here and the referral pack print
+ *  the same bracket: two documents from one app disagreeing about
+ *  where one value came from is worse in front of a clinician than
+ *  either wording on its own. */
+export const withValueOrigin = (value: string, origin: PassportValueOriginDTO) =>
+  origin.kind === 'absent' ? value : `${value}（${origin.labelZh}）`;
+
+/**
+ * Chinese for a 基因证据 row whose components do not share a source.
+ *
+ * `kind` alone would leave a clinician reading 「来源无法确定」 over a
+ * string that contains a laboratory's own number.
+ */
+const MIXED_GENE_EVIDENCE_DETAIL =
+  '这一行是几项拼起来的：单倍型、EcoRI 片段和 D4Z4 重复数来自上传的报告，分型这一项的来源写在它自己那一行上 —— 整行归不到同一个来源。';
+
+/** How each printed diagnosis value is named in a sentence. Not
+ *  exported: the DTO carries the origin, and a renderer that wanted
+ *  these labels would be rebuilding the passport's own prose. */
+const PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH: Record<PassportDiagnosisValueKey, string> = {
+  geneticType: '分型',
+  d4z4Repeats: 'D4Z4 重复数',
+  methylationValue: '甲基化',
+  diagnosisDate: '诊断日期',
+};
+
 /** The marked baseline fields, flattened for the wire. Sorted by path
  *  because `listBaselineFieldOrigins` sorts, so a re-render of an
  *  unchanged profile is byte-identical. */
@@ -1783,10 +2075,12 @@ export const buildClinicalPassportSummary = (
     null,
   );
 
-  // Only fields OCR pulled off an uploaded report count as evidence.
-  // `geneticType` deliberately does NOT: it falls back to
-  // `profile.geneticMutation`, which is free text the patient types
-  // into the baseline form, and `diagnosisDate` is typed too.
+  // Confirmation rests on a MEASUREMENT read off an uploaded report: a
+  // D4Z4 repeat count, a 4q haplotype, an EcoRI fragment. 分型 and
+  // 诊断日期 are excluded because neither is reliably the report's —
+  // each falls back to a profile column (see DiagnosisValueSlot), and
+  // which source actually supplied it on this passport is answered per
+  // value in `valueOrigins` below rather than assumed here.
   const geneticallyConfirmed =
     hasMeaningfulValue(reportInsights.d4z4Repeats) ||
     hasMeaningfulValue(reportInsights.haplotype) ||
@@ -1799,11 +2093,14 @@ export const buildClinicalPassportSummary = (
   const fieldOrigins = collectPassportFieldOrigins(profile.baseline);
   // `!== 'patient'` and not `=== 'admin_entered'`: an entry that
   // exists and cannot be parsed is still not the patient's, and the
-  // one thing this page may never do is fall back to their name. What
-  // that costs is that `admin_entered` cannot by itself be read as
-  // 「an administrator typed this」 — see the type's doc comment, and
-  // the strings below, which branch on this origin before they name
-  // anybody. The per-field truth is in `fieldOrigins` beside it.
+  // one thing this page may never do is fall back to their name.
+  //
+  // `confirmation` is derived from THIS ONE FIELD's marker, so
+  // `admin_entered` means 「确诊年份 is not this patient's own entry」
+  // and nothing about who typed 分型, 甲基化 or anything else on the
+  // page. No string is written off it any more: authorship is per
+  // value, in `valueOrigins` below, and per baseline field in
+  // `fieldOrigins` beside it.
   const diagnosisYearOrigin = readBaselineFieldOrigin(profile.baseline, 'foundation.diagnosisYear');
   const diagnosisConfirmation: PassportDiagnosisConfirmation = geneticallyConfirmed
     ? 'genetic'
@@ -1812,6 +2109,64 @@ export const buildClinicalPassportSummary = (
         ? 'admin_entered'
         : 'self_reported'
       : 'none';
+  // WHERE EACH PRINTED DIAGNOSIS VALUE CAME FROM, resolved once here so
+  // that the app, the share page, the referral pack and the PDF all
+  // read the same answer instead of each inferring one from
+  // `confirmation` — which is an evidence grade and says nothing about
+  // authorship.
+  const diagnosisValueOrigins: Record<PassportDiagnosisValueKey, PassportValueOriginDTO> = {
+    geneticType: resolveValueOrigin(
+      reportInsights.diagnosisValueSlots.geneticType,
+      null,
+      profile.baseline,
+    ),
+    d4z4Repeats: resolveValueOrigin(
+      reportInsights.diagnosisValueSlots.d4z4Repeats,
+      null,
+      profile.baseline,
+    ),
+    methylationValue: resolveValueOrigin(
+      reportInsights.diagnosisValueSlots.methylationValue,
+      null,
+      profile.baseline,
+    ),
+    diagnosisDate: resolveValueOrigin(
+      reportInsights.diagnosisValueSlots.diagnosisDate,
+      'foundation.diagnosisYear',
+      profile.baseline,
+    ),
+  };
+  // 基因证据 is those values joined, so its bracket is the join's. A
+  // join carrying a report-only value beside a 分型 of another origin
+  // belongs to neither of them; a join that is 分型 by itself belongs
+  // exactly where 分型 does — the same string carrying 「本人填写」 on the
+  // 分型 row and 「来源无法确定」 on this one is one page disagreeing with
+  // itself in front of a clinician.
+  const geneticTypeOrigin = diagnosisValueOrigins.geneticType;
+  const geneEvidenceOrigin: PassportValueOriginDTO = !reportInsights.geneEvidenceFromReport
+    ? geneticTypeOrigin
+    : geneticTypeOrigin.kind === 'report' || geneticTypeOrigin.kind === 'absent'
+      ? valueOrigin('report', { documentId: reportInsights.latestGeneticDocumentId })
+      : valueOrigin('indeterminate', { detail: MIXED_GENE_EVIDENCE_DETAIL });
+  /** Which origin kinds this passport's diagnosis block actually
+   *  contains, so a sentence about a state is written only when that
+   *  state is on the page. */
+  const diagnosisOriginKinds = new Set<PassportValueOriginKind>(
+    Object.values(diagnosisValueOrigins).map((origin) => origin.kind),
+  );
+  /** 「分型（报告读取）、诊断日期（管理员代填）」 — the printed diagnosis
+   *  values with their own sources, for a sentence rather than a table.
+   *  Values with nothing behind them are left out; a reader does not
+   *  need a list of what is not there. */
+  const diagnosisOriginPhrase = (
+    Object.keys(PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH) as PassportDiagnosisValueKey[]
+  )
+    .filter((key) => diagnosisValueOrigins[key].kind !== 'absent')
+    .map(
+      (key) =>
+        `${PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH[key]}（${diagnosisValueOrigins[key].labelZh}）`,
+    )
+    .join('、');
   const diagnosisLadder = readDiagnosisLadder(profile);
   const diagnosisLadderOrigin = readBaselineFieldOrigin(
     profile.baseline,
@@ -1918,22 +2273,44 @@ export const buildClinicalPassportSummary = (
     nextSteps.push({
       title: diagnosisClaimed ? '补充基因检测报告' : '补充基因或诊断依据',
       kind: 'record',
-      // Read by the PATIENT, so the 「由本人填写」 half has to be true of
-      // them specifically. It is not, when our own back office typed
-      // the diagnosis in on their behalf — and that is the reader most
-      // likely not to know a value is sitting in their record at all.
-      description:
-        diagnosisConfirmation === 'admin_entered'
-          ? diagnosisYearOrigin.state === 'admin_entered'
-            ? '目前的诊断信息是本平台管理员代你录入的（在护照的字段来源里能看到是谁、什么时候），尚无基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
-            : // The marker exists but does not parse, so we know it is
-              // not this patient's own entry and we do NOT know who
-              // made it. Naming an administrator here would be inventing
-              // one.
-              '目前的诊断信息不是你自己填的——档案里记着它是从后台录进来的，但那条来源记录本平台读不出来（原因写在护照的字段来源里），也还没有基因报告佐证。如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
-          : diagnosisClaimed
-            ? '目前的诊断信息由本人填写，尚无基因报告佐证。上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。'
-            : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
+      // Read by the PATIENT, and this is the reader most likely not to
+      // know a value is sitting in their record at all. The values in
+      // this block do not share an author — 分型 can have come off an
+      // uploaded report while the marker behind `admin_entered` covers
+      // 确诊年份 alone — so the sentence names each value's own source
+      // and then explains only the states that are on this page.
+      //
+      // It says what the passport shows rather than what the platform
+      // read: `buildReportInsights` takes its genetic values out of one
+      // document, so a repeat count in an earlier report is never read
+      // and 「没有从你上传的报告里读到」 would be a claim about reports
+      // this passport has not opened.
+      description: diagnosisClaimed
+        ? [
+            `目前护照上的诊断信息：${diagnosisOriginPhrase}；护照上还没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能写成已确诊。`,
+            ...(diagnosisOriginKinds.has('admin_entered')
+              ? [
+                  `标着「${VALUE_ORIGIN_LABEL_ZH.admin_entered}」的那几项是本平台管理员代你录入的 —— 是谁、什么时候，护照的「字段来源」里有。`,
+                ]
+              : []),
+            ...(diagnosisOriginKinds.has('admin_unreadable')
+              ? [
+                  `标着「${VALUE_ORIGIN_LABEL_ZH.admin_unreadable}」的那几项不是你自己填的，但那条来源记录本平台读不出来，原因写在护照的「字段来源」里。`,
+                ]
+              : []),
+            ...(diagnosisOriginKinds.has('indeterminate')
+              ? [
+                  `标着「${VALUE_ORIGIN_LABEL_ZH.indeterminate}」的那几项，本平台分不清是你自己填的，还是系统从你上传的报告里读来的。`,
+                ]
+              : []),
+            ...(diagnosisOriginKinds.has('admin_entered') ||
+            diagnosisOriginKinds.has('admin_unreadable') ||
+            diagnosisOriginKinds.has('indeterminate')
+              ? ['如果哪一项不对，你可以自己改；改过之后那一项就记回你名下。']
+              : []),
+            '上传基因检测报告后，护照才能显示 D4Z4 重复数等可供医生直接引用的证据。',
+          ].join('')
+        : '上传基因检测报告，护照才能展示 D4Z4 重复数、4q 单倍型等可引用的诊断证据。',
     });
   }
   if (geneticEvidence.grade === 'method_right_incomplete') {
@@ -2029,16 +2406,17 @@ export const buildClinicalPassportSummary = (
       key: 'diagnosis',
       title: '诊断证据',
       ready: diagnosisReady,
+      // 「以下为本人填写」 and 「以下由本平台管理员代填」 were both written
+      // about the whole block off `confirmation` alone, and 以下 covers
+      // rows whose value came off an uploaded report. The card now
+      // states the evidence grade — which is what `confirmation` is —
+      // and hands each value its own source.
       summary:
         diagnosisConfirmation === 'genetic'
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
-          : diagnosisConfirmation === 'admin_entered'
-            ? diagnosisYearOrigin.state === 'admin_entered'
-              ? '未经基因确诊 —— 以下由本平台管理员代填，不是患者本人填写，尚无基因报告佐证'
-              : '未经基因确诊 —— 以下不是患者本人填写，来源记录读不出来，尚无基因报告佐证'
-            : diagnosisConfirmation === 'self_reported'
-              ? '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证'
-              : '缺少可直接展示的基因或诊断证据',
+          : diagnosisClaimed
+            ? `未经基因确诊（未读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
+            : '缺少可直接展示的基因或诊断证据',
       meta: `诊断日期 ${reportInsights.diagnosisDate}`,
     },
     {
@@ -2143,7 +2521,9 @@ export const buildClinicalPassportSummary = (
       d4z4Repeats: reportInsights.d4z4Repeats,
       methylationValue: reportInsights.methylationValue,
       diagnosisDate: reportInsights.diagnosisDate,
+      valueOrigins: diagnosisValueOrigins,
       geneEvidence: reportInsights.geneEvidence,
+      geneEvidenceOrigin,
     },
     motor: {
       ready: motorReady,
@@ -2197,11 +2577,28 @@ export const buildClinicalPassportExport = (
     '',
     '## 诊断证据',
     '',
-    `- 基因类型：${summary.diagnosis.geneticType}`,
-    `- D4Z4 重复数：${summary.diagnosis.d4z4Repeats}`,
-    `- 甲基化值：${summary.diagnosis.methylationValue}`,
-    `- 诊断日期：${summary.diagnosis.diagnosisDate}`,
-    `- 证据摘要：${summary.diagnosis.geneEvidence}`,
+    // §B3 again: the export carries the source too. Per value, because
+    // the lines below do not share one.
+    `- 基因类型：${withValueOrigin(
+      summary.diagnosis.geneticType,
+      summary.diagnosis.valueOrigins.geneticType,
+    )}`,
+    `- D4Z4 重复数：${withValueOrigin(
+      summary.diagnosis.d4z4Repeats,
+      summary.diagnosis.valueOrigins.d4z4Repeats,
+    )}`,
+    `- 甲基化值：${withValueOrigin(
+      summary.diagnosis.methylationValue,
+      summary.diagnosis.valueOrigins.methylationValue,
+    )}`,
+    `- 诊断日期：${withValueOrigin(
+      summary.diagnosis.diagnosisDate,
+      summary.diagnosis.valueOrigins.diagnosisDate,
+    )}`,
+    `- 证据摘要：${withValueOrigin(
+      summary.diagnosis.geneEvidence,
+      summary.diagnosis.geneEvidenceOrigin,
+    )}`,
     // 「本人填写的诊断进度」 was hardcoded here. The renderer had no way
     // to check it, and it is exactly the claim baseline-provenance.ts
     // exists to stop being made blind.

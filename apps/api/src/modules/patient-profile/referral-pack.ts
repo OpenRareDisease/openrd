@@ -1,5 +1,6 @@
 import {
   buildClinicalPassportSummary,
+  withValueOrigin,
   type ClinicalPassportSummaryDTO,
   type PassportDiagnosisConfirmation,
   type PassportFieldOriginDTO,
@@ -118,6 +119,12 @@ export interface ReferralDiagnosisDTO {
   d4z4Repeats: string;
   methylationValue: string;
   diagnosisDate: string;
+  /** Where each of the four values above came from, carried straight
+   *  off the passport. `statement` says what the evidence is worth; a
+   *  clinician reading 「FSHD1」 also needs to know whether a laboratory
+   *  or the patient put it there, and those two questions have
+   *  different answers on the same sheet. */
+  valueOrigins: ClinicalPassportSummaryDTO['diagnosis']['valueOrigins'];
   geneEvidence: string;
   latestSourceDate: string | null;
 }
@@ -373,19 +380,23 @@ const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
 
 /**
  * One line per member of `PassportDiagnosisConfirmation`, and a
- * `switch` rather than a ternary chain on purpose.
+ * `switch` with a `never` default rather than a ternary chain: a fifth
+ * member has to fail the build here instead of silently taking another
+ * state's sentence.
  *
- * This used to be a two-test ternary written when the union had three
- * members. When `admin_entered` was added to it, this file was not
- * updated and the new state fell into the last arm: the pack told the
- * neurologist 「本平台尚无任何诊断依据记录」 four lines above a 诊断日期
- * one of our administrators had typed.
+ * IT STATES THE EVIDENCE AND DOES NOT NAME AN AUTHOR. `confirmation` is
+ * an evidence grade: a report parsed to `diagnosisType` alone lands in
+ * `self_reported`, and `admin_entered` is derived from 确诊年份's marker
+ * alone, so neither says who put the values below on the page.
+ * Per-value authorship is printed beside each value, off
+ * `diagnosis.valueOrigins`; who wrote a marked baseline field is in the
+ * 字段来源 list at the end of 一、诊断依据.
  *
- * `admin_entered` also covers a marker that exists and cannot be
- * parsed, and this function is handed only `confirmation` — so the
- * line it returns says 「不是患者本人填写」 and does not name whoever did
- * type the value. Who and when is per field, in the 字段来源 list at
- * the end of 一、诊断依据.
+ * NOR DOES IT QUANTIFY OVER UPLOADED REPORTS. `buildReportInsights`
+ * takes its genetic values out of ONE document, so a repeat count in an
+ * earlier report is never read and 「未从任何上传的报告里读到」 would be a
+ * claim about reports this pack has not opened. The line says what this
+ * document holds and hands the reader the question to ask instead.
  *
  * The wording is longer than the passport's because this reader can
  * act on the difference: an unconfirmed patient in front of a 协作网
@@ -401,11 +412,16 @@ const buildDiagnosisStatement = (
         ? `面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 ${repeats}`
         : '面肩肱型肌营养不良症（FSHD），基因确诊';
     case 'self_reported':
-      return '面肩肱型肌营养不良症（FSHD）—— 本人填报，本平台未收到基因报告，请勿按已确诊处理';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'admin_entered':
-      return '面肩肱型肌营养不良症（FSHD）—— 不是患者本人填写，患者可能未核对过，本平台未收到基因报告，请勿按已确诊处理';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，且档案里的「确诊年份」不是患者本人填写的，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'none':
-      return '本平台尚无任何诊断依据记录 —— 以下内容仅为患者自述与自测，不构成诊断';
+      // Not 「尚无任何诊断依据记录 …… 仅为患者自述与自测」: this state only
+      // means no 分型, no 诊断日期 and no D4Z4/单倍型/EcoRI. 甲基化 is in
+      // none of those tests, so a genetic report that parsed to a
+      // methylation value alone lands here with that value printed
+      // three lines below.
+      return '本资料没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果 —— 下面的内容不构成诊断';
     default: {
       const _never: never = confirmation;
       return _never;
@@ -446,6 +462,7 @@ const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisD
     d4z4Repeats: diagnosis.d4z4Repeats,
     methylationValue: diagnosis.methylationValue,
     diagnosisDate: diagnosis.diagnosisDate,
+    valueOrigins: diagnosis.valueOrigins,
     geneEvidence: diagnosis.geneEvidence,
     latestSourceDate: diagnosis.latestSourceDate,
   };
@@ -748,28 +765,30 @@ export const REFERRAL_QUESTION_PROMPTS: readonly ReferralQuestionPromptDTO[] = [
  * `genetic` is excluded from the parameter rather than given a branch:
  * the question is not asked at all for a confirmed patient, and a
  * string nobody can reach is a string nobody keeps true. The `never`
- * default still fails the build on a fifth confirmation state — this
- * hint had the same hole as the 结论 line above, one `=== 'self_reported'`
- * test deciding between three possible states.
+ * default still fails the build on a fifth confirmation state.
  */
 const buildConfirmDiagnosisHint = (
   confirmation: Exclude<PassportDiagnosisConfirmation, 'genetic'>,
 ): string => {
   switch (confirmation) {
     case 'self_reported':
-      return '本平台没有收到你的基因报告，所以本资料把诊断标为「本人填报」。如果你其实做过，把报告带上或上传，这一行就会改。';
+      return '本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 有的是你自己填的，有的是系统从你上传的报告里读出来的，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
     // Telling this reader 「本平台没有任何诊断依据记录」 would hide the
     // very lines the neurologist is reading on the same sheet.
     //
-    // It points at the 「这些字段不是本人填写的」 list rather than naming
-    // a field or a person: the state proves only that 确诊年份 is not
-    // this patient's own entry. That list is non-empty whenever this
-    // hint is shown — the state is derived from an entry in the same
-    // provenance block the list prints.
+    // It names 确诊年份 and nothing else: that is the single field this
+    // state is derived from. The 「这些字段不是本人填写的」 list is
+    // non-empty whenever this hint is shown, because the state comes
+    // from an entry in the same provenance block that list prints.
+    //
+    // It does NOT promise who or when. This state also covers a marker
+    // that is present and cannot be parsed, and that row prints
+    // 来源记录读不出来 — a hint promising a name would send the patient
+    // looking for one that is not there.
     case 'admin_entered':
-      return '本资料第一节里有诊断信息不是你自己填的（具体哪几项，列在第一节末尾），本平台也没有收到你的基因报告。你可能没见过那几行字，医生却会看到 —— 当面核对一遍，不对的地方现在就说；做过基因检测的话，把报告带上或上传。';
+      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
     case 'none':
-      return '本平台没有任何诊断依据记录。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
+      return '本资料没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
     default: {
       const _never: never = confirmation;
       return _never;
@@ -822,17 +841,16 @@ const buildQuestions = (
  * reads the tables without reading it will over-trust them: this app
  * has no way to verify a single number below it.
  *
- * It used to say the contents were the patient's uploads and the
- * patient's own entries, full stop. That stopped being true when
- * `baseline-provenance.ts` let an administrator type into a patient's
- * baseline, so the note now names that third source and points at the
- * 「这些字段不是本人填写的」 list, which `buildReferralPack` emits at the
- * end of 一、诊断依据 whenever `summary.fieldOrigins` is non-empty. If
- * that list is ever dropped from the markdown, this sentence has to
- * lose the clause with it.
+ * It names three sources, not two: `baseline-provenance.ts` lets an
+ * administrator type into a patient's baseline, so a value here can be
+ * one this patient has never seen. The clause about that source points
+ * at the 「这些字段不是本人填写的」 list, which `buildReferralPack` emits
+ * at the end of 一、诊断依据 whenever `summary.fieldOrigins` is
+ * non-empty. If that list is ever dropped from the markdown, this
+ * sentence has to lose the clause with it.
  */
 export const REFERRAL_PROVENANCE_NOTE =
-  '本资料由患者本人在自助管理平台上生成，内容来自患者上传的报告、患者自行填写的记录，以及本平台管理员代为录入的字段（若有，逐条列在第一节末尾），未经医疗机构核对，不是病历，也不构成诊断。凡写「本平台未能读出」或「本平台没有记录」的条目，都只说明本平台的记录状态，不能推断该项检查没有做过。';
+  '本资料由患者本人在自助管理平台上生成，内容来自患者上传的报告、患者自行填写的记录，以及本平台管理员代为录入的字段（若有，逐条列在第一节末尾），未经医疗机构核对，不是病历，也不构成诊断。第一节里的括号写在哪一项后面，就只说那一项的来源；有的写「来源无法确定」，那是本平台确实没法把它归到某一个来源上。凡写「本平台未能读出」或「本平台没有记录」的条目，都只说明本平台的记录状态，不能推断该项检查没有做过。';
 
 const questionBlankLine = '　我的情况 / 想问的：______________________________________';
 
@@ -864,11 +882,21 @@ export const buildReferralPack = (
     '## 一、诊断依据',
     '',
     `- 结论：${escapeMarkdown(diagnosis.statement)}`,
-    `- 基因类型：${escapeMarkdown(diagnosis.geneticType)}`,
-    `- D4Z4 重复数：${escapeMarkdown(diagnosis.d4z4Repeats)}`,
-    `- 甲基化：${escapeMarkdown(diagnosis.methylationValue)}`,
-    `- 诊断日期：${escapeMarkdown(diagnosis.diagnosisDate)}`,
-    `- 证据摘要：${escapeMarkdown(diagnosis.geneEvidence)}`,
+    // Per value, because these four do not share one source: 分型 and
+    // 诊断日期 each fall back to a profile column the patient may have
+    // typed and the OCR autofill may have written, while D4Z4 and 甲基化
+    // come only off an uploaded report.
+    `- 基因类型：${withValueOrigin(escapeMarkdown(diagnosis.geneticType), diagnosis.valueOrigins.geneticType)}`,
+    `- D4Z4 重复数：${withValueOrigin(escapeMarkdown(diagnosis.d4z4Repeats), diagnosis.valueOrigins.d4z4Repeats)}`,
+    `- 甲基化：${withValueOrigin(escapeMarkdown(diagnosis.methylationValue), diagnosis.valueOrigins.methylationValue)}`,
+    `- 诊断日期：${withValueOrigin(escapeMarkdown(diagnosis.diagnosisDate), diagnosis.valueOrigins.diagnosisDate)}`,
+    // 证据摘要 joins several of the values above, so its bracket is the
+    // join's and not any one row's — `geneEvidenceOrigin` on the
+    // summary carries it.
+    `- 证据摘要：${withValueOrigin(
+      escapeMarkdown(diagnosis.geneEvidence),
+      summary.diagnosis.geneEvidenceOrigin,
+    )}`,
     `- 最近一份诊断相关报告：${formatDate(diagnosis.latestSourceDate) ?? '本平台无记录'}`,
     // The 字段来源 list the passport, the share page, the PDF and all
     // three portable envelopes already carry (§B3), on the one document

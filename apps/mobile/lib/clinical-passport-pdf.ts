@@ -1,4 +1,8 @@
-import type { ClinicalPassportSummary } from './api';
+import {
+  readPassportValueOrigins,
+  type ClinicalPassportSummary,
+  type PassportValueOrigin,
+} from './api';
 import { formatDateLabel } from './clinical-visuals';
 import { parseAnswer, type TextSpan } from '../screens/common/answer-format';
 
@@ -175,6 +179,37 @@ export const buildClinicalPassportPdfHtml = (
                 }</li>`,
             )
             .join('')}</ul>
+        </div>`;
+
+  /**
+   * 逐项来源：`diagnosisCard` 把它印成值下面单独的一行
+   * （`.value-origin`），不是只写在横幅里。
+   *
+   * `confirmation` 是证据等级，本节各个值的来源互不相同（见
+   * profile.passport.ts 里 PassportValueOriginKind 的注释）。来源必须跟
+   * 着值走：`confirmation === 'genetic'` 时下面那条横幅根本不印，而那种
+   * 档案的分型仍然可能不是从报告里读出来的。拿着这张纸的医生要能分清哪
+   * 个数是实验室出的，哪个是患者对自己的叙述。
+   *
+   * 服务端没给来源时不留空，也不默认「都是本人填的」——那正是这一块要
+   * 防的假话。和本文件 `fieldOriginsBlock` 一样：undefined 不是「没有」。
+   */
+  const valueOrigins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  const diagnosisCard = (label: string, value: string, origin: PassportValueOrigin | null) => `
+          <article class="info-card">
+            <p class="info-label">${escapeHtml(label)}</p>
+            <p class="info-value">${safeText(value)}</p>
+            ${
+              origin && origin.kind !== 'absent'
+                ? `<p class="value-origin">${escapeHtml(origin.labelZh)}</p>`
+                : ''
+            }
+          </article>`;
+  const valueOriginsFallback = valueOrigins
+    ? ''
+    : `<div class="note">
+          <p class="note-title">逐项来源</p>
+          <p class="info-value">服务端这一版没有返回逐项来源，本节每一个值是从报告里读出来的还是谁填进去的，本平台无法说明。</p>
         </div>`;
 
   const summaryCards = summary.summaryCards
@@ -495,6 +530,18 @@ export const buildClinicalPassportPdfHtml = (
         font-size: 12px;
         color: #8a8077;
       }
+      /* The source of the value directly above it. Set below the value
+         rather than beside it so it cannot be mistaken for a second
+         reading, and kept at ink weight rather than grey-on-grey
+         because this page gets photocopied at a 一块钱 print shop and a
+         clinician who loses this line loses the difference between a
+         laboratory's number and a patient's account of themselves. */
+      .value-origin {
+        margin: 4px 0 0;
+        font-size: 11px;
+        line-height: 1.5;
+        color: #6c5a4b;
+      }
       .note,
       .list-block {
         margin-top: 12px;
@@ -552,44 +599,46 @@ export const buildClinicalPassportPdfHtml = (
             <h2>诊断证据</h2>
             <p class="section-copy">集中查看基因结果、诊断日期和证据摘要。</p>
             ${
+              /*
+               * 横幅只说证据，不说是谁填的。
+               *
+               * `confirmation` 是证据等级（见 profile.passport.ts 里
+               * PassportDiagnosisConfirmation 的注释），本节各张卡片的来源
+               * 各不相同：基因确诊靠的是 D4Z4 重复数 / 单倍型 / EcoRI 片段
+               * 之一，所以「基因确诊」时的分型仍可能是患者自己打的字；而只
+               * 解析出 diagnosisType 的报告不足以基因确诊，那一行却是系统
+               * 从报告里读出来的。
+               *
+               * 逐项来源印在下面每个值自己下面那一行，见 「diagnosisCard」。
+               */
               summary.diagnosis.confirmation === 'genetic'
                 ? ''
                 : `<p class="unconfirmed-banner">${
-                    summary.diagnosis.confirmation === 'self_reported'
-                      ? '⚠ 未经基因确诊：本节内容由患者本人填写，尚无基因检测报告佐证，请勿据此确认诊断。'
-                      : summary.diagnosis.confirmation === 'admin_entered'
-                        ? // 契约 §B3 的第四种来源。以前只有三个分支，管理员
-                          // 代填的值落进 self_reported，这张纸就告诉医生
-                          // 「患者本人填写」——而患者可能没见过那段字。
-                          '⚠ 未经基因确诊：本节内容由「肌愈通」管理员根据患者电话或消息代为录入，不是患者本人填写，患者可能未核对过，尚无基因检测报告佐证，请勿据此确认诊断。'
-                        : '⚠ 尚无诊断依据：本节为空，请勿据此确认诊断。'
+                    summary.diagnosis.confirmation === 'admin_entered'
+                      ? '⚠ 未经基因确诊：本平台未从该患者上传的报告里读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段，且档案里的「确诊年份」不是患者本人填写的（详见本节末尾的字段来源），请勿据此确认诊断。'
+                      : summary.diagnosis.confirmation === 'self_reported'
+                        ? '⚠ 未经基因确诊：本平台未从该患者上传的报告里读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段，本节内容不构成诊断依据，请勿据此确认诊断。'
+                        : // 不写「本节为空」：这个状态只表示没有分型、没有诊断
+                          // 日期，也没有 D4Z4/单倍型/EcoRI；甲基化不在这三项
+                          // 里，只解析出甲基化值的报告会落在这里，而那张卡片
+                          // 上是有值的。
+                          '⚠ 尚无诊断依据：本平台没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果，请勿据此确认诊断。'
                   }</p>`
             }
           </div>
           <span class="freshness">${escapeHtml(summary.diagnosis.freshness.label)}</span>
         </div>
         <div class="info-grid">
-          <article class="info-card">
-            <p class="info-label">基因类型</p>
-            <p class="info-value">${safeText(summary.diagnosis.geneticType)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">D4Z4 重复数</p>
-            <p class="info-value">${safeText(summary.diagnosis.d4z4Repeats)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">甲基化值</p>
-            <p class="info-value">${safeText(summary.diagnosis.methylationValue)}</p>
-          </article>
-          <article class="info-card">
-            <p class="info-label">诊断日期</p>
-            <p class="info-value">${safeText(summary.diagnosis.diagnosisDate)}</p>
-          </article>
+          ${diagnosisCard('基因类型', summary.diagnosis.geneticType, valueOrigins?.geneticType ?? null)}
+          ${diagnosisCard('D4Z4 重复数', summary.diagnosis.d4z4Repeats, valueOrigins?.d4z4Repeats ?? null)}
+          ${diagnosisCard('甲基化值', summary.diagnosis.methylationValue, valueOrigins?.methylationValue ?? null)}
+          ${diagnosisCard('诊断日期', summary.diagnosis.diagnosisDate, valueOrigins?.diagnosisDate ?? null)}
         </div>
         <div class="note">
           <p class="note-title">证据摘要</p>
           <p class="info-value">${safeText(summary.diagnosis.geneEvidence)}</p>
         </div>
+        ${valueOriginsFallback}
         ${fieldOriginsBlock}
       </section>
 

@@ -8,13 +8,18 @@
  * from `+html.tsx` inside the root layout and the browser tab said the
  * literal string "undefined".
  *
- * Three places have to agree and are edited at different times: the
- * document shell, the root layout's title sync, and the about screen.
+ * Every screen that names or versions the build imports from here. The
+ * set of them is deliberately not listed: it grows, and a list in a
+ * comment is what goes stale while the code stays fine. `grep -rn
+ * app-identity apps/mobile` answers it. What holds the screens to it is
+ * a test each, pinning that the name they draw is THIS one — see
+ * screens/p-login_register/__tests__/app-name.test.tsx,
+ * screens/p-settings/__tests__/version-footer.test.tsx and
+ * screens/p-about_us/__tests__/index.test.tsx.
  */
 import Constants from 'expo-constants';
 
-/** The product's name to a patient. NOT the repository name — the login
- *  screen used to render 「FSHD-openrd」 as its largest element. */
+/** The product's name to a patient. NOT the repository name. */
 export const APP_NAME = '肌愈通';
 
 /** Document title. Name first: WeChat's title bar truncates hard and

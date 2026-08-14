@@ -1,17 +1,30 @@
 /**
  * Build-time feature flags.
  *
- * The five "探索" destinations (community, expert consult, trial
- * square, resource map, rehab share) are all pre-launch placeholders.
- * Until PR-30 they occupied navigation budget in Settings alongside
- * privacy, audit and deletion — genuinely serious features — which
- * made the list read as though everything in it were equally real.
+ * `explore` gates the 探索 group in Settings: the destinations that
+ * are still placeholders, each of which opens an UnavailableScreen.
+ * Until PR-30 they occupied navigation budget alongside privacy, audit
+ * and deletion — genuinely serious features — which made the list read
+ * as though everything in it were equally real.
  *
- * They now sit behind a flag instead of behind a「即将上线」badge:
- * off by default, flipped per-build via EXPO_PUBLIC_ENABLE_EXPLORE.
- * The screens and their routes stay in the tree, so a deep link (or
- * flipping the flag) brings a feature back with no code change — the
- * flag governs discoverability, not existence.
+ * They sit behind the flag instead of behind a「即将上线」badge: off by
+ * default, flipped per-build via EXPO_PUBLIC_ENABLE_EXPLORE. The
+ * screens and their routes stay in the tree either way, so a deep link
+ * (or flipping the flag) reaches one with no code change — the flag
+ * governs discoverability, not existence.
+ *
+ * Which destinations are still in that group is a question for the
+ * group itself, in screens/p-settings; a page leaves it once it is
+ * finished and picks up a row elsewhere in Settings. A second copy of
+ * the list here is what goes stale while the code stays fine — this
+ * docblock listed 患者社区 and 康复经验分享 as pre-launch placeholders
+ * while both were already shipped pages.
+ *
+ * Prose that describes a feature is subject to the same rule from the
+ * other side: a sentence about something still in the group belongs
+ * behind this flag, and a sentence about a page that has left it must
+ * not be, or a default build hides a feature the app ships and links
+ * to.
  *
  * Where to actually set these
  * ---------------------------
@@ -20,13 +33,10 @@
  * apps/mobile/.env.example.
  *
  * The Docker web image is a separate path and does not read that file:
- * it only forwards EXPO_PUBLIC_API_URL as a build ARG. Turning either
- * flag on for a compose build therefore needs an `ARG` in
- * Dockerfile.web plus an `args:` entry in docker-compose.yml, mirroring
- * how EXPO_PUBLIC_API_URL is plumbed. Until someone needs that, an env
- * var exported around `docker compose build` is silently dropped at
- * bundle time — which is worth knowing before spending an afternoon on
- * it.
+ * apps/mobile/Dockerfile.web declares an `ARG` per key and the `web`
+ * service in docker-compose.yml passes each one through, so a compose
+ * build takes them from the shell environment (or the repository-root
+ * .env compose interpolates) rather than from apps/mobile/.env.
  *
  * These are build-time constants: Metro inlines them, so flipping one
  * always means a rebuild, never a restart.
@@ -40,7 +50,7 @@ const readBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => 
 };
 
 export const FEATURE_FLAGS = {
-  /** Surface the pre-launch 探索 section in Settings. */
+  /** Surface the 探索 group of placeholder destinations in Settings. */
   explore: readBooleanEnv(process.env.EXPO_PUBLIC_ENABLE_EXPLORE, false),
 
   /**

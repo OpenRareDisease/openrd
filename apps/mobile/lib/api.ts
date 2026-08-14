@@ -770,6 +770,112 @@ export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEviden
   };
 };
 
+/**
+ * WHERE ONE PRINTED DIAGNOSIS VALUE CAME FROM — the API's
+ * `PassportValueOriginKind`, mirrored member for member.
+ *
+ * `confirmation` is an evidence grade and answers nothing about
+ * authorship: 分型 can be OCR off an uploaded report while
+ * `confirmation` is `self_reported`, and can be the patient's own free
+ * text while it is `genetic`, because the measurement that earns
+ * `genetic` is a different field. Every renderer that read authorship
+ * off that enum printed 「本人填写」 over values nobody typed.
+ *
+ * `indeterminate` is a real answer, not a shrug — the API resolves it
+ * where the patient's own typing and the read-time OCR autofill are
+ * indistinguishable — so it must never be collapsed into 「本人填写」.
+ *
+ * Kept as a value, not a type alone, so the reader below can check it
+ * at runtime.
+ */
+export const PASSPORT_VALUE_ORIGIN_KINDS = [
+  'report',
+  'patient',
+  'admin_entered',
+  'admin_unreadable',
+  'indeterminate',
+  'absent',
+] as const;
+
+export type PassportValueOriginKind = (typeof PASSPORT_VALUE_ORIGIN_KINDS)[number];
+
+export interface PassportValueOrigin {
+  kind: PassportValueOriginKind;
+  /** One phrase for a printed page, worded by the API so this app, the
+   *  share page and the referral pack cannot disagree about a value's
+   *  source in front of a clinician. */
+  labelZh: string;
+  documentId: string | null;
+  adminUserId: string | null;
+  at: string | null;
+  detail: string | null;
+}
+
+/** The diagnosis values the passport prints as their own rows, and
+ *  therefore the ones that need an origin beside them. */
+export const PASSPORT_DIAGNOSIS_VALUE_KEYS = [
+  'geneticType',
+  'd4z4Repeats',
+  'methylationValue',
+  'diagnosisDate',
+] as const;
+
+export type PassportDiagnosisValueKey = (typeof PASSPORT_DIAGNOSIS_VALUE_KEYS)[number];
+
+export type PassportValueOrigins = Record<PassportDiagnosisValueKey, PassportValueOrigin>;
+
+/**
+ * `diagnosis.valueOrigins`, unwrapped and shape-checked.
+ *
+ * Same reason as `readPassportGeneticEvidence` above:
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call, and that type
+ * parameter is an unchecked assertion over whatever the server sent.
+ * This block is new on the wire and this app ships as a web export that
+ * WeChat's in-app browser caches for days, so a handset can be running
+ * today's bundle against an API build that has no `valueOrigins` at all.
+ *
+ * All four keys or null, never a partial map. A caller handed three
+ * origins would print a source under three values and nothing under the
+ * fourth, and a reader who has learned that the caption marks a source
+ * reads the missing caption as 「read off a report」 — the one direction
+ * this record exists to prevent. Null makes the callers say the server
+ * did not send it.
+ *
+ * A kind this bundle has never heard of does NOT null the map. The
+ * cache cuts both ways: a NEWER API adding a seventh kind would make
+ * every renderer print 「the server did not send it」 over origins it
+ * did send, which is its own false sentence. It falls to
+ * `indeterminate` instead — a real member, and the one that promises
+ * nothing — carrying the server's own `labelZh` with it, so an
+ * unrecognised state can never lift a value into the register kept for
+ * a laboratory result.
+ */
+export const readPassportValueOrigins = (raw: unknown): PassportValueOrigins | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const origins = {} as PassportValueOrigins;
+  for (const key of PASSPORT_DIAGNOSIS_VALUE_KEYS) {
+    const entry = record[key];
+    if (!entry || typeof entry !== 'object') return null;
+    const origin = entry as Record<string, unknown>;
+    // `labelZh` is the phrase that gets printed. Without it there is
+    // nothing to say about this value, and a caption cannot be invented
+    // here — so the whole map fails rather than one row going silent.
+    if (typeof origin.labelZh !== 'string' || origin.labelZh.trim().length === 0) return null;
+    origins[key] = {
+      kind: PASSPORT_VALUE_ORIGIN_KINDS.includes(origin.kind as PassportValueOriginKind)
+        ? (origin.kind as PassportValueOriginKind)
+        : 'indeterminate',
+      labelZh: origin.labelZh,
+      documentId: typeof origin.documentId === 'string' ? origin.documentId : null,
+      adminUserId: typeof origin.adminUserId === 'string' ? origin.adminUserId : null,
+      at: typeof origin.at === 'string' ? origin.at : null,
+      detail: typeof origin.detail === 'string' ? origin.detail : null,
+    };
+  }
+  return origins;
+};
+
 export interface ClinicalPassportSummary {
   generatedAt: string;
   passportId: string;
@@ -828,6 +934,17 @@ export interface ClinicalPassportSummary {
     d4z4Repeats: string;
     methylationValue: string;
     diagnosisDate: string;
+    /**
+     * 上面四个值各自的来源。
+     *
+     * Typed as `unknown` for the same reason as `geneticEvidence`
+     * below: the type parameter on `getClinicalPassportSummary` proves
+     * nothing about what a cached bundle's API build actually sends.
+     * `unknown` makes the compiler refuse `.geneticType.kind` until it
+     * has gone through `readPassportValueOrigins`, which is the only
+     * thing that has looked at the bytes.
+     */
+    valueOrigins?: unknown;
     geneEvidence: string;
     /**
      * 对基因证据的分级读法，外加可以递给医生的《检查申请说明》。

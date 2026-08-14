@@ -5,26 +5,10 @@ import Icon from '../common/Icon';
 import ListGroup, { Row } from '../common/ListGroup';
 import { APP_NAME, readAppVersion } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
-import { isFeatureEnabled } from '../../lib/feature-flags';
 import styles from './styles';
 import { PRIVACY_POLICY_SECTIONS, USER_AGREEMENT_SECTIONS } from '../../lib/legal-content';
 import ScreenHeader from '../common/ScreenHeader';
 import { useAppDialog } from '../common/feedback/AppDialog';
-
-/**
- * Both re-exported rather than redefined. This page used to own its own
- * copy of the name and its own copy of the version, and 设置 owned a
- * third and a fourth — which is how 设置 came to say 「FSHD-openrd
- * v1.0.0」 while this page said 「肌愈通 · 版本 2.5.0」. Two screens
- * describing the same build, disagreeing about both its name and its
- * number.
- *
- * Kept as re-exports because this module's tests import them from here
- * and because a reader landing on the copyright line below should be
- * able to follow the name one hop. The single definition is in
- * lib/app-identity.ts.
- */
-export { APP_NAME, readAppVersion } from '../../lib/app-identity';
 
 /**
  * 用户协议 / 隐私政策 in a sheet.
@@ -209,19 +193,14 @@ const AboutUsScreen = () => {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>产品介绍</Text>
             <View style={styles.introContent}>
-              {/* The 「社区互助」half of this paragraph was describing
-                  features that are behind FEATURE_FLAGS.explore and do
-                  not exist in a default build — the same placeholders
-                  Settings already stopped advertising. Prose counts:
-                  a patient who reads「社区互助」here and then cannot
-                  find a community has been told something untrue by
-                  the page whose job is to say what this app is. The
-                  clause is now tied to the same flag as the feature. */}
+              {/* Only what a patient can do in a default build. The
+                  peer half of this sentence promises reading and not
+                  交流: screens/p-community is a shelf of narratives
+                  their authors published elsewhere, with no posting
+                  surface and nothing to reply to. */}
               <Text style={styles.introText}>
                 {APP_NAME}
-                是专为面肩肱型肌营养不良症（FSHD）患者打造的自我管理平台。你可以在这里记录症状与肌力变化、整理化验单和检查报告、查阅带出处的疾病知识
-                {isFeatureEnabled('explore') ? '，也可以和其他病友交流经验' : ''}
-                ；在你同意的前提下，这些数据还能为FSHD科研提供真实世界的记录。
+                是专为面肩肱型肌营养不良症（FSHD）患者打造的自我管理平台。你可以在这里记录症状与肌力变化、整理化验单和检查报告、查阅带出处的疾病知识，也可以读病友自己写下、已公开发表的经历；在你同意的前提下，这些数据还能为FSHD科研提供真实世界的记录。
               </Text>
             </View>
           </View>
@@ -242,20 +221,21 @@ const AboutUsScreen = () => {
                 '标准化肌力评估与趋势分析，辅助医患沟通决策',
                 COLOR.accentWash,
               )}
-              {/* 患者社区 is one of the five pre-launch 探索
-                  destinations. Settings stopped listing it in PR-30
-                  (see FEATURE_FLAGS.explore) but this page kept
-                  advertising it as a 核心功能 — so the app both hid the
-                  feature and promised it, on two screens one tap apart.
-                  Same flag, so the next launch flips one switch. */}
-              {isFeatureEnabled('explore')
-                ? renderFeatureItem(
-                    'users',
-                    '患者社区',
-                    '症状经验分享、康复方法探讨与心理互助陪伴',
-                    COLOR.goodWash,
-                  )
-                : null}
+              {/* screens/p-community, which ships and has a row of its
+                  own in Settings, so this one is not gated: putting it
+                  behind FEATURE_FLAGS.explore would hide a feature the
+                  app links to from the page whose job is to say what
+                  the app is. It is described as a shelf rather than a
+                  community because that is what it is — excerpts from
+                  narratives their authors published elsewhere, each
+                  with its byline and source, and nothing collected
+                  from the reader. */}
+              {renderFeatureItem(
+                'users',
+                '病友经验',
+                '病友自己写下、已公开发表的经历，只放摘录、署名与出处',
+                COLOR.goodWash,
+              )}
             </View>
           </View>
 

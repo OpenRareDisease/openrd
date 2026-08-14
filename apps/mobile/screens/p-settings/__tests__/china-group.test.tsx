@@ -3,11 +3,12 @@
  *
  * This pins the placement, not the copy. The two administrative pages
  * are finished and sourced, and the group they sit in decides whether a
- * patient believes that before tapping: 探索 · 即将上线's five rows have
- * already taught this audience to read a chevron in Settings as
- *「大概又是个空页面」. Dropping either row into that group — or letting it
- * acquire an 即将上线 badge — costs the pages their readership without
- * changing a word of their content.
+ * patient believes that before tapping: every row under 探索 · 即将上线
+ * wears an 即将上线 badge and opens an UnavailableScreen, which teaches
+ * this audience to read a chevron in Settings as 「大概又是个空页面」.
+ * Dropping either row into that group — or letting it acquire that
+ * badge — costs the pages their readership without changing a word of
+ * their content.
  */
 
 import TestRenderer, { act } from 'react-test-renderer';

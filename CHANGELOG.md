@@ -61,14 +61,26 @@ Two feature areas and the consent the second one obliges us to ask for.
 
 ### Ops
 
-- **Migrations 026 and 027**, both with `_down`. See
-  [`docs/runbooks/v2.6.0-deploy.md`](docs/runbooks/v2.6.0-deploy.md) — it is a delta on
-  the v2.5.0 runbook, not a replacement.
+- **Migrations 021 through 027**, each with a `_down`. 026 and 027 carry the trial cache
+  and the audit index, but the batch also includes the tables patients type into —
+  `passport_share_links` (021), the instrument tables (022), `patient_falls` (023),
+  `passport_pickup_codes` (024) — whose `_down` scripts are `DROP TABLE`, plus 022's
+  rewrite of `independentlyAmbulatory` back to a boolean, which cannot be undone from the
+  database. 025 rebuilds `idx_patient_measurements_cohort` and holds ACCESS EXCLUSIVE on
+  `patient_measurements` for the whole build — reads blocked, not just writes. Read
+  [`docs/runbooks/v2.6.0-deploy.md`](docs/runbooks/v2.6.0-deploy.md) §1.1 before
+  deploying, and run the migration pre-flight before the stack comes up: the api image's
+  CMD applies migrations on container start. The runbook is a delta on the v2.5.0 one,
+  not a replacement.
 - **New host cron job** for the trial refresh. Without it the data ages in place (the
   page says so; it does not pretend otherwise).
 - **The reverse proxy must pass `/s/*`.** The passport share page is mounted outside
-  `/api`, so a config with only `handle /api/*` sends patients to the front-end router's
-  「这个链接打不开了」.
+  `/api`, so a config with only `handle /api/*` hands the link to the static app, which
+  answers 200 with the front-end router's 「页面未找到」 screen — the clinician sees a
+  consumer app's not-found page and `opened_count` never moves. (「这个链接打不开了」 is
+  the API's own expired-link page, served 404: that one means the proxy is right.)
+  Updating the file is not enough — `up -d` leaves the existing caddy container in place,
+  so recreate it.
 - **Every active account sees a consent screen on next open.** Expected, not a fault.
   Ship the web export and the API together: the loop where the server calls a version
   current that the shipped bundle cannot display is guarded, but the guard is not a

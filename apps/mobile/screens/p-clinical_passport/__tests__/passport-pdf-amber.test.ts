@@ -17,6 +17,15 @@
  * only caller of the builder.
  */
 
+// The builder reads `readPassportValueOrigins` out of api.ts, which
+// pulls in AsyncStorage through session-storage, and that has no native
+// module under jest. Same stub api-transport.test.ts uses.
+jest.mock('../../../lib/session-storage', () => ({
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { buildClinicalPassportPdfHtml } from '../../../lib/clinical-passport-pdf';
 import type { ClinicalPassportSummary } from '../../../lib/api';
 
@@ -34,7 +43,7 @@ const summary = (confirmation: 'genetic' | 'self_reported' | 'none') =>
         key: 'diagnosis',
         title: '诊断证据',
         ready: false,
-        summary: '未经基因确诊 —— 以下为本人填写，尚无基因报告佐证',
+        summary: '未经基因确诊，尚无基因报告佐证 —— 分型（报告读取）、诊断日期（本人填写）',
         meta: '诊断日期 2023-05-01',
       },
       {

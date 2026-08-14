@@ -34,19 +34,15 @@ import {
  * `zh-Hans-CN` rather than `zh`: Simplified script, mainland region.
  * Every patient-facing string in this app is Simplified Chinese, and
  * the region tag is what gets number/date formatting right.
- *
- * Kept as exported constants because the same strings have to agree
- * across three places that are edited at different times — this file,
- * `app.json`'s `web` block (the PWA manifest / bookmark name), and the
- * about screen. See __tests__/document-shell.test.tsx, which fails if
- * they drift apart.
  */
 
 /**
  * Identity constants live in `lib/app-identity.ts`, not here: this file
  * is only evaluated by the export/SSR step, so anything defined here is
- * `undefined` to the client bundle. Re-exported so the shell and the
- * runtime cannot drift.
+ * `undefined` to the client bundle. Re-exported for
+ * __tests__/document-shell.test.tsx, the only importer: it pulls them
+ * in alongside Root to assert the rendered head carries these exact
+ * strings, and that `app.json`'s `web` block still agrees with them.
  */
 export {
   APP_NAME,

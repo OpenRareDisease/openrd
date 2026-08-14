@@ -19,6 +19,15 @@
  *    anesthetist.
  */
 
+// The anesthesia card reads `readPassportValueOrigins` out of api.ts,
+// which pulls in AsyncStorage through session-storage, and that has no
+// native module under jest. Same stub api-transport.test.ts uses.
+jest.mock('../../../lib/session-storage', () => ({
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 import {
   ANESTHESIA_CARD_HREF,
   buildSurveillanceSchedule,

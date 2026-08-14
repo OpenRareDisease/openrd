@@ -1,3 +1,12 @@
+// The card reads `readPassportValueOrigins` out of api.ts, which pulls
+// in AsyncStorage through session-storage, and that has no native module
+// under jest. Same stub api-transport.test.ts uses.
+jest.mock('../session-storage', () => ({
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { buildAnesthesiaCard } from '../anesthesia-card';
 import { wrapText } from '../anesthesia-card-image';
 import type { ClinicalPassportSummary } from '../api';
@@ -8,10 +17,38 @@ import type { ClinicalPassportSummary } from '../api';
  * literature summary as an instruction.
  */
 
+/** One `PassportValueOrigin`, worded the way the API words it. */
+const valueOrigin = (kind: string, labelZh: string) => ({
+  kind,
+  labelZh,
+  documentId: null,
+  adminUserId: null,
+  at: null,
+  detail: null,
+});
+
+/** The whole map. `readPassportValueOrigins` is all-or-nothing, so a
+ *  fixture that names one key still has to carry the other three. */
+const origins = (over: Record<string, ReturnType<typeof valueOrigin>>) => ({
+  geneticType: valueOrigin('absent', '未填'),
+  d4z4Repeats: valueOrigin('absent', '未填'),
+  methylationValue: valueOrigin('absent', '未填'),
+  diagnosisDate: valueOrigin('absent', '未填'),
+  ...over,
+});
+
 const summary = (over: Record<string, unknown> = {}) =>
   ({
     patientName: '张三',
-    diagnosis: { confirmation: 'genetic', d4z4Repeats: '4' },
+    diagnosis: {
+      confirmation: 'genetic',
+      d4z4Repeats: '4',
+      geneticType: 'FSHD1',
+      valueOrigins: origins({
+        geneticType: valueOrigin('patient', '本人填写'),
+        d4z4Repeats: valueOrigin('report', '报告读取'),
+      }),
+    },
     monitoring: {
       items: [
         {
@@ -47,24 +84,78 @@ describe('诊断依据不能在卡上被抬高', () => {
     expect(card.patientLines[0]).toContain('4');
   });
 
-  it('自填诊断必须写明尚无基因报告', () => {
+  it('未确诊时写明被查过的是哪三项，而不是说没收到报告', () => {
     // An anesthetist who reads 「FSHD」 will plan around FSHD. If nobody
-    // has confirmed it, they are entitled to know that before they
-    // pick an airway plan on the strength of it.
+    // has confirmed it, they are entitled to know that before they pick
+    // an airway plan on the strength of it — but 「本人填报，本平台尚未
+    // 收到基因报告」 is false in both halves on this very fixture: the
+    // 分型 is read off an uploaded report, so nobody filed it and a
+    // report IS on file. What `confirmation` actually withholds is the
+    // measurements named below.
     const card = buildAnesthesiaCard(
-      summary({ diagnosis: { confirmation: 'self_reported', d4z4Repeats: '—' } }),
+      summary({
+        diagnosis: {
+          confirmation: 'self_reported',
+          d4z4Repeats: '—',
+          geneticType: 'FSHD1',
+          valueOrigins: origins({ geneticType: valueOrigin('report', '报告读取') }),
+        },
+      }),
       TODAY,
     );
-    expect(card.patientLines[0]).toContain('本人填报');
-    expect(card.patientLines[0]).not.toContain('基因确诊');
+    expect(card.patientLines[0]).toContain('未经基因确诊');
+    expect(card.patientLines[0]).toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+    expect(card.patientLines[0]).not.toContain('本人填报');
+    expect(card.patientLines[0]).not.toContain('尚未收到');
+    expect(card.patientLines[0]).not.toContain('基因确诊（');
+  });
+
+  it('分型是谁给的，跟着分型一起写出来', () => {
+    // 「患者说自己是 FSHD1」 and 「我们从他的报告里读到 FSHD1」 are
+    // different things to plan from, so the card prints whichever one
+    // the server named and asserts neither on its own.
+    const line = (kind: string, label: string) =>
+      buildAnesthesiaCard(
+        summary({
+          diagnosis: {
+            confirmation: 'self_reported',
+            d4z4Repeats: '—',
+            geneticType: 'FSHD1',
+            valueOrigins: origins({ geneticType: valueOrigin(kind, label) }),
+          },
+        }),
+        TODAY,
+      ).patientLines[0];
+    expect(line('report', '报告读取')).toContain('档案里的分型为 FSHD1（报告读取）');
+    expect(line('patient', '本人填写')).toContain('档案里的分型为 FSHD1（本人填写）');
+    expect(line('indeterminate', '来源无法确定')).toContain('档案里的分型为 FSHD1（来源无法确定）');
+  });
+
+  it('服务端没给来源时不替它编一个 —— 那一句整个不出现', () => {
+    const card = buildAnesthesiaCard(
+      summary({
+        diagnosis: { confirmation: 'self_reported', d4z4Repeats: '—', geneticType: 'FSHD1' },
+      }),
+      TODAY,
+    );
+    expect(card.patientLines[0]).toContain('未经基因确诊');
+    expect(card.patientLines[0]).not.toContain('档案里的分型');
   });
 
   it('什么依据都没有时也不留白', () => {
     const card = buildAnesthesiaCard(
-      summary({ diagnosis: { confirmation: 'none', d4z4Repeats: '—' } }),
+      summary({
+        diagnosis: {
+          confirmation: 'none',
+          d4z4Repeats: '—',
+          geneticType: '—',
+          valueOrigins: origins({}),
+        },
+      }),
       TODAY,
     );
-    expect(card.patientLines[0]).toContain('尚无诊断依据');
+    expect(card.patientLines[0]).toContain('未经基因确诊');
+    expect(card.patientLines[0]).not.toContain('档案里的分型');
   });
 });
 
