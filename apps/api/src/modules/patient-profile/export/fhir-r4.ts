@@ -65,10 +65,10 @@ import { toPartialFhirDate } from './occurrence-date.js';
  * ON `Bundle.type = "document"`. A document bundle's first entry must
  * be a Composition; a bundle of clinical resources without one is not
  * a document, whatever its `type` says. So a Composition is built and
- * it is real: its `author` is the Patient, because these data ARE the
- * patient's own record of themselves, and saying so in the structure
- * is more accurate than inventing an Organization that never touched
- * them.
+ * it is real: its `author` is the Patient, which in FHIR names who is
+ * responsible for the information, not who typed each value — and
+ * naming them is more accurate than inventing an Organization that
+ * never touched them. Who typed a value is said per value, not here.
  *
  * NO NON-STANDARD FIELDS. Nothing in this bundle carries an
  * `_openrd*` key or any other private extension. Everything we want
@@ -302,15 +302,18 @@ export const buildFhirExport = (
       ? { recordedDate: String(source.diagnosisYear.year) }
       : {}),
     // `note` is the one conformant slot on a Condition for a sentence a
-    // human has to read. Both facts belong in it, so a receiver that
-    // never opens the envelope still sees them.
+    // human has to read. What goes in it does not branch on the
+    // `verificationStatus` arm above, so a receiver that never opens
+    // the envelope sees these sentences on a confirmed Condition too.
     ...(() => {
       const yearOrigin = originNoteZh(source, 'foundation.diagnosisYear');
+      const typeOrigin = originNoteZh(source, 'diseaseBackground.diagnosisType');
       const notes = [
         ...(source.diagnosisYear.kind === 'unknown'
           ? ['确诊年份：患者记不清了（已问过，不是未采集）。']
           : []),
         ...(yearOrigin ? [`确诊年份${yearOrigin}。`] : []),
+        ...(typeOrigin ? [`FSHD 分型${typeOrigin}。`] : []),
       ];
       return notes.length > 0 ? { note: notes.map((text) => ({ text })) } : {};
     })(),
@@ -669,7 +672,7 @@ export const buildFhirExport = (
     type: codeableText('患者自持的疾病记录摘要（面肩肱型肌营养不良）'),
     subject: { reference: patientRef },
     date: options.generatedAt,
-    author: [{ reference: patientRef, display: '患者本人（本记录由患者自行采集与自述）' }],
+    author: [{ reference: patientRef, display: '患者本人' }],
     title: '肌愈通 患者自持记录导出',
     section: [
       { title: '诊断', entry: [{ reference: `urn:uuid:${conditionId}` }] },
@@ -779,7 +782,7 @@ export const buildFhirExport = (
               .map((origin) => origin.labelZh)
               .join(
                 '、',
-              )}。逐条见信封的 fieldOrigins。FHIR 的资源结构里没有可以承载这一区分的合规位置，所以它在信封上而不在 Bundle 里；把这些值当作患者自述会记错。`,
+              )}。逐条见信封的 fieldOrigins；诊断相关的几项在 Condition.note 里也各自写明。把这些值当作患者自述会记错。`,
       编码: hasExternalCodings
         ? `本 Bundle 中出现的 system，除已核对来源的第三方术语（${codedSystemsZh}）之外，均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category）。哪些是第三方术语、各自的核对来源，见 codingProvenance.emitted。`
         : '本 Bundle 中出现的 system 均为 FHIR R4 规范自身定义的取值集（condition-clinical、condition-ver-status、observation-category），不是第三方术语。',

@@ -254,6 +254,29 @@ describe('确诊状态必须在数值之前出现', () => {
     expect(page({})).not.toContain('这些字段不是患者本人填的');
   });
 
+  it('页脚说这一页的内容从哪来时，把那一节也算进去', () => {
+    const origin = (state: 'admin_entered' | 'unreadable') => ({
+      path: 'foundation.diagnosisYear',
+      labelZh: '确诊年份',
+      state,
+      adminUserId: '11111111-2222-3333-4444-555555555555',
+      at: '2026-08-13T04:11:07.912Z',
+      detail: null,
+    });
+    // The footer sentence is what a clinician reads to know what they
+    // are holding; it cannot name fewer places than the page shows.
+    for (const state of ['admin_entered', 'unreadable'] as const) {
+      const html = page({ fieldOrigins: [origin(state)] });
+      const sentence = html.slice(html.indexOf('本页由患者本人主动分享'));
+      expect(sentence.slice(0, sentence.indexOf('未经医疗机构核验'))).toContain(
+        '一节逐条列出的字段',
+      );
+    }
+    const clean = page({});
+    expect(clean).toContain('本页由患者本人主动分享');
+    expect(clean).not.toContain('一节逐条列出的字段');
+  });
+
   it('运动功能那两行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
     // 概况 and 受累部位 are patient self-measurement wrapped in the same
     // class with no inline text marker, so if the rule does not bite,

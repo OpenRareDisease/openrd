@@ -33,6 +33,7 @@ jest.mock('../../../lib/api', () => {
     // whole passport down, so a test that faked it would be asserting
     // against its own fiction.
     readPassportGeneticEvidence: jest.requireActual('../../../lib/api').readPassportGeneticEvidence,
+    readPassportValueOrigin: jest.requireActual('../../../lib/api').readPassportValueOrigin,
     readPassportValueOrigins: jest.requireActual('../../../lib/api').readPassportValueOrigins,
     ApiError,
     isConsentRequiredError: () => false,
@@ -194,6 +195,9 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
       diagnosisDate: '2023-05-01',
       valueOrigins: SELF_REPORTED_ORIGINS,
       geneEvidence: '暂无可直接展示的基因证据',
+      // 证据摘要 has an origin of its own on the wire, beside the map.
+      // With nothing joined off a report it is the 分型 row's own.
+      geneEvidenceOrigin: origin('report', '报告读取'),
     },
     motor: {
       ready: false,
@@ -242,7 +246,7 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
     ...over,
   }) as unknown as ClinicalPassportSummary;
 
-const geneticSummary = () =>
+const geneticSummary = (diagnosisOver: Record<string, unknown> = {}) =>
   summary({
     summaryCards: [
       {
@@ -273,6 +277,10 @@ const geneticSummary = () =>
         diagnosisDate: origin('indeterminate', '来源无法确定'),
       },
       geneEvidence: 'FSHD1 · 4qA · 18kb · 4',
+      // Joined out of values that do not agree about where they came
+      // from, which is the state the API resolves to `indeterminate`.
+      geneEvidenceOrigin: origin('indeterminate', '来源无法确定'),
+      ...diagnosisOver,
     },
   });
 
@@ -464,17 +472,46 @@ describe('逐项来源：每个值按自己的来源排版，而不是按整块�
     const renderer = await render(
       summary({ diagnosis: { ...summary().diagnosis, valueOrigins: undefined } }),
     );
-    expect(joinedText(renderer)).toContain('服务端这一版没有返回逐项来源');
+    expect(joinedText(renderer)).toContain('服务端这一版没有把逐项来源发全');
     // It names the diagnosis values it is about. 临床护照 ID is generated
     // here and 诊断进度 is labelled with its own author, so neither is
     // covered by this sentence.
-    expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值和诊断日期');
+    expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值、诊断日期和证据摘要');
     // And the notice above the grid stops pointing at captions that are
     // not there.
     expect(joinedText(renderer)).not.toContain('本平台能说明来源的值，来源就写在那个值下面');
     // And nothing keeps the laboratory register on the strength of a
     // field that never arrived.
     expect(styleOfValue(renderer, 'FSHD1').fontVariant).toBeUndefined();
+  });
+
+  it('证据摘要那一行也印着自己的来源 —— 和这个屏幕导出的 PDF 说同一件事', async () => {
+    const renderer = await render(
+      geneticSummary({ geneEvidenceOrigin: origin('indeterminate', '拼出来的，来源不一致') }),
+    );
+    const runs = allText(renderer);
+    const value = runs.indexOf('FSHD1 · 4qA · 18kb · 4', runs.indexOf('证据摘要'));
+    expect(value).toBeGreaterThan(-1);
+    expect(runs[value + 1]).toBe('拼出来的，来源不一致');
+  });
+
+  it('只漏了证据摘要的来源时也说没发全 —— 那张表来了不等于这一节全了', async () => {
+    const renderer = await render(geneticSummary({ geneEvidenceOrigin: null }));
+    expect(joinedText(renderer)).toContain('服务端这一版没有把逐项来源发全');
+  });
+
+  it('证据摘要没有来源可归时不印小字 —— 和上面那些格子一样', async () => {
+    // `absent` is a source the server did send, so the sentence about a
+    // missing payload must not fire on it either.
+    const joined = joinedText(
+      await render(
+        summary({
+          diagnosis: { ...summary().diagnosis, geneEvidenceOrigin: origin('absent', '未填') },
+        }),
+      ),
+    );
+    expect(joined).not.toContain('未填');
+    expect(joined).not.toContain('服务端这一版没有把逐项来源发全');
   });
 
   it('护照 ID 在任何状态下都保持 metric —— 它是系统生成的，不是谁声称的', async () => {

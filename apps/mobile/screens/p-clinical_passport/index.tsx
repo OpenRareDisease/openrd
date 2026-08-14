@@ -31,6 +31,7 @@ import {
   getMyPatientProfile,
   isConsentRequiredError,
   readPassportGeneticEvidence,
+  readPassportValueOrigin,
   readPassportValueOrigins,
   type ClinicalPassportSummary,
   type GeneticTestRequest,
@@ -524,6 +525,16 @@ const ClinicalPassportScreen = () => {
    */
   const valueOrigins = useMemo(
     () => readPassportValueOrigins(passport?.diagnosis.valueOrigins),
+    [passport],
+  );
+  /**
+   * Where 证据摘要 came from, or null when this API build does not say.
+   *
+   * It is not in the map above: 证据摘要 is those values joined, so the
+   * API resolves its origin beside them and sends it on its own key.
+   */
+  const geneEvidenceOrigin = useMemo(
+    () => readPassportValueOrigin(passport?.diagnosis.geneEvidenceOrigin),
     [passport],
   );
   /**
@@ -1060,26 +1071,35 @@ const ClinicalPassportScreen = () => {
                       {DIAGNOSIS_NOTE_TITLE[passport.diagnosis.confirmation] ?? '诊断信息'}
                     </Text>
                     <Text style={styles.noteText}>{passport.diagnosis.geneEvidence}</Text>
+                    {/* Under the value, in the same register as the
+                        cells above. `absent` prints nothing: an empty
+                        value has no source to name. */}
+                    {geneEvidenceOrigin && geneEvidenceOrigin.kind !== 'absent' ? (
+                      <Text style={styles.infoLabel}>{geneEvidenceOrigin.labelZh}</Text>
+                    ) : null}
                   </View>
 
                   {/* The cells `renderDiagnosisCell` prints carry their
-                      own sources; this is the state where the server
-                      sent none, and silence would be read as 「every one
-                      of them came off a report」 by a reader who has
-                      learned what the line under a value means. The
-                      sentence names those values instead of the grid
-                      they sit in: the passport ID in that grid is
-                      generated here and claimed by nobody, and the
-                      诊断进度 cell is labelled with its own author.
-                      WeChat caches this web export for days,
-                      so a current bundle can be talking to an API build
-                      that does not send the field. */}
-                  {valueOrigins ? null : (
+                      own sources, and so does 证据摘要; this is the state
+                      where the server did not send all of them, and
+                      silence would be read as 「every one of them came
+                      off a report」 by a reader who has learned what the
+                      line under a value means. The sentence names the
+                      values it covers rather than the grid they sit in,
+                      and covers only the ones with no line under them:
+                      the passport ID in that grid is generated here and
+                      claimed by nobody, and the 诊断进度 cell is
+                      labelled with its own author. WeChat caches this
+                      web export for days, so a current bundle can be
+                      talking to an API build that sends neither key or
+                      only one of them, and the sentence has to hold for
+                      both. */}
+                  {valueOrigins && geneEvidenceOrigin ? null : (
                     <View style={styles.noteCard}>
                       <Text style={styles.noteTitle}>逐项来源</Text>
                       <Text style={styles.noteText}>
-                        服务端这一版没有返回逐项来源，基因类型、D4Z4
-                        重复数、甲基化值和诊断日期是从报告里读出来的还是谁填进去的，本平台无法说明。
+                        服务端这一版没有把逐项来源发全，基因类型、D4Z4
+                        重复数、甲基化值、诊断日期和证据摘要里，下面没有标来源的那些，是从报告里读出来的还是谁填进去的，本平台无法说明。
                       </Text>
                     </View>
                   )}

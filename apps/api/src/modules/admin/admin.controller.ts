@@ -17,6 +17,7 @@ import type { HealthSummary } from '../../routes/index.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   applyAdminBaselineWrite,
+  leafPaths,
   listBaselineFieldOrigins,
 } from '../patient-profile/baseline-provenance.js';
 import type { ExportFieldOrigin } from '../patient-profile/export/envelope.js';
@@ -302,10 +303,12 @@ export class AdminController {
     }
 
     // A BODY THAT SURVIVED PARSING AS NOTHING IS NOT AN INSTRUCTION TO
-    // ERASE. `baselineProfileSchema` is a plain Zod object: a key it
-    // does not know is dropped silently, so a client one version out of
-    // step, or an operator who mistyped a section name, arrives here
-    // with `payload` empty. `upsertBaseline` REPLACES the column, and
+    // ERASE. `baselineProfileSchema` is a plain Zod object AT EVERY
+    // LEVEL: a key it does not know is dropped silently, so a client
+    // one version out of step arrives here with no fields left. This
+    // counts LEAVES, not sections — a body naming a section the schema
+    // knows and filling it with field names it does not parses to
+    // {foundation: {}}, which is a section with no answers in it. `upsertBaseline` REPLACES the column, and
     // `applyAdminBaselineWrite` reads an absent value as a deletion —
     // which the allowlist permits, because deleting an admin-writable
     // field is a write to an admin-writable field.
@@ -317,11 +320,8 @@ export class AdminController {
     // present to be refused, so it survived every test that used a
     // realistic baseline.
     //
-    // Sending no fields is therefore refused rather than obeyed. It
-    // costs the back office nothing: it draws twelve inputs and always
-    // submits them, so an empty payload is only ever reachable by
-    // something that is not this build's form.
-    if (Object.keys(payload).length === 0) {
+    // Sending no fields is therefore refused rather than obeyed.
+    if (leafPaths(payload).length === 0) {
       throw new AppError(
         '这次提交里没有一个后台能识别的字段，所以没有改动任何东西。如果你确实想清空某一项，把那一项留空提交；如果你以为自己填了内容，多半是这一页和后台版本对不上，刷新一次再试。',
         400,
@@ -639,7 +639,7 @@ export class AdminController {
       });
     } catch (error) {
       this.deps.logger.error(
-        { error, adminUserId: req.user.id, patientCount: rows.length, fileName },
+        { err: error, adminUserId: req.user.id, patientCount: rows.length, fileName },
         'Refusing the full patient export because its audit row could not be written',
       );
       throw new AppError('全量导出暂不可用：审计记录写入失败', 503);

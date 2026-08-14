@@ -265,7 +265,7 @@ const sameJsonValue = (a: unknown, b: unknown): boolean => {
 /** Every leaf path in a payload, excluding the provenance block
  *  itself. A leaf is anything that is not a plain object, plus any
  *  plain object at MAX_LEAF_DEPTH. */
-const leafPaths = (value: unknown, prefix = '', depth = 0): string[] => {
+export const leafPaths = (value: unknown, prefix = '', depth = 0): string[] => {
   if (!isPlainObject(value) || depth >= MAX_LEAF_DEPTH) {
     return prefix ? [prefix] : [];
   }

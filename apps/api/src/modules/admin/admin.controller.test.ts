@@ -448,6 +448,30 @@ describe('AdminController.updatePatientBaseline', () => {
     expect(profiles.upsertBaseline).not.toHaveBeenCalled();
   });
 
+  it('refuses a known section whose every field name the schema strips', async () => {
+    // Same leak as the patient route: counting top-level keys let
+    // {「foundation」:{「diagnosis_year」:2016}} through as {foundation:{}},
+    // and the allowlist is no backstop — the implied deletion touches
+    // only 确诊年份, which an administrator MAY write.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ foundation: { diagnosisYear: 2016 } }),
+      profiles,
+    });
+
+    await expect(
+      controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { foundation: { diagnosis_year: 2016 }, lifestyle: { smoking: 'never' } },
+          method: 'PUT',
+        }),
+        fakeResponse().res,
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+  });
+
   it('refuses a save that carries no version at all, and does not call it an edit', async () => {
     // Refused like a stale one — but NOT with the stale one's sentence.
     // 「已经不是你打开这一页时的那一版了」 asserts somebody changed the

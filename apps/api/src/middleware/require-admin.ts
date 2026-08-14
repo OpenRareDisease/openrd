@@ -169,7 +169,7 @@ export const requireAdmin = (
       );
       account = result.rows[0];
     } catch (error) {
-      logger.error({ error, userId: user.id }, 'Could not read the role for an admin request');
+      logger.error({ err: error, userId: user.id }, 'Could not read the role for an admin request');
       return next(new AppError('Administrator check unavailable', 503));
     }
 
@@ -293,7 +293,7 @@ export const requireAdmin = (
       );
     } catch (error) {
       logger.error(
-        { error, event: spec.event, ...payload },
+        { err: error, event: spec.event, ...payload },
         'Refusing an admin request because its audit row could not be written',
       );
       return next(new AppError('Admin access is unavailable: audit write failed', 503));

@@ -61,10 +61,9 @@
 -- legacy row outside the set, and buys nothing for this feature —
 -- requireAdmin compares role to the literal 'admin', so an unexpected
 -- legacy value is simply not an admin. See migration 022's note for
--- the one thing NOT VALID does cost: a row already holding an
--- out-of-set role cannot be UPDATEd, so `admin:grant` against such an
--- account raises 23514. scripts/admin-role.mjs reports that case by
--- name rather than as a raw driver error.
+-- what NOT VALID does and does not buy. scripts/admin-role.mjs reports
+-- a 23514 from its own UPDATE by naming the value the constraint
+-- rejected, rather than passing a raw driver error to the operator.
 --
 --
 -- LOCKS THIS MIGRATION TAKES

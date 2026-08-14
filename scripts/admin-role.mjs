@@ -2,8 +2,8 @@
 /**
  * Grant or revoke the `admin` role, from the host, by a human.
  *
- *   npm run admin:grant  -- +8613900000000
- *   npm run admin:revoke -- +8613900000000
+ *   npm run admin:grant  -- 13900000000
+ *   npm run admin:revoke -- 13900000000
  *
  * WHY THIS IS A SCRIPT AND NOT A SCREEN
  *
@@ -56,8 +56,10 @@ const usage = `Usage:
   npm run admin:grant  -- <phone>
   npm run admin:revoke -- <phone>
 
-  <phone>   The account's phone number, with or without the +86 prefix.
-            Both forms are looked up; the account must already exist.
+  <phone>   The account's phone number. Write it bare (13900000000): that
+            form is looked up both as typed and with +86 prepended, while
+            +8613900000000 is looked up only as typed. The account must
+            already exist.
 
 Both commands ask for confirmation on a terminal and write an
 audit_logs row in the same transaction as the role change.
@@ -79,12 +81,14 @@ const fail = (message, code = 1) => {
 };
 
 /**
- * Mirrors normalizePhone in apps/api/src/utils/phone.ts. Both forms are
- * used in the lookup rather than trusting either one: the column has
- * held both shapes historically (see the note on `phoneNumber` in
- * auth.schema.ts), and a normalisation rule that drifts from the API's
- * would silently look up an account that is not the one the operator
- * means.
+ * Mirrors normalizePhone in apps/api/src/utils/phone.ts: a bare number
+ * gets `+86`, a number that already carries a country code is kept as
+ * typed. A rule that drifts from the API's would silently look up an
+ * account that is not the one the operator means.
+ *
+ * The column has held both shapes — see the note on `phoneNumber` in
+ * auth.schema.ts — which is why `resolveAccount` queries a candidate
+ * list rather than one string.
  */
 const withCountryCode = (phone) => (phone.startsWith('+') ? phone : `+86${phone}`);
 
@@ -239,14 +243,14 @@ const apply = async (client, { mode, account, newRole }) => {
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     if (error?.code === '23514') {
-      // Promised by db/migrations/026_trials_and_admin.sql: the role
-      // CHECK is NOT VALID, so a row still holding a pre-011 role value
-      // cannot be UPDATEd at all.
+      // The CHECK is evaluated against the row being written, so what
+      // was rejected is newRole. On revoke that is whatever the grant's
+      // audit row recorded as previousRole, which nothing validates.
       fail(
-        `Postgres rejected the new role (${error.constraint ?? 'check constraint'}). ` +
-          "The account's current role is outside the CHECK set on app_users.role, which makes " +
-          'the row un-updatable until it is corrected. Inspect it with: ' +
-          `SELECT id, role FROM app_users WHERE id = '${account.id}';`,
+        `Postgres rejected role = '${newRole}' (${error.constraint ?? 'check constraint'}). ` +
+          "That is the value this run tried to write, not the account's current role. " +
+          'Inspect the constraint with: SELECT conname, pg_get_constraintdef(oid) ' +
+          "FROM pg_constraint WHERE conrelid = 'app_users'::regclass AND contype = 'c';",
       );
     }
     throw error;

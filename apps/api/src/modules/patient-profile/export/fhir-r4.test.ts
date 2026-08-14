@@ -32,11 +32,11 @@ describe('FHIR R4 — the bundle is a document', () => {
     );
   });
 
-  it('names the patient as the author, because they are', () => {
+  it('names the patient as the author, and says nothing about who typed each value', () => {
     const composition = resourcesOf(build(), 'Composition')[0];
     const patient = resourcesOf(build(), 'Patient')[0];
     expect(composition.author).toEqual([
-      { reference: `urn:uuid:${patient.id}`, display: '患者本人（本记录由患者自行采集与自述）' },
+      { reference: `urn:uuid:${patient.id}`, display: '患者本人' },
     ]);
   });
 
@@ -596,7 +596,7 @@ const ocrAutofilled = (): Partial<PatientProfileDTO> => {
 /**
  * Contract §B3. A FHIR validator rejects unknown fields, so there is no
  * conformant slot for a per-field 「our staff typed this」 — the envelope
- * carries the list, and the two diagnosis-facing ones also go into the
+ * carries the list, and the diagnosis-facing ones also go into the
  * Condition's own `note`, which IS conformant and is where a receiver
  * that never opens the envelope will look.
  */
@@ -625,6 +625,26 @@ describe('FHIR R4 — §B3：管理员代填的值不能记成患者自述', () 
   it('确诊年份的来源进 Condition.note，而不是只在信封上', () => {
     const condition = resourcesOf(build({ ...adminEdited(), documents: [] }), 'Condition')[0];
     expect(JSON.stringify(condition.note)).toContain('不是患者本人填写');
+  });
+
+  // The fixture carries a `genetic_report`, so this build takes the
+  // `confirmed` arm — the one where the Condition is OMIM-coded and a
+  // reader is least likely to doubt it.
+  it('分型的来源在 confirmed 的那一支上也进 Condition.note', () => {
+    const condition = resourcesOf(build(adminEdited()), 'Condition')[0];
+    expect(
+      (condition.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
+    ).toBe('confirmed');
+    expect(JSON.stringify(condition.note)).toContain('FSHD 分型');
+    expect(JSON.stringify(condition.note)).toContain('不是患者本人填写');
+  });
+
+  it('Composition 的作者不替患者认领任何一个值', () => {
+    const marked = build(adminEdited());
+    expect(marked.fieldOrigins.length).toBeGreaterThan(0);
+    const composition = resourcesOf(marked, 'Composition')[0];
+    expect(JSON.stringify(composition.author)).not.toContain('自述');
+    expect(JSON.stringify(composition.author)).not.toContain('自行采集');
   });
 
   it('信封逐条列出，并且没有标记时明说没有代填', () => {

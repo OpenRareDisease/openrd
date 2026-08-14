@@ -1652,6 +1652,24 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
     expect(upsertBaseline).not.toHaveBeenCalled();
   });
 
+  it('refuses a known section whose every field name the schema strips', async () => {
+    // The leak the first version of this guard had: it counted
+    // top-level keys, and {「foundation」:{「full_name」:…}} parses to
+    // {foundation:{}} — one key, no answers. That is the shape a
+    // version-skewed bundle actually sends (a renamed field, a
+    // snake_case ops script); the all-unknown-sections shape is the
+    // hand-crafted one. Counting leaves catches both.
+    const { controller, upsertBaseline } = buildController(storedWithTwoMarkers());
+
+    await expect(
+      controller.updateMyBaseline(
+        reqWith({ foundation: { full_name: '张三' }, lifestyle: { smoking: 'never' } }),
+        fakeRes(),
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(upsertBaseline).not.toHaveBeenCalled();
+  });
+
   it('still lets the patient clear one field, which is a key the schema knows', async () => {
     // The guard is about a body the server could not read at all, not
     // about erasure — otherwise it would take away 清空 and the refusal

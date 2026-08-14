@@ -2,7 +2,7 @@ import type { Response } from 'express';
 import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { DeletionRequestError } from './account-deletion.js';
-import { applyPatientBaselineWrite } from './baseline-provenance.js';
+import { applyPatientBaselineWrite, leafPaths } from './baseline-provenance.js';
 import {
   buildPortableExport,
   isPortableExportFormat,
@@ -728,7 +728,13 @@ export class PatientProfileController {
     const payload = baselineProfileSchema.parse(req.body);
 
     // A BODY THAT PARSED TO NOTHING IS NOT 「CLEAR EVERYTHING」.
-    // `baselineProfileSchema` drops keys it does not know, and
+    // `baselineProfileSchema` drops keys it does not know AT EVERY
+    // LEVEL, so this counts LEAVES rather than sections: a body naming
+    // a section the schema still knows and filling it with field names
+    // it does not (a renamed key, a snake_case ops script) parses to
+    // {foundation: {}}, which has a top-level key and no answers in it.
+    // That is the shape a version-skewed client actually produces; the
+    // all-unknown-sections shape is the hand-crafted one. And
     // `upsertBaseline` REPLACES the column — so a request whose every
     // key is unrecognised arrives here as {} and erases the whole
     // baseline, answering 200.
@@ -742,7 +748,7 @@ export class PatientProfileController {
     // The form always submits its sections, so an empty payload never
     // comes from this build. Clearing a single field still works — send
     // the field as null, which is a key the schema knows.
-    if (Object.keys(payload).length === 0) {
+    if (leafPaths(payload).length === 0) {
       throw new AppError(
         '这次保存里没有一项是本平台这一版认得的字段，所以什么都没有改。多半是这个页面的版本比服务端旧了：把页面整个刷新一次（微信里可能要先清一下缓存），再保存一次。',
         400,

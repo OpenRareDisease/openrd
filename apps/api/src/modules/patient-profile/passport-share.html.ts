@@ -420,7 +420,12 @@ ${
 }
 
 <footer>
-  <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录，
+  <p>本页由患者本人主动分享，内容来自其在「肌愈通」中上传的报告与自行录入的记录${
+    // Tied to the 「这些字段不是患者本人填的」 section above: this clause
+    // is emitted on the same condition, and has to go if that section
+    // ever does.
+    origins ? '，以及上方「这些字段不是患者本人填的」一节逐条列出的字段' : ''
+  }，
      未经医疗机构核验，不构成诊断或诊疗意见。运动功能一栏为患者自测，不是查体所得。</p>
   <p>生成时间 ${day(summary.generatedAt)} · ${
     // A pickup code lives fifteen minutes, so printing its expiry as a
