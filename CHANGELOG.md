@@ -29,7 +29,9 @@ Two feature areas and the consent the second one obliges us to ask for.
   找到」 and 「我们没能查」 are distinguishable in the data, because to a patient they are
   not the same sentence.
 - **A back office over patient records, whose whole design is that it cannot lie about
-  who typed what.** Provenance is stored per field; absence means the patient, so no
+  who typed what.** Provenance is stored per field, and only a write by our own staff
+  records one — so an unmarked field means nobody here wrote it, which is not the same
+  as the patient having typed it. Nothing is backfilled, so no
   existing record is retroactively relabelled. Twelve fields are admin-writable,
   deny-by-default, and every export format carries the origin through. The clinical
   passport prints 基因确诊 / 自述 / 管理员代填 as different things because a neurologist

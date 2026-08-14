@@ -2097,8 +2097,10 @@ export const buildClinicalPassportSummary = (
   const diagnosisClaimed =
     hasMeaningfulValue(reportInsights.geneticType) ||
     hasMeaningfulValue(reportInsights.diagnosisDate);
-  // WHO PUT THE BASELINE VALUES ON THIS PAGE. Absence is the patient,
-  // so this is empty for the overwhelming majority of profiles.
+  // WHICH BASELINE VALUES ON THIS PAGE CARRY A MARKER. Only marked
+  // fields get a row, so this is empty for the overwhelming majority of
+  // profiles — which says nobody on our side recorded a write, not that
+  // the patient typed everything.
   const fieldOrigins = collectPassportFieldOrigins(profile.baseline);
   // `!== 'patient'` and not `=== 'admin_entered'`: an entry that
   // exists and cannot be parsed is still not the patient's, and the

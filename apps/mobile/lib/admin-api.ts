@@ -607,13 +607,14 @@ export interface AdminPatientRecord {
    */
   baselineIsStored: boolean;
   /**
-   * One entry per MARKED field; an absent path inside a PRESENT list is
-   * the patient's own. `null` means the server did not send the list at
-   * all — the same distinction as the sections below, and it matters
-   * more here, because this is the one section that decides whether a
-   * value is labelled as the patient's. Collapsing it to `[]` would
-   * chip 「本人填写」 on every field of a record read from a build that
-   * does not send it.
+   * One entry per MARKED field. An absent path inside a PRESENT list
+   * carries no marker — which is not the same as the patient having
+   * typed it, and the chip says 无代填记录 for exactly that reason.
+   * `null` means the server did not send the list at all, and that is a
+   * different fact again: not 「nothing is marked」 but 「we do not
+   * know」. Collapsing it to `[]` would answer the second question with
+   * the first on every field of a record read from a build that does
+   * not send it.
    */
   fieldOrigins: AdminFieldOriginEntry[] | null;
   /**
@@ -653,8 +654,8 @@ export const readAdminPatientRecord = (payload: unknown): AdminPatientRecord => 
   if (!body || !accountRecord || !userId) throw new AdminResponseError('患者档案');
 
   // `null` when the key is absent or unreadable, `[]` when the server
-  // sent an empty list. Only the second one licenses 「本人填写」 on a
-  // field with no entry; see the field's doc comment above.
+  // sent an empty list. Only the second one lets a field with no entry
+  // be reported as unmarked; see the field's doc comment above.
   const rawFieldOrigins = asArray(body.fieldOrigins);
   let fieldOrigins: AdminFieldOriginEntry[] | null = null;
   if (rawFieldOrigins) {
@@ -662,9 +663,10 @@ export const readAdminPatientRecord = (payload: unknown): AdminPatientRecord => 
     for (const item of rawFieldOrigins) {
       const record = asRecord(item);
       const path = record ? asStringOrNull(record.path) : null;
-      // An entry with no path cannot be attached to a field. Dropping it
-      // would leave whichever field it belonged to reading 「本人填写」,
-      // so it is surfaced as its own row instead.
+      // An entry with no path cannot be attached to a field. Dropping
+      // it would leave whichever field it belonged to reporting no
+      // marker, when one was in fact recorded — so it is surfaced as
+      // its own row instead.
       fieldOrigins.push({
         path: path ?? '（服务端未给出字段名）',
         origin: record

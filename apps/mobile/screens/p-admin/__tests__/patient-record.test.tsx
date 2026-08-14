@@ -237,8 +237,8 @@ describe('provenance is rendered, not flattened', () => {
     // A back-office bundle talking to a build that does not send the
     // section — the same skew lib/clinical-passport-pdf.ts handles for
     // the patient's own passport. An absent LIST is not an empty one:
-    // 「no entry for this path」 means the patient typed it only when
-    // the list itself arrived.
+    // 「no entry for this path」 means no marker was recorded, and it
+    // means even that only when the list itself arrived.
     delete body.fieldOrigins;
     mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(body));
     const tree = await render();

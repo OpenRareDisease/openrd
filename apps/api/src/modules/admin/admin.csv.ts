@@ -167,8 +167,12 @@ export const FULL_EXPORT_COLUMNS: CsvColumn[] = [
    * `admin_entered` marker in the stored payload. That is all this
    * column reports; it does not certify the rest.
    *
-   * 「Empty means the patient entered every value」 holds only while no
-   * writer REPLACES `baseline_payload` outside the two helpers in
+   * Empty means no field on this profile carries a marker. It does NOT
+   * mean the patient entered every value — a value can reach a baseline
+   * field without passing the provenance block at all (see ABSENCE IS
+   * THE PATIENT in baseline-provenance.ts). And even the narrow reading
+   * holds only while no writer REPLACES `baseline_payload` outside the
+   * helpers in
    * baseline-provenance.ts, because `baselineProfileSchema` strips the
    * block and `upsertBaseline` writes over the whole column — one save
    * from a replacing writer that calls neither erases every marker on

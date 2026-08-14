@@ -40,7 +40,7 @@ import styles from './styles';
  *
  * §B3: a value an administrator typed must never appear as the
  * patient's own. Every editable field here carries a marker
- * (「本人填写」/「管理员代填」/「来源不明」), the marker comes from the
+ * (「无代填记录」/「管理员代填」/「来源不明」), the marker comes from the
  * server's provenance block rather than from anything this screen
  * remembers, and 「来源不明」 is rendered as itself — an entry that
  * exists and cannot be read is NOT the patient's.
@@ -342,8 +342,8 @@ const AdminPatientRecordScreen = () => {
 
   /** An absent ENTRY is the patient — see baseline-provenance.ts. An
    *  absent LIST is not: a build that does not send the section tells
-   *  us nothing about who typed these values, and 「本人填写」 is the
-   *  one answer we may not guess. */
+   *  us nothing about these values, and 「无代填记录」 would be an
+   *  answer we do not have. */
   const originFor = (path: string): AdminFieldOrigin =>
     originByPath === null
       ? { state: 'unreadable', detail: '服务端这一版没有返回字段来源' }

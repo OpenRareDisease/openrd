@@ -312,7 +312,7 @@ export const AdminOriginChip = ({ origin }: { origin: AdminFieldOrigin }) => {
         ? { color: COLOR.alert, wash: COLOR.alertWash }
         : { color: COLOR.inkMuted, wash: 'transparent' };
   // The words come from lib/admin-api.ts, not from here. Two copies of
-  //「本人填写」/「管理员代填」/「来源不明」is how a chip ends up disagreeing
+  //「无代填记录」/「管理员代填」/「来源不明」is how a chip ends up disagreeing
   // with an accessibility label about the same field.
   const label = ADMIN_FIELD_ORIGIN_LABEL[origin.state];
   return (
