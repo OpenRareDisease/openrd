@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildClinicalPassportExport,
-  buildClinicalPassportSummary,
-  isLargeD4Z4Deletion,
-} from './profile.passport.js';
+import { applyAdminBaselineWrite } from './baseline-provenance.js';
+import { applyGeneticReportAutofill } from './profile.autofill.js';
+import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
+
+const ADMIN_ID = '22222222-2222-4222-8222-222222222222';
 
 /**
  * Every assertion in this file traces to one of two primary sources,
@@ -69,8 +69,11 @@ const base = (over: Partial<PatientProfileDTO> = {}): PatientProfileDTO =>
     ...over,
   }) as unknown as PatientProfileDTO;
 
-const geneticReport = (fields: Record<string, string>) => ({
-  id: 'd1',
+const geneticReport = (
+  fields: Record<string, string>,
+  at: { id?: string; uploadedAt?: string } = {},
+) => ({
+  id: at.id ?? 'd1',
   documentType: 'genetic_report',
   title: null,
   fileName: 'g.pdf',
@@ -78,7 +81,7 @@ const geneticReport = (fields: Record<string, string>) => ({
   fileSizeBytes: 1,
   storageUri: 'local://g',
   status: 'parsed',
-  uploadedAt: '2026-02-01T00:00:00.000Z',
+  uploadedAt: at.uploadedAt ?? '2026-02-01T00:00:00.000Z',
   checksum: null,
   submissionId: null,
   ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
@@ -89,6 +92,13 @@ const stepTitles = (profile: PatientProfileDTO) =>
 
 const itemFor = (profile: PatientProfileDTO, key: 'blood' | 'respiratory' | 'cardiac') =>
   buildClinicalPassportSummary(profile).monitoring.items.find((item) => item.key === key);
+
+/** Does an uploaded report printing `raw` earn the AAN Level B retinal
+ *  recommendation? The whole path, not the predicate on its own. */
+const readsAsLargeDeletion = (raw: string) =>
+  stepTitles(base({ documents: [geneticReport({ d4z4Repeats: raw })] } as never)).includes(
+    '问一次眼底检查',
+  );
 
 describe('心脏：不向无症状患者索要检查 [AAN Level C]', () => {
   it('没有心脏数据时不产生待补项', () => {
@@ -176,7 +186,10 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
 
   describe('重复数读不准时不提示 —— 这一条决定是否让人去挂眼科', () => {
     // The value is OCR'd off a genetics report, so it arrives however
-    // the lab chose to print it.
+    // the lab chose to print it. Driven through an uploaded report
+    // rather than by calling the predicate on a string: `ReportReadD4Z4`
+    // now has no string constructor, and going through the document is
+    // what proves the table still governs the recommendation.
     it.each([
       ['1-10', '范围'],
       ['≤10', '比较符'],
@@ -187,15 +200,159 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       ['未检出', '纯文字'],
       ['0', '不成立的等位基因'],
     ])('%s（%s）不触发', (raw) => {
-      expect(isLargeD4Z4Deletion(raw)).toBe(false);
+      expect(readsAsLargeDeletion(raw)).toBe(false);
     });
 
     it.each([['1'], ['2'], ['3'], ['4'], ['3个']])('%s 触发', (raw) => {
-      expect(isLargeD4Z4Deletion(raw)).toBe(true);
+      expect(readsAsLargeDeletion(raw)).toBe(true);
     });
 
     it('5 及以上不触发 —— 指南写的是 1–4 repeats', () => {
-      expect(isLargeD4Z4Deletion('5')).toBe(false);
+      expect(readsAsLargeDeletion('5')).toBe(false);
+    });
+  });
+
+  /**
+   * THE INVARIANT, AT THE FOUR STATES A REPEAT COUNT CAN REACH THIS
+   * PAGE IN.
+   *
+   * A value that was not read out of an uploaded report may be
+   * displayed, with its origin beside it. It may never decide a
+   * recommendation, a threshold, a guideline citation or a screening
+   * interval. Three of the four states below print a number this
+   * platform never read off a report, and one of them prints 3 — the
+   * middle of the range the guideline calls a large deletion. Only the
+   * fourth may earn 「问一次眼底检查」.
+   *
+   * What each state must ALSO do is say so. Dropping the step in the
+   * first three would leave the page showing the number and silently
+   * withholding the one recommendation keyed to it, which a reader
+   * takes for 「不适用」.
+   */
+  describe('这个数是从哪来的，决定它能不能作数', () => {
+    const SIZING_REPORT_AT = '2025-02-01T00:00:00.000Z';
+    const LATER_REPORT_AT = '2026-04-01T00:00:00.000Z';
+
+    /** The read-time step this passport is handed the output of:
+     *  `getPatientProfile` runs it before building anything, and it
+     *  copies a report's value into an empty baseline field without
+     *  recording that it did. */
+    const autofilledFrom = (documents: unknown[]) =>
+      applyGeneticReportAutofill(
+        { diagnosisDate: null, geneticMutation: null, baseline: null },
+        documents as never,
+      ).baseline;
+
+    const retinaStep = (profile: PatientProfileDTO) =>
+      buildClinicalPassportSummary(profile).nextSteps.find((step) => step.title.includes('眼底'));
+
+    it('管理员转述的重复数：显示，带来源，但换不来眼底检查那一条', () => {
+      // Somebody read a report to us over the phone. Nobody here has
+      // opened it.
+      const profile = base({
+        baseline: applyAdminBaselineWrite(
+          null,
+          { diseaseBackground: { d4z4: '3' } },
+          {
+            adminUserId: ADMIN_ID,
+            at: new Date('2026-05-01T00:00:00.000Z'),
+          },
+        ) as never,
+      });
+      const summary = buildClinicalPassportSummary(profile);
+
+      expect(summary.diagnosis.d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('admin_entered');
+      expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+
+      const step = retinaStep(profile);
+      expect(step?.title).toBe('眼底检查这一条要看报告原件');
+      // Displayed with its origin beside it, and never classified.
+      expect(step?.description).toContain('3（管理员代填）');
+      expect(step?.description).not.toContain('属于指南所说的大片段缺失');
+      // Names what would change it.
+      expect(step?.description).toContain('上传');
+      expect(step?.description).toContain('报告原件');
+    });
+
+    it('OCR 补进基线的重复数：报告被后一份盖过之后，这个数不再作数', () => {
+      // The sizing report's count was copied into the empty baseline at
+      // read time. A later FSHD2 methylation workup is now the newest
+      // genetic report, and the passport only ever opens that one — so
+      // the number on the page is the archive's, and this platform
+      // cannot say whether the archive got it from a report.
+      const sizing = geneticReport(
+        { d4z4Repeats: '3' },
+        { id: 'sizing', uploadedAt: SIZING_REPORT_AT },
+      );
+      const later = geneticReport(
+        { methylationValue: '25%' },
+        { id: 'fshd2', uploadedAt: LATER_REPORT_AT },
+      );
+      const profile = base({
+        baseline: autofilledFrom([sizing]) as never,
+        documents: [sizing, later] as never,
+      });
+      const summary = buildClinicalPassportSummary(profile);
+
+      // The autofill really is what put it there.
+      expect((summary.diagnosis as { d4z4Repeats: string }).d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('indeterminate');
+      expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+
+      const step = retinaStep(profile);
+      expect(step?.description).toContain('3（来源无法确定）');
+      // 「本平台这次没有从基因报告里读出这个数」 and NOT 「这个数不是从
+      // 报告里读出来的」: here it demonstrably came out of one.
+      expect(step?.description).toContain('这次没有从基因报告里读出这个数');
+      expect(step?.description).not.toContain('不是本平台从基因报告里读出来的');
+    });
+
+    it('新报告盖过旧报告：旧报告上的数字还在档案里，但不再是本护照读到的', () => {
+      // Same document pair, but the count in the baseline is the
+      // patient's own typing. The passport cannot tell this apart from
+      // the case above, and says so rather than picking one.
+      const sizing = geneticReport(
+        { d4z4Repeats: '3' },
+        { id: 'sizing', uploadedAt: SIZING_REPORT_AT },
+      );
+      const later = geneticReport(
+        { methylationValue: '25%' },
+        { id: 'fshd2', uploadedAt: LATER_REPORT_AT },
+      );
+      const profile = base({
+        baseline: { diseaseBackground: { d4z4: '3' } } as never,
+        documents: [sizing, later] as never,
+      });
+      const summary = buildClinicalPassportSummary(profile);
+
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('indeterminate');
+      expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+      expect(retinaStep(profile)?.description).toContain('本平台只读最新的一份基因报告');
+    });
+
+    it('报告里读出来的重复数：这一条才成立，句子里引的也是报告上的数', () => {
+      const profile = base({ documents: [geneticReport({ d4z4Repeats: '3' })] as never });
+      const summary = buildClinicalPassportSummary(profile);
+
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('report');
+      const step = retinaStep(profile);
+      expect(step?.title).toBe('问一次眼底检查');
+      expect(step?.description).toContain('你的 D4Z4 重复数为 3');
+      expect(step?.description).toContain('散瞳间接检眼镜');
+    });
+
+    it('基线的数和报告的数不一样时，引用的是报告的那个', () => {
+      // The merged string prefers the report, so this passes either
+      // way today — it is here so that a future change to that
+      // preference cannot quietly put the baseline's number inside an
+      // AAN Level B sentence.
+      const profile = base({
+        baseline: { diseaseBackground: { d4z4: '9' } } as never,
+        documents: [geneticReport({ d4z4Repeats: '3' })] as never,
+      });
+      expect(retinaStep(profile)?.description).toContain('你的 D4Z4 重复数为 3');
+      expect(retinaStep(profile)?.description).not.toContain('9');
     });
   });
 });

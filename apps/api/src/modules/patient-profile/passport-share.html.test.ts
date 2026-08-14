@@ -503,7 +503,7 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
 
     expect(html).toContain('未经基因确诊');
     expect(html).not.toContain('上传的任何报告');
-    expect(html).toContain('这份摘要里没有可作确诊依据的基因结果');
+    expect(html).toContain('这份摘要里没有从基因报告里读出来的基因结果');
     expect(html).toContain('患者手里可能还有本平台没有读过的报告');
   });
 
@@ -794,6 +794,109 @@ describe('取件码失败页 —— 一种页面回答所有失败', () => {
 
   it('也不带脚本', () => {
     expect(page).not.toMatch(/<script/i);
+  });
+});
+
+/**
+ * 后台代填的基因数值，在医生扫码打开的这一页上。
+ *
+ * 这一页的下半部分就是 §B3 那份 「这些字段不是患者本人填的」 清单，用的
+ * 词是 「D4Z4 重复数」「甲基化」 —— 和上面那两行的标签一模一样。上面印
+ * 「—」、下面点名同一个字段，是同一屏之内自相矛盾。
+ */
+describe('基线里的基因数值印在分享页上', () => {
+  const genetics = (over: Partial<PatientProfileDTO> = {}) =>
+    profile({
+      diagnosisDate: '2019-01-01',
+      baseline: adminEdited(null as unknown as Record<string, unknown>, {
+        foundation: { diagnosisYear: 2019 },
+        diseaseBackground: {
+          d4z4: '6',
+          haplotype: '4qA',
+          methylation: '25%',
+          diagnosisType: 'FSHD1',
+        },
+      }),
+      ...over,
+    });
+
+  it('值和「管理员代填」印在同一行上', () => {
+    const html = rendered(genetics());
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（管理员代填）');
+    expect(rowOf(html, '甲基化')).toContain('25%（管理员代填）');
+    expect(rowOf(html, '分型')).toContain('FSHD1（管理员代填）');
+  });
+
+  it('上面的值和下面那份清单说的是同一批字段', () => {
+    const html = rendered(genetics());
+
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(rowOf(html, 'D4Z4 重复数')).not.toContain('<dd>—</dd>');
+    expect(rowOf(html, '甲基化')).not.toContain('<dd>—</dd>');
+  });
+
+  it('横幅说的是没有报告可读，不是「这页上没有这个数」', () => {
+    const html = rendered(genetics());
+
+    expect(html).toContain('没有从基因报告里读出来的');
+    expect(html).not.toContain('没有可作确诊依据的基因结果（D4Z4 重复数');
+  });
+
+  /**
+   * 代填的数字不是化验值，排版上也不能是 —— 一个排得漂亮的数字本身就在
+   * 说「这是测出来的」。走这一页自己的样式表解析，别看 class 名字：
+   * `class="reported"` 那个断言曾经在选择器根本选不中的时候一直是绿的。
+   */
+  it('代填的数字不排进化验值那一档', () => {
+    const html = rendered(genetics());
+    const typed = valueChain(html, 'D4Z4 重复数');
+
+    expect(effective(html, typed, 'color')).toBe('var(--soft)');
+    expect(effective(html, typed, 'font-variant-numeric')).toBe('normal');
+  });
+
+  it('患者自己填的同样印出来，标「本人填写」', () => {
+    const html = rendered(
+      profile({
+        diagnosisDate: '2019-01-01',
+        baseline: {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: { d4z4: '6', methylation: '25%', diagnosisType: 'FSHD1' },
+        },
+      } as never),
+    );
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（本人填写）');
+    expect(rowOf(html, '甲基化')).toContain('25%（本人填写）');
+  });
+
+  /**
+   * 后台只代填了基因数值、没碰确诊年份的时候，`confirmation` 落在
+   * `self_reported`（它只看 确诊年份 那一个标记），而页面上已经有几行
+   * 带着 「管理员代填」。这一档的横幅要是把来源列成一张单子，那张单子就
+   * 漏掉了这一页正印着的那一种。
+   */
+  it('横幅不把来源列成一张漏项的单子', () => {
+    const html = rendered(
+      profile({
+        baseline: adminEdited(null as unknown as Record<string, unknown>, {
+          diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' },
+        }),
+      }),
+    );
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（管理员代填）');
+    expect(html).not.toContain(
+      '有的是患者自己填的，有的是系统从上传的报告里读出来的，还有的本平台无法确定',
+    );
+  });
+
+  it('报告里有数时印报告那个', () => {
+    const html = rendered(genetics({ documents: [geneticReport({ d4z4Repeats: '4' })] } as never));
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('4（报告读取）');
+    expect(rowOf(html, 'D4Z4 重复数')).not.toContain('6');
   });
 });
 

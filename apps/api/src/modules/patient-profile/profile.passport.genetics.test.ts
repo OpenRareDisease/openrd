@@ -118,14 +118,23 @@ describe('parseD4Z4Reading —— 报告怎么印的就怎么读', () => {
 
 describe('isLargeD4Z4Deletion 在改成解析器之后行为一字不变', () => {
   // 这张表和 apps/mobile/lib/surveillance-schedule.ts 里手抄的那一份是同一张。
+  // 值从上传的报告里走一遍再判断：`ReportReadD4Z4` 没有字符串构造器，
+  // 而且要证明的本来就是「报告上印成这样时，指南那一条到底出不出」。
+  const readsAsLargeDeletion = (raw: string) =>
+    isLargeD4Z4Deletion(
+      buildClinicalPassportSummary(
+        base({ documents: [geneticReport({ d4z4Repeats: raw })] } as never),
+      ).diagnosis.geneticEvidence.record.d4z4,
+    );
+
   it.each([['1-10'], ['≤10'], ['4~7'], ['1 至 10'], [''], ['—'], ['未检出'], ['0'], ['5']])(
     '%s 不触发',
     (raw) => {
-      expect(isLargeD4Z4Deletion(raw)).toBe(false);
+      expect(readsAsLargeDeletion(raw)).toBe(false);
     },
   );
   it.each([['1'], ['2'], ['3'], ['4'], ['3个']])('%s 触发', (raw) => {
-    expect(isLargeD4Z4Deletion(raw)).toBe(true);
+    expect(readsAsLargeDeletion(raw)).toBe(true);
   });
 });
 

@@ -29,7 +29,7 @@ jest.mock('../../../lib/session-storage', () => ({
 import { buildClinicalPassportPdfHtml } from '../../../lib/clinical-passport-pdf';
 import type { ClinicalPassportSummary } from '../../../lib/api';
 
-const summary = (confirmation: 'genetic' | 'self_reported' | 'none') =>
+const summary = (confirmation: 'genetic' | 'self_reported' | 'admin_entered' | 'none') =>
   ({
     generatedAt: '2026-08-05T00:00:00.000Z',
     passportId: 'FSHD-TEST',
@@ -131,5 +131,90 @@ describe('PDF：琥珀色只留给未确诊横幅', () => {
   it('未确诊和无依据都印，措辞不同', () => {
     expect(html).toContain('⚠ 未经基因确诊');
     expect(buildClinicalPassportPdfHtml(summary('none'))).toContain('⚠ 尚无诊断依据');
+  });
+});
+
+/**
+ * 后台照着基因报告代填的数值，落在导出的这份 PDF 上。
+ *
+ * 这一节的末尾就是 §B3 那份 「这些字段不是患者本人填的」 清单，用的词是
+ * 「D4Z4 重复数」「甲基化」 —— 和上面两张卡片的标题一字不差。卡片上印
+ * 「—」、清单里点名同一个字段，是同一页纸自己跟自己打架，而拿着它的是
+ * 一位一辈子可能只见三个 FSHD 患者的神经内科医生。
+ */
+describe('PDF：基线里的基因数值', () => {
+  const valueOrigin = (kind: string, labelZh: string) => ({
+    kind,
+    labelZh,
+    documentId: null,
+    adminUserId: kind === 'admin_entered' ? '11111111-2222-3333-4444-555555555555' : null,
+    at: kind === 'admin_entered' ? '2026-08-01T02:03:04.000Z' : null,
+    detail: null,
+  });
+
+  const adminTyped = (over: Record<string, unknown> = {}) => {
+    const built = summary('admin_entered' as never) as unknown as Record<string, unknown>;
+    return {
+      ...built,
+      diagnosis: {
+        ...(built.diagnosis as Record<string, unknown>),
+        geneticType: 'FSHD1',
+        d4z4Repeats: '6',
+        methylationValue: '25%',
+        geneEvidence: 'FSHD1',
+        valueOrigins: {
+          geneticType: valueOrigin('admin_entered', '管理员代填'),
+          d4z4Repeats: valueOrigin('admin_entered', '管理员代填'),
+          methylationValue: valueOrigin('admin_entered', '管理员代填'),
+          diagnosisDate: valueOrigin('admin_entered', '管理员代填'),
+        },
+        geneEvidenceOrigin: valueOrigin('admin_entered', '管理员代填'),
+      },
+      fieldOrigins: [
+        {
+          path: 'diseaseBackground.d4z4',
+          labelZh: 'D4Z4 重复数',
+          state: 'admin_entered',
+          adminUserId: '11111111-2222-3333-4444-555555555555',
+          at: '2026-08-01T02:03:04.000Z',
+          detail: null,
+        },
+      ],
+      ...over,
+    } as unknown as ClinicalPassportSummary;
+  };
+
+  /** 一张卡片的文字，去掉标签。 */
+  const cardText = (html: string, label: string) => {
+    const cards = html.match(/<article class="info-card">[\s\S]*?<\/article>/g) ?? [];
+    const card = cards.find((candidate) => candidate.includes(`>${label}<`));
+    if (card === undefined) throw new Error(`no card labelled ${label}`);
+    return card
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  it('卡片上印着值，下面一行印着是谁填的', () => {
+    const html = buildClinicalPassportPdfHtml(adminTyped());
+
+    expect(cardText(html, 'D4Z4 重复数')).toBe('D4Z4 重复数 6 管理员代填');
+    expect(cardText(html, '甲基化值')).toBe('甲基化值 25% 管理员代填');
+    expect(cardText(html, '基因类型')).toBe('基因类型 FSHD1 管理员代填');
+  });
+
+  it('横幅说的是没有报告可读，不是「这一节里没有这个数」', () => {
+    const html = buildClinicalPassportPdfHtml(adminTyped());
+
+    expect(html).toContain('没有从基因报告里读出来的 D4Z4 重复数');
+    // 这句话与同一节里那张印着 6 的卡片直接矛盾。
+    expect(html).not.toContain('本节里没有 D4Z4 重复数');
+  });
+
+  it('卡片上的值和节末那份清单说的是同一批字段', () => {
+    const html = buildClinicalPassportPdfHtml(adminTyped());
+
+    expect(html).toContain('这些字段不是患者本人填的');
+    expect(cardText(html, 'D4Z4 重复数')).not.toBe('D4Z4 重复数 —');
   });
 });

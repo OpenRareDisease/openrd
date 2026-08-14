@@ -62,6 +62,89 @@ export const LEGAL_DOCUMENT_SECTIONS = {
   [LEGAL_DOCUMENTS.guardianConsent]: GUARDIAN_CONSENT_SECTIONS,
 } satisfies Record<LegalDocumentId, LegalSection[]>;
 
+/**
+ * A baseline field an administrator may fill in, and whether the
+ * patient app draws a box the patient can type it back in through.
+ *
+ * WHY THE SPLIT HAS TO REACH THE COPY
+ *
+ * A 「管理员代填」 marker is dropped only for a field the patient's own
+ * save CHANGED — `applyPatientBaselineWrite` diffs the stored baseline
+ * against the incoming one and releases exactly the leaf paths that
+ * differ. The patient's baseline reaches the server through
+ * `updateMyBaseline`, and the form behind it copies
+ * `foundation.preferredName`, `diseaseBackground.haplotype`,
+ * `diseaseBackground.methylation` and `notes` forward from the stored
+ * baseline verbatim, because it draws no control for any of them.
+ * Those paths therefore cannot enter the changed set, however many
+ * times the patient saves — so 「你自己再改一次那一个字段」 is not an
+ * instruction they can carry out for them, and a re-consent screen
+ * that says it is has promised a remedy the app does not have. The
+ * bullets below say which fields the sentence applies to and where to
+ * go for the rest.
+ *
+ * AND THE OTHER HALF OF 「按字段算」: A MARKER MUST NOT COME OFF A FIELD
+ * THE PATIENT DID NOT OPEN
+ *
+ * 出生年份 and 所在地区 are the two the form does not fill from the
+ * baseline. Their controls are the profile's own 出生日期 and 省市区
+ * columns, and an administrator writing `foundation.birthYear` or
+ * `foundation.regionLabel` leaves those columns alone — so the control
+ * and the stored value can hold different answers, and a save that
+ * rebuilt the baseline field from the control would post a value the
+ * patient never entered. `applyPatientBaselineWrite` counts that leaf
+ * path as changed, which drops the marker on a save about a different
+ * field entirely. `loadedPickerIdentity` in p-register_profile is what
+ * keeps the clause true: while those two controls sit where they were
+ * loaded, the stored value is carried forward untouched.
+ *
+ * `label` is the back office's own label for the field (`EDITABLE_FIELDS`
+ * on the patient-record screen) and `path` is the leaf path the
+ * server's `ADMIN_WRITABLE_BASELINE_FIELDS` admits.
+ *
+ * KEEPING IT IN STEP: __tests__/admin-filled-fields.test.tsx renders
+ * the back office and the patient's form and fails when this list
+ * stops describing either of them — a field the back office can write
+ * and this list omits, a field marked editable that the patient's save
+ * cannot reach, one marked uneditable that the copy does not name, or
+ * a save that releases a marker the patient never opened the control
+ * for.
+ */
+export interface AdminFilledBaselineField {
+  path: string;
+  label: string;
+  /** True when p-register_profile draws a control the patient can move
+   *  this path with, and moving that control is the only thing that
+   *  moves it — which is what lets one save release one marker. */
+  patientEditable: boolean;
+}
+
+export const ADMIN_FILLED_BASELINE_FIELDS: AdminFilledBaselineField[] = [
+  { path: 'foundation.fullName', label: '姓名', patientEditable: true },
+  { path: 'foundation.preferredName', label: '称呼', patientEditable: false },
+  { path: 'foundation.regionLabel', label: '所在地区', patientEditable: true },
+  { path: 'foundation.birthYear', label: '出生年份', patientEditable: true },
+  { path: 'foundation.diagnosisYear', label: '确诊年份', patientEditable: true },
+  { path: 'diseaseBackground.diagnosisType', label: 'FSHD 分型', patientEditable: true },
+  { path: 'diseaseBackground.d4z4', label: 'D4Z4 重复数', patientEditable: true },
+  { path: 'diseaseBackground.haplotype', label: '单倍型', patientEditable: false },
+  { path: 'diseaseBackground.methylation', label: '甲基化', patientEditable: false },
+  { path: 'diseaseBackground.familyHistory', label: '家族史', patientEditable: true },
+  { path: 'diseaseBackground.onsetRegion', label: '起病部位', patientEditable: true },
+  { path: 'notes', label: '备注', patientEditable: false },
+];
+
+/** The fields the copy has to send somewhere other than the form,
+ *  already joined the way the bullets below read them out. Derived
+ *  rather than typed a second time: a field that loses its box, or a
+ *  new writable field that never had one, then appears in the sentence
+ *  without anyone remembering to edit it. */
+export const ADMIN_FILLED_FIELDS_WITHOUT_PATIENT_INPUT = ADMIN_FILLED_BASELINE_FIELDS.filter(
+  (field) => !field.patientEditable,
+)
+  .map((field) => field.label)
+  .join('、');
+
 export interface LegalVersionNote {
   /** The version this note describes, always YYYY-MM-DD — same shape as
    *  LEGAL_DOCUMENT_VERSIONS. The LEDGER's version is not: migration 019
@@ -100,8 +183,13 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         // 十二项；applyAdminBaselineWrite 对名单以外的改动直接 400。
         '管理员可以代你填写十二项基线字段：姓名、称呼、地区、出生年份、确诊年份、分型、D4Z4、单倍型、甲基化、家族史、起病部位、备注。你对自己身体的那些回答——诊断进展、能不能独立行走、各项困难评分——后台只能看，服务端会拒绝代填。',
         // §B3。标记随值一起存在 baseline_payload 里，护照与三种导出都
-        // 单独列出来；patient 自己再写同一个字段时标记按字段移除。
-        '被代填过的字段会标成「管理员代填」，不会写成「本人填写」；你自己再改一次那一个字段，标记就消失，这个字段回到你名下。',
+        // 单独列出来；patient 自己再写同一个字段时标记按字段移除 ——
+        // 能被 p-register_profile 的 payload 写到的那些字段才行，见
+        // ADMIN_FILLED_BASELINE_FIELDS。清空则不留标记（
+        // applyAdminBaselineWrite 对写入 null 的路径 delete 掉那一条）。
+        '被代填过的字段会标成「管理员代填」，不会写成「本人填写」。除了下面点名的几项，其余的你都能自己收回：在「我的 → 编辑资料」里把那一个字段再改一次，标记就消失、这个字段回到你名下——按字段算，你改哪一个就只放开哪一个。' +
+          ADMIN_FILLED_FIELDS_WITHOUT_PATIENT_INPUT +
+          '这几项，App 里没有给你填的地方，你在 App 内改不了它们，也去不掉它们的标记；要改值或者去掉标记，请按《隐私政策》第 1 条的邮箱或电话找我们——我们代你改，标记仍然是「管理员代填」；我们把它清空，那一项就不再有标记。',
         // require-admin.ts：审计行在 handler 之前写，写不进去就 503。
         // 保存 180 天 = AUDIT_RETENTION_DAYS。
         '每一次查阅和修改都记一条带时间的记录，保存 180 天。这条记录写不进去，这次访问就会被服务端拒绝——宁可管理员看不成，也不留一次没有记录的查阅。',
@@ -135,7 +223,9 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         // 第 4 条写的是「我们的运维人员不会主动查阅具体患儿的报告」。
         '第 4 条以前写的是「我们的运维人员不会主动查阅具体患儿的报告」。管理员后台上线后这句话不再成立，我们把它改掉了，而不是留在那里。',
         '管理员能看到的、能代填的十二项，与成年患者完全相同；患儿对自己身体的那些回答，后台只能看，服务端会拒绝代填。',
-        '代填过的字段会标成「管理员代填」；监护人自己再改一次那一个字段，标记就消失、回到监护人名下。',
+        '代填过的字段会标成「管理员代填」；监护人在「我的 → 编辑资料」里自己再改一次那一个字段，标记就消失、回到监护人名下。' +
+          ADMIN_FILLED_FIELDS_WITHOUT_PATIENT_INPUT +
+          '这几项 App 里没有给监护人填的地方，改不了，也去不掉它们的标记，请按《隐私政策》第 1 条的邮箱或电话找我们。',
         '每一次查阅和修改都记一条带时间的记录，保存 180 天。监护人可以按隐私政策第 1 条的方式来问是谁看过。',
       ],
     },

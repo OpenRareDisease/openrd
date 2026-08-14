@@ -237,7 +237,7 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(result.diagnosis.confirmation).toBe('self_reported');
     expect(result.diagnosis.d4z4Repeats).toBe('—');
     expect(result.diagnosis.statement).not.toContain('任何上传的报告');
-    expect(result.diagnosis.statement).toContain('本资料里没有 D4Z4 重复数');
+    expect(result.diagnosis.statement).toContain('本资料里没有从基因报告里读出来的 D4Z4 重复数');
     // And it hands the reader the question this document cannot answer.
     expect(result.markdown).toContain('患者手里可能还有本平台没有读过的报告');
   });
@@ -330,11 +330,149 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     const unconfirmed = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(unconfirmed.questions[0]?.id).toBe('confirm-diagnosis');
     expect(unconfirmed.questions[0]?.hint).toContain(
-      '本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段',
+      '本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段',
     );
 
     const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
+  });
+});
+
+/**
+ * 后台照着基因报告代填的数值，落在这张纸上。
+ *
+ * 拿着这张纸的是罕见病诊疗协作网的神经内科医生，他十秒钟之内没有办法
+ * 跟患者核对任何一行。只读上传报告的话，这一节会同时印着 「结论：…… 本
+ * 资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段」 和四行之下的 「D4Z4
+ * 重复数：本平台管理员于 …… 代为录入」，而同一份档案的 TREAT-NMD 导出
+ * 里带着 6 和 4qA —— 确诊 FSHD1 的那一对。国内能做长片段检测的中心只有
+ * 几家，那句假话的代价是一次重测或一次错过的入组转诊。
+ */
+describe('后台代填的基因数值印在转诊资料上', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-01T02:03:04.000Z');
+
+  const adminTypedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
+    base({
+      diagnosisDate: '2019-01-01',
+      baseline: applyAdminBaselineWrite(
+        null,
+        {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: {
+            d4z4: '6',
+            haplotype: '4qA',
+            methylation: '25%',
+            diagnosisType: 'FSHD1',
+          },
+        },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+      ...over,
+    } as Partial<PatientProfileDTO>);
+
+  it('值印出来，每一行后面写着是谁填的', () => {
+    const result = pack(adminTypedGenetics());
+
+    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(result.markdown).toContain('- 甲基化：25%（管理员代填）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（管理员代填）');
+    expect(result.markdown).not.toContain('- D4Z4 重复数：—');
+  });
+
+  it('结论说的是没有报告可读，不是「这份资料里没有这个数」', () => {
+    const result = pack(adminTypedGenetics());
+
+    expect(result.diagnosis.confirmation).toBe('admin_entered');
+    expect(result.diagnosis.statement).toContain('没有从基因报告里读出来的');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // 这句话与三行之下的 「D4Z4 重复数：6（管理员代填）」 直接矛盾。
+    expect(result.diagnosis.statement).not.toContain('本资料里没有 D4Z4 重复数、');
+  });
+
+  /**
+   * §B3 那份清单和上面那几行说的是同一批字段。清单里出现 「D4Z4 重复数」
+   * 而值那一行印着 「—」，是同一页纸自己跟自己打架。
+   */
+  it('§B3 清单里点名的字段，上面都印着值', () => {
+    const result = pack(adminTypedGenetics());
+    const section = result.markdown.split('## 二、')[0];
+
+    expect(section).toContain('### 这些字段不是本人填写的');
+    expect(section).toContain('D4Z4 重复数：本平台管理员');
+    expect(section).toContain('甲基化：本平台管理员');
+    expect(section).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(section).toContain('- 甲基化：25%（管理员代填）');
+  });
+
+  it('患者自己填的三个值，标的是「本人填写」', () => {
+    const result = pack(
+      base({
+        diagnosisDate: '2019-01-01',
+        baseline: {
+          foundation: { diagnosisYear: 2019 },
+          diseaseBackground: { d4z4: '6', methylation: '25%', diagnosisType: 'FSHD1' },
+        },
+      } as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（本人填写）');
+    expect(result.markdown).toContain('- 甲基化：25%（本人填写）');
+  });
+
+  it('报告里有数时印报告那个，标「报告读取」', () => {
+    const result = pack(
+      adminTypedGenetics({
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.markdown).toContain('- D4Z4 重复数：4（报告读取）');
+    expect(result.markdown).not.toContain('- D4Z4 重复数：6');
+  });
+
+  /**
+   * 报告里只有单倍型时 `confirmation` 已经是 `genetic`，而 「D4Z4 重复数」
+   * 那一行印的仍是后台代填的数字。把那个数字接在 「基因确诊；」 后面，等于
+   * 把实验室的分量借给了一个电话里念来的数 —— 那一行自己带着括号，结论
+   * 不再重复它。
+   */
+  /**
+   * 后台只代填了基因数值、没碰确诊年份时，`confirmation` 落在
+   * `self_reported` —— 它只看 确诊年份 那一个标记。而这一档给患者的那句
+   * 提示要是把来源列成「要么你自己填的，要么你上传的报告」，就等于当着
+   * 患者的面否掉了同一页上那几行 「管理员代填」。
+   */
+  it('给患者的提示不把来源列成一张漏项的单子', () => {
+    const result = pack(
+      base({
+        baseline: applyAdminBaselineWrite(
+          null,
+          { diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } },
+          { adminUserId: ADMIN_ID, at: AT },
+        ),
+      } as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('self_reported');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(result.questions[0]?.hint).not.toContain(
+      '有的是你自己填的，有的是系统从你上传的报告里读出来的',
+    );
+  });
+
+  it('结论里的重复数只写报告读出来的那个', () => {
+    const result = pack(
+      adminTypedGenetics({
+        documents: [geneticReport({ haplotype: '4qA' })],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('genetic');
+    expect(result.diagnosis.statement).toBe('面肩肱型肌营养不良症（FSHD），基因确诊');
+    expect(result.diagnosis.statement).not.toContain('D4Z4 重复数 6');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
   });
 });
 

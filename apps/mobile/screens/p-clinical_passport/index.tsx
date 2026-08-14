@@ -549,11 +549,17 @@ const ClinicalPassportScreen = () => {
    * pointing there is only written when there is something to point at:
    * on an API build that sends no origins there is nothing under any of
    * them.
+   *
+   * 「从基因报告里读出来的」 cannot be dropped: the D4Z4 重复数 and 甲基化
+   * cells below also print baseline values — an administrator's
+   * transcription or the patient's own typing — each with its source
+   * under it, and the flat sentence would deny a number on the same
+   * screen.
    */
   const diagnosisNotice =
     !passport || passport.diagnosis.confirmation === 'genetic'
       ? null
-      : '未经基因确诊：这份护照里没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。' +
+      : '未经基因确诊：这份护照里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。' +
         (valueOrigins
           ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
           : '');

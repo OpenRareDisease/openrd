@@ -232,6 +232,56 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     expect(step?.description).not.toContain('由本人填写');
     expect(step?.description).toContain('诊断日期（管理员代填）');
     expect(step?.description).toContain('管理员代你录入');
+    // 分型 and 确诊年份 both have a box on 建档表单, so the promise is
+    // about them by name.
+    expect(step?.description).toContain(
+      '分型、诊断日期如果不对，你可以在「我的 → 编辑资料」里自己改',
+    );
+  });
+
+  /**
+   * 「改过之后那一项就记回你名下」 IS A CLAIM ABOUT A TEXT BOX.
+   *
+   * `applyPatientBaselineWrite` releases a marker when the patient's own
+   * PUT changes that leaf path, so the promise holds only for the paths
+   * 建档表单 posts. 甲基化 is admin-writable, is printed in this block,
+   * and has no control anywhere in the patient's app — so the sentence
+   * that covered every marked value sent its owner hunting for a box
+   * that does not exist, and the marker stayed on the page a clinician
+   * reads.
+   */
+  it('does not promise self-service on a value the patient has no box for', () => {
+    const step = buildClinicalPassportSummary(
+      base({
+        baseline: adminEdited(
+          {},
+          {
+            diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' },
+          },
+        ),
+      }),
+    ).nextSteps.find((item) => item.title === '补充基因检测报告');
+
+    // Both values are on the page and both are marked.
+    expect(step?.description).toContain('分型（管理员代填）');
+    expect(step?.description).toContain('甲基化（管理员代填）');
+    // 分型 has a box; 甲基化 does not, and the two get opposite
+    // instructions rather than one that is half true.
+    expect(step?.description).toContain('分型如果不对，你可以在「我的 → 编辑资料」里自己改');
+    expect(step?.description).toContain('App 里没有给你填甲基化的地方');
+    expect(step?.description).toContain('《隐私政策》第 1 条');
+    expect(step?.description).not.toContain('甲基化如果不对，你可以');
+  });
+
+  it('says nothing about self-service when every marked value has a box', () => {
+    const step = buildClinicalPassportSummary(
+      base({
+        baseline: adminEdited({}, { diseaseBackground: { diagnosisType: 'FSHD1' } }),
+      }),
+    ).nextSteps.find((item) => item.title === '补充基因检测报告');
+
+    expect(step?.description).toContain('分型如果不对，你可以在「我的 → 编辑资料」里自己改');
+    expect(step?.description).not.toContain('App 里没有给你填');
   });
 
   it('leaves an unmarked profile with an empty list and no extra section', () => {
@@ -470,6 +520,176 @@ describe('每个诊断值自带来源', () => {
     expect(markdown).toContain('- 诊断日期：2019-05-03（本人填写）');
     // Nothing to attribute, so nothing in brackets.
     expect(markdown).toContain('- 甲基化值：—\n');
+  });
+});
+
+/**
+ * 基线里的基因数值 —— 报告之外的第二个来源。
+ *
+ * `diseaseBackground.{d4z4,methylation,diagnosisType}` 有两个写入方：
+ * 后台（`ADMIN_WRITABLE_BASELINE_FIELDS` 收了这三条，运营照着患者电话里
+ * 念的基因报告代填），和患者自己的登记表。这三个值都印在诊断证据这一节
+ * 里，而这一节的下面就是 §B3 那份「这些字段不是本人填的」清单 —— 清单用
+ * 的正是 「D4Z4 重复数」「甲基化」 这两个词。
+ *
+ * 只读报告的话，同一页会同时写着 「D4Z4 重复数：—」 和 「D4Z4 重复数：本平台
+ * 管理员代为录入」，而同一次调用生成的 TREAT-NMD 导出里带着 6 和 4qA ——
+ * 确诊 FSHD1 的那一对。拿着转诊资料的神经内科医生据此判断要不要重测。
+ */
+describe('基线里的基因数值：印出来，并且印明是谁填的', () => {
+  const ADMIN_ID = '11111111-2222-3333-4444-555555555555';
+  const AT = new Date('2026-08-01T02:03:04.000Z');
+  const GENETICS = { d4z4: '6', haplotype: '4qA', methylation: '25%', diagnosisType: 'FSHD1' };
+
+  /** 后台代填过基因数值、且一份报告都没传的档案。`diagnosisDate` 是
+   *  `upsertBaseline` 把 `foundation.diagnosisYear` 镜像进去的那一列。 */
+  const adminTypedGenetics = (over: Partial<PatientProfileDTO> = {}) =>
+    base({
+      diagnosisDate: '2019-01-01',
+      baseline: applyAdminBaselineWrite(
+        null,
+        { foundation: { diagnosisYear: 2019 }, diseaseBackground: { ...GENETICS } },
+        { adminUserId: ADMIN_ID, at: AT },
+      ),
+      ...over,
+    });
+
+  /** 同样三个值，患者自己在登记表里填的。 */
+  const patientTypedGenetics = () =>
+    base({
+      diagnosisDate: '2019-01-01',
+      baseline: { foundation: { diagnosisYear: 2019 }, diseaseBackground: { ...GENETICS } },
+    });
+
+  it('后台代填的数值印在护照上，每一个都带「管理员代填」', () => {
+    const summary = buildClinicalPassportSummary(adminTypedGenetics());
+
+    expect(summary.diagnosis.d4z4Repeats).toBe('6');
+    expect(summary.diagnosis.methylationValue).toBe('25%');
+    expect(summary.diagnosis.geneticType).toBe('FSHD1');
+    for (const key of ['d4z4Repeats', 'methylationValue', 'geneticType'] as const) {
+      expect(summary.diagnosis.valueOrigins[key]).toMatchObject({
+        kind: 'admin_entered',
+        labelZh: '管理员代填',
+        adminUserId: ADMIN_ID,
+        at: AT.toISOString(),
+      });
+    }
+  });
+
+  /**
+   * 印出来不等于升级成证据。`confirmation` 是证据等级，靠的是本平台从
+   * 上传的报告里读到的 D4Z4 / 单倍型 / EcoRI 片段；照着电话代填的数字不
+   * 是报告。这一条要是反了，转诊资料上会直接写「基因确诊」。
+   */
+  it('代填的数值不会把诊断升级成基因确诊', () => {
+    const summary = buildClinicalPassportSummary(adminTypedGenetics());
+
+    expect(summary.diagnosis.confirmation).toBe('admin_entered');
+    expect(summary.diagnosis.ready).toBe(false);
+  });
+
+  it('患者自己填的同样印出来，标的是「本人填写」', () => {
+    const summary = buildClinicalPassportSummary(patientTypedGenetics());
+
+    expect(summary.diagnosis.d4z4Repeats).toBe('6');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('patient');
+    expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('patient');
+    expect(summary.diagnosis.confirmation).toBe('self_reported');
+    expect(summary.diagnosis.ready).toBe(false);
+  });
+
+  it('报告和基线都有值时，印报告的那个，标「报告读取」', () => {
+    const summary = buildClinicalPassportSummary(
+      adminTypedGenetics({
+        documents: [geneticReport({ d4z4Repeats: '4', methylationValue: '10%' })],
+      } as never),
+    );
+
+    expect(summary.diagnosis.d4z4Repeats).toBe('4');
+    expect(summary.diagnosis.methylationValue).toBe('10%');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats).toMatchObject({
+      kind: 'report',
+      documentId: 'd1',
+    });
+    expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('report');
+  });
+
+  /**
+   * 报告里只有单倍型的时候，`confirmation` 已经是 `genetic` 了，而印在
+   * 「D4Z4 重复数」那一行上的仍然是后台代填的数字。这两件事必须各说各的。
+   */
+  it('报告只够确诊、数字来自基线时，数字仍标「管理员代填」', () => {
+    const summary = buildClinicalPassportSummary(
+      adminTypedGenetics({ documents: [geneticReport({ haplotype: '4qA' })] } as never),
+    );
+
+    expect(summary.diagnosis.confirmation).toBe('genetic');
+    expect(summary.diagnosis.d4z4Repeats).toBe('6');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('admin_entered');
+  });
+
+  /**
+   * `patient_profiles.genetic_mutation` 是患者自己那个接口写的自由文本，
+   * `upsertBaseline` 碰都不碰它。基线上 `diseaseBackground.diagnosisType`
+   * 的标记说的是另一个值 —— 盖到这一行上，就等于把管理员的名字按在患者
+   * 自己打的字上面。
+   */
+  it('分型回退到 genetic_mutation 时，不拿基线的标记盖在上面', () => {
+    const summary = buildClinicalPassportSummary(
+      base({
+        geneticMutation: '我猜是 FSHD1',
+        baseline: applyAdminBaselineWrite(
+          null,
+          { diseaseBackground: { diagnosisType: 'FSHD2' } },
+          { adminUserId: ADMIN_ID, at: AT },
+        ),
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as never),
+    );
+
+    // 基线自己有值，所以印的是基线那个，标记也是它自己的。
+    expect(summary.diagnosis.geneticType).toBe('FSHD2');
+    expect(summary.diagnosis.valueOrigins.geneticType.kind).toBe('admin_entered');
+
+    // 基线这一项空着时才回退到那一列，而那时没有任何标记可用。
+    const fallback = buildClinicalPassportSummary(
+      base({
+        geneticMutation: '我猜是 FSHD1',
+        baseline: applyAdminBaselineWrite(
+          null,
+          { foundation: { fullName: '测试' } },
+          { adminUserId: ADMIN_ID, at: AT },
+        ),
+        documents: [geneticReport({ d4z4Repeats: '4' })],
+      } as never),
+    );
+
+    expect(fallback.diagnosis.geneticType).toBe('我猜是 FSHD1');
+    expect(fallback.diagnosis.valueOrigins.geneticType.kind).toBe('patient');
+  });
+
+  it('导出的 markdown 上，值和来源印在同一行', () => {
+    const markdown = buildClinicalPassportExport(
+      buildClinicalPassportSummary(adminTypedGenetics()),
+    ).markdown;
+
+    expect(markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(markdown).toContain('- 甲基化值：25%（管理员代填）');
+    expect(markdown).toContain('- 基因类型：FSHD1（管理员代填）');
+  });
+
+  /**
+   * 值印出来之后，「本护照内没有 D4Z4 重复数」 就和三行之下那个数字互相
+   * 打架了。这句话要说的一直是「没有从报告里读出来的证据」。
+   */
+  it('概览那句话说的是报告，不是「这页上没有这个数」', () => {
+    const card = buildClinicalPassportSummary(adminTypedGenetics()).summaryCards.find(
+      (item) => item.key === 'diagnosis',
+    );
+
+    expect(card?.summary).toContain('没有从基因报告里读出来的');
+    expect(card?.summary).not.toContain('本护照内没有 D4Z4 重复数');
   });
 });
 

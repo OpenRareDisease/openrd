@@ -88,6 +88,13 @@ const day = (value: string | null | undefined): string => {
  * a claim about reports this page has not opened. These sentences say
  * what the page holds, which is what its reader can check against the
  * report in the patient's hands.
+ *
+ * 「从基因报告里读出来的」 IS NOT PADDING. The 诊断信息 rows below can
+ * carry a D4Z4 重复数 or a 甲基化 an administrator transcribed off a
+ * phone call, each with 「管理员代填」 in brackets, and the bare 「没有可
+ * 作确诊依据的基因结果」 would then sit above a number the clinician can
+ * read. The qualifier is still a claim about this page and not about
+ * the patient's other reports.
  */
 const CONFIRMATION_BANNER: Record<
   ClinicalPassportSummaryDTO['diagnosis']['confirmation'],
@@ -101,7 +108,7 @@ const CONFIRMATION_BANNER: Record<
   self_reported: {
     tone: 'warn',
     title: '未经基因确诊',
-    body: '这份摘要里没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段），下面的诊断信息不构成诊断依据。括号写在哪一行后面就只说那一行：有的是患者自己填的，有的是系统从上传的报告里读出来的，还有的本平台无法确定。FSHD 的误诊率很高，请勿据此锚定。患者手里可能还有本平台没有读过的报告，值得当面问一句。',
+    body: '这份摘要里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段），下面的诊断信息不构成诊断依据。括号写在哪一行后面就只说那一行 —— 每一行的来源写在它自己的括号里，本平台说不上来的那几行也照实写着。FSHD 的误诊率很高，请勿据此锚定。患者手里可能还有本平台没有读过的报告，值得当面问一句。',
   },
   // The fourth source (baseline-provenance.ts). The title names the
   // FIELD, because the field is all the marker covers: this state is
@@ -110,17 +117,17 @@ const CONFIRMATION_BANNER: Record<
   admin_entered: {
     tone: 'warn',
     title: '未经基因确诊 —— 档案里的「确诊年份」由本平台工作人员代填',
-    body: '这份摘要里没有可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条本平台管理员代为录入的记录：那是我们的工作人员根据患者的电话或消息转述录入的，患者本人可能没有看过，也没有核对过。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
+    body: '这份摘要里没有从基因报告里读出来的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条本平台管理员代为录入的记录：那是我们的工作人员根据患者的电话或消息转述录入的，患者本人可能没有看过，也没有核对过。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
   },
   none: {
     tone: 'warn',
     title: '这份摘要里没有诊断依据',
     // Not 「该患者既未上传基因报告，也未填写诊断信息」. This state means no
-    // 分型, no 诊断日期 and no D4Z4 count / 单倍型 / EcoRI fragment —
-    // 甲基化 is in none of those tests, so a genetic report that parsed
-    // to a methylation value and nothing else lands here with a value
-    // from that very report printed below.
-    body: '这份摘要里没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。下面的括号写在哪一行后面，就只说那一行。',
+    // 分型 and no 诊断日期. 甲基化 is in neither test, and neither is a
+    // D4Z4 重复数 that reached the record without one of those two, so
+    // both can be printed below with their own source in brackets while
+    // this banner stands.
+    body: '这份摘要里没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果，患者手里可能还有本平台没有读过的报告。下面的括号写在哪一行后面，就只说那一行。',
   },
 };
 

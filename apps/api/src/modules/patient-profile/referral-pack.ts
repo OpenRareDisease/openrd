@@ -398,6 +398,14 @@ const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
  * claim about reports this pack has not opened. The line says what this
  * document holds and hands the reader the question to ask instead.
  *
+ * WHAT IT DENIES IS A REPORT, NOT A VALUE. The rows below can print a
+ * D4Z4 重复数 or a 甲基化 that an administrator transcribed off a phone
+ * call, each carrying 「管理员代填」 in brackets, and the flat 「本资料里
+ * 没有 D4Z4 重复数」 would then contradict a number three lines under
+ * it — in front of the one reader who acts on the difference. Missing
+ * is a report this platform read the value off, which is exactly what
+ * `confirmation` grades.
+ *
  * The wording is longer than the passport's because this reader can
  * act on the difference: an unconfirmed patient in front of a 协作网
  * neurologist is a patient who may still be able to get confirmed.
@@ -412,16 +420,16 @@ const buildDiagnosisStatement = (
         ? `面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 ${repeats}`
         : '面肩肱型肌营养不良症（FSHD），基因确诊';
     case 'self_reported':
-      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'admin_entered':
-      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，且档案里的「确诊年份」不是患者本人填写的，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，且档案里的「确诊年份」不是患者本人填写的，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'none':
       // Not 「尚无任何诊断依据记录 …… 仅为患者自述与自测」: this state only
-      // means no 分型, no 诊断日期 and no D4Z4/单倍型/EcoRI. 甲基化 is in
-      // none of those tests, so a genetic report that parsed to a
-      // methylation value alone lands here with that value printed
-      // three lines below.
-      return '本资料没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果 —— 下面的内容不构成诊断';
+      // means no 分型 and no 诊断日期. 甲基化 is in neither test, and a
+      // D4Z4 重复数 that reached the record without either of those two
+      // is in neither test either — both print three lines below with
+      // their own source in brackets.
+      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果 —— 下面的内容不构成诊断';
     default: {
       const _never: never = confirmation;
       return _never;
@@ -452,7 +460,17 @@ const formatFieldOriginLine = (origin: PassportFieldOriginDTO): string => {
 
 const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisDTO => {
   const { diagnosis } = summary;
-  const repeats = hasText(diagnosis.d4z4Repeats) ? diagnosis.d4z4Repeats : null;
+  // ONLY A REPORT'S NUMBER GOES INTO THE 结论. `confirmation` is
+  // 'genetic' as soon as an uploaded report carries any one of D4Z4 /
+  // 单倍型 / EcoRI 片段, and the printed 重复数 may have come from the
+  // baseline instead — an administrator's transcription. Setting that
+  // number after 「基因确诊；」 would hand it the report's authority
+  // without the bracket that says whose it is. The row below prints it
+  // either way, with its own source.
+  const repeats =
+    diagnosis.valueOrigins.d4z4Repeats.kind === 'report' && hasText(diagnosis.d4z4Repeats)
+      ? diagnosis.d4z4Repeats
+      : null;
   const statement = buildDiagnosisStatement(diagnosis.confirmation, repeats);
 
   return {
@@ -772,7 +790,7 @@ const buildConfirmDiagnosisHint = (
 ): string => {
   switch (confirmation) {
     case 'self_reported':
-      return '本资料里没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 有的是你自己填的，有的是系统从你上传的报告里读出来的，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
+      return '本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 每一项的来源写在它自己的括号里，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
     // Telling this reader 「本平台没有任何诊断依据记录」 would hide the
     // very lines the neurologist is reading on the same sheet.
     //
@@ -786,9 +804,9 @@ const buildConfirmDiagnosisHint = (
     // 来源记录读不出来 — a hint promising a name would send the patient
     // looking for one that is not there.
     case 'admin_entered':
-      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
+      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
     case 'none':
-      return '本资料没有可展示的分型或诊断日期，也没有可作确诊依据的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
+      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
     default: {
       const _never: never = confirmation;
       return _never;

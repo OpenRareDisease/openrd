@@ -56,7 +56,12 @@
 import { buildAnesthesiaCard } from './anesthesia-card';
 import { ageInYears } from './guardian-consent';
 import { bucketForScore } from '../screens/p-data_entry/sleep-score';
-import type { ClinicalPassportSummary, PatientProfile } from './api';
+import {
+  readPassportValueOrigins,
+  type ClinicalPassportSummary,
+  type PassportValueOrigin,
+  type PatientProfile,
+} from './api';
 
 /** AAN recommendation strength, kept as the guideline states it. */
 export type SurveillanceLevel = 'B' | 'C';
@@ -282,6 +287,54 @@ const normalizedScore = (item: {
 const monitoringItem = (summary: ClinicalPassportSummary, key: 'respiratory' | 'cardiac') =>
   summary.monitoring.items.find((item) => item.key === key) ?? null;
 
+declare const REPORT_READ_REPEATS: unique symbol;
+
+/**
+ * A D4Z4 REPEAT COUNT THIS PLATFORM READ OFF AN UPLOADED REPORT.
+ *
+ * THE RULE THIS TYPE IS: a value that was not read out of an uploaded
+ * report may be DISPLAYED, always with its origin beside it. It may
+ * never decide a recommendation, a threshold, a guideline citation or a
+ * screening interval.
+ *
+ * `summary.diagnosis.d4z4Repeats` is a merged value — the passport
+ * resolves it from a report OR from the baseline, where an
+ * administrator's transcription of a report read out over the phone
+ * lands beside the patient's own typing. Both are `string`, so nothing
+ * but a rule in someone's head kept the merged one out of the branch
+ * that tells a patient to go pay for a dilated fundus exam, and the
+ * rule did not hold. The brand is that rule expressed as a type:
+ * `readReportReadRepeatCount` is the only expression that mints one and
+ * it mints nothing unless the API's own `valueOrigins` says the value
+ * came off a report.
+ */
+export interface ReportReadRepeatCount {
+  /** The count as the report printed it — free text, not a number. */
+  readonly raw: string;
+  readonly [REPORT_READ_REPEATS]: true;
+}
+
+/**
+ * The printed repeat count, but only when a report supplied it.
+ *
+ * Null covers every other way a number reaches this page —
+ * an administrator's transcription, the patient's own typing, a value
+ * the API cannot attribute, an API build old enough to send no
+ * `valueOrigins` at all — and deliberately does not tell them apart,
+ * because none of them may reach a guideline branch. The row's evidence
+ * text is where they are told apart for the reader; this function only
+ * answers 「may this decide anything」.
+ */
+export const readReportReadRepeatCount = (
+  summary: ClinicalPassportSummary,
+): ReportReadRepeatCount | null => {
+  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  if (origins?.d4z4Repeats.kind !== 'report') return null;
+  const raw = (summary.diagnosis.d4z4Repeats ?? '').trim();
+  if (!raw || raw === '—') return null;
+  return { raw } as ReportReadRepeatCount;
+};
+
 /**
  * True only when the D4Z4 repeat count is unambiguously in the range
  * the guideline calls a large deletion.
@@ -302,18 +355,68 @@ const monitoringItem = (summary: ClinicalPassportSummary, key: 'respiratory' | '
  *  - 0 repeats is not a viable FSHD1 allele. Reading one means the
  *    extraction is wrong, not that the deletion is enormous.
  *
- * If the API's version changes, this one has to change with it — the
- * two are checked against the same cases but nothing in the build
- * links them.
+ * The API's copy takes its own branded reading for the same reason this
+ * one takes `ReportReadRepeatCount`. If either version's rule changes,
+ * the other has to change with it — the two are checked against the
+ * same cases but nothing in the build links them.
  */
-export const isLargeD4Z4Deletion = (raw: string | null | undefined): boolean => {
-  const text = (raw ?? '').trim();
+export const isLargeD4Z4Deletion = (count: ReportReadRepeatCount | null): boolean => {
+  const text = count?.raw.trim() ?? '';
   if (!text || text === '—') return false;
   if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
   const numbers = text.match(/\d+(?:\.\d+)?/g);
   if (!numbers || numbers.length !== 1) return false;
   const repeats = Number(numbers[0]);
   return Number.isInteger(repeats) && repeats >= 1 && repeats <= 4;
+};
+
+/**
+ * The 判断不了 sentence for a count this page is showing but did not get
+ * off a report.
+ *
+ * ONE SENTENCE PER ORIGIN, because a single flat 「它不是本平台从基因报告
+ * 里读出来的」 is false in the state that fires most. `indeterminate` is
+ * the API's answer for 「the read-time OCR autofill copies a report's
+ * value into an empty baseline field and leaves no record, so this
+ * platform cannot tell that apart from the patient's own typing」 — a
+ * state an FSHD2 methylation workup uploaded after the sizing report
+ * produces on its own, because the passport only ever opens the newest
+ * genetic report. Asserting the negative there contradicts the server's
+ * own record of what it does not know.
+ *
+ * What IS true in every arm is the slot: this passport took the number
+ * out of the archive rather than reading it off a report, which is what
+ * `origins.d4z4Repeats.kind !== 'report'` says and all any of these
+ * sentences claims.
+ */
+const unverifiedRepeatEvidence = (printed: string, origin: PassportValueOrigin | null): string => {
+  const head = `你档案里的 D4Z4 重复数是 ${printed}`;
+  // 「只读最新的一份」 is the passport's actual behaviour: its genetic
+  // values all come out of one document, so a count printed on an
+  // earlier report is not read at all. Naming that is what makes the
+  // instruction actionable instead of 「上传报告」 to someone who has.
+  const askDoctor =
+    '这一条要不要做，请医生看着报告原件判断。本平台只读你上传的最新一份基因报告 —— 重复数写在别的报告上的话，把那一份重新上传一次，这一行就会跟着改。';
+  switch (origin?.kind) {
+    case 'admin_entered':
+      return `${head}，它是本平台的管理员代你录进来的 —— 是谁、什么时候，护照的「字段来源」那一栏里有。这个数是从你的档案里取的，本平台没有打开基因报告读过它。${askDoctor}`;
+    case 'admin_unreadable':
+      // The marker exists and cannot be parsed. 「不是你自己填的」 is
+      // the whole of what it proves — naming an author it does not name
+      // is the direction this row exists to avoid.
+      return `${head}，它不是你自己填的，但那条来源记录本平台读不出来，原因写在护照的「字段来源」里。这个数是从你的档案里取的，本平台没有打开基因报告读过它。${askDoctor}`;
+    case 'patient':
+      return `${head}，它填在你的档案里，而本平台手上没有任何一份能读出重复数的基因报告。这一条要不要做，请医生看着报告原件判断 —— 把写着重复数的基因报告上传上来，这一行就会跟着改。`;
+    case 'indeterminate':
+      return `${head}。本平台分不清它是你自己填的，还是系统从你上传的报告里读来的 —— 读取档案时系统会拿报告里的值补上空着的栏位，而且不留记录。所以这个数可能就是报告上写的那个，也可能不是。${askDoctor}`;
+    default:
+      // No `valueOrigins` on the wire: this app ships as a web export
+      // that WeChat's in-app browser caches for days, so a handset can
+      // be running today's bundle against an API build that sends none.
+      // 「不是从报告里读出来的」 would be inventing the answer the server
+      // did not give.
+      return `${head}，但本平台这次没有拿到这个数的来源，所以说不出它是从报告里读出来的，还是填在档案里的。${askDoctor}`;
+  }
 };
 
 /**
@@ -564,9 +667,36 @@ const buildEyeAndEarRows = (
   profile: PatientProfile | null,
   today: Date,
 ): SurveillanceRow[] => {
-  const repeats = summary.diagnosis.d4z4Repeats;
-  const isLarge = isLargeD4Z4Deletion(repeats);
-  const hasPlainCount = /^\d+$/.test((repeats ?? '').trim());
+  /**
+   * A REPORT'S REPEAT COUNT, OR NOTHING.
+   *
+   * This row decides whether a guideline about vision loss applies, so
+   * its input is `ReportReadRepeatCount` — a value the merged
+   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. 「你的基因
+   * 报告里 D4Z4 重复数是 6」 would be a sentence about a report nobody
+   * here has opened. A transcribed number sends this to the 判断不了
+   * branch, which asks for the original — the same answer a range gets,
+   * and for the same reason.
+   */
+  // Read here for the wording only. `readReportReadRepeatCount` reads it
+  // again rather than being handed this: what may decide a
+  // recommendation must not depend on a caller having checked the
+  // origin correctly, and the two reads are of the same bytes by the
+  // same pure parser.
+  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
+  const reportCount = readReportReadRepeatCount(summary);
+  const reportRaw = reportCount?.raw ?? '';
+  const isLarge = isLargeD4Z4Deletion(reportCount);
+  const hasPlainCount = /^\d+$/.test(reportRaw);
+  /** The printed number, when the page is showing one that no report
+   *  supplied — so the 判断不了 sentence can say which state it is in
+   *  rather than claiming the platform has nothing. */
+  const printedRepeats = (summary.diagnosis.d4z4Repeats ?? '').trim();
+  const showsUnverifiedRepeats =
+    !reportCount &&
+    printedRepeats !== '' &&
+    printedRepeats !== '—' &&
+    origins?.d4z4Repeats.kind !== 'absent';
 
   const retina: SurveillanceRow = {
     id: 'retinal_screening',
@@ -577,10 +707,12 @@ const buildEyeAndEarRows = (
       '指南建议：D4Z4 大片段缺失（缺失后片段 10–20 kb，约 1–4 个重复）的患者，转有经验的眼科医生（最好是视网膜专科）做一次散瞳间接检眼镜。渗出性视网膜病变（Coats 病）在 FSHD 里很少见，但几乎只出现在这一组人身上；不处理可能造成明显的视力损失，早发现能挡住。之后多久复查一次，由第一次的结果决定。',
     applicability: isLarge ? 'matched' : hasPlainCount ? 'not_matched' : 'unknown',
     evidence: isLarge
-      ? `你的基因报告里 D4Z4 重复数是 ${repeats}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
+      ? `你的基因报告里 D4Z4 重复数是 ${reportRaw}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
       : hasPlainCount
-        ? `你的基因报告里 D4Z4 重复数是 ${repeats}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
-        : '本平台读不出你的 D4Z4 重复数：可能是还没上传基因报告，或者报告上写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
+        ? `你的基因报告里 D4Z4 重复数是 ${reportRaw}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
+        : showsUnverifiedRepeats
+          ? unverifiedRepeatEvidence(printedRepeats, origins?.d4z4Repeats ?? null)
+          : '本平台读不出你的 D4Z4 重复数：可能是还没上传基因报告，或者报告上写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
     ask: '可以问：「按我的基因结果，需要做一次散瞳眼底检查吗？」',
     source: SURVEILLANCE_SOURCE,
   };

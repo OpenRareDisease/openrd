@@ -101,9 +101,11 @@ export const buildAnesthesiaCard = (
    * to nothing but a 分型 lands in one of those states with that 分型
    * read off the report by OCR.
    *
-   * D4Z4 is not bracketed in the confirmed branch: the API resolves that
-   * value off the genetic report or not at all, so a repeat count on
-   * this card is always a report's.
+   * 「这张卡上没有」 is a claim about this card and stays true: the
+   * unconfirmed branch prints no repeat count. A D4Z4 重复数 the API
+   * resolved from the baseline is deliberately kept off an airway card
+   * — it is a number somebody typed from a phone call, and this reader
+   * cannot check it against anything.
    */
   const unconfirmedLine =
     '诊断：FSHD —— 未经基因确诊：这张卡上没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）';
@@ -115,10 +117,24 @@ export const buildAnesthesiaCard = (
     hasValue(geneticType) && geneticTypeOrigin && geneticTypeOrigin.kind !== 'absent'
       ? `；档案里的分型为 ${geneticType}（${geneticTypeOrigin.labelZh}）`
       : '';
+  /**
+   * The repeat count printed inside 「基因确诊（…）」, and ONLY a report's.
+   *
+   * `confirmation` is 'genetic' as soon as an uploaded report carries
+   * any one of D4Z4 / 单倍型 / EcoRI 片段, so a card can be confirmed on
+   * a haplotype while the printed 重复数 came from the baseline. Set
+   * bare after 「基因确诊」, that number reads as the laboratory's.
+   *
+   * An API build that sends no `valueOrigins` cannot answer the
+   * question, and this drops the number rather than guessing — the
+   * direction that cannot overstate.
+   */
+  const confirmedRepeats =
+    hasValue(d4z4Repeats) && origins?.d4z4Repeats.kind === 'report' ? d4z4Repeats : null;
   const diagnosisLine =
     confirmation === 'genetic'
-      ? hasValue(d4z4Repeats)
-        ? `诊断：FSHD，基因确诊（D4Z4 重复数 ${d4z4Repeats}）`
+      ? confirmedRepeats
+        ? `诊断：FSHD，基因确诊（D4Z4 重复数 ${confirmedRepeats}）`
         : '诊断：FSHD，基因确诊'
       : `${unconfirmedLine}${geneticTypeNote}`;
 

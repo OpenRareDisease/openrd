@@ -142,6 +142,65 @@ describe('诊断依据不能在卡上被抬高', () => {
     expect(card.patientLines[0]).not.toContain('档案里的分型');
   });
 
+  /**
+   * `confirmation` 只要上传的报告里有 D4Z4 / 单倍型 / EcoRI 片段之一就
+   * 是 `genetic`，而印在「D4Z4 重复数」上的那个数还可能来自基线 —— 后台
+   * 照着电话里念的报告代填的，或患者自己填的。把它接在 「基因确诊（」
+   * 后面，就等于把实验室的分量借给了一个没人见过报告的数字，而看这张卡
+   * 的麻醉医生手边没有任何东西可以核对。
+   */
+  it('确诊时括号里只写报告读出来的重复数', () => {
+    const fromBaseline = buildAnesthesiaCard(
+      summary({
+        diagnosis: {
+          confirmation: 'genetic',
+          d4z4Repeats: '6',
+          geneticType: '—',
+          valueOrigins: origins({ d4z4Repeats: valueOrigin('admin_entered', '管理员代填') }),
+        },
+      }),
+      TODAY,
+    );
+
+    expect(fromBaseline.patientLines[0]).toBe('诊断：FSHD，基因确诊');
+    expect(fromBaseline.patientLines[0]).not.toContain('6');
+  });
+
+  it('报告读出来的重复数照常印在括号里', () => {
+    const fromReport = buildAnesthesiaCard(summary(), TODAY);
+    expect(fromReport.patientLines[0]).toBe('诊断：FSHD，基因确诊（D4Z4 重复数 4）');
+  });
+
+  /** 服务端没发来源时，答不上来「这个数是谁的」，就不印这个数。 */
+  it('服务端没给来源时不把重复数印成报告的', () => {
+    const card = buildAnesthesiaCard(
+      summary({
+        diagnosis: { confirmation: 'genetic', d4z4Repeats: '6', geneticType: '—' },
+      }),
+      TODAY,
+    );
+
+    expect(card.patientLines[0]).toBe('诊断：FSHD，基因确诊');
+  });
+
+  /** 未确诊那一支上这张卡本来就不印重复数，所以「这张卡上没有」是真的。 */
+  it('未确诊时卡上确实没有重复数', () => {
+    const card = buildAnesthesiaCard(
+      summary({
+        diagnosis: {
+          confirmation: 'admin_entered',
+          d4z4Repeats: '6',
+          geneticType: '—',
+          valueOrigins: origins({ d4z4Repeats: valueOrigin('admin_entered', '管理员代填') }),
+        },
+      }),
+      TODAY,
+    );
+
+    expect(card.patientLines[0]).toContain('这张卡上没有可作确诊依据的基因结果');
+    expect(card.patientLines[0]).not.toContain('6');
+  });
+
   it('什么依据都没有时也不留白', () => {
     const card = buildAnesthesiaCard(
       summary({

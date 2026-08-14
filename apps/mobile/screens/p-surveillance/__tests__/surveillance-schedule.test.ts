@@ -32,6 +32,7 @@ import {
   ANESTHESIA_CARD_HREF,
   buildSurveillanceSchedule,
   isLargeD4Z4Deletion,
+  readReportReadRepeatCount,
   type SurveillanceRow,
 } from '../../../lib/surveillance-schedule';
 import { buildAnesthesiaCard } from '../../../lib/anesthesia-card';
@@ -42,10 +43,31 @@ import type { ClinicalPassportSummary, PatientProfile } from '../../../lib/api';
 const TODAY = new Date(2026, 7, 5, 12, 0, 0);
 const daysAgo = (days: number) => new Date(TODAY.getTime() - days * 86_400_000).toISOString();
 
+/** A `diagnosis.valueOrigins` map naming one source for every printed
+ *  value — the shape a real API build sends. The retina row reads
+ *  `d4z4Repeats` out of it, because the passport resolves that number
+ *  from an uploaded report OR from the baseline and only the first can
+ *  carry a guideline decision. */
+const valueOrigins = (d4z4: { kind: string; labelZh: string }) => ({
+  geneticType: { kind: 'report', labelZh: '报告读取' },
+  d4z4Repeats: d4z4,
+  methylationValue: { kind: 'report', labelZh: '报告读取' },
+  diagnosisDate: { kind: 'report', labelZh: '报告读取' },
+});
+
+const REPORT_ORIGIN = { kind: 'report', labelZh: '报告读取' };
+const ADMIN_ORIGIN = { kind: 'admin_entered', labelZh: '管理员代填' };
+const PATIENT_ORIGIN = { kind: 'patient', labelZh: '本人填写' };
+const INDETERMINATE_ORIGIN = { kind: 'indeterminate', labelZh: '来源无法确定' };
+
 const summary = (over: Record<string, unknown> = {}) =>
   ({
     patientName: '张三',
-    diagnosis: { confirmation: 'genetic', d4z4Repeats: '7' },
+    diagnosis: {
+      confirmation: 'genetic',
+      d4z4Repeats: '7',
+      valueOrigins: valueOrigins(REPORT_ORIGIN),
+    },
     monitoring: {
       items: [
         {
@@ -177,6 +199,22 @@ describe('指南的否定推荐必须在页面上', () => {
 });
 
 describe('大片段缺失分支', () => {
+  /** The same table the API's copy is checked against, driven through
+   *  the only expression that mints a decidable count: a passport whose
+   *  own `valueOrigins` says a report supplied the number. There is no
+   *  string overload left to call — a merged value cannot be handed to
+   *  the predicate at all. */
+  const reportSays = (raw: string) =>
+    readReportReadRepeatCount(
+      summary({
+        diagnosis: {
+          confirmation: 'genetic',
+          d4z4Repeats: raw,
+          valueOrigins: valueOrigins(REPORT_ORIGIN),
+        },
+      }),
+    );
+
   it.each<[string, boolean]>([
     ['1', true],
     ['4', true],
@@ -189,12 +227,143 @@ describe('大片段缺失分支', () => {
     ['—', false],
     ['', false],
   ])('D4Z4「%s」→ %s', (raw, expected) => {
-    expect(isLargeD4Z4Deletion(raw)).toBe(expected);
+    expect(isLargeD4Z4Deletion(reportSays(raw))).toBe(expected);
   });
 
   it('重复数在 1–4 时才把眼底检查标成对得上', () => {
-    const large = summary({ diagnosis: { confirmation: 'genetic', d4z4Repeats: '3' } });
+    const large = summary({
+      diagnosis: {
+        confirmation: 'genetic',
+        d4z4Repeats: '3',
+        valueOrigins: valueOrigins(REPORT_ORIGIN),
+      },
+    });
     expect(row('retinal_screening', large).applicability).toBe('matched');
+  });
+
+  it('报告没给的数，连算都算不进来', () => {
+    // The barrier, stated as behaviour rather than as a type error:
+    // every non-report origin yields nothing to decide on, so no
+    // wording change can accidentally re-open the branch.
+    for (const origin of [ADMIN_ORIGIN, PATIENT_ORIGIN, INDETERMINATE_ORIGIN]) {
+      expect(
+        readReportReadRepeatCount(
+          summary({
+            diagnosis: {
+              confirmation: 'self_reported',
+              d4z4Repeats: '3',
+              valueOrigins: valueOrigins(origin),
+            },
+          }),
+        ),
+      ).toBeNull();
+    }
+  });
+
+  /**
+   * The number the passport prints can be an administrator's
+   * transcription of a report read out over the phone, or the
+   * patient's own typing — `diseaseBackground.d4z4` is admin-writable
+   * and the registration form posts it. Deciding a guideline about
+   * vision loss on it, and telling the patient 「你的基因报告里 D4Z4
+   * 重复数是 3」 when no report was ever opened, are the two failures
+   * this pins.
+   */
+  it.each([
+    ['管理员代填', ADMIN_ORIGIN],
+    ['来源记录读不出来', { kind: 'admin_unreadable', labelZh: '非本人填写，来源不明' }],
+    ['本人填写', PATIENT_ORIGIN],
+    ['来源无法确定', INDETERMINATE_ORIGIN],
+  ])('重复数不是从报告里读出来的（%s）时不下判断', (_label, origin) => {
+    const typed = summary({
+      diagnosis: {
+        confirmation: 'self_reported',
+        d4z4Repeats: '3',
+        valueOrigins: valueOrigins(origin),
+      },
+    });
+    const retina = row('retinal_screening', typed);
+    expect(retina.applicability).toBe('unknown');
+    // Shown, with its origin available beside it on the passport, and
+    // never presented as something a report said.
+    expect(retina.evidence).toContain('你档案里的 D4Z4 重复数是 3');
+    expect(retina.evidence).not.toContain('你的基因报告里');
+    // Named: what would change this row.
+    expect(retina.evidence).toContain('报告原件');
+  });
+
+  /**
+   * 「它不是本平台从基因报告里读出来的」 as one flat sentence for every
+   * non-report origin. `indeterminate` is the API's own answer for 「the
+   * read-time OCR autofill copies a report's value into an empty
+   * baseline field and leaves no record」, so in the two states that
+   * produce it — a report whose OCR filled the baseline, and a newer
+   * report that supersedes the one carrying the count — that sentence
+   * asserts a negative the server explicitly refuses to assert.
+   */
+  it('分不清来源时不说「不是从报告里读出来的」，而是说分不清', () => {
+    const retina = row(
+      'retinal_screening',
+      summary({
+        diagnosis: {
+          confirmation: 'self_reported',
+          d4z4Repeats: '3',
+          valueOrigins: valueOrigins(INDETERMINATE_ORIGIN),
+        },
+      }),
+    );
+    expect(retina.evidence).toContain('分不清');
+    expect(retina.evidence).toContain('也可能不是');
+    expect(retina.evidence).not.toContain('不是本平台从基因报告里读出来的');
+    expect(retina.evidence).not.toContain('没有打开基因报告读过它');
+  });
+
+  it('管理员代填时点名是管理员录的，并指向护照上的字段来源', () => {
+    const retina = row(
+      'retinal_screening',
+      summary({
+        diagnosis: {
+          confirmation: 'admin_entered',
+          d4z4Repeats: '3',
+          valueOrigins: valueOrigins(ADMIN_ORIGIN),
+        },
+      }),
+    );
+    expect(retina.evidence).toContain('管理员代你录进来的');
+    expect(retina.evidence).toContain('字段来源');
+  });
+
+  /** A marker that exists and cannot be parsed proves 「not the
+   *  patient's」 and nothing more. Naming an administrator it does not
+   *  name would be the same invention in the other direction. */
+  it('来源记录读不出来时只说「不是你自己填的」，不点名是谁', () => {
+    const retina = row(
+      'retinal_screening',
+      summary({
+        diagnosis: {
+          confirmation: 'admin_entered',
+          d4z4Repeats: '3',
+          valueOrigins: valueOrigins({ kind: 'admin_unreadable', labelZh: '非本人填写，来源不明' }),
+        },
+      }),
+    );
+    expect(retina.evidence).toContain('不是你自己填的');
+    expect(retina.evidence).toContain('读不出来');
+    expect(retina.evidence).not.toContain('管理员代你录进来的');
+  });
+
+  /** No `valueOrigins` on the wire cannot be read as 「a report said
+   *  so」: an older API build sends none at all. And it cannot be read
+   *  as 「a report did not say so」 either — the server said nothing. */
+  it('API 没发来源时不拿这个数下判断，也不替服务端编一个来源', () => {
+    const noOrigins = summary({
+      diagnosis: { confirmation: 'genetic', d4z4Repeats: '3' },
+    });
+    const retina = row('retinal_screening', noOrigins);
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toContain('没有拿到这个数的来源');
+    expect(retina.evidence).not.toContain('不是你自己填的');
+    expect(retina.evidence).not.toContain('没有打开基因报告读过它');
   });
 
   it('重复数是明确的大数时标为不适用，但不说「不用查眼睛」', () => {
@@ -204,10 +373,85 @@ describe('大片段缺失分支', () => {
   });
 
   it('读不出重复数时是「判断不了」，不是「不适用」 —— 范围我们不猜', () => {
-    const ranged = summary({ diagnosis: { confirmation: 'genetic', d4z4Repeats: '1-10' } });
+    const ranged = summary({
+      diagnosis: {
+        confirmation: 'genetic',
+        d4z4Repeats: '1-10',
+        valueOrigins: valueOrigins(REPORT_ORIGIN),
+      },
+    });
     const retina = row('retinal_screening', ranged);
     expect(retina.applicability).toBe('unknown');
     expect(retina.evidence).toContain('报告原件');
+  });
+
+  /**
+   * THE FOUR WAYS A REPEAT COUNT REACHES THIS PAGE, and what each of
+   * them may say.
+   *
+   * The situations are the API's, and the origin beside each is the one
+   * `resolveValueOrigin` actually resolves for it. The two middle ones
+   * share an origin on purpose: an OCR autofill that filled an empty
+   * baseline leaves no record, and a newer genetic report that does not
+   * restate the count leaves the archive's number on the page — the
+   * server cannot tell those apart and says so instead of picking.
+   * That is exactly why a flat 「它不是本平台从基因报告里读出来的」 was
+   * false: in the first of the two, the number demonstrably came out of
+   * a report.
+   *
+   * All four print 3, which is inside the range the guideline calls a
+   * large deletion. Only the last may act on it.
+   */
+  describe('这个数是从哪来的，决定这一行能说什么', () => {
+    const retinaFor = (origin: { kind: string; labelZh: string } | null) =>
+      row(
+        'retinal_screening',
+        summary({
+          diagnosis: {
+            confirmation: 'self_reported',
+            d4z4Repeats: '3',
+            ...(origin ? { valueOrigins: valueOrigins(origin) } : {}),
+          },
+        }),
+      );
+
+    it('管理员按电话转述录进来的：显示，说清不是本人填的，不下判断', () => {
+      const retina = retinaFor(ADMIN_ORIGIN);
+      expect(retina.applicability).toBe('unknown');
+      expect(retina.evidence).toBe(
+        '你档案里的 D4Z4 重复数是 3，它是本平台的管理员代你录进来的 —— 是谁、什么时候，护照的「字段来源」那一栏里有。这个数是从你的档案里取的，本平台没有打开基因报告读过它。这一条要不要做，请医生看着报告原件判断。本平台只读你上传的最新一份基因报告 —— 重复数写在别的报告上的话，把那一份重新上传一次，这一行就会跟着改。',
+      );
+    });
+
+    it('报告的 OCR 补进基线的：不说「不是从报告里读出来的」，说分不清', () => {
+      const retina = retinaFor(INDETERMINATE_ORIGIN);
+      expect(retina.applicability).toBe('unknown');
+      expect(retina.evidence).toContain('分不清它是你自己填的，还是系统从你上传的报告里读来的');
+      expect(retina.evidence).toContain('可能就是报告上写的那个，也可能不是');
+    });
+
+    it('新报告盖过旧报告的：同一句，并说明为什么重传能改掉它', () => {
+      const retina = retinaFor(INDETERMINATE_ORIGIN);
+      expect(retina.evidence).toContain('本平台只读你上传的最新一份基因报告');
+      expect(retina.evidence).toContain('把那一份重新上传一次，这一行就会跟着改');
+    });
+
+    it('从报告里读出来的：这一行才引「你的基因报告里」，也才对得上', () => {
+      const retina = retinaFor(REPORT_ORIGIN);
+      expect(retina.applicability).toBe('matched');
+      expect(retina.evidence).toContain('你的基因报告里 D4Z4 重复数是 3');
+      expect(retina.evidence).toContain('大片段缺失范围（1–4）');
+    });
+
+    it('前三种都不引指南的范围，也都指得出下一步', () => {
+      for (const origin of [ADMIN_ORIGIN, PATIENT_ORIGIN, INDETERMINATE_ORIGIN, null]) {
+        const retina = retinaFor(origin);
+        expect(retina.applicability).toBe('unknown');
+        expect(retina.evidence).not.toContain('大片段缺失范围');
+        expect(retina.evidence).not.toContain('不适用');
+        expect(retina.evidence).toContain('报告原件');
+      }
+    });
   });
 });
 
