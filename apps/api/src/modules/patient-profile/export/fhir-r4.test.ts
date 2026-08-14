@@ -619,7 +619,10 @@ describe('FHIR R4 — §B3：管理员代填的值不能记成患者自述', () 
     const text = (condition.verificationStatus as { text: string }).text;
 
     expect(text).not.toContain('由患者本人填写');
-    expect(text).toContain('不是患者本人填写');
+    // The marker belongs to 分型 alone, and the subject of this sentence
+    // is 诊断信息 — which spans `recordedDate` in the same resource. It
+    // rides `note` instead.
+    expect(text).not.toContain('此项');
   });
 
   it('确诊年份的来源进 Condition.note，而不是只在信封上', () => {

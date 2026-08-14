@@ -479,7 +479,7 @@ describe('逐项来源：每个值按自己的来源排版，而不是按整块�
     expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值、诊断日期和证据摘要');
     // And the notice above the grid stops pointing at captions that are
     // not there.
-    expect(joinedText(renderer)).not.toContain('本平台能说明来源的值，来源就写在那个值下面');
+    expect(joinedText(renderer)).not.toContain('本平台能说明来源的，来源就写在那个值下面');
     // And nothing keeps the laboratory register on the strength of a
     // field that never arrived.
     expect(styleOfValue(renderer, 'FSHD1').fontVariant).toBeUndefined();

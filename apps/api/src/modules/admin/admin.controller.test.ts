@@ -290,8 +290,8 @@ describe('AdminController.updatePatientBaseline', () => {
     });
     const { res } = fakeResponse();
 
-    await expect(
-      controller.updatePatientBaseline(
+    const refused = await controller
+      .updatePatientBaseline(
         request({
           params: { userId: PATIENT_ID },
           body: {
@@ -302,8 +302,21 @@ describe('AdminController.updatePatientBaseline', () => {
           method: 'PUT',
         }),
         res,
-      ),
-    ).rejects.toMatchObject({ statusCode: 400 });
+      )
+      .then(
+        () => new Error('the write was accepted'),
+        (caught: unknown) => caught as Error,
+      );
+    expect(refused).toMatchObject({ statusCode: 400 });
+
+    // The sentence is the whole refusal — the throw carries no
+    // machine-readable field list — so it has to name the fields the
+    // way the operator's own screen does. A dotted English path inside
+    // a Chinese sentence names nothing they can see.
+    expect(refused.message).toContain('足下垂');
+    expect(refused.message).toContain('疼痛');
+    expect(refused.message).toContain('诊断进展');
+    expect(refused.message).not.toMatch(/[a-zA-Z]+\.[a-zA-Z]+/);
 
     // Nothing was written at all — not the refused fields, and not the
     // rest of the payload either.

@@ -238,8 +238,8 @@ describe('a baseline write carries the whole payload', () => {
   it('keeps every untouched field, including the provenance block', () => {
     // `upsertBaseline` runs `SET baseline_payload = $1` over the whole
     // column, and `applyAdminBaselineWrite` derives the changed set by
-    // diffing. A partial payload would delete the rest of the baseline
-    // AND stamp 管理员代填 on the fields it dropped.
+    // diffing. A partial payload would read as the administrator
+    // clearing every field it left out.
     const next = buildAdminBaselineWrite(stored, { 'diseaseBackground.d4z4': '3/22' });
     expect(next).toEqual({
       foundation: { fullName: '张三', birthYear: 1988 },

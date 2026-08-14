@@ -2422,7 +2422,7 @@ export const buildClinicalPassportSummary = (
         diagnosisConfirmation === 'genetic'
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
           : diagnosisClaimed
-            ? `未经基因确诊（未读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
+            ? `未经基因确诊（本护照内没有 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
             : '缺少可直接展示的基因或诊断证据',
       meta: `诊断日期 ${reportInsights.diagnosisDate}`,
     },

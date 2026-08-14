@@ -11,8 +11,8 @@ import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
  * exactly what §B3 forbids in the other direction.
  *
  * It also pins the save: the PUT must carry the WHOLE baseline. A
- * partial one is deleted fields plus 管理员代填 stamped on things nobody
- * touched, and neither is visible from the outside afterwards.
+ * partial one reads as the administrator clearing every field it left
+ * out, and that is not visible from the outside afterwards.
  */
 
 // lib/admin-api imports lib/api, which reaches AsyncStorage and

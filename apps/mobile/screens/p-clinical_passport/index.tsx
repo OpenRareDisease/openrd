@@ -540,9 +540,7 @@ const ClinicalPassportScreen = () => {
   /**
    * The sentence above the values, and it states EVIDENCE only.
    *
-   * It says the one thing `confirmation` answers: whether a genetic
-   * measurement this platform accepts as confirmation is on file at
-   * all. Not 「there is nothing to show」 — a genetics report parsed to
+   * It is not 「there is nothing to show」 — a genetics report parsed to
    * nothing but a methylation value lands in a non-genetic state, since
    * 甲基化 is not one of the three results above, with that report's
    * 甲基化值 printed in the grid right below.
@@ -555,7 +553,7 @@ const ClinicalPassportScreen = () => {
   const diagnosisNotice =
     !passport || passport.diagnosis.confirmation === 'genetic'
       ? null
-      : '未经基因确诊：本平台没有读到可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。' +
+      : '未经基因确诊：这份护照里没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。' +
         (valueOrigins
           ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
           : '');

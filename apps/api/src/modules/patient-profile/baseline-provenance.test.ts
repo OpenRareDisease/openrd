@@ -135,14 +135,14 @@ describe('applyAdminBaselineWrite', () => {
         baseline({ currentStatus: { footDrop: false, assistiveDevices: ['手杖'] } }),
         { adminUserId: ADMIN_ID, at: AT },
       ),
-    ).toThrow(/足下垂|currentStatus\.footDrop/);
+    ).toThrow(/足下垂/);
 
     expect(() =>
       applyAdminBaselineWrite(baseline(), baseline({ currentChallenges: { pain: 3 } }), {
         adminUserId: ADMIN_ID,
         at: AT,
       }),
-    ).toThrow(/currentChallenges\.pain/);
+    ).toThrow(/疼痛/);
 
     expect(() =>
       applyAdminBaselineWrite(
@@ -150,7 +150,7 @@ describe('applyAdminBaselineWrite', () => {
         baseline({ diseaseBackground: { diagnosisLadder: 'genetically_confirmed' } }),
         { adminUserId: ADMIN_ID, at: AT },
       ),
-    ).toThrow(/diseaseBackground\.diagnosisLadder/);
+    ).toThrow(/诊断进展/);
   });
 
   it('refuses with a 400 and names every offending field, and writes nothing', () => {
@@ -177,9 +177,10 @@ describe('applyAdminBaselineWrite', () => {
     // The message is the only thing that reaches the operator — the
     // error handler's CLIENT_SAFE_DETAIL_KEYS drops any `details`
     // payload this throw could attach — so both offending fields have
-    // to be in it.
-    expect((thrown as AppError).message).toContain('currentChallenges.pain');
-    expect((thrown as AppError).message).toContain('currentStatus.footDrop');
+    // to be in it, named the way the back office names them rather
+    // than by their dotted paths.
+    expect((thrown as AppError).message).toContain('疼痛');
+    expect((thrown as AppError).message).toContain('足下垂');
   });
 
   it('lets an admin clear a field they may write, and drops its marker', () => {

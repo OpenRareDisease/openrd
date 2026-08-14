@@ -156,13 +156,18 @@ export const ADMIN_WRITABLE_BASELINE_FIELDS = [
 const ADMIN_WRITABLE = new Set<string>(ADMIN_WRITABLE_BASELINE_FIELDS);
 
 /**
- * How a marked field is named to a human — on the passport a
- * neurologist reads, and in the three portable exports.
+ * How a baseline field is named to a human — on the passport a
+ * neurologist reads, in the portable exports, and in the refusal
+ * `applyAdminBaselineWrite` throws.
  *
- * Only the admin-writable paths are here, because only those can gain
- * a marker. A path with no label falls back to the dotted path itself
- * rather than to a guess: a marker on an unlabelled field still has to
- * be shown, and 「foundation.somethingNew」 is honest where an invented
+ * Keyed on every path `baselineProfileSchema` accepts, not only the
+ * admin-writable ones: `applyAdminBaselineWrite` renders its refusal
+ * through this map, and a refused path is by construction outside the
+ * allowlist.
+ *
+ * A path with no label falls back to the dotted path itself rather
+ * than to a guess: a marker on an unlabelled field still has to be
+ * shown, and 「foundation.somethingNew」 is honest where an invented
  * Chinese label would not be.
  */
 export const BASELINE_FIELD_LABELS_ZH: Record<string, string> = {
@@ -171,12 +176,27 @@ export const BASELINE_FIELD_LABELS_ZH: Record<string, string> = {
   'foundation.regionLabel': '所在地区',
   'foundation.birthYear': '出生年份',
   'foundation.diagnosisYear': '确诊年份',
+  'foundation.ageBand': '年龄段',
   'diseaseBackground.diagnosisType': 'FSHD 分型',
   'diseaseBackground.d4z4': 'D4Z4 重复数',
   'diseaseBackground.haplotype': '单倍型',
   'diseaseBackground.methylation': '甲基化',
   'diseaseBackground.familyHistory': '家族史',
   'diseaseBackground.onsetRegion': '起病部位',
+  'diseaseBackground.diagnosisLadder': '诊断进展',
+  'diseaseBackground.diagnosedFshd': '是否确诊 FSHD',
+  'currentStatus.independentlyAmbulatory': '独立行走',
+  'currentStatus.armRaiseDifficulty': '抬臂困难',
+  'currentStatus.facialWeakness': '面部无力',
+  'currentStatus.footDrop': '足下垂',
+  'currentStatus.breathingSymptoms': '呼吸症状',
+  'currentStatus.assistiveDevices': '辅具',
+  'currentChallenges.fatigue': '疲劳',
+  'currentChallenges.pain': '疼痛',
+  'currentChallenges.stairs': '上楼梯',
+  'currentChallenges.dressing': '穿衣',
+  'currentChallenges.reachingUp': '上举',
+  'currentChallenges.walkingStability': '行走稳定性',
   notes: '备注',
 };
 

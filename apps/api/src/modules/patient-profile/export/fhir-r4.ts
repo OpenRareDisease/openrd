@@ -5,7 +5,6 @@ import {
   instrumentOmission,
   originNoteZh,
   resourceUuid,
-  withOriginNote,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type NormalisedSource,
 } from './export-source.js';
@@ -290,11 +289,7 @@ export const buildFhirExport = (
       // notes.字段来源 (contract §B3).
       text: source.geneticEvidence.hasGeneticReport
         ? '患者已上传基因检测报告（报告内容未经本平台人工复核）'
-        : withOriginNote(
-            source,
-            'diseaseBackground.diagnosisType',
-            '未上传基因检测报告；诊断信息来自档案记录',
-          ),
+        : '未上传基因检测报告；诊断信息来自档案记录',
     },
     code: codeableText(conditionText),
     subject: { reference: patientRef },

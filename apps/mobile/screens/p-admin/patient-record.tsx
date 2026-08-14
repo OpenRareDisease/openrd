@@ -50,9 +50,9 @@ import styles from './styles';
  * `upsertBaseline` overwrites the entire `baseline_payload` column, and
  * `applyAdminBaselineWrite` derives the changed field set by diffing
  * the stored payload against the incoming one. Sending only the edited
- * fields would therefore delete everything else AND stamp 管理员代填 on
- * fields nobody touched. `buildAdminBaselineWrite` in lib/admin-api.ts
- * is the one place that merge happens.
+ * fields would therefore read as the administrator clearing everything
+ * else. `buildAdminBaselineWrite` in lib/admin-api.ts is the one place
+ * that merge happens.
  *
  * WHY THE FORM CAN REFUSE TO OPEN.
  *

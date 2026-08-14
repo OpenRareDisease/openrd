@@ -5,7 +5,7 @@
  * WHY THIS EXISTS
  *
  * 隐私政策 §9 promises 「涉及处理目的、处理方式、信息种类或接收方实质
- * 变更的，我们会在 App 内重新征得你的同意」, and 用户协议 §9 promises
+ * 变更的，我们会在 App 内重新征得你的同意」, and 用户协议 §11 promises
  * 「会在你下次进入 App 时请你重新确认」. The administrator back office
  * is exactly such a change — a new recipient and a new processing
  * purpose — so both documents were revised and their versions bumped
@@ -110,12 +110,13 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         '管理员权限不能自己给自己：注册页上没有这个选项，只能由能登录我们服务器的人在命令行上授予，收回同样是一条命令。',
         // AdminController.exportPatient，三种格式，审计事件 admin.export。
         // 三种格式都不带原件（DocumentReference / files 只写一条本平台
-        // 的 API 路径）。姓名、电话、住址：fhir-r4.ts:225-233 从不写入，
-        // phenopacket 同理，TREAT-NMD 放在 localOnly 节，而
+        // 的 API 路径）。姓名、电话、住址：fhir-r4.ts 的 Patient 资源
+        // 从不写入，phenopacket 同理，TREAT-NMD 放在 localOnly 节，而
         // AdminController.exportPatient 恒传 includeLocalOnly:false —— 家族史
-        // 也在那一节里（treat-nmd.ts:207）。反过来，测量 / 功能测试 /
-        // 症状评分 / 日常影响是 getPatientRecord 明确不发、而导出会写的
-        // （fhir-r4.ts:347/376/418/440），所以「和页面上一样」是假话。
+        // 也在那一节里（treat-nmd.ts 的 familyHistory）。反过来，测量 /
+        // 功能测试 / 症状评分 / 日常影响是 getPatientRecord 明确不发、
+        // 而导出会写的（fhir-r4.ts 的 buildFhirExport），所以「和页面上
+        // 一样」是假话。
         '管理员还可以把你这一份档案导成一个 FHIR / Phenopacket / TREAT-NMD 文件（研究与医院系统常用的格式），导出同样单独记一条。这个文件里没有你上传的报告原件，也不写姓名、电话、住址和家族史；但它比后台页面上看到的多——你记录过的肌力测量、功能测试、症状评分与日常影响也在里面。',
         // §10（七）。App 里确实还没有自助入口——「查看 AI 调用记录」
         // 只覆盖 AI 调用。

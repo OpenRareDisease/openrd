@@ -784,8 +784,7 @@ export const buildAdminBaselineWrite = (
  *  2. `applyAdminBaselineWrite` derives the changed set by diffing the
  *     stored payload against the one about to be written
  *     (baseline-provenance.ts). A partial payload therefore reads as
- *    「the administrator cleared these fields」 and stamps 管理员代填 on
- *     fields nobody touched.
+ *    「the administrator cleared these fields」.
  *
  * `expectedUpdatedAt` IS THE VERSION THE PAYLOAD WAS BUILT ON —
  * `identity.updatedAt` from the record read that filled the form — and

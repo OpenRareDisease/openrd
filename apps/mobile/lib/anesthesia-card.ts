@@ -93,23 +93,20 @@ export const buildAnesthesiaCard = (
   const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
 
   /**
-   * The line an anesthetist plans an airway from. It says what this
-   * platform CHECKED, and it names no author it has not been told.
+   * The line an anesthetist plans an airway from. It names no author
+   * it has not been told.
    *
    * A non-genetic `confirmation` says nothing about who filed anything
    * and nothing about whether a genetic report exists: a report parsed
    * to nothing but a 分型 lands in one of those states with that 分型
-   * read off the report by OCR. What `confirmation` does withhold is
-   * narrower, and is the thing that matters here: no D4Z4 repeat count,
-   * 4q haplotype or EcoRI fragment was read. `unconfirmedLine` says
-   * that and nothing more, which is true in every non-genetic state.
+   * read off the report by OCR.
    *
    * D4Z4 is not bracketed in the confirmed branch: the API resolves that
    * value off the genetic report or not at all, so a repeat count on
    * this card is always a report's.
    */
   const unconfirmedLine =
-    '诊断：FSHD —— 未经基因确诊：本平台没有读到可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）';
+    '诊断：FSHD —— 未经基因确诊：这张卡上没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）';
   // Whose 分型 it is, when the platform has been told. Without it the
   // reader is left to assume, and 「the patient says FSHD1」 and 「we read
   // FSHD1 off their report」 are different things to plan from.
