@@ -1900,10 +1900,17 @@ const VALUE_ORIGIN_LABEL_ZH: Record<PassportValueOriginKind, string> = {
 /** Chinese for the state where the patient's own typing and the OCR
  *  autofill are indistinguishable.
  *
- *  No surface prints `detail` today — the renderers show `labelZh` and
- *  stop. It is written in Chinese anyway, and for a reader rather than
- *  a maintainer, because the day one of them does show it there must be
- *  nothing to translate first. */
+ *  No surface prints a `PassportValueOriginDTO.detail` today — the
+ *  renderers that read this type (`diagnosisRow`, `withValueOrigin`,
+ *  `renderDiagnosisCell`, `diagnosisCard`) show `labelZh` and stop. It
+ *  is written in Chinese anyway, and for a reader rather than a
+ *  maintainer, because the day one of them does show it there must be
+ *  nothing to translate first.
+ *
+ *  Note which type: `PassportFieldOriginDTO` also has a `detail`, and
+ *  that one IS printed, inside 「来源记录读不出来（…）」. They are
+ *  different fields on different types and a grep for `.detail` finds
+ *  both — I confused them once while checking this very sentence. */
 const AUTOFILL_INDETERMINATE_DETAIL =
   '这位患者上传的报告里也有这一项，而本平台在读取档案时会用报告里的值补上空着的栏位，且不留记录 —— 所以本平台分不清这一栏是患者自己填的，还是系统从报告里读来的。';
 
