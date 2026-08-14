@@ -301,6 +301,33 @@ export class AdminController {
       throw new AppError('Patient account not found', 404);
     }
 
+    // A BODY THAT SURVIVED PARSING AS NOTHING IS NOT AN INSTRUCTION TO
+    // ERASE. `baselineProfileSchema` is a plain Zod object: a key it
+    // does not know is dropped silently, so a client one version out of
+    // step, or an operator who mistyped a section name, arrives here
+    // with `payload` empty. `upsertBaseline` REPLACES the column, and
+    // `applyAdminBaselineWrite` reads an absent value as a deletion —
+    // which the allowlist permits, because deleting an admin-writable
+    // field is a write to an admin-writable field.
+    //
+    // Found by running it: a PUT of {「lifestyle」: {…}} against a
+    // baseline holding only 确诊年份 returned 200 and left
+    // `baseline_payload` as {}, taking the provenance block with it.
+    // The allowlist catches this whenever any non-writable field is
+    // present to be refused, so it survived every test that used a
+    // realistic baseline.
+    //
+    // Sending no fields is therefore refused rather than obeyed. It
+    // costs the back office nothing: it draws twelve inputs and always
+    // submits them, so an empty payload is only ever reachable by
+    // something that is not this build's form.
+    if (Object.keys(payload).length === 0) {
+      throw new AppError(
+        '这次提交里没有一个后台能识别的字段，所以没有改动任何东西。如果你确实想清空某一项，把那一项留空提交；如果你以为自己填了内容，多半是这一页和后台版本对不上，刷新一次再试。',
+        400,
+      );
+    }
+
     const stored = await this.deps.admin.getStoredProfile(userId);
     if (!stored) {
       // THE ACCOUNT EXISTS AND HAS NO PROFILE ROW. Answered here, and

@@ -414,6 +414,40 @@ describe('AdminController.updatePatientBaseline', () => {
     expect(profiles.upsertBaseline).not.toHaveBeenCalled();
   });
 
+  it('refuses a body whose fields the schema does not know, rather than erasing', async () => {
+    // Found by running the API, not by reading it. `baselineProfileSchema`
+    // drops keys it does not know, so a client one version out of step
+    // arrives with an empty payload; `upsertBaseline` REPLACES the
+    // column and an absent value reads as a deletion. The allowlist
+    // does not stop it when every field in the stored baseline is one
+    // an administrator may write — deleting an admin-writable field is
+    // a write to an admin-writable field.
+    //
+    // Live reproduction: PUT {lifestyle:{…}} over a baseline holding
+    // only 确诊年份 answered 200 and left baseline_payload as {}, with
+    // the provenance block gone.
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({ foundation: { diagnosisYear: 2016 } }),
+      profiles,
+    });
+
+    await expect(
+      controller.updatePatientBaseline(
+        request({
+          params: { userId: PATIENT_ID },
+          body: { lifestyle: { smoking: 'never' } },
+          method: 'PUT',
+        }),
+        fakeResponse().res,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining('没有一个后台能识别的字段'),
+    });
+    expect(profiles.upsertBaseline).not.toHaveBeenCalled();
+  });
+
   it('refuses a save that carries no version at all, and does not call it an edit', async () => {
     // Refused like a stale one — but NOT with the stale one's sentence.
     // 「已经不是你打开这一页时的那一版了」 asserts somebody changed the

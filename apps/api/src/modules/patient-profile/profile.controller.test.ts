@@ -1628,6 +1628,48 @@ describe('PatientProfileController.updateMyBaseline — §B3 per-field reclaim',
   const reqWith = (body: unknown) =>
     ({ user: { id: 'user-1' }, body }) as unknown as AuthenticatedRequest;
 
+  it('refuses a save whose every key the schema strips, instead of erasing the baseline', async () => {
+    // Found by running the API, not by reading it. `baselineProfileSchema`
+    // is a plain Zod object, so a key it does not know is dropped; a
+    // body of only such keys arrives as {}, and `upsertBaseline`
+    // REPLACES the column. Reproduced live: PUT {lifestyle:{…}} over a
+    // stored baseline answered 200 and left it as {}.
+    //
+    // Not exotic. This app ships as a web export and WeChat caches it
+    // for days, so a bundle older than the current schema is the
+    // ordinary case — the patient taps 保存 on the form they were
+    // given and their answers are gone.
+    const { controller, upsertBaseline } = buildController({
+      foundation: { fullName: '张三' },
+    });
+
+    await expect(
+      controller.updateMyBaseline(reqWith({ lifestyle: { smoking: 'never' } }), fakeRes()),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining('认得的字段'),
+    });
+    expect(upsertBaseline).not.toHaveBeenCalled();
+  });
+
+  it('still lets the patient clear one field, which is a key the schema knows', async () => {
+    // The guard is about a body the server could not read at all, not
+    // about erasure — otherwise it would take away 清空 and the refusal
+    // would be worse than the bug.
+    const { controller, upsertBaseline } = buildController({
+      foundation: { fullName: '张三', regionLabel: '广东 深圳' },
+    });
+
+    await controller.updateMyBaseline(
+      reqWith({ foundation: { fullName: '张三', regionLabel: null } }),
+      fakeRes(),
+    );
+
+    expect(upsertBaseline).toHaveBeenCalled();
+    const written = upsertBaseline.mock.calls[0][1] as Record<string, unknown>;
+    expect((written.foundation as Record<string, unknown>).regionLabel).toBeNull();
+  });
+
   it('keeps every marker when the patient saves a field they did not touch', async () => {
     // The form posts the WHOLE baseline on every save, so this is the
     // ordinary case. Before this controller merged, it wiped both

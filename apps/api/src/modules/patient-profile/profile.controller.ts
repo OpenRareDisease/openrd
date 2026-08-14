@@ -726,6 +726,29 @@ export class PatientProfileController {
    */
   updateMyBaseline = async (req: AuthenticatedRequest, res: Response) => {
     const payload = baselineProfileSchema.parse(req.body);
+
+    // A BODY THAT PARSED TO NOTHING IS NOT 「CLEAR EVERYTHING」.
+    // `baselineProfileSchema` drops keys it does not know, and
+    // `upsertBaseline` REPLACES the column — so a request whose every
+    // key is unrecognised arrives here as {} and erases the whole
+    // baseline, answering 200.
+    //
+    // This app ships as a web export and WeChat caches it for days, so
+    // 「a bundle older than the current schema」 is the ordinary case
+    // rather than the exotic one. Reproduced against a running API: a
+    // PUT of {「lifestyle」: {…}} over a stored baseline left the column
+    // as {} with a 200.
+    //
+    // The form always submits its sections, so an empty payload never
+    // comes from this build. Clearing a single field still works — send
+    // the field as null, which is a key the schema knows.
+    if (Object.keys(payload).length === 0) {
+      throw new AppError(
+        '这次保存里没有一项是本平台这一版认得的字段，所以什么都没有改。多半是这个页面的版本比服务端旧了：把页面整个刷新一次（微信里可能要先清一下缓存），再保存一次。',
+        400,
+      );
+    }
+
     const stored = await this.service.getStoredBaselinePayload(req.user.id);
     const merged = applyPatientBaselineWrite(stored?.payload ?? null, payload);
     // The cast is the point of the call. `BaselineProfileInput` has no
