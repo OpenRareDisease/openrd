@@ -36,13 +36,30 @@
  *     }
  *   }
  *
- * ABSENCE IS THE PATIENT. There is no `self_reported` entry, and that
- * is deliberate: an entry per patient-written field would grow a
- * record of every field every patient ever touched for no reader, and
- * 「the patient wrote it」 is already the default this app is built on.
- * So a field is admin-entered if and only if it has an entry, and the
- * patient taking a field back is the entry being REMOVED. That is what
- * §B3's 「标记回到本人填写」 is, mechanically.
+ * ABSENCE IS THE PATIENT — AS A STORAGE RULE, AND ONLY AS ONE. There is
+ * no `self_reported` entry, and that is deliberate: an entry per
+ * patient-written field would grow a record of every field every
+ * patient ever touched for no reader. So a field is admin-entered if
+ * and only if it has an entry, and the patient taking a field back is
+ * the entry being REMOVED. That is what §B3's 「标记回到本人填写」 is,
+ * mechanically.
+ *
+ * WHAT THAT SENTENCE IS NOT. It is a rule about THIS BLOCK, not about
+ * the world. It says nothing was recorded here — and something can
+ * reach a baseline field without being recorded here: OCR extraction
+ * off an uploaded report, the read-time autofill that fills an empty
+ * column from one, an instrument administration merged in with
+ * `jsonb_set`. So a RENDERER may never turn an absent entry into
+ * 「本人填写」 on a page a clinician reads. It has one fact — no marker —
+ * and 「the patient typed this」 is a different, stronger one.
+ *
+ * That distinction has regrown the same defect in a new surface in
+ * every review round of this branch: the share page, the PDF, the FHIR
+ * Condition, the TREAT-NMD items, the anaesthesia card, the 诊断进度
+ * cell. Each time, someone carried this header's convention into a
+ * rendering decision. If you are about to write a fallback from a
+ * missing marker to an authorship claim, this paragraph is the reason
+ * not to; say where the value is kept, or say nothing.
  *
  * There is no `version` field. A future second source is a new value
  * of `source`, which every reader already switches on; a genuinely

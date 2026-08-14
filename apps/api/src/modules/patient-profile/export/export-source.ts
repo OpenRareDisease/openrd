@@ -142,7 +142,15 @@ export interface NormalisedSource {
 
 /**
  * The one sentence a serialiser appends beside a value that somebody
- * other than the patient typed, or `null` when the patient typed it.
+ * other than the patient typed, or `null` when no marker is on record
+ * for that path.
+ *
+ * `null` IS NOT 「the patient typed it」. `listBaselineFieldOrigins`
+ * emits a row only for a marked field, so absence here is the absence
+ * of a marker and nothing more — the same rule
+ * NO_ADMIN_FIELD_ORIGIN_NOTE_ZH below is worded around. A serialiser
+ * may append this sentence when it is non-null; on `null` it may print
+ * no authorship claim at all.
  *
  * Takes the baseline PATH rather than an item key, because the path is
  * what the provenance block is keyed by; a serialiser that invented its

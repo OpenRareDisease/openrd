@@ -53,14 +53,14 @@ export interface AdminControllerDeps {
 }
 
 /**
- * The two tokens an export has to carry for a marked profile to leave
+ * The tokens an export has to carry for a marked profile to leave
  * this endpoint, one per origin STATE.
  *
  * Typed as `ExportFieldOrigin['state']` rather than written out as bare
  * strings, so a renamed state cannot leave the guard looking for a word
  * nothing writes any more. It is the EXPORT's vocabulary and not
  * `BASELINE_FIELD_SOURCES`, because what is searched for is what the
- * document says, and the two lists are different: the source is the
+ * document says, and the lists are different: the source is the
  * word stored in the profile, the state is what a reader made of it.
  *
  * `BaselineFieldOrigin` collapses every member of
@@ -102,7 +102,7 @@ const shanghaiDate = (at: Date): string =>
  * capability. Anyone who can reach this endpoint as an administrator
  * can obtain the phrase by asking for it. The controls that decide WHO
  * may do this are `requireAdmin`'s role check and `npm run admin:grant`;
- * the controls that make it visible afterwards are the two audit rows
+ * the controls that make it visible afterwards are the audit rows
  * and the operator's id in the filename.
  */
 export const buildFullExportConfirmation = (patientCount: number, at: Date): string =>
@@ -118,24 +118,24 @@ export class AdminController {
 
   /**
    * One patient's record: the account, who they are, the baseline, and
-   * the four histories §B4 names — 报告 / 随访 / 跌倒 / 量表.
+   * the histories §B4 names — 报告 / 随访 / 跌倒 / 量表.
    *
    * WHAT IT DOES NOT SEND, and why that is not an oversight. Measurements,
    * function tests, symptom scores, daily impacts, activity logs and
    * medications are read (they arrive inside `getProfileByUserId`) and
-   * then dropped. §B4 enumerates the four histories above, no admin
+   * then dropped. §B4 enumerates the histories above, no admin
    * screen renders the rest, and every field of a patient's record that
    * crosses the wire without a reader is sensitive data spent for
    * nothing. Adding a section here is a decision, not a default.
    *
    * The sections are projected off `getProfileByUserId`, `listFalls` and
    * `listAdministrations` rather than off new SQL. `getProfileByUserId`
-   * alone is nine statements (the profile SELECT plus eight parallel
-   * ones) and two of its results are used, and the cost is paid on
-   * purpose: those queries carry the `deleted_at IS NULL` filters that
-   * keep a record the patient retracted from coming back to life, and a
-   * second query shape over the same tables is a second place to forget
-   * one. This endpoint serves a handful of operators, not patients.
+   * issues far more statements than the sections here read results
+   * from, and the cost is paid on purpose: those queries carry the
+   * `deleted_at IS NULL` filters that keep a record the patient
+   * retracted from coming back to life, and a second query shape over
+   * the same tables is a second place to forget one. This endpoint
+   * serves a handful of operators, not patients.
    *
    * `baseline` is THE STORED COLUMN, not the read-time merge, and
    * `baselineIsStored` says so on the wire — see AdminStoredProfile for
@@ -236,7 +236,8 @@ export class AdminController {
    * The administrator's baseline write, and the one place in this
    * module where getting it wrong is worse than failing.
    *
-   * FOUR THINGS HOLD THE §B3 PROPERTY UP, and all four are here:
+   * EVERY NUMBERED ITEM BELOW HOLDS THE §B3 PROPERTY UP. Dropping one
+   * is not a simplification — it is the property going away:
    *
    * 0. The write is REFUSED, 400, if it changes any field outside
    *    `ADMIN_WRITABLE_BASELINE_FIELDS` — the ladder, the 现状
@@ -452,13 +453,13 @@ export class AdminController {
    * document in as many words (「本导出中的绝大多数内容为患者自述或自评
    * ……每个条目的 provenanceZh 写明了来源」).
    *
-   * The three builders carry it as of 2026-08-13. Measured by calling
-   * `buildPortableExport` for each format on
+   * Every builder in `PORTABLE_EXPORT_FORMATS` carried it on 2026-08-13.
+   * Measured by calling `buildPortableExport` for each format on
    * `export/__fixtures__/profile.fixture.ts`'s profile with ONE
-   * `fieldProvenance` entry added to its baseline, once per each of the
-   * twelve ADMIN_WRITABLE_BASELINE_FIELDS paths, and searching the
-   * serialised document for `admin_entered`: present in all 36
-   * combinations (treat-nmd 7,629 bytes, phenopacket 4,470, fhir-r4
+   * `fieldProvenance` entry added to its baseline, once per
+   * `ADMIN_WRITABLE_BASELINE_FIELDS` path, and searching the serialised
+   * document for `admin_entered`: present in every combination
+   * (treat-nmd 7,629 bytes, phenopacket 4,470, fhir-r4
    * 15,540 for the `diseaseBackground.d4z4` case). Before that landed,
    * this endpoint refused every marked profile — the refusal was
    * written first and did not have to be taken out afterwards, which is
@@ -467,19 +468,19 @@ export class AdminController {
    * AN `unreadable` ENTRY IS CHECKED AGAINST A DIFFERENT WORD, because
    * the document says a different thing about it. Re-measuring the same
    * way on 2026-08-13 with the d4z4 entry made unparseable (`{ source:
-   * 'admin_entered' }`, no `adminUserId`): none of the three documents
-   * contains `admin_entered` — nothing was admin-entered — and all
-   * three carry `"state":"unreadable"` on the envelope plus 「此项的来源
+   * 'admin_entered' }`, no `adminUserId`): no document contains
+   * `admin_entered` — nothing was admin-entered — and every one of them
+   * carries `"state":"unreadable"` on the envelope plus 「此项的来源
    * 记录读不出来（…），只能确定不是患者本人填写」 beside the value
-   * (treat-nmd 7,591 bytes, phenopacket 4,437, fhir-r4 15,507). One
-   * check for both states therefore refused a document that WAS honest
+   * (treat-nmd 7,591 bytes, phenopacket 4,437, fhir-r4 15,507). Checking
+   * the states together therefore refused a document that WAS honest
    * about the field, in a sentence calling it 管理员代填 — which is the
    * one rendering baseline-provenance.ts says an `unreadable` entry must
    * never be given.
    *
    * So the check is a REGRESSION GUARD on the bytes this endpoint
    * sends, not a list of formats to keep up to date: a builder that
-   * stops emitting the origin — or a fourth format that never did —
+   * stops emitting the origin — or a new format that never did —
    * refuses here rather than shipping the flattened document.
    */
   exportPatient = async (req: AuthenticatedRequest, res: Response) => {
@@ -497,8 +498,8 @@ export class AdminController {
     // property this endpoint should have to depend on.
     const stored = await this.deps.admin.getStoredProfile(userId);
     const origins = listBaselineFieldOrigins(stored?.baselinePayload ?? null);
-    // TWO STATES, CHECKED SEPARATELY, because the document says two
-    // different things about them and one check for both was wrong
+    // THE STATES ARE CHECKED SEPARATELY, because the document says a
+    // different thing about each and a single check over them was wrong
     // about each: it refused a document that carried the `unreadable`
     // origin (which never contains the word `admin_entered`, because
     // nothing was admin-entered) and told the operator those fields
@@ -629,9 +630,9 @@ export class AdminController {
       await this.deps.admin.recordFullExportAudit({
         adminUserId: req.user.id,
         // The same projection require-admin.ts applies to its own
-        // row, imported rather than re-derived: two rows describing
-        // one request that disagree about the path are worse than
-        // either one alone.
+        // row, imported rather than re-derived: audit rows describing
+        // one request that disagree about the path are worse than any
+        // of them alone.
         path: _auditPathOf(req.originalUrl),
         method: req.method,
         patientCount: rows.length,

@@ -14,13 +14,13 @@ import { COLOR } from '../../lib/design';
 import styles from './styles';
 
 /**
- * The parts all three back-office screens share.
+ * The parts every back-office screen shares.
  *
  * The banner and the error wording live here rather than in each
- * screen because they are the two things that must not drift: an
- * operator has to read the same sentence about audit on every screen,
- * and a 403 has to mean the same thing on every screen — otherwise the
- * one that words it loosely is the one somebody believes.
+ * screen because they must not drift: an operator has to read the same
+ * sentence about audit on every screen, and a 403 has to mean the same
+ * thing on every screen — otherwise the one that words it loosely is
+ * the one somebody believes.
  */
 
 /**
@@ -86,7 +86,7 @@ export const describeValidationDetails = (data: unknown): string | null => {
  * What each status means on the admin routes, and therefore what this
  * client is allowed to say about it:
  *
- *  - 403 for 「不是管理员 / 账号停用 / 查无此账号」 — all three deliberately
+ *  - 403 for 「不是管理员 / 账号停用 / 查无此账号」 — these deliberately
  *    share one message, so this client cannot tell them apart either.
  *  - 503 for 「角色读不到」 and for 「审计写不进去」.
  *  - 400 for a `targetParam` that is present and is not a UUID (a
@@ -128,7 +128,7 @@ export const describeAdminError = (error: unknown): { title: string; message: st
       return { title: '找不到这条记录', message: '这个账号可能已经注销，或者链接里的 ID 不对。' };
     }
     if (error.status === 400) {
-      // Two very different 400s reach here. `requireAdmin` answers one
+      // Very different 400s reach here. `requireAdmin` answers one
       // with a sentence an operator can act on (「链接里的患者 ID 不是一个
       // 合法的用户 ID」); a zod refusal answers the bare English
       // 'Validation failed' from error-handler.ts, and puts the useful
@@ -224,7 +224,8 @@ export const AdminState = ({
 /**
  * One titled section that loads, fails and retries ON ITS OWN.
  *
- * This is why the ops dashboard makes four requests instead of one:
+ * This is why the ops dashboard makes a request per block rather than
+ * one aggregate call:
  * the page an operator opens is the page they open BECAUSE something
  * is already wrong, and a single aggregate call means a slow
  * `ai_prompt_audit` scan takes the corpus status and the parse queue
@@ -301,7 +302,7 @@ export const AdminStat = ({
   </View>
 );
 
-/** The provenance marker, §B3. Three states, three words, and
+/** The provenance marker, §B3. One word per state, and
  *  `unreadable` never borrows the patient's. */
 export const AdminOriginChip = ({ origin }: { origin: AdminFieldOrigin }) => {
   const tone =

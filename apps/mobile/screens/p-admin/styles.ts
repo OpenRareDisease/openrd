@@ -3,16 +3,16 @@ import { MIN_TOUCH_TARGET } from '../../lib/a11y';
 import { COLOR, HAIRLINE, INTERACTION, RADIUS, SPACE, SURFACE, TYPE } from '../../lib/design';
 
 /**
- * 后台 — one stylesheet for the three back-office screens.
+ * 后台 — one stylesheet for the back-office screens.
  *
- * SHARED ON PURPOSE. The overview, the list and one patient's record
- * are one tool used in one sitting, and three stylesheets would let the
- * same row drift into three heights. It is also the only place in the
+ * SHARED ON PURPOSE. The back office is one tool used in one sitting,
+ * and a stylesheet per screen would let the same row drift into a
+ * different height on each. It is also the only place in the
  * app where a screen may not look like the patient app: an operator
  * needs to know at a glance that what is on screen is somebody else's
- * record. Hence `auditBanner` — the same warn-coloured block on all
- * three, carrying the sentence in screens/p-admin/common.tsx that says
- * this page is being recorded.
+ * record. Hence `auditBanner` — the same warn-coloured block on every
+ * screen here, carrying the sentence in screens/p-admin/common.tsx that
+ * says this page is being recorded.
  *
  * DESIGNED FOR THE SAME PHONE EVERYTHING ELSE HERE RUNS ON. §C says the
  * back office is a web export read in WeChat's in-app browser like the

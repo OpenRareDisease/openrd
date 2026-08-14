@@ -231,7 +231,8 @@ export const isDamagedExtraction = (text: string): boolean => {
 
 /**
  * Remove the `[label]` line the ingest pipeline prepends to every chunk
- * (scripts/kb-ingest.py:328 — `tagged = f"[{section.label}]\n{...}"`).
+ * (_chunk_sections in scripts/kb-ingest.py —
+ * `tagged = f"[{section.label}]\n{...}"`).
  *
  * 7,524 of the corpus's 10,241 chunks carry one (measured 2026-08-11).
  * It is the pipeline's own annotation — usually `[page 92]`, sometimes

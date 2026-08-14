@@ -474,8 +474,8 @@ describe('逐项来源：每个值按自己的来源排版，而不是按整块�
     );
     expect(joinedText(renderer)).toContain('服务端这一版没有把逐项来源发全');
     // It names the diagnosis values it is about. 临床护照 ID is generated
-    // here and 诊断进度 is labelled with its own author, so neither is
-    // covered by this sentence.
+    // here and 诊断进度 carries whatever author the server named, so
+    // neither is covered by this sentence.
     expect(joinedText(renderer)).toContain('基因类型、D4Z4 重复数、甲基化值、诊断日期和证据摘要');
     // And the notice above the grid stops pointing at captions that are
     // not there.
@@ -649,13 +649,23 @@ describe('§B3：这一页要说出哪些字段不是患者自己填的', () => 
     expect(text).not.toContain('本人填写的诊断进度');
   });
 
-  it('服务端没给来源时才回落到「本人填写」—— 那是 §B3 之前的接口', async () => {
+  // A cached bundle can reach an API build that sends the rung without
+  // the origin. The rung still prints; the author does not, because the
+  // same render says 「无法确认上面这些值是不是都由你本人填写」 a few
+  // blocks down and this cell cannot know better than that sentence.
+  it('服务端没给来源时，那一格不替患者认领这个答案', async () => {
     const renderer = await render(
       summary({
         diagnosis: { ...summary().diagnosis, ladder: 'confirmed', ladderLabel: '已确诊' },
       }),
     );
-    expect(allText(renderer)).toContain('本人填写的诊断进度');
+    const text = allText(renderer);
+    expect(text).toContain('诊断进度');
+    expect(text).toContain('已确诊');
+    expect(text).not.toContain('本人填写的诊断进度');
+    expect(text).toContain(
+      '服务端这一版没有返回字段来源，无法确认上面这些值是不是都由你本人填写。',
+    );
   });
 
   it('逐条列出被代填的字段，带上是谁、什么时候 —— PDF 和分享页早就列了', async () => {
@@ -1067,12 +1077,13 @@ describe('服务端没给这一段的时候', () => {
   });
 });
 
-describe('本人填写的诊断进度', () => {
+describe('诊断进度那一格', () => {
   it('答过的那一级按 API 的措辞出现，且不用 metric 字体', async () => {
     // 「what did you tell us」 and 「what does the evidence show」 are
-    // different questions. This cell is a self-report by construction,
-    // so it never takes the 16.5pt/700/tabular-nums treatment even on a
-    // genetically confirmed passport.
+    // different questions. This cell answers the first one and is not
+    // evidence whatever the uploaded reports say, so it never takes the
+    // 16.5pt/700/tabular-nums treatment even on a genetically confirmed
+    // passport.
     const base = geneticSummary();
     const renderer = await render(
       summary({
@@ -1093,6 +1104,6 @@ describe('本人填写的诊断进度', () => {
 
   it('没答过的时候整格不出现，而不是印一个「—」', async () => {
     const renderer = await render(summary());
-    expect(allText(renderer)).not.toContain('本人填写的诊断进度');
+    expect(allText(renderer)).not.toContain('诊断进度');
   });
 });

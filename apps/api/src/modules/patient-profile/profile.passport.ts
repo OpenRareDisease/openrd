@@ -117,11 +117,13 @@ export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'admin
 /**
  * One baseline field that somebody other than the patient put here.
  *
- * ABSENCE IS THE PATIENT (baseline-provenance.ts), so this list holds
- * only the marked fields and an empty list means every baseline value
- * on this passport is the patient's own or came off one of their
- * reports. There is no `patient` member: a row per unmarked field
- * would be a list of everything, which is a list of nothing.
+ * ABSENCE IS THE PATIENT (baseline-provenance.ts) is a rule about the
+ * stored block, so this list holds only the marked fields. An empty
+ * list therefore says no marker is on record — NOT that the patient
+ * authored what is on the page. See that header for why the two are
+ * different and for what else can write a baseline field without
+ * leaving a marker. There is no `patient` member: a row per unmarked
+ * field would be a list of everything, which is a list of nothing.
  *
  * `unreadable` is carried rather than dropped. A marker that exists
  * and cannot be parsed is NOT the patient's — dropping it here is
@@ -2611,7 +2613,7 @@ export const buildClinicalPassportExport = (
     // exists to stop being made blind.
     ...(summary.diagnosis.ladderLabel
       ? [
-          `- 诊断进度（${summary.diagnosis.ladderOriginZh ?? '本人填写'}）：${
+          `- 诊断进度${summary.diagnosis.ladderOriginZh ? `（${summary.diagnosis.ladderOriginZh}）` : ''}：${
             summary.diagnosis.ladderLabel
           }`,
         ]

@@ -90,11 +90,12 @@ interface CrossLink {
    * reader — the reader this whole page was opened up for — tapped
    * 「打开「麻醉注意事项卡」」 and had the timeline she was reading
    * replaced by a login form that did not say why. That is verbatim the
-   * regression app/_layout.tsx:29-34 records having already happened to
-   * p-pregnancy itself; it was fixed for the route and left standing in
-   * the two buttons pointing out of it. The sentence stays because the
-   * fact is worth having (a card for the anaesthetist exists, bring it)
-   * even when the page behind it is not reachable yet.
+   * regression the GUEST_ROUTES comment in app/_layout.tsx records
+   * having already happened to p-pregnancy itself; it was fixed for the
+   * route and left standing in the two buttons pointing out of it. The
+   * sentence stays because the fact is worth having (a card for the
+   * anaesthetist exists, bring it) even when the page behind it is not
+   * reachable yet.
    */
   lockedNote: string | null;
 }

@@ -84,7 +84,7 @@ export const cdtRowsPage = (): string => read('chinadrugtrials.searchlist.rows.h
  *
  * REDACTED BEFORE COMMITTING. The live page names the applicant's
  * contact person and the principal investigator with their phone
- * numbers, email addresses and postal addresses. Those ten values were
+ * numbers, email addresses and postal addresses. Those values were
  * overwritten with placeholders; nothing else in the file was touched,
  * and the parser reads none of them — which is a property this fixture
  * can demonstrate precisely because they are not there.

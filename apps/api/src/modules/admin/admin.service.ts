@@ -14,7 +14,10 @@ import { AUDIT_RETENTION_DAYS } from '../../services/audit/retention.js';
  * second query shape over the same tables is a second thing that has to
  * be kept correct when a column is added. What is left for this file is
  * the cohort-level work those services have no method for: the list, the
- * full-database export, and the four operations dashboards.
+ * full-database export, and the operations dashboards that answer a
+ * question by querying. The ops health summary is not one of those —
+ * the controller takes it from a `healthSummary` dependency rather than
+ * from this class.
  */
 
 /** No logger, unlike its sibling services. Nothing in here recovers
@@ -90,8 +93,8 @@ export interface AdminAccountDTO {
  * payload AS STORED.
  *
  * THE STORED COLUMN IS THE POINT, and it is the reason this method
- * exists next to two services that already read this table. Both
- * `getProfileByUserId` and `getBaselineByUserId` run
+ * exists next to services that already read this table.
+ * `getProfileByUserId` and `getBaselineByUserId` each run
  * `applyGeneticReportAutofill` on the way out, which fills a missing
  * D4Z4 / haplotype / diagnosis year from the patient's most recent
  * genetic report at READ time. That merge is right for a screen and
@@ -108,7 +111,7 @@ export interface AdminAccountDTO {
  *     would be stamping 管理员代填 across every field the autofill had
  *     supplied.
  *
- * So the edit form and the provenance diff both work off this, and the
+ * So the edit form and the provenance diff work off this, and the
  * response says so with `baselineIsStored`.
  */
 export interface AdminStoredProfile {
@@ -298,7 +301,7 @@ export const escapeLikePattern = (value: string): string =>
  * has `npm run db:backup`, which is the tool for that job.
  *
  * The number sits far above the cohort and far below anything that
- * would strain a single response. Both halves measured on 2026-08-13
+ * would strain a single response. Each half measured on 2026-08-13
  * against the dev database:
  *
  *   psql "$DATABASE_URL" -c 'SELECT count(*) FROM patient_profiles'
@@ -330,7 +333,7 @@ export class AdminService {
    * is precisely the one an operator is looking for when the caller
    * says「我注册了但是填不进去」. An inner join would answer「查无此人」.
    *
-   * The search matches the phone number, the patient code, and both
+   * The search matches the phone number, the patient code, and the
    * name columns. The name columns are searched and NEVER returned —
    * `maskedName` is what leaves this method — so a wildcard fishing
    * expedition returns masked rows, and READING a name off this list
@@ -351,8 +354,8 @@ export class AdminService {
    *
    * IT IS NOT A PROPERTY OF THE MODULE. `POST /api/admin/exports/
    * patients.csv` enumerates the whole roster — full names, phone
-   * numbers and regions, `listExportRows` below — and neither of its two
-   * audit rows names a patient: `requireAdmin`'s carries
+   * numbers and regions, `listExportRows` below — and no audit row on
+   * that path names a patient: `requireAdmin`'s carries
    * `targetUserId: null` because the route declares no `targetParam`
    * (it is about every patient, so there is no single one to record),
    * and `recordFullExportAudit`'s carries the cohort as a whole
@@ -435,12 +438,12 @@ export class AdminService {
   /**
    * The account behind a user id, or null.
    *
-   * The read and the write route both call this first, and the reason
-   * is that without it the two failures the operator has to tell apart
-   * arrive as the same answer. A user id that belongs to nobody and a
-   * user id whose owner has never opened the baseline form both reach
-   * `patient_profiles` and find nothing —
-   * `getProfileByUserId` returns null and `ensureProfileForUser` raises
+   * The read route and the write route each call this first, and the
+   * reason is that without it the failures the operator has to tell
+   * apart arrive as the same answer. A user id that belongs to nobody
+   * and a user id whose owner has never opened the baseline form alike
+   * reach `patient_profiles` and find nothing — `getProfileByUserId`
+   * returns null and `ensureProfileForUser` raises
    * 「Patient profile not found」. With this lookup in front,
    * 「查无此账号」is a 404 and「有账号，没填过」is a 200 with a null
    * profile, which are different things to do next about.
@@ -513,10 +516,10 @@ export class AdminService {
    *
    * The counts are one grouped query per kind, UNION ALLed into a
    * single round trip and keyed by `profile_id` in memory, rather than
-   * ten correlated subqueries in the row SELECT: the correlated form
-   * re-runs every count once per patient, so its cost grows with
-   * patients × kinds while this one is ten sequential aggregates
-   * whatever the cohort size.
+   * a correlated subquery per kind in the row SELECT: the correlated
+   * form re-runs every count once per patient, so its cost grows with
+   * patients × kinds while this one is one sequential aggregate per
+   * kind whatever the cohort size.
    *
    * The `deleted_at IS NULL` filters mirror `getProfileByUserId` and
    * `FallsService`. Without them the CSV would count records the
@@ -634,17 +637,17 @@ export class AdminService {
    * is built and refused loudly if it cannot be written.
    *
    * `requireAdmin` already wrote an `admin.export` row for this
-   * request, carrying the four fields §B2 asks for. This row carries
-   * the three facts that make the most dangerous action in the product
+   * request, carrying the fields §B2 asks for. This row carries the
+   * facts that make the most dangerous action in the product
    * reconstructible afterwards and that the middleware's fixed payload
    * has no room for: how many patients were in the file, what the file
    * was called, and that this was the whole cohort rather than one
    * patient (`scope`).
    *
-   * Two rows of the same `event_type` for one request is deliberate and
-   * it is the one place it happens: `ADMIN_AUDIT_EVENTS` is fixed by
-   * require-admin.ts and has no `admin.export_all` member, so `scope`
-   * is the discriminator a query filters on
+   * Repeating an `event_type` within one request is deliberate here:
+   * `ADMIN_AUDIT_EVENTS` is fixed by require-admin.ts and has no
+   * `admin.export_all` member, so `scope` is the discriminator a query
+   * filters on
    * (`event_payload->>'scope' = 'all_patients'`). The path is a second,
    * weaker discriminator — weaker because renaming the route silently
    * changes it.
@@ -658,7 +661,7 @@ export class AdminService {
   }): Promise<void> {
     // Same statement shape as require-admin.ts, event type included:
     // one insert form for `admin.*` rows means a reader (and a test)
-    // does not have to know which of the two writers produced a row to
+    // does not have to know which writer produced a row to
     // find its event type.
     await this.pool.query(
       `INSERT INTO audit_logs (event_type, event_payload)
@@ -719,8 +722,8 @@ export class AdminService {
   /**
    * Documents whose OCR did not produce a usable result.
    *
-   * Three statuses, and the third is the reason this is a query and not
-   * a `WHERE status = 'parse_failed'`: a row left in `processing` by a
+   * The `processing` clause is the reason this is a query and not a
+   * `WHERE status = 'parse_failed'`: a row left in `processing` by a
    * job that died with its process is stuck, but nothing has marked it
    * — the sweep in profile.routes.ts only runs when this process has no
    * OCR jobs in flight, so on a busy instance a stranded row can sit
@@ -798,7 +801,7 @@ export class AdminService {
     // by name; `success` is the one status that counts as a success;
     // EVERYTHING ELSE IS A FAILURE, including a status this build has
     // never heard of. `ai_prompt_audit.status` has no CHECK and
-    // `AuditStatus` (ai-agents/audit/types.ts) is closed at three
+    // `AuditStatus` (ai-agents/audit/types.ts) is a closed union
     // today, so a `timeout` added next year would otherwise appear in
     // `byStatus` and in neither the numerator nor the denominator —
     // the dashboard would report an unchanged failure rate while the

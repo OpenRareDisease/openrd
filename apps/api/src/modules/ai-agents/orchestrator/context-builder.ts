@@ -255,7 +255,7 @@ const MAX_AUTHORITY_CHARS = 24;
  * landed in af72417; there is no parallel lane and no rename to absorb.
  * None of the extra shapes was ever produced — medical-kb.ts reads the
  * backend's snake_case `authority_label` out of metadata and stamps the
- * camelCase field itself (medical-kb.ts:583-607) — and none was ever
+ * camelCase field itself (MedicalKbRetriever.searchOnce) — and none was ever
  * tested, so the breadth was defence against nothing that could happen.
  *
  * The RUNTIME check on the value stays, and is not the same thing. The

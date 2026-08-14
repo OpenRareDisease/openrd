@@ -1052,12 +1052,17 @@ const ClinicalPassportScreen = () => {
                         来源不明). The server is the only thing that can
                         answer it — nothing in this bundle can tell from
                         the answer alone — so this label prints what it
-                        sends rather than deciding. `?? '本人填写'` covers
-                        an API build that does not send it. */}
+                        sends rather than deciding. An API build that
+                        sends no origin gets the bare 「诊断进度」: naming
+                        the patient out of that silence is the same
+                        claim the 字段来源 block below refuses to make,
+                        and this cell sits above it. */}
                     {ladderLabel ? (
                       <View style={styles.infoCell}>
                         <Text style={styles.infoLabel}>
-                          {`${passport.diagnosis.ladderOriginZh ?? '本人填写'}的诊断进度`}
+                          {passport.diagnosis.ladderOriginZh
+                            ? `${passport.diagnosis.ladderOriginZh}的诊断进度`
+                            : '诊断进度'}
                         </Text>
                         <Text style={styles.infoValueSelfReported}>{ladderLabel}</Text>
                       </View>
@@ -1086,12 +1091,12 @@ const ClinicalPassportScreen = () => {
                       values it covers rather than the grid they sit in,
                       and covers only the ones with no line under them:
                       the passport ID in that grid is generated here and
-                      claimed by nobody, and the 诊断进度 cell is
-                      labelled with its own author. WeChat caches this
-                      web export for days, so a current bundle can be
-                      talking to an API build that sends neither key or
-                      only one of them, and the sentence has to hold for
-                      both. */}
+                      claimed by nobody, and the 诊断进度 cell either
+                      carries the author the server named or names
+                      nobody at all. WeChat caches this web export for
+                      days, so a current bundle can be talking to an API
+                      build that sends neither key or only one of them,
+                      and the sentence has to hold for both. */}
                   {valueOrigins && geneEvidenceOrigin ? null : (
                     <View style={styles.noteCard}>
                       <Text style={styles.noteTitle}>逐项来源</Text>

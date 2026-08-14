@@ -472,7 +472,14 @@ export type AdminFieldOrigin =
   | { state: 'unreadable'; detail: string };
 
 export const ADMIN_FIELD_ORIGIN_LABEL: Record<AdminFieldOrigin['state'], string> = {
-  patient: '本人填写',
+  // NOT 「本人填写」. This state is inferred from a path having no entry
+  // in a list that did arrive, which proves only that nobody on our
+  // side marked it — the value can still have been read off an uploaded
+  // report, or written into an empty column by the read-time autofill,
+  // neither of which records anything. See ABSENCE IS THE PATIENT in
+  // apps/api's baseline-provenance for why the storage rule and this
+  // label are different claims.
+  patient: '无代填记录',
   admin_entered: '管理员代填',
   unreadable: '来源不明',
 };

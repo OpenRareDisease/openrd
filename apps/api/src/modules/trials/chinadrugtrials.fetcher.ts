@@ -7,7 +7,7 @@
  * session.
  *
  *
- * THE THREE THINGS THAT MAKE THIS DIFFERENT FROM ctgov.fetcher.ts
+ * WHAT MAKES THIS DIFFERENT FROM ctgov.fetcher.ts
  *
  * 1. AN ANTI-BOT GATE. The first request of a session is answered with
  *    HTTP 202 and a ~25 KB page that carries no results table, plus two
@@ -83,11 +83,12 @@
  * WHAT IS IN `raw`
  *
  * NOT the page. An allowlist of the labelled values this file
- * extracted, plus the two URLs and the keyword that found the record.
- * Two reasons, and the second is the important one: the detail page is
- * ~66 KB, and it carries the named principal investigator with their
- * mobile number, email and postal address, and the applicant's contact
- * person with theirs. We have no use for any of it. A `raw` that was
+ * extracted, plus the URLs it was fetched from and the keyword that
+ * found the record. Size is the lesser reason and privacy is the real
+ * one: the detail page is ~66 KB, and it carries the named principal
+ * investigator with their mobile number, email and postal address, and
+ * the applicant's contact person with theirs. We have no use for any of
+ * it. A `raw` that was
  * 「the page」 would put a stranger's phone number in our database
  * because it happened to be next to a phase number.
  */
@@ -168,10 +169,10 @@ const MAX_CODE_POINT = 0x10ffff;
  * One numeric entity, or a failure that says where it came from.
  *
  * `String.fromCodePoint` is not total, and not every string it does
- * return can be stored. Three forms, each spliced into the title on the
- * real 9-row results page and driven through `_parseSearchList` on
+ * return can be stored. Each form below was spliced into the title on
+ * the real 9-row results page and driven through `_parseSearchList` on
  * 2026-08-14, then through `SELECT $1::text` and `SELECT $1::jsonb` on
- * the dev database for the two that survived the parse:
+ * the dev database for the ones that survived the parse:
  *
  *   &#999999999;  fromCodePoint threw 「RangeError: Invalid code point
  *                 999999999」 — no source, no step, no CTR number.
@@ -183,7 +184,7 @@ const MAX_CODE_POINT = 0x10ffff;
  *   &#0;          decoded to NUL, which Postgres refuses in text at all
  *                 —「invalid byte sequence for encoding "UTF8": 0x00」.
  *
- * None of the three is a silent wrong answer, so the run does fail
+ * None of them is a silent wrong answer, so the run does fail
  * either way. What they lacked is a label: every other failure in this
  * file names the source and the step, and these arrived in
  * `trial_fetch_runs.error` as a bare RangeError or driver string.
@@ -290,8 +291,8 @@ const rowsOf = (tableHtml: string): string[] =>
  *
  * It stops at the FIRST `</table>`, so it must only be pointed at a
  * table with none nested inside it. The detail page has nested tables
- * — 入选标准 and 排除标准 hold one each — and none of the four markers
- * used below reach them.
+ * — 入选标准 and 排除标准 hold one each — and no marker used below
+ * reaches them.
  */
 const tableFrom = (html: string, tableStart: number): string | undefined => {
   if (tableStart === -1) return undefined;
@@ -360,8 +361,8 @@ export interface CdtSearchPage {
 /**
  * One search-results page.
  *
- * Exported for its test, which drives it with three real captures: a
- * page with rows, a page with none, and the anti-bot challenge.
+ * Exported for its test, which drives it with real captures: a page
+ * with rows, a page with none, and the anti-bot challenge.
  */
 export const _parseSearchList = (html: string, label: string): CdtSearchPage => {
   const table = tableWithAttribute(html, 'class="searchTable"');
@@ -455,12 +456,12 @@ export interface CdtDetail {
  * Exported for its test, which drives it with
  * __fixtures__/chinadrugtrials.detail.html — a real capture of
  * CTR20252821, which is a DMD trial, because on 2026-08-13 no FSHD
- * trial was registered here to capture. The four contact fields in
- * that capture were overwritten before it was committed; see the
- * fixture module.
+ * trial was registered here to capture. The contact fields in that
+ * capture were overwritten before it was committed; see the fixture
+ * module.
  */
 export const _parseDetail = (html: string, label: string): CdtDetail => {
-  // The four sections this parser reads are page TEMPLATE, not optional
+  // The sections this parser reads are page TEMPLATE, not optional
   // content — every one of them is on the captured page and they are
   // headings the site renders for every registered trial. So a missing
   // section is treated as the page having changed shape, and fails the
