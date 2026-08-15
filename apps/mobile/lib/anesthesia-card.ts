@@ -89,7 +89,7 @@ export const buildAnesthesiaCard = (
   summary: ClinicalPassportSummary,
   today: Date,
 ): AnesthesiaCardModel => {
-  const { confirmation, d4z4Repeats, geneticType } = summary.diagnosis;
+  const { confirmation, geneticType } = summary.diagnosis;
   const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
 
   /**
@@ -127,21 +127,31 @@ export const buildAnesthesiaCard = (
       ? `；档案里的分型为 ${geneticType}（${geneticTypeOrigin.labelZh}）`
       : '';
   /**
-   * The repeat count printed inside 「基因确诊（…）」, and ONLY a report's.
+   * The repeat count printed inside 「基因确诊（…）」, and ONLY the
+   * laboratory's own determinate one.
    *
    * `confirmation` grades the evidence and says nothing about which of
    * the values on this card came off a report, so a card can be
-   * confirmed on a haplotype while the printed 重复数 came from the
-   * baseline. Set bare after 「基因确诊」, that number reads as the
-   * laboratory's. Which one it is comes off `valueOrigins`, per value,
-   * and never off `confirmation`.
+   * confirmed while the printed 重复数 came from the baseline. Set bare
+   * after 「基因确诊」, that number reads as the laboratory's.
    *
-   * An API build that sends no `valueOrigins` cannot answer the
-   * question, and this drops the number rather than guessing — the
-   * direction that cannot overstate.
+   * THAT WAS ASKED OF `valueOrigins.d4z4Repeats`, WHICH IS THE WRONG
+   * QUESTION: it says the row came off a document and says nothing
+   * about what the cell reads. Rendered: a report whose repeat-count
+   * cell read 「1-10」 put 「诊断：FSHD，基因确诊（D4Z4 重复数 1-10）」 on
+   * the card an anaesthetist plans an airway from. The API reads that
+   * cell — a range, a kb length and a 0 are each refused there, with
+   * the reasons — and sends the one number this line may carry.
+   *
+   * An API build that predates the field cannot answer the question,
+   * and this drops the number rather than falling back to the printed
+   * row — the direction that cannot overstate.
    */
+  const laboratoryRepeatCount = summary.diagnosis.laboratoryRepeatCount;
   const confirmedRepeats =
-    hasValue(d4z4Repeats) && origins?.d4z4Repeats.kind === 'report' ? d4z4Repeats : null;
+    typeof laboratoryRepeatCount === 'string' && hasValue(laboratoryRepeatCount)
+      ? laboratoryRepeatCount
+      : null;
   const diagnosisLine =
     confirmation === 'genetic'
       ? confirmedRepeats

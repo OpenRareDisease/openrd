@@ -136,7 +136,14 @@ describe('护照的诊断确认状态', () => {
     expect(both.diagnosis.ready).toBe(true);
   });
 
-  it('长度那一半可以由 EcoRI 片段补上，单倍型那一半不能空着', () => {
+  /**
+   * EcoRI 片段是以 kb 写的长度，指南给的界限写在重复单元数上，而本仓库
+   * 引到的两句 kb —— 「单个 D4Z4 单元长 3.3 kb」和指南自己的「10–20 kb
+   * or 1–4 repeats」—— 换算不到一起，所以推不出一个能用的 kb 界限。
+   * 以 kb 写的长度照常印在护照上（带自己的来源括号），但不参与确诊、
+   * 不参与分级、不参与灰区、也不撑任何一条建议。
+   */
+  it('两项都齐、但长度是 kb 时不算确诊 —— kb 只印不判', () => {
     // Annotated rather than inferred. An inline array of two object literals
     // with disjoint keys widens to `{haplotype: string; ecoRIFragment?:
     // undefined} | {ecoRIFragment: string; haplotype?: undefined}`, and
@@ -157,7 +164,17 @@ describe('护照的诊断确认状态', () => {
     const fragmentAndHaplotype = buildClinicalPassportSummary(
       base({ documents: [geneticReport({ ecoRIFragment: '18kb', haplotype: '4qA' })] } as never),
     );
-    expect(fragmentAndHaplotype.diagnosis.confirmation).toBe('genetic');
+    expect(fragmentAndHaplotype.diagnosis.confirmation).not.toBe('genetic');
+    // 数还在页面上，只是没有判它 —— 并且说了为什么没判。
+    expect(fragmentAndHaplotype.diagnosis.geneEvidence).toContain('18kb');
+    expect(fragmentAndHaplotype.diagnosis.geneticEvidence.reason).toContain(
+      '报告上以 kb 写的长度（18kb）照常印在护照上',
+    );
+    expect(fragmentAndHaplotype.diagnosis.geneticEvidence.reason).toContain(
+      '本平台不在 kb 和重复单元数之间做换算',
+    );
+    // kb 也不能被当成「基因确诊；D4Z4 重复数 …」里的那个数。
+    expect(fragmentAndHaplotype.diagnosis.laboratoryRepeatCount).toBeNull();
   });
 
   it('未确诊时卡片明说「未经基因确诊」，不留给读者去推断', () => {
@@ -551,6 +568,12 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
    *
    * The 字段来源 row is written off the baseline field, which the upload
    * leaves alone, so it survives the value being superseded.
+   *
+   * AND THE STEP ITSELF IS GONE FROM THIS PROFILE, which is the point
+   * the last review made about it: 「补充基因检测报告」 was asked of a
+   * reader whose genetics report is on file, was read, and put
+   * 甲基化 31%（报告读取）on the same page — and the report is listed in
+   * 最近来源 under it. The report is graded on what it stated instead.
    */
   it('a report carrying 甲基化 still changes the printed value and its bracket', () => {
     const summary = buildClinicalPassportSummary(
@@ -566,9 +589,14 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     expect(summary.diagnosis.methylationValue).toBe('31%');
     expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('report');
 
-    const step = summary.nextSteps.find((item) => item.title === '补充基因检测报告');
-    expect(step?.description).toContain('甲基化（报告读取）');
-    expect(step?.description).not.toContain('甲基化没有可以填的地方');
+    expect(summary.nextSteps.map((item) => item.title)).not.toContain('补充基因检测报告');
+    const everything = [
+      ...summary.nextSteps.map((item) => `${item.title}${item.description}`),
+      summary.diagnosis.geneticEvidence.reason,
+      buildClinicalPassportExport(summary).markdown,
+    ].join('\n');
+    expect(everything).not.toContain('还没有上传过基因报告');
+    expect(everything).not.toContain('上传基因检测报告');
 
     expect(summary.fieldOrigins.map((field) => field.labelZh)).toContain('甲基化');
   });
@@ -963,22 +991,25 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
   });
 
   /**
-   * 报告里只有单倍型的时候，`confirmation` 已经是 `genetic` 了，而印在
-   * 「D4Z4 重复数」那一行上的仍然是后台代填的数字。这两件事必须各说各的。
+   * `confirmation` 是证据分级，不回答「这一行是谁写上去的」。报告足以确诊
+   * 的时候，页面上照样可以有后台代填的值，那一格的括号必须还是它自己的。
    */
-  it('报告只够确诊、数字来自基线时，数字仍标「管理员代填」', () => {
-    // The report carries both required items — a length as an EcoRI
-    // fragment, and the permissive haplotype — and no `d4z4Repeats`
-    // field, so the printed 重复数 is still the marked baseline's.
+  it('报告已经确诊时，没有从报告读到的那些值仍标「管理员代填」', () => {
     const summary = buildClinicalPassportSummary(
       markedGenetics({
-        documents: [geneticReport({ haplotype: '4qA', ecoRIFragment: '18kb' })],
+        documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
       } as never),
     );
 
     expect(summary.diagnosis.confirmation).toBe('genetic');
-    expect(summary.diagnosis.d4z4Repeats).toBe('6');
-    expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('admin_entered');
+    // 报告读到的那个数印出来、标「报告读取」，并且是结论那一句可以带的
+    // 唯一一个数。
+    expect(summary.diagnosis.d4z4Repeats).toBe('4');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('report');
+    expect(summary.diagnosis.laboratoryRepeatCount).toBe('4');
+    // 报告里没有的那一格照旧是后台代填的。
+    expect(summary.diagnosis.methylationValue).toBe('25%');
+    expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('admin_entered');
   });
 
   /**

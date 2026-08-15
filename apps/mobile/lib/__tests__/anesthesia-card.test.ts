@@ -43,6 +43,7 @@ const summary = (over: Record<string, unknown> = {}) =>
     diagnosis: {
       confirmation: 'genetic',
       d4z4Repeats: '4',
+      laboratoryRepeatCount: '4',
       geneticType: 'FSHD1',
       valueOrigins: origins({
         geneticType: valueOrigin('patient', '本人填写'),
@@ -184,11 +185,11 @@ describe('诊断依据不能在卡上被抬高', () => {
   });
 
   /**
-   * `confirmation` 只要上传的报告里有 D4Z4 / 单倍型 / EcoRI 片段之一就
-   * 是 `genetic`，而印在「D4Z4 重复数」上的那个数还可能来自基线 —— 后台
-   * 照着电话里念的报告代填的，或患者自己填的。把它接在 「基因确诊（」
-   * 后面，就等于把实验室的分量借给了一个没人见过报告的数字，而看这张卡
-   * 的麻醉医生手边没有任何东西可以核对。
+   * `confirmation` 是证据分级，不回答「这一行是谁写上去的」，而印在
+   * 「D4Z4 重复数」上的那个数还可能来自基线 —— 后台照着电话里念的报告
+   * 代填的，或患者自己填的。把它接在 「基因确诊（」 后面，就等于把实验室
+   * 的分量借给了一个没人见过报告的数字，而看这张卡的麻醉医生手边没有
+   * 任何东西可以核对。
    */
   it('确诊时括号里只写报告读出来的重复数', () => {
     const fromBaseline = buildAnesthesiaCard(
@@ -196,6 +197,7 @@ describe('诊断依据不能在卡上被抬高', () => {
         diagnosis: {
           confirmation: 'genetic',
           d4z4Repeats: '6',
+          laboratoryRepeatCount: null,
           geneticType: '—',
           valueOrigins: origins({ d4z4Repeats: valueOrigin('admin_entered', '管理员代填') }),
         },
@@ -207,21 +209,54 @@ describe('诊断依据不能在卡上被抬高', () => {
     expect(fromBaseline.patientLines[0]).not.toContain('6');
   });
 
-  it('报告读出来的重复数照常印在括号里', () => {
-    const fromReport = buildAnesthesiaCard(summary(), TODAY);
-    expect(fromReport.patientLines[0]).toBe('诊断：FSHD，基因确诊（D4Z4 重复数 4）');
-  });
-
-  /** 服务端没发来源时，答不上来「这个数是谁的」，就不印这个数。 */
-  it('服务端没给来源时不把重复数印成报告的', () => {
+  /**
+   * 这一句问的是那一格写着什么，不是这一行是从哪来的。
+   *
+   * 这张卡问的曾经是 `valueOrigins.d4z4Repeats.kind === 'report'` ——
+   * 那只说明这一行是从某份文件里读出来的，没读那一格写的是什么。报告
+   * 那一格写着区间的时候，麻醉医生手上这张卡印出来的是「诊断：FSHD，
+   * 基因确诊（D4Z4 重复数 1-10）」。现在那一格由服务端读，卡只印服务端
+   * 读出来的那个数。
+   */
+  it('那一格是区间时，即使标着「报告读取」也不印进括号', () => {
     const card = buildAnesthesiaCard(
       summary({
-        diagnosis: { confirmation: 'genetic', d4z4Repeats: '6', geneticType: '—' },
+        diagnosis: {
+          confirmation: 'genetic',
+          d4z4Repeats: '1-10',
+          laboratoryRepeatCount: null,
+          geneticType: '—',
+          valueOrigins: origins({ d4z4Repeats: valueOrigin('report', '报告读取') }),
+        },
       }),
       TODAY,
     );
 
     expect(card.patientLines[0]).toBe('诊断：FSHD，基因确诊');
+    expect(card.patientLines[0]).not.toContain('1-10');
+  });
+
+  it('报告读出来的重复数照常印在括号里', () => {
+    const fromReport = buildAnesthesiaCard(summary(), TODAY);
+    expect(fromReport.patientLines[0]).toBe('诊断：FSHD，基因确诊（D4Z4 重复数 4）');
+  });
+
+  /** 缓存在微信里的旧包会碰上不发这个字段的服务端。答不上来就不印。 */
+  it('服务端没发这个字段时，不把印出来的那一行当成报告的读数', () => {
+    const card = buildAnesthesiaCard(
+      summary({
+        diagnosis: {
+          confirmation: 'genetic',
+          d4z4Repeats: '6',
+          geneticType: '—',
+          valueOrigins: origins({ d4z4Repeats: valueOrigin('report', '报告读取') }),
+        },
+      }),
+      TODAY,
+    );
+
+    expect(card.patientLines[0]).toBe('诊断：FSHD，基因确诊');
+    expect(card.patientLines[0]).not.toContain('6');
   });
 
   /** 未确诊那一支上这张卡本来就不印重复数，所以「这张卡上没有」是真的。 */

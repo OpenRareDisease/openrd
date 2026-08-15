@@ -127,12 +127,23 @@ describe('isLargeD4Z4Deletion 在改成解析器之后行为一字不变', () =>
       base({ documents: [geneticReport({ d4z4Repeats: raw })] } as never),
     ).nextSteps.some((step) => step.title === '问一次眼底检查');
 
-  it.each([['1-10'], ['≤10'], ['4~7'], ['1 至 10'], [''], ['—'], ['未检出'], ['0'], ['5']])(
-    '%s 不触发',
-    (raw) => {
-      expect(readsAsLargeDeletion(raw)).toBe(false);
-    },
-  );
+  it.each([
+    ['1-10'],
+    ['≤10'],
+    ['4~7'],
+    ['1 至 10'],
+    [''],
+    ['—'],
+    ['未检出'],
+    ['0'],
+    ['5'],
+    // kb 是另一个单位、另一个界限：同一句指南把 kb 的界写成 10–20，
+    // 「3kb」要落进 1–4 只能靠一次本仓库没写过的换算。
+    ['3kb'],
+    ['3 kb'],
+  ])('%s 不触发', (raw) => {
+    expect(readsAsLargeDeletion(raw)).toBe(false);
+  });
   it.each([['1'], ['2'], ['3'], ['4'], ['3个']])('%s 触发', (raw) => {
     expect(readsAsLargeDeletion(raw)).toBe(true);
   });
@@ -221,7 +232,58 @@ describe('分级：方法对但结果不全 —— 这是最常见的一档', ()
   it('文案是鼓励不是训斥', () => {
     const e = evidence({ documents: [geneticReport({ d4z4Repeats: '3' })] } as never);
     expect(e.action).toContain('通常不需要重新采血');
-    expect(e.headline).toContain('方法是对的');
+  });
+
+  /**
+   * 「方法是对的」是在说报告上的检测方法那一格，而这一档最常见的情况恰恰
+   * 是那一格没读出来 —— 本文件对这个字段没有任何按正文猜的兜底，所以
+   * 「未知」是常态而不是边角。同一份产物上还会附着《为什么全外显子 / 全
+   * 基因组测序读不到 FSHD》，那一节印出来的条件正是「方法不确定是能测长度
+   * 的那几种」。两句话不能同时印在一张纸上。
+   */
+  it('没读出检测方法时，分级和标题都不说「方法是对的」', () => {
+    const unknownMethod = evidence({
+      documents: [geneticReport({ d4z4Repeats: '3' })],
+    } as never);
+    expect(unknownMethod.grade).toBe('method_right_incomplete');
+    expect(unknownMethod.gradeLabel).toBe('结果不全');
+    expect(unknownMethod.headline).not.toContain('方法是对的');
+    expect(unknownMethod.reason).not.toContain('能测长度的方法');
+    // 同一份产物上确实附着那一节 —— 这正是不能说「方法是对的」的原因。
+    expect(unknownMethod.testRequest?.sections.map((section) => section.heading)).toContain(
+      '为什么全外显子 / 全基因组测序读不到 FSHD',
+    );
+
+    const namedMethod = evidence({
+      documents: [geneticReport({ d4z4Repeats: '3', geneticTestMethod: 'southern_blot' })],
+    } as never);
+    expect(namedMethod.gradeLabel).toBe('方法对，但结果不全');
+    expect(namedMethod.headline).toContain('方法是对的');
+    expect(namedMethod.testRequest?.sections.map((section) => section.heading)).not.toContain(
+      '为什么全外显子 / 全基因组测序读不到 FSHD',
+    );
+  });
+
+  /**
+   * 方法不适用是要花钱的一句话：它等于告诉患者「你做的那次是错的检查」。
+   * 报告上写着一个 D4Z4 长度的时候，不管方法那一格 OCR 成了什么，这一句
+   * 都不发 —— kb 在这里不是被「判」了，是它挡下了一句本平台可能说错的话。
+   */
+  it('报告上有长度时，即使方法那一格写着短读长测序也不说「方法不适用」', () => {
+    const e = evidence({
+      documents: [
+        geneticReport({ geneticTestMethod: 'short_read_sequencing', ecoRIFragment: '18kb' }),
+      ],
+    } as never);
+    expect(e.grade).not.toBe('method_not_applicable');
+    expect(e.reason).not.toContain('测不到 FSHD 的位点');
+  });
+
+  it('两项都没读出确定结果、方法也没读出来时，不替报告说它测了什么', () => {
+    const e = evidence({ documents: [geneticReport({ d4z4Repeats: '1-10' })] } as never);
+    expect(e.headline).toBe('这两项都还没有确定的结果');
+    expect(e.reason).toContain('报告里也没有能明确认出检测方法的字样');
+    expect(e.reason).not.toContain('报告用的是能测长度的方法');
   });
 
   it('会生成一条 clinical 待办，而不是让人再去传一次文件', () => {
@@ -1260,19 +1322,29 @@ describe('长度这一项也要读出来才算读到', () => {
     expect(e.reason).not.toContain('未检出');
   });
 
-  it('重复数是区间、EcoRI 片段是确切值时，印出来的是那个确切值', () => {
-    // 「有没有长度」和「长度是多少」出自同一个表达式，所以印在依据里的
-    // 不会是另一项的读数。
-    const e = buildClinicalPassportSummary(
+  /**
+   * 转诊资料上曾经印出「面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4
+   * 重复数 1-10」—— 确诊是 EcoRI 片段挣来的，而接在那句后面的数字是重复数
+   * 那一格里的区间。kb 不参与确诊之后，这一行根本到不了确诊。
+   */
+  it('重复数是区间、EcoRI 片段是确切值时，两项都不成立', () => {
+    const summary = buildClinicalPassportSummary(
       base({
         documents: [
           geneticReport({ d4z4Repeats: '1-10', ecoRIFragment: '18kb', haplotype: '4qA' }),
         ],
       } as never),
-    ).diagnosis.geneticEvidence;
-    expect(e.grade).toBe('trial_ready');
-    expect(e.reason).toContain('D4Z4 长度 18kb');
-    expect(e.reason).not.toContain('1-10');
+    );
+    const e = summary.diagnosis.geneticEvidence;
+    expect(e.grade).toBe('method_right_incomplete');
+    expect(summary.diagnosis.confirmation).not.toBe('genetic');
+    // 两个数都还印在页面上，只是没有一个被判过。
+    expect(summary.diagnosis.d4z4Repeats).toBe('1-10');
+    expect(summary.diagnosis.geneEvidence).toContain('18kb');
+    expect(summary.diagnosis.laboratoryRepeatCount).toBeNull();
+    expect(e.reason).toContain('报告上以 kb 写的长度（18kb）照常印在护照上');
+    // 区间不会被当成读数引用。
+    expect(e.headline).not.toContain('1-10');
   });
 
   it('报告只写了探针清单 4qA/4qB 时，不算基因确诊', () => {
@@ -1342,8 +1414,13 @@ describe('长度说的是不是缩短 —— 大于 10 个重复单元', () => {
     expect(evidence.reason).toContain('SMCHD1');
     expect(evidence.reason).toContain('FSHD2');
     // 「结果不全」在这一档仍然成立：指南在这个数上要的甲基化分析与
-    // SMCHD1 测序，本平台从来没有从任何一份报告上读到过 SMCHD1。
-    expect(evidence.gradeLabel).toBe('方法对，但结果不全');
+    // SMCHD1 测序，本平台从来没有从任何一份报告上读到过 SMCHD1。这份
+    // 报告没写检测方法，所以那半句不印。
+    expect(evidence.gradeLabel).toBe('结果不全');
+    expect(
+      summaryFor({ d4z4Repeats: '30', haplotype: '4qA', geneticTestMethod: 'southern_blot' })
+        .diagnosis.geneticEvidence.gradeLabel,
+    ).toBe('方法对，但结果不全');
     expect(evidence.testRequest?.sections.map((section) => section.heading)).not.toContain(
       '能测出 FSHD1 的方法',
     );
@@ -1375,16 +1452,169 @@ describe('长度说的是不是缩短 —— 大于 10 个重复单元', () => {
     expect(evidence.reason).not.toContain('SMCHD1');
   });
 
-  it('kb 不按重复单元的界判 —— 本仓库没有写过 kb 的界，也不在这里换算', () => {
-    // `isLargeD4Z4Deletion` 把「10–20 kb or 1–4 repeats」原样引下来，并
-    // 写明不做换算；`isD4Z4GreyZone` 同样在 unit === 'kb' 上让开。确定的
-    // EcoRI 片段仍然只是「有这一项」。
-    expect(summaryFor({ d4z4Repeats: '18kb', haplotype: '4qA' }).diagnosis.confirmation).toBe(
-      'genetic',
+  /**
+   * 以 kb 写的长度只印不判。
+   *
+   * `isLargeD4Z4Deletion` 把「10–20 kb or 1–4 repeats」原样引下来，并写明
+   * 不做换算；本仓库另一处写的是「单个 D4Z4 单元长 3.3 kb」，两句合不成
+   * 一个换算，所以推不出能用的 kb 界限。既然没有界限，kb 就不能撑起确诊、
+   * 分级、灰区或任何一条建议 —— 它照常印在页面上，页面再说明为什么这个数
+   * 没有被判。
+   */
+  it('kb 不按重复单元的界判 —— 只印，不判，并且说明为什么', () => {
+    // 标注而不是让它推导：两个键不相交的对象字面量会被拓宽成带
+    // `?: undefined` 成员的联合，`Record<string, string>` 不收（TS2345）。
+    // esbuild 不做类型检查，所以这一条只有 `npm run typecheck` 会红。
+    const halves: Record<string, string>[] = [
+      { d4z4Repeats: '18kb', haplotype: '4qA' },
+      { ecoRIFragment: '38', haplotype: '4qA' },
+    ];
+    for (const fields of halves) {
+      const summary = summaryFor(fields);
+      const label = Object.keys(fields).join(',');
+      expect(summary.diagnosis.confirmation, label).not.toBe('genetic');
+      expect(summary.diagnosis.geneticEvidence.grade, label).toBe('method_right_incomplete');
+      expect(summary.diagnosis.laboratoryRepeatCount, label).toBeNull();
+      expect(summary.diagnosis.geneticEvidence.reason, label).toContain(
+        '本平台不在 kb 和重复单元数之间做换算',
+      );
+    }
+    // 数本身照旧印在页面上。
+    expect(summaryFor({ d4z4Repeats: '18kb', haplotype: '4qA' }).diagnosis.d4z4Repeats).toBe(
+      '18kb',
     );
-    expect(summaryFor({ ecoRIFragment: '38', haplotype: '4qA' }).diagnosis.confirmation).toBe(
-      'genetic',
+    expect(summaryFor({ ecoRIFragment: '38', haplotype: '4qA' }).diagnosis.geneEvidence).toContain(
+      '38',
     );
+  });
+});
+
+/**
+ * 0 个重复单元：读到了一个数，而这个数说不通。
+ *
+ * FSHD1 的等位基因不可能是 0 个重复单元，所以读到 0 更可能是这一格没被
+ * 读对、或者这一格说的根本不是重复单元数。它既不是确诊也不是排除：数照
+ * 印，页面上写明本平台读不通它，并请医生看原件。
+ */
+describe('重复数读到 0', () => {
+  const summaryFor = (fields: Record<string, string>) =>
+    buildClinicalPassportSummary(
+      base({ geneticMutation: 'FSHD1', documents: [geneticReport(fields)] } as never),
+    );
+
+  it('不算确诊 —— 0 通不过「说的是缩短」那一关', () => {
+    const summary = summaryFor({ d4z4Repeats: '0', haplotype: '4qA' });
+    expect(summary.diagnosis.confirmation).not.toBe('genetic');
+    expect(summary.diagnosis.geneticEvidence.grade).not.toBe('trial_ready');
+    expect(summary.diagnosis.ready).toBe(false);
+    expect(summary.diagnosis.laboratoryRepeatCount).toBeNull();
+  });
+
+  it('也不算排除 —— 没有一句说这份报告否定了 FSHD', () => {
+    const summary = summaryFor({ d4z4Repeats: '0', haplotype: '4qA' });
+    const evidence = summary.diagnosis.geneticEvidence;
+    const everything = `${evidence.headline}${evidence.reason}${evidence.action}\n${
+      buildClinicalPassportExport(summary).markdown
+    }`;
+    expect(everything).toContain('既不拿它当确诊依据，也不拿它当排除依据');
+    expect(everything).not.toContain('可用于入组');
+    // 「这份报告排除了 / 不支持 FSHD」这类话一句都没有 —— 4qB 那一档才
+    // 说得出「不支持这条致病机制」，0 这一档说不出。
+    expect(everything).not.toContain('不支持这条致病机制');
+    expect(everything).not.toContain('不是允许型');
+  });
+
+  it('数照印，并写明本平台读不通它、请医生看原件', () => {
+    const summary = summaryFor({ d4z4Repeats: '0', haplotype: '4qA' });
+    const evidence = summary.diagnosis.geneticEvidence;
+    expect(summary.diagnosis.d4z4Repeats).toBe('0');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+    expect(evidence.headline).toBe('报告读到的 D4Z4 重复单元数是「0」，本平台读不通这个数');
+    expect(evidence.action).toContain('把报告原件带去门诊，请医生看一下这一格写的是什么');
+    // 单倍型已经读到了，所以不会再说它「还没有确定的结果」。
+    expect(evidence.reason).not.toContain('4qA / 4qB 单倍型这一项');
+    expect(summary.nextSteps.map((step) => step.title)).toContain('带着报告原件问一次这个重复数');
+  });
+
+  it('单倍型也没读到时，那一项照旧点出来', () => {
+    const evidence = summaryFor({ d4z4Repeats: '0' }).diagnosis.geneticEvidence;
+    expect(evidence.reason).toContain('4qA / 4qB 单倍型这一项报告上也还没有确定的结果');
+  });
+
+  it('灰区、眼底那几条按重复数分组的建议一条都不套', () => {
+    const summary = summaryFor({ d4z4Repeats: '0', haplotype: '4qA' });
+    expect(summary.diagnosis.geneticEvidence.record.greyZone).toBe(false);
+    expect(summary.diagnosis.geneticEvidence.greyZoneNote).toBeNull();
+    expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+  });
+});
+
+/**
+ * 报告在手上、读过了、只是它没写这两项 —— 这也不是「还没有上传过基因
+ * 报告」。
+ *
+ * 分级以前挂在「两项之一在报告上」这个析取上，所以一份只解析出甲基化的
+ * 基因报告会掉到患者自填的那一级，出来的是 未知：依据开头写着「还没有
+ * 上传过基因报告」，待办叫人「补充基因检测报告」—— 而同一页上印着
+ * 甲基化 32%（报告读取），最近来源里还列着这份报告本身。
+ */
+describe('只解析出甲基化的基因报告', () => {
+  const summary = () =>
+    buildClinicalPassportSummary(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport({ methylationValue: '32%' })],
+      } as never),
+    );
+
+  it('页面上确实印着从这份报告读出来的那一格，报告本身也在最近来源里', () => {
+    const s = summary();
+    expect(s.diagnosis.methylationValue).toBe('32%');
+    expect(s.diagnosis.valueOrigins.methylationValue.labelZh).toBe('报告读取');
+    expect(s.timeline.some((item) => item.tag === '报告')).toBe(true);
+  });
+
+  it('不再说「还没有上传过基因报告」，也不再叫人去补传一份', () => {
+    const s = summary();
+    const everything = [
+      s.diagnosis.geneticEvidence.headline,
+      s.diagnosis.geneticEvidence.reason,
+      s.diagnosis.geneticEvidence.action,
+      ...s.nextSteps.map((step) => `${step.title}${step.description}`),
+      buildClinicalPassportExport(s).markdown,
+    ].join('\n');
+
+    expect(s.diagnosis.geneticEvidence.grade).toBe('method_right_incomplete');
+    expect(everything).not.toContain('还没有上传过基因报告');
+    expect(everything).not.toContain('上传基因检测报告');
+    expect(s.nextSteps.map((step) => step.title)).not.toContain('补充基因检测报告');
+    expect(s.nextSteps.map((step) => step.title)).not.toContain('补充基因或诊断依据');
+  });
+
+  it('患者自己答过「还没测过」也一样 —— 报告读到的东西压过自填的那一级', () => {
+    const s = buildClinicalPassportSummary(
+      base({
+        baseline: withLadder('untested_no_plan'),
+        documents: [geneticReport({ methylationValue: '32%' })],
+      } as never),
+    );
+    expect(s.diagnosis.geneticEvidence.grade).toBe('method_right_incomplete');
+    expect(s.diagnosis.geneticEvidence.reason).not.toContain('还没有上传过基因报告');
+  });
+
+  /**
+   * 解析还没落地的那一份仍然留在 未知。`pickGeneticEvidenceDocument` 会
+   * 在没有别的文件时挑一份读不出内容的报告，这时页面上一格读数都没有，
+   * 而「报告上这两项都还没有确定的结果」是在替一份没人打开过的报告说话。
+   */
+  it('解析没落地的报告不进这一档 —— 本平台没读过，就不替它说话', () => {
+    const s = buildClinicalPassportSummary(
+      base({
+        documents: [{ ...geneticReport({}), status: 'processing', ocrPayload: null }],
+      } as never),
+    );
+    expect(s.diagnosis.geneticEvidence.grade).toBe('unknown');
+    expect(s.diagnosis.geneticEvidence.reason).not.toContain('报告上这两项都还没有确定的结果');
   });
 });
 
@@ -1410,27 +1640,32 @@ describe('长度说的是不是缩短 —— 大于 10 个重复单元', () => {
  * rendered and every surface a human reads is read off it.
  */
 describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不出', () => {
-  /** 长度这一格。`isSize` 是「这一项在报告上」，`contraction` 是「这个数
-   *  说的是缩短」—— 两个不同的问题，混成一个的时候 30 个重复单元拿到了
-   *  基因确诊。 */
+  /** 重复数这一格。`isCount` 是「这一格给出了本平台可以据以判断的重复
+   *  数」，`contraction` 是「这个数说的是缩短」—— 两个不同的问题，混成一个
+   *  的时候 30 个重复单元拿到了基因确诊。以 kb 写的和 0 都不是 `isCount`：
+   *  前者没有可用的界限，后者不是 FSHD1 会有的等位基因。 */
   const D4Z4_CELLS = [
-    { name: '空着', value: null, isSize: false, contraction: false },
-    { name: '确定的重复数', value: '3', isSize: true, contraction: true },
-    { name: '灰区里的重复数', value: '8', isSize: true, contraction: true },
-    { name: '大于 10 的重复数', value: '30', isSize: true, contraction: false },
-    { name: '区间', value: '1-10', isSize: false, contraction: false },
-    { name: '否定句', value: '未检出', isSize: false, contraction: false },
-    { name: '读不出的字', value: '见附页', isSize: false, contraction: false },
+    { name: '空着', value: null, isCount: false, contraction: false },
+    { name: '确定的重复数', value: '3', isCount: true, contraction: true },
+    { name: '灰区里的重复数', value: '8', isCount: true, contraction: true },
+    { name: '大于 10 的重复数', value: '30', isCount: true, contraction: false },
+    { name: '零', value: '0', isCount: false, contraction: false },
+    { name: '以 kb 写的长度', value: '18kb', isCount: false, contraction: false },
+    { name: '区间', value: '1-10', isCount: false, contraction: false },
+    { name: '否定句', value: '未检出', isCount: false, contraction: false },
+    { name: '读不出的字', value: '见附页', isCount: false, contraction: false },
   ] as const;
 
-  /** EcoRI 片段一律是 kb。指南给的边界写在重复单元上，本仓库没有任何一处
-   *  写过 kb 的边界（`isLargeD4Z4Deletion` 是把 10–20 kb 原样引下来的，
-   *  不是换算出来的），所以确定的片段长度只当作「有这一项」。 */
+  /** EcoRI 片段一律是 kb，而指南给的界限写在重复单元上：本仓库引到的两句
+   *  kb —— 「单个 D4Z4 单元长 3.3 kb」和指南自己的「10–20 kb or 1–4
+   *  repeats」—— 合不成一个换算，所以推不出能用的 kb 界限。这一格照印，
+   *  但不参与确诊、分级、灰区或任何一条建议，所以这里没有 `isSize`
+   *  可言。 */
   const ECORI_CELLS = [
-    { name: '空着', value: null, isSize: false, contraction: false },
-    { name: '确定的片段长度', value: '18kb', isSize: true, contraction: true },
-    { name: '否定句', value: '未检出 EcoRI 片段', isSize: false, contraction: false },
-    { name: '读不出的字', value: '见附页', isSize: false, contraction: false },
+    { name: '空着', value: null },
+    { name: '确定的片段长度', value: '18kb' },
+    { name: '否定句', value: '未检出 EcoRI 片段' },
+    { name: '读不出的字', value: '见附页' },
   ] as const;
 
   const HAPLOTYPE_CELLS = [
@@ -1457,20 +1692,32 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
         );
         return {
           label: `长度=${d4z4.name} / EcoRI=${ecoRI.name} / 单倍型=${haplotype.name}`,
-          hasSize: d4z4.isSize || ecoRI.isSize,
-          /** 分级读的是哪一格：重复数这一格只要有确定值就是它，否则才轮到
-           *  EcoRI 片段 —— `determinateSize` 就是这个顺序。 */
-          saysContraction: d4z4.isSize ? d4z4.contraction : ecoRI.contraction,
-          countAboveRange: d4z4.isSize && !d4z4.contraction,
+          /** 分级读的只有重复数这一格 —— `determinateRepeatCount`。EcoRI
+           *  片段是 kb，撑不起任何判断。 */
+          saysContraction: d4z4.isCount && d4z4.contraction,
+          countAboveRange: d4z4.isCount && !d4z4.contraction,
+          /** 0 个重复单元不是 FSHD1 会有的等位基因：既不确诊也不排除，
+           *  单独一句话交给医生看原件。 */
+          countReadsZero: d4z4.value === '0',
           /** 灰区读的也只是重复数这一格 —— `isD4Z4GreyZone` 的区间是以
            *  重复单元写的，EcoRI 片段是 kb。 */
           greyZoneCount: d4z4.value === '8',
           verdict: haplotype.verdict,
-          /** The cell strings this report did NOT state a result in.
-           *  Nothing written in a laboratory's voice may quote one. */
+          /**
+           * The cell strings this report did NOT state a result in.
+           * Nothing written in a laboratory's voice may quote one.
+           *
+           * A kb length and a 0 are NOT in here: this platform did read
+           * a number out of those cells, and each has a sentence that
+           * names it in order to say what did not follow from it — a
+           * number on the page that changed nothing is exactly what a
+           * reader stops on.
+           */
           unreadCells: [
-            ...(d4z4.isSize || !d4z4.value ? [] : [d4z4.value]),
-            ...(ecoRI.isSize || !ecoRI.value ? [] : [ecoRI.value]),
+            ...(d4z4.value && !d4z4.isCount && d4z4.value !== '0' && d4z4.value !== '18kb'
+              ? [d4z4.value]
+              : []),
+            ...(ecoRI.value && ecoRI.value !== '18kb' ? [ecoRI.value] : []),
             ...(haplotype.verdict === 'none' && haplotype.value ? [haplotype.value] : []),
           ],
           summary,
@@ -1615,7 +1862,9 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
       // 重复数大于 10 的那些行两项都在，没有哪一项要去要 —— 那一条待办
       // 问的是这个数怎么解读，用的是 4qB 那一条已有的说法。
       expect(titles, row.label).toContain(
-        row.countAboveRange ? '带着报告原件问一次这个重复数' : '问一下报告里缺的那一项',
+        row.countAboveRange || row.countReadsZero
+          ? '带着报告原件问一次这个重复数'
+          : '问一下报告里缺的那一项',
       );
       expect(titles, row.label).not.toContain('补充基因检测报告');
       expect(titles, row.label).not.toContain('补充基因或诊断依据');
@@ -1645,8 +1894,9 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
       (item) => item.summary.diagnosis.geneticEvidence.grade === 'method_right_incomplete',
     )) {
       const evidence = row.summary.diagnosis.geneticEvidence;
-      // 大于 10 的那一档两项都读到了，说的是另一件事。
-      if (row.countAboveRange) continue;
+      // 大于 10 的那一档两项都读到了，0 那一档是读到了一个读不通的数，
+      // 两者说的都是另一件事。
+      if (row.countAboveRange || row.countReadsZero) continue;
       expect(`${evidence.headline}${evidence.reason}`, row.label).toContain('还没有确定的结果');
     }
   });

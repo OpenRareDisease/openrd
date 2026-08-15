@@ -361,7 +361,10 @@ export const readReportReadRepeatCount = (
  *
  *  - the guideline supplies both forms of the threshold in one
  *    sentence — 「contracted D4Z4 allele of 10–20 kb or 1–4 repeats」 —
- *    so nothing here converts kb to repeats on its own authority;
+ *    so nothing here converts kb to repeats on its own authority, and
+ *    a cell that STATES kb is refused outright: 1–4 is the repeat form,
+ *    the kb form is 10–20, and the only way 「3kb」 reaches this range is
+ *    a conversion nobody wrote;
  *  - the input is OCR'd off a genetics report and arrives as free
  *    text (「3」,「3个」,「1-10」,「≤10」). A range or a comparison
  *    operator means the number is not known, and this gates a
@@ -394,6 +397,10 @@ export const isLargeD4Z4Deletion = (count: ReportReadRepeatCount | null): boolea
   )
     return false;
   if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
+  // A stated kb is a different measurement with a different threshold —
+  // the API's copy refuses it on `unit === 'kb'`, out of the same
+  // `parseD4Z4Reading` pattern.
+  if (/kb|千碱基|kilobase/i.test(text)) return false;
   const numbers = text.match(/\d+(?:\.\d+)?/g);
   if (!numbers || numbers.length !== 1) return false;
   const repeats = Number(numbers[0]);

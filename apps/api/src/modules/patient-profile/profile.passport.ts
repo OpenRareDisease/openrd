@@ -377,6 +377,22 @@ export interface PassportDiagnosisDTO {
   d4z4Repeats: string;
   methylationValue: string;
   diagnosisDate: string;
+  /**
+   * THE D4Z4 REPEAT COUNT THE LABORATORY'S OWN REPORT STATES, as it
+   * printed it, or null. NOT the printed `d4z4Repeats` row, which
+   * resolves from the archive when no document supplied one and shows
+   * whatever the cell held when one did.
+   *
+   * For the artefacts that set a number after 「基因确诊」 — the referral
+   * pack's 结论 and the anaesthesia card's diagnosis line. Both used to
+   * gate that number on `valueOrigins.d4z4Repeats`, which says the row
+   * came off a document and says nothing about what the cell reads, so
+   * a range or a kb length was printed as the confirmed count. Sent
+   * rather than re-derived per surface because the card is a bundle
+   * WeChat caches for days: a rule that lives only in this file is a
+   * rule a handset cannot apply.
+   */
+  laboratoryRepeatCount: string | null;
   /** Where each of the four values above came from. A `Record` and not
    *  four optional fields: adding a printed row to the block should
    *  fail the build until it has an origin. */
@@ -1668,18 +1684,24 @@ type ReportReadD4Z4 = D4Z4Reading & { readonly [REPORT_READ]: true };
  * carries: this function's answer IS an AAN Level B recommendation, so
  * its input has to be a report's own reading by construction.
  *
- * NOTE ON `unit`: this deliberately ignores it, so that the behaviour is
- * bit-for-bit what it was before `parseD4Z4Reading` existed. There is a
- * hand-kept copy of this function in the mobile bundle
+ * A STATED kb IS REFUSED. 1–4 is the repeat form of the threshold; the
+ * kb form the same sentence gives is 10–20, so a cell reading 「3kb」 is
+ * not a large deletion under either — it is a number in the wrong unit,
+ * and the only way it could reach this range is a conversion nobody in
+ * this repo wrote. The two kb statements the repo does carry — 「单个
+ * D4Z4 单元长 3.3 kb」 and the guideline's own pairing — do not agree as
+ * one, so there is nothing to convert with.
+ *
+ * There is a hand-kept copy of this function in the mobile bundle
  * (apps/mobile/lib/surveillance-schedule.ts) that cannot import from the
  * API package and is checked against the same table of cases; nothing in
  * the build links the two, so a semantic change here silently makes the
  * app and the passport disagree about whether to send someone to an
- * ophthalmologist. Requiring `unit !== 'kb'` would be defensible — 1–4
- * kb is not a viable EcoRI fragment — but it belongs in one change that
- * touches both copies, not this one.
+ * ophthalmologist. The kb line went onto both copies and into both
+ * tables in one change, which is the condition this note used to set.
  */
 const isLargeD4Z4Deletion = (reading: ReportReadD4Z4 | null): boolean => {
+  if (reading?.unit === 'kb') return false;
   const value = reading?.value ?? null;
   // 0 repeats is not a viable FSHD1 allele; reading one means the
   // extraction is wrong, not that the deletion is enormous.
@@ -1911,13 +1933,12 @@ const SOURCE_XIA_2024 =
 const CELL_REPORTS_ABSENCE =
   /未检出|未检测|未检到|未见|未测出|未测到|未获|阴性|not\s*detected|undetected|negative/i;
 
-/** Exported for the baseline autofill, which asserts 「是否确诊 FSHD」
- *  off these same cells and was asserting it off a raw non-empty check
- *  — the predicate this file's own gates were moved off. One predicate
- *  and not a second copy in that module: what a cell has to say is one
- *  question, and the passport's answer and the archive's have to be the
- *  same answer. */
-export const reportsAbsence = (raw: string | null | undefined): boolean =>
+/** One predicate, applied by the cell readers below. It used to be
+ *  exported for the baseline autofill, which asserted 「是否确诊 FSHD」
+ *  off these same cells; that field is the patient's own answer and the
+ *  autofill no longer writes it, so nothing outside this file asks the
+ *  question any more. */
+const reportsAbsence = (raw: string | null | undefined): boolean =>
   typeof raw === 'string' && CELL_REPORTS_ABSENCE.test(raw);
 
 /** 4qA / 4qB, read strictly, and read for what the cell SAYS. See
@@ -2047,37 +2068,116 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
 };
 
 /**
- * IS A LENGTH ON THE REPORT AT ALL, AS THE REPORT PRINTED IT, or null.
- * A definite repeat count, or a definite EcoRI fragment length. A range
- * is a real finding but not a size.
+ * THE D4Z4 REPEAT COUNT THE LABORATORY'S REPORT STATES, as the report
+ * printed it, or null. The only length reading anything in this file
+ * may reason from.
  *
- * The question 「is this report missing an item」 asks — the same one
- * `haplotypeDetermined` answers for the other item, and the one the
- * 《检查申请说明》 and the printed 依据 need. What the number MEANS is
- * `countAboveFshd1Range` below, and the confirmation conjunction asks
- * that one too.
+ * IT IS THE REPEAT-COUNT CELL AND NOTHING ELSE. This used to answer
+ * 「is a length on the report at all」 and fell back to the EcoRI
+ * fragment, so a kb measurement earned the confirmation for a report
+ * whose repeat-count cell said 「1-10」 — and the referral pack then set
+ * that range after 「基因确诊；D4Z4 重复数」. The boundary this platform
+ * quotes is written in repeat units, and the two kb statements the
+ * repo carries — 「单个 D4Z4 单元长 3.3 kb」 and the guideline's own
+ * 「10–20 kb or 1–4 repeats」 — do not agree as a conversion, so there
+ * is no kb threshold to derive. A kb length is DISPLAYED, with its
+ * origin bracket, and judged by nothing: `KB_LENGTH_NOT_JUDGED_ZH` is
+ * the sentence that says so on the page, because a number that changed
+ * nothing is a number a reader stops to wonder about.
  *
- * Returns the string rather than a boolean so that 「there is a size」
- * and 「the size is X」 come out of one expression. They used to be two:
- * a boolean here and `sizeText = d4z4?.raw || ecoRIFragment` beside the
- * copy, which disagree whenever the report carries both — a range in
- * `d4z4Repeats` and a fragment in `ecoRIFragment` printed 「D4Z4 长度
- * 1-10」 under a grade the fragment had earned.
+ * ZERO IS NOT A COUNT EITHER. 0 repeat units is not a viable FSHD1
+ * allele, so reading one means the cell was misread or is about
+ * something else — the same reason `isLargeD4Z4Deletion` has refused it
+ * since it was written. It is neither a confirmation nor an exclusion:
+ * `zeroRepeatCount` below carries it back out for the copy that prints
+ * it and asks a clinician to look at the original.
  *
- * THE FRAGMENT IS PARSED, NOT MERELY COUNTED AS PRESENT. `Boolean(...)`
- * accepted whatever string the OCR put in that field: rendered, a
- * report whose `ecoRIFragment` read 「未检出」 came out 可用于入组 with
- * 「D4Z4 长度 未检出，单倍型 4qA」 as its 依据 — a sentence handed to a
- * neurologist saying the array was both unmeasurable and measured. Same
- * reader as the repeat count — `readSizeCell`, which is where a
- * negation carrying a number of its own is refused — so 「未检出」,
- * 「>50kb」 and a blank are all what they are.
+ * Returns the string rather than a boolean so that 「there is a count」
+ * and 「the count is X」 come out of one expression. They used to be
+ * two: a boolean here and `sizeText = d4z4?.raw || ecoRIFragment`
+ * beside the copy, which disagree whenever the report carries both.
+ *
+ * THE CELL IS PARSED, NOT MERELY COUNTED AS PRESENT. `readSizeCell` is
+ * where a negation carrying a number of its own is refused, so
+ * 「未检出」, 「>50kb」 and a blank are all what they are.
  */
-const determinateSize = (record: LaboratoryGeneticRecord): string | null => {
-  if (record.d4z4 && record.d4z4.value !== null) return record.d4z4.raw;
-  const fragment = readSizeCell(record.ecoRIFragment);
-  return fragment && fragment.value !== null ? fragment.raw : null;
+const determinateRepeatCount = (record: LaboratoryGeneticRecord): string | null => {
+  const count = record.d4z4;
+  if (count === null || count.value === null) return null;
+  if (count.unit === 'kb' || count.value === 0) return null;
+  return count.raw;
 };
+
+/**
+ * DID THE REPORT STATE A LENGTH AT ALL, in either cell and in any unit.
+ *
+ * THE ONE GATE THAT MAY ASK THIS, and it is asked to WITHHOLD a claim
+ * rather than to earn one. 方法不适用 tells a patient their test was the
+ * wrong test — a sentence that sends somebody to self-fund a second one
+ * — and `gradeGeneticEvidence` reaches it off a single parsed method
+ * string read from a photograph of a thermal print. A report that
+ * states a D4Z4 length is not a report that measured nothing at this
+ * locus, whatever its method field says, so the length blocks that
+ * sentence.
+ *
+ * It is not a threshold and it is not a grade this report earns:
+ * `determinateRepeatCount` is still the only reading that earns
+ * anything, and 「no safe kb boundary can be derived」 is about deriving,
+ * which nothing here does. A kb number that stops this platform from
+ * making a costly claim has not been judged.
+ */
+const reportStatesALength = (record: LaboratoryGeneticRecord): boolean => {
+  if (record.d4z4 && record.d4z4.value !== null) return true;
+  const fragment = readSizeCell(record.ecoRIFragment);
+  return fragment !== null && fragment.value !== null;
+};
+
+/**
+ * A REPEAT-COUNT CELL READING ZERO, as the report printed it, or null.
+ *
+ * Split out of `determinateRepeatCount` rather than folded into 「no
+ * count」, because the two owe the reader different sentences: a blank
+ * cell is a report that did not state the item, and a 0 is a report
+ * this platform read a number off and cannot make sense of. It is not
+ * a confirmation and it is not an exclusion — 0 units is not an FSHD1
+ * allele at all, so what it says about the patient is nothing and what
+ * it says about the cell is that somebody should look at the original.
+ */
+const zeroRepeatCount = (record: LaboratoryGeneticRecord): string | null => {
+  const count = record.d4z4;
+  return count !== null && count.value === 0 && count.unit !== 'kb' ? count.raw : null;
+};
+
+/**
+ * THE LENGTHS ON THIS REPORT THAT ARE PRINTED AND NOT JUDGED — a
+ * repeat-count cell the report gave in kb, and the EcoRI fragment,
+ * which is a kb measurement by definition (`ecoriFragmentKb` is the
+ * key the parser writes it under).
+ *
+ * Collected so one sentence can name them. See
+ * `determinateRepeatCount` for why no threshold is derived from either.
+ */
+const kbLengthsNotJudged = (record: LaboratoryGeneticRecord): string[] => {
+  const lengths: string[] = [];
+  if (record.d4z4 && record.d4z4.value !== null && record.d4z4.unit === 'kb') {
+    lengths.push(record.d4z4.raw);
+  }
+  const fragment = readSizeCell(record.ecoRIFragment);
+  if (fragment && fragment.value !== null) lengths.push(fragment.raw);
+  return lengths;
+};
+
+/**
+ * WHY A LENGTH ON THE PAGE CHANGED NOTHING.
+ *
+ * The passport prints every cell the report stated, so a reader holding
+ * a report that says 「EcoRI 片段 18kb」 sees the number and then reads a
+ * grade that does not account for it. Without this sentence the honest
+ * answer — this platform has no kb boundary to compare it against —
+ * looks like an omission.
+ */
+const KB_LENGTH_NOT_JUDGED_ZH = (lengths: readonly string[]) =>
+  `报告上以 kb 写的长度（${lengths.join('、')}）照常印在护照上，但它不参与上面这段判断：指南给出的界限是按重复单元数写的，本平台不在 kb 和重复单元数之间做换算。`;
 
 /** The repeat count this platform's own statement of the report
  *  requirements stops describing FSHD1 above. `WHAT_THE_REPORT_MUST_SAY`
@@ -2087,12 +2187,12 @@ const determinateSize = (record: LaboratoryGeneticRecord): string | null => {
 const FSHD1_MAX_REPEAT_UNITS = 10;
 
 /**
- * DOES THE LENGTH SAY A CONTRACTION — the different question, which
- * `determinateSize` was standing in for on the confirmation
+ * DOES THE COUNT SAY A CONTRACTION — the different question, which
+ * `determinateRepeatCount` was standing in for on the confirmation
  * conjunction.
  *
  * FSHD1 is a CONTRACTED D4Z4 array on a permissive 4qA allele.
- * `determinateSize` asks only whether the cell parses to one
+ * `determinateRepeatCount` asks only whether the cell parses to one
  * unambiguous number, so a count that says the array is not contracted
  * satisfied it exactly as a contraction did. Rendered: a report reading
  * D4Z4 30 / 4qA came out 基因确诊 / 可用于入组 under 「这份报告已经包含
@@ -2120,9 +2220,10 @@ const FSHD1_MAX_REPEAT_UNITS = 10;
  * no kb boundary anywhere — `isLargeD4Z4Deletion` QUOTES 「10–20 kb or
  * 1–4 repeats」 rather than converting, for the reason its note gives.
  * Converting here would put a threshold nobody wrote in front of a
- * clinician, so a cell parsed as kb, and the EcoRI fragment
- * `determinateSize` falls back to, are left as the determinate lengths
- * they are. `isD4Z4GreyZone` draws the same line on `unit !== 'kb'`.
+ * clinician, so a cell parsed as kb is left as the length it is and
+ * `KB_LENGTH_NOT_JUDGED_ZH` tells the reader why nothing came of it.
+ * `isD4Z4GreyZone` and `determinateRepeatCount` draw the same line on
+ * `unit !== 'kb'`.
  */
 const countAboveFshd1Range = (record: LaboratoryGeneticRecord): boolean => {
   const count = record.d4z4;
@@ -2168,6 +2269,29 @@ const haplotypeNonPermissive = (record: LaboratoryGeneticRecord) =>
   record.permissiveHaplotype === false;
 
 /**
+ * DID THIS PLATFORM READ ANYTHING AT ALL OFF THE LABORATORY'S REPORT.
+ *
+ * Every value the record can hold, and the 检测方法 with it — not the
+ * two guideline items, which is the narrower question the grade itself
+ * asks. The two came apart on a report that parsed to a 甲基化 alone:
+ * neither item was on it, so the grader fell through to the patient's
+ * own ladder and the page denied an upload it was printing a reading
+ * from.
+ *
+ * False means the payload is empty, which for a picked laboratory
+ * report means its parse has not landed — `processing`, `parse_failed`,
+ * or a legacy row. Nothing in the record can be graded then, and
+ * nothing may be said about what the report states either.
+ */
+const laboratoryStatedSomething = (record: LaboratoryGeneticRecord) =>
+  record.geneticType !== null ||
+  record.haplotype !== null ||
+  record.ecoRIFragment !== null ||
+  record.d4z4 !== null ||
+  record.methylationValue !== null ||
+  record.method !== 'unknown';
+
+/**
  * The four-level grade, plus 未知.
  *
  * The rules only ever move off 未知 on something explicit, and both
@@ -2192,6 +2316,22 @@ const haplotypeNonPermissive = (record: LaboratoryGeneticRecord) =>
  * grade they get is `transcribed_only`. Grading them on their content
  * is how a clinic letter came to be told it 「已经包含临床试验入组通常
  * 要求的两项内容」.
+ *
+ * A LABORATORY REPORT THIS PLATFORM READ SOMETHING OFF NEVER FALLS PAST
+ * THIS BLOCK. It used to: the incomplete arm was behind a disjunction
+ * over the two items, so a genetics report that parsed to a 甲基化 alone
+ * dropped through to the ladder and came out 未知, whose 依据 opens
+ * 「还没有上传过基因报告」 and whose 待办 asks for the upload — on a page
+ * printing 甲基化 32%（报告读取）, with the report itself in 最近来源.
+ * The gate is now what this platform HAS read off the report, which is
+ * the thing the copy below is written about.
+ *
+ * A REPORT THIS PLATFORM HAS NOT READ STILL FALLS PAST. A row in
+ * `processing` or `parse_failed` has no payload — see
+ * `pickGeneticEvidenceDocument`, which picks a silent document only
+ * when nothing else is on file — and 「报告上这两项都还没有确定的结果」
+ * is a claim about a page nobody here has opened. That state keeps the
+ * grade that promises nothing.
  */
 const gradeGeneticEvidence = (
   record: PassportGeneticRecordDTO,
@@ -2205,7 +2345,7 @@ const gradeGeneticEvidence = (
   if (record.source === 'transcribed') return 'transcribed_only';
 
   const laboratory = laboratoryRecord(record);
-  if (laboratory) {
+  if (laboratory && laboratoryStatedSomething(laboratory)) {
     // AHEAD OF EVERY 「how complete is it」 RULE, because completeness is
     // the wrong axis for this report: it may carry both items and still
     // not be a molecular diagnosis of FSHD1. Ahead of
@@ -2214,35 +2354,51 @@ const gradeGeneticEvidence = (
     // reader, not for the machine.
     if (haplotypeNonPermissive(laboratory)) return 'non_permissive_haplotype';
 
-    const size = determinateSize(laboratory) !== null;
+    const count = determinateRepeatCount(laboratory);
     const haplotype = haplotypeDetermined(laboratory);
 
-    if (laboratory.method === 'short_read_sequencing' && !size && !haplotype) {
+    // 「AND the report to carry no D4Z4 result at all」 — the length half
+    // of that is `reportStatesALength` and not `count`, which is the
+    // one place a kb reading is still consulted and the note on that
+    // function says why.
+    if (
+      laboratory.method === 'short_read_sequencing' &&
+      !reportStatesALength(laboratory) &&
+      !haplotype
+    ) {
       return 'method_not_applicable';
     }
-    if (SIZING_METHODS.has(laboratory.method) || size || haplotype || laboratory.d4z4 !== null) {
-      // BOTH ARMS ASK WHAT THE CELL SAYS. 「是允许型」 and not 「有这一
-      // 项」 on the haplotype: the two coincide below — the non-permissive
-      // answer returned above and the ambiguous one is not
-      // `haplotypeDetermined` — and the enrolment sentence is written off
-      // the question it is actually making a claim about, so a later
-      // reordering cannot quietly restore 4qB to this line. And 「is a
-      // contraction」 and not 「is a number」 on the length, which is the
-      // same distinction on the other item: a report reading D4Z4 30 /
-      // 4qA has both, and neither of them is FSHD1.
-      //
-      // 「方法对，但结果不全」 stays true of the report that falls out
-      // here on the length: `WHAT_THE_REPORT_MUST_SAY` item 三 asks a
-      // count above the range for D4Z4 甲基化分析 and SMCHD1 测序, and
-      // SMCHD1 is a result this platform has never read off any report.
-      return size && !countAboveFshd1Range(laboratory) && haplotypePermissive(laboratory)
-        ? 'trial_ready'
-        : 'method_right_incomplete';
-    }
+    // BOTH ARMS ASK WHAT THE CELL SAYS. 「是允许型」 and not 「有这一项」
+    // on the haplotype: the two coincide here — the non-permissive
+    // answer returned above and the ambiguous one is not
+    // `haplotypeDetermined` — and the enrolment sentence is written off
+    // the question it is actually making a claim about, so a later
+    // reordering cannot quietly restore 4qB to this line. And 「is a
+    // contraction」 and not 「is a number」 on the length, which is the
+    // same distinction on the other item: a report reading D4Z4 30 /
+    // 4qA has both, and neither of them is FSHD1.
+    //
+    // 「方法对，但结果不全」 stays true of the report that falls out
+    // here on the length: `WHAT_THE_REPORT_MUST_SAY` item 三 asks a
+    // count above the range for D4Z4 甲基化分析 and SMCHD1 测序, and
+    // SMCHD1 is a result this platform has never read off any report.
+    // It is not printed for a report whose method this platform never
+    // recognised — see `buildGeneticEvidence`, where the label and the
+    // headline are gated on the same `SIZING_METHODS` membership the
+    // 《检查申请说明》 uses to decide whether to explain short reads.
+    return count !== null && !countAboveFshd1Range(laboratory) && haplotypePermissive(laboratory)
+      ? 'trial_ready'
+      : 'method_right_incomplete';
   }
-  // Nothing readable on file. The patient's own answer is the only
-  // evidence left, and only three of the five rungs assert that no
-  // genetic test has been done.
+  // NOTHING THIS PLATFORM HAS READ. Either no genetic evidence document
+  // at all, or one whose parse has not landed — never a document that
+  // supplied a value, which is what lets the copy below stop denying an
+  // upload it was printing a reading from. It still covers a report on
+  // file that nobody here has opened, so 未知's 依据 keeps the disjunct
+  // that is true of that state and does not flatly deny the upload.
+  //
+  // The patient's own answer is the only evidence left, and only three
+  // of the five rungs assert that no genetic test has been done.
   if (
     ladder === 'untested_wants_test' ||
     ladder === 'untested_no_plan' ||
@@ -2266,6 +2422,12 @@ const gradeGeneticEvidence = (
 const GUIDELINE_TWO_ITEMS_ZH =
   '指南把 FSHD 的基因分析定义为两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型';
 
+/** The two items above, named one at a time, in the wording the copy
+ *  below already used. Two sentences name the same item and one of them
+ *  is built from a list, so the string is here rather than typed twice. */
+const REPEAT_COUNT_ITEM_ZH = 'D4Z4 重复单元数';
+const HAPLOTYPE_ITEM_ZH = '4qA / 4qB 单倍型';
+
 const GENETIC_GRADE_LABELS: Record<GeneticEvidenceGrade, string> = {
   not_tested: '未检测',
   method_not_applicable: '方法不适用',
@@ -2284,6 +2446,23 @@ const GENETIC_GRADE_LABELS: Record<GeneticEvidenceGrade, string> = {
   trial_ready: '可用于入组',
   unknown: '未知',
 };
+
+/**
+ * 方法对，但结果不全 WITH THE 方法对 TAKEN OUT.
+ *
+ * `method_right_incomplete` is reached by every laboratory report that
+ * is not a molecular diagnosis, including the ones whose 检测方法 this
+ * platform never recognised — and there is no text-scanning fallback
+ * for that field on purpose, so 未知 is the common answer, not the rare
+ * one. 「方法对」 over an unrecognised method is a claim nothing on this
+ * page checked, printed on the same artefact as 《为什么全外显子 / 全
+ * 基因组测序读不到 FSHD》, which is attached precisely BECAUSE the
+ * method is not known to be one that can size the array.
+ *
+ * The grade is unchanged: what a report still owes is the same question
+ * either way. Only the words that speak for the laboratory come off.
+ */
+const INCOMPLETE_WITHOUT_METHOD_LABEL_ZH = '结果不全';
 
 const WHY_SHORT_READ_CANNOT: GeneticTestRequestSectionDTO = {
   heading: '为什么全外显子 / 全基因组测序读不到 FSHD',
@@ -2365,7 +2544,21 @@ const buildTestRequest = (
     if (!laboratory || !SIZING_METHODS.has(laboratory.method)) {
       sections.push(WHY_SHORT_READ_CANNOT);
     }
-    if (!laboratory || determinateSize(laboratory) === null) {
+    // 「能测出 FSHD1 的方法」 is worth handing over while the repeat
+    // count is still missing, which is the item this section's three
+    // methods produce — and only while nothing on file says the
+    // laboratory already used one of them. Naming the methods to
+    // somebody whose report says Southern blot reads as 「go and have it
+    // done again」 over a test that was done.
+    //
+    // THE METHOD FIELD AND THE COUNT, AND NOT A kb LENGTH. This used to
+    // yield to any determinate length, so an EcoRI fragment suppressed
+    // the section; a kb reading decides nothing here for the same reason
+    // it decides nothing anywhere else. See `determinateRepeatCount`.
+    if (
+      !laboratory ||
+      (!SIZING_METHODS.has(laboratory.method) && determinateRepeatCount(laboratory) === null)
+    ) {
       sections.push(WHICH_TEST_INSTEAD);
     }
     sections.push(WHAT_THE_REPORT_MUST_SAY);
@@ -2423,8 +2616,16 @@ const buildGeneticEvidence = (
   // used to be picked separately from the flag that says there is a
   // size, and picked by presence, so a report carrying a range and a
   // fragment printed the range under a grade the fragment earned.
-  const sizeText = laboratory ? (determinateSize(laboratory) ?? '') : '';
+  const sizeText = laboratory ? (determinateRepeatCount(laboratory) ?? '') : '';
   const size = sizeText !== '';
+  /** The lengths on this report that are printed and judged by nothing.
+   *  See `determinateRepeatCount`. */
+  const kbLengths = laboratory ? kbLengthsNotJudged(laboratory) : [];
+  /** The report named a method that can size the array. The only thing
+   *  that entitles this page to say 方法是对的 — there is no
+   *  text-scanning fallback for `method` on purpose, so 未知 is an
+   *  ordinary answer and not an edge case. */
+  const sizingMethodNamed = laboratory !== null && SIZING_METHODS.has(laboratory.method);
   // 「有没有这一项」 here and not 「是不是允许型」: this is the copy for the
   // grades where the question is what the report still owes. The one
   // grade where the answer 4qB matters has its own branch below and
@@ -2459,8 +2660,9 @@ const buildGeneticEvidence = (
       break;
     case 'method_right_incomplete': {
       // Both facts are read independently, because this branch is
-      // reached whenever ANY of {sizing method named, size present,
-      // haplotype present, a D4Z4 reading of any kind} holds — so
+      // reached by every laboratory report this platform read something
+      // off that is not a molecular diagnosis — including one whose only
+      // reading is a 甲基化, with neither of the two items on it — so
       // 「not size」 does NOT imply 「haplotype」. Deriving both from the
       // single `size` boolean printed 「已有单倍型（null）」 for a report
       // whose only genetic content was a range like 「1-10」, and
@@ -2484,24 +2686,43 @@ const buildGeneticEvidence = (
       // them, which is the one wording true of a blank cell, a range, a
       // negation and a probe list alike.
       const undetermined: string[] = [];
-      if (!size) undetermined.push('D4Z4 重复单元数');
-      if (!haplotype) undetermined.push('4qA / 4qB 单倍型');
+      if (!size) undetermined.push(REPEAT_COUNT_ITEM_ZH);
+      if (!haplotype) undetermined.push(HAPLOTYPE_ITEM_ZH);
       const missing = undetermined.join('和');
 
       const presentParts: string[] = [];
       if (size) presentParts.push(`D4Z4 长度（${sizeText}）`);
       if (haplotype) presentParts.push(`单倍型（${haplotypeText}）`);
 
-      // THE REPORT STATED A LENGTH AND THE LENGTH IS NOT A CONTRACTION.
-      // `sizeText` is the count itself in this state and not the EcoRI
-      // fragment: `countAboveFshd1Range` reads the count cell, and
-      // `determinateSize` prefers that same cell whenever it has a
-      // value, so the number named here is the number classified.
+      /** The cell reads 0. Not a confirmation and not an exclusion —
+       *  see `zeroRepeatCount`. Ahead of everything else in this
+       *  branch, because a reader looking at a 0 on the page is owed a
+       *  sentence about the 0 before one about what the report is
+       *  missing. */
+      const zeroText = laboratory ? zeroRepeatCount(laboratory) : null;
+
+      // THE REPORT STATED A COUNT AND THE COUNT IS NOT A CONTRACTION.
+      // `sizeText` is the count cell in this state and never the EcoRI
+      // fragment: `countAboveFshd1Range` and `determinateRepeatCount`
+      // read the same cell, so the number named here is the number
+      // classified.
       //
       // Nothing is missing from the two items, so the branches below
       // would have printed 「只差「」」. What this reader is owed is the
       // guideline's own instruction for the count they are holding.
-      if (laboratory !== null && countAboveFshd1Range(laboratory)) {
+      if (zeroText !== null) {
+        // The count cell is what this sentence is about, so the clause
+        // that lists what is still undetermined names the OTHER item
+        // only — 「D4Z4 重复单元数这一项还没有确定的结果」 after two
+        // sentences about the number in that cell reads as a
+        // contradiction rather than as the same fact twice.
+        headline = `报告读到的 D4Z4 重复单元数是「${zeroText}」，本平台读不通这个数`;
+        reason = `${GUIDELINE_TWO_ITEMS_ZH}。0 个重复单元不是 FSHD1 会有的等位基因，所以这一格更可能是没被读对，或者写的根本不是重复单元数。本平台既不拿它当确诊依据，也不拿它当排除依据。${
+          haplotype ? '' : `${HAPLOTYPE_ITEM_ZH}这一项报告上也还没有确定的结果。`
+        }`;
+        action =
+          '把报告原件带去门诊，请医生看一下这一格写的是什么。下面这份说明列出了指南要求报告写明的内容，可以一起带去对照。';
+      } else if (laboratory !== null && countAboveFshd1Range(laboratory)) {
         headline = `报告读到的 D4Z4 重复单元数是「${sizeText}」，大于指南所说的 10`;
         reason = `${GUIDELINE_TWO_ITEMS_ZH}。你的报告已有${presentParts.join(
           '、',
@@ -2511,18 +2732,35 @@ const buildGeneticEvidence = (
         action =
           '把报告原件带去门诊，请医生看一下这一条：临床表现是不是仍然指向 FSHD、要不要按指南加做 D4Z4 甲基化分析与 SMCHD1 测序。下面这份说明列出了指南要求报告写明的内容，可以一起带去对照。';
       } else {
+        // 「方法是对的」 IS A CLAIM ABOUT THE 检测方法 FIELD, and this
+        // branch is reached with that field unread — there is no
+        // text-scanning fallback for it on purpose, so 未知 is the
+        // ordinary answer. Rendered before this gate: a report whose
+        // only genetic content was 「1-10」 came out 「方法是对的，但这两
+        // 项都还没有确定的结果」 with 依据 「报告用的是能测长度的方法」,
+        // stapled to a 《检查申请说明》 opening 《为什么全外显子 / 全基因
+        // 组测序读不到 FSHD》 — a section attached precisely BECAUSE the
+        // method is not known to be one that can size the array. The
+        // clause comes off rather than being softened; what is left is
+        // the part this platform read.
         headline =
           presentParts.length > 0
-            ? `方法是对的，「${missing}」还没有确定的结果`
-            : '方法是对的，但这两项都还没有确定的结果';
+            ? `${sizingMethodNamed ? '方法是对的，' : ''}「${missing}」还没有确定的结果`
+            : sizingMethodNamed
+              ? '方法是对的，但这两项都还没有确定的结果'
+              : '这两项都还没有确定的结果';
         reason =
           presentParts.length > 0
             ? `${GUIDELINE_TWO_ITEMS_ZH}。你的报告已有${presentParts.join('、')}，${missing}这一项还没有确定的结果。`
-            : `${GUIDELINE_TWO_ITEMS_ZH}。报告用的是能测长度的方法，但这两项都还没有确定的结果。`;
+            : sizingMethodNamed
+              ? `${GUIDELINE_TWO_ITEMS_ZH}。报告用的是能测长度的方法，但这两项都还没有确定的结果。`
+              : `${GUIDELINE_TWO_ITEMS_ZH}。报告上这两项都还没有确定的结果，报告里也没有能明确认出检测方法的字样。`;
         action =
           presentParts.length > 0
             ? '这一步很常见，大多数报告都停在这里。这一项通常不需要重新采血——原实验室多半可以在既有样本上补出结果、补发报告。下面的说明列出了需要补写的内容。'
-            : '可以先对着报告原件核对一下这两项。如果原件上确实没有结果，通常不需要重新采血——原实验室多半可以在既有样本上补出结果、补发报告。下面的说明列出了需要补写的内容。';
+            : sizingMethodNamed
+              ? '可以先对着报告原件核对一下这两项。如果原件上确实没有结果，通常不需要重新采血——原实验室多半可以在既有样本上补出结果、补发报告。下面的说明列出了需要补写的内容。'
+              : '可以先对着报告原件核对一下这两项，顺便看一下报告上写的检测方法是哪一种。下面这份说明列出了指南要求报告写明的内容，可以一起带去对照。';
       }
       sources.push(SOURCE_ZHANG_2019);
       break;
@@ -2584,9 +2822,25 @@ const buildGeneticEvidence = (
       break;
   }
 
+  // WHY A NUMBER ON THE PAGE CHANGED NOTHING, said once, wherever it
+  // applies. Every grade but `trial_ready` withholds something from a
+  // report, and a reader whose report states a kb length is entitled to
+  // know that this particular number was never weighed — see
+  // `determinateRepeatCount`. On `trial_ready` nothing was withheld, so
+  // there is nothing to explain.
+  if (grade !== 'trial_ready' && kbLengths.length > 0) {
+    reason = `${reason}${KB_LENGTH_NOT_JUDGED_ZH(kbLengths)}`;
+  }
+
   return {
     grade,
-    gradeLabel: GENETIC_GRADE_LABELS[grade],
+    // The label carries the same claim the headline does, on the line
+    // directly above it in the markdown export and on the pill in the
+    // app. See INCOMPLETE_WITHOUT_METHOD_LABEL_ZH.
+    gradeLabel:
+      grade === 'method_right_incomplete' && !sizingMethodNamed
+        ? INCOMPLETE_WITHOUT_METHOD_LABEL_ZH
+        : GENETIC_GRADE_LABELS[grade],
     headline,
     reason,
     action,
@@ -3101,12 +3355,36 @@ export const buildClinicalPassportSummary = (
   // `laboratoryRecord` (a 病历摘要 quoting a count grades
   // `transcribed_only`, and its number stays on the page with 「转录自非
   // 基因报告文件」 beside it), only past the 4qB return, and only on
-  // `determinateSize`, which parses both size cells instead of counting
-  // them as present, AND on `countAboveFshd1Range`, which reads what the
-  // count says rather than that it parsed.
+  // `determinateRepeatCount`, which parses the count cell instead of
+  // counting it as present, AND on `countAboveFshd1Range`, which reads
+  // what the count says rather than that it parsed.
   const geneticSource = reportInsights.geneticRecord.source;
   const laboratoryGeneticRecord = laboratoryRecord(reportInsights.geneticRecord);
   const nonPermissiveLaboratoryHaplotype = geneticEvidence.grade === 'non_permissive_haplotype';
+  /**
+   * THE ONE ANSWER TO 「WHICH REPEAT COUNT MAY A CONFIRMATION BE STATED
+   * WITH」, computed here and carried, because two artefacts outside this
+   * file set a number after 「基因确诊」 and both were deciding it for
+   * themselves.
+   *
+   * Both asked `valueOrigins.d4z4Repeats.kind === 'report'` — whether
+   * the printed row came off a document — which is a question about the
+   * ROW and not about the CELL. Rendered: a report whose repeat-count
+   * cell read 「1-10」 while its EcoRI fragment carried the day printed
+   * 「面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 1-10」 in the
+   * referral pack and 「诊断：FSHD，基因确诊（D4Z4 重复数 1-10）」 on the
+   * card an anaesthetist plans an airway from.
+   *
+   * Non-null does NOT mean confirmed — a count of 30, or one beside a
+   * 4qB, is determinate and earns nothing. It means this number is the
+   * laboratory's own determinate repeat count, so a surface that has
+   * already decided it may print a confirmation has one number it may
+   * print it with. See `determinateRepeatCount` for what is excluded and
+   * why.
+   */
+  const laboratoryRepeatCount = laboratoryGeneticRecord
+    ? determinateRepeatCount(laboratoryGeneticRecord)
+    : null;
   /** The report stated a count and the count is not a contraction. The
    *  one state of 方法对，但结果不全 where nothing is missing from the two
    *  items, so the steps written for that grade have to ask a different
@@ -3114,6 +3392,11 @@ export const buildClinicalPassportSummary = (
    *  reading of it. */
   const countAboveRange =
     laboratoryGeneticRecord !== null && countAboveFshd1Range(laboratoryGeneticRecord);
+  /** The count cell reads 0 — see `zeroRepeatCount`. The other state of
+   *  方法对，但结果不全 whose step is a question about the number rather
+   *  than a request for a missing item. */
+  const countReadsZero =
+    laboratoryGeneticRecord !== null && zeroRepeatCount(laboratoryGeneticRecord) !== null;
   /** The 4qB as the report printed it, for the sentences that name it.
    *  Empty unless the flag above is set — `parsePermissiveHaplotype`
    *  reads `false` only out of a string — so no branch guarded by that
@@ -3559,13 +3842,18 @@ export const buildClinicalPassportSummary = (
   }
   if (geneticEvidence.grade === 'method_right_incomplete') {
     nextSteps.push({
-      // 「缺的那一项」 IS FALSE OF ONE STATE OF THIS GRADE. A report
+      // 「缺的那一项」 IS FALSE OF TWO STATES OF THIS GRADE. A report
       // stating a count above the range states both items, so there is
-      // nothing to go and ask the laboratory for; what its owner is
-      // carrying is a question about what the count means. Same shape
-      // as the 4qB step above, and it borrows that step's wording
-      // rather than inventing a second one for the same errand.
-      title: countAboveRange ? '带着报告原件问一次这个重复数' : '问一下报告里缺的那一项',
+      // nothing to go and ask the laboratory for; and a cell reading 0
+      // is a number this platform read and cannot make sense of, which
+      // is not an item to request either. In both, what its owner is
+      // carrying is a question about the number. Same shape as the 4qB
+      // step above, and it borrows that step's wording rather than
+      // inventing a second one for the same errand.
+      title:
+        countAboveRange || countReadsZero
+          ? '带着报告原件问一次这个重复数'
+          : '问一下报告里缺的那一项',
       kind: 'clinical',
       description: `${geneticEvidence.headline}。${geneticEvidence.action}`,
     });
@@ -3894,6 +4182,7 @@ export const buildClinicalPassportSummary = (
       d4z4Repeats: reportInsights.d4z4Repeats,
       methylationValue: reportInsights.methylationValue,
       diagnosisDate: reportInsights.diagnosisDate,
+      laboratoryRepeatCount,
       valueOrigins: diagnosisValueOrigins,
       geneEvidence: reportInsights.geneEvidence,
       geneEvidenceOrigin,

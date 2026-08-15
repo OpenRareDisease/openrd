@@ -498,17 +498,23 @@ const formatFieldOriginLine = (origin: PassportFieldOriginDTO): string => {
 
 const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisDTO => {
   const { diagnosis } = summary;
-  // ONLY A REPORT'S NUMBER GOES INTO THE 结论. `confirmation` grades
-  // the evidence and says nothing about which value on this page came
-  // off a report — a pack can be confirmed on a haplotype while the
-  // printed 重复数 came from the baseline instead, the patient's own
-  // typing. Setting that number after 「基因确诊；」 would hand it the
-  // report's authority without the bracket that says whose it is. The
-  // row below prints it either way, with its own source.
-  const repeats =
-    diagnosis.valueOrigins.d4z4Repeats.kind === 'report' && hasText(diagnosis.d4z4Repeats)
-      ? diagnosis.d4z4Repeats
-      : null;
+  // ONLY THE LABORATORY'S OWN DETERMINATE COUNT GOES INTO THE 结论.
+  //
+  // `confirmation` grades the evidence and says nothing about which
+  // value on this page came off a report — a pack can be confirmed
+  // while the printed 重复数 came from the baseline instead, the
+  // patient's own typing. Setting that number after 「基因确诊；」 would
+  // hand it the report's authority without the bracket that says whose
+  // it is. The row below prints it either way, with its own source.
+  //
+  // AND 「off a report」 IS NOT THE QUESTION EITHER. This asked
+  // `valueOrigins.d4z4Repeats.kind === 'report'`, which is about the
+  // ROW rather than the CELL: rendered, a report whose repeat-count
+  // cell read 「1-10」 printed 「面肩肱型肌营养不良症（FSHD），基因确诊；
+  // D4Z4 重复数 1-10」 to a 协作网 neurologist. `laboratoryRepeatCount`
+  // is the passport's own reading of that cell and the only number this
+  // line may carry.
+  const repeats = hasText(diagnosis.laboratoryRepeatCount) ? diagnosis.laboratoryRepeatCount : null;
   const statement = buildDiagnosisStatement(diagnosis.confirmation, repeats);
 
   return {

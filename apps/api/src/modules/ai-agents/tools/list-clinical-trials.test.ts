@@ -383,6 +383,37 @@ describe('ListClinicalTrialsTool display', () => {
     expect(display).toContain('直接用原词再查一次');
   });
 
+  it('does not tell the model a 国内 status word is untranslated or means something else', async () => {
+    // 药物临床试验登记与信息公示平台 writes its status in Chinese and the
+    // refresh stores that word verbatim, so 已完成 arrives here outside
+    // the six the schema lists. Both things this line used to say about
+    // such a word are false — it is the very Chinese status-map.ts fixes
+    // for COMPLETED — and the model is instructed to pass them on.
+    const { tool } = toolWith(
+      result(
+        snapshotMeta({
+          statusFilter: 'COMPLETED',
+          matched: 45,
+          returned: 12,
+          statusCounts: [
+            { status: 'COMPLETED', count: 45, translated: true },
+            { status: '已完成', count: 4, translated: false },
+            { status: '进行中 招募中', count: 1, translated: false },
+          ],
+        }),
+      ),
+    );
+    const { display } = await tool.execute({ status: 'COMPLETED', notes: [] }, ctx);
+    expect(display).toContain('「已完成」4 条');
+    expect(display).toContain('「进行中 招募中」1 条');
+    expect(display).not.toContain('没有中文译法');
+    expect(display).not.toContain('也不等于 COMPLETED');
+    // What is left is the only reason they are absent, and the warning
+    // that follows from it.
+    expect(display).toContain('和 COMPLETED 不是同一个词');
+    expect(display).toContain('写法不一样不代表说的不是同一件事');
+  });
+
   it('does not tell the model a word is missing from a filter on that word', async () => {
     const { tool } = toolWith(
       result(

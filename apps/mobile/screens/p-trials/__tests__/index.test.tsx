@@ -373,8 +373,10 @@ describe('名单本身', () => {
     expect(rendered).toContain('ENROLLING_BY_INVITATION');
     expect(rendered).toContain('A Study of Something in FSHD');
     expect(buttonByLabel(tree, '其他状态，1 项').props['aria-expanded']).toBe(true);
-    // And the group says why its cards read in English.
-    expect(rendered).toContain('没有固定的中文译法');
+    // And the group says why its cards read the way they do — without
+    // explaining it as a missing translation, which is false of the
+    // mainland rows that land in the same group already in Chinese.
+    expect(rendered).toContain('卡片上按注册库的原词显示');
   });
 
   it('缺的字段写「注册库未标注」，不是空白', async () => {

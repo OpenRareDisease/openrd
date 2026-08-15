@@ -6,8 +6,8 @@
  * date we copied it. Nothing else. It does not judge eligibility, it
  * does not summarise results, and it does not translate a status word
  * it was not given a translation for. Those three refusals are the
- * whole product here: a patient reading「招募中」on this page is
- * reading ClinicalTrials.gov's own `overallStatus`, one hop removed.
+ * whole product here: a patient reading「招募中」on a card is reading
+ * the word its own registry wrote, one hop removed.
  *
  * THE DATE IS NOT DECORATION. The list is a cache — `npm run
  * trials:refresh` fills it from a host cron, and the request path only
@@ -37,14 +37,33 @@
  * because 已终止 and 已完成 are not the same fact about a drug and a
  * group header must not be the only place that difference is recorded.
  *
- * The other 32 are open on arrival, INCLUDING 其他状态. That group is
- * the 10 rows whose registry word §A4 gives us no Chinese for, and
- * three of them are `ENROLLING_BY_INVITATION` — studies still taking
- * participants, by the registry's own definition. Not translating a
- * word we were given no translation for is the rule; hiding the rows
- * behind a shut toggle labelled 其他状态 is not what that rule asks
- * for, and it is the one place this page could bury something a reader
- * came for.
+ * The rest are open on arrival, INCLUDING 其他状态 — the group for rows
+ * whose status word this page could not place. `ENROLLING_BY_INVITATION`
+ * lands there, and it is a study still taking participants by the
+ * registry's own definition. Not translating a word we were given no
+ * translation for is the rule; hiding the rows behind a shut toggle
+ * labelled 其他状态 is not what that rule asks for, and it is the one
+ * place this page could bury something a reader came for.
+ *
+ * TWO REGISTRIES, TWO VOCABULARIES, ONE COLUMN. Grouping reads
+ * `status_raw` — the word the registry itself wrote — and it has to
+ * read two vocabularies out of that one column: ctgov's
+ * `overallStatus`, and 药物临床试验登记与信息公示平台's 试验状态, which
+ * is Chinese. Its words are the ones that registry's own status filter
+ * offers, and its result rows write the 进行中 sub-states as
+ *「进行中 招募中」rather than as the sub-state alone; both spellings are
+ * listed on the groups below, and a word from neither vocabulary still
+ * has 其他状态 to land in.
+ *
+ * It cannot read `status_zh` for the mainland half instead, because
+ * nothing writes one: that column is filled from the ctgov map alone
+ * (`translateCtgovStatus`), and chinadrugtrials.fetcher.ts writes NULL
+ * into it for every row it produces. A mainland row placed by a
+ * translation is a row that never arrives, so every one of them used to
+ * land in 其他状态 — a study the registry itself calls 招募中 filed
+ * under 其他状态, with the group whose header is spelled with that same
+ * word sitting above it, and a 已完成 study sitting outside 已完成或已
+ * 停止 under a note explaining that we had no Chinese for its status.
  */
 
 /* ------------------------------------------------------------------ */
@@ -179,16 +198,20 @@ export interface TrialGroupSpec {
    *  its own. Rendered by the screen; absent on every group whose title
    *  already says what it holds. */
   note?: string;
-  /** Registry status words, as ClinicalTrials.gov v2 writes them in
-   *  `statusModule.overallStatus`. Compared case-insensitively after
-   *  trimming; nothing else is normalised. */
+  /**
+   * Status words as their own registry writes them: ClinicalTrials.gov
+   * v2's `statusModule.overallStatus`, and the mainland registry's
+   * 试验状态 cell. Compared case-insensitively, whitespace removed;
+   * nothing else is normalised, and no word is ever mapped onto
+   * another.
+   *
+   * The mainland words are the ones on that registry's own 试验状态
+   * filter. Its results table writes the three 进行中 sub-states as the
+   * parent and the sub-state together —「进行中 招募中」— and the filter
+   * writes the sub-state alone, so both spellings are listed and both
+   * are the registry's, not ours.
+   */
   statusRawTokens: readonly string[];
-  /** The translations migration 026's `status_zh` is meant to carry
-   *  for those words. A row whose `statusRaw` we do not recognise —
-   *  the mainland registry writes Chinese in that column — is placed
-   *  by its `status_zh` instead, so it lands in the right group rather
-   *  than in 其他状态. */
-  statusZhLabels: readonly string[];
   /** Open on arrival. False only for the two groups where every row is
    *  closed or no longer recruiting; see the file header for the census
    *  behind that split. */
@@ -199,47 +222,74 @@ export const TRIAL_GROUP_SPECS: readonly TrialGroupSpec[] = [
   {
     key: 'recruiting',
     title: '招募中',
-    statusRawTokens: ['RECRUITING'],
-    statusZhLabels: ['招募中'],
+    statusRawTokens: ['RECRUITING', '招募中', '进行中 招募中'],
     initiallyExpanded: true,
   },
   {
     key: 'not_yet_recruiting',
     title: '尚未开始招募',
-    statusRawTokens: ['NOT_YET_RECRUITING'],
-    statusZhLabels: ['尚未开始招募'],
+    statusRawTokens: ['NOT_YET_RECRUITING', '尚未招募', '进行中 尚未招募'],
     initiallyExpanded: true,
   },
   {
     key: 'active_not_recruiting',
     title: '进行中 · 不再招募',
-    statusRawTokens: ['ACTIVE_NOT_RECRUITING'],
-    statusZhLabels: ['进行中·不再招募'],
+    // 招募完成 is the mainland registry's own third sub-state of
+    // 进行中: the study is running and its enrolment is closed, which
+    // is what this header says.
+    statusRawTokens: ['ACTIVE_NOT_RECRUITING', '招募完成', '进行中 招募完成'],
     initiallyExpanded: false,
   },
   {
     key: 'closed',
     title: '已完成或已停止',
-    statusRawTokens: ['COMPLETED', 'TERMINATED', 'WITHDRAWN'],
-    statusZhLabels: ['已完成', '已终止', '已撤回'],
+    // The mainland registry names who stopped it — the sponsor, the
+    // ethics committee, the regulator — and that difference stays on
+    // the card. 已完成或已停止 is true of all three.
+    //
+    // Its 暂停 words are deliberately absent. A study that is paused is
+    // neither stopped nor recruiting, this page has no group that would
+    // be true of it, and 其他状态 shows the registry's own word rather
+    // than filing it under a header that would overstate what happened.
+    statusRawTokens: [
+      'COMPLETED',
+      'TERMINATED',
+      'WITHDRAWN',
+      '已完成',
+      '主动终止',
+      'IEC/IRB终止',
+      '责令终止',
+    ],
     initiallyExpanded: false,
   },
 ];
 
-/** Anything whose status word neither list recognises. Its cards show
- *  the registry's word untouched — guessing at a translation is how
- *  the old corpus snapshot ended up rendering `Recruiting` as「招聘」. */
+/**
+ * Anything whose status word no group above recognises. Its cards show
+ * the registry's word untouched — guessing at a translation is how the
+ * old corpus snapshot ended up rendering `Recruiting` as「招聘」.
+ *
+ * THE NOTE SAYS WHY THE ROWS ARE HERE, NOT WHAT THE WORDS ARE. It used
+ * to say the platform had no fixed Chinese for these status words and
+ * offer `ENROLLING_BY_INVITATION` as the example. Both halves fail on
+ * the first mainland row that reaches this group: that registry writes
+ * its status in Chinese, so the sentence would explain a Chinese card
+ * by saying we could not render one, and the example names a word that
+ * is on no card in the group. What is left is true of every row that
+ * can land here, whichever registry wrote it.
+ */
 export const OTHER_GROUP_SPEC: TrialGroupSpec = {
   key: 'other',
   title: '其他状态',
   note:
-    '这些记录的状态词本平台没有固定的中文译法，卡片上按注册库的原词显示。' +
-    '其中可能有仍在入组的试验（例如 ENROLLING_BY_INVITATION：受邀才能参加），请点开原始记录确认。',
+    '这些记录的状态词没有归进上面任何一组，卡片上按注册库的原词显示。' +
+    '其中可能有仍在入组的试验，请点开原始记录确认。',
   statusRawTokens: [],
-  statusZhLabels: [],
-  // Open on arrival, unlike the two closed groups. See the file header:
-  // 3 of the 10 rows here are still enrolling, and a shut toggle is the
-  // one way this page could hide a study a reader came for.
+  // Open on arrival, unlike the two closed groups: a row lands here
+  // because its word was not placed, which is not the same as its study
+  // being over — ENROLLING_BY_INVITATION is a study still taking
+  // participants — and a shut toggle is the one way this page could
+  // hide a study a reader came for.
   initiallyExpanded: true,
 };
 
@@ -248,39 +298,34 @@ export interface TrialGroup {
   trials: TrialRecord[];
 }
 
-const normalizeRawStatus = (value: string): string => value.trim().toUpperCase();
-
-/** `进行中·不再招募` vs `进行中 · 不再招募` — the group title spaces the
- *  middle dot for legibility and `status_zh` does not, so comparison
- *  drops whitespace rather than requiring the two to be typed
- *  identically in two files. */
-const normalizeZhStatus = (value: string): string => value.replace(/\s+/g, '');
+/**
+ * Whitespace goes because the mainland registry's results table writes
+ * 「进行中 招募中」 with the parent and the sub-state separated, and its
+ * own filter writes the sub-state alone. Removing it compares the two
+ * spellings of one word equal; it never brings two different words
+ * together, and case folding is a no-op on Chinese.
+ */
+const normalizeRawStatus = (value: string): string => value.replace(/\s+/g, '').toUpperCase();
 
 /**
- * Two passes, and the order matters.
+ * ONE PASS, OVER THE WORD THE REGISTRY ITSELF WROTE.
  *
- * The registry's own word is checked against EVERY group before
- * `status_zh` is consulted for any of them. Interleaving the two — one
- * spec's raw tokens, then its Chinese labels, then the next spec's —
- * lets a stale or mismatched translation outrank an exact match on the
- * registry's word: a row whose `status_raw` is NOT_YET_RECRUITING and
- * whose `status_zh` still says 招募中 would be filed under 招募中,
- * which is the one group a patient acts on.
+ * `status_zh` is not consulted, and consulting it would be a way to get
+ * this wrong rather than a fallback. It is our own column: the refresh
+ * fills it from `translateCtgovStatus`, whose every key is a ctgov word
+ * already listed above, and leaves it NULL for every mainland row. So
+ * it can only ever confirm a placement `status_raw` had already made,
+ * or contradict one — a row whose `status_raw` is NOT_YET_RECRUITING
+ * and whose `status_zh` is a mapping edit behind, still saying 招募中,
+ * would be filed under 招募中, which is the one group a patient acts
+ * on.
  */
 export const groupKeyForTrial = (trial: TrialRecord): string => {
   const raw = normalizeRawStatus(trial.statusRaw);
   const byRaw = TRIAL_GROUP_SPECS.find((spec) =>
     spec.statusRawTokens.some((token) => normalizeRawStatus(token) === raw),
   );
-  if (byRaw) return byRaw.key;
-
-  const zh = trial.statusZh ? normalizeZhStatus(trial.statusZh) : null;
-  const byZh = zh
-    ? TRIAL_GROUP_SPECS.find((spec) =>
-        spec.statusZhLabels.some((label) => normalizeZhStatus(label) === zh),
-      )
-    : undefined;
-  return byZh ? byZh.key : OTHER_GROUP_SPEC.key;
+  return byRaw ? byRaw.key : OTHER_GROUP_SPEC.key;
 };
 
 /**

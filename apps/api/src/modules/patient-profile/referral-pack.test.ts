@@ -651,21 +651,46 @@ describe('基线里的基因数值印在转诊资料上', () => {
     );
   });
 
-  it('结论里的重复数只写报告读出来的那个', () => {
+  it('结论里的重复数只写实验室报告自己写明的那一个', () => {
     const result = pack(
       markedGenetics({
-        // Both required items off the report — the length as an EcoRI
-        // fragment — and no `d4z4Repeats` field on it, so the 重复数 the
-        // pack prints is the marked baseline's and the 结论 may not
-        // carry it.
-        documents: [geneticReport({ haplotype: '4qA', ecoRIFragment: '18kb' })],
+        documents: [geneticReport({ haplotype: '4qA', d4z4Repeats: '4' })],
       } as unknown as Partial<PatientProfileDTO>),
     );
 
     expect(result.diagnosis.confirmation).toBe('genetic');
-    expect(result.diagnosis.statement).toBe('面肩肱型肌营养不良症（FSHD），基因确诊');
-    expect(result.diagnosis.statement).not.toContain('D4Z4 重复数 6');
-    expect(result.markdown).toContain('- D4Z4 重复数：6（管理员代填）');
+    expect(result.diagnosis.statement).toBe(
+      '面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 4',
+    );
+    // 后台代填的那个数没有接在「基因确诊；」后面 —— 它在下面那一行，
+    // 带着自己的括号。
+    expect(result.diagnosis.statement).not.toContain('6');
+    expect(result.markdown).toContain('- D4Z4 重复数：4（报告读取）');
+  });
+
+  /**
+   * 「结论」那一句问的是这一格写着什么，不是这一行是从哪来的。
+   *
+   * 这里以前问的是 `valueOrigins.d4z4Repeats.kind === 'report'` —— 那是
+   * 在问「这一行是不是从某份文件里读出来的」。报告的重复数那一格写着区间
+   * 「1-10」、确诊是 EcoRI 片段挣来的时候，递到协作网神经内科医生手上的
+   * 那一句就是「面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数
+   * 1-10」。
+   */
+  it('报告那一格是区间时，结论里不带这个数', () => {
+    const result = pack(
+      base({
+        documents: [
+          geneticReport({ d4z4Repeats: '1-10', ecoRIFragment: '18kb', haplotype: '4qA' }),
+        ],
+      } as unknown as Partial<PatientProfileDTO>),
+    );
+
+    // kb 不参与确诊，所以这一行根本到不了「基因确诊」。
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.diagnosis.statement).not.toContain('基因确诊；');
+    // 区间照旧印在它自己那一行上，带着「报告读取」。
+    expect(result.markdown).toContain('- D4Z4 重复数：1-10（报告读取）');
   });
 });
 

@@ -959,6 +959,19 @@ export interface ClinicalPassportSummary {
     methylationValue: string;
     diagnosisDate: string;
     /**
+     * 实验室报告自己写明的那个 D4Z4 重复数，报告怎么印就怎么给；不是上面
+     * 那一行 `d4z4Repeats`（那一行档案里的值也会印，报告那一格写的是区间
+     * 或 kb 时也照印）。服务端 PassportDiagnosisDTO 上有完整说明。
+     *
+     * Optional and `unknown`-adjacent for the reason `valueOrigins` is:
+     * the type parameter on `getClinicalPassportSummary` is an unchecked
+     * assertion, and this app ships as a web export WeChat caches for
+     * days, so a handset can be running today's bundle against an API
+     * build that predates the field. A reader must check the type before
+     * printing it.
+     */
+    laboratoryRepeatCount?: string | null;
+    /**
      * 上面四个值各自的来源。
      *
      * Typed as `unknown` for the same reason as `geneticEvidence`

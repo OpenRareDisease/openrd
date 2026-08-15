@@ -1,5 +1,4 @@
 import { readGeneticEvidence, type GeneticEvidenceDocumentLike } from './genetic-evidence.js';
-import { reportsAbsence } from './profile.passport.js';
 
 /**
  * WHICH REPORT THIS FILLS FROM IS NOT DECIDED HERE.
@@ -48,26 +47,6 @@ const hasMeaningfulValue = (value: unknown) => {
 
   return true;
 };
-
-/**
- * A CELL THAT STATES SOMETHING ABOUT THIS PATIENT.
- *
- * `hasMeaningfulValue` asks whether the cell has characters in it, and
- * 「未检出」 has characters in it. That is the whole of what asserted
- * 「是否确诊 FSHD」 below: a genetics report whose only genetic content
- * was a D4Z4 cell reading 未检出 wrote `diagnosedFshd: true` into the
- * baseline — and the baseline is the archive, so unlike a sentence on a
- * page it is still there after the report is re-read, and the portable
- * exports read it back.
- *
- * `reportsAbsence` and not a second predicate here: it is the passport's
- * own reader, applied to the same cells, and the two have to reach the
- * same answer about one report. The VALUES are still written as the
- * report printed them — an archive that silently dropped 未检出 would
- * lose what the laboratory said — so this gates the assertion only.
- */
-const cellStatesResult = (value: string | null) =>
-  hasMeaningfulValue(value) && !reportsAbsence(value);
 
 const normalizeDate = (value: string | null) => {
   if (!value) {
@@ -152,6 +131,30 @@ export const applyGeneticReportAutofill = (
   const nextFoundation = { ...foundation };
   const nextDiseaseBackground = { ...diseaseBackground };
 
+  // EVERY FIELD BELOW IS A VALUE THE REPORT PRINTED, COPIED AS PRINTED.
+  //
+  // That is the whole of what this function is allowed to do, and the
+  // rule it is now written to. 分型, D4Z4 重复数, 单倍型 and 甲基化 are
+  // the laboratory's statements about this patient, so a report is a
+  // source for them; `foundation.diagnosisYear` below is the year part
+  // of the 诊断日期 the report itself carries, which is the same kind of
+  // copy in a different shape.
+  //
+  // 「是否确诊 FSHD」 IS NOT ONE OF THEM, AND IS NOT WRITTEN HERE ANY
+  // MORE. That field is the patient's own answer to whether a doctor has
+  // diagnosed them — it is answered by the patient and by nobody else,
+  // and no report can supply it. This function used to assert it `true`
+  // whenever any of the four cells above stated a result, which put an
+  // answer this platform invented into the archive under the patient's
+  // question. The archive is not a page: unlike a sentence on the
+  // passport it survives a re-read of the report, and the portable
+  // exports read it back.
+  //
+  // It is also not the same fact as 基因确诊. Molecular confirmation is
+  // what the evidence gate decides off the report and is derived, never
+  // stored (`geneticallyConfirmed` in profile.passport.ts); a patient
+  // can carry a clinical diagnosis without it, and the two may disagree.
+  // Both are kept, and neither is written from the other.
   let baselineChanged = false;
   baselineChanged =
     assignMissingValue(nextDiseaseBackground, 'diagnosisType', derived.diagnosisType) ||
@@ -163,17 +166,6 @@ export const applyGeneticReportAutofill = (
   baselineChanged =
     assignMissingValue(nextDiseaseBackground, 'methylation', derived.methylation) ||
     baselineChanged;
-
-  if (
-    !hasMeaningfulValue(nextDiseaseBackground.diagnosedFshd) &&
-    (cellStatesResult(derived.diagnosisType) ||
-      cellStatesResult(derived.d4z4) ||
-      cellStatesResult(derived.haplotype) ||
-      cellStatesResult(derived.methylation))
-  ) {
-    nextDiseaseBackground.diagnosedFshd = true;
-    baselineChanged = true;
-  }
 
   const nextDiagnosisDate = normalizeDate(profile.diagnosisDate) ?? derived.diagnosisDate;
   const nextGeneticMutation = hasMeaningfulValue(profile.geneticMutation)

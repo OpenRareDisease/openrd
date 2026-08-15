@@ -365,19 +365,32 @@ const describeRetrieval = (retrieval: RetrieveResult, notes: string[] = []): str
         '需要的话用其中一个原词再查一次；不要因为这次是 0 条就说「没有试验」。',
     );
   } else if (meta.statusFilter !== null) {
-    // The words §A4 gives us no Chinese for are still rows a patient can
-    // ask about — three of them are studies still taking participants —
-    // so they are named with the spelling that fetches them, not left
-    // as an absence. The current filter is excluded: saying a word is
-    // missing from the results of a filter on that same word would be
-    // false.
+    // The words outside the six the schema lists are still rows a
+    // patient can ask about — a study still taking participants is
+    // among them — so they are named with the spelling that fetches
+    // them, not left as an absence. The current filter is excluded:
+    // saying a word is missing from the results of a filter on that
+    // same word would be false.
+    //
+    // WHAT THE SENTENCE MAY CLAIM ABOUT THEM IS ALMOST NOTHING, and
+    // that is the fix. It used to say they had no Chinese rendering
+    // and did not mean the same thing as the filter, then instruct the
+    // model to pass that on. Against a cache holding mainland rows —
+    // 药物临床试验登记与信息公示平台 writes its 试验状态 in Chinese, and
+    // the refresh stores that word verbatim — both are false: 已完成
+    // reaches this line as an untranslated word while being the very
+    // Chinese ../../trials/status-map.ts fixes for COMPLETED, and a
+    // filter on COMPLETED then told the model that 已完成 does not mean
+    // COMPLETED. What is true is only why they are absent: the filter
+    // compares the registry's word verbatim, and these are other words.
     const others = counts.filter(
       (c) => !c.translated && normalizeStatus(c.status) !== meta.statusFilter,
     );
     if (others.length > 0) {
       const listed = others.map((c) => `「${c.status}」${c.count} 条`).join('、');
       lines.push(
-        `注意：缓存里还有${listed}，这些状态词本平台没有中文译法，也不等于 ${meta.statusFilter}，所以不在这次结果里。` +
+        `注意：缓存里还有${listed}。筛选是按状态词原样匹配的，这些词和 ${meta.statusFilter} 不是同一个词，所以不在这次结果里；` +
+          '两个登记库各写各的状态词，写法不一样不代表说的不是同一件事。' +
           '如果用户问的范围可能包含它们，说明一下，或者直接用原词再查一次。',
       );
     }

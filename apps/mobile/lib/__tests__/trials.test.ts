@@ -116,18 +116,35 @@ describe('分组', () => {
     );
   });
 
-  it('原词不认识但 status_zh 认识时，按 status_zh 归组', () => {
-    // The mainland registry writes Chinese into `status_raw`. Without
-    // this fallback every one of its recruiting studies would land in
-    //「其他状态」, i.e. below the fold, i.e. invisible.
-    expect(
+  it('国内登记平台的状态词也按它自己写的词归组', () => {
+    // The words this registry writes, and it writes them with
+    // `status_zh` NULL — that is what its fetcher stores. Reading a
+    // translation instead put every one of these rows in「其他状态」:
+    // a 招募中 study below the fold, and a 已完成 one under a note
+    // saying we had no Chinese for its status word.
+    const cn = (statusRaw: string) =>
       groupKeyForTrial(
-        trial({ source: 'chinadrugtrials', statusRaw: '进行中（招募中）', statusZh: '招募中' }),
-      ),
-    ).toBe('recruiting');
+        trial({ source: 'chinadrugtrials', sourceId: 'CTR20252821', statusRaw, statusZh: null }),
+      );
+    expect(cn('进行中 招募中')).toBe('recruiting');
+    expect(cn('进行中 尚未招募')).toBe('not_yet_recruiting');
+    expect(cn('已完成')).toBe('closed');
+    expect(cn('主动终止')).toBe('closed');
+    // The registry's own filter writes the 进行中 sub-state without the
+    // parent; its result rows write both. Same status either way.
+    expect(cn('招募中')).toBe('recruiting');
+    expect(cn('招募完成')).toBe('active_not_recruiting');
   });
 
-  it('两边都不认识就是「其他状态」，不塞进任何一组', () => {
+  it('国内登记平台的「暂停」不算已停止，进「其他状态」按原词显示', () => {
+    // Paused is neither over nor recruiting, and no group header here
+    // would be true of it. 其他状态 shows the registry's own word.
+    const paused = trial({ source: 'chinadrugtrials', statusRaw: '主动暂停', statusZh: null });
+    expect(groupKeyForTrial(paused)).toBe('other');
+    expect(trialStatusLabel(paused)).toBe('主动暂停');
+  });
+
+  it('不认识的状态词就是「其他状态」，不塞进任何一组', () => {
     expect(groupKeyForTrial(trial({ statusRaw: 'UNKNOWN_TO_US', statusZh: null }))).toBe('other');
   });
 
@@ -165,6 +182,27 @@ describe('分组', () => {
 
   it('空的组不出现', () => {
     expect(groupTrials([trial()]).map((group) => group.spec.key)).toEqual(['recruiting']);
+  });
+
+  it('「其他状态」的说明对组里的每一张卡都成立', () => {
+    // Every card in this group can be in Chinese already — the mainland
+    // registry writes its status word that way — so the note may not
+    // explain the group by saying we have no Chinese for those words,
+    // and it may not point at a word that is on none of the cards.
+    const groups = groupTrials([
+      trial({ sourceId: 'NCT6', statusRaw: 'UNKNOWN', statusZh: null }),
+      trial({
+        source: 'chinadrugtrials',
+        sourceId: 'CTR20250001',
+        statusRaw: '主动暂停',
+        statusZh: null,
+      }),
+    ]);
+    const other = groups.find((group) => group.spec.key === 'other');
+    expect(other?.trials).toHaveLength(2);
+    expect(other?.spec.note).toContain('卡片上按注册库的原词显示');
+    expect(other?.spec.note).not.toContain('中文译法');
+    expect(other?.spec.note).not.toContain('ENROLLING_BY_INVITATION');
   });
 
   it('组内按注册库更新日期从新到旧，没有日期的排最后', () => {

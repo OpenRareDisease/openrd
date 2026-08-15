@@ -252,6 +252,10 @@ describe('大片段缺失分支', () => {
     ['未见 4 个重复', false],
     ['阴性', false],
     ['not detected', false],
+    // kb 是另一个单位、另一个界限：同一句指南把 kb 的界写成 10–20，
+    // 「3kb」要落进 1–4 只能靠一次两边都没写过的换算。
+    ['3kb', false],
+    ['3 kb', false],
   ])('D4Z4「%s」→ %s', (raw, expected) => {
     expect(isLargeD4Z4Deletion(reportSays(raw))).toBe(expected);
   });
