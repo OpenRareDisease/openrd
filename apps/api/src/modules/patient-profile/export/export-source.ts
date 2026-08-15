@@ -9,7 +9,8 @@ import {
   readGeneticEvidence,
 } from '../genetic-evidence.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
-import { decodeFirstYear, type YearAnswer } from './year-value.js';
+import { buildClinicalPassportSummary } from '../profile.passport.js';
+import { decodeFirstYearFrom, type YearAnswer } from './year-value.js';
 import type { PatientDocumentDTO, PatientProfileDTO } from '../profile.service.js';
 
 /**
@@ -49,6 +50,22 @@ export interface ExportOptions {
 }
 
 export type FshdDiagnosisType = 'FSHD1' | 'FSHD2' | 'unspecified';
+
+/**
+ * The two stores a 确诊年份 can be read out of, named so the walk that
+ * picks between them can hand back which one answered.
+ *
+ * `baseline` — `baseline.foundation.diagnosisYear`, the questionnaire's
+ *   own slot. Also what `applyGeneticReportAutofill` tops up from the
+ *   evidence document's 诊断日期, and the one of the two that
+ *   `ADMIN_WRITABLE_BASELINE_FIELDS` covers.
+ * `profileColumn` — `patient_profiles.diagnosis_date`, read for its
+ *   year part when that slot is empty. `upsertBaseline` mirrors the
+ *   slot into this column on every write AND on every clear, so this
+ *   store answering is itself the statement that no standing baseline
+ *   write put the year there.
+ */
+export type DiagnosisYearStore = 'baseline' | 'profileColumn';
 
 export interface MilestoneEvent {
   readonly kind: 'wheelchair' | 'niv' | 'afo';
@@ -103,6 +120,29 @@ export interface ReportField {
   readonly observedAtIsUploadTime: boolean;
   readonly category: 'laboratory' | 'exam' | 'imaging';
   /**
+   * True when this is a GENETIC result and the document it was read off
+   * is not the genetics laboratory's own report —
+   * `isLaboratoryGeneticReport` asked, through
+   * `readGeneticEvidence`, of the one document
+   * `pickGeneticEvidenceDocument` named.
+   *
+   * `category` above says what KIND of reading this is and the genetic
+   * specs say `laboratory`, which is true of the assay and false of our
+   * copy of it when the copy is a 病历摘要 quoting one. A serialiser
+   * that emitted the category anyway told a registry a laboratory
+   * measured a number this platform read off a transcription — beside a
+   * `derivedFrom` pointing at the very document that shows it did not.
+   * So the flag travels with the field and the serialisers decide what
+   * their own format may still say.
+   *
+   * FALSE FOR EVERY NON-GENETIC FIELD, whatever kind of document it
+   * came off. A CK value on a 血液检验报告 is a laboratory result
+   * measured by that laboratory; nothing about it is transcribed, and a
+   * flag that spread to it would strip the category off the readings it
+   * is correct for.
+   */
+  readonly transcribedGeneticReading: boolean;
+  /**
    * The ledger key a coding WOULD be looked up under. Null where no
    * candidate exists at all. Never a code — see codings.ts.
    */
@@ -114,14 +154,68 @@ export interface NormalisedSource {
   readonly options: ExportOptions;
   readonly diagnosisType: FshdDiagnosisType;
   readonly diagnosisTypeRawZh: string | null;
+  /**
+   * WHICH STORE THE PRINTED 分型 CAME OUT OF.
+   *
+   * `diagnosisTypeRawZh` resolves the baseline questionnaire's own slot
+   * first and `patient_profiles.genetic_mutation` after it, and for one
+   * round it threw away which one answered. Everything downstream then
+   * described the first: the provenance sentence said the value sits in
+   * the questionnaire slot and that the read-time autofill tops that
+   * slot up, and `withOriginNote` looked up the marker for that slot —
+   * so a 分型 that came off the free-text column was described by a
+   * paragraph about an empty box, and could be stamped with an
+   * administrator's name recorded against a value nobody was looking
+   * at. The passport already carries this (`DiagnosisValueSlot`), and
+   * carrying it here is what lets the two agree.
+   *
+   * `none` when nothing is on record, which is neither store.
+   */
+  readonly diagnosisTypeStore: 'baseline' | 'profile_column' | 'none';
   readonly diagnosisYear: YearAnswer;
+  /**
+   * WHICH STORE THE PRINTED 确诊年份 CAME OUT OF, on the same terms.
+   *
+   * `null` when neither answered — 记不清了 and 未采集 both land here,
+   * and neither has an author to describe.
+   */
+  readonly diagnosisYearStore: DiagnosisYearStore | null;
   readonly birthYear: YearAnswer;
   readonly geneticEvidence: {
     readonly d4z4: string | null;
     readonly haplotype: string | null;
     readonly methylation: string | null;
-    readonly hasGeneticReport: boolean;
   };
+  /**
+   * WHETHER THIS PROFILE IS GENETICALLY CONFIRMED, as the clinical
+   * passport answers it — `buildClinicalPassportSummary`'s
+   * `diagnosis.confirmation`, asked here rather than re-derived.
+   *
+   * THE THREE SERIALISERS BELOW ARE NOT ALLOWED A FOURTH ANSWER. Each
+   * of them used to ask `hasGeneticReport`, which was 「is ANY document
+   * on file the laboratory's own report」 — a different question, and
+   * true in states this platform will not call confirmed. A genetics
+   * report that read out nothing, on file beside a 病历摘要 quoting the
+   * repeat count, answered it true: the FHIR Condition went out as
+   * verificationStatus=confirmed and TREAT-NMD's
+   * diagnosis.geneticallyConfirmed as true, for the same profile whose
+   * passport, referral pack and anesthesia card all said 未经基因确诊
+   * and whose exported genetic values name
+   * `TRANSCRIBED_EVIDENCE_LABEL_ZH` as their source.
+   *
+   * Taken off the passport and not off the documents because the rule
+   * is not 「a report exists」: it is that the graded evidence came off
+   * the laboratory's own report AND states a result the guideline
+   * accepts. That rule lives in one place, it moves, and a registry
+   * receiving `confirmed` has to move with it.
+   *
+   * WHAT IT IS NOT. It says nothing about whether a report is on file
+   * — a patient with an unreadable one is unconfirmed here and still
+   * has it — and nothing about who typed any archived value. Which
+   * document was READ is `geneticEvidenceReading`, and authorship is
+   * `fieldOrigins` and the provenance sentences.
+   */
+  readonly geneticallyConfirmed: boolean;
   /**
    * What this platform reads for those same three fields right now, off
    * the ONE document that is this profile's genetic evidence.
@@ -326,6 +420,44 @@ export const NO_ADMIN_FIELD_ORIGIN_NOTE_ZH = '本次导出的基线字段没有�
 export type GeneticBaselineField = 'diagnosisType' | 'd4z4' | 'haplotype' | 'methylation';
 
 /**
+ * THE BASELINE PATH WHOSE PROVENANCE MARKER DESCRIBES THE 分型 THIS
+ * EXPORT PRINTED, or null when none does.
+ *
+ * `diseaseBackground.diagnosisType` and
+ * `patient_profiles.genetic_mutation` are two different values, and the
+ * marker belongs to whichever one is on the page. Attaching the
+ * baseline slot's marker to a value the column supplied stamps an
+ * administrator's name onto a string they never saw — and the state it
+ * happens in is the one where that slot is EMPTY, so the marker being
+ * looked up is about a value this document does not contain.
+ *
+ * Shared rather than restated because two files ask it: the value's own
+ * provenance sentence and the FHIR Condition's 分型 note, which is a
+ * second rendering of the same marker on the same value.
+ */
+export const diagnosisTypeMarkerPath = (source: NormalisedSource): string | null =>
+  source.diagnosisTypeStore === 'baseline' ? 'diseaseBackground.diagnosisType' : null;
+
+/**
+ * THE BASELINE PATH WHOSE PROVENANCE MARKER DESCRIBES THE 确诊年份 THIS
+ * EXPORT PRINTED, or null when none does.
+ *
+ * The same rule as `diagnosisTypeMarkerPath` over the other pair of
+ * stores. Null ONLY when the printed year came off
+ * `patient_profiles.diagnosis_date`: there the questionnaire's slot is
+ * empty, so its marker is about a value this document does not carry.
+ * Where nothing was printed at all — 记不清了, 未采集 — the sentence is
+ * about the slot itself and the marker is about the same slot, so it
+ * still applies; an administrator writing 「记不清了」 into it is a state
+ * this export must be able to report.
+ *
+ * Shared for the reason its sibling is: the provenance sentence and the
+ * FHIR Condition's 确诊年份 note are two renderings of one marker.
+ */
+export const diagnosisYearMarkerPath = (source: NormalisedSource): string | null =>
+  source.diagnosisYearStore === 'profileColumn' ? null : 'foundation.diagnosisYear';
+
+/**
  * 分型 IS IN THIS TABLE, and joined it for the reason the other three
  * are in it.
  *
@@ -348,39 +480,57 @@ export type GeneticBaselineField = 'diagnosisType' | 'd4z4' | 'haplotype' | 'met
 const GENETIC_BASELINE_VALUE_ORIGINS: Record<
   GeneticBaselineField,
   {
-    readonly path: string;
+    /**
+     * The baseline path whose provenance marker is about THE VALUE THIS
+     * SENTENCE PRINTS, or null when no marker is about it.
+     *
+     * A function rather than a string because 分型 is the one whose
+     * printed value does not always sit in the baseline: see
+     * `diagnosisTypeMarkerPath`.
+     */
+    readonly markerPath: (source: NormalisedSource) => string | null;
     readonly patientFormDrawsABox: boolean;
     /** The archived value this sentence is about, as the export holds
      *  it — the string compared against the report's reading. */
     readonly archived: (source: NormalisedSource) => string | null;
     /** How the sentence opens: where the value sits. */
     readonly locationZh: (source: NormalisedSource) => string;
+    /** What follows the location: which store holds the value and who
+     *  can write that store. Per field, and for 分型 per store. */
+    readonly storeClauseZh: (source: NormalisedSource) => string;
   }
 > = {
   diagnosisType: {
-    path: 'diseaseBackground.diagnosisType',
+    markerPath: diagnosisTypeMarkerPath,
     patientFormDrawsABox: true,
     archived: (source) => source.diagnosisTypeRawZh,
     locationZh: (source) =>
       `本平台档案中记录的「${source.diagnosisTypeRawZh}」，本次导出的分型由它归一而来`,
+    storeClauseZh: (source) =>
+      source.diagnosisTypeStore === 'profile_column'
+        ? GENETIC_TYPE_FROM_PROFILE_COLUMN_CLAUSE_ZH
+        : GENETIC_VALUE_WITH_BOX_CLAUSE_ZH,
   },
   d4z4: {
-    path: 'diseaseBackground.d4z4',
+    markerPath: () => 'diseaseBackground.d4z4',
     patientFormDrawsABox: true,
     archived: (source) => source.geneticEvidence.d4z4,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+    storeClauseZh: () => GENETIC_VALUE_WITH_BOX_CLAUSE_ZH,
   },
   haplotype: {
-    path: 'diseaseBackground.haplotype',
+    markerPath: () => 'diseaseBackground.haplotype',
     patientFormDrawsABox: false,
     archived: (source) => source.geneticEvidence.haplotype,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+    storeClauseZh: () => GENETIC_VALUE_NO_BOX_CLAUSE_ZH,
   },
   methylation: {
-    path: 'diseaseBackground.methylation',
+    markerPath: () => 'diseaseBackground.methylation',
     patientFormDrawsABox: false,
     archived: (source) => source.geneticEvidence.methylation,
     locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+    storeClauseZh: () => GENETIC_VALUE_NO_BOX_CLAUSE_ZH,
   },
 };
 
@@ -394,6 +544,24 @@ const GENETIC_VALUE_LOCATION_ZH = '本平台档案中记录的值';
  *  tail's business, and the tail is where the reading is. */
 const GENETIC_VALUE_WITH_BOX_CLAUSE_ZH =
   '基线问卷为这一项提供输入框；同时本平台在读取档案时会用这份档案基因证据的解析结果补上档案里空着的这一项，不留记录，而问卷的输入框预填的正是读取到的档案值，保存时一并写回。';
+
+/**
+ * What follows the location for a 分型 that is NOT in the baseline
+ * questionnaire's slot.
+ *
+ * The slot is empty and the printed string is
+ * `patient_profiles.genetic_mutation`, which is a different field with
+ * a different set of writers: the patient's own profile endpoint, and
+ * the same read-time autofill, which fills that column off the evidence
+ * document's 分型 in the same pass and with the same silence. It says
+ * what is absent from the marker block rather than naming an author,
+ * because `fieldOrigins` covers baseline paths only — so this value's
+ * absence from that list is not evidence about it either way, and a
+ * sentence that let a reader take it as such would be the same false
+ * signature the marker itself would have been.
+ */
+const GENETIC_TYPE_FROM_PROFILE_COLUMN_CLAUSE_ZH =
+  '这个值不在基线问卷的分型栏位里——那一栏是空的——而在患者档案主记录上的基因突变自由文本栏；本平台在读取档案时也会用这份档案基因证据的解析结果补上空着的这一栏，不留记录。本导出的基线字段来源清单（fieldOrigins）只覆盖基线问卷的栏位，不覆盖这一栏，所以这个值没有出现在那份清单上并不说明它是谁写的。';
 
 /** What follows it for a field with no box anywhere. What it rules out
  *  holds whatever the reports say. */
@@ -475,6 +643,78 @@ const EVIDENCE_IS_TRANSCRIPTION_NOTE_ZH = `那一份不是基因报告：本平�
 /** The note, or nothing, folded on where a tail ends. */
 const transcriptionNoteZh = (laboratory: boolean) =>
   laboratory ? '' : EVIDENCE_IS_TRANSCRIPTION_NOTE_ZH;
+
+/**
+ * WHAT 基因确诊 MEANS ON THIS PLATFORM, in the one wording every export
+ * states it in.
+ *
+ * `geneticallyConfirmed` is one boolean and the three formats each have
+ * a slot that has to explain it — FHIR on `Condition.verificationStatus.text`,
+ * TREAT-NMD on the item's `provenanceZh`, Phenopacket in the omission
+ * that stands in for a field the format does not have. Three wordings
+ * of one rule is three things to keep true, and a receiver holding two
+ * of these exports side by side would be reading them against each
+ * other.
+ *
+ * IT DOES NOT ENUMERATE THE TESTS THAT EARN IT. 「D4Z4 重复数、4q 单倍型
+ * 或 EcoRI 片段」 is the rule restated, and a restatement is a second
+ * copy that goes stale the first time the rule moves — a report naming
+ * both probes rather than stating a haplotype has a 4q 单倍型 on it and
+ * is not a confirmation, so a sentence promising the reader those three
+ * names starts lying at that point. What each of these documents does
+ * carry is the readings themselves, item by item, with the document
+ * they came off named beside them.
+ *
+ * 可作确诊依据的基因结果 is the anesthesia card's phrase, unchanged: one
+ * patient can be holding that card and this export at the same desk.
+ */
+export const GENETICALLY_CONFIRMED_REASON_ZH =
+  '本平台把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，且报告上有可作确诊依据的基因结果。文件类型以解析器的判定为准，解析未落地时按上传时声明的类型；报告内容未经本平台人工复核';
+
+/**
+ * …and the negative, which is a statement about what this platform HAS
+ * READ and about nothing else.
+ *
+ * 「没有基因报告」 is what this sentence must not say, and what the flag
+ * it replaced did say. A genetics report can be on file and unreadable,
+ * or on file and silent about every result; the patient is holding it
+ * either way, and an export that tells a registry no report exists
+ * sends somebody to re-order a test that has already been run.
+ */
+export const NOT_GENETICALLY_CONFIRMED_REASON_ZH =
+  '本平台没有把这份档案判定为基因确诊：本平台没有从基因检测报告里读到可作确诊依据的基因结果。这不表示该患者没有做过基因检测，也不表示他手里没有报告 —— 只表示本平台没有读到';
+
+/** One of the two, chosen by the shared answer. */
+export const geneticConfirmationReasonZh = (source: NormalisedSource): string =>
+  source.geneticallyConfirmed
+    ? GENETICALLY_CONFIRMED_REASON_ZH
+    : NOT_GENETICALLY_CONFIRMED_REASON_ZH;
+
+/**
+ * WHICH DOCUMENT THIS PLATFORM ACTUALLY READ THE GENETIC VALUES OFF,
+ * as a sentence, for the formats that have room for one.
+ *
+ * A SEPARATE QUESTION FROM CONFIRMATION, AND ASKED SEPARATELY. The two
+ * were folded together and the fold is what produced the defect: a
+ * disclosure that branched on 「is a report on file」 wrote the
+ * transcription warning only when no report existed — the half of the
+ * state space where there is no transcription to warn about — and
+ * stayed silent in the half where the values on the page were read off
+ * a 病历摘要 while a silent genetics report sat beside it.
+ *
+ * THREE STATES, because a receiver acts differently on each. Nothing
+ * read at all is not the same as read off a transcription, and neither
+ * is the same as read off the laboratory's own report.
+ */
+export const geneticEvidenceDocumentZh = (source: NormalisedSource): string => {
+  const { documentId, laboratory } = source.geneticEvidenceReading;
+  if (documentId === null) {
+    return '本平台此刻没有可作为这份档案基因证据来读的文件。';
+  }
+  return laboratory
+    ? '本平台读作这份档案基因证据的那一份是基因检测报告。'
+    : `本平台读作这份档案基因证据的那一份不是基因报告，来源标为「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」，上面写着的基因结果是从别处转录来的，不是实验室出的结论。`;
+};
 
 /**
  * …and the evidence document reads the same thing, for a field with no
@@ -559,17 +799,19 @@ export const geneticValueProvenanceZh = (
           ? geneticValueMatchesEvidenceWithBoxTailZh(laboratory)
           : geneticValueFromEvidenceTailZh(laboratory)
         : geneticValueReportDiffersTailZh(reading, laboratory);
-  const base =
-    `${spec.locationZh(source)}。` +
-    (spec.patientFormDrawsABox
-      ? GENETIC_VALUE_WITH_BOX_CLAUSE_ZH
-      : GENETIC_VALUE_NO_BOX_CLAUSE_ZH) +
-    tail;
+  const base = `${spec.locationZh(source)}。${spec.storeClauseZh(source)}${tail}`;
+  const markerPath = spec.markerPath(source);
+  // No marker is about this value, so no marker is folded in. The store
+  // clause is what says so — it names the store the value sits in and
+  // states that the marker block does not cover it, which is a claim a
+  // reader can check against `fieldOrigins` rather than infer from an
+  // absence.
+  if (!markerPath) return base;
   // The marked sentence keeps the location and drops everything after
   // it — including 分型's own longer location, which says which string
   // the exported value was classified from and stays true of an
   // administrator's entry.
-  return withOriginNote(source, spec.path, base, spec.locationZh(source));
+  return withOriginNote(source, markerPath, base, spec.locationZh(source));
 };
 
 /**
@@ -593,10 +835,54 @@ export const geneticValueProvenanceZh = (
  * comparing them — the receiver has both, and 「本平台没有留下记录」
  * holds whether they agree or not.
  */
-const DIAGNOSIS_YEAR_LOCATION_ZH = '档案中的确诊年份；该栏位缺失时回退到确诊日期的年份部分';
+const DIAGNOSIS_YEAR_RULE_ZH = '档案中的确诊年份；该栏位缺失时回退到确诊日期的年份部分';
+
+/**
+ * WHERE THE YEAR ON THE PAGE ACTUALLY CAME FROM, which is not the same
+ * sentence as the rule above.
+ *
+ * `DIAGNOSIS_YEAR_RULE_ZH` states the fallback chain and stops, and
+ * everything that followed it described the FIRST link: the
+ * questionnaire draws a box for that slot, the autofill tops that slot
+ * up, so the platform cannot tell the two apart. The decoder prefers
+ * that slot and only falls back — so whenever the fallback answered,
+ * the slot it describes is EMPTY, and 「区分不了」 was this export
+ * declining to state something it knows. A registry reading two
+ * profiles could not tell 「the patient answered the question」 from
+ * 「nobody ever answered it and we took the year off a date column」.
+ *
+ * So each store opens with where the printed year sits, and the rule
+ * itself is kept for the answers that are not a year: 记不清了 and
+ * 未采集 have no store and no author, only a rule that was applied to
+ * nothing.
+ */
+const DIAGNOSIS_YEAR_LOCATION_ZH: Record<DiagnosisYearStore, string> = {
+  baseline: '档案中基线问卷的确诊年份栏位',
+  profileColumn:
+    '基线问卷的确诊年份栏位是空的，本次导出的年份取自患者档案主记录上的确诊日期的年份部分',
+};
 
 const DIAGNOSIS_YEAR_BOX_CLAUSE_ZH =
   '基线问卷为这一项提供输入框；同时本平台在读取档案时会用这份档案基因证据上的诊断日期补上档案里空着的这一项，不留记录，而问卷的输入框预填的正是读取到的档案值，保存时一并写回。';
+
+/**
+ * …and the same, for the year that came off `patient_profiles
+ * .diagnosis_date` instead.
+ *
+ * NAMES WHAT THE EMPTY SLOT RULES OUT. `upsertBaseline` writes that
+ * column from `foundation.diagnosisYear` on every save AND on every
+ * clear, so a standing baseline answer cannot leave the slot empty and
+ * the column full — which is why this branch can say the year is not a
+ * questionnaire answer at all, where the branch above can only say it
+ * might be. What is left is the patient's own profile endpoint and the
+ * read-time autofill, and nothing on record separates them.
+ *
+ * The marker block is not consulted on this branch and the clause says
+ * so: `foundation.diagnosisYear` is admin-writable, its marker would
+ * still be in the baseline, and it would be about the empty slot.
+ */
+const DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH =
+  '基线问卷为确诊年份提供输入框，但这份档案的那一栏是空的；保存基线时那一栏会连同确诊日期一起写入或一起清空，所以本次导出的这个年份不是问卷里填的答案。确诊日期这一栏由患者自己的档案接口写入，本平台在读取档案时也会用这份档案基因证据上的诊断日期补上空着的它，不留记录。本导出的基线字段来源清单（fieldOrigins）说的是基线问卷的栏位，不覆盖这一栏。';
 
 /** The read scope, plus the clause that puts 诊断日期 inside it — the
  *  shared constant enumerates the genetic results, and a receiver
@@ -611,29 +897,59 @@ const DIAGNOSIS_DATE_READ_SCOPE_ZH = `${GENETIC_EVIDENCE_READ_SCOPE_ZH}，那一
 
 const DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH = `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份没有诊断日期。这不等于该患者手里没有写着确诊时间的报告。这个年份当初如何进入档案，本平台没有留下记录，来源无法确定。`;
 
-const diagnosisYearFromReportTailZh = (reading: string, laboratory: boolean) =>
-  `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份的诊断日期是「${reading}」，本平台取其中的年份。所以这个年份是患者在问卷里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。${transcriptionNoteZh(laboratory)}`;
+/**
+ * …and the evidence document states a 诊断日期. One ending per store,
+ * because the two do not have the same set of possible authors.
+ *
+ * The 问卷 arm keeps 「区分不了」, which is the whole of what is known
+ * about a slot the patient's box and the autofill both write. The
+ * column arm does not offer the questionnaire at all — see
+ * `DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH` for what an empty slot
+ * beside a full column rules out.
+ */
+const diagnosisYearFromReportTailZh = (
+  reading: string,
+  laboratory: boolean,
+  store: DiagnosisYearStore,
+) =>
+  `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份的诊断日期是「${reading}」，本平台取其中的年份。${
+    store === 'baseline'
+      ? '所以这个年份是患者在问卷里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。'
+      : '所以这个确诊日期是患者自己在档案里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。'
+  }${transcriptionNoteZh(laboratory)}`;
 
 export const diagnosisYearProvenanceZh = (source: NormalisedSource): string => {
   // 记不清了 and 「never asked」 are answers about the question, not
   // values with an author: there is nothing for a report reading to
-  // have supplied and nothing for the autofill to have written.
-  if (source.diagnosisYear.kind !== 'year') {
-    return withOriginNote(source, 'foundation.diagnosisYear', DIAGNOSIS_YEAR_LOCATION_ZH);
+  // have supplied and nothing for the autofill to have written. Neither
+  // names a store either, so what is printed is the rule, and the
+  // marker still rides along — an administrator can write 记不清了 into
+  // the slot that holds it.
+  const store = source.diagnosisYearStore;
+  const markerPath = diagnosisYearMarkerPath(source);
+  if (source.diagnosisYear.kind !== 'year' || store === null) {
+    return markerPath
+      ? withOriginNote(source, markerPath, DIAGNOSIS_YEAR_RULE_ZH)
+      : DIAGNOSIS_YEAR_RULE_ZH;
   }
+  const locationZh = DIAGNOSIS_YEAR_LOCATION_ZH[store];
   const { documentId, laboratory, diagnosisDate } = source.geneticEvidenceReading;
   const tail =
     diagnosisDate === null
       ? documentId === null
         ? GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH
         : DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH
-      : diagnosisYearFromReportTailZh(diagnosisDate, laboratory);
-  return withOriginNote(
-    source,
-    'foundation.diagnosisYear',
-    `${DIAGNOSIS_YEAR_LOCATION_ZH}。${DIAGNOSIS_YEAR_BOX_CLAUSE_ZH}${tail}`,
-    DIAGNOSIS_YEAR_LOCATION_ZH,
-  );
+      : diagnosisYearFromReportTailZh(diagnosisDate, laboratory, store);
+  const clauseZh =
+    store === 'baseline' ? DIAGNOSIS_YEAR_BOX_CLAUSE_ZH : DIAGNOSIS_YEAR_PROFILE_COLUMN_CLAUSE_ZH;
+  const base = `${locationZh}。${clauseZh}${tail}`;
+  // The marker is about `foundation.diagnosisYear`. On the column
+  // branch that slot is empty and holds a different value from the one
+  // printed, so no marker describes this year and none is folded in —
+  // the clause above is where the reader is told the block does not
+  // cover it.
+  if (!markerPath) return base;
+  return withOriginNote(source, markerPath, base, locationZh);
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -841,7 +1157,7 @@ const documentFields = (document: PatientDocumentDTO): Record<string, unknown> |
 
 const collectReportFields = (
   documents: readonly PatientDocumentDTO[],
-  geneticEvidenceDocumentId: string | null,
+  geneticEvidenceReading: NormalisedSource['geneticEvidenceReading'],
 ): ReportField[] => {
   const out: ReportField[] = [];
   // Newest first so a consumer taking the head of each key gets the
@@ -870,7 +1186,7 @@ const collectReportFields = (
     if (!fields) return;
     const reportTime = pickReading(fields, ['reportTime', 'report_time']);
     REPORT_FIELD_SPECS.forEach((spec) => {
-      if (spec.geneticEvidenceOnly && document.id !== geneticEvidenceDocumentId) return;
+      if (spec.geneticEvidenceOnly && document.id !== geneticEvidenceReading.documentId) return;
       const value = pickReading(fields, spec.keys);
       if (value === null) return;
       out.push({
@@ -879,6 +1195,13 @@ const collectReportFields = (
         value,
         documentId: document.id,
         documentType: document.documentType,
+        // Whose page this reading is on, taken off the same read that
+        // named the document rather than re-derived from its type here.
+        // Only a genetic reading can be a transcription in this sense:
+        // the other specs are measurements the document's own
+        // laboratory made. See ReportField.transcribedGeneticReading.
+        transcribedGeneticReading:
+          spec.geneticEvidenceOnly === true && !geneticEvidenceReading.laboratory,
         // The report's own stated time when OCR read one, else the
         // upload time — with the substitution recorded, not silent.
         // Every consumer of `observedAt` has to decide what to do
@@ -903,7 +1226,22 @@ export const normaliseSource = (
   const status = section(baseline, 'currentStatus');
   const challenges = section(baseline, 'currentChallenges');
 
-  const diagnosisTypeRaw = text(disease?.diagnosisType) ?? text(profile.geneticMutation);
+  // WHICH STORE, NOT JUST WHICH STRING. 分型 resolves out of the
+  // baseline questionnaire's slot or out of
+  // `patient_profiles.genetic_mutation`, and collapsing the two into
+  // one string left every sentence downstream describing the first one
+  // — including the marker lookup, which would then be about a slot
+  // this document does not print. See NormalisedSource.diagnosisTypeStore.
+  const diagnosisTypeFromBaseline = text(disease?.diagnosisType);
+  const diagnosisTypeFromColumn = diagnosisTypeFromBaseline ? null : text(profile.geneticMutation);
+  const diagnosisTypeRaw = diagnosisTypeFromBaseline ?? diagnosisTypeFromColumn;
+  const diagnosisYear = decodeFirstYearFrom([
+    // Explicit diagnosis YEAR first, then the year component of the
+    // diagnosis DATE. The date is often back-filled from a report's
+    // print date, so it is the weaker of the two.
+    ['baseline', foundation?.diagnosisYear],
+    ['profileColumn', profile.diagnosisDate],
+  ] as const);
 
   const assistiveDevices = Array.isArray(status?.assistiveDevices)
     ? status.assistiveDevices.filter(
@@ -931,19 +1269,24 @@ export const normaliseSource = (
     options,
     diagnosisType: classifyDiagnosisType(diagnosisTypeRaw),
     diagnosisTypeRawZh: diagnosisTypeRaw,
-    // Explicit diagnosis YEAR first, then the year component of the
-    // diagnosis DATE. The date is often back-filled from a report's
-    // print date, so it is the weaker of the two.
-    diagnosisYear: decodeFirstYear(foundation?.diagnosisYear, profile.diagnosisDate),
-    birthYear: decodeFirstYear(foundation?.birthYear, profile.dateOfBirth),
+    diagnosisTypeStore: diagnosisTypeFromBaseline
+      ? 'baseline'
+      : diagnosisTypeFromColumn
+        ? 'profile_column'
+        : 'none',
+    diagnosisYear: diagnosisYear.answer,
+    diagnosisYearStore: diagnosisYear.from,
+    birthYear: decodeFirstYearFrom([
+      ['baseline', foundation?.birthYear],
+      ['profileColumn', profile.dateOfBirth],
+    ] as const).answer,
     geneticEvidence: {
       d4z4: text(disease?.d4z4),
       haplotype: text(disease?.haplotype),
       methylation: text(disease?.methylation),
-      hasGeneticReport: profile.documents.some(
-        (document) => document.documentType === 'genetic_report',
-      ),
     },
+    geneticallyConfirmed:
+      buildClinicalPassportSummary(profile).diagnosis.confirmation === 'genetic',
     geneticEvidenceReading,
     familyHistoryStatement: text(disease?.familyHistory),
     currentStatus: {
@@ -980,7 +1323,7 @@ export const normaliseSource = (
         severity: text(event.severity),
         descriptionZh: text(event.description),
       })),
-    reportFields: collectReportFields(profile.documents, geneticEvidenceReading.documentId),
+    reportFields: collectReportFields(profile.documents, geneticEvidenceReading),
   };
 };
 

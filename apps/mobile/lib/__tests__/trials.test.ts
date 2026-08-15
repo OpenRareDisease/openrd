@@ -7,9 +7,11 @@
  *  1. A status word we invented. The corpus snapshot this feature
  *     replaces rendered `Recruiting` as「招聘」and
  *     `facioscapulohumeral` as「面肩关节疾病」.
- *  2. 「不含仅在国内登记的试验」printed over a list that does contain
- *     them, or 「国内没有」printed when the mainland scraper is simply
- *     down.
+ *  2. 「国内没有」printed when the mainland scraper is simply down —
+ *     and its quieter twin, our own scope printed over the registry's
+ *     answer: a run that came back successful with nothing in it used
+ *     to render as「本页只收录 ClinicalTrials.gov 的记录」, which told
+ *     the reader we do not fetch that registry at all.
  *  3. A date that is one day wrong, or a list with no date at all.
  *  4. 招募中 buried under 已完成.
  *  5. A sentence about 「下面这份名单」 printed over a screen that is
@@ -20,7 +22,7 @@
  */
 
 import {
-  COVERAGE_NOTE_CTGOV_ONLY,
+  COVERAGE_NOTE_NO_CHINA_RECORDS,
   TRIALS_DISCLAIMER,
   describeChinaCoverage,
   describeCtgovStaleness,
@@ -352,12 +354,19 @@ describe('名单到底有没有画出来', () => {
   });
 
   it('固定那句话不声称有一份名单在下面', () => {
-    // 它也是请求还在飞、请求失败、名单为空时印的那一句，那几种情况下
-    // 下面什么都没有。
-    expect(COVERAGE_NOTE_CTGOV_ONLY).not.toContain('本列表');
-    expect(COVERAGE_NOTE_CTGOV_ONLY).not.toContain('下面这份名单');
-    expect(COVERAGE_NOTE_CTGOV_ONLY).toContain('不含仅在国内登记的试验');
-    expect(COVERAGE_NOTE_CTGOV_ONLY).toContain('chinadrugtrials.org.cn');
+    // 它也是请求还在飞、请求失败时印的那一句，那两种情况下下面什么都
+    // 没有。
+    expect(COVERAGE_NOTE_NO_CHINA_RECORDS).not.toContain('本列表');
+    expect(COVERAGE_NOTE_NO_CHINA_RECORDS).not.toContain('下面这份名单');
+    expect(COVERAGE_NOTE_NO_CHINA_RECORDS).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('固定那句话也不声称本平台不抓国内登记平台', () => {
+    // 平台是抓的：chinadrugtrials 在 TRIAL_SOURCES 里，cron 在跑它。
+    // 这句话在请求失败时也印，那时候连它这次跑成什么样都不知道，所以
+    // 它只说页面上现在没有什么。
+    expect(COVERAGE_NOTE_NO_CHINA_RECORDS).not.toContain('只收录');
+    expect(COVERAGE_NOTE_NO_CHINA_RECORDS).not.toContain('不含仅在国内登记的试验');
   });
 
   it('国内取不到、名单又画不出来时，不说名单里剩下什么', () => {
@@ -429,11 +438,34 @@ describe('名单到底有没有画出来', () => {
 });
 
 describe('国内那半边', () => {
-  it('名单里没有国内记录、也没有抓取记录时，说的是固定那句', () => {
+  it('负载里根本没有国内那个来源块时，说的是固定那句', () => {
+    // 服务端每个注册库都发一块，不管它有没有跑过（apps/api
+    // trials.service.ts），所以块不在等于这份负载读不动，而不是一种
+    // 可以命名的状态。固定那句是唯一一句对抓取不作任何声称的。
     const notice = describeChinaCoverage(snapshot());
     expect(notice.tone).toBe('plain');
-    expect(notice.text).toBe(COVERAGE_NOTE_CTGOV_ONLY);
-    expect(notice.text).toContain('不含仅在国内登记的试验');
+    expect(notice.text).toBe(COVERAGE_NOTE_NO_CHINA_RECORDS);
+    expect(notice.text).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('来源块在、只是从来没跑过时，说的是还没抓过，而不是固定那句', () => {
+    const notice = describeChinaCoverage(
+      snapshot(
+        [trial()],
+        [
+          sourceStatus(),
+          sourceStatus({
+            source: 'chinadrugtrials',
+            recordCount: 0,
+            fetchedAt: null,
+            lastRun: null,
+            lastSuccessAt: null,
+          }),
+        ],
+      ),
+    );
+    expect(notice.tone).toBe('plain');
+    expect(notice.text).toContain('国内这部分还没有抓取过');
     expect(notice.text).toContain('chinadrugtrials.org.cn');
   });
 
@@ -516,7 +548,7 @@ describe('国内那半边', () => {
     );
   });
 
-  it('名单里真有国内记录时，不再印那句「不含仅在国内登记的试验」', () => {
+  it('名单里真有国内记录时，不再印那句「本页现在没有来自国内登记平台的记录」', () => {
     // The fixed sentence is a statement about the list on screen. Once
     // the scraper works it stops being true, and printing it anyway
     // would be the page lying about its own contents.
@@ -526,9 +558,109 @@ describe('国内那半边', () => {
         [sourceStatus(), sourceStatus({ source: 'chinadrugtrials' })],
       ),
     );
-    expect(notice.text).not.toContain('不含仅在国内登记的试验');
+    expect(notice.text).not.toContain('本页现在没有来自国内登记平台的记录');
     expect(notice.text).toContain('可能不完整');
     expect(notice.text).toContain('chinadrugtrials.org.cn');
+  });
+});
+
+/**
+ * 国内那次抓取跑成功了，一条记录都没带回来 —— 今天线上就是这个状态。
+ *
+ * 它以前和「从来没跑过」共用同一句话，而那句话说的是本页只收录
+ * ClinicalTrials.gov 的记录。登记库自己的零被印成了我们的缺席，而这
+ * 两件事的区别正是把这个来源接进来的全部意义。
+ */
+describe('国内那次抓取成功了，却一条都没带回来', () => {
+  const cnOkZero = (overrides: Partial<TrialSourceStatus> = {}): TrialSourceStatus =>
+    sourceStatus({
+      source: 'chinadrugtrials',
+      recordCount: 0,
+      fetchedAt: null,
+      lastRun: {
+        startedAt: '2026-08-14T00:03:00.000Z',
+        finishedAt: '2026-08-14T00:03:31.000Z',
+        ok: true,
+      },
+      lastSuccessAt: '2026-08-14T00:03:31.000Z',
+      ...overrides,
+    });
+
+  const withList = (cn: TrialSourceStatus): TrialsSnapshot =>
+    snapshot([trial()], [sourceStatus(), cn]);
+  const withoutList = (cn: TrialSourceStatus): TrialsSnapshot =>
+    snapshot([], [sourceStatus({ recordCount: 0, fetchedAt: null }), cn]);
+
+  it('说的是我们抓过、这次抓成了、什么也没带回来', () => {
+    const notice = describeChinaCoverage(withList(cnOkZero()));
+    expect(notice.text).toContain('国内这部分最近一次抓取');
+    expect(notice.text).toContain('是成功的');
+    expect(notice.text).toContain('但一条记录都没有取回来');
+    expect(notice.text).toContain(formatInstantAsDay('2026-08-14T00:03:31.000Z') as string);
+  });
+
+  it('不说本平台不收录国内登记的试验 —— 抓了，而且这次抓成了', () => {
+    const notice = describeChinaCoverage(withList(cnOkZero()));
+    expect(notice.text).not.toContain('只收录');
+    expect(notice.text).not.toContain('不含仅在国内登记的试验');
+    expect(notice.text).not.toBe(COVERAGE_NOTE_NO_CHINA_RECORDS);
+  });
+
+  it('也不替登记库回答「国内没有相关试验」', () => {
+    // ok = TRUE 配一份空名单，分不出「登记库上没有」和「我们的抓取
+    // 一条也没认出来」。能分开的是 source_reported_total（迁移 027），
+    // 那一列不上线路 —— TrialSourceStatus 没有承接它的字段。
+    const notice = describeChinaCoverage(withList(cnOkZero()));
+    expect(notice.text).toContain('这不等于国内就没有相关的试验');
+  });
+
+  it('不是 warn —— 这一格里没有东西坏掉', () => {
+    // warn 是留给读者有权知道的失败的。cron 跑完了，活也干了。
+    expect(describeChinaCoverage(withList(cnOkZero())).tone).toBe('plain');
+  });
+
+  it('上次成功的时间读不出来时，不在同一句里说自己没成功过', () => {
+    const notice = describeChinaCoverage(withList(cnOkZero({ lastSuccessAt: null })));
+    expect(notice.text).toContain('是成功的');
+    expect(notice.text).not.toContain('到目前为止还没有成功抓取过');
+    expect(notice.text).not.toContain('上次成功抓取');
+  });
+
+  it('名单没画出来时，不说下面那份名单里剩下什么', () => {
+    const notice = describeChinaCoverage(withoutList(cnOkZero()));
+    expect(notice.text).not.toContain('下面这份名单');
+    // 该说的还是说了。
+    expect(notice.text).toContain('但一条记录都没有取回来');
+    expect(notice.text).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('跑成功却空手、跑失败、从没跑过、真有记录：四句不同的话', () => {
+    const failed = cnOkZero({
+      lastRun: {
+        startedAt: '2026-08-14T00:03:00.000Z',
+        finishedAt: '2026-08-14T00:03:31.000Z',
+        ok: false,
+      },
+      lastSuccessAt: '2026-07-30T02:00:05.000Z',
+    });
+    const neverRan = cnOkZero({ lastRun: null, lastSuccessAt: null });
+    const withRecords = snapshot(
+      [trial(), trial({ source: 'chinadrugtrials', sourceId: 'CTR20250001' })],
+      [sourceStatus(), cnOkZero({ recordCount: 1, fetchedAt: '2026-08-14T00:03:31.000Z' })],
+    );
+    const sentences = [
+      describeChinaCoverage(withList(cnOkZero())).text,
+      describeChinaCoverage(withList(failed)).text,
+      describeChinaCoverage(withList(neverRan)).text,
+      describeChinaCoverage(withRecords).text,
+    ];
+    expect(new Set(sentences).size).toBe(4);
+    for (const sentence of sentences) {
+      // 没有一句说本平台不抓这个登记库，也没有一句替它回答。
+      expect(sentence).not.toContain('只收录');
+      expect(sentence).not.toContain('不含仅在国内登记的试验');
+      expect(sentence).toContain('chinadrugtrials.org.cn');
+    }
   });
 });
 

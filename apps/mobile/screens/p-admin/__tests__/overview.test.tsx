@@ -68,7 +68,7 @@ jest.mock('../../../lib/admin-api', () => {
 });
 
 import { AdminResponseError } from '../../../lib/admin-api';
-import { ADMIN_AUDIT_NOTICE } from '../common';
+import { ADMIN_AUDIT_NOTICE_OVERVIEW } from '../common';
 import AdminOverviewScreen from '../index';
 
 const textContent = (node: ReactTestInstance | string | number | null): string => {
@@ -207,6 +207,66 @@ describe('取不到的那一项会说自己取不到，不会显示 0', () => {
     const screen = textContent((await render()).root);
     expect(screen).toContain('窗口内没有可计入的调用');
     expect(screen).not.toContain('服务端没有返回这一项');
+  });
+
+  it('does not blame the server for a corpus that is simply empty', async () => {
+    // THE STATE EVERY STACK IS IN ON ITS FIRST DAY. `getCorpusStatus`
+    // asks `kb_chunks` for totals and for a GROUP BY over `embed_model`;
+    // with no rows the totals are zeroes with NULL timestamps and the
+    // breakdown is no rows at all. The page rendered both derived rows
+    // as 「服务端没有返回这一项」, so the operator standing in front of a
+    // freshly deployed stack was told the API was broken and sent to
+    // read logs that say nothing.
+    const actual = readAll();
+    mockCorpus.mockResolvedValue(
+      actual.readAdminCorpusStatus({
+        chunkCount: 0,
+        sourceFileCount: 0,
+        unembeddedChunkCount: 0,
+        embedModels: [],
+        oldestUpdatedAt: null,
+        newestUpdatedAt: null,
+      }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('语料库里还没有分块');
+    expect(screen).toContain('全新部署还没导语料时就是这个样子');
+    // The AI block is untouched by this and still renders its own
+    // numbers, so 「服务端没有返回这一项」 must be absent because the
+    // corpus block stopped saying it — not because nothing else could.
+    expect(screen).not.toContain('服务端没有返回这一项');
+  });
+
+  it('still says a model list is missing when the corpus is not empty', async () => {
+    // The other side of the discriminator: chunks in the table and no
+    // breakdown of them means the field did not arrive. 「语料库里还没有
+    // 分块」 here would deny the count printed one row above it.
+    const actual = readAll();
+    mockCorpus.mockResolvedValue(
+      actual.readAdminCorpusStatus({ ...CORPUS, embedModels: undefined, newestUpdatedAt: null }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('服务端没有返回这一项');
+    expect(screen).not.toContain('语料库里还没有分块');
+  });
+
+  it('cannot tell either way when the chunk count itself did not arrive', async () => {
+    // No denominator, so no answer. Asserting an empty corpus off a
+    // count the page just said it did not receive is the failure the
+    // AI block's third case exists for, arriving through the other
+    // block.
+    const actual = readAll();
+    mockCorpus.mockResolvedValue(
+      actual.readAdminCorpusStatus({
+        ...CORPUS,
+        chunkCount: undefined,
+        embedModels: [],
+        newestUpdatedAt: null,
+      }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('服务端没有返回这一项');
+    expect(screen).not.toContain('语料库里还没有分块');
   });
 
   it('still prints a real zero as a number', async () => {
@@ -355,18 +415,18 @@ describe('§B4 导出 is reachable from here', () => {
 });
 
 describe('the audit banner is true on a page whose rows name no patient', () => {
-  it('draws the one notice, and it promises no patient here', async () => {
+  it('draws the notice written for this screen, and it promises no patient here', async () => {
     // Everything this screen requests is mounted without a
     // `targetParam` (admin.routes.ts), so every row it writes has
     // `targetUserId: null` — asserted against the real router in
-    // apps/api/src/modules/admin/admin.routes.test.ts. The banner is a
-    // single constant that `AdminScreen` draws on every back-office
-    // screen, so it has to hold HERE as well as over a patient record;
-    // it used to say 「看了哪位患者的哪个接口」, which no row on this
-    // page could support.
+    // apps/api/src/modules/admin/admin.routes.test.ts. The banner used
+    // to be one constant drawn on every back-office screen and promised
+    // 「看了哪位患者的哪个接口」, which no row on this page could
+    // support. Asserting the constant this screen was given is what
+    // stops it being handed another screen's promise later.
     readAll();
     const screen = textContent((await render()).root);
-    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE_OVERVIEW);
     expect(screen).not.toContain('看了哪位患者');
   });
 });

@@ -6,6 +6,8 @@ import {
 } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
+  geneticConfirmationReasonZh,
+  geneticEvidenceDocumentZh,
   instrumentOmission,
   resourceUuid,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
@@ -127,6 +129,39 @@ export const buildPhenopacketExport = (
         source.diagnosisTypeRawZh === null
           ? '档案中没有记录 FSHD 分型。Phenopacket 的 Disease.term 必须是一个本体项，没有可核对的分型就没有可写的本体项——留空而不是默认写成最常见的 1 型。'
           : `档案记录的分型「${source.diagnosisTypeRawZh}」无法明确归入 FSHD1 或 FSHD2，因此不写 Disease 条目。`,
+    });
+  } else {
+    /**
+     * WHAT A `Disease.term` IN THIS PACKET DOES NOT SAY.
+     *
+     * The v2 `Disease` message carries `term`, `excluded`, onset,
+     * resolution, stage, TNM finding, primary site and laterality —
+     * and nothing that records HOW the diagnosis was established.
+     * `excluded` is the wrong slot to reach for: it means the disease
+     * was RULED OUT, and its default false is not a confirmation.
+     *
+     * So a bare term made a genetically confirmed patient and a patient
+     * whose repeat count this platform read off a 病历摘要 into the same
+     * packet, and nothing anywhere in the envelope said so. The FHIR
+     * bundle answers this on `Condition.verificationStatus`; this
+     * omission is the same answer, from `geneticallyConfirmed`, in the
+     * one place this format leaves for it.
+     *
+     * WHICH DOCUMENT WAS READ IS ASKED SEPARATELY, AND FIRST. This
+     * branched on 「is a report on file」 before it branched on which
+     * document supplied the values, so the transcription disclosure was
+     * written only in the state where no report existed — the half of
+     * the state space that has no transcription in it. The state it was
+     * written FOR is the other half: a genetics report on file that
+     * read out nothing is exactly when the picker falls through to a
+     * 病历摘要, and that packet went out naming a laboratory report and
+     * saying nothing about the page the numbers actually came off.
+     * `geneticEvidenceDocumentZh` asks the reading, so the three states
+     * a receiver acts differently on stay apart.
+     */
+    omissions.push({
+      field: 'diseases[].term（诊断依据）',
+      reasonZh: `Phenopacket 的 Disease 消息只有 term、excluded、发病与分期等字段，没有记录「这个诊断是怎么确立的」的位置；excluded 表示「已排除该病」，它取默认值 false 不是一次确认。因此本文件里的 Disease.term 只表示档案记录的分型归一到了这个本体项，不表示基因确诊。${geneticConfirmationReasonZh(source)}。${geneticEvidenceDocumentZh(source)}这个判定与 FHIR 导出的 Condition.verificationStatus 以及 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 出自同一个答案；该分型的值本身如何进入档案，见 TREAT-NMD 对齐导出中 diagnosis.type 的 provenanceZh 与本信封的 fieldOrigins。`,
     });
   }
 

@@ -850,9 +850,22 @@ describe('AdminController.exportAllPatientsCsv', () => {
     await controller.exportAllPatientsCsv(exportRequest(), res);
 
     expect(captured.statusCode).toBe(428);
-    const body = captured.body as { requiredConfirmation: string; patientCount: number };
+    const body = captured.body as {
+      requiredConfirmation: string;
+      patientCount: number;
+      notes: string[];
+    };
     expect(body.patientCount).toBe(36);
     expect(body.requiredConfirmation).toContain('36');
+    // THE NOTES ARE RENDERED VERBATIM by the 全量导出 screen, which is
+    // why what they name is settled here. The autofill reads whichever
+    // document `pickGeneticEvidenceDocument` picks as a profile's
+    // genetic evidence, and that picker takes a 病历摘要 quoting the
+    // results — so a note naming 基因报告 put a claim about a document
+    // nobody had seen onto an operator's screen, for every patient in
+    // the file at once.
+    expect(body.notes.join('')).toContain('不含「从上传的文件自动补全」的部分');
+    expect(body.notes.join('')).not.toContain('基因报告');
     // Nothing was read and nothing was audited as an export: the
     // operator has not taken anything yet.
     expect(admin.listExportRows).not.toHaveBeenCalled();

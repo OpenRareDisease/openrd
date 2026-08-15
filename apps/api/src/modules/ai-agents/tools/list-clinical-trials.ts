@@ -299,27 +299,51 @@ const describeRetrieval = (retrieval: RetrieveResult, notes: string[] = []): str
 
   // The cache is not a source of truth about which registries exist; it
   // is a source of truth about what we managed to read. So the mainland
-  // half is stated in the answer rather than left as an absence.
+  // half is stated in the answer rather than left as an absence, and
+  // what §A5 is holding up is that a patient must never read this list
+  // as complete for China. Both branches carry that — one says no
+  // mainland record came back and where to go instead, the other says
+  // which platform the mainland rows came from and that scraping a site
+  // with no public API cannot be assumed complete.
   //
-  // §A5 words this as a fixed sentence and it is conditional here, as
-  // it is on the screen (apps/mobile/lib/trials.ts,
-  // `describeChinaCoverage`). The reason is 铁律 1: 「不含只在国内登记的
-  // 试验」 is a claim about the list being rendered, and it turns false
-  // the day one mainland row is in that list. What §A5 is holding up is
-  // that a patient must never read this list as complete for China, and
-  // both branches carry that — one says the mainland registry
-  // contributed nothing and where to go instead, the other says which
-  // platform the mainland rows came from and that scraping a site with
-  // no public API cannot be assumed complete. Neither branch is silent,
-  // and the two surfaces must keep saying the same thing.
-  const cn = meta.sources.find((s) => s.source === 'chinadrugtrials');
-  if (!cn || cn.recordCount === 0) {
-    lines.push(
-      `- 必须说明：这份名单来自 ${TRIAL_SOURCE_LABELS.ctgov}，不含只在国内登记的试验；国内的请查${TRIAL_SOURCE_LABELS.chinadrugtrials}（chinadrugtrials.org.cn）。`,
-    );
-  } else {
+  // NEITHER BRANCH SAYS 「不含只在国内登记的试验」 ANY MORE. That is a
+  // claim about this platform's scope, and this platform fetches
+  // chinadrugtrials.org.cn — the source is in TRIAL_SOURCES, the cron
+  // runs it, and on the day this was written its run came back
+  // successful with zero rows. Printed over that state it told the
+  // patient the mainland registry was outside our reach when what had
+  // happened is that we looked and found nothing. The screen deleted
+  // that sentence rather than qualifying it (apps/mobile/lib/trials.ts,
+  // `describeChinaCoverage`); here it was the worse copy of the two,
+  // because this text is an instruction to a model that will obey it.
+  // What replaces it is the same fact the screen states — no mainland
+  // record is in front of the reader, which is not the registry's
+  // answer about whether any exist.
+  //
+  // BRANCHED ON THE RENDERED ROWS, not on the cache's row count. A
+  // status filter, or the limit, can leave a list with no mainland row
+  // in it while the cache holds several, and 「这份名单里国内登记的那部
+  // 分」 over that list names a part of it that is not there.
+  // `describeChinaCoverage` branches on the records that reached the
+  // screen for the same reason, and the two surfaces must keep saying
+  // the same thing.
+  const chinaRendered = retrieval.chunks.some(
+    (chunk) => chunk.metadata?.source === 'chinadrugtrials',
+  );
+  if (chinaRendered) {
     lines.push(
       `- 必须说明：这份名单里国内登记的那部分来自${TRIAL_SOURCE_LABELS.chinadrugtrials}；该平台没有公开接口，只能按页面抓取，可能不完整，国内的请以 chinadrugtrials.org.cn 上的原始记录为准。`,
+    );
+  } else {
+    // The middle clause describes the list, so it is withheld where
+    // there is no list — a filter that matched nothing and an empty
+    // cache both reach this line, and the second of them goes on to
+    // print EMPTY_CACHE_RULES. Same gate as the screen's
+    // `shownListFetchedOn`.
+    lines.push(
+      `- 必须说明：这次返回的记录里没有一条来自${TRIAL_SOURCE_LABELS.chinadrugtrials}` +
+        `${retrieval.chunks.length > 0 ? `，下面这份名单目前只有 ${TRIAL_SOURCE_LABELS.ctgov} 的记录` : ''}。` +
+        '这不等于国内就没有相关的试验，国内登记的试验请直接查 chinadrugtrials.org.cn。',
     );
   }
 

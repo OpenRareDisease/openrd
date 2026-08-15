@@ -218,6 +218,27 @@ describe('管理员代填的字段要印在 PDF 上', () => {
     expect(html).not.toContain('尚未收到该患者的基因检测报告');
   });
 
+  it('单倍型非允许型的警示条说的是那个结果，不是「没有结果」', () => {
+    // The report is on file, it was read, and 4qB is what it said —
+    // printed on the same sheet with 报告读取 in its bracket. The three
+    // sibling banners deny a reading, so this state may not take one of
+    // them; and the doctor holding this page must not read it as an
+    // exclusion either.
+    const html = buildClinicalPassportPdfHtml(
+      withDiagnosis({
+        diagnosis: {
+          ...(withDiagnosis({}) as { diagnosis: Record<string, unknown> }).diagnosis,
+          confirmation: 'genetic_non_permissive',
+          d4z4Repeats: '3',
+        },
+      }),
+    );
+    expect(html).toContain('⚠ 未构成基因确诊');
+    expect(html).toContain('4q 单倍型不是允许型 4qA');
+    expect(html).toContain('这不是排除诊断');
+    expect(html).not.toContain('没有从基因报告里读出来的');
+  });
+
   it('尚无诊断依据的警示条不说「本节为空」', () => {
     // 甲基化 is in none of the three tests that earn 基因确诊 and is
     // neither 分型 nor 诊断日期, so a report parsed to a methylation

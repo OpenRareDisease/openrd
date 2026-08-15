@@ -831,6 +831,195 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     expect(year).not.toContain('那一份没有诊断日期');
   });
 
+  /**
+   * 分型 HAS TWO STORES AND THE SENTENCE DESCRIBED ONE.
+   *
+   * `diagnosisTypeRawZh` resolves the baseline questionnaire's slot
+   * first and `patient_profiles.genetic_mutation` after it, and the
+   * provenance sentence described the first in every state: a value out
+   * of the free-text column was exported under a paragraph about a box
+   * that is empty, and the marker looked up beside it belonged to that
+   * empty box. An administrator's name would have landed on a string
+   * they never saw.
+   */
+  it('分型来自 genetic_mutation 列时，来源句说的是那一栏，且不套用基线栏位的标记', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = { ...(stored.diseaseBackground as Record<string, unknown>) };
+    delete disease.diagnosisType;
+    const result = build({
+      geneticMutation: 'FSHD1',
+      baseline: {
+        ...stored,
+        diseaseBackground: disease,
+        // A marker on the slot that is now EMPTY. It still rides the
+        // envelope, because it describes the marker block; what it may
+        // not do is describe the value on the page.
+        [BASELINE_PROVENANCE_KEY]: {
+          'diseaseBackground.diagnosisType': {
+            source: 'admin_entered',
+            adminUserId: ADMIN_ID,
+            at: AT,
+          },
+        },
+      },
+      documents: [],
+    } as Partial<PatientProfileDTO>);
+    const item = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.type');
+
+    // The value still exports — this is about the sentence, not about
+    // dropping the column.
+    expect(item?.value).toBe('FSHD1');
+    const provenance = item?.provenanceZh ?? '';
+    expect(provenance).toContain('不在基线问卷的分型栏位里');
+    expect(provenance).toContain('基因突变自由文本栏');
+    // The clause the baseline slot's value gets, and the marker that
+    // goes with it, are both absent.
+    expect(provenance).not.toContain('基线问卷为这一项提供输入框');
+    expect(provenance).not.toContain('不是患者本人填写');
+    // The marker itself is not hidden: it is what the envelope is for.
+    expect(result.fieldOrigins.map((origin) => origin.path)).toContain(
+      'diseaseBackground.diagnosisType',
+    );
+
+    // And the slot's own value keeps the sentence that is true of it,
+    // so the two states differ rather than the column's wording taking
+    // over everywhere.
+    const fromSlot = itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.type')?.provenanceZh ?? '';
+    expect(fromSlot).toContain('基线问卷为这一项提供输入框');
+    expect(fromSlot).not.toContain('基因突变自由文本栏');
+  });
+
+  /**
+   * 确诊年份 HAS TWO STORES TOO, AND SAID IT COULD NOT TELL THEM APART.
+   *
+   * The decoder prefers `foundation.diagnosisYear` and only falls back
+   * to the year part of `patient_profiles.diagnosis_date` — so whenever
+   * the fallback answers, the questionnaire's slot is EMPTY and 「患者在
+   * 问卷里填的，还是某一次读取补上的，区分不了」 was this export
+   * declining to state something it knows. `upsertBaseline` writes that
+   * column from the slot on every save and clears it on every clear,
+   * which is what makes the empty slot beside a full column a real
+   * answer rather than a gap.
+   */
+  it('确诊年份取自确诊日期时，来源句说那一栏是空的，不再说自己区分不了问卷', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const foundation = { ...(stored.foundation as Record<string, unknown>) };
+    delete foundation.diagnosisYear;
+    const result = build({
+      diagnosisDate: '2014-03-02',
+      baseline: {
+        ...stored,
+        foundation,
+        [BASELINE_PROVENANCE_KEY]: {
+          'foundation.diagnosisYear': { source: 'admin_entered', adminUserId: ADMIN_ID, at: AT },
+        },
+      },
+      documents: [],
+    } as Partial<PatientProfileDTO>);
+    const item = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year');
+
+    expect(item?.value).toMatchObject({ answer: 'known', year: 2014 });
+    const provenance = item?.provenanceZh ?? '';
+    expect(provenance).toContain('基线问卷的确诊年份栏位是空的');
+    expect(provenance).toContain('不是问卷里填的答案');
+    // The marker is about the empty slot, so it is not folded in here
+    // either — and the envelope still carries it.
+    expect(provenance).not.toContain('不是患者本人填写');
+    expect(result.fieldOrigins.map((origin) => origin.path)).toContain('foundation.diagnosisYear');
+
+    // The slot's own value keeps 区分不了, which is the whole of what is
+    // known THERE: the box and the read-time autofill both write it.
+    const fromSlot = itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.year')?.provenanceZh ?? '';
+    expect(fromSlot).toContain('档案中基线问卷的确诊年份栏位');
+    expect(fromSlot).not.toContain('不是问卷里填的答案');
+  });
+
+  /**
+   * THE KEY IS WHAT A RECEIVER MAPS ON.
+   *
+   * The item was narrowed to 是否有基因报告 in its label and its
+   * provenance, while `diagnosis.geneticallyConfirmed` stayed in the key
+   * and 「is any document on file the laboratory's report」 stayed in the
+   * value. A registry ingests the key and never reads the label, so it
+   * received a confirmation claim for a profile whose passport, referral
+   * pack and anesthesia card all read 未经基因确诊.
+   */
+  it('diagnosis.geneticallyConfirmed 答的是它的键说的那个问题', () => {
+    const item = itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.geneticallyConfirmed');
+    expect(item?.labelZh).toBe('是否基因确诊');
+    expect(item?.value).toBe(true);
+
+    // The state that separates 「a report is on file」 from 「the graded
+    // evidence came off one」: a genetics report that read out nothing,
+    // beside a 病历摘要 quoting the repeat count. The picker yields to
+    // the transcription; the item may not report a confirmation.
+    const transcribed = itemOf(
+      sectionOf(
+        build({
+          documents: [
+            {
+              ...EXPORT_FIXTURE_PROFILE.documents[0],
+              id: '88888888-8888-4888-8888-888888888881',
+              documentType: 'genetic_report',
+              status: 'parsed',
+              ocrPayload: { fields: { reportTime: '2024-01-28' } },
+            },
+            {
+              ...EXPORT_FIXTURE_PROFILE.documents[0],
+              id: '88888888-8888-4888-8888-888888888883',
+              documentType: 'medical_record',
+              status: 'parsed',
+              uploadedAt: '2024-03-01T06:00:00.000Z',
+              ocrPayload: { fields: { d4z4Repeats: '5', haplotype: '4qA' } },
+            },
+          ] as PatientProfileDTO['documents'],
+        } as Partial<PatientProfileDTO>),
+        'diagnosis',
+      ),
+      'diagnosis.geneticallyConfirmed',
+    );
+    expect(transcribed?.value).toBe(false);
+    // And the sentence says which document was read rather than denying
+    // that a report exists — one is on file in exactly this state.
+    expect(transcribed?.provenanceZh).toContain('转录自非基因报告文件');
+    expect(transcribed?.provenanceZh).toContain('也不表示他手里没有报告');
+  });
+
+  /**
+   * A dropdown is not evidence: the uploader picks a type from a menu
+   * and the parser reads the page. Where they disagree the parser wins,
+   * which is `isLaboratoryGeneticReport` — the same answer that ranks
+   * the picker and grades the passport.
+   */
+  it('判定基因确诊时的文件类型以解析器为准，不是上传时选的那一项', () => {
+    const withType = (documentType: string, classifiedType: string) =>
+      itemOf(
+        sectionOf(
+          build({
+            documents: [
+              {
+                ...EXPORT_FIXTURE_PROFILE.documents[0],
+                documentType,
+                ocrPayload: { fields: { classifiedType, d4z4Repeats: '5' } },
+              },
+            ] as PatientProfileDTO['documents'],
+          } as Partial<PatientProfileDTO>),
+          'diagnosis',
+        ),
+        'diagnosis.geneticallyConfirmed',
+      );
+
+    expect(withType('genetic_report', 'medical_record')?.value).toBe(false);
+    expect(withType('other', 'genetic_report')?.value).toBe(true);
+    // A document the parse has not reached has no verdict to prefer, so
+    // the declaration is what is left — and the sentence says so rather
+    // than leaving a patient who picked that menu item without a
+    // reason.
+    expect(withType('other', 'genetic_report')?.provenanceZh).toContain(
+      '解析器的判定为准，解析未落地时按上传时声明的类型',
+    );
+  });
+
   it('信封上逐条列出，带管理员账号和时间', () => {
     expect(build(adminEditedProfile()).fieldOrigins).toEqual([
       {

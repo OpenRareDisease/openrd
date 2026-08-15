@@ -106,9 +106,18 @@ export const buildAnesthesiaCard = (
    * resolved from the baseline is deliberately kept off an airway card
    * — it is a number somebody typed from a phone call, and this reader
    * cannot check it against anything.
+   *
+   * AND IT NO LONGER NAMES THE THREE TESTS. 「（D4Z4 重复数、4q 单倍型或
+   * EcoRI 片段）」 was this card's own copy of the rule `confirmation` is
+   * graded by, printed onto a card that gets folded into a wallet and
+   * read months later. The rule lives on the API side and moves there —
+   * a report naming both probes rather than stating a haplotype has a
+   * 4q 单倍型 on it and earns no confirmation — and at that point a card
+   * promising the anesthetist those three names is telling them the
+   * report they are holding was never read. What the card can say is
+   * what is on the card.
    */
-  const unconfirmedLine =
-    '诊断：FSHD —— 未经基因确诊：这张卡上没有可作确诊依据的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）';
+  const unconfirmedLine = '诊断：FSHD —— 未经基因确诊：这张卡上没有可作确诊依据的基因结果';
   // Whose 分型 it is, when the platform has been told. Without it the
   // reader is left to assume, and 「the patient says FSHD1」 and 「we read
   // FSHD1 off their report」 are different things to plan from.
@@ -120,10 +129,12 @@ export const buildAnesthesiaCard = (
   /**
    * The repeat count printed inside 「基因确诊（…）」, and ONLY a report's.
    *
-   * `confirmation` is 'genetic' as soon as an uploaded report carries
-   * any one of D4Z4 / 单倍型 / EcoRI 片段, so a card can be confirmed on
-   * a haplotype while the printed 重复数 came from the baseline. Set
-   * bare after 「基因确诊」, that number reads as the laboratory's.
+   * `confirmation` grades the evidence and says nothing about which of
+   * the values on this card came off a report, so a card can be
+   * confirmed on a haplotype while the printed 重复数 came from the
+   * baseline. Set bare after 「基因确诊」, that number reads as the
+   * laboratory's. Which one it is comes off `valueOrigins`, per value,
+   * and never off `confirmation`.
    *
    * An API build that sends no `valueOrigins` cannot answer the
    * question, and this drops the number rather than guessing — the

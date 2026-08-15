@@ -102,6 +102,28 @@ export interface PassportSummaryCardDTO {
  *   laboratory had said any of it. The value still prints — with
  *   `PassportValueOriginKind.transcribed` beside it — and earns none of
  *   the grades. See `isLaboratoryGeneticReport`.
+ * `genetic_non_permissive` — THE LABORATORY'S OWN REPORT, READ FOR WHAT
+ *   IT SAYS RATHER THAN FOR WHETHER IT SAID ANYTHING. Its 4q haplotype
+ *   is an unambiguous 4qB.
+ *
+ *   FSHD1 is a contracted D4Z4 array ON A PERMISSIVE 4qA ALLELE — the
+ *   platform states it in its own words in `WHAT_THE_REPORT_MUST_SAY`
+ *   (「只有 4qA 是允许型，缺了这一项，重复单元数本身不足以下结论」) and
+ *   in the phenopacket export's reason for writing no
+ *   `interpretations`. So a contraction reported on 4qB is not weaker
+ *   evidence towards the diagnosis; it is a finding that argues against
+ *   this mechanism, and `genetic` would have graded it as a step
+ *   towards 基因确诊. Rendered before this member existed: a report
+ *   reading D4Z4 3 / 4qB came out 基因确诊 / 可用于入组, and the
+ *   referral pack a neurologist reads printed 「面肩肱型肌营养不良症
+ *   （FSHD），基因确诊；D4Z4 重复数 3」.
+ *
+ *   The readings still print, with 报告读取 beside them, and the grade
+ *   `non_permissive_haplotype` says what they mean. What this state
+ *   withholds is 基因确诊, 可用于入组, the completion ring and the
+ *   guideline branches keyed to a repeat count — not the result, which
+ *   is a real laboratory finding and the one that decides what gets
+ *   tested next.
  * `self_reported` — a 分型 or a 诊断日期 is on the page and no such
  *   measurement off the laboratory's own report is. That is the
  *   commonest state: the literature puts the FSHD diagnostic odyssey
@@ -142,7 +164,12 @@ export interface PassportSummaryCardDTO {
  * ten-year odysseys in the first place. A passport must never present a
  * patient's own guess in the same visual register as a genetic result.
  */
-export type PassportDiagnosisConfirmation = 'genetic' | 'self_reported' | 'admin_entered' | 'none';
+export type PassportDiagnosisConfirmation =
+  | 'genetic'
+  | 'genetic_non_permissive'
+  | 'self_reported'
+  | 'admin_entered'
+  | 'none';
 
 /**
  * One baseline field that somebody other than the patient put here.
@@ -1734,7 +1761,10 @@ export interface PassportGeneticRecordDTO {
   /** See isD4Z4GreyZone, and `laboratoryD4Z4` for why a transcribed
    *  count is never in the zone as far as this flag is concerned: the
    *  grey zone is a guideline's classification of a laboratory's
-   *  number, and it is printed as one. Derived here rather than stored
+   *  number, and it is printed as one. It is also a classification of a
+   *  4qA array specifically — every sentence written off this flag says
+   *  so, down to 「这个区间的 4qA 等位基因」 — so a report stating 4qB is
+   *  not in the zone either. Derived here rather than stored
    *  by the parser so it cannot drift from the number on screen:
    *  `d4z4Repeats` is one of the fields a patient may hand-correct
    *  after OCR, and a flag frozen at parse time would then contradict
@@ -1769,6 +1799,18 @@ export type GeneticEvidenceGrade =
    * well have already had.
    */
   | 'transcribed_only'
+  /**
+   * The laboratory determined the 4q haplotype and it is 4qB.
+   *
+   * NOT A RUNG BELOW `trial_ready` AND NOT A RUNG ABOVE
+   * `method_right_incomplete` — it is off that ladder. The other grades
+   * answer 「how much of the analysis has been done」; this one answers
+   * 「what the completed part says」, and what it says is that the
+   * contraction the report describes is not on the allele FSHD1
+   * requires. A report can reach it with both items present, which is
+   * why 「结果不全」 would be false of it and 「可用于入组」 dangerous.
+   */
+  | 'non_permissive_haplotype'
   | 'trial_ready'
   | 'unknown';
 
@@ -1833,19 +1875,31 @@ const buildGeneticRecord = (
   const d4z4Raw = pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats);
   const d4z4 = d4z4Raw ? parseD4Z4Reading(d4z4Raw) : null;
   const haplotype = pickReading(fields, GENETIC_FIELD_KEYS.haplotype);
+  const permissiveHaplotype = parsePermissiveHaplotype(haplotype);
   const methodRaw = pickReading(fields, GENETIC_FIELD_KEYS.testMethod);
 
   return {
     geneticType: pickReading(fields, GENETIC_FIELD_KEYS.geneticType),
     haplotype,
-    permissiveHaplotype: parsePermissiveHaplotype(haplotype),
+    permissiveHaplotype,
     ecoRIFragment: pickReading(fields, GENETIC_FIELD_KEYS.ecoRIFragment),
     d4z4,
     // The zone is a guideline's reading of a laboratory's number, and
     // everything that consumes this flag prints it as one: a patient
     // whose 病历摘要 quotes 8 个重复 would be told the guideline calls
     // their result borderline, on the strength of a clinic letter.
-    greyZone: source === 'laboratory_report' && isD4Z4GreyZone(d4z4),
+    //
+    // AND IT IS A READING OF A 4qA ARRAY. Giardina 2024 states the
+    // 1%–2% asymptomatic-carrier figure for 8–10 U 4qA alleles, and
+    // both sentences this flag turns on quote it that way. Over a
+    // report stating 4qB the note read 「这个区间的 4qA 等位基因……这不
+    // 推翻你的诊断」 — a paragraph about the other allele, ending in a
+    // reassurance about a diagnosis this report does not support.
+    // `!== false` and not `=== true`: a report that never named a
+    // haplotype keeps the note, which is the direction that only ever
+    // adds uncertainty.
+    greyZone:
+      source === 'laboratory_report' && permissiveHaplotype !== false && isD4Z4GreyZone(d4z4),
     methylationValue: pickReading(fields, GENETIC_FIELD_KEYS.methylationValue),
     // Read off whatever document supplied the values, and consumed only
     // through `LaboratoryGeneticRecord` — a 病历摘要 that writes
@@ -1896,23 +1950,79 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
   return laboratory?.d4z4 ? (laboratory.d4z4 as ReportReadD4Z4) : null;
 };
 
-/** A size the guideline would accept: a definite repeat count, or an
- *  EcoRI fragment length. A range is a real finding but not a size. */
-const hasDeterminateSize = (record: LaboratoryGeneticRecord) =>
-  (record.d4z4 !== null && record.d4z4.value !== null) || Boolean(record.ecoRIFragment);
+/**
+ * A size the guideline would accept, AS THE REPORT PRINTED IT, or null.
+ * A definite repeat count, or a definite EcoRI fragment length. A range
+ * is a real finding but not a size.
+ *
+ * Returns the string rather than a boolean so that 「there is a size」
+ * and 「the size is X」 come out of one expression. They used to be two:
+ * a boolean here and `sizeText = d4z4?.raw || ecoRIFragment` beside the
+ * copy, which disagree whenever the report carries both — a range in
+ * `d4z4Repeats` and a fragment in `ecoRIFragment` printed 「D4Z4 长度
+ * 1-10」 under a grade the fragment had earned.
+ *
+ * THE FRAGMENT IS PARSED, NOT MERELY COUNTED AS PRESENT. `Boolean(...)`
+ * accepted whatever string the OCR put in that field: rendered, a
+ * report whose `ecoRIFragment` read 「未检出」 came out 可用于入组 with
+ * 「D4Z4 长度 未检出，单倍型 4qA」 as its 依据 — a sentence handed to a
+ * neurologist saying the array was both unmeasurable and measured. Same
+ * parser as the repeat count, so 「未检出」, 「>50kb」 and a blank are all
+ * what they are.
+ */
+const determinateSize = (record: LaboratoryGeneticRecord): string | null => {
+  if (record.d4z4 && record.d4z4.value !== null) return record.d4z4.raw;
+  const fragment = record.ecoRIFragment ? parseD4Z4Reading(record.ecoRIFragment) : null;
+  return fragment && fragment.value !== null ? fragment.raw : null;
+};
 
-const hasHaplotypeResult = (record: LaboratoryGeneticRecord) => record.permissiveHaplotype !== null;
+/**
+ * DID THE LABORATORY DETERMINE THE HAPLOTYPE AT ALL.
+ *
+ * The question 「is this report missing an item」 asks, and the only one
+ * this predicate answers. 4qA and 4qB both satisfy it, on purpose: a
+ * report stating 4qB has not left the assay undone, and telling its
+ * owner to go and ask the laboratory for the haplotype would send them
+ * back for something they are holding.
+ */
+const haplotypeDetermined = (record: LaboratoryGeneticRecord) =>
+  record.permissiveHaplotype !== null;
+
+/**
+ * DOES THE HAPLOTYPE SUPPORT FSHD1 — the different question, which the
+ * predicate above was standing in for everywhere it mattered.
+ *
+ * FSHD1 is a contracted D4Z4 array on a permissive 4qA allele. 「A
+ * haplotype was reported」 was fed to the trial-readiness grade and to
+ * `geneticallyConfirmed`, so a 4qB — the non-permissive allele, a
+ * result that argues against this mechanism — was counted as the second
+ * of the two things a molecular diagnosis needs. Rendered: D4Z4 3 /
+ * 4qB came out 可用于入组 under 「这份报告已经包含临床试验入组通常要求的
+ * 两项内容」.
+ */
+const haplotypePermissive = (record: LaboratoryGeneticRecord) =>
+  record.permissiveHaplotype === true;
+
+/** The other definite answer. Null — a missing field, or a report
+ *  naming its probes rather than stating a result — is neither this nor
+ *  `haplotypePermissive`, and the three-way split is the point. */
+const haplotypeNonPermissive = (record: LaboratoryGeneticRecord) =>
+  record.permissiveHaplotype === false;
 
 /**
  * The four-level grade, plus 未知.
  *
- * The rules only ever UPGRADE on something explicit, and the one
- * downgrade — 方法不适用 — needs the parser to have named a short-read
- * method AND the report to carry no D4Z4 result at all. A Chinese
- * genetics report arrives as a photo of a low-contrast thermal print;
- * telling somebody their test was the wrong test on the strength of a
- * fuzzy match would send them to pay for a second one they may not need.
- * Anything that does not match falls to 未知.
+ * The rules only ever move off 未知 on something explicit, and both
+ * moves that cost the reader something need an unambiguous string:
+ * 方法不适用 needs the parser to have named a short-read method AND the
+ * report to carry no D4Z4 result at all, and 单倍型非允许型 needs
+ * `parsePermissiveHaplotype` to have read a 4qB with no 4qA anywhere in
+ * the same field. A Chinese genetics report arrives as a photo of a
+ * low-contrast thermal print; telling somebody their test was the wrong
+ * test on the strength of a fuzzy match would send them to pay for a
+ * second one they may not need, and telling them their allele is the
+ * non-permissive one would be worse. Anything that does not match falls
+ * to 未知.
  *
  * Report evidence outranks the self-reported ladder deliberately: a
  * patient who ticked 「临床诊断，还没做过基因检测」 and then uploaded a
@@ -1938,14 +2048,27 @@ const gradeGeneticEvidence = (
 
   const laboratory = laboratoryRecord(record);
   if (laboratory) {
-    const size = hasDeterminateSize(laboratory);
-    const haplotype = hasHaplotypeResult(laboratory);
+    // AHEAD OF EVERY 「how complete is it」 RULE, because completeness is
+    // the wrong axis for this report: it may carry both items and still
+    // not be a molecular diagnosis of FSHD1. Ahead of
+    // `method_not_applicable` too, which cannot fire here anyway — a
+    // stated haplotype is a D4Z4 result — so the order is for the
+    // reader, not for the machine.
+    if (haplotypeNonPermissive(laboratory)) return 'non_permissive_haplotype';
+
+    const size = determinateSize(laboratory) !== null;
+    const haplotype = haplotypeDetermined(laboratory);
 
     if (laboratory.method === 'short_read_sequencing' && !size && !haplotype) {
       return 'method_not_applicable';
     }
     if (SIZING_METHODS.has(laboratory.method) || size || haplotype || laboratory.d4z4 !== null) {
-      return size && haplotype ? 'trial_ready' : 'method_right_incomplete';
+      // 「是允许型」 and not 「有这一项」. The two coincide below — the
+      // non-permissive answer returned above and the ambiguous one is
+      // not `haplotypeDetermined` — and the enrolment sentence is
+      // written off the question it is actually making a claim about,
+      // so a later reordering cannot quietly restore 4qB to this line.
+      return size && haplotypePermissive(laboratory) ? 'trial_ready' : 'method_right_incomplete';
     }
   }
   // Nothing readable on file. The patient's own answer is the only
@@ -1971,6 +2094,11 @@ const GENETIC_GRADE_LABELS: Record<GeneticEvidenceGrade, string> = {
   // the one case where `pickGeneticEvidenceDocument` lets a
   // transcription through.
   transcribed_only: '仅有转录结果',
+  // Names the reading, not a verdict on the patient. 「非 FSHD1」 would
+  // be a diagnosis this platform is in no position to make: the report
+  // states the haplotype of the allele it looked at, and the pill sits
+  // above copy that says whose job the rest is.
+  non_permissive_haplotype: '单倍型非允许型',
   trial_ready: '可用于入组',
   unknown: '未知',
 };
@@ -2027,6 +2155,7 @@ const buildTestRequest = (
 
   const sections: GeneticTestRequestSectionDTO[] = [];
   const transcribedOnly = grade === 'transcribed_only';
+  const nonPermissive = grade === 'non_permissive_haplotype';
   // A DIFFERENT DOCUMENT FOR A DIFFERENT ASK. This patient's result
   // exists — somebody wrote it into a 病历摘要 — so the page they need
   // across a desk is the list of what the report has to state, to check
@@ -2034,7 +2163,16 @@ const buildTestRequest = (
   // have a clinic re-ordering a test that may already have been done,
   // and 「为什么 WES 读不到」 is an answer to a question nobody has asked
   // here: no method is known, because the report was never read.
-  if (transcribedOnly) {
+  //
+  // THE SAME ONE SECTION FOR THE NON-PERMISSIVE REPORT, for the
+  // opposite reason: nothing about that report is missing. What its
+  // owner is carrying across the desk is a question about what the
+  // result means, and the only thing this platform can usefully attach
+  // is the guideline's own statement of the two items and of which
+  // haplotype is the permissive one — the sentence the passport just
+  // graded them on. 「能测出 FSHD1 的方法」 would read as 「go and have it
+  // done again」 over a test that was done and answered.
+  if (transcribedOnly || nonPermissive) {
     sections.push(WHAT_THE_REPORT_MUST_SAY);
   } else {
     // Only worth printing when the report was not already done by a
@@ -2045,7 +2183,7 @@ const buildTestRequest = (
     if (!laboratory || !SIZING_METHODS.has(laboratory.method)) {
       sections.push(WHY_SHORT_READ_CANNOT);
     }
-    if (!laboratory || !hasDeterminateSize(laboratory)) {
+    if (!laboratory || determinateSize(laboratory) === null) {
       sections.push(WHICH_TEST_INSTEAD);
     }
     sections.push(WHAT_THE_REPORT_MUST_SAY);
@@ -2055,9 +2193,17 @@ const buildTestRequest = (
   }
 
   const title = 'FSHD（面肩肱型肌营养不良）基因检查申请说明';
-  const intro = transcribedOnly
-    ? '这份说明由患者本人带来。患者的病历类材料里写着基因检测的结果，但报告原件不在本平台手上，患者正在设法取回一份。下面这一节摘自国际 FSHD 基因诊断最佳实践指南，列出报告上需要写明的内容，供核对；如果原报告缺了其中某一项，通常不需要重新采血。'
-    : '这份说明由患者本人带来，内容摘自国际 FSHD 基因诊断最佳实践指南与国内综述，供接诊医生参考。患者无法判断该开哪张单子，只是希望在开单之前，这几条与常规基因检测不同的地方能被看到。';
+  const intro = nonPermissive
+    ? // NOT AN ASK, AND SAYS SO IN ITS FIRST CLAUSE. Everything else
+      // this page is ever handed over for is a request for a test; this
+      // copy is handed over because the patient has a result they were
+      // told does not mean what they assumed, and the doctor is the one
+      // who decides what follows. It states what the platform did, and
+      // stops.
+      '这份说明由患者本人带来。患者上传的基因报告上写着 4q 单倍型不是允许型（4qA），本平台因此没有把它当作已确认的分子遗传学诊断，也没有据它去套指南里按重复数分组的建议。这不是一张检查申请单：下面这一节摘自国际 FSHD 基因诊断最佳实践指南，列出报告上需要写明的内容，供和报告原件对照；这份结果该怎么解读、还需不需要再查什么，由您看着报告原件判断。'
+    : transcribedOnly
+      ? '这份说明由患者本人带来。患者的病历类材料里写着基因检测的结果，但报告原件不在本平台手上，患者正在设法取回一份。下面这一节摘自国际 FSHD 基因诊断最佳实践指南，列出报告上需要写明的内容，供核对；如果原报告缺了其中某一项，通常不需要重新采血。'
+      : '这份说明由患者本人带来，内容摘自国际 FSHD 基因诊断最佳实践指南与国内综述，供接诊医生参考。患者无法判断该开哪张单子，只是希望在开单之前，这几条与常规基因检测不同的地方能被看到。';
 
   const printable = [
     `【${title}】`,
@@ -2090,15 +2236,22 @@ const buildGeneticEvidence = (
   // BOTH facts, not just size. This function rendered the patient-facing
   // copy while holding only one of the two things that copy talks about,
   // which is how it came to print 「已有单倍型（null）」.
-  const size = laboratory !== null && hasDeterminateSize(laboratory);
-  const haplotype = laboratory !== null && hasHaplotypeResult(laboratory);
-  // The strings behind those two booleans, resolved beside them. `size`
-  // is true only when one of the two is a non-empty string and
-  // `haplotype` only when `laboratory.haplotype` parsed to a definite
-  // 4qA / 4qB, so neither placeholder can reach a printed sentence —
-  // and a branch that prints one without checking its flag would be
-  // printing an empty string rather than 「null」.
-  const sizeText = laboratory?.d4z4?.raw || laboratory?.ecoRIFragment || '';
+  //
+  // The string and the fact come out of ONE expression each: `sizeText`
+  // used to be picked separately from the flag that says there is a
+  // size, and picked by presence, so a report carrying a range and a
+  // fragment printed the range under a grade the fragment earned.
+  const sizeText = laboratory ? (determinateSize(laboratory) ?? '') : '';
+  const size = sizeText !== '';
+  // 「有没有这一项」 here and not 「是不是允许型」: this is the copy for the
+  // grades where the question is what the report still owes. The one
+  // grade where the answer 4qB matters has its own branch below and
+  // never reads this flag.
+  const haplotype = laboratory !== null && haplotypeDetermined(laboratory);
+  // `haplotype` is true only when `laboratory.haplotype` parsed to a
+  // definite 4qA / 4qB, so the placeholder cannot reach a printed
+  // sentence — and a branch that prints it without checking the flag
+  // would be printing an empty string rather than 「null」.
   const haplotypeText = laboratory?.haplotype ?? '';
 
   let headline: string;
@@ -2181,6 +2334,26 @@ const buildGeneticEvidence = (
       reason = `本平台这次读的是你上传的「${from}」：上面转录了基因检测的结果，但它不是基因报告本身，转录也不是检测。指南把 FSHD 的基因分析定义为两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型；这两项该由做检测的实验室在报告上写明。没有读到报告本身，本平台就不给这份证据评级，也不拿转录来的数字去套指南里按重复数分组的建议。`;
       action =
         '转录来的内容仍然印在护照上 —— 每一行后面的括号写着那一行的来源。如果基因报告在你手上，拍照上传，护照就会按报告本身来读；如果不在，可以向做这次检测的医院或医生要一份复印件——下面这份说明列出了报告上需要写明的内容，可以一起带去核对。';
+      break;
+    }
+    case 'non_permissive_haplotype': {
+      // THE ONE BRANCH WHERE THE REPORT IS COMPLETE AND THE NEWS IS NOT
+      // GOOD, and the copy has three jobs it must not trade against
+      // each other: not to call this a confirmation, not to call it
+      // nothing, and not to turn it into a diagnosis of its own.
+      //
+      // 「你没有 FSHD」 IS NOT SAID AND MAY NOT BE. The report states the
+      // haplotype of the allele it looked at; the other 4q allele, and
+      // FSHD2, are outside what this page has read. What is provable
+      // here is exactly one thing — a contraction on 4qB is not the
+      // FSHD1 mechanism — and the sentence stops there and hands the
+      // rest to a clinician with the original report in front of them.
+      headline = `报告读到的 4q 单倍型是「${haplotypeText}」，不是允许型 4qA`;
+      reason = `指南把 FSHD 的基因分析定义为两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型；其中只有 4qA 是允许型。FSHD1 指的是 D4Z4 重复序列在允许型 4qA 等位基因上的缩短，所以报告上这一条结果不是「离基因确诊更近一步」，它不支持这条致病机制。${
+        size ? `报告上的 D4Z4 长度（${sizeText}）照常印在护照上。` : ''
+      }本平台能说到的就是这里：不把这份报告算作已确认的分子遗传学诊断，也不拿它上面的重复数去套指南里按重复数分组的建议。这份结果能不能排除 FSHD、要不要再查别的，本平台不下判断。`;
+      action =
+        '这不是说这份报告没有用 —— 它是实验室出的结果，医生需要看到它，而且它很可能改变下一步查什么。把报告原件带去门诊，请医生看一下这一条：报告写的是哪一条等位基因、临床表现是不是仍然指向 FSHD、还需不需要再查别的。下面这份说明列出了指南要求报告写明的内容，可以一起带去对照。';
       break;
     }
     case 'trial_ready':
@@ -2702,12 +2875,51 @@ export const buildClinicalPassportSummary = (
   // transcribable — then read 基因确诊 off the clinic's letter. The
   // number stays on the page with 「转录自非基因报告文件」 beside it;
   // what it stops earning is this.
+  //
+  // AND ON WHAT THE LABORATORY SAID, not on whether it filled the
+  // field. `hasMeaningfulValue(record.haplotype)` asked the second
+  // question while the sentences written off this flag make the first
+  // claim, and the gap between them is the whole finding: a 4qB is the
+  // non-permissive allele, so a contraction reported on it is not the
+  // FSHD1 mechanism at all — and it satisfied this test, filled the
+  // completion ring, and put 「面肩肱型肌营养不良症（FSHD），基因确诊；
+  // D4Z4 重复数 3」 into a referral pack. It now takes the state of its
+  // own, `genetic_non_permissive`, whose copy says what the reading is.
+  //
+  // The same substitution retires a second reading of that field: a
+  // report whose haplotype cell says 「4qA/4qB」 is naming its probes,
+  // which `parsePermissiveHaplotype` refuses to call a result — and
+  // which nonetheless came out 基因确诊, under a grade whose own
+  // headline was 「暂时判断不出你做的是哪一种基因检测」.
+  //
+  // THE TWO SIZE ARMS STILL ASK THE FIRST QUESTION, and knowingly. A
+  // report whose `ecoRIFragment` cell reads 「未检出」 satisfies
+  // `hasMeaningfulValue` and earns 基因确诊 — the same defect in the
+  // same shape, and `determinateSize` above already answers it. It is
+  // not substituted here because the states such a profile would fall
+  // to say 「没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI
+  // 片段」, and a range reading like 「1-10」 — which the same
+  // substitution demotes — makes that sentence false on the passport
+  // card, the share banner and the exported PDF. That sentence is being
+  // reworded elsewhere; the substitution belongs in the change that
+  // finishes it, not in this one.
   const geneticSource = reportInsights.geneticRecord.source;
   const laboratoryGeneticRecord = laboratoryRecord(reportInsights.geneticRecord);
+  const nonPermissiveLaboratoryHaplotype =
+    laboratoryGeneticRecord !== null && haplotypeNonPermissive(laboratoryGeneticRecord);
+  /** The 4qB as the report printed it, for the sentences that name it.
+   *  Empty unless the flag above is set — `parsePermissiveHaplotype`
+   *  reads `false` only out of a string — so no branch guarded by that
+   *  flag can print a placeholder, which is the failure that put
+   *  「已有单倍型（null）」 on this page once already. */
+  const nonPermissiveHaplotypeText = nonPermissiveLaboratoryHaplotype
+    ? (laboratoryGeneticRecord?.haplotype ?? '')
+    : '';
   const geneticallyConfirmed =
     laboratoryGeneticRecord !== null &&
+    !nonPermissiveLaboratoryHaplotype &&
     (hasMeaningfulValue(laboratoryGeneticRecord.d4z4?.raw) ||
-      hasMeaningfulValue(laboratoryGeneticRecord.haplotype) ||
+      haplotypePermissive(laboratoryGeneticRecord) ||
       hasMeaningfulValue(laboratoryGeneticRecord.ecoRIFragment));
   const diagnosisClaimed =
     hasMeaningfulValue(reportInsights.geneticType) ||
@@ -2728,13 +2940,21 @@ export const buildClinicalPassportSummary = (
   // value, in `valueOrigins` below, and per baseline field in
   // `fieldOrigins` beside it.
   const diagnosisYearOrigin = readBaselineFieldOrigin(profile.baseline, 'foundation.diagnosisYear');
+  // The non-permissive state sits where `genetic` does — above the two
+  // marker-derived states — for the same reason `genetic` does: it is a
+  // statement about a laboratory's reading, and the reader who needs it
+  // needs it before anything about who typed 确诊年份. The marker is not
+  // lost by that: `fieldOrigins` prints it on every surface, beside the
+  // field it is about.
   const diagnosisConfirmation: PassportDiagnosisConfirmation = geneticallyConfirmed
     ? 'genetic'
-    : diagnosisClaimed
-      ? diagnosisYearOrigin.state !== 'patient'
-        ? 'admin_entered'
-        : 'self_reported'
-      : 'none';
+    : nonPermissiveLaboratoryHaplotype
+      ? 'genetic_non_permissive'
+      : diagnosisClaimed
+        ? diagnosisYearOrigin.state !== 'patient'
+          ? 'admin_entered'
+          : 'self_reported'
+        : 'none';
   // WHERE EACH PRINTED DIAGNOSIS VALUE CAME FROM, resolved once here so
   // that the app, the share page, the referral pack and the PDF all
   // read the same answer instead of each inferring one from
@@ -2953,6 +3173,19 @@ export const buildClinicalPassportSummary = (
     // sentence to take to a doctor, which is what `clinical` means here.
     nextSteps.push({
       title: '这份报告用的方法测不到 FSHD',
+      kind: 'clinical',
+      description: `${geneticEvidence.reason}${geneticEvidence.action}`,
+    });
+  } else if (geneticEvidence.grade === 'non_permissive_haplotype') {
+    // AHEAD OF THE RECORD STEP BELOW, WHICH IS FALSE HERE TWICE OVER.
+    // That step opens 「护照上还没有从基因报告里读出来的 D4Z4 重复数、
+    // 4q 单倍型或 EcoRI 片段」 over a page printing a laboratory's
+    // haplotype, and closes by asking for an upload of the report this
+    // reader already sent. Same shape as the 方法不适用 step above: the
+    // patient has done the test and paid for it, and what is left is a
+    // sentence to take to a doctor — which is what `clinical` means.
+    nextSteps.push({
+      title: '带着报告原件问一次这个单倍型',
       kind: 'clinical',
       description: `${geneticEvidence.reason}${geneticEvidence.action}`,
     });
@@ -3175,7 +3408,11 @@ export const buildClinicalPassportSummary = (
   // does not type-check here either.
   const reportReadRepeats = laboratoryD4Z4(reportInsights.geneticRecord);
   const printedD4Z4Origin = diagnosisValueOrigins.d4z4Repeats;
-  if (reportReadRepeats && isLargeD4Z4Deletion(reportReadRepeats)) {
+  if (
+    reportReadRepeats &&
+    !nonPermissiveLaboratoryHaplotype &&
+    isLargeD4Z4Deletion(reportReadRepeats)
+  ) {
     nextSteps.push({
       title: '问一次眼底检查',
       kind: 'clinical',
@@ -3189,6 +3426,29 @@ export const buildClinicalPassportSummary = (
       // the report, and a change to that preference must not be able to
       // slide a baseline value into this sentence.
       description: `你的 D4Z4 重复数为 ${reportReadRepeats.raw}，属于指南所说的大片段缺失。这一组患者的视网膜血管病变风险高于其他患者，指南建议由有经验的眼科医生做一次散瞳间接检眼镜检查，之后的复查频率按第一次的结果定。这不是急事，但值得在下次就诊时主动提出来。`,
+    });
+  } else if (
+    reportReadRepeats &&
+    nonPermissiveLaboratoryHaplotype &&
+    isLargeD4Z4Deletion(reportReadRepeats)
+  ) {
+    // SAID PLAINLY RATHER THAN OMITTED, for the reason the arm below
+    // says it: the passport prints a repeat count in the guideline's
+    // band and has just declined to answer the guideline's question off
+    // it, and a step that simply vanishes reads as 「不适用」 to the
+    // patient and to the clinician holding the printout.
+    //
+    // Why it is declined: 「这一组患者」 in the step above is a group
+    // inside FSHD, and the report this count came off states the
+    // non-permissive haplotype — so putting this reader in that group
+    // would be this platform diagnosing FSHD1 on a report that does not
+    // support it, in order to hand out a recommendation. The count is
+    // named, the reason is named, and the judgement goes to the person
+    // holding the original.
+    nextSteps.push({
+      title: '眼底检查这一条，要连着单倍型一起问',
+      kind: 'clinical',
+      description: `你的报告读到 D4Z4 重复数 ${reportReadRepeats.raw}，落在指南所说的大片段缺失（1–4 个重复）区间；同一份报告上的 4q 单倍型写的是「${nonPermissiveHaplotypeText}」，不是允许型 4qA。指南把散瞳间接检眼镜这一条限定在 FSHD 患者里大片段缺失的那一组人身上，本平台不拿一个非允许型的结果把你归进那一组。下次就诊时把这两项一起提出来，由医生看着报告原件说。`,
     });
   } else if (printedD4Z4Origin.kind !== 'report' && printedD4Z4Origin.kind !== 'absent') {
     // SAID PLAINLY RATHER THAN OMITTED. The passport is printing a
@@ -3278,9 +3538,26 @@ export const buildClinicalPassportSummary = (
       summary:
         diagnosisConfirmation === 'genetic'
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
-          : diagnosisClaimed
-            ? `未经基因确诊（本护照内没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
-            : '缺少可直接展示的基因或诊断证据',
+          : // Names the reading and stops. The card is one line in the
+            // markdown export's 核心摘要 table as well as a tile on the
+            // screen, and 「未经基因确诊（本护照内没有从基因报告里读出来
+            // 的……4q 单倍型……）」 below is false of this profile: the
+            // haplotype IS off the laboratory's report. The values and
+            // their brackets are the rows' job; the grade block says
+            // what the reading means.
+            diagnosisConfirmation === 'genetic_non_permissive'
+            ? `未构成基因确诊：报告上的 4q 单倍型是「${nonPermissiveHaplotypeText}」，不是允许型 4qA`
+            : diagnosisClaimed
+              ? `未经基因确诊（本护照内没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
+              : // 「缺少」 is a claim about this card's own subject, and
+                // the 证据摘要 row can be carrying a string while it is
+                // made: a genetics report whose haplotype cell names its
+                // probes, or a 病历摘要 quoting a haplotype, reaches
+                // 'none' — no 分型, no 诊断日期, nothing that earns a
+                // confirmation — with that string printed two rows down.
+                hasMeaningfulValue(reportInsights.geneEvidence)
+                ? `未经基因确诊 —— ${compactText(reportInsights.geneEvidence, '—', 86)}`
+                : '缺少可直接展示的基因或诊断证据',
       meta: `诊断日期 ${reportInsights.diagnosisDate}`,
     },
     {

@@ -125,6 +125,11 @@ const formatVisitPrepTimestamp = (value: string | null) => {
  */
 const DIAGNOSIS_NOTE_TITLE: Record<ClinicalPassportSummary['diagnosis']['confirmation'], string> = {
   genetic: '证据摘要',
+  // 证据摘要 as well: the block under this heading is the same join of
+  // values off the same laboratory report, and this state is the one
+  // where they were read and answered. What they are worth is the grade
+  // block's sentence, not this heading's.
+  genetic_non_permissive: '证据摘要',
   self_reported: '诊断信息',
   admin_entered: '诊断信息',
   none: '诊断信息',
@@ -556,13 +561,23 @@ const ClinicalPassportScreen = () => {
    * under it, and the flat sentence would deny a number on the same
    * screen.
    */
-  const diagnosisNotice =
-    !passport || passport.diagnosis.confirmation === 'genetic'
+  const valueOriginsClause = valueOrigins
+    ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
+    : '';
+  const diagnosisNotice = !passport
+    ? null
+    : passport.diagnosis.confirmation === 'genetic'
       ? null
-      : '未经基因确诊：这份护照里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。' +
-        (valueOrigins
-          ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
-          : '');
+      : // A REPORT WAS READ AND THIS IS WHAT IT SAID. The sentence below
+        // denies one, and denying it here would be false on a screen
+        // that is printing the laboratory's own 单倍型 two rows down —
+        // this state is reached only when the report determined it and
+        // the answer was 4qB. The grade block further down carries the
+        // guideline and the 下一步; this line says the one thing the
+        // reader must not miss while scrolling past the values.
+        passport.diagnosis.confirmation === 'genetic_non_permissive'
+        ? `未构成基因确诊：基因报告读到的 4q 单倍型不是允许型 4qA，这一条不支持 FSHD1 的致病机制。这不是排除诊断 —— 下面「证据分级」里写了指南怎么说、以及该问医生什么。${valueOriginsClause}`
+        : `未经基因确诊：这份护照里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。${valueOriginsClause}`;
   /**
    * One diagnosis cell: the value, the typographic register its own
    * source has earned, and that source under it.

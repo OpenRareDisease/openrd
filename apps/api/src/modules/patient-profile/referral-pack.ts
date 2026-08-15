@@ -415,6 +415,19 @@ const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
  * report this platform read the value off, which is exactly what
  * `confirmation` grades.
  *
+ * AND IT DOES NOT RESTATE THE RULE IT IS GRADED BY. These lines named
+ * the three tests — 「D4Z4 重复数、4q 单倍型或 EcoRI 片段」 — which is a
+ * second copy of `confirmation`'s own definition, kept in prose, on a
+ * page that cannot be recompiled once it is printed. It was already
+ * wrong in one direction: 甲基化 earns no confirmation and is not in
+ * that list, so a report reading only a 甲基化 landed in `none` and
+ * printed 「没有从基因报告里读出来的基因结果」 directly above 甲基化 32%
+ * （报告读取）. And it goes wrong in the other direction the moment the
+ * rule moves — a report naming both probes rather than stating a
+ * haplotype has a 4q 单倍型 on it and confirms nothing. 可作确诊依据的
+ * 基因结果 is the claim `confirmation` actually makes, in the anesthesia
+ * card's words, because one patient can be carrying both documents.
+ *
  * The wording is longer than the passport's because this reader can
  * act on the difference: an unconfirmed patient in front of a 协作网
  * neurologist is a patient who may still be able to get confirmed.
@@ -428,17 +441,33 @@ const buildDiagnosisStatement = (
       return repeats
         ? `面肩肱型肌营养不良症（FSHD），基因确诊；D4Z4 重复数 ${repeats}`
         : '面肩肱型肌营养不良症（FSHD），基因确诊';
+    case 'genetic_non_permissive':
+      // THE ONE UNCONFIRMED STATE WHERE A LABORATORY DID READ SOMETHING,
+      // so it may not borrow the sentence next to it: 「患者手里可能还有
+      // 本平台没有读过的报告」 sends a neurologist looking for a document
+      // that is already on this platform and already read, and the
+      // reading is the whole point. It says what the report says and
+      // hands the interpretation to the person holding the original —
+      // whether this rules FSHD out is not a question this page answers.
+      //
+      // The repeat count is deliberately not set into this line even
+      // though it IS the report's. Bare after a diagnosis name it reads
+      // as a confirmation; the row below prints it with 报告读取 in its
+      // own bracket, which is where a number belongs on this page.
+      return '面肩肱型肌营养不良症（FSHD）—— 报告读到的 4q 单倍型不是允许型 4qA，本平台不把这份报告算作已确认的分子遗传学诊断，请勿按已确诊处理；这份结果能不能排除 FSHD、还需不需要再查别的，请看着报告原件判断。下面的括号写在哪一项后面，就只说那一项';
     case 'self_reported':
-      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的、可作确诊依据的基因结果，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'admin_entered':
-      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，且档案里的「确诊年份」不是患者本人填写的，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
+      return '面肩肱型肌营养不良症（FSHD）—— 本资料里没有从基因报告里读出来的、可作确诊依据的基因结果，且档案里的「确诊年份」不是患者本人填写的，请勿按已确诊处理；患者手里可能还有本平台没有读过的报告，值得当面问一句。下面的括号写在哪一项后面，就只说那一项';
     case 'none':
       // Not 「尚无任何诊断依据记录 …… 仅为患者自述与自测」: this state only
-      // means no 分型 and no 诊断日期. 甲基化 is in neither test, and a
-      // D4Z4 重复数 that reached the record without either of those two
-      // is in neither test either — both print three lines below with
-      // their own source in brackets.
-      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果 —— 下面的内容不构成诊断';
+      // means no 分型, no 诊断日期, and nothing that earns a
+      // confirmation. 甲基化 is in none of those tests, and a D4Z4
+      // 重复数 that reached the record without a 分型 or a 诊断日期 is in
+      // none of them either — both print three lines below with their
+      // own source in brackets, and that source can be 报告读取, which
+      // is why the denial here is qualified rather than flat.
+      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果 —— 下面的内容不构成诊断';
     default: {
       const _never: never = confirmation;
       return _never;
@@ -469,13 +498,13 @@ const formatFieldOriginLine = (origin: PassportFieldOriginDTO): string => {
 
 const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisDTO => {
   const { diagnosis } = summary;
-  // ONLY A REPORT'S NUMBER GOES INTO THE 结论. `confirmation` is
-  // 'genetic' as soon as an uploaded report carries any one of D4Z4 /
-  // 单倍型 / EcoRI 片段, and the printed 重复数 may have come from the
-  // baseline instead — the patient's own typing. Setting that number
-  // after 「基因确诊；」 would hand it the report's authority without the
-  // bracket that says whose it is. The row below prints it either way,
-  // with its own source.
+  // ONLY A REPORT'S NUMBER GOES INTO THE 结论. `confirmation` grades
+  // the evidence and says nothing about which value on this page came
+  // off a report — a pack can be confirmed on a haplotype while the
+  // printed 重复数 came from the baseline instead, the patient's own
+  // typing. Setting that number after 「基因确诊；」 would hand it the
+  // report's authority without the bracket that says whose it is. The
+  // row below prints it either way, with its own source.
   const repeats =
     diagnosis.valueOrigins.d4z4Repeats.kind === 'report' && hasText(diagnosis.d4z4Repeats)
       ? diagnosis.d4z4Repeats
@@ -793,14 +822,27 @@ export const REFERRAL_QUESTION_PROMPTS: readonly ReferralQuestionPromptDTO[] = [
  * `genetic` is excluded from the parameter rather than given a branch:
  * the question is not asked at all for a confirmed patient, and a
  * string nobody can reach is a string nobody keeps true. The `never`
- * default still fails the build on a fifth confirmation state.
+ * default still fails the build on a further confirmation state.
+ *
+ * NO BRANCH NAMES THE TESTS THAT EARN A CONFIRMATION. Three of these
+ * did, and 「D4Z4 重复数、4q 单倍型或 EcoRI 片段」 is the rule copied into
+ * prose the patient reads on paper: it was already telling this reader
+ * to go and fetch a 4q 单倍型 their own report states, in the state
+ * below where the laboratory determined it and the answer was 4qB.
  */
 const buildConfirmDiagnosisHint = (
   confirmation: Exclude<PassportDiagnosisConfirmation, 'genetic'>,
 ): string => {
   switch (confirmation) {
+    // The report was read and it answered. 「把报告带上或上传，这一行就
+    // 会改」 — the sibling branches' closing promise — is false here
+    // twice over: the report is already uploaded and already read, and
+    // uploading it again changes nothing. What this reader needs is the
+    // question to ask about the result they have.
+    case 'genetic_non_permissive':
+      return '你上传的基因报告读到的 4q 单倍型不是允许型 4qA，所以本平台没有把它算作已确认的分子遗传学诊断。这不是说这份报告没有用 —— 它是实验室出的结果，医生需要看到它。把报告原件带去，请医生看一下这一条：报告写的是哪一条等位基因、临床表现是不是仍然指向 FSHD、还需不需要再查别的。这份结果能不能排除 FSHD，本平台不下判断。';
     case 'self_reported':
-      return '本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 每一项的来源写在它自己的括号里，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
+      return '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 每一项的来源写在它自己的括号里，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
     // Telling this reader 「本平台没有任何诊断依据记录」 would hide the
     // very lines the neurologist is reading on the same sheet.
     //
@@ -814,9 +856,9 @@ const buildConfirmDiagnosisHint = (
     // 来源记录读不出来 — a hint promising a name would send the patient
     // looking for one that is not there.
     case 'admin_entered':
-      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
+      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有从基因报告里读出来的、可作确诊依据的基因结果。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
     case 'none':
-      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
+      return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
     default: {
       const _never: never = confirmation;
       return _never;

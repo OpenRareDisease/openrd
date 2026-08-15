@@ -11,8 +11,12 @@ import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
  * 2. Going quiet when the mainland registry is down. A short list
  *    presented in silence teaches「国内没有」from a fetch that never
  *    landed — the reason `trial_fetch_runs` is part of the feature.
- * 3. Printing「不含仅在国内登记的试验」over a list that does contain
- *    them.
+ * 3. Printing our own scope over the mainland registry's answer. A
+ *    successful mainland run that came back with nothing used to
+ *    render as「本页只收录 ClinicalTrials.gov 的记录，不含仅在国内登记
+ *    的试验」—— the reader was told we do not fetch that registry, on
+ *    the morning we fetched it. And its mirror image: that sentence
+ *    printed over a list that does contain mainland rows.
  * 4. Burying 招募中 — or ENROLLING_BY_INVITATION, which is the same
  *    burial with a word we have no Chinese for. This audience pays for
  *    every screen of scroll, and only a group where every row is
@@ -183,10 +187,10 @@ describe('拉取于', () => {
 });
 
 describe('固定的那两句话', () => {
-  it('名单里没有国内记录时，说不含仅在国内登记的试验，并给出去哪里查', async () => {
+  it('负载里连国内那个来源块都没有时，说页面上现在没有它的记录，并给出去哪里查', async () => {
     mockListTrials.mockResolvedValue({ trials: [trial()], sources: [sourceStatus()] });
     const rendered = screenText(await render());
-    expect(rendered).toContain('不含仅在国内登记的试验');
+    expect(rendered).toContain('本页现在没有来自国内登记平台的记录');
     expect(rendered).toContain('chinadrugtrials.org.cn');
   });
 
@@ -216,8 +220,11 @@ describe('固定的那两句话', () => {
     // successful load.
     mockListTrials.mockRejectedValue(new Error('boom'));
     const rendered = screenText(await render());
-    expect(rendered).toContain('不含仅在国内登记的试验');
+    expect(rendered).toContain('chinadrugtrials.org.cn');
     expect(rendered).toContain('主诊医生');
+    // 请求都没回来，这一格连国内那次抓取跑成什么样都不知道，所以这句
+    // 话只说页面上现在没有什么 —— 不声称本平台不抓那个登记库。
+    expect(rendered).not.toContain('只收录');
   });
 });
 
@@ -245,6 +252,51 @@ describe('国内那半边取不到时', () => {
     expect(rendered).toContain(`上次成功抓取：${formatInstantAsDay('2026-07-30T02:00:05.000Z')}`);
     // And the list is still shown — the ctgov half is real data.
     expect(rendered).toContain('A Study of Something in FSHD');
+  });
+});
+
+describe('国内那半边跑成功了、却一条都没带回来时', () => {
+  // 今天线上就是这一格：ctgov 正常，国内那次抓取报的是成功，记录零条。
+  // 读者第一天打开这一页，读到的就是下面这几句。
+  const CN_OK_ZERO = sourceStatus({
+    source: 'chinadrugtrials',
+    recordCount: 0,
+    fetchedAt: null,
+    lastRun: {
+      startedAt: '2026-08-14T00:03:00.000Z',
+      finishedAt: '2026-08-14T00:03:31.000Z',
+      ok: true,
+    },
+    lastSuccessAt: '2026-08-14T00:03:31.000Z',
+  });
+
+  const renderShipping = async () => {
+    mockListTrials.mockResolvedValue({
+      trials: [trial()],
+      sources: [sourceStatus(), CN_OK_ZERO],
+    });
+    return screenText(await render());
+  };
+
+  it('说的是我们抓了、这次抓成了、什么也没带回来', async () => {
+    const rendered = await renderShipping();
+    expect(rendered).toContain('国内这部分最近一次抓取');
+    expect(rendered).toContain('但一条记录都没有取回来');
+    expect(rendered).toContain(formatInstantAsDay('2026-08-14T00:03:31.000Z') as string);
+    // 名单照画，去原站的门也照旧在。
+    expect(rendered).toContain('A Study of Something in FSHD');
+    expect(rendered).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('不把登记库的零印成我们的缺席', async () => {
+    const rendered = await renderShipping();
+    expect(rendered).not.toContain('只收录');
+    expect(rendered).not.toContain('不含仅在国内登记的试验');
+    expect(rendered).not.toContain('国内这部分还没有抓取过');
+  });
+
+  it('也不替登记库回答「国内没有相关试验」', async () => {
+    expect(await renderShipping()).toContain('这不等于国内就没有相关的试验');
   });
 });
 

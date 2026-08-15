@@ -17,6 +17,7 @@ import { DIAGNOSIS_LADDER_LABELS, type DiagnosisLadderState } from '../../lib/ap
 import { COLOR } from '../../lib/design';
 import { ADMIN_FILLED_BASELINE_FIELDS } from '../../lib/legal-updates';
 import {
+  ADMIN_AUDIT_NOTICE_PATIENT_RECORD,
   AdminBlock,
   AdminOriginChip,
   AdminScreen,
@@ -216,7 +217,16 @@ interface ReadonlyGroup {
  */
 const PATIENT_CAN_TYPE_IT_REASON =
   '这一项后台不能填：电话里听来、照片上认出来的数字，看着像化验结果但不是。' +
-  '但不是没人能改——患者自己在「我的 → 编辑资料」里有这一项的输入框，上传基因报告也能带进来。' +
+  // 「上传基因报告也能带进来」 was the last place on this screen that
+  // named the document. The autofill reads whichever document
+  // `pickGeneticEvidenceDocument` picks as this profile's genetic
+  // evidence, and a 病历摘要 quoting a repeat count is a legitimate
+  // pick — so an operator with this sentence in front of him would tell
+  // a patient to go and upload a genetics report in order to correct a
+  // value that a summary he has already uploaded can carry. The other
+  // half of the sentence is the remedy that actually works from here,
+  // and it is unchanged.
+  '但不是没人能改——患者自己在「我的 → 编辑资料」里有这一项的输入框，他上传的文件里读到了这一项也能带进来。' +
   '要更正，通常请他自己在编辑资料里改最快。';
 
 const NOBODY_CAN_TYPE_IT_REASON =
@@ -242,6 +252,18 @@ const NOBODY_CAN_TYPE_IT_REASON =
  *
  * An operator reading 未填 off this row tells the patient he never
  * filled it in, about a value he is looking at.
+ *
+ * IT IS A HEDGE, AND A HEDGE IS FALSE WHERE THE ANSWER IS KNOWN. The
+ * fill has exactly one input, an uploaded document, so on a record
+ * whose 报告 list came back empty there is nothing that could put a
+ * value on the patient's side that is missing here — and this note
+ * would be telling the operator not to trust a list this same screen is
+ * printing two blocks down. An account that never opened the baseline
+ * form is the sharpest case: `getPatientRecord` answers it with no
+ * identity and no documents, so there is no patient side for the
+ * sentence to be about. `printAbsentNote` is the gate; a record that
+ * did not carry the 报告 section at all keeps the note, because then
+ * this screen does not know either.
  */
 const GENETIC_ABSENT_NOTE =
   // 「最近一份」 was the autofill's old rule. The server now reads the
@@ -261,6 +283,16 @@ const GENETIC_ABSENT_NOTE =
   // qualifying a claim this screen cannot check.
   '这不代表患者那边也是空的：患者端和导出会用他上传的文件里读到的值补上缺的基因结果，' +
   '这一页只显示基线里存的那一份。所以别在电话里说「你没填」——先看这一页的报告列表。';
+
+/**
+ * Whether GENETIC_ABSENT_NOTE is true of the record on screen.
+ *
+ * `null` is 「this build did not send the 报告 section」 — not 「there are
+ * none」 — and the note stays for it: the caution it carries is the
+ * right thing to keep where the screen cannot check.
+ */
+const printAbsentNote = (documents: AdminPatientRecord['documents']): boolean =>
+  documents === null || documents.length > 0;
 
 const GENETIC_PATIENT_CAN_TYPE: ReadonlyGroup = {
   reason: PATIENT_CAN_TYPE_IT_REASON,
@@ -700,7 +732,12 @@ const AdminPatientRecordScreen = () => {
 
   if (state === 'loading') {
     return (
-      <AdminScreen title="患者档案" subtitle="正在读取。" fallbackHref="/p-admin_patients">
+      <AdminScreen
+        title="患者档案"
+        subtitle="正在读取。"
+        audit={ADMIN_AUDIT_NOTICE_PATIENT_RECORD}
+        fallbackHref="/p-admin_patients"
+      >
         <AdminState kind="loading" message="加载中…" />
       </AdminScreen>
     );
@@ -709,7 +746,12 @@ const AdminPatientRecordScreen = () => {
   if (state === 'error' || !record) {
     const described = describeAdminError(error);
     return (
-      <AdminScreen title="患者档案" subtitle="没能打开这份档案。" fallbackHref="/p-admin_patients">
+      <AdminScreen
+        title="患者档案"
+        subtitle="没能打开这份档案。"
+        audit={ADMIN_AUDIT_NOTICE_PATIENT_RECORD}
+        fallbackHref="/p-admin_patients"
+      >
         <AdminState
           kind="error"
           title={described.title}
@@ -765,6 +807,7 @@ const AdminPatientRecordScreen = () => {
     <AdminScreen
       title={identity?.fullName ?? identity?.preferredName ?? '未填姓名'}
       subtitle="打开这一页时已经写了一条读取审计记录。下面的手机号没有打码——列表页有。"
+      audit={ADMIN_AUDIT_NOTICE_PATIENT_RECORD}
       fallbackHref="/p-admin_patients"
     >
       <AdminBlock title="账号" state="ready">
@@ -904,7 +947,9 @@ const AdminPatientRecordScreen = () => {
                   ? field.group.absent
                   : formatReadonly(field.path, stored)
               }
-              note={absent ? field.group.absentNote : undefined}
+              note={
+                absent && printAbsentNote(record.documents) ? field.group.absentNote : undefined
+              }
               origin={originFor(field.path)}
               reason={field.group.reason}
             />

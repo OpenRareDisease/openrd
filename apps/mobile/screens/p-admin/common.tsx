@@ -24,40 +24,74 @@ import styles from './styles';
  */
 
 /**
- * What every screen here says at the top.
+ * The mechanism, which is the same wherever the banner is drawn.
  *
  * It is not a disclaimer. `requireAdmin` writes one `audit_logs` row
- * per request INCLUDING reads, before the handler runs, and refuses the
- * request with a 503 if that write fails. So this sentence is a
- * description of the mechanism, and an operator who reads it and keeps
- * browsing has been told the truth.
+ * for every request it lets through, INCLUDING reads, before the
+ * handler runs, and refuses the request with a 503 if that write fails.
+ * So this sentence is a description of what happens, and an operator
+ * who reads it and keeps browsing has been told the truth.
  *
- * IT NAMES A PATIENT ONLY WHERE A ROW CAN CARRY ONE, and that is the
- * whole shape of the sentence. `targetUserId` is filled from
- * `AdminAuditSpec.targetParam` — a patient id in the route's OWN PATH —
- * so the routes behind `getPatientRecord`, `updatePatientBaseline` and
- * `exportPatient` name a patient, and the others cannot: `listPatients`
- * answers with a page of many, the ops panels are about nobody, and
- * `exportAllPatientsCsv` is about everybody (the extra row
- * `recordFullExportAudit` writes says how many, not who).
- *
- * `AdminScreen` draws this banner on EVERY back-office screen, so a
- * sentence that promised 「看了哪位患者」 was false on each screen whose
- * rows carry none — including the one an operator opens to take the
- * whole database. It now says which requests carry a patient and what
- * the rest carry, and each screen's test asserts that THIS string is
- * the text drawn there, so a screen cannot end up under a different
- * promise from the one the audit rows keep.
+ * It says 放行之前 rather than 每次请求, because a request refused AT the
+ * gate writes nothing: `requireAdmin` answers a non-admin, a deactivated
+ * account and an unparseable patient id without touching `audit_logs`,
+ * and says why in its own comments. Those refusals are states these
+ * screens display — the banner sits above the 403 — so a sentence
+ * promising a row for every request would be false on the screen an
+ * operator is looking at when they read it.
  */
-export const ADMIN_AUDIT_NOTICE =
-  '你在这里打开的每一页都会记进审计：哪个管理员账号、什么时间、请求了哪个接口。' +
-  '针对某一位患者的请求还会记下是哪一位；患者列表、运维面板和全量导出不针对某一位患者，记录里就没有患者这一项。' +
+const AUDIT_MECHANISM =
+  '服务端放行一次后台请求之前，会先记一条审计：哪个管理员账号、什么时间、请求了哪个接口。' +
   '记录写不进去时，服务端会直接拒绝这次访问，而不是先给你看。';
 
-const AdminAuditBanner = () => (
+/**
+ * WHAT THE BANNER MAY CLAIM IS DECIDED PER SCREEN, and that is why
+ * there is no longer one constant for all of them.
+ *
+ * Two facts differ from screen to screen, and one sentence covering
+ * every screen has to be false on some of them:
+ *
+ *  - WHETHER OPENING THE SCREEN RECORDS ANYTHING. 全量导出 issues no
+ *    request when it opens — the first one is the one the operator asks
+ *    for by pressing a button. The old wording opened with 「你在这里打开
+ *    的每一页都会记进审计」, so the one screen that touches nothing on
+ *    open was also the one screen telling an operator, in the strongest
+ *    words on the page, that something had been written down.
+ *  - WHETHER THE ROWS NAME A PATIENT. `targetUserId` is filled from
+ *    `AdminAuditSpec.targetParam` — a patient id in the route's OWN
+ *    PATH — so the routes behind `getPatientRecord`,
+ *    `updatePatientBaseline` and `exportPatient` name a patient, and
+ *    the others cannot: `listPatients` answers with a page of many, the
+ *    ops panels are about nobody, and `exportAllPatientsCsv` is about
+ *    everybody (the extra row `recordFullExportAudit` writes says how
+ *    many, not who).
+ *
+ * `AdminScreen` takes the notice as a required prop rather than owning
+ * one, so a screen added later has to answer both questions instead of
+ * inheriting an answer written for a different screen. Each screen's
+ * test asserts that ITS string is the text drawn there.
+ */
+export const ADMIN_AUDIT_NOTICE_OVERVIEW =
+  '这一页一打开就会向服务端取数；这些请求不针对某一位患者，记录里就没有患者这一项。' +
+  AUDIT_MECHANISM;
+
+export const ADMIN_AUDIT_NOTICE_PATIENT_LIST =
+  '这一页一打开就会向服务端要一页患者，搜索和翻页也各是一次请求；这些请求不针对某一位患者，' +
+  '记录里就没有患者这一项。点开一位患者的那一次才会记下是哪一位。' +
+  AUDIT_MECHANISM;
+
+export const ADMIN_AUDIT_NOTICE_PATIENT_RECORD =
+  '这一页的请求都针对某一位患者——打开、保存、导出都算——记录里会写着是哪一位。' + AUDIT_MECHANISM;
+
+export const ADMIN_AUDIT_NOTICE_FULL_EXPORT =
+  '这一页打开时不向服务端要任何东西，所以到这里为止没有记下什么。' +
+  '从「查看规模并取确认口令」那一步起，每一次请求才会记进审计；全量导出不针对某一位患者，记录里就没有患者这一项。' +
+  AUDIT_MECHANISM;
+
+const AdminAuditBanner = ({ notice }: { notice: string }) => (
   <View style={styles.auditBanner}>
     <Icon name="file-shield" size={18} color={COLOR.warn} />
-    <Text style={styles.auditBannerText}>{ADMIN_AUDIT_NOTICE}</Text>
+    <Text style={styles.auditBannerText}>{notice}</Text>
   </View>
 );
 
@@ -345,12 +379,18 @@ export const AdminOriginChip = ({ origin }: { origin: AdminFieldOrigin }) => {
 export const AdminScreen = ({
   title,
   subtitle,
+  audit,
   fallbackHref,
   children,
   refreshControl,
 }: {
   title: string;
   subtitle: string;
+  /** The banner's sentence — one of the `ADMIN_AUDIT_NOTICE_*` above.
+   *  Required, and deliberately not defaulted: a default is how the
+   *  next screen ends up promising what some other screen's requests
+   *  record. */
+  audit: string;
   /** Where 返回 goes when this route was opened cold — the back office
    *  is reached by typing a URL as often as by tapping. */
   fallbackHref?: '/p-admin' | '/p-admin_patients' | '/p-home';
@@ -368,7 +408,7 @@ export const AdminScreen = ({
         <Text style={styles.pageTitle}>{title}</Text>
         <Text style={styles.pageSubtitle}>{subtitle}</Text>
       </View>
-      <AdminAuditBanner />
+      <AdminAuditBanner notice={audit} />
       {children}
     </ScrollView>
   </SafeAreaView>

@@ -71,7 +71,7 @@ jest.mock('../download', () => {
   };
 });
 
-import { ADMIN_AUDIT_NOTICE } from '../common';
+import { ADMIN_AUDIT_NOTICE_FULL_EXPORT } from '../common';
 import AdminFullExportScreen from '../full-export';
 
 const PHRASE = '确认导出全部 35 位患者的完整数据 2026-08-13';
@@ -317,7 +317,7 @@ describe('a real failure is reported as one', () => {
 });
 
 describe('the audit banner is true on the page that takes every patient', () => {
-  it('draws the one notice, which promises no patient, next to the two-row note', async () => {
+  it('draws the notice written for this screen, which promises no patient, next to the two-row note', async () => {
     // The page where the old wording was worst: the file is every
     // patient in the database, and the promise it carried was that the
     // trail would say WHICH patient. `exportAllPatientsCsv` is mounted
@@ -326,8 +326,55 @@ describe('the audit banner is true on the page that takes every patient', () => 
     // block note is the one that says what the second row holds, and
     // the two sentences have to agree.
     const screen = textContent((await render()).root);
-    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE_FULL_EXPORT);
     expect(screen).not.toContain('看了哪位患者');
     expect(screen).toContain('一条记下导了多少人和文件名');
+  });
+
+  it('does not say anything was recorded on a screen that requested nothing', async () => {
+    // THE STATE THE SCREEN OPENS IN. Every other back-office screen
+    // fetches on mount; this one deliberately does not — 「requests
+    // nothing on mount」 at the top of this file is the same fact
+    // asserted from the other side. A banner opening with 「你在这里打开
+    // 的每一页都会记进审计」 therefore told an operator, in the loudest
+    // sentence on the page, that a row existed for a page that had not
+    // touched the server.
+    const tree = await render();
+    expect(mockRequest).not.toHaveBeenCalled();
+    const screen = textContent(tree.root);
+    expect(screen).toContain('这一页打开时不向服务端要任何东西，所以到这里为止没有记下什么');
+    expect(screen).not.toContain('你在这里打开的每一页都会记进审计');
+  });
+});
+
+/**
+ * THE FILE THIS SCREEN DESCRIBES IS MISSING VALUES, AND IT MUST NOT SAY
+ * WHICH DOCUMENT THEY WOULD HAVE COME FROM.
+ *
+ * The autofill reads whichever document `pickGeneticEvidenceDocument`
+ * picks as a profile's genetic evidence, and that picker takes a 病历
+ * 摘要 quoting the results when the genetics report read out nothing.
+ * This screen sees neither the profile nor the document — it renders a
+ * confirmation phrase and the server's notes — so naming a 基因报告 was
+ * asserting a document it has no way to have seen, about every patient
+ * at once.
+ */
+describe('后台不替某一类文件背书', () => {
+  it('says the autofilled fields come from an uploaded file, in its own note and in the server note', async () => {
+    mockRequest.mockResolvedValue({
+      ...confirmationRequired,
+      notes: [
+        '基线字段是数据库中存储的值，不含「从上传的文件自动补全」的部分——界面上看得到的 D4Z4 结果，这份文件里可能是空的。',
+      ],
+    });
+    const tree = await render();
+    await press(tree, '查看规模并取确认口令');
+    const screen = textContent(tree.root);
+
+    expect(screen).toContain('其实是从已上传的文件里读出来的那些字段');
+    expect(screen).not.toContain('基因报告');
+    // The caveat the sentence exists for is untouched: those columns
+    // can be empty in the file while the app shows a value.
+    expect(screen).toContain('在这个文件里可能是空的');
   });
 });

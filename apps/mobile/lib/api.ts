@@ -935,8 +935,15 @@ export interface ClinicalPassportSummary {
      *  患者自己的说法，患者本人可能根本没见过那段文字。
      *  打印页据此显示未确诊警示条——那张纸会递到一年只见三例 FSHD 的
      *  医生手里，患者的自述不能和基因结果长得一样，我们自己敲进去的字
-     *  更不能写成患者的自述。 */
-    confirmation: 'genetic' | 'self_reported' | 'admin_entered' | 'none';
+     *  更不能写成患者的自述。
+     *
+     *  'genetic_non_permissive' 是实验室报告读到了 4q 单倍型、而它是
+     *  4qB：FSHD1 是 D4Z4 在允许型 4qA 等位基因上的缩短，所以这不是
+     *  「证据少一点」，是一条不支持这条机制的结果。它和上面三种「没有
+     *  读到报告结果」不是一回事——报告在，读过了，说的就是这个——所以
+     *  凡是写「没有从基因报告里读出来的基因结果」的句子，都不能落到它
+     *  头上。服务端 PassportDiagnosisConfirmation 上有完整说明。 */
+    confirmation: 'genetic' | 'genetic_non_permissive' | 'self_reported' | 'admin_entered' | 'none';
     /** 患者自己在建档表上答的那一级，没答过就是 null。和 `confirmation`
      *  回答的不是同一个问题（「你怎么说」 vs 「报告怎么写」），护照两个
      *  都显示，不做调和。 */

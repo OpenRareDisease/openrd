@@ -2,12 +2,17 @@ import { buildCodingProvenance, verifiedCoding, type CodingProvenance } from './
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   deterministicUuid,
+  diagnosisTypeMarkerPath,
+  diagnosisYearMarkerPath,
+  geneticConfirmationReasonZh,
+  geneticEvidenceDocumentZh,
   instrumentOmission,
   originNoteZh,
   resourceUuid,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type NormalisedSource,
 } from './export-source.js';
+import { TRANSCRIBED_EVIDENCE_LABEL_ZH } from '../genetic-evidence.js';
 import {
   DAILY_IMPACT_LABELS,
   DOCUMENT_TYPE_LABELS,
@@ -169,6 +174,10 @@ interface ObservationCandidate {
     readonly codingSystem?: string;
     /** True for a report field whose report stated no date of its own. */
     readonly undatedReportField?: boolean;
+    /** True for a genetic reading read off a document that is not the
+     *  genetics laboratory's own report, which is why that Observation
+     *  carries no `category`. */
+    readonly transcribedGeneticReading?: boolean;
   };
 }
 
@@ -176,6 +185,7 @@ interface KeptDeclarations {
   readonly codingKeys: ReadonlySet<string>;
   readonly codingSystems: ReadonlySet<string>;
   readonly hasUndatedReportField: boolean;
+  readonly hasTranscribedGeneticReading: boolean;
 }
 
 /** Everything the envelope may assert about the bundle, read off the survivors. */
@@ -183,13 +193,15 @@ const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations
   const codingKeys = new Set<string>();
   const codingSystems = new Set<string>();
   let hasUndatedReportField = false;
+  let hasTranscribedGeneticReading = false;
   kept.forEach(({ declares }) => {
     if (!declares) return;
     if (declares.codingKey) codingKeys.add(declares.codingKey);
     if (declares.codingSystem) codingSystems.add(declares.codingSystem);
     if (declares.undatedReportField) hasUndatedReportField = true;
+    if (declares.transcribedGeneticReading) hasTranscribedGeneticReading = true;
   });
-  return { codingKeys, codingSystems, hasUndatedReportField };
+  return { codingKeys, codingSystems, hasUndatedReportField, hasTranscribedGeneticReading };
 };
 
 // --------------------------------------------------------------- builder
@@ -266,15 +278,27 @@ export const buildFhirExport = (
       coding: [{ system: CLINICAL_STATUS_SYSTEM, code: 'active' }],
       text: '现症',
     },
-    // `confirmed` requires evidence. A genetic report on file is that
-    // evidence; a self-reported diagnosis is not, and calling it
-    // confirmed would be this export telling a clinician something we
-    // do not know.
+    // `confirmed` requires evidence, and the evidence is a result this
+    // platform read off the genetics laboratory's own report. A
+    // self-reported diagnosis is not that, and calling it confirmed
+    // would be this export telling a clinician something we do not
+    // know.
+    //
+    // WHAT DECIDES IT IS NOT A DOCUMENT COUNT. This read
+    // `hasGeneticReport` — 「is ANY document on file the laboratory's
+    // own report」 — which is true for a profile whose genetics report
+    // read out nothing and whose repeat count this platform took off a
+    // 病历摘要 beside it. That bundle went to a registry as
+    // verificationStatus=confirmed while its own genetic Observations
+    // carried no `category` because the reading was a transcription,
+    // and while the patient's passport, referral pack and anesthesia
+    // card all said 未经基因确诊. `geneticallyConfirmed` is the
+    // passport's own answer, so there is one of it.
     verificationStatus: {
       coding: [
         {
           system: VERIFICATION_STATUS_SYSTEM,
-          code: source.geneticEvidence.hasGeneticReport ? 'confirmed' : 'unconfirmed',
+          code: source.geneticallyConfirmed ? 'confirmed' : 'unconfirmed',
         },
       ],
       // This text says what evidence backs the status and where the
@@ -287,9 +311,12 @@ export const buildFhirExport = (
       // nothing behind that says it did. Who typed a baseline value, as
       // far as it can be known, rides the envelope — `fieldOrigins` and
       // notes.字段来源 (contract §B3).
-      text: source.geneticEvidence.hasGeneticReport
-        ? '患者已上传基因检测报告（报告内容未经本平台人工复核）'
-        : '未上传基因检测报告；诊断信息来自档案记录',
+      //
+      // The sentence is shared with the other two exports rather than
+      // written here: a receiver holding this bundle beside the
+      // TREAT-NMD document reads one account of what 基因确诊 means on
+      // this platform, not two wordings of it.
+      text: `${geneticConfirmationReasonZh(source)}。${geneticEvidenceDocumentZh(source)}`,
     },
     code: codeableText(conditionText),
     subject: { reference: patientRef },
@@ -301,8 +328,19 @@ export const buildFhirExport = (
     // `verificationStatus` arm above, so a receiver that never opens
     // the envelope sees these sentences on a confirmed Condition too.
     ...(() => {
-      const yearOrigin = originNoteZh(source, 'foundation.diagnosisYear');
-      const typeOrigin = originNoteZh(source, 'diseaseBackground.diagnosisType');
+      // Null when the year on this Condition is the year part of
+      // `patient_profiles.diagnosis_date` — same reason as the 分型
+      // path below.
+      const yearMarkerPath = diagnosisYearMarkerPath(source);
+      const yearOrigin = yearMarkerPath ? originNoteZh(source, yearMarkerPath) : null;
+      // Null when the 分型 on this Condition came out of
+      // `patient_profiles.genetic_mutation`: the marker is about the
+      // baseline slot, that slot is empty in that state, and printing
+      // its note here would put an administrator's name on a string
+      // they never wrote. Asked through the shared answer so this note
+      // and the TREAT-NMD provenance sentence cannot disagree.
+      const typeMarkerPath = diagnosisTypeMarkerPath(source);
+      const typeOrigin = typeMarkerPath ? originNoteZh(source, typeMarkerPath) : null;
       const notes = [
         ...(source.diagnosisYear.kind === 'unknown'
           ? ['确诊年份：患者记不清了（已问过，不是未采集）。']
@@ -543,6 +581,7 @@ export const buildFhirExport = (
       declares: {
         ...(coding && ledgered ? { codingKey: ledgered.key, codingSystem: coding.system } : {}),
         undatedReportField: field.observedAtIsUploadTime,
+        transcribedGeneticReading: field.transcribedGeneticReading,
       },
       // Not `sortKey(field.observedAt)`: for an undated report field
       // that value is the upload time, and this Observation is about
@@ -555,17 +594,35 @@ export const buildFhirExport = (
         resourceType: 'Observation',
         id: deterministicUuid(`observation:${field.documentId}:${field.key}`),
         status: 'final',
-        category: [
-          {
-            coding: [
-              {
-                system: OBSERVATION_CATEGORY_SYSTEM,
-                code: field.category === 'imaging' ? 'imaging' : field.category,
-              },
-            ],
-            text: field.category === 'imaging' ? '影像' : '检验',
-          },
-        ],
+        // `category` is written ONLY when this bundle can name one
+        // truthfully. The genetic specs are marked laboratory-category
+        // because a repeat count IS a laboratory assay — but our copy
+        // of it is not always the laboratory's page, and
+        // `transcribedGeneticReading` is that question already asked of
+        // the document this reading came off. Emitting `laboratory`
+        // over a 病历摘要's transcription told a registry a laboratory
+        // measured the number, with a `derivedFrom` pointing at the
+        // very document that shows it did not; the observation-category
+        // value set has no member that means 「read off a transcript」,
+        // and inventing a code is what the rest of this file refuses to
+        // do. The reading itself still ships — for some patients it is
+        // the only copy of the number in existence — and the note plus
+        // the omission below say what it is.
+        ...(field.transcribedGeneticReading
+          ? {}
+          : {
+              category: [
+                {
+                  coding: [
+                    {
+                      system: OBSERVATION_CATEGORY_SYSTEM,
+                      code: field.category === 'imaging' ? 'imaging' : field.category,
+                    },
+                  ],
+                  text: field.category === 'imaging' ? '影像' : '检验',
+                },
+              ],
+            }),
         code: coding ? { coding: [coding], text: field.labelZh } : codeableText(field.labelZh),
         subject: { reference: patientRef },
         // `effectiveDateTime` is written ONLY when the report stated
@@ -589,6 +646,13 @@ export const buildFhirExport = (
           {
             text: '由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。',
           },
+          ...(field.transcribedGeneticReading
+            ? [
+                {
+                  text: `本条不是实验室出具的基因报告上的结果：本平台把 derivedFrom 指向的那份上传件读作这份档案的基因证据，而它不是基因报告，来源标为「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」，上面写着的内容是从别处转录来的。因此本条不写 category——observation-category 取值集里没有表示这种来源的编码，写成 laboratory 会把一段转录说成实验室的结论。`,
+                },
+              ]
+            : []),
           ...(field.observedAtIsUploadTime
             ? [
                 {
@@ -710,6 +774,16 @@ export const buildFhirExport = (
       field: 'Observation.effectiveDateTime（报告自动解析项）',
       reasonZh:
         '有报告没有被识别出检查或报告日期。这类条目不写 effectiveDateTime，也不用上传时间代替——一份 2019 年打印、上周才拍照上传的报告，若标成上周，接收方读到的就是一个「当前」的结果。上传时间见对应 DocumentReference.date，它是上传时间而不是检查时间。',
+    });
+  }
+
+  // Gated on the survivors for the same reason: this explains why
+  // certain Observations IN THIS BUNDLE carry no `category`, and with
+  // all of them evicted there is nothing in the bundle it is about.
+  if (declared.hasTranscribedGeneticReading) {
+    omissions.push({
+      field: 'Observation.category（基因结果）',
+      reasonZh: `本 Bundle 中的基因结果读自一份不是基因报告的上传件——本平台把它读作这份档案的基因证据，来源标为「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」。observation-category 取值集里没有能表示这种来源的编码，而 laboratory 会把一段转录说成实验室的结论，因此这类 Observation 不写 category。读数照常给出：对一些患者来说，这是唯一一份写着这个数字的材料。请不要把它当作实验室的结论，也不要据它做需要基因确诊的分组。哪一份文件供的数，见该 Observation 的 derivedFrom。`,
     });
   }
 

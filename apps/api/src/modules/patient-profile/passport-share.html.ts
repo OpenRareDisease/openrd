@@ -105,6 +105,23 @@ const CONFIRMATION_BANNER: Record<
     title: '基因确诊',
     body: '本平台已从患者上传的报告里读到可作确诊依据的基因结果。下面「诊断信息」里，括号写在哪一行后面就只说那一行。原始报告以患者手中的报告单为准。',
   },
+  /**
+   * The laboratory's own report, carrying a 4qB.
+   *
+   * TONE IS `warn` AND NOT `ok`, and the title does not say 未经基因确诊
+   * either. Both of the two banners that existed would have been read
+   * as a statement about how much evidence there is; this one is about
+   * what the evidence says, and it is the banner most likely to be the
+   * first time anybody has told this patient. It names the reading,
+   * gives the guideline's rule for reading it, and refuses the two
+   * conclusions a hurried reader would otherwise draw — that the
+   * platform has confirmed FSHD1, and that it has excluded FSHD.
+   */
+  genetic_non_permissive: {
+    tone: 'warn',
+    title: '基因报告读到的 4q 单倍型不是允许型',
+    body: '本平台从患者上传的基因报告里读到的 4q 单倍型是 4qB。指南把 FSHD 的基因分析定义为 D4Z4 重复序列的长度与它的 4qA / 4qB 单倍型两项，其中只有 4qA 是允许型 —— FSHD1 指的是 D4Z4 在允许型 4qA 等位基因上的缩短。因此本平台没有把这份报告当作已确认的分子遗传学诊断，也没有据它去套指南里按重复数分组的建议。这不是排除诊断：报告写的是它所检测的那条等位基因，结论请以报告原件与临床判断为准。下面「诊断信息」里，括号写在哪一行后面就只说那一行。',
+  },
   self_reported: {
     tone: 'warn',
     title: '未经基因确诊',

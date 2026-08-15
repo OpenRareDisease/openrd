@@ -119,20 +119,37 @@ export const CHINA_REGISTRY_NAME = '药物临床试验登记与信息公示平�
 export const CHINA_REGISTRY_URL = 'http://www.chinadrugtrials.org.cn/';
 
 /**
- * Shown when nothing from the mainland registry reached the reader —
- * which is its state whenever that scraper has never succeeded. It must
- * not be printed when mainland records did reach them (see
- * `describeChinaCoverage`).
- *
- * 本页, not 本列表. The screen prints this same sentence while the
- * request is in flight, after the request failed, over an empty
- * snapshot and over the undated refusal — states with no list under it
- * at all. What this page draws from is true in every one of them;
- *「本列表来自…」was a claim that a list existed.
+ * Where to go for the half this page does not have in hand. One
+ * phrasing, ending every notice that has no mainland record to
+ * describe — the reader gets the same instruction whether we never
+ * looked, could not read the registry, or read it and came back with
+ * nothing.
  */
-export const COVERAGE_NOTE_CTGOV_ONLY =
-  `本页只收录 ClinicalTrials.gov 的记录，不含仅在国内登记的试验。` +
-  `国内登记的试验请查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`;
+const CHINA_REGISTRY_POINTER = `国内登记的试验请直接查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`;
+
+/**
+ * Shown when the snapshot says nothing at all about the mainland half:
+ * the request is in flight, it failed, or it came back carrying no
+ * source block for that registry. Every other state has a fact of its
+ * own to state and states it (see `describeChinaCoverage`).
+ *
+ * IT NO LONGER SAYS 「本页只收录 ClinicalTrials.gov 的记录，不含仅在
+ * 国内登记的试验」. That sentence described a platform that does not
+ * fetch chinadrugtrials.org.cn, and this one does — the source is in
+ * TRIAL_SOURCES, the cron runs it, and on the day this was written its
+ * run came back successful with zero rows. Printed over that state it
+ * told every patient the mainland registry was outside our scope when
+ * what had actually happened is that we checked it and found nothing,
+ * which is a different fact and a much smaller one. The scope claim is
+ * deleted rather than qualified; what is left is what the reader can
+ * check for themselves.
+ *
+ * 本页, not 本列表. The screen prints this while the request is in
+ * flight and after it failed — states with no list under it at all —
+ * so it says what is not on the page rather than what is in a list.
+ */
+export const COVERAGE_NOTE_NO_CHINA_RECORDS =
+  `本页现在没有来自国内登记平台的记录。` + CHINA_REGISTRY_POINTER;
 
 export const TRIALS_DISCLAIMER = '是否参加试验，请与你的主诊医生商量。';
 
@@ -520,6 +537,35 @@ const lastSuccessClause = (status: TrialSourceStatus | null): string => {
 };
 
 /**
+ * The one clause that describes the list rather than our copy of the
+ * mainland half, so it is the one clause gated on `shownListFetchedOn`.
+ * True of every state that reaches it: no mainland record is in the
+ * snapshot on any of those paths, and the only other source is ctgov.
+ */
+const CHINA_ABSENT_LIST_SCOPE = '所以下面这份名单目前只有 ClinicalTrials.gov 的记录。';
+
+/**
+ * The three states with no mainland record in hand say the same things
+ * in the same order: what became of our copy of that half, what the
+ * list on screen therefore holds — ONLY when a list is on screen — and
+ * where to go for the rest.
+ *
+ * `fact` and `caveat` end in 「，」 so the pointer closes the sentence
+ * whether or not the middle clause is there.
+ */
+const chinaAbsenceNotice = (
+  snapshot: TrialsSnapshot,
+  tone: CoverageNotice['tone'],
+  fact: string,
+  caveat = '',
+): CoverageNotice => ({
+  tone,
+  text:
+    `${fact}${shownListFetchedOn(snapshot) ? CHINA_ABSENT_LIST_SCOPE : ''}` +
+    `${caveat}${CHINA_REGISTRY_POINTER}`,
+});
+
+/**
  * What to say about the mainland half.
  *
  * The sentence has to be true about the list the reader is looking at,
@@ -544,9 +590,28 @@ const lastSuccessClause = (status: TrialSourceStatus | null): string => {
  * points at rows on screen is a false sentence wherever the screen drew
  * none. What is left points at our copy of the mainland half, which
  * exists in every state that renders this.
- *「下面这份名单目前只有 ClinicalTrials.gov 的记录」is the one clause
- * that genuinely describes the list, so it survives only when
- * `shownListFetchedOn` says there is a list to describe.
+ * `CHINA_ABSENT_LIST_SCOPE` is the one clause that genuinely describes
+ * the list, so it survives only when `shownListFetchedOn` says there is
+ * a list to describe.
+ *
+ * A SUCCESSFUL RUN THAT RETURNED NOTHING IS ITS OWN STATE, and it is
+ * the state production is in. It used to fall through to the fixed
+ * sentence together with 「we have never run this scraper」, which read
+ * as「本页只收录 ClinicalTrials.gov 的记录」— our absence, printed over
+ * the registry's own zero. What separates them here is `lastRun`: a
+ * run that exists and reports `ok` is us having looked.
+ *
+ * What that branch may NOT do is finish the thought. `ok = TRUE` with
+ * no rows does not distinguish「the registry lists nothing matching」
+ * from「our scrape read the pages and recognised nothing」, and the one
+ * column that would — `source_reported_total`, migration 027 — is not
+ * on the wire (no field of `TrialSourceStatus` holds it; the same
+ * absence `describeEmptyList` works around). Deriving the registry's
+ * zero from `ok` plus an empty list is the inference
+ * apps/api/src/modules/trials/refresh.ts forbids, so the branch states
+ * the two facts it has — the run succeeded, it brought back nothing —
+ * and then refuses the conclusion out loud rather than leaving the
+ * reader to draw it.
  */
 export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice => {
   const status = sourceStatusOf(snapshot, 'chinadrugtrials');
@@ -575,18 +640,47 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
     const detail = lastRun.finishedAt
       ? '国内这部分这次没有取到'
       : '国内这部分最近一次抓取还没有返回结果';
-    const scope = shownListFetchedOn(snapshot)
-      ? '所以下面这份名单目前只有 ClinicalTrials.gov 的记录。'
-      : '';
-    return {
-      tone: 'warn',
-      text:
-        `${detail}（${lastSuccessClause(status)}），${scope}` +
-        `国内登记的试验请直接查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`,
-    };
+    return chinaAbsenceNotice(snapshot, 'warn', `${detail}（${lastSuccessClause(status)}），`);
   }
 
-  return { tone: 'plain', text: COVERAGE_NOTE_CTGOV_ONLY };
+  if (lastRun) {
+    // Nothing failed, so this is not a `warn`: the cron did its work
+    // and the mainland half of the cache is empty because of what came
+    // back, not because something broke. A warning triangle here would
+    // spend the one alarm this page has on a run that worked.
+    //
+    // Not `lastSuccessClause`: its no-success wording (「到目前为止还没
+    // 有成功抓取过」) inside a sentence that just said the run reported
+    // success is the contradiction `describeEmptyList` documents. The
+    // day is printed bare rather than under 「上次成功抓取：」 because
+    // here it belongs to the run being described — `lastRun.ok` is
+    // true, so the latest run and the latest successful one are the
+    // same run — and because the empty-list card can be on screen
+    // directly under this one saying 「抓取本身报的是成功（上次成功抓
+    // 取：…）」 about ctgov, with a different date in it.
+    const successDay = lastSuccessDay(status);
+    return chinaAbsenceNotice(
+      snapshot,
+      'plain',
+      `国内这部分最近一次抓取${successDay ? `（${successDay}）` : ''}是成功的，` +
+        `但一条记录都没有取回来，`,
+      '这不等于国内就没有相关的试验，',
+    );
+  }
+
+  // A source block with no run: this registry has never been fetched on
+  // this database. Distinct from the branch above on purpose — 「we have
+  // not looked」 and 「we looked and found nothing」 are different facts
+  // about us, and only one of them is worth a reader's patience.
+  if (status) {
+    return chinaAbsenceNotice(snapshot, 'plain', '国内这部分还没有抓取过，');
+  }
+
+  // No block for the source at all. The server sends one per registry
+  // whatever its state (apps/api trials.service.ts), so this is a
+  // payload we cannot read rather than a state we can name — and the
+  // fixed sentence is the one that claims nothing about the fetch.
+  return { tone: 'plain', text: COVERAGE_NOTE_NO_CHINA_RECORDS };
 };
 
 /**

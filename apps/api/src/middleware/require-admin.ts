@@ -23,11 +23,13 @@ import { AppError } from '../utils/app-error.js';
  *    handler runs, so a route added next month cannot forget to call
  *    anything.
  *
- *    WHAT A ROW CAN ANSWER, exactly — `ADMIN_AUDIT_NOTICE` promises
- *    it to operators on every back-office screen, so it has to be
- *    stated rather than assumed: the administrator, the time
- *    (`audit_logs.occurred_at`), the method and the path, ALWAYS; and
- *    which patient, only where `targetParam` names one. A route whose
+ *    WHAT A ROW CAN ANSWER, exactly — the back office's
+ *    `ADMIN_AUDIT_NOTICE_*` banners promise it to operators, one
+ *    sentence per screen because what the rows behind each screen carry
+ *    differs, so it has to be stated rather than assumed: the
+ *    administrator, the time (`audit_logs.occurred_at`), the method and
+ *    the path, ALWAYS; and which patient, only where `targetParam`
+ *    names one. A route whose
  *    subject is a page of patients, or nobody, or the whole cohort has
  *    no single id to record and records none. Reading 「看了谁」 out of
  *    those rows is reading something that was never written.

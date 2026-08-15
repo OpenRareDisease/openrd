@@ -11,7 +11,7 @@ import { listTrials } from '../../lib/trials-api';
 import {
   CHINA_REGISTRY_NAME,
   CHINA_REGISTRY_URL,
-  COVERAGE_NOTE_CTGOV_ONLY,
+  COVERAGE_NOTE_NO_CHINA_RECORDS,
   TRIALS_DISCLAIMER,
   TRIALS_INTRO,
   TRIAL_SOURCE_NAMES,
@@ -41,9 +41,12 @@ import {
  *     VPS is a spinner on their screen. An undated copy of a registry
  *     is a present-tense claim nobody checked, so when the snapshot
  *     carries no readable timestamp this screen shows no list at all.
- *  2. 不含仅在国内登记的试验，国内请查 chinadrugtrials.org.cn. Printed
- *     when it is true of the list on screen; replaced — not dropped —
- *     by a truer sentence when it is not. lib/trials.ts owns which.
+ *  2. 国内登记的试验请直接查 chinadrugtrials.org.cn. The page fetches
+ *     that registry too, so what sits above this line is never a claim
+ *     that we do not cover it — it is whatever happened to our copy of
+ *     that half: never fetched, could not be read, fetched and empty,
+ *     or here and dated. Replaced — not dropped — as that state moves.
+ *     lib/trials.ts owns which sentence.
  *  3. 是否参加请与主诊医生商量.
  *
  * WHAT IT IS NOT ALLOWED TO SAY. No eligibility («你可能符合»), no
@@ -205,20 +208,23 @@ const TrialsScreen = () => {
   const fetchedOn = useMemo(() => (snapshot ? shownListFetchedOn(snapshot) : null), [snapshot]);
   const groups = useMemo(() => (snapshot ? groupTrials(snapshot.trials) : []), [snapshot]);
   /**
-   * The scope sentence and the disclaimer stand whether or not the
-   * fetch worked. A reader who hits the error state is exactly the one
-   * who needs to be told that this page never covered the mainland
-   * registry and where to go instead — dropping it there would make
-   * the sentence a reward for a successful load.
+   * This notice and the disclaimer stand whether or not the fetch
+   * worked. A reader who hits the error state is exactly the one who
+   * needs to be told where the mainland registry is — dropping it there
+   * would make the sentence a reward for a successful load.
    *
-   * With no snapshot there are certainly no mainland records on
-   * screen, so the fixed sentence is the true one.
+   * With no snapshot nothing is on screen at all, AND nothing is known
+   * about what the mainland fetch did. So the fixed sentence is the
+   * only one that fits: it says what the page is not showing and where
+   * to go for it, and claims nothing about the fetch — which is what
+   * stops this state from telling the reader we do not cover that
+   * registry on a morning when we fetched it and it came back empty.
    */
   const coverage = useMemo<CoverageNotice>(
     () =>
       snapshot
         ? describeChinaCoverage(snapshot)
-        : { tone: 'plain', text: COVERAGE_NOTE_CTGOV_ONLY },
+        : { tone: 'plain', text: COVERAGE_NOTE_NO_CHINA_RECORDS },
     [snapshot],
   );
   const staleness = useMemo(() => (snapshot ? describeCtgovStaleness(snapshot) : null), [snapshot]);

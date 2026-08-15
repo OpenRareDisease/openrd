@@ -70,6 +70,107 @@ describe('Phenopacket v2 — only verified ontology terms', () => {
   });
 });
 
+/**
+ * A `Disease.term` IS NOT A CONFIRMATION, AND THE PACKET HAS NOWHERE TO
+ * SAY SO.
+ *
+ * The v2 `Disease` message carries `term` and `excluded` and nothing
+ * that records how the diagnosis was established — and `excluded`
+ * means RULED OUT, so its default false is not a confirmation either.
+ * The packet therefore emitted one identical term for a genetically
+ * confirmed patient and for a patient whose repeat count this platform
+ * read off a 病历摘要, with nothing in the envelope separating them.
+ * The FHIR bundle answers this on `Condition.verificationStatus`; this
+ * is the same answer in the one place this format leaves for it.
+ */
+describe('Phenopacket v2 — 一个 Disease.term 不表示基因确诊', () => {
+  const transcription: PatientProfileDTO['documents'][number] = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    id: '88888888-8888-4888-8888-888888888899',
+    documentType: 'medical_summary',
+    ocrPayload: {
+      fields: { classifiedType: 'medical_summary', d4z4Repeats: '9', haplotype: '4qB' },
+    },
+  };
+
+  const basisOf = (overrides: Partial<PatientProfileDTO> = {}) =>
+    build(overrides).omissions.find((entry) => entry.field.startsWith('diseases[]'))?.reasonZh ??
+    '';
+
+  it('每次写出 Disease 都同时声明这个字段说不了诊断依据', () => {
+    const result = build();
+    expect(result.document.diseases).toHaveLength(1);
+    const basis = basisOf();
+    expect(basis).toContain('没有记录「这个诊断是怎么确立的」的位置');
+    expect(basis).toContain('不表示基因确诊');
+    // `excluded` is the slot a reader would otherwise reach for, so the
+    // sentence says what it actually means rather than leaving it.
+    expect(basis).toContain('excluded 表示「已排除该病」');
+  });
+
+  it('三种状态说三句不同的话 —— 读的是报告 / 读的是转录件 / 什么都没读', () => {
+    const laboratory = basisOf();
+    const transcribed = basisOf({ documents: [transcription] });
+    const nothing = basisOf({ documents: [] });
+
+    expect(laboratory).toContain('本平台读作这份档案基因证据的那一份是基因检测报告');
+
+    // The transcription state names the document class in the phrase
+    // every other surface uses, so a registry holding this beside the
+    // TREAT-NMD export reads one claim and not two wordings of one.
+    expect(transcribed).toContain('转录自非基因报告文件');
+
+    // And 「read a transcription」 is not merged with 「read nothing」: one
+    // says this platform holds a number it may not speak for, the other
+    // that it holds none. Merging them sends a registry asking after a
+    // document that does not exist.
+    expect(nothing).toContain('本平台此刻没有可作为这份档案基因证据来读的文件');
+    expect(nothing).not.toContain('转录自非基因报告文件');
+
+    expect(new Set([laboratory, transcribed, nothing]).size).toBe(3);
+  });
+
+  /**
+   * THE DISCLOSURE BRANCHED ON THE WRONG HALF OF THE STATE SPACE.
+   *
+   * It asked 「is a report on file」 before it asked which document was
+   * read, so the transcription warning was written only where no report
+   * existed — where there is no transcription to warn about — and went
+   * silent in the state it was written for: a genetics report on file
+   * that read out nothing is exactly when the picker falls through to a
+   * 病历摘要, and that packet named a laboratory report and said nothing
+   * about the page the numbers came off.
+   */
+  it('报告在档但读出来的是转录件时，转录声明照发', () => {
+    const basis = basisOf({
+      documents: [
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          id: '88888888-8888-4888-8888-888888888881',
+          documentType: 'genetic_report',
+          status: 'parsed',
+          ocrPayload: { fields: { reportTime: '2024-01-28' } },
+        },
+        { ...transcription, uploadedAt: '2024-03-01T06:00:00.000Z' },
+      ] as PatientProfileDTO['documents'],
+    });
+
+    expect(basis).toContain('转录自非基因报告文件');
+    expect(basis).not.toContain('本平台读作这份档案基因证据的那一份是基因检测报告');
+    // And the headline claim is the one the FHIR bundle and the
+    // TREAT-NMD item carry for the same profile.
+    expect(basis).toContain('本平台没有把这份档案判定为基因确诊');
+  });
+
+  it('没有可写的 Disease 时不发这条声明 —— 它说的是本文件里的那个 term', () => {
+    const result = build(withDiagnosisType(null));
+    expect(result.document.diseases).toBeUndefined();
+    expect(result.omissions.some((entry) => entry.field.startsWith('diseases[]'))).toBe(false);
+    // The other 'diseases' omission is the one that applies there.
+    expect(result.omissions.some((entry) => entry.field === 'diseases')).toBe(true);
+  });
+});
+
 describe('Phenopacket v2 — FSHD1 is not a sequence variant', () => {
   it('never emits interpretations, and says why', () => {
     const result = build();

@@ -242,7 +242,9 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(result.diagnosis.confirmation).toBe('self_reported');
     expect(result.diagnosis.d4z4Repeats).toBe('—');
     expect(result.diagnosis.statement).not.toContain('任何上传的报告');
-    expect(result.diagnosis.statement).toContain('本资料里没有从基因报告里读出来的 D4Z4 重复数');
+    expect(result.diagnosis.statement).toContain(
+      '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果',
+    );
     // And it hands the reader the question this document cannot answer.
     expect(result.markdown).toContain('患者手里可能还有本平台没有读过的报告');
   });
@@ -343,6 +345,50 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(result.diagnosis.confirmation).toBe('none');
     expect(result.diagnosis.statement).not.toContain('仅为患者自述与自测');
     expect(result.markdown).toContain('- 甲基化：32%（报告读取）');
+    // AND THE 结论 MAY NOT DENY THE ROW UNDER IT. The flat 「也没有从基因
+    // 报告里读出来的基因结果」 was printed over exactly this pack: a
+    // 甲基化 this platform read off the genetics report, three lines
+    // below, carrying 报告读取 as its source. What is missing is a
+    // result that earns a confirmation, and 甲基化 is not one.
+    expect(result.diagnosis.statement).toContain('可作确诊依据的基因结果');
+    expect(result.markdown).not.toContain('也没有从基因报告里读出来的基因结果 ——');
+  });
+
+  /**
+   * THE 结论 DOES NOT KEEP ITS OWN COPY OF THE CONFIRMATION RULE.
+   *
+   * These lines named the three tests that earn 基因确诊. That is
+   * `confirmation`'s definition restated in prose, on a page that gets
+   * printed and read weeks later, and it drifts the moment the rule
+   * moves — a report that names both probes rather than stating a
+   * haplotype has a 4q 单倍型 on it and confirms nothing, so a pack
+   * promising the neurologist those three names tells them a report
+   * they can see was never read.
+   */
+  it('未确诊的结论不复述「哪三项能构成确诊」', () => {
+    (['self_reported', 'admin_entered', 'none'] as const).forEach((expected) => {
+      const profile =
+        expected === 'self_reported'
+          ? base({ geneticMutation: 'FSHD1' } as never)
+          : expected === 'none'
+            ? base()
+            : base({
+                diagnosisDate: '2014-01-01',
+                baseline: applyAdminBaselineWrite(
+                  { foundation: { fullName: '张三' } },
+                  { foundation: { fullName: '张三', diagnosisYear: 2014 } },
+                  {
+                    adminUserId: '11111111-2222-3333-4444-555555555555',
+                    at: new Date('2026-08-13T04:11:07.912Z'),
+                  },
+                ),
+              } as never);
+      const result = pack(profile);
+      expect(result.diagnosis.confirmation).toBe(expected);
+      expect(result.diagnosis.statement).not.toContain('EcoRI 片段');
+      expect(result.diagnosis.statement).not.toContain('4q 单倍型');
+      expect(result.diagnosis.statement).toContain('可作确诊依据的基因结果');
+    });
   });
 
   it('prints each diagnosis value with its own source, not one sentence for the block', () => {
@@ -418,11 +464,39 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     const unconfirmed = pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>));
     expect(unconfirmed.questions[0]?.id).toBe('confirm-diagnosis');
     expect(unconfirmed.questions[0]?.hint).toContain(
-      '本资料里没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段',
+      '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果',
     );
 
     const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
+  });
+
+  /**
+   * A LABORATORY DID READ THIS PATIENT'S SAMPLE, so the unconfirmed
+   * copy next door is false for them in both directions: it offers a
+   * report this platform has not seen, and it asks them to upload the
+   * one it has already read.
+   */
+  it('单倍型非允许型时，结论和提示都不当作「还没做过检测」来写', () => {
+    const result = pack(
+      base({
+        documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qB' })],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).toBe('genetic_non_permissive');
+    expect(result.diagnosis.statement).toContain('不是允许型 4qA');
+    expect(result.diagnosis.statement).toContain('请勿按已确诊处理');
+    // Not a confirmation, and the repeat count is not set bare after the
+    // diagnosis name where it would read as one.
+    expect(result.diagnosis.statement).not.toContain('基因确诊；');
+    // The row below still prints it, with the report named as its
+    // source — refusing the confirmation is not withholding the result.
+    expect(result.markdown).toContain('- D4Z4 重复数：3（报告读取）');
+
+    const hint = result.questions.find((question) => question.id === 'confirm-diagnosis')?.hint;
+    expect(hint).toContain('不是允许型 4qA');
+    expect(hint).not.toContain('把报告带上或上传，这一行就会改');
   });
 });
 

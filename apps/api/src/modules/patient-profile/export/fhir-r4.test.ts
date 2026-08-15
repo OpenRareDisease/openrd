@@ -7,6 +7,7 @@ import { applyAdminBaselineWrite, BASELINE_PROVENANCE_KEY } from '../baseline-pr
 import { applyGeneticReportAutofill } from '../profile.autofill.js';
 import { MAX_OBSERVATIONS, buildFhirExport, toFhirGender, type FhirResource } from './fhir-r4.js';
 import { AMBULATION_LABELS, DAILY_IMPACT_LABELS, FUNCTION_TEST_LABELS } from './labels.js';
+import { TRANSCRIBED_EVIDENCE_LABEL_ZH } from '../genetic-evidence.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
 const build = (overrides: Partial<PatientProfileDTO> = {}, includeLocalOnly = false) =>
@@ -96,7 +97,7 @@ describe('FHIR R4 — no unverified terminology', () => {
 });
 
 describe('FHIR R4 — Condition tells the truth about confirmation', () => {
-  it('is confirmed only when a genetic report is on file', () => {
+  it('is confirmed only when the graded evidence came off the laboratory report', () => {
     const withReport = resourcesOf(build(), 'Condition')[0];
     expect(
       (withReport.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
@@ -111,8 +112,123 @@ describe('FHIR R4 — Condition tells the truth about confirmation', () => {
     // so any 「本人填写」 here would be an author invented out of an
     // absence. See the §B3 block below and the autofill case with it.
     const selfReportedText = (selfReported.verificationStatus as { text: string }).text;
-    expect(selfReportedText).toContain('未上传基因检测报告');
+    expect(selfReportedText).toContain('本平台没有把这份档案判定为基因确诊');
     expect(selfReportedText).not.toContain('患者本人填写');
+    // AND IT DOES NOT REPORT THE ABSENCE OF A DOCUMENT AS THE REASON.
+    // A patient with an unreadable genetics report on file is
+    // unconfirmed here and is still holding it; a registry told no
+    // report exists sends somebody to re-order a test already run.
+    expect(selfReportedText).toContain('也不表示他手里没有报告');
+  });
+
+  /**
+   * A REPORT ON FILE IS NOT THE QUESTION, AND ASKING IT PUT A
+   * LABORATORY BEHIND A TRANSCRIPTION.
+   *
+   * `hasGeneticReport` was 「is ANY document on file the laboratory's
+   * own report」. A genetics report that read out nothing is still one,
+   * and it is exactly the state where `pickGeneticEvidenceDocument`
+   * falls through to a 病历摘要 quoting the repeat count — so this
+   * bundle went out as verificationStatus=confirmed while its own
+   * genetic Observations carried no `category` because the reading was
+   * a transcription, and while the same patient's passport, referral
+   * pack and anesthesia card all read 未经基因确诊.
+   */
+  it('is not confirmed when the report read out nothing and a 病历摘要 supplied the numbers', () => {
+    const result = build({
+      documents: [
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          id: '88888888-8888-4888-8888-888888888881',
+          documentType: 'genetic_report',
+          status: 'parsed',
+          ocrPayload: { fields: { reportTime: '2024-01-28' } },
+        },
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          id: '88888888-8888-4888-8888-888888888883',
+          documentType: 'medical_record',
+          status: 'parsed',
+          uploadedAt: '2024-03-01T06:00:00.000Z',
+          ocrPayload: { fields: { d4z4Repeats: '5', haplotype: '4qA' } },
+        },
+      ],
+    });
+    const condition = resourcesOf(result, 'Condition')[0];
+    expect(
+      (condition.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
+    ).toBe('unconfirmed');
+    // The premise: a laboratory report IS on file. The text must not
+    // deny it — what it denies is having read a confirming result.
+    expect(result.document.entry.map((entry) => entry.resource.resourceType)).toContain(
+      'DocumentReference',
+    );
+    const text = (condition.verificationStatus as { text: string }).text;
+    expect(text).toContain('本平台没有把这份档案判定为基因确诊');
+    // And it says which document the numbers in this bundle came off,
+    // in the phrase every other surface uses for that document class.
+    expect(text).toContain(TRANSCRIBED_EVIDENCE_LABEL_ZH);
+  });
+
+  /**
+   * A dropdown is not evidence. The uploader picks a type from a menu
+   * and the parser reads the page; where they disagree the parser wins,
+   * which is `isLaboratoryGeneticReport` — the same answer that ranks
+   * the picker and grades the passport. Before this, a 病历摘要 filed
+   * under 基因检测报告 arrived at a registry as a laboratory's
+   * confirmation, in a bundle whose genetic Observations name a
+   * transcription as their source.
+   */
+  it('is not confirmed by a 病历摘要 the uploader filed as a genetic report', () => {
+    const condition = resourcesOf(
+      build({
+        documents: [
+          {
+            ...EXPORT_FIXTURE_PROFILE.documents[0],
+            documentType: 'genetic_report',
+            ocrPayload: {
+              fields: { classifiedType: 'medical_summary', d4z4Repeats: '5', haplotype: '4qA' },
+            },
+          },
+        ],
+      }),
+      'Condition',
+    )[0];
+    expect(
+      (condition.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
+    ).toBe('unconfirmed');
+    // And the text says which document the values came off, because the
+    // patient chose that menu item and is owed the reason this answers
+    // no.
+    expect((condition.verificationStatus as { text: string }).text).toContain(
+      TRANSCRIBED_EVIDENCE_LABEL_ZH,
+    );
+  });
+
+  /**
+   * The other direction: the parser recognises a genetics report the
+   * uploader filed as 其他医疗文件. Reading the declaration alone lost
+   * a real laboratory report, which is the half of this rule that
+   * costs a patient a confirmation they earned.
+   */
+  it('is confirmed by a genetics report the uploader filed as something else', () => {
+    const condition = resourcesOf(
+      build({
+        documents: [
+          {
+            ...EXPORT_FIXTURE_PROFILE.documents[0],
+            documentType: 'other',
+            ocrPayload: {
+              fields: { classifiedType: 'genetic_report', d4z4Repeats: '5', haplotype: '4qA' },
+            },
+          },
+        ],
+      }),
+      'Condition',
+    )[0];
+    expect(
+      (condition.verificationStatus as { coding: Array<{ code: string }> }).coding[0].code,
+    ).toBe('confirmed');
   });
 
   it('puts the OMIM number inside human-readable text, never as a coding', () => {
@@ -752,5 +868,121 @@ describe('FHIR R4 —— 基因读数只从被点名的那一份报告出', () =
       { label: 'D4Z4 重复单元数', value: '9' },
       { label: '4q 单倍型', value: '4qB' },
     ]);
+  });
+
+  /**
+   * A TRANSCRIPTION MAY NOT BE FILED AS A LABORATORY OBSERVATION.
+   *
+   * The genetic specs are marked laboratory-category because a repeat
+   * count IS a laboratory assay — but the document this bundle read it
+   * off is not always the laboratory's page, and the exporter took the
+   * category off the spec whatever supplied the value. So a registry
+   * received `category=laboratory` over a number this platform read out
+   * of a 病历摘要, with a `derivedFrom` pointing at the very document
+   * that shows no laboratory measured it here.
+   *
+   * The reading still ships: for some patients it is the only copy of
+   * the number in existence. What goes is the claim about who measured
+   * it.
+   */
+  const transcriptionOnly = (): Partial<PatientProfileDTO> => ({
+    documents: [summaryTranscription],
+  });
+
+  const categoryCodesOf = (result: ReturnType<typeof build>, labelPattern: RegExp) =>
+    resourcesOf(result, 'Observation')
+      .filter((resource) => labelPattern.test((resource.code as { text?: string }).text ?? ''))
+      .map((resource) => resource.category ?? null);
+
+  it('证据是病历摘要时，基因 Observation 不写 category，也不自己编一个编码', () => {
+    const result = build(transcriptionOnly());
+    const genetic = geneticObservations(result);
+    // The values are there.
+    expect(genetic).toEqual([
+      { label: 'D4Z4 重复单元数', value: '9' },
+      { label: '4q 单倍型', value: '4qB' },
+    ]);
+    // And carry no category at all — not `laboratory`, and not an
+    // invented code either.
+    expect(categoryCodesOf(result, /D4Z4|单倍型/)).toEqual([null, null]);
+
+    // Each says what it is, in the phrase every other surface uses for
+    // the same document.
+    resourcesOf(result, 'Observation')
+      .filter((resource) => /D4Z4|单倍型/.test((resource.code as { text?: string }).text ?? ''))
+      .forEach((resource) => {
+        const notes = (resource.note as Array<{ text: string }>).map((note) => note.text).join('');
+        expect(notes).toContain('转录自非基因报告文件');
+        expect(notes).toContain('不写 category');
+      });
+
+    // And the envelope declares the gap, because a missing element in a
+    // conformant document is otherwise indistinguishable from an
+    // exporter that never had one.
+    const omission = result.omissions.find((entry) =>
+      entry.field.startsWith('Observation.category'),
+    );
+    expect(omission?.reasonZh).toContain('转录自非基因报告文件');
+    expect(omission?.reasonZh).toContain('不要把它当作实验室的结论');
+  });
+
+  it('是实验室那份报告时 category 照写，声明也不出现', () => {
+    // The rule is about the document, not about the field: the same two
+    // items off the genetics report keep 检验, which is true there.
+    const result = build();
+    expect(categoryCodesOf(result, /D4Z4|单倍型/)).toEqual([
+      [
+        {
+          coding: [
+            {
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+              code: 'laboratory',
+            },
+          ],
+          text: '检验',
+        },
+      ],
+      [
+        {
+          coding: [
+            {
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+              code: 'laboratory',
+            },
+          ],
+          text: '检验',
+        },
+      ],
+    ]);
+    expect(result.omissions.some((entry) => entry.field.startsWith('Observation.category'))).toBe(
+      false,
+    );
+  });
+
+  it('转录规则不会波及血液检验报告上的 CK —— 那是那家实验室自己测的', () => {
+    const result = build(transcriptionOnly());
+    // The 血液检验 document is gone from that profile, so put it back
+    // alongside the transcription and check the CK keeps its category.
+    const both = build({
+      documents: [summaryTranscription, EXPORT_FIXTURE_PROFILE.documents[1]],
+    });
+    expect(categoryCodesOf(both, /肌酸激酶/)).toEqual([
+      [
+        {
+          coding: [
+            {
+              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+              code: 'laboratory',
+            },
+          ],
+          text: '检验',
+        },
+      ],
+    ]);
+    // And the genetic ones in that same bundle still have none.
+    expect(categoryCodesOf(both, /D4Z4|单倍型/)).toEqual([null, null]);
+    expect(result.omissions.some((entry) => entry.field.startsWith('Observation.category'))).toBe(
+      true,
+    );
   });
 });

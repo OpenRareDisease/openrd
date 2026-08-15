@@ -287,6 +287,27 @@ describe('确诊状态必须在数值之前出现', () => {
     expect(effective(html, valueChain(html, 'MRI 摘要'), 'color')).toBe('var(--ink)');
   });
 
+  it('单倍型非允许型时，横幅说的是结果是什么，不是「没有结果」', () => {
+    // Built through the real summariser rather than from a literal:
+    // this banner is only correct if the state it renders is the state
+    // a 4qB report actually produces.
+    const p = profile({
+      documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qB' })],
+    } as never);
+    expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('genetic_non_permissive');
+
+    const html = rendered(p);
+    expect(html).toContain('4q 单倍型不是允许型');
+    expect(html).toContain('只有 4qA 是允许型');
+    // 既不锚定成已确诊，也不锚定成已排除 —— 这一页的读者两个方向都会
+    // 记住。
+    expect(html).not.toContain('这份摘要里没有从基因报告里读出来的基因结果');
+    expect(html).toContain('这不是排除诊断');
+    expect(html.indexOf('4q 单倍型不是允许型')).toBeLessThan(html.indexOf('D4Z4 重复数'));
+    // 数值照印，括号照印 —— 横幅收走的是结论，不是结果。
+    expect(html).toContain('3（报告读取）');
+  });
+
   it('什么依据都没有时也有横幅，不是留白', () => {
     const html = page({ diagnosis: { ...summary().diagnosis, confirmation: 'none' } });
     expect(html).toContain('这份摘要里没有诊断依据');

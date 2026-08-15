@@ -2,6 +2,8 @@ import { buildCodingProvenance, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   diagnosisYearProvenanceZh,
+  geneticConfirmationReasonZh,
+  geneticEvidenceDocumentZh,
   geneticValueProvenanceZh,
   instrumentOmission,
   withOriginNote,
@@ -190,9 +192,21 @@ export const buildTreatNmdExport = (
       },
       {
         key: 'diagnosis.geneticallyConfirmed',
-        labelZh: '是否有基因报告',
-        value: source.geneticEvidence.hasGeneticReport,
-        provenanceZh: '依据患者是否上传过基因检测报告文件判断，不代表报告内容已被人工核对',
+        labelZh: '是否基因确诊',
+        value: source.geneticallyConfirmed,
+        // THE KEY IS WHAT A RECEIVER MAPS ON, so the key is what the
+        // value has to answer. This item was narrowed to 是否有基因报告
+        // in its label and its provenance while `geneticallyConfirmed`
+        // stayed in the key and 「is any document on file the
+        // laboratory's report」 stayed in the value — a registry
+        // ingesting the key never sees the label, so it received a
+        // confirmation claim for a profile whose passport, referral
+        // pack and anesthesia card all read 未经基因确诊, and whose three
+        // genetic values two lines below name 转录自非基因报告文件 as
+        // their source. Answered off the passport's own
+        // `geneticallyConfirmed` now, which is the same answer the FHIR
+        // Condition's verificationStatus carries.
+        provenanceZh: `${geneticConfirmationReasonZh(source)}。${geneticEvidenceDocumentZh(source)}`,
       },
       // The three genetic results do not share one provenance sentence,
       // and geneticValueProvenanceZh is where the reason is written

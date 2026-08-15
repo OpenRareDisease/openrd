@@ -610,7 +610,16 @@ export class AdminController {
         patientCount,
         notes: [
           '这份文件包含全部患者的姓名、手机号、所在地区与全部基线临床字段，请只在需要时导出。',
-          '基线字段是数据库中存储的值，不含「从上传的基因报告自动补全」的部分——界面上看得到的 D4Z4 结果，这份文件里可能是空的。',
+          // NOT 「从上传的基因报告自动补全」. `applyGeneticReportAutofill`
+          // fills from the one document `pickGeneticEvidenceDocument`
+          // picks as a profile's genetic evidence, and that picker takes
+          // a 病历摘要 quoting the results when the genetics report read
+          // out nothing — so this note asserted a genetics report behind
+          // values that a summary supplied. The 全量导出 screen renders
+          // these notes verbatim, on purpose, so the claim was on an
+          // operator's screen without any client having written it.
+          // What the file is missing is the same either way.
+          '基线字段是数据库中存储的值，不含「从上传的文件自动补全」的部分——界面上看得到的 D4Z4 结果，这份文件里可能是空的。',
           '每份记录的明细（每一次肌力测量、每一份报告）不在这份文件里，只有条数。',
           '导出会以你的账号写入审计记录，文件名里也会带上你的账号与时间。',
         ],

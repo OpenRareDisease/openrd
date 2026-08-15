@@ -48,9 +48,58 @@ const SOURCES: TrialSourceStatus[] = [
   },
 ];
 
-const result = (metadata: Record<string, unknown>): RetrieveResult => ({
+/** A rendered record, as the retriever chunks one. Only `metadata.source`
+ *  is read by the wrapper — it is how the mainland sentence is decided,
+ *  because what the reader is holding is the rendered list and not the
+ *  cache behind it. */
+const chunk = (
+  source: 'ctgov' | 'chinadrugtrials',
+  sourceId: string,
+): RetrieveResult['chunks'][0] =>
+  ({
+    id: sourceId,
+    source: 'clinical_trials',
+    content: `【临床试验登记记录】\n登记号：${sourceId}`,
+    metadata: { source, sourceId },
+    distance: null,
+  }) as RetrieveResult['chunks'][0];
+
+const CHINA = '药物临床试验登记与信息公示平台';
+
+/** What production is in: the cron reached the mainland registry, the
+ *  run reported success, and it brought back no rows. */
+const CN_OK_ZERO: TrialSourceStatus = {
+  source: 'chinadrugtrials',
+  recordCount: 0,
+  fetchedAt: null,
+  lastRun: { startedAt: '2026-08-14T00:03:00Z', finishedAt: '2026-08-14T00:03:31Z', ok: true },
+  lastSuccessAt: '2026-08-14T00:03:31Z',
+};
+
+/** The mainland registry contributing rows to the cache. Whether any of
+ *  them reach a given answer is a separate question — the filter and the
+ *  limit both decide it. */
+const CN_WITH_ROWS: TrialSourceStatus = {
+  source: 'chinadrugtrials',
+  recordCount: 2,
+  fetchedAt: '2026-08-14T04:00:05Z',
+  lastRun: { startedAt: '2026-08-14T04:00:00Z', finishedAt: '2026-08-14T04:00:11Z', ok: true },
+  lastSuccessAt: '2026-08-14T04:00:11Z',
+};
+
+/** `chunks` defaults to `returned` ClinicalTrials.gov records, so a
+ *  fixture that says it rendered nothing does not arrive holding a
+ *  record — the wrapper reads both the count and the list. */
+const result = (
+  metadata: Record<string, unknown>,
+  chunks?: RetrieveResult['chunks'],
+): RetrieveResult => ({
   retrieverId: 'clinical_trials',
-  chunks: [],
+  chunks:
+    chunks ??
+    Array.from({ length: Number(metadata.returned) || 0 }, (_, index) =>
+      chunk('ctgov', `NCT0000000${index}`),
+    ),
   citations: [],
   metadata,
 });
@@ -194,45 +243,61 @@ describe('ListClinicalTrialsTool display', () => {
     expect(display).toContain('平台无法区分');
   });
 
-  it('spells out that the 国内 registry is not in the list', async () => {
-    const { tool } = toolWith(result(snapshotMeta()));
+  it('does not print our own scope over the 国内 registry’s own answer', async () => {
+    // Production's shape: the cron fetched chinadrugtrials, the run
+    // came back ok, and it brought back nothing. 「不含只在国内登记的试
+    // 验」 over that state tells the patient we do not reach that
+    // registry on the morning we reached it — and this text is an
+    // instruction to a model, so it is said. The screen deleted the
+    // same sentence; this is the copy that would have been obeyed.
+    const { tool } = toolWith(result(snapshotMeta({ sources: [SOURCES[0], CN_OK_ZERO] })));
     const { display } = await tool.execute({ notes: [] }, ctx);
-    expect(display).toContain('不含只在国内登记的试验');
+    expect(display).not.toContain('不含只在国内登记的试验');
+    expect(display).toContain(`这次返回的记录里没有一条来自${CHINA}`);
+    expect(display).toContain('下面这份名单目前只有 ClinicalTrials.gov 的记录');
+    // …and it refuses the conclusion out loud rather than leaving the
+    // model to draw it from an empty half.
+    expect(display).toContain('这不等于国内就没有相关的试验');
     expect(display).toContain('chinadrugtrials.org.cn');
   });
 
-  it('says the 国内 half may be incomplete once it does contribute rows', async () => {
-    // §A5's sentence is conditional, here and on the screen: 「不含只在
-    // 国内登记的试验」 is a claim about the list, and it is false the
-    // day a mainland row is in it. What must not vary is that the
-    // patient is never left reading this list as complete for China —
-    // so the branch that drops the fixed sentence has to say something
-    // stronger, not nothing.
+  it('does not describe a list as having a 国内 part when it has none', async () => {
+    // The cache holds mainland rows and the filter left every one of
+    // them out. 「这份名单里国内登记的那部分」 names a part of the list
+    // that is not in front of the reader, so the branch is decided by
+    // the rendered records rather than by the cache's count — the same
+    // thing `describeChinaCoverage` branches on.
     const { tool } = toolWith(
-      result(
-        snapshotMeta({
-          sources: [
-            SOURCES[0],
-            {
-              source: 'chinadrugtrials' as const,
-              recordCount: 2,
-              fetchedAt: '2026-08-14T04:00:05Z',
-              lastRun: {
-                startedAt: '2026-08-14T04:00:00Z',
-                finishedAt: '2026-08-14T04:00:11Z',
-                ok: true,
-              },
-              lastSuccessAt: '2026-08-14T04:00:11Z',
-            },
-          ],
-        }),
-      ),
+      result(snapshotMeta({ sources: [SOURCES[0], CN_WITH_ROWS], statusFilter: 'RECRUITING' })),
+    );
+    const { display } = await tool.execute({ status: 'RECRUITING', notes: [] }, ctx);
+    expect(display).not.toContain('这份名单里国内登记的那部分');
+    expect(display).toContain(`这次返回的记录里没有一条来自${CHINA}`);
+  });
+
+  it('says the 国内 half may be incomplete once it does contribute rows', async () => {
+    // What must not vary is that the patient is never left reading this
+    // list as complete for China — so the branch that has mainland rows
+    // in hand has to say something stronger, not nothing.
+    const { tool } = toolWith(
+      result(snapshotMeta({ sources: [SOURCES[0], CN_WITH_ROWS] }), [
+        chunk('ctgov', 'NCT00000001'),
+        chunk('chinadrugtrials', 'CTR20250001'),
+      ]),
     );
     const { display } = await tool.execute({ notes: [] }, ctx);
     expect(display).not.toContain('不含只在国内登记的试验');
+    expect(display).toContain('这份名单里国内登记的那部分');
     expect(display).toContain('没有公开接口');
     expect(display).toContain('可能不完整');
     expect(display).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('claims nothing about a list when no record was returned', async () => {
+    const { tool } = toolWith(result(snapshotMeta({ cachedTotal: 0, matched: 0, returned: 0 })));
+    const { display } = await tool.execute({ notes: [] }, ctx);
+    expect(display).toContain(`这次返回的记录里没有一条来自${CHINA}`);
+    expect(display).not.toContain('下面这份名单');
   });
 
   it('carries the §A5 boundaries the model must not cross', async () => {

@@ -84,14 +84,21 @@ describe('诊断依据不能在卡上被抬高', () => {
     expect(card.patientLines[0]).toContain('4');
   });
 
-  it('未确诊时写明被查过的是哪三项，而不是说没收到报告', () => {
+  it('未确诊时说的是这张卡上没有什么，不是说没收到报告', () => {
     // An anesthetist who reads 「FSHD」 will plan around FSHD. If nobody
     // has confirmed it, they are entitled to know that before they pick
     // an airway plan on the strength of it — but 「本人填报，本平台尚未
     // 收到基因报告」 is false in both halves on this very fixture: the
     // 分型 is read off an uploaded report, so nobody filed it and a
-    // report IS on file. What `confirmation` actually withholds is the
-    // measurements named below.
+    // report IS on file.
+    //
+    // NOR DOES IT NAME THE THREE TESTS. The line used to end
+    // 「（D4Z4 重复数、4q 单倍型或 EcoRI 片段）」, which is the API's
+    // confirmation rule copied onto a card that gets folded into a
+    // wallet: a report stating a non-permissive 4qB haplotype is not a
+    // confirmation and does have a 4q 单倍型 on it, so that parenthesis
+    // tells the anesthetist a report they can see was never read. What
+    // is true of every state is what is on the card.
     const card = buildAnesthesiaCard(
       summary({
         diagnosis: {
@@ -104,10 +111,44 @@ describe('诊断依据不能在卡上被抬高', () => {
       TODAY,
     );
     expect(card.patientLines[0]).toContain('未经基因确诊');
-    expect(card.patientLines[0]).toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+    expect(card.patientLines[0]).toContain('这张卡上没有可作确诊依据的基因结果');
+    expect(card.patientLines[0]).not.toContain('EcoRI 片段');
+    expect(card.patientLines[0]).not.toContain('4q 单倍型');
     expect(card.patientLines[0]).not.toContain('本人填报');
     expect(card.patientLines[0]).not.toContain('尚未收到');
     expect(card.patientLines[0]).not.toContain('基因确诊（');
+  });
+
+  /**
+   * THE STATE THE PARENTHESIS WAS WRONG IN, ASSERTED AT THE WIRE.
+   *
+   * `genetic_non_permissive` is what the API sends for a laboratory
+   * report that determined the 4q haplotype and got 4qB. It is not a
+   * confirmation, so this card must take the unconfirmed branch — but a
+   * laboratory did read this patient's sample, and a card claiming no
+   * 4q 单倍型 was found is contradicting the report in the anesthetist's
+   * other hand.
+   */
+  it('单倍型非允许型时按未确诊印，且不声称没读到单倍型', () => {
+    const card = buildAnesthesiaCard(
+      summary({
+        diagnosis: {
+          confirmation: 'genetic_non_permissive',
+          d4z4Repeats: '3',
+          geneticType: 'FSHD1',
+          valueOrigins: origins({
+            geneticType: valueOrigin('report', '报告读取'),
+            d4z4Repeats: valueOrigin('report', '报告读取'),
+          }),
+        },
+      }),
+      TODAY,
+    );
+    expect(card.patientLines[0]).toContain('未经基因确诊');
+    expect(card.patientLines[0]).not.toContain('4q 单倍型');
+    // And the repeat count stays off the airway line: this branch prints
+    // no number, which is what keeps 「这张卡上没有」 true.
+    expect(card.patientLines[0]).not.toContain('3');
   });
 
   it('分型是谁给的，跟着分型一起写出来', () => {

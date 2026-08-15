@@ -54,6 +54,10 @@
   },
   "omissions": [
     {
+      "field": "diseases[].term（诊断依据）",
+      "reasonZh": "Phenopacket 的 Disease 消息只有 term、excluded、发病与分期等字段，没有记录「这个诊断是怎么确立的」的位置；excluded 表示「已排除该病」，它取默认值 false 不是一次确认。因此本文件里的 Disease.term 只表示档案记录的分型归一到了这个本体项，不表示基因确诊。本平台把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，且报告上有可作确诊依据的基因结果。文件类型以解析器的判定为准，解析未落地时按上传时声明的类型；报告内容未经本平台人工复核。本平台读作这份档案基因证据的那一份是基因检测报告。这个判定与 FHIR 导出的 Condition.verificationStatus 以及 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 出自同一个答案；该分型的值本身如何进入档案，见 TREAT-NMD 对齐导出中 diagnosis.type 的 provenanceZh 与本信封的 fieldOrigins。"
+    },
+    {
       "field": "measurements",
       "reasonZh": "本次导出持有 2 条肌力记录与 2 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式完整保留。"
     },

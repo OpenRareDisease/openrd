@@ -9,7 +9,13 @@ import {
   type AdminPatientListItem,
 } from '../../lib/admin-api';
 import { COLOR } from '../../lib/design';
-import { AdminScreen, AdminState, describeAdminError, formatDate } from './common';
+import {
+  ADMIN_AUDIT_NOTICE_PATIENT_LIST,
+  AdminScreen,
+  AdminState,
+  describeAdminError,
+  formatDate,
+} from './common';
 import styles from './styles';
 
 /**
@@ -148,6 +154,7 @@ const AdminPatientListScreen = () => {
     <AdminScreen
       title="患者列表"
       subtitle="搜索会匹配手机号、患者编号和姓名；返回的姓名和手机号是打码的。点开一位患者才会看到完整信息，那一次会记进审计。"
+      audit={ADMIN_AUDIT_NOTICE_PATIENT_LIST}
       fallbackHref="/p-admin"
     >
       <View style={styles.searchRow}>

@@ -92,7 +92,7 @@ jest.mock('../download', () => {
   };
 });
 
-import { ADMIN_AUDIT_NOTICE } from '../common';
+import { ADMIN_AUDIT_NOTICE_PATIENT_RECORD } from '../common';
 import AdminPatientRecordScreen from '../patient-record';
 import styles from '../styles';
 
@@ -129,6 +129,17 @@ const flush = async () => {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+};
+
+/** One uploaded document, which is the only thing the read-time autofill
+ *  can read a missing genetic value out of. Deliberately not typed
+ *  `genetic_report`: whether it is one changes nothing this screen says. */
+const UPLOAD = {
+  id: '22222222-2222-4222-8222-222222222222',
+  title: '门诊病历摘要',
+  documentType: 'medical_record',
+  status: 'parsed',
+  uploadedAt: '2026-07-20T02:00:00.000Z',
 };
 
 /** What the record endpoint is expected to answer with, in the shape
@@ -579,7 +590,9 @@ describe('saving', () => {
 describe('后台不替某一类文件背书', () => {
   it('说自动补全是从上传的文件来的，不说是从基因报告来的', async () => {
     const actual = jest.requireActual('../../../lib/admin-api');
-    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    mockGetRecord.mockResolvedValue(
+      actual.readAdminPatientRecord(recordBody({ documents: [UPLOAD] })),
+    );
     const tree = await render();
     const screen = textContent(tree.root);
 
@@ -587,9 +600,77 @@ describe('后台不替某一类文件背书', () => {
     expect(screen).not.toContain('会用他已上传的基因报告里的值');
     expect(screen).not.toContain('从他已上传的基因报告里自动补上');
 
+    // The phone script beside every genetic row this patient can
+    // correct himself. 「上传基因报告也能带进来」 outlived the three
+    // notices above and named the document in the one sentence written
+    // to be read out loud — sending a patient to obtain a report in
+    // order to fix a value the summary he already uploaded can carry.
+    expect(screen).toContain('他上传的文件里读到了这一项也能带进来');
+    expect(screen).not.toContain('上传基因报告也能带进来');
+    // No sentence on this screen names that document any more. The
+    // account and report blocks still print whatever `documentType` the
+    // server sent, so this is about the screen's own prose.
+    expect(screen).not.toContain('基因报告里');
+
     // The instruction the note exists for is untouched: an empty row
     // here is not 「你没填」, and the answer is in the list below.
     expect(screen).toContain('别在电话里说「你没填」');
+  });
+});
+
+/**
+ * 「这不代表患者那边也是空的」 IS A HEDGE, AND A HEDGE HAS TO BE ABOUT
+ * SOMETHING THIS SCREEN CANNOT SEE.
+ *
+ * The fill has one input: a document the patient uploaded. Printed over
+ * a record whose 报告 list came back empty, the note tells the operator
+ * that a value he cannot see may exist — while the same screen, two
+ * blocks down, is printing 没有报告. The account that never opened the
+ * baseline form is the case where it is furthest from true: there is no
+ * profile, no document, and no patient side for the sentence to be
+ * about.
+ */
+describe('空的基因行说的话不能超出这一页看得见的东西', () => {
+  const withDocuments = (documents: unknown) =>
+    jest.requireActual('../../../lib/admin-api').readAdminPatientRecord(recordBody({ documents }));
+
+  it('这一页说没有报告时，就不再说「患者那边可能不是空的」', async () => {
+    mockGetRecord.mockResolvedValue(withDocuments([]));
+    const tree = await render();
+    const screen = textContent(tree.root);
+    expect(screen).toContain('没有报告');
+    expect(screen).not.toContain('这不代表患者那边也是空的');
+    expect(screen).not.toContain('别在电话里说「你没填」');
+    // The row is still there, and it still says what it is showing.
+    expect(rowFor(tree, '单倍型')).toContain('基线里没有');
+  });
+
+  it('连档案都没有的账号更加不说', async () => {
+    // `getPatientRecord` answers this account with identity null and no
+    // documents — the autofill this note describes has no profile to
+    // read and nothing to read from.
+    mockGetRecord.mockResolvedValue(
+      jest
+        .requireActual('../../../lib/admin-api')
+        .readAdminPatientRecord(recordBody({ identity: null, baseline: null })),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('这个账号还没有健康档案');
+    expect(screen).not.toContain('这不代表患者那边也是空的');
+  });
+
+  it('这一段整个没返回时，谨慎的那句话留着', async () => {
+    // `null` is 「this build did not send the section」. The screen
+    // cannot check, so it keeps the caution — and says so in the same
+    // breath.
+    const body = recordBody();
+    delete (body as Record<string, unknown>).documents;
+    mockGetRecord.mockResolvedValue(
+      jest.requireActual('../../../lib/admin-api').readAdminPatientRecord(body),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('服务端没有返回这一项');
+    expect(screen).toContain('这不代表患者那边也是空的');
   });
 });
 
@@ -804,17 +885,17 @@ describe('§B4 导出：单个患者', () => {
 });
 
 describe('the audit banner is true on the one page whose rows do name a patient', () => {
-  it('draws the one notice over the record whose read was audited with this patient', async () => {
-    // The half of the banner that survives: `getPatientRecord` is
-    // mounted with `targetParam: 'userId'`, so the row written before
-    // this screen got its data carries this patient's id. The
-    // subtitle says the same thing in the first person, and the two
-    // are the reason the banner still mentions a patient at all
-    // instead of the sentence being deleted outright.
+  it('draws the notice written for this screen, over a record whose read was audited with this patient', async () => {
+    // This is the screen the patient half of the old banner was true
+    // for: `getPatientRecord` is mounted with `targetParam: 'userId'`,
+    // so the row written before this screen got its data carries this
+    // patient's id. The subtitle says the same thing in the first
+    // person, and the two are why this screen's notice names a patient
+    // where the other three say there is none to name.
     const actual = jest.requireActual('../../../lib/admin-api');
     mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
     const screen = textContent((await render()).root);
-    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE_PATIENT_RECORD);
     expect(screen).toContain('打开这一页时已经写了一条读取审计记录');
   });
 });

@@ -549,6 +549,29 @@ describe('标题和提示只说证据，不说是谁填的', () => {
     expect(text).not.toContain('本人填写的诊断信息');
   });
 
+  it('单倍型非允许型时，提示说的是那个结果，而不是「没有读到结果」', async () => {
+    // A 4qB is the laboratory's own reading, printed two rows down with
+    // 报告读取 in its bracket. The sibling notice denies that reading
+    // exists, so this state may not borrow it — and it may not be read
+    // as an exclusion either.
+    const text = joinedText(
+      await render(
+        summary({
+          diagnosis: {
+            ...summary().diagnosis,
+            confirmation: 'genetic_non_permissive',
+            d4z4Repeats: '3',
+            geneEvidence: '4qB · 3',
+          },
+        }),
+      ),
+    );
+    expect(text).toContain('未构成基因确诊');
+    expect(text).toContain('不是允许型 4qA');
+    expect(text).toContain('这不是排除诊断');
+    expect(text).not.toContain('没有从基因报告里读出来的基因结果');
+  });
+
   it('提示说的是被检查过的那三项，不是「本平台尚未收到基因报告」', async () => {
     const text = joinedText(await render(summary()));
     expect(text).toContain('未经基因确诊');

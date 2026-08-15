@@ -3,7 +3,13 @@ import { Text, TextInput, View } from 'react-native';
 import Button from '../common/Button';
 import { requestAdminFullPatientCsv, type AdminFullExportResult } from '../../lib/admin-api';
 import { COLOR } from '../../lib/design';
-import { AdminBlock, AdminScreen, AdminState, describeAdminError } from './common';
+import {
+  ADMIN_AUDIT_NOTICE_FULL_EXPORT,
+  AdminBlock,
+  AdminScreen,
+  AdminState,
+  describeAdminError,
+} from './common';
 import {
   DOWNLOAD_UNSUPPORTED_MESSAGE,
   describeDownloadName,
@@ -122,6 +128,7 @@ const AdminFullExportScreen = () => {
     <AdminScreen
       title="全量导出"
       subtitle="把全部患者的档案导成一个 CSV 文件。这是这个产品里最危险的一个动作，所以它要你把一句话完整敲一遍。"
+      audit={ADMIN_AUDIT_NOTICE_FULL_EXPORT}
       fallbackHref="/p-admin"
     >
       <AdminBlock
@@ -130,8 +137,17 @@ const AdminFullExportScreen = () => {
         state="ready"
       >
         <View style={styles.field}>
+          {/* 「从已上传的基因报告推出来的」 named a document this screen
+              cannot see. The autofill reads the one document
+              `pickGeneticEvidenceDocument` picks as a profile's genetic
+              evidence, and that picker takes a 病历摘要 quoting the
+              results when the genetics report read out nothing — so the
+              sentence asserted a genetics report behind values belonging
+              to patients who have never uploaded one. What the file does
+              and does not carry is the same either way, so the clause
+              names 已上传的文件 and stops. */}
           <Text style={styles.stateText}>
-            导出的是数据库里存着的值。界面上看得到、但其实是从已上传的基因报告推出来的那些字段（基因结果和确诊年份），在这个文件里可能是空的。
+            导出的是数据库里存着的值。界面上看得到、但其实是从已上传的文件里读出来的那些字段（基因结果和确诊年份），在这个文件里可能是空的。
           </Text>
           <Text style={styles.blockNote}>
             每位患者的明细（每一次肌力测量、每一份报告的内容）不在这个文件里，只有条数。要一位患者的完整文档，用他档案页上的「导出」。

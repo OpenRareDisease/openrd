@@ -10,6 +10,7 @@ import {
   type AdminAiStatusCount,
 } from '../../lib/admin-api';
 import {
+  ADMIN_AUDIT_NOTICE_OVERVIEW,
   AdminBlock,
   AdminScreen,
   AdminStat,
@@ -74,6 +75,48 @@ const attemptedCalls = (usage: { totalCalls: number | null; byStatus: AdminAiSta
   return usage.totalCalls - consentDenied;
 };
 
+/**
+ * What the corpus block says when the corpus is EMPTY, which is an
+ * answer and not a missing field.
+ *
+ * `AdminService.getCorpusStatus` asks `kb_chunks` two questions. The
+ * totals come back for an empty table — zeroes, and NULL for the
+ * `MIN`/`MAX` of `updated_at` — while the model breakdown is a GROUP BY
+ * over no rows and comes back as no rows at all. So a stack with no
+ * corpus loaded, which is every stack on its first day, answers with an
+ * empty model list and no timestamps.
+ *
+ * The client's reader maps an absent field and an empty array onto the
+ * same `[]`, and `AdminStat` renders `null` as 「服务端没有返回这一项」.
+ * Between them, the page told an operator the API was broken on the one
+ * morning it was merely new — and 「服务端没有返回」 is the sentence that
+ * sends somebody to read API logs that say nothing.
+ *
+ * The discriminator is `chunkCount`, in the same shape as the failure
+ * rate above: a number the server sent in the same body decides which
+ * sentence the missing one gets. Zero chunks means the empty list and
+ * the absent timestamps are what the table holds; a positive count with
+ * neither means a field really did not arrive, and that still says so.
+ * A `chunkCount` of `null` leaves both unanswerable, which is the third
+ * case and keeps 「服务端没有返回这一项」.
+ *
+ * ONE STRING FOR BOTH ROWS, and the explanation printed once — under
+ * 分块, where the zero it is explaining is. Two rows of the same block
+ * wording 「语料库是空的」 differently is the same defect wearing a
+ * different sentence.
+ */
+const EMPTY_CORPUS_VALUE = '语料库里还没有分块';
+// The detail says what the zero means for THIS block and stops. It
+// drafted 「AI 问答现在检索不到任何东西」, which this page cannot stand
+// behind: `MedicalKbRetriever` and `ClinicalTrialsRetriever` read
+// `kb_chunks` and would indeed return nothing, but the retrievers over
+// the patient's own profile, reports and follow-ups do not touch this
+// table and keep answering. An operator told the assistant was dead
+// would go looking for a fault that is not there.
+const EMPTY_CORPUS_DETAIL =
+  '一段都没有入库：下面的模型和更新时间跟着是空的，那是这一块自己的答案，不是服务端漏了这几项。' +
+  '全新部署还没导语料时就是这个样子。';
+
 const AdminOverviewScreen = () => {
   const router = useRouter();
 
@@ -114,6 +157,7 @@ const AdminOverviewScreen = () => {
     <AdminScreen
       title="运维概览"
       subtitle="下面四块各自独立取数、各自重试。取不到的那一项会说自己取不到，不会显示 0。"
+      audit={ADMIN_AUDIT_NOTICE_OVERVIEW}
       fallbackHref="/p-home"
       refreshControl={<RefreshControl refreshing={pulled} onRefresh={reloadAll} />}
     >
@@ -262,7 +306,12 @@ const AdminOverviewScreen = () => {
       >
         {corpusData ? (
           <>
-            <AdminStat first label="分块" value={formatCount(corpusData.chunkCount, '段')} />
+            <AdminStat
+              first
+              label="分块"
+              value={formatCount(corpusData.chunkCount, '段')}
+              detail={corpusData.chunkCount === 0 ? EMPTY_CORPUS_DETAIL : null}
+            />
             <AdminStat label="来源文件" value={formatCount(corpusData.sourceFileCount, '个')} />
             <AdminStat
               label="没有 embedding 的分块"
@@ -272,11 +321,13 @@ const AdminOverviewScreen = () => {
             <AdminStat
               label="embedding 模型"
               value={
-                corpusData.embedModels.length === 0
-                  ? null
-                  : corpusData.embedModels
+                corpusData.embedModels.length > 0
+                  ? corpusData.embedModels
                       .map((entry) => `${entry.embedModel}（${entry.chunkCount} 段）`)
                       .join('\n')
+                  : corpusData.chunkCount === 0
+                    ? EMPTY_CORPUS_VALUE
+                    : null
               }
               alert={corpusData.embedModels.length > 1}
               detail={
@@ -287,7 +338,11 @@ const AdminOverviewScreen = () => {
             />
             <AdminStat
               label="最近更新"
-              value={formatDateTime(corpusData.newestUpdatedAt)}
+              value={
+                corpusData.newestUpdatedAt === null && corpusData.chunkCount === 0
+                  ? EMPTY_CORPUS_VALUE
+                  : formatDateTime(corpusData.newestUpdatedAt)
+              }
               detail={
                 corpusData.oldestUpdatedAt
                   ? `最早一条：${formatDateTime(corpusData.oldestUpdatedAt)}`

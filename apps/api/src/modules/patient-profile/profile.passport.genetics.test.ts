@@ -1059,3 +1059,234 @@ describe('病历摘要抄来的结果：值照登，但不给分级、不替实�
     expect(summary.diagnosis.d4z4Repeats).toBe('7');
   });
 });
+
+/**
+ * 4qB IS NOT A SMALLER 4qA.
+ *
+ * FSHD1 is a contracted D4Z4 array on a PERMISSIVE 4qA allele — the
+ * platform states it in its own words in 「只有 4qA 是允许型，缺了这一
+ * 项，重复单元数本身不足以下结论」 and in the phenopacket export's reason
+ * for writing no interpretations. So a report stating 4qB has not
+ * produced weaker evidence towards the diagnosis; it has produced a
+ * result that argues against this mechanism.
+ *
+ * The gate it walked through was `permissiveHaplotype !== null`, which
+ * asks whether the laboratory REPORTED a haplotype and never what the
+ * haplotype SAYS. Rendered before these tests existed: D4Z4 3 / 4qB
+ * came out 可用于入组 under 「这份报告已经包含临床试验入组通常要求的两项
+ * 内容」, 基因确诊 on the share banner, and 「面肩肱型肌营养不良症
+ * （FSHD），基因确诊；D4Z4 重复数 3」 in the referral pack.
+ *
+ * What these pin is the whole page for that profile, not just the
+ * grade: the values stay printed, the confirmation moves, the guideline
+ * branches keyed to a repeat count stop firing, and no sentence claims
+ * either that FSHD1 is confirmed or that it is excluded.
+ */
+describe('4qB —— 非允许型不是「离确诊更近一步」', () => {
+  const nonPermissive = (fields: Record<string, string> = {}) =>
+    buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ haplotype: '4qB', ...fields })] } as never),
+    );
+
+  describe('长度也读到了 —— 两项都在，仍然不是分子诊断', () => {
+    const summary = nonPermissive({ d4z4Repeats: '3' });
+    const e = summary.diagnosis.geneticEvidence;
+
+    it('不评「可用于入组」，评「单倍型非允许型」', () => {
+      expect(e.grade).toBe('non_permissive_haplotype');
+      expect(e.gradeLabel).toBe('单倍型非允许型');
+    });
+
+    it('不写基因确诊，完整度也不为它加一格', () => {
+      expect(summary.diagnosis.confirmation).toBe('genetic_non_permissive');
+      expect(summary.diagnosis.ready).toBe(false);
+    });
+
+    it('没有任何一句说这份材料满足入组要求', () => {
+      const everything = [e.headline, e.reason, e.action].join('');
+      expect(everything).not.toContain('入组');
+      expect(everything).not.toContain('材料是齐的');
+    });
+
+    it('也不写成「结果不全」 —— 两项都读到了，缺的不是结果', () => {
+      expect(e.headline).not.toContain('只差');
+      expect(e.reason).not.toContain('还没有看到');
+    });
+
+    it('说清楚 4qA 才是允许型，并把结论的边界划出来', () => {
+      expect(e.headline).toContain('4qB');
+      expect(e.headline).toContain('允许型');
+      expect(e.reason).toContain('只有 4qA 是允许型');
+      // 既不说已确诊，也不说已排除 —— 报告写的是它检测的那条等位基因。
+      expect(e.reason).toContain('能不能排除 FSHD');
+      expect(e.reason).not.toContain('你没有');
+    });
+
+    it('数值不消失，也不被说成没用', () => {
+      expect(summary.diagnosis.d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+      expect(e.reason).toContain('D4Z4 长度（3）照常印在护照上');
+      expect(e.action).toContain('医生需要看到它');
+    });
+
+    it('核心摘要那一格说的是「未构成基因确诊」，不是「没有基因结果」', () => {
+      const card = summary.summaryCards.find((item) => item.key === 'diagnosis');
+      expect(card?.ready).toBe(false);
+      expect(card?.summary).toContain('未构成基因确诊');
+      expect(card?.summary).toContain('4qB');
+      // 这一页印着实验室读出来的 4q 单倍型，「没有从基因报告里读出来的
+      // ……4q 单倍型」在这种档案上是假话。
+      expect(card?.summary).not.toContain('没有从基因报告里读出来的');
+    });
+  });
+
+  describe('只有单倍型 —— 没有长度也一样，别把 4qB 说成「已有」', () => {
+    const e = nonPermissive().diagnosis.geneticEvidence;
+
+    it('仍然评单倍型非允许型，而不是「方法对，但结果不全」', () => {
+      expect(e.grade).toBe('non_permissive_haplotype');
+    });
+
+    it('不出现「已有单倍型（4qB）」这种把它算作进度的说法', () => {
+      expect(e.reason).not.toContain('已有单倍型');
+    });
+  });
+
+  describe('按重复数分组的指南建议，一条都不套在它身上', () => {
+    it('灰区提示不出现 —— 那段话讲的是 4qA 等位基因', () => {
+      const summary = nonPermissive({ d4z4Repeats: '9' });
+      expect(summary.diagnosis.geneticEvidence.record.greyZone).toBe(false);
+      expect(summary.diagnosis.geneticEvidence.greyZoneNote).toBeNull();
+      expect(summary.nextSteps.some((step) => step.title.includes('灰区'))).toBe(false);
+    });
+
+    it('大片段缺失的眼底检查不发出，但也不悄悄消失', () => {
+      const summary = nonPermissive({ d4z4Repeats: '3' });
+      const titles = summary.nextSteps.map((step) => step.title);
+      expect(titles).not.toContain('问一次眼底检查');
+      const step = summary.nextSteps.find((item) => item.title.includes('眼底检查'));
+      expect(step?.kind).toBe('clinical');
+      // 数字照说，理由照说，判断交给拿着报告原件的人。
+      expect(step?.description).toContain('3');
+      expect(step?.description).toContain('4qB');
+      expect(step?.description).toContain('不拿一个非允许型的结果把你归进那一组');
+    });
+  });
+
+  describe('待办：这个人已经做过检测了', () => {
+    const summary = nonPermissive({ d4z4Repeats: '3' });
+    const titles = summary.nextSteps.map((step) => step.title);
+
+    it('不叫人再传一次报告', () => {
+      expect(titles).not.toContain('补充基因检测报告');
+      expect(titles).not.toContain('补充基因或诊断依据');
+    });
+
+    it('给的是一条 clinical 待办，内容就是分级里那两段', () => {
+      const step = summary.nextSteps.find((item) => item.title.includes('单倍型'));
+      expect(step?.kind).toBe('clinical');
+      expect(step?.description).toContain('只有 4qA 是允许型');
+    });
+  });
+
+  describe('《检查申请说明》：不是一张检查单', () => {
+    const request = nonPermissive({ d4z4Repeats: '3' }).diagnosis.geneticEvidence.testRequest;
+
+    it('只留「报告上需要写明的内容」这一节', () => {
+      const headings = request?.sections.map((section) => section.heading) ?? [];
+      expect(headings).toEqual(['报告上需要写明的内容']);
+    });
+
+    it('开头就说明它不是在要一项检查', () => {
+      expect(request?.intro).toContain('这不是一张检查申请单');
+      expect(request?.intro).toContain('由您看着报告原件判断');
+    });
+  });
+
+  it('导出的 markdown 带着这一级和它的依据', () => {
+    const markdown = buildClinicalPassportExport(nonPermissive({ d4z4Repeats: '3' })).markdown;
+    expect(markdown).toContain('单倍型非允许型');
+    expect(markdown).toContain('只有 4qA 是允许型');
+    expect(markdown).not.toContain('可用于入组');
+  });
+
+  it('4qA 一个字都没变', () => {
+    const summary = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qA' })] } as never),
+    );
+    expect(summary.diagnosis.geneticEvidence.grade).toBe('trial_ready');
+    expect(summary.diagnosis.confirmation).toBe('genetic');
+    expect(summary.diagnosis.ready).toBe(true);
+  });
+
+  it('转录件上的 4qB 不评级 —— 谁的页面还是谁的页面', () => {
+    // A 病历摘要 quoting 4qB is a transcription, and this platform does
+    // not tell somebody their allele is the non-permissive one on the
+    // strength of a clinic letter any more than it confirms one.
+    const summary = buildClinicalPassportSummary(
+      base({
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '3', haplotype: '4qB' }),
+            documentType: 'medical_summary',
+            ocrPayload: {
+              fields: { classifiedType: 'medical_summary', d4z4Repeats: '3', haplotype: '4qB' },
+            },
+          },
+        ],
+      } as never),
+    );
+    expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+    expect(summary.diagnosis.confirmation).not.toBe('genetic_non_permissive');
+  });
+});
+
+/**
+ * THE SAME SHAPE, IN THE GATES BESIDE IT: a predicate that asks whether
+ * a field is present where the question is what the field says.
+ */
+describe('长度这一项也要读出来才算读到', () => {
+  it('EcoRI 片段写着「未检出」时，不算已有长度，更不算入组齐备', () => {
+    // `Boolean(record.ecoRIFragment)` counted the string. Rendered: the
+    // 依据 handed to a neurologist read 「D4Z4 长度 未检出，单倍型 4qA」
+    // under 「这份报告已经包含临床试验入组通常要求的两项内容」.
+    const e = buildClinicalPassportSummary(
+      base({
+        documents: [geneticReport({ ecoRIFragment: '未检出', haplotype: '4qA' })],
+      } as never),
+    ).diagnosis.geneticEvidence;
+    expect(e.grade).not.toBe('trial_ready');
+    expect(e.reason).not.toContain('未检出');
+  });
+
+  it('重复数是区间、EcoRI 片段是确切值时，印出来的是那个确切值', () => {
+    // 「有没有长度」和「长度是多少」出自同一个表达式，所以印在依据里的
+    // 不会是另一项的读数。
+    const e = buildClinicalPassportSummary(
+      base({
+        documents: [
+          geneticReport({ d4z4Repeats: '1-10', ecoRIFragment: '18kb', haplotype: '4qA' }),
+        ],
+      } as never),
+    ).diagnosis.geneticEvidence;
+    expect(e.grade).toBe('trial_ready');
+    expect(e.reason).toContain('D4Z4 长度 18kb');
+    expect(e.reason).not.toContain('1-10');
+  });
+
+  it('报告只写了探针清单 4qA/4qB 时，不算基因确诊', () => {
+    // Same gate as 4qB: `hasMeaningfulValue(record.haplotype)` counted
+    // the string, and `parsePermissiveHaplotype` had already refused to
+    // read it as a result — so the passport printed 基因确诊 under a
+    // grade whose own headline was 「暂时判断不出你做的是哪一种基因检测」.
+    const summary = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ haplotype: '4qA/4qB' })] } as never),
+    );
+    expect(summary.diagnosis.confirmation).not.toBe('genetic');
+    expect(summary.diagnosis.ready).toBe(false);
+    // 值仍然印着，那一格就不能说「缺少可直接展示的基因证据」。
+    const card = summary.summaryCards.find((item) => item.key === 'diagnosis');
+    expect(summary.diagnosis.geneEvidence).toContain('4qA/4qB');
+    expect(card?.summary).toContain('4qA/4qB');
+  });
+});
