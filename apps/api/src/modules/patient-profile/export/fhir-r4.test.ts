@@ -986,3 +986,178 @@ describe('FHIR R4 —— 基因读数只从被点名的那一份报告出', () =
     );
   });
 });
+
+/**
+ * A CELL THIS PLATFORM READS NO RESULT OFF IS NOT PUBLISHED AS ONE.
+ *
+ * `valueString` is the element a registry ingests as this
+ * observation's answer, and it used to be written straight off the
+ * OCR cell whatever that cell held. So a 4q 单倍型 Observation went
+ * out with the laboratory's PROBES as the patient's haplotype, a D4Z4
+ * one with 「未检出」 as the repeat count, and the same profile's
+ * TREAT-NMD document said 「本平台从它读不出这一项的结果」 about the very
+ * same cell on the very same run.
+ *
+ * What replaces it is FHIR's own answer for 「no value, and this is
+ * why」 rather than a note appended under a value that stayed. The cell
+ * still travels — for some patients it is the only copy of the number
+ * in existence — verbatim, inside the element that says it is not a
+ * result.
+ */
+describe('FHIR R4 —— 读不出结果的基因栏位，不发成结果', () => {
+  const geneticReport = (cells: Record<string, string>) => ({
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', ...cells } },
+  });
+
+  const reported = (cells: Record<string, string>) =>
+    build({ documents: [geneticReport(cells), ...EXPORT_FIXTURE_PROFILE.documents.slice(1)] });
+
+  const observationFor = (result: ReturnType<typeof build>, labelZh: string) =>
+    resourcesOf(result, 'Observation').find(
+      (resource) => (resource.code as { text: string }).text === labelZh,
+    );
+
+  const absentReasonOf = (result: ReturnType<typeof build>, labelZh: string) =>
+    observationFor(result, labelZh)?.dataAbsentReason as
+      | { coding: Array<{ system: string; code: string }>; text: string }
+      | undefined;
+
+  /** Every cell shape a real report puts in these two boxes, and
+   *  whether this platform reads it as that item's result. */
+  const CELLS: ReadonlyArray<{
+    readonly name: string;
+    readonly cells: Record<string, string>;
+    readonly labelZh: string;
+    readonly isResult: boolean;
+  }> = [
+    { name: '探针名', cells: { haplotype: '4qA/4qB' }, labelZh: '4q 单倍型', isResult: false },
+    { name: '未检出', cells: { haplotype: '未检出' }, labelZh: '4q 单倍型', isResult: false },
+    {
+      name: '未检出（重复数）',
+      cells: { d4z4Repeats: '未检出' },
+      labelZh: 'D4Z4 重复单元数',
+      isResult: false,
+    },
+    { name: '区间', cells: { d4z4Repeats: '1-10' }, labelZh: 'D4Z4 重复单元数', isResult: false },
+    {
+      name: '读不成数的一句话',
+      cells: { d4z4Repeats: '详见报告' },
+      labelZh: 'D4Z4 重复单元数',
+      isResult: false,
+    },
+    { name: '允许型单倍型', cells: { haplotype: '4qA' }, labelZh: '4q 单倍型', isResult: true },
+    { name: '非允许型单倍型', cells: { haplotype: '4qB' }, labelZh: '4q 单倍型', isResult: true },
+    {
+      name: '一个确定的重复数',
+      cells: { d4z4Repeats: '5' },
+      labelZh: 'D4Z4 重复单元数',
+      isResult: true,
+    },
+  ];
+
+  CELLS.forEach(({ name, cells, labelZh, isResult }) => {
+    it(`${name} → ${isResult ? '发成结果' : '不发成结果'}`, () => {
+      const result = reported(cells);
+      const observation = observationFor(result, labelZh);
+      const cell = Object.values(cells)[0];
+
+      // The reading ships either way — what changes is whether it
+      // ships as this observation's answer. An assertion about an
+      // Observation that is not in the bundle proves nothing.
+      expect(observation, name).toBeDefined();
+      expect(JSON.stringify(observation), name).toContain(cell);
+
+      if (isResult) {
+        expect(observation?.valueString).toBe(cell);
+        expect(observation?.dataAbsentReason).toBeUndefined();
+        return;
+      }
+
+      // R4 forbids the two together, so the check is both halves.
+      expect(observation?.valueString).toBeUndefined();
+      const reason = absentReasonOf(result, labelZh);
+      expect(reason?.coding).toEqual([
+        { system: 'http://terminology.hl7.org/CodeSystem/data-absent-reason', code: 'unknown' },
+      ]);
+      // The cell itself is still in the document, verbatim.
+      expect(reason?.text).toContain(cell);
+      expect(reason?.text).toContain('读不出这一项的结果');
+    });
+  });
+
+  /**
+   * WHAT IS NOT CLAIMED ABOUT THE LABORATORY. 「未检出」 is the cell a
+   * `NEG` / `ND` interpretation would be tempting on, and nothing here
+   * writes one: the only thing that could decide it is a substring
+   * matcher whose contract is that it only ever withholds, and no
+   * other surface on this platform states a negative finding off it.
+   */
+  it('不给这些条目安一个「实验室没有检出」的编码', () => {
+    const result = reported({ haplotype: '未检出', d4z4Repeats: '未检出' });
+    expect(observationFor(result, '4q 单倍型')?.interpretation).toBeUndefined();
+    expect(observationFor(result, 'D4Z4 重复单元数')?.interpretation).toBeUndefined();
+    expect(JSON.stringify(result.document)).not.toContain('ObservationInterpretation');
+  });
+
+  /**
+   * The record's lifecycle is not a verdict on the cell. Downgrading
+   * `status` would tell a receiver a result is still coming for a
+   * report that is finished.
+   */
+  it('不改 status，也不改 category —— 报告是哪种报告没有变', () => {
+    const observation = observationFor(reported({ haplotype: '4qA/4qB' }), '4q 单倍型');
+    expect(observation?.status).toBe('final');
+    expect(observation?.category).toEqual([
+      {
+        coding: [
+          {
+            system: 'http://terminology.hl7.org/CodeSystem/observation-category',
+            code: 'laboratory',
+          },
+        ],
+        text: '检验',
+      },
+    ]);
+  });
+
+  const valueOmission = (result: ReturnType<typeof build>) =>
+    result.omissions.find((entry) => entry.field.startsWith('Observation.value[x]'));
+
+  it('信封说明本 Bundle 里为什么有 Observation 不带结果值', () => {
+    const reason = valueOmission(reported({ haplotype: '4qA/4qB' }))?.reasonZh;
+    expect(reason).toContain('读不出这一项的结果');
+    expect(reason).toContain('dataAbsentReason');
+    expect(reason).toContain('不要把那段原文当作该项的检测结果导入');
+  });
+
+  it('本 Bundle 里没有这样的条目时，就不出现这条说明', () => {
+    expect(valueOmission(build())).toBeUndefined();
+    expect(valueOmission(reported({ d4z4Repeats: '5', haplotype: '4qA' }))).toBeUndefined();
+  });
+
+  /**
+   * The declaration is read off the SURVIVORS, like every other
+   * sentence this envelope makes about its own contents: a genetic
+   * Observation the MAX_OBSERVATIONS cut evicted is not in the bundle,
+   * and an omission explaining an element it does not carry sends a
+   * reader hunting for a resource that is not there.
+   */
+  it('被上限挤掉时，这条说明跟着消失', () => {
+    const symptomScores = Array.from({ length: MAX_OBSERVATIONS + 10 }, (_, index) => ({
+      ...EXPORT_FIXTURE_PROFILE.symptomScores[0],
+      id: `55555555-5555-4555-8555-${String(index).padStart(12, '0')}`,
+      recordedAt: new Date(Date.UTC(2026, 0, 1) + index * 86400000).toISOString(),
+    }));
+    const crowded = build({
+      documents: [
+        geneticReport({ haplotype: '4qA/4qB' }),
+        ...EXPORT_FIXTURE_PROFILE.documents.slice(1),
+      ],
+      symptomScores,
+    });
+
+    expect(observationFor(crowded, '4q 单倍型')).toBeUndefined();
+    expect(valueOmission(crowded)).toBeUndefined();
+  });
+});

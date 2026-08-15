@@ -7,6 +7,7 @@ import { ToolRegistry } from './registry.js';
 import type { TrialSourceStatus } from '../../trials/trials.service.js';
 import { buildContext } from '../orchestrator/context-builder.js';
 import { Executor } from '../orchestrator/executor.js';
+import { toLlmTool } from '../orchestrator/planner.js';
 import type { RetrieveResult } from '../retrievers/base.js';
 import { ClinicalTrialsRetriever } from '../retrievers/clinical-trials.js';
 
@@ -175,6 +176,50 @@ describe('ListClinicalTrialsTool.parseArgs', () => {
     const { tool } = toolWith(result(snapshotMeta()));
     expect(tool.parseArgs('{"limit":9999}')).toEqual({ limit: 40, notes: [] });
     expect(tool.parseArgs('{"limit":0}')).toEqual({ limit: 1, notes: [] });
+  });
+});
+
+describe('what the model is told this tool holds', () => {
+  /** The description as it reaches the provider: `toLlmTool` is what
+   *  the planner sends, so this is the sentence the model obeys. */
+  const described = () => toLlmTool(toolWith(result(snapshotMeta())).tool).description;
+
+  it('does not name one registry as the contents of the cache', () => {
+    // The cache is keyed on TRIAL_SOURCES and the reader stamps every
+    // record with its own 登记库 line. A description saying the records
+    // come from ClinicalTrials.gov is an instruction, not a caption: a
+    // model holding a 药物临床试验登记与信息公示平台 record and a
+    // sentence telling it the cache is ClinicalTrials.gov has been set
+    // up to attribute that record to the wrong registry.
+    expect(described()).not.toContain('（来自 ClinicalTrials.gov）');
+    // Nor is every id an NCT number — the mainland registry's is a CTR
+    // number (trials.service.ts, `TrialRecord.sourceId`).
+    expect(described()).not.toContain('登记号(NCT)');
+    expect(described()).toContain('登记库');
+  });
+
+  it('still refuses the knowledge base’s 2025 snapshot by name', () => {
+    // That sentence IS about ClinicalTrials.gov specifically — it is
+    // the corpus page this tool exists to stop the model quoting — so
+    // removing the registry's name from the first sentence must not
+    // take it out of the third.
+    expect(described()).toContain('知识库里那份 ClinicalTrials.gov 列表是 2025 年的网页快照');
+  });
+
+  it('lets the model state the registry it is elsewhere required to name', async () => {
+    // 只能陈述上面列出的事实 is a closed list, and the mainland line
+    // printed above it says 必须说明…来自 that registry. With 登记库
+    // missing from the list, those two rules contradicted each other
+    // on exactly the answer that has rows from both registries in it.
+    const { tool } = toolWith(
+      result(snapshotMeta({ sources: [SOURCES[0], CN_WITH_ROWS] }), [
+        chunk('ctgov', 'NCT00000001'),
+        chunk('chinadrugtrials', 'CTR20250001'),
+      ]),
+    );
+    const { display } = await tool.execute({ notes: [] }, ctx);
+    expect(display).toContain('只能陈述上面列出的事实：登记库、登记号');
+    expect(display).toContain(`这份名单里国内登记的那部分来自${CHINA}`);
   });
 });
 

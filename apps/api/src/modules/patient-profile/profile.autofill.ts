@@ -1,4 +1,5 @@
 import { readGeneticEvidence, type GeneticEvidenceDocumentLike } from './genetic-evidence.js';
+import { reportsAbsence } from './profile.passport.js';
 
 /**
  * WHICH REPORT THIS FILLS FROM IS NOT DECIDED HERE.
@@ -47,6 +48,26 @@ const hasMeaningfulValue = (value: unknown) => {
 
   return true;
 };
+
+/**
+ * A CELL THAT STATES SOMETHING ABOUT THIS PATIENT.
+ *
+ * `hasMeaningfulValue` asks whether the cell has characters in it, and
+ * 「未检出」 has characters in it. That is the whole of what asserted
+ * 「是否确诊 FSHD」 below: a genetics report whose only genetic content
+ * was a D4Z4 cell reading 未检出 wrote `diagnosedFshd: true` into the
+ * baseline — and the baseline is the archive, so unlike a sentence on a
+ * page it is still there after the report is re-read, and the portable
+ * exports read it back.
+ *
+ * `reportsAbsence` and not a second predicate here: it is the passport's
+ * own reader, applied to the same cells, and the two have to reach the
+ * same answer about one report. The VALUES are still written as the
+ * report printed them — an archive that silently dropped 未检出 would
+ * lose what the laboratory said — so this gates the assertion only.
+ */
+const cellStatesResult = (value: string | null) =>
+  hasMeaningfulValue(value) && !reportsAbsence(value);
 
 const normalizeDate = (value: string | null) => {
   if (!value) {
@@ -145,7 +166,10 @@ export const applyGeneticReportAutofill = (
 
   if (
     !hasMeaningfulValue(nextDiseaseBackground.diagnosedFshd) &&
-    (derived.diagnosisType || derived.d4z4 || derived.haplotype || derived.methylation)
+    (cellStatesResult(derived.diagnosisType) ||
+      cellStatesResult(derived.d4z4) ||
+      cellStatesResult(derived.haplotype) ||
+      cellStatesResult(derived.methylation))
   ) {
     nextDiseaseBackground.diagnosedFshd = true;
     baselineChanged = true;

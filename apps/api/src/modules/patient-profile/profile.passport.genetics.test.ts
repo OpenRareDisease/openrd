@@ -485,14 +485,14 @@ describe('方法对但结果不全：不能凭空说患者已有某一项', () =
     const reason = reasonFor({ d4z4Repeats: '1-10' });
     expect(reason).not.toContain('null');
     expect(reason).not.toContain('已有单倍型');
-    expect(reason).toContain('这两项都还没读到');
+    expect(reason).toContain('这两项都还没有确定的结果');
   });
 
   it('只写了方法、什么结果都没读到时同理', () => {
     const reason = reasonFor({ geneticTestMethod: 'southern_blot' });
     expect(reason).not.toContain('null');
     expect(reason).not.toContain('已有');
-    expect(reason).toContain('这两项都还没读到');
+    expect(reason).toContain('这两项都还没有确定的结果');
   });
 
   it('报告写的是探针清单 4qA/4qB 时，不算已有单倍型结果', () => {
@@ -1293,6 +1293,102 @@ describe('长度这一项也要读出来才算读到', () => {
 });
 
 /**
+ * 一个说得清清楚楚的重复数，说的不是缩短。
+ *
+ * FSHD1 是允许型 4qA 上 D4Z4 重复序列的缩短。`determinateSize` 只问这一
+ * 格能不能解析出一个确定的数，所以 30 个重复单元和 3 个重复单元过的是
+ * 同一道闸 —— 报告写着 D4Z4 30 / 4qA 时，护照给的是 基因确诊 / 可用于
+ * 入组，依据是「D4Z4 长度 30，单倍型 4qA」，转诊包里印的是「面肩肱型肌
+ * 营养不良症（FSHD），基因确诊」。
+ *
+ * 界是本平台自己印在《检查申请说明》上的那一条：「若重复单元数大于 10
+ * 而临床仍高度怀疑，需加做 D4Z4 甲基化分析与 SMCHD1 测序，以评估
+ * FSHD2」。
+ */
+describe('长度说的是不是缩短 —— 大于 10 个重复单元', () => {
+  const summaryFor = (fields: Record<string, string>) =>
+    buildClinicalPassportSummary(
+      base({ geneticMutation: 'FSHD1', documents: [geneticReport(fields)] } as never),
+    );
+
+  it('30 个重复单元 + 4qA 不是基因确诊，完整度也不为它加一格', () => {
+    const summary = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' });
+    expect(summary.diagnosis.confirmation).toBe('self_reported');
+    expect(summary.diagnosis.geneticEvidence.grade).not.toBe('trial_ready');
+    expect(summary.diagnosis.ready).toBe(false);
+  });
+
+  it('没有一句说这份材料满足入组要求', () => {
+    const summary = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' });
+    const evidence = summary.diagnosis.geneticEvidence;
+    const everything = `${evidence.headline}${evidence.reason}${evidence.action}\n${
+      buildClinicalPassportExport(summary).markdown
+    }`;
+    expect(everything).not.toContain('可用于入组');
+    expect(everything).not.toContain('入组通常要求');
+  });
+
+  it('数值不消失，也不被说成没读到', () => {
+    const summary = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' });
+    expect(summary.diagnosis.d4z4Repeats).toBe('30');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+    const evidence = summary.diagnosis.geneticEvidence;
+    expect(evidence.headline).toContain('30');
+    expect(`${evidence.headline}${evidence.reason}`).not.toContain('还没有确定的结果');
+  });
+
+  it('把指南在这个数上给的下一步说出来，而不是让人再做一次同样的检测', () => {
+    const evidence = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' }).diagnosis.geneticEvidence;
+    expect(evidence.reason).toContain('SMCHD1');
+    expect(evidence.reason).toContain('FSHD2');
+    // 「结果不全」在这一档仍然成立：指南在这个数上要的甲基化分析与
+    // SMCHD1 测序，本平台从来没有从任何一份报告上读到过 SMCHD1。
+    expect(evidence.gradeLabel).toBe('方法对，但结果不全');
+    expect(evidence.testRequest?.sections.map((section) => section.heading)).not.toContain(
+      '能测出 FSHD1 的方法',
+    );
+  });
+
+  it('两项都在的时候不会印出「只差「」」这种空括号', () => {
+    const evidence = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' }).diagnosis.geneticEvidence;
+    expect(evidence.headline).not.toContain('「」');
+    expect(evidence.reason).not.toContain('「」');
+    expect(evidence.reason).toContain('已有D4Z4 长度（30）、单倍型（4qA）');
+  });
+
+  it('按重复数分组的那几条指南建议，一条都不套在它身上', () => {
+    // 30 落在 1–4 之外，眼底那一条本来就不发；灰区那一条也不发。
+    const summary = summaryFor({ d4z4Repeats: '30', haplotype: '4qA' });
+    expect(summary.diagnosis.geneticEvidence.record.greyZone).toBe(false);
+    expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+  });
+
+  it('单倍型还没读到时，两件事都说，不只说其中一件', () => {
+    const evidence = summaryFor({ d4z4Repeats: '30' }).diagnosis.geneticEvidence;
+    expect(evidence.headline).toContain('30');
+    expect(evidence.reason).toContain('4qA / 4qB 单倍型这一项报告上也还没有确定的结果');
+  });
+
+  it('4qB 优先 —— 单倍型这一条更早，且它自己的文案里没有重复数那一句', () => {
+    const evidence = summaryFor({ d4z4Repeats: '30', haplotype: '4qB' }).diagnosis.geneticEvidence;
+    expect(evidence.grade).toBe('non_permissive_haplotype');
+    expect(evidence.reason).not.toContain('SMCHD1');
+  });
+
+  it('kb 不按重复单元的界判 —— 本仓库没有写过 kb 的界，也不在这里换算', () => {
+    // `isLargeD4Z4Deletion` 把「10–20 kb or 1–4 repeats」原样引下来，并
+    // 写明不做换算；`isD4Z4GreyZone` 同样在 unit === 'kb' 上让开。确定的
+    // EcoRI 片段仍然只是「有这一项」。
+    expect(summaryFor({ d4z4Repeats: '18kb', haplotype: '4qA' }).diagnosis.confirmation).toBe(
+      'genetic',
+    );
+    expect(summaryFor({ ecoRIFragment: '38', haplotype: '4qA' }).diagnosis.confirmation).toBe(
+      'genetic',
+    );
+  });
+});
+
+/**
  * THE WHOLE MATRIX, BECAUSE 基因确诊 IS A CONJUNCTION AND A CONJUNCTION
  * IS WHERE 「the cell has something in it」 HIDES.
  *
@@ -1309,24 +1405,32 @@ describe('长度这一项也要读出来才算读到', () => {
  * So the three cells are crossed here rather than sampled: each of them
  * present, absent, saying the thing was NOT found, and holding something
  * this platform cannot parse — plus, for the length, a range, which is a
- * real finding that is not a size. Every combination is rendered and
- * every surface a human reads is read off it.
+ * real finding that is not a size, and a count the report states
+ * perfectly well that is not a contraction. Every combination is
+ * rendered and every surface a human reads is read off it.
  */
 describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不出', () => {
-  /** 长度这一格。`isSize` 是「指南要的那个确定长度」，不是「这一格有字」。 */
+  /** 长度这一格。`isSize` 是「这一项在报告上」，`contraction` 是「这个数
+   *  说的是缩短」—— 两个不同的问题，混成一个的时候 30 个重复单元拿到了
+   *  基因确诊。 */
   const D4Z4_CELLS = [
-    { name: '空着', value: null, isSize: false },
-    { name: '确定的重复数', value: '3', isSize: true },
-    { name: '区间', value: '1-10', isSize: false },
-    { name: '否定句', value: '未检出', isSize: false },
-    { name: '读不出的字', value: '见附页', isSize: false },
+    { name: '空着', value: null, isSize: false, contraction: false },
+    { name: '确定的重复数', value: '3', isSize: true, contraction: true },
+    { name: '灰区里的重复数', value: '8', isSize: true, contraction: true },
+    { name: '大于 10 的重复数', value: '30', isSize: true, contraction: false },
+    { name: '区间', value: '1-10', isSize: false, contraction: false },
+    { name: '否定句', value: '未检出', isSize: false, contraction: false },
+    { name: '读不出的字', value: '见附页', isSize: false, contraction: false },
   ] as const;
 
+  /** EcoRI 片段一律是 kb。指南给的边界写在重复单元上，本仓库没有任何一处
+   *  写过 kb 的边界（`isLargeD4Z4Deletion` 是把 10–20 kb 原样引下来的，
+   *  不是换算出来的），所以确定的片段长度只当作「有这一项」。 */
   const ECORI_CELLS = [
-    { name: '空着', value: null, isSize: false },
-    { name: '确定的片段长度', value: '18kb', isSize: true },
-    { name: '否定句', value: '未检出 EcoRI 片段', isSize: false },
-    { name: '读不出的字', value: '见附页', isSize: false },
+    { name: '空着', value: null, isSize: false, contraction: false },
+    { name: '确定的片段长度', value: '18kb', isSize: true, contraction: true },
+    { name: '否定句', value: '未检出 EcoRI 片段', isSize: false, contraction: false },
+    { name: '读不出的字', value: '见附页', isSize: false, contraction: false },
   ] as const;
 
   const HAPLOTYPE_CELLS = [
@@ -1354,6 +1458,13 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
         return {
           label: `长度=${d4z4.name} / EcoRI=${ecoRI.name} / 单倍型=${haplotype.name}`,
           hasSize: d4z4.isSize || ecoRI.isSize,
+          /** 分级读的是哪一格：重复数这一格只要有确定值就是它，否则才轮到
+           *  EcoRI 片段 —— `determinateSize` 就是这个顺序。 */
+          saysContraction: d4z4.isSize ? d4z4.contraction : ecoRI.contraction,
+          countAboveRange: d4z4.isSize && !d4z4.contraction,
+          /** 灰区读的也只是重复数这一格 —— `isD4Z4GreyZone` 的区间是以
+           *  重复单元写的，EcoRI 片段是 kb。 */
+          greyZoneCount: d4z4.value === '8',
           verdict: haplotype.verdict,
           /** The cell strings this report did NOT state a result in.
            *  Nothing written in a laboratory's voice may quote one. */
@@ -1381,9 +1492,12 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
       ...row.summary.nextSteps.map((step) => `${step.title}${step.description}`),
     ].join('\n');
 
-  it('基因确诊当且仅当报告同时给出确定的长度和允许型 4qA', () => {
+  it('基因确诊当且仅当报告读到的长度说的是缩短、且单倍型是允许型 4qA', () => {
     for (const row of rows) {
-      const confirmed = row.hasSize && row.verdict === 'permissive';
+      // `saysContraction` 而不是 `hasSize`：报告写着 D4Z4 30 / 4qA 时两项
+      // 都在、都确定，而 30 个重复单元不是 FSHD1 的缩短 —— 这一行以前拿到
+      // 的是 基因确诊 / 可用于入组，依据写着「D4Z4 长度 30，单倍型 4qA」。
+      const confirmed = row.saysContraction && row.verdict === 'permissive';
       expect(row.summary.diagnosis.confirmation, row.label).toBe(
         row.verdict === 'non_permissive'
           ? 'genetic_non_permissive'
@@ -1445,14 +1559,13 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
     }
   });
 
-  it('否定读数没有一行能进灰区或大片段缺失那两条指南分支', () => {
+  it('灰区只在报告真的写了 8–10 个单元、且没写 4qB 时才判', () => {
     for (const row of rows) {
-      const grey = row.summary.diagnosis.geneticEvidence.record.greyZone;
-      expect(grey, row.label).toBe(false);
-      expect(row.summary.diagnosis.geneticEvidence.greyZoneNote, row.label).toBeNull();
+      const expected = row.greyZoneCount && row.verdict !== 'non_permissive';
+      expect(row.summary.diagnosis.geneticEvidence.record.greyZone, row.label).toBe(expected);
+      expect(Boolean(row.summary.diagnosis.geneticEvidence.greyZoneNote), row.label).toBe(expected);
     }
-    // 上面那一格的长度只有 3 和 18kb 两种确定值，都不在 8–10，所以灰区
-    // 全表为假是应该的 —— 这一条断言的是「否定句里的 8 不算 8」。
+    // 否定句里的 8 不是 8。
     const negatedEight = buildClinicalPassportSummary(
       base({
         documents: [geneticReport({ d4z4Repeats: '未检出8个单元', haplotype: '4qA' })],
@@ -1460,10 +1573,28 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
     );
     expect(negatedEight.diagnosis.geneticEvidence.record.greyZone).toBe(false);
     expect(negatedEight.diagnosis.confirmation).not.toBe('genetic');
-    const realEight = buildClinicalPassportSummary(
-      base({ documents: [geneticReport({ d4z4Repeats: '8', haplotype: '4qA' })] } as never),
-    );
-    expect(realEight.diagnosis.geneticEvidence.record.greyZone).toBe(true);
+  });
+
+  /**
+   * 灰区在「说的是缩短」这条线的哪一边。
+   *
+   * 指南对 8 个单元的报告口径是「可能致病」，本仓库引的 Xia 2024 里那
+   * 219 例确诊 FSHD1 的重复单元数是 2–9 个，而灰区说明自己那一段的最后
+   * 一句是「这不推翻你的诊断」。所以把界划在灰区下沿，会让护照一边否认
+   * 一个数、一边在同一页上安慰读者说这个数不推翻什么。界划在指南自己
+   * 写的那个数上：大于 10。
+   */
+  it('灰区仍然算缩短，11 个单元不算 —— 界在指南写的 10 上，不在灰区下沿', () => {
+    const confirmationFor = (repeats: string) =>
+      buildClinicalPassportSummary(
+        base({ documents: [geneticReport({ d4z4Repeats: repeats, haplotype: '4qA' })] } as never),
+      ).diagnosis.confirmation;
+    for (const inside of ['1', '7', '8', '9', '10']) {
+      expect(confirmationFor(inside), inside).toBe('genetic');
+    }
+    for (const outside of ['11', '30', '150']) {
+      expect(confirmationFor(outside), outside).not.toBe('genetic');
+    }
   });
 
   it('全表都不再逐条点名那三项读数 —— 那是把评级规则抄进了纸面', () => {
@@ -1481,9 +1612,42 @@ describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不�
       (item) => item.summary.diagnosis.geneticEvidence.grade === 'method_right_incomplete',
     )) {
       const titles = row.summary.nextSteps.map((step) => step.title);
-      expect(titles, row.label).toContain('问一下报告里缺的那一项');
+      // 重复数大于 10 的那些行两项都在，没有哪一项要去要 —— 那一条待办
+      // 问的是这个数怎么解读，用的是 4qB 那一条已有的说法。
+      expect(titles, row.label).toContain(
+        row.countAboveRange ? '带着报告原件问一次这个重复数' : '问一下报告里缺的那一项',
+      );
       expect(titles, row.label).not.toContain('补充基因检测报告');
       expect(titles, row.label).not.toContain('补充基因或诊断依据');
+    }
+  });
+
+  /**
+   * 文案不否认这一页自己印着的读数。
+   *
+   * 三格的读数器现在只扣下否定句和探针清单的 VALUE，raw 照印，括号里写
+   * 着「报告读取」。所以护照上会同时出现「D4Z4 重复数 未检出（报告读
+   * 取）」和「还没有看到 D4Z4 重复单元数」—— 后半句是假的，本平台看到
+   * 了，报告写的是未检出。「只差某一项」也一样：4qA/4qB 这一格印在页面
+   * 上，不是缺。
+   */
+  it('没有一行说自己没看到页面上印着的那一格', () => {
+    for (const row of rows) {
+      const everything = `${prose(row)}\n${row.share}\n${row.markdown}`;
+      expect(everything, row.label).not.toContain('还没有看到');
+      expect(everything, row.label).not.toContain('只差');
+      expect(everything, row.label).not.toContain('还没读到');
+    }
+  });
+
+  it('读到了但不是确定结果的那一格，说的是「没有确定的结果」', () => {
+    for (const row of rows.filter(
+      (item) => item.summary.diagnosis.geneticEvidence.grade === 'method_right_incomplete',
+    )) {
+      const evidence = row.summary.diagnosis.geneticEvidence;
+      // 大于 10 的那一档两项都读到了，说的是另一件事。
+      if (row.countAboveRange) continue;
+      expect(`${evidence.headline}${evidence.reason}`, row.label).toContain('还没有确定的结果');
     }
   });
 });
@@ -1524,5 +1688,67 @@ describe('否定句里的数字不是读数', () => {
     const e = readingOf({ d4z4Repeats: '3', haplotype: '4qA not detected' });
     expect(e.record.permissiveHaplotype).toBeNull();
     expect(e.grade).not.toBe('trial_ready');
+  });
+});
+
+/**
+ * 页面印着一格读数，同一页的文案不能说这一格没读到。
+ *
+ * 读数器扣下的是 VALUE，raw 原样留着，所以这些格子都印在护照上，括号里
+ * 写的是「报告读取」。文案原本落在「报告还没写这一项」那一套话上 ——
+ * 「还没有看到 D4Z4 重复单元数」、「只差「4qA / 4qB 单倍型」」—— 一个拿着
+ * 护照的人抬眼就能看见那一格。
+ */
+describe('method_right_incomplete 的文案对得上页面上印着的读数', () => {
+  const rendered = (fields: Record<string, string>) => {
+    const summary = buildClinicalPassportSummary(
+      base({ geneticMutation: 'FSHD1', documents: [geneticReport(fields)] } as never),
+    );
+    const evidence = summary.diagnosis.geneticEvidence;
+    return {
+      summary,
+      copy: `${evidence.headline}${evidence.reason}${evidence.action}`,
+      printed: `${summary.diagnosis.d4z4Repeats}\n${summary.diagnosis.geneEvidence}`,
+    };
+  };
+
+  it.each([
+    ['否定句', { d4z4Repeats: '未检出', haplotype: '4qA' }, '未检出'],
+    ['区间', { d4z4Repeats: '1-10', haplotype: '4qA' }, '1-10'],
+    ['读不出的字', { d4z4Repeats: '见附页', haplotype: '4qA' }, '见附页'],
+  ])('长度这一格是%s时，页面印着它，文案说的是「没有确定的结果」', (_name, fields, cell) => {
+    const { copy, printed, summary } = rendered(fields as Record<string, string>);
+    expect(printed).toContain(cell);
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+    expect(copy).not.toContain('还没有看到');
+    expect(copy).not.toContain('只差');
+    expect(copy).toContain('D4Z4 重复单元数这一项还没有确定的结果');
+  });
+
+  it.each([
+    ['探针清单', { d4z4Repeats: '3', haplotype: '4qA/4qB' }, '4qA/4qB'],
+    ['否定句', { d4z4Repeats: '3', haplotype: '未检出 4qA 等位基因' }, '未检出 4qA 等位基因'],
+  ])('单倍型这一格是%s时同理', (_name, fields, cell) => {
+    const { copy, printed } = rendered(fields as Record<string, string>);
+    expect(printed).toContain(cell);
+    expect(copy).not.toContain('还没有看到');
+    expect(copy).not.toContain('只差');
+    expect(copy).toContain('4qA / 4qB 单倍型这一项还没有确定的结果');
+  });
+
+  it('两格都读到了却都不是结果时，也不说「还没读到」', () => {
+    const { copy, printed } = rendered({ d4z4Repeats: '未检出', haplotype: '4qA/4qB' });
+    expect(printed).toContain('未检出');
+    expect(printed).toContain('4qA/4qB');
+    expect(copy).not.toContain('还没读到');
+    expect(copy).toContain('这两项都还没有确定的结果');
+  });
+
+  it('两格都是空的时候，同一句话照样成立 —— 一种说法，不是两种', () => {
+    const { copy } = rendered({ geneticTestMethod: 'southern_blot' });
+    expect(copy).toContain('这两项都还没有确定的结果');
+    // 「可能是报告本身没写，也可能是我们没能从图片里读出来」把原因数尽
+    // 了，而报告写着未检出是第三种；这句话删掉，没有换成更长的一句。
+    expect(copy).not.toContain('可能是报告本身没写');
   });
 });

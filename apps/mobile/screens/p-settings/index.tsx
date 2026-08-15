@@ -17,6 +17,7 @@ import {
 import { APP_NAME, readAppVersion } from '../../lib/app-identity';
 import { COLOR } from '../../lib/design';
 import { isAdminRole } from '../../lib/admin-access';
+import { AUDIT_MECHANISM } from '../p-admin/common';
 import { isFeatureEnabled } from '../../lib/feature-flags';
 import { useAppDialog } from '../common/feedback/AppDialog';
 import ListGroup, { Row } from '../common/ListGroup';
@@ -513,9 +514,18 @@ const SettingsScreen = () => {
             with /p-home by the gate in app/_layout.tsx. This is a
             drawing decision made from the role cached at sign-in —
             lib/admin-access.ts says why that is allowed to be stale,
-            and why it is not the access control. */}
+            and why it is not the access control.
+
+            THE FOOTNOTE IS THE BACK OFFICE'S OWN SENTENCE, imported
+            rather than written again here. It used to promise that
+            every page an operator opened was recorded — 「包括只是打开
+            看看」 — which is the wording each back-office screen stopped
+            using once 全量导出 turned out to request nothing on mount.
+            What is true of all of them is the mechanism, so that is
+            what this door says; what varies from screen to screen is
+            said by the screen, in its own ADMIN_AUDIT_NOTICE_*. */}
         {isAdminRole(user?.role) ? (
-          <ListGroup title="后台" footnote="这里看到的每一页都会记进审计，包括只是打开看看。">
+          <ListGroup title="后台" footnote={AUDIT_MECHANISM}>
             <Row
               icon="file-shield"
               label="运维与患者档案"

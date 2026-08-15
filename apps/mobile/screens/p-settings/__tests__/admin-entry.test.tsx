@@ -61,6 +61,7 @@ jest.mock('../../../lib/api', () => ({
   getAccountDeletionStatus: jest.fn(() => Promise.resolve({ deletion: null })),
 }));
 
+import { AUDIT_MECHANISM } from '../../p-admin/common';
 import SettingsScreen from '../index';
 
 const collectText = (node: unknown): string => {
@@ -106,5 +107,20 @@ describe('the back-office row in 我的', () => {
       row.props.onPress();
     });
     expect(mockPush).toHaveBeenCalledWith('/p-admin');
+  });
+
+  it('promises the mechanism, not a row for every page an operator opens', () => {
+    // 全量导出 sits behind this row and requests nothing when it
+    // opens — asserted from the other side in
+    // screens/p-admin/__tests__/full-export.test.tsx. The footnote
+    // used to read 「这里看到的每一页都会记进审计，包括只是打开看看」,
+    // which is the wording the back office itself stopped using for
+    // that exact reason, kept alive on the door outside it.
+    const text = collectText(renderAs('admin').toJSON());
+    expect(text).not.toContain('每一页都会记进审计');
+    expect(text).not.toContain('包括只是打开看看');
+    // And it is the back office's own sentence, so the two cannot
+    // drift into two different promises about one mechanism.
+    expect(text).toContain(AUDIT_MECHANISM);
   });
 });

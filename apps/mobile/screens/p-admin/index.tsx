@@ -190,6 +190,14 @@ const AdminOverviewScreen = () => {
       >
         {healthData ? (
           <>
+            {/* 总体状态 speaks for readiness and for nothing else.
+                It used to append 「组件都还好」 to the draining line,
+                which is a claim about the components made by the one
+                branch that never looked at them — and draining and a
+                real failure are simultaneous states, not alternatives
+                (apps/api/src/routes/health.test.ts asserts that pair).
+                Every component's own status and detail are drawn
+                directly below, so the summary has nothing to add. */}
             <AdminStat
               first
               label="总体状态"
@@ -197,7 +205,7 @@ const AdminOverviewScreen = () => {
               alert={healthData.status !== 'ok'}
               detail={
                 healthData.draining
-                  ? '这个实例正在退出（draining）：组件都还好，但它已经不该再接新流量。'
+                  ? '这个实例正在退出（draining）：它已经不该再接新流量。'
                   : healthData.ready === null
                     ? null
                     : healthData.ready

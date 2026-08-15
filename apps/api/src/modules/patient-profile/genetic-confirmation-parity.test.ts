@@ -274,3 +274,119 @@ describe('基因确诊 — 五个界面读同一个答案', () => {
     });
   });
 });
+
+/**
+ * ONE CELL, TWO DOCUMENTS, ONE ANSWER — the same failure one level
+ * down from the flag above.
+ *
+ * A 4q 单倍型 cell can hold the laboratory's PROBES, and a D4Z4 cell
+ * can hold an interval or a sentence saying the assay found nothing.
+ * The TREAT-NMD document learnt to publish the line together with
+ * whether this platform reads a result off it; the FHIR bundle went on
+ * writing whatever the cell held into `Observation.valueString`, which
+ * is the element a registry ingests as the answer. So one profile, on
+ * one run, shipped 「未检出」 as a genotype in one file and 「本平台从它
+ * 读不出这一项的结果」 about the same cell in the other.
+ *
+ * The rows below are built the way a real profile reaches the
+ * exporters — the report's cell sitting in the archive, because
+ * `applyGeneticReportAutofill` has already run — so that both formats
+ * are describing ONE cell and a disagreement is a real one.
+ */
+describe('基因结果 —— 一个格子，两份导出说的是同一件事', () => {
+  const ITEMS = {
+    d4z4: { ocrKey: 'd4z4Repeats', itemKey: 'diagnosis.d4z4', labelZh: 'D4Z4 重复单元数' },
+    haplotype: { ocrKey: 'haplotype', itemKey: 'diagnosis.haplotype', labelZh: '4q 单倍型' },
+  } as const;
+
+  const profileWithCell = (item: keyof typeof ITEMS, cell: string): PatientProfileDTO => {
+    const baseline = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = baseline.diseaseBackground as Record<string, unknown>;
+    return {
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: {
+        ...baseline,
+        diseaseBackground: { ...disease, d4z4: null, haplotype: null, [item]: cell },
+      },
+      documents: [laboratoryReport({ [ITEMS[item].ocrKey]: cell })],
+    };
+  };
+
+  /** What each format says about that one cell. */
+  const renderCell = (item: keyof typeof ITEMS, cell: string) => {
+    const source = normaliseSource(profileWithCell(item, cell), {
+      includeLocalOnly: false,
+      generatedAt: FIXTURE_GENERATED_AT,
+    });
+
+    const treatNmdItem = buildTreatNmdExport(source)
+      .document.sections.find((section) => section.key === 'diagnosis')
+      ?.items.find((entry) => entry.key === ITEMS[item].itemKey);
+    const treatNmdValue = treatNmdItem?.value as {
+      recordedZh: string;
+      reading: string;
+      readingZh: string;
+    };
+
+    const observation = buildFhirExport(source)
+      .document.entry.map((entry) => entry.resource)
+      .find(
+        (resource) =>
+          resource.resourceType === 'Observation' &&
+          (resource.code as { text?: string }).text === ITEMS[item].labelZh,
+      ) as unknown as {
+      valueString?: string;
+      dataAbsentReason?: { text: string };
+    };
+
+    return { treatNmdValue, observation };
+  };
+
+  /** Every cell shape these two boxes actually hold, and whether this
+   *  platform reads it as that item's result. One column, because
+   *  there is one answer. */
+  const CELLS: ReadonlyArray<{
+    readonly item: keyof typeof ITEMS;
+    readonly cell: string;
+    readonly isResult: boolean;
+  }> = [
+    { item: 'd4z4', cell: '5', isResult: true },
+    { item: 'd4z4', cell: '未检出', isResult: false },
+    { item: 'd4z4', cell: '1-10', isResult: false },
+    { item: 'haplotype', cell: '4qA', isResult: true },
+    // 非允许型 is a result too: what it does to the diagnosis is the
+    // question the block above answers, not this one.
+    { item: 'haplotype', cell: '4qB', isResult: true },
+    { item: 'haplotype', cell: '4qA/4qB', isResult: false },
+    { item: 'haplotype', cell: '未检出', isResult: false },
+  ];
+
+  CELLS.forEach(({ item, cell, isResult }) => {
+    it(`${ITEMS[item].labelZh} 一栏写着「${cell}」→ ${isResult ? '是结果' : '不是结果'}，两处一致`, () => {
+      const { treatNmdValue, observation } = renderCell(item, cell);
+
+      expect({
+        treatNmd: treatNmdValue.reading === 'result',
+        fhir: observation.valueString !== undefined,
+      }).toEqual({ treatNmd: isResult, fhir: isResult });
+
+      // Whichever way it went, neither document dropped the line the
+      // report actually holds.
+      expect(treatNmdValue.recordedZh).toBe(cell);
+      expect(JSON.stringify(observation)).toContain(cell);
+    });
+  });
+
+  /**
+   * AND THEY REFUSE IT IN THE SAME WORDS. Two wordings for one
+   * judgement is two things to keep true, and a receiver can be
+   * holding both documents.
+   */
+  it('读不出结果时，两份导出用的是同一句话', () => {
+    CELLS.filter(({ isResult }) => !isResult).forEach(({ item, cell }) => {
+      const { treatNmdValue, observation } = renderCell(item, cell);
+      expect(treatNmdValue.readingZh, cell).toContain('本平台从它读不出这一项的结果');
+      expect(observation.dataAbsentReason?.text, cell).toContain('本平台从它读不出这一项的结果');
+    });
+  });
+});

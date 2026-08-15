@@ -221,7 +221,13 @@ const describeSource = (status: TrialSourceStatus): string => {
  *  answering from its own memory. The other three are requests. */
 const BOUNDARY_RULES = [
   '硬性要求：',
-  '- 只能陈述上面列出的事实：登记号、状态、期别、申办方、国家、登记库最后更新日期、链接。',
+  // 登记库 is on this list because `renderTrial` puts it on every
+  // record, and because the mainland line `describeRetrieval` prints
+  // just above these rules orders the model to say which registry a
+  // row came from. A closed list of permitted facts that leaves out
+  // the one another rule demands is two instructions that cannot both
+  // be followed.
+  '- 只能陈述上面列出的事实：登记库、登记号、状态、期别、申办方、国家、登记库最后更新日期、链接。',
   '- 提到任何一条试验时，必须同时给出它的登记号、状态、和「本平台读取时间」，并且带上链接。',
   '- 不要判断用户是否符合入组条件，不要说「你可能符合」「你应该能参加」。本工具不提供入组标准，你手上也没有。',
   '- 不要陈述任何疗效或结果结论。本工具不提供试验结果、摘要或结论，你手上同样没有。',
@@ -383,8 +389,27 @@ const describeRetrieval = (retrieval: RetrieveResult, notes: string[] = []): str
 
 export class ListClinicalTrialsTool implements ITool {
   readonly name = 'list_clinical_trials';
+  /**
+   * A tool description is an instruction, so it may not name a registry
+   * the cache is not limited to.
+   *
+   * It opened with 「（来自 ClinicalTrials.gov）」 and promised an NCT
+   * number on every record, from when that was the only source. The
+   * cache is keyed on TRIAL_SOURCES, `readTrialSnapshot` returns rows
+   * for all of them, `renderTrial` stamps each one with its own 登记库,
+   * and the mainland registry's id is a CTR number. A model reading
+   * this sentence over a mixed list has been told to file every row
+   * under one registry — and the same run's `display` tells it to say
+   * which rows came from the other one.
+   *
+   * What replaces it is what is true of every record whatever fetched
+   * it: each one says where it came from. The 2025 snapshot sentence
+   * further down keeps ClinicalTrials.gov by name, because that one is
+   * about a specific page in the knowledge base and not about the
+   * cache.
+   */
   readonly description =
-    '查询本平台缓存的 FSHD 临床试验登记记录（来自 ClinicalTrials.gov），每条带登记号(NCT)、状态、期别、申办方、国家、登记库更新日期、平台读取时间和链接。' +
+    '查询本平台缓存的 FSHD 临床试验登记记录，每条都写明来自哪个登记库，并带登记号、状态、期别、申办方、国家、登记库最后更新日期、本平台读取时间和链接。' +
     '凡是问到临床试验——哪些在招募、有没有新的试验、某个 NCT 是什么情况、试验进展——都必须调用这个工具。' +
     '知识库里那份 ClinicalTrials.gov 列表是 2025 年的网页快照、而且状态词是机器翻译的，不能用来回答「现在还在不在招募」。' +
     '本工具不提供入组标准，也不提供试验结果或疗效结论。';

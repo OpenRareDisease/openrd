@@ -24,7 +24,10 @@ import styles from './styles';
  */
 
 /**
- * The mechanism, which is the same wherever the banner is drawn.
+ * The mechanism, which is the same wherever the banner is drawn — and
+ * exported because 我的 draws it too, on the row that opens the back
+ * office (screens/p-settings). That door had its own wording, and it
+ * was the one this file had already retired.
  *
  * It is not a disclaimer. `requireAdmin` writes one `audit_logs` row
  * for every request it lets through, INCLUDING reads, before the
@@ -40,7 +43,7 @@ import styles from './styles';
  * promising a row for every request would be false on the screen an
  * operator is looking at when they read it.
  */
-const AUDIT_MECHANISM =
+export const AUDIT_MECHANISM =
   '服务端放行一次后台请求之前，会先记一条审计：哪个管理员账号、什么时间、请求了哪个接口。' +
   '记录写不进去时，服务端会直接拒绝这次访问，而不是先给你看。';
 

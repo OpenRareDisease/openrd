@@ -107,6 +107,32 @@ export interface FhirBundle {
 const CLINICAL_STATUS_SYSTEM = 'http://terminology.hl7.org/CodeSystem/condition-clinical';
 const VERIFICATION_STATUS_SYSTEM = 'http://terminology.hl7.org/CodeSystem/condition-ver-status';
 const OBSERVATION_CATEGORY_SYSTEM = 'http://terminology.hl7.org/CodeSystem/observation-category';
+/**
+ * FHIR's own answer to 「there is no value here, and this is why」.
+ *
+ * Reached for rather than invented: `Observation.dataAbsentReason` is
+ * the element R4 defines for a missing `value[x]`, its `unknown` means
+ * 「the value is expected to exist but is not known」, and R4 forbids
+ * the two from appearing together — so writing this is the same edit
+ * as not writing a value, checked by a receiver's validator instead of
+ * by us.
+ *
+ * WHY ONLY `unknown`, when the value set holds other codes and a
+ * report saying 未检出 has told us more than 「不知道」. FHIR does offer
+ * the finer answer — `interpretation` = `ND`, 「looked for and not
+ * detected」 — and it is deliberately not written. The only thing that
+ * could decide it is `CELL_REPORTS_ABSENCE`, a substring matcher whose
+ * own contract is that it ONLY EVER WITHHOLDS: a cell it matches falls
+ * to the copy written for a report that has not stated the item, and
+ * nothing downstream may turn a negation into a sentence about a
+ * result. Every surface that reads these cells today treats a negation
+ * as no result and none of them states a negative finding. A code here
+ * saying the laboratory looked and found nothing would make this
+ * bundle the one place on this platform that says so, decided by a
+ * regex, to the one audience that believes a code rather than a label.
+ * What the cell says still travels, verbatim, in `text`.
+ */
+const DATA_ABSENT_REASON_SYSTEM = 'http://terminology.hl7.org/CodeSystem/data-absent-reason';
 
 /**
  * How many Observations the bundle will carry.
@@ -178,6 +204,9 @@ interface ObservationCandidate {
      *  genetics laboratory's own report, which is why that Observation
      *  carries no `category`. */
     readonly transcribedGeneticReading?: boolean;
+    /** True for a genetic cell this platform reads no result off, which
+     *  is why that Observation carries no `value[x]`. */
+    readonly geneticNonResult?: boolean;
   };
 }
 
@@ -186,6 +215,7 @@ interface KeptDeclarations {
   readonly codingSystems: ReadonlySet<string>;
   readonly hasUndatedReportField: boolean;
   readonly hasTranscribedGeneticReading: boolean;
+  readonly hasGeneticNonResult: boolean;
 }
 
 /** Everything the envelope may assert about the bundle, read off the survivors. */
@@ -194,14 +224,22 @@ const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations
   const codingSystems = new Set<string>();
   let hasUndatedReportField = false;
   let hasTranscribedGeneticReading = false;
+  let hasGeneticNonResult = false;
   kept.forEach(({ declares }) => {
     if (!declares) return;
     if (declares.codingKey) codingKeys.add(declares.codingKey);
     if (declares.codingSystem) codingSystems.add(declares.codingSystem);
     if (declares.undatedReportField) hasUndatedReportField = true;
     if (declares.transcribedGeneticReading) hasTranscribedGeneticReading = true;
+    if (declares.geneticNonResult) hasGeneticNonResult = true;
   });
-  return { codingKeys, codingSystems, hasUndatedReportField, hasTranscribedGeneticReading };
+  return {
+    codingKeys,
+    codingSystems,
+    hasUndatedReportField,
+    hasTranscribedGeneticReading,
+    hasGeneticNonResult,
+  };
 };
 
 // --------------------------------------------------------------- builder
@@ -582,6 +620,7 @@ export const buildFhirExport = (
         ...(coding && ledgered ? { codingKey: ledgered.key, codingSystem: coding.system } : {}),
         undatedReportField: field.observedAtIsUploadTime,
         transcribedGeneticReading: field.transcribedGeneticReading,
+        geneticNonResult: field.readsAsResult === false,
       },
       // Not `sortKey(field.observedAt)`: for an undated report field
       // that value is the upload time, and this Observation is about
@@ -640,7 +679,34 @@ export const buildFhirExport = (
         // rendered string («1245 U/L», «45%»), and splitting it into a
         // number and a unit would be this exporter guessing at the
         // unit rather than reading it.
-        valueString: field.value,
+        //
+        // AND ONLY WHERE THE CELL IS A RESULT AT ALL. `value[x]` is the
+        // element a receiver ingests as this observation's answer, and
+        // the genetic cells are the ones this platform's own parser
+        // refuses: a 4q 单倍型 reading 「4qA/4qB」 names the laboratory's
+        // probes, a D4Z4 reading 「未检出」 or 「1-10」 is not a count.
+        // Every one of those went out as `valueString` under a code
+        // that says 「4q 单倍型」, and 「未检出」 filed as a genotype is
+        // indistinguishable from an allele name once ingested — the one
+        // direction that cannot be caught downstream, and the one the
+        // TREAT-NMD document already refuses for the same cell.
+        // `readsAsResult` is that same reading, not a second one.
+        //
+        // `status` STAYS `final`, and so does the category. R4 defines
+        // status as the lifecycle of the record — 「complete and there
+        // are no further actions needed」 — not as a verdict on what the
+        // cell holds; downgrading it to `preliminary` would tell a
+        // receiver a result is still coming for a report that is
+        // finished, which is a second false statement rather than a
+        // repair of the first.
+        ...(field.readsAsResult === false
+          ? {
+              dataAbsentReason: {
+                coding: [{ system: DATA_ABSENT_REASON_SYSTEM, code: 'unknown' }],
+                text: `报告上这一项写的是「${field.value}」，那是报告原文，不是这一项的检测结果：本平台从它读不出这一项的结果，因此本条不给出结果值。`,
+              },
+            }
+          : { valueString: field.value }),
         ...(documentRef ? { derivedFrom: [{ reference: documentRef }] } : {}),
         note: [
           {
@@ -784,6 +850,18 @@ export const buildFhirExport = (
     omissions.push({
       field: 'Observation.category（基因结果）',
       reasonZh: `本 Bundle 中的基因结果读自一份不是基因报告的上传件——本平台把它读作这份档案的基因证据，来源标为「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」。observation-category 取值集里没有能表示这种来源的编码，而 laboratory 会把一段转录说成实验室的结论，因此这类 Observation 不写 category。读数照常给出：对一些患者来说，这是唯一一份写着这个数字的材料。请不要把它当作实验室的结论，也不要据它做需要基因确诊的分组。哪一份文件供的数，见该 Observation 的 derivedFrom。`,
+    });
+  }
+
+  // Gated on the survivors for the same reason: this explains why
+  // certain Observations IN THIS BUNDLE carry no `value[x]`, and an
+  // element that is simply missing is otherwise indistinguishable from
+  // an exporter that never had one.
+  if (declared.hasGeneticNonResult) {
+    omissions.push({
+      field: 'Observation.value[x]（基因结果）',
+      reasonZh:
+        '本 Bundle 中有基因结果的 Observation 没有给出结果值：报告上那一项写着东西，但本平台从它读不出这一项的结果。那一栏可能写的是实验室用的探针名（例如「4qA/4qB」，那是两个探针，不是一个单倍型结果）、一个区间，或者一句表示没有检出的话——都不是这一项的结果。这类条目按 FHIR 的写法给出 dataAbsentReason（data-absent-reason 取值集，code=unknown），报告上那一项的原文原样放在同一个元素的 text 里供人阅读。请不要把那段原文当作该项的检测结果导入。',
     });
   }
 

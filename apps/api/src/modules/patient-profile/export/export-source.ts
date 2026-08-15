@@ -147,6 +147,29 @@ export interface ReportField {
    */
   readonly transcribedGeneticReading: boolean;
   /**
+   * WHETHER THIS PLATFORM READS THIS CELL AS A RESULT FOR ITS ITEM —
+   * the passport's own answer, carried here rather than asked again,
+   * and `null` for every field that has no such answer.
+   *
+   * Only the two genetic items have one. A 4q 单倍型 cell reading
+   * 「4qA/4qB」 names the laboratory's probes and is not a haplotype; a
+   * D4Z4 cell reading 「未检出」 or 「1-10」 is not a repeat count. This
+   * platform's own parser refuses all three — the passport prints them
+   * and grades the profile as carrying no confirmatory reading — so a
+   * serialiser that published one of them as the observation's value
+   * would hand a receiver prose under a key it maps as data, in the one
+   * direction that cannot be caught downstream. Same reading as
+   * `geneticResultValue` reports to the TREAT-NMD document, so the two
+   * exports cannot describe one cell differently in one run.
+   *
+   * NULL FOR EVERY OTHER FIELD, and that is not 「not filled in yet」:
+   * nothing on this platform refuses a CK string, so there is no
+   * reading to report and inventing one here would be this module
+   * answering a question nothing else asks — the reason 甲基化 has none
+   * either.
+   */
+  readonly readsAsResult: boolean | null;
+  /**
    * The ledger key a coding WOULD be looked up under. Null where no
    * candidate exists at all. Never a code — see codings.ts.
    */
@@ -971,6 +994,13 @@ const GENETIC_RESULT_READING_LABELS_ZH: Record<SerialisedGeneticResult['reading'
  * that is the parser's own verdict on its own string, not a second
  * reading of it. `permissiveHaplotype` is the same for 4qA / 4qB, with
  * null covering both a missing cell and a cell naming the probes.
+ *
+ * `isAResult` HAS TWO CALLERS AND ONE ANSWER. `geneticResultValue`
+ * asks it about the line in the archive, for the TREAT-NMD item;
+ * `collectReportFields` asks it about the same cell on the evidence
+ * report, for `ReportField.readsAsResult`. Both readings are this one,
+ * so the two documents built from one profile in one run cannot say
+ * different things about one cell.
  */
 const GENETIC_RESULT_ITEMS: Record<
   'd4z4' | 'haplotype',
@@ -1208,9 +1238,12 @@ const CHALLENGE_LABELS: Record<string, string> = {
  * the anesthesia card and the registry export disagree about the same
  * report. Every alias below is copied, and nothing has been invented.
  *
- * `geneticEvidenceOnly` marks the entries that may be read ONLY off
- * the document `pickGeneticEvidenceDocument` names. See
- * `collectReportFields`.
+ * `geneticItem` marks the entries that may be read ONLY off the
+ * document `pickGeneticEvidenceDocument` names, and names which item
+ * of `GENETIC_RESULT_ITEMS` answers for that cell. ONE member and not
+ * two: the document rule and the reading are about the same cell, and
+ * two flags that have to move together are two flags that can stop
+ * moving together. See `collectReportFields`.
  */
 const REPORT_FIELD_SPECS: ReadonlyArray<{
   keys: readonly string[];
@@ -1218,7 +1251,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
   labelZh: string;
   category: ReportField['category'];
   codingKey: string | null;
-  geneticEvidenceOnly?: true;
+  geneticItem?: 'd4z4' | 'haplotype';
 }> = [
   {
     key: 'creatineKinase',
@@ -1296,7 +1329,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     labelZh: 'D4Z4 重复单元数',
     category: 'laboratory',
     codingKey: null,
-    geneticEvidenceOnly: true,
+    geneticItem: 'd4z4',
   },
   {
     key: 'haplotype',
@@ -1304,7 +1337,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     labelZh: '4q 单倍型',
     category: 'laboratory',
     codingKey: null,
-    geneticEvidenceOnly: true,
+    geneticItem: 'haplotype',
   },
 ];
 
@@ -1353,6 +1386,7 @@ const documentFields = (document: PatientDocumentDTO): Record<string, unknown> |
 const collectReportFields = (
   documents: readonly PatientDocumentDTO[],
   geneticEvidenceReading: NormalisedSource['geneticEvidenceReading'],
+  geneticEvidenceRecord: PassportGeneticRecordDTO,
 ): ReportField[] => {
   const out: ReportField[] = [];
   // Newest first so a consumer taking the head of each key gets the
@@ -1381,7 +1415,9 @@ const collectReportFields = (
     if (!fields) return;
     const reportTime = pickReading(fields, ['reportTime', 'report_time']);
     REPORT_FIELD_SPECS.forEach((spec) => {
-      if (spec.geneticEvidenceOnly && document.id !== geneticEvidenceReading.documentId) return;
+      if (spec.geneticItem !== undefined && document.id !== geneticEvidenceReading.documentId) {
+        return;
+      }
       const value = pickReading(fields, spec.keys);
       if (value === null) return;
       out.push({
@@ -1396,7 +1432,17 @@ const collectReportFields = (
         // the other specs are measurements the document's own
         // laboratory made. See ReportField.transcribedGeneticReading.
         transcribedGeneticReading:
-          spec.geneticEvidenceOnly === true && !geneticEvidenceReading.laboratory,
+          spec.geneticItem !== undefined && !geneticEvidenceReading.laboratory,
+        // Asked of the record the passport itself printed and graded,
+        // and asked of the same cell: this field was read off the
+        // document `pickGeneticEvidenceDocument` named, with the same
+        // key list and the same reader that built the record. A second
+        // parse here is how the bundle would come to publish a result
+        // the passport does not.
+        readsAsResult:
+          spec.geneticItem === undefined
+            ? null
+            : GENETIC_RESULT_ITEMS[spec.geneticItem].isAResult(geneticEvidenceRecord),
         // The report's own stated time when OCR read one, else the
         // upload time — with the substitution recorded, not silent.
         // Every consumer of `observedAt` has to decide what to do
@@ -1525,7 +1571,11 @@ export const normaliseSource = (
         severity: text(event.severity),
         descriptionZh: text(event.description),
       })),
-    reportFields: collectReportFields(profile.documents, geneticEvidenceReading),
+    reportFields: collectReportFields(
+      profile.documents,
+      geneticEvidenceReading,
+      passportDiagnosis.geneticEvidence.record,
+    ),
   };
 };
 

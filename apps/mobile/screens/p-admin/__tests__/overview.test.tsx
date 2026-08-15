@@ -414,6 +414,50 @@ describe('§B4 导出 is reachable from here', () => {
   });
 });
 
+describe('总体状态 does not answer for the components', () => {
+  it('does not say 组件都还好 over a draining instance whose database is down', async () => {
+    // A deploy and a real failure can be true at the same moment — the
+    // server has its own test for exactly that state
+    // (apps/api/src/routes/health.test.ts, 「reports draining without
+    // hiding a real component failure」). The draining branch was
+    // written first and answered for the components as well, so this
+    // page was the one surface that folded the failure away on the
+    // morning it mattered.
+    const actual = readAll();
+    mockHealth.mockResolvedValue(
+      actual.readAdminHealth({
+        status: 'error',
+        ready: false,
+        draining: true,
+        components: { database: { status: 'error', detail: 'ECONNREFUSED' } },
+      }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).not.toContain('组件都还好');
+    // The component says what happened to it, one line below.
+    expect(screen).toContain('ECONNREFUSED');
+    // …and draining is still reported, because it is still true.
+    expect(screen).toContain('正在退出（draining）');
+  });
+
+  it('still says an ordinary deploy is a deploy', async () => {
+    const actual = readAll();
+    mockHealth.mockResolvedValue(
+      actual.readAdminHealth({
+        status: 'degraded',
+        ready: false,
+        draining: true,
+        components: { database: { status: 'ok' } },
+      }),
+    );
+    const screen = textContent((await render()).root);
+    expect(screen).toContain('正在退出（draining）');
+    expect(screen).toContain('不该再接新流量');
+    // 未就绪 is what draining MEANS here, and the page says it once.
+    expect(screen).not.toContain('负载均衡应该把它摘掉');
+  });
+});
+
 describe('the audit banner is true on a page whose rows name no patient', () => {
   it('draws the notice written for this screen, and it promises no patient here', async () => {
     // Everything this screen requests is mounted without a
