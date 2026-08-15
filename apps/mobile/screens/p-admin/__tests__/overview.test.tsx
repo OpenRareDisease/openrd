@@ -68,6 +68,7 @@ jest.mock('../../../lib/admin-api', () => {
 });
 
 import { AdminResponseError } from '../../../lib/admin-api';
+import { ADMIN_AUDIT_NOTICE } from '../common';
 import AdminOverviewScreen from '../index';
 
 const textContent = (node: ReactTestInstance | string | number | null): string => {
@@ -350,5 +351,22 @@ describe('§B4 导出 is reachable from here', () => {
       await flush();
     });
     expect(mockPush).toHaveBeenCalledWith('/p-admin_patients');
+  });
+});
+
+describe('the audit banner is true on a page whose rows name no patient', () => {
+  it('draws the one notice, and it promises no patient here', async () => {
+    // Everything this screen requests is mounted without a
+    // `targetParam` (admin.routes.ts), so every row it writes has
+    // `targetUserId: null` — asserted against the real router in
+    // apps/api/src/modules/admin/admin.routes.test.ts. The banner is a
+    // single constant that `AdminScreen` draws on every back-office
+    // screen, so it has to hold HERE as well as over a patient record;
+    // it used to say 「看了哪位患者的哪个接口」, which no row on this
+    // page could support.
+    readAll();
+    const screen = textContent((await render()).root);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).not.toContain('看了哪位患者');
   });
 });

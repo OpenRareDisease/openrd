@@ -24,6 +24,7 @@ const silentLogger = {
 const geneticDocument = {
   id: 'doc-1',
   document_type: 'genetic_report',
+  status: 'parsed',
   uploaded_at: new Date('2026-03-02T00:00:00Z'),
   ocr_payload: {
     fields: {
@@ -87,7 +88,7 @@ describe('getBaselineByUserId', () => {
     }
   });
 
-  it('still autofills the baseline from the latest genetic report', async () => {
+  it('still autofills the baseline off the report the picker names', async () => {
     const { pool } = makePool([profileRow]);
     const baseline = await serviceFor(pool).getBaselineByUserId('user-1');
 
@@ -122,6 +123,20 @@ describe('getBaselineByUserId', () => {
     expect(documentSql).toContain("'fields'");
     expect(documentSql).toContain("'extractedText'");
     expect(documentSql).not.toContain('aiExtraction');
+  });
+
+  it('selects the columns the picker needs, id and status included', async () => {
+    // `pickGeneticEvidenceDocument` will not take a document whose
+    // parse has not landed over one that has, and it breaks ties on
+    // `id`. A projection that dropped either would have this screen
+    // filling from a report the passport does not read — silently, and
+    // only for a patient with more than one upload.
+    const { pool, sqls } = makePool([profileRow]);
+    await serviceFor(pool).getBaselineByUserId('user-1');
+
+    const documentSql = sqls.find((sql) => sql.includes('patient_documents')) ?? '';
+    expect(documentSql).toContain('status');
+    expect(documentSql).toMatch(/SELECT id,/);
   });
 });
 

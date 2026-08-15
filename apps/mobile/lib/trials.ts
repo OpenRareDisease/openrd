@@ -119,14 +119,19 @@ export const CHINA_REGISTRY_NAME = '药物临床试验登记与信息公示平�
 export const CHINA_REGISTRY_URL = 'http://www.chinadrugtrials.org.cn/';
 
 /**
- * Shown when the list on screen contains nothing from the mainland
- * registry — which is its state whenever that scraper has never
- * succeeded. It is a statement about the list the reader is looking
- * at, so it must not be printed when the list does in fact carry
- * mainland records (see `describeChinaCoverage`).
+ * Shown when nothing from the mainland registry reached the reader —
+ * which is its state whenever that scraper has never succeeded. It must
+ * not be printed when mainland records did reach them (see
+ * `describeChinaCoverage`).
+ *
+ * 本页, not 本列表. The screen prints this same sentence while the
+ * request is in flight, after the request failed, over an empty
+ * snapshot and over the undated refusal — states with no list under it
+ * at all. What this page draws from is true in every one of them;
+ *「本列表来自…」was a claim that a list existed.
  */
 export const COVERAGE_NOTE_CTGOV_ONLY =
-  `本列表来自 ClinicalTrials.gov，不含仅在国内登记的试验。` +
+  `本页只收录 ClinicalTrials.gov 的记录，不含仅在国内登记的试验。` +
   `国内登记的试验请查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`;
 
 export const TRIALS_DISCLAIMER = '是否参加试验，请与你的主诊医生商量。';
@@ -418,6 +423,35 @@ export const resolveFetchedOn = (snapshot: TrialsSnapshot): string | null => {
   return formatInstantAsDay(oldest.value);
 };
 
+/**
+ * The day the studies on screen are dated — or null when no studies are
+ * on screen at all.
+ *
+ * THE ONE ANSWER to whether this reader is looking at a list, and every
+ * sentence that points at one has to ask it. A snapshot can arrive and
+ * still put nothing in front of the reader, and both ways it does that
+ * used to be described as though the list were there:
+ *
+ *  - nothing came back at all, so `describeEmptyList` speaks instead;
+ *  - records came back with no readable copy time, so the screen
+ *    refuses to draw them undated (see the file header).
+ *
+ * The notices above the list stay rendered through both, which is why a
+ * clause like 「下面这份名单…」 or 「重要的试验请点开原始记录核对」 is a
+ * false sentence in either one unless it is gated on this.
+ *
+ * `resolveFetchedOn` alone is not that gate: it reads the source blocks
+ * as well as the records, so a snapshot whose records all failed to
+ * parse still carries a date. Dated and empty is a real combination,
+ * and the date belongs to a list that is not there.
+ *
+ * It returns the date rather than a boolean so the screen dates its
+ * header off the same call that decides the list is drawable, instead
+ * of arithmetic of its own that could drift from what the copy claims.
+ */
+export const shownListFetchedOn = (snapshot: TrialsSnapshot): string | null =>
+  snapshot.trials.length > 0 ? resolveFetchedOn(snapshot) : null;
+
 /*
  * THERE IS NO PER-ROW STALENESS NOTICE, and the reason is that the data
  * cannot carry one. This page used to print 「这一条是 X 抄的，之后几次
@@ -503,6 +537,16 @@ const lastSuccessClause = (status: TrialSourceStatus | null): string => {
  * makes `ok = true` with a null `finished_at` unwritable, which is why
  *「还没有返回结果」can cover a run that died and a run still going
  * without claiming which.
+ *
+ * AND WHETHER A LIST IS DRAWN AT ALL, which is why nothing here says
+ *「其中」or「国内这几条」any more. This notice keeps its place above
+ * the empty state and above the undated refusal, so a clause that
+ * points at rows on screen is a false sentence wherever the screen drew
+ * none. What is left points at our copy of the mainland half, which
+ * exists in every state that renders this.
+ *「下面这份名单目前只有 ClinicalTrials.gov 的记录」is the one clause
+ * that genuinely describes the list, so it survives only when
+ * `shownListFetchedOn` says there is a list to describe.
  */
 export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice => {
   const status = sourceStatusOf(snapshot, 'chinadrugtrials');
@@ -513,9 +557,9 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
   if (records.length > 0) {
     const fetchedOn = formatInstantAsDay(status?.fetchedAt ?? records[0]?.fetchedAt ?? null);
     const provenance =
-      `其中国内登记的试验来自${CHINA_REGISTRY_NAME}` +
+      `国内这部分来自${CHINA_REGISTRY_NAME}` +
       `${fetchedOn ? `（抓取于 ${fetchedOn}）` : ''}。` +
-      `该平台没有公开接口，这部分只能按页面抓取，可能不完整，` +
+      `该平台没有公开接口，只能按页面抓取，可能不完整，` +
       `请以 chinadrugtrials.org.cn 上的原始记录为准。`;
     if (!runFailed) return { tone: 'plain', text: provenance };
     const detail = lastRun?.finishedAt
@@ -523,7 +567,7 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
       : '国内这部分最近一次抓取还没有返回结果';
     return {
       tone: 'warn',
-      text: `${provenance}${detail}（${lastSuccessClause(status)}），国内这几条此后有没有变过，这里看不出来。`,
+      text: `${provenance}${detail}（${lastSuccessClause(status)}），此后有没有变过，这里看不出来。`,
     };
   }
 
@@ -531,11 +575,13 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
     const detail = lastRun.finishedAt
       ? '国内这部分这次没有取到'
       : '国内这部分最近一次抓取还没有返回结果';
+    const scope = shownListFetchedOn(snapshot)
+      ? '所以下面这份名单目前只有 ClinicalTrials.gov 的记录。'
+      : '';
     return {
       tone: 'warn',
       text:
-        `${detail}（${lastSuccessClause(status)}），` +
-        `所以下面这份名单目前只有 ClinicalTrials.gov 的记录。` +
+        `${detail}（${lastSuccessClause(status)}），${scope}` +
         `国内登记的试验请直接查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`,
     };
   }
@@ -553,18 +599,32 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
  * shown are still real records, they are just older than the date the
  * cron was supposed to make them. So the sentence names the age of the
  * list rather than telling the reader to distrust it.
+ *
+ * WHICH IS ALSO WHY IT IS WITHHELD WHEN NOTHING IS SHOWN. Every clause
+ * left in it has the records on screen for its subject —
+ *「下面这份名单是 X 抓到的」and「重要的试验请点开原始记录核对」both
+ * point at rows, and the second asks the reader to go open one. Over an
+ * empty list that is an instruction with nothing to carry it out on,
+ * and over the undated refusal it contradicts the card underneath,
+ * which is the page declining to show those very records. Neither state
+ * is left silent by returning null: a failed run over an empty list is
+ * exactly what `describeEmptyList` says, and the undated card says why
+ * a list that did come back is not being drawn. A banner narrower than
+ * its premise is a second, quieter phrasing of what those two already
+ * say, and it would be the one that is wrong.
  */
 export const describeCtgovStaleness = (snapshot: TrialsSnapshot): CoverageNotice | null => {
   const status = sourceStatusOf(snapshot, 'ctgov');
   const lastRun = status?.lastRun ?? null;
   if (!lastRun || lastRun.ok) return null;
-  const fetchedOn = resolveFetchedOn(snapshot);
+  const fetchedOn = shownListFetchedOn(snapshot);
+  if (!fetchedOn) return null;
   const detail = lastRun.finishedAt ? '最近一次更新没有成功' : '最近一次更新还没有返回结果';
   return {
     tone: 'warn',
     text:
       `${detail}（${lastSuccessClause(status)}）。` +
-      `${fetchedOn ? `下面这份名单是 ${fetchedOn} 抓到的，` : ''}` +
+      `下面这份名单是 ${fetchedOn} 抓到的，` +
       `注册库上此后的变化不会反映在这里，重要的试验请点开原始记录核对。`,
   };
 };

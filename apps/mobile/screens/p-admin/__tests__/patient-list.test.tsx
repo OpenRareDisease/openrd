@@ -61,6 +61,7 @@ jest.mock('../../../lib/admin-api', () => {
   return { ...actual, listAdminPatients: (...args: unknown[]) => mockList(...args) };
 });
 
+import { ADMIN_AUDIT_NOTICE } from '../common';
 import AdminPatientListScreen from '../patient-list';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -279,5 +280,21 @@ describe('a failure says which failure it was', () => {
     const screen = textContent((await render()).root);
     expect(screen).toContain('这个账号没有后台权限');
     expect(screen).not.toContain('一个账号也没有');
+  });
+});
+
+describe('the audit banner is true on a page whose rows name no patient', () => {
+  it('draws the one notice over a list of many patients', async () => {
+    // A page of patients is not one patient: `listPatients` is mounted
+    // without a `targetParam`, so the row for this screen says which
+    // administrator asked for the list and not whose rows came back.
+    // The subtitle below already tells an operator where the audited
+    // patient read happens — opening one of these rows — and the
+    // banner must not contradict it by claiming this page recorded one.
+    mockList.mockResolvedValue({ page: 1, pageSize: 20, total: 1, items: [row()] });
+    const screen = textContent((await render()).root);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).not.toContain('看了哪位患者');
+    expect(screen).toContain('点开一位患者才会看到完整信息，那一次会记进审计。');
   });
 });

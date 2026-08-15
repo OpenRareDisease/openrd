@@ -21,7 +21,7 @@ import {
   groupTrials,
   hasChinaSite,
   readRegistryDay,
-  resolveFetchedOn,
+  shownListFetchedOn,
   trialPhaseLabel,
   trialStatusLabel,
   type CoverageNotice,
@@ -195,7 +195,14 @@ const TrialsScreen = () => {
     void load();
   }, [load]);
 
-  const fetchedOn = useMemo(() => (snapshot ? resolveFetchedOn(snapshot) : null), [snapshot]);
+  /**
+   * Non-null exactly when this render draws a list — and then it is the
+   * day that list is dated. lib/trials.ts owns the rule (see
+   * `shownListFetchedOn`) because the sentences above the list are
+   * written against it: a date here and no date there would put
+   *「下面这份名单…」over an empty screen.
+   */
+  const fetchedOn = useMemo(() => (snapshot ? shownListFetchedOn(snapshot) : null), [snapshot]);
   const groups = useMemo(() => (snapshot ? groupTrials(snapshot.trials) : []), [snapshot]);
   /**
    * The scope sentence and the disclaimer stand whether or not the
@@ -222,9 +229,10 @@ const TrialsScreen = () => {
    *
    *  - `isEmpty` — the request worked and returned no trials at all.
    *    `describeEmptyList` says which kind of empty, and it is checked
-   *    FIRST because an empty snapshot legitimately carries no
-   *    `fetched_at` (nothing was fetched), and answering that with the
-   *    undated-list refusal below would blame the wrong thing.
+   *    FIRST because an empty snapshot can still carry a `fetched_at`
+   *    from a source block whose records all failed to parse, and
+   *    answering that with the undated-list refusal below would blame
+   *    the wrong thing.
    *  - `isUndated` — there are trials but not one readable copy time.
    *    That is a bug on our side, and drawing 92 undated studies
    *    through it is the one thing this feature is not allowed to do.
@@ -232,7 +240,7 @@ const TrialsScreen = () => {
    */
   const isEmpty = Boolean(snapshot) && groups.length === 0;
   const isUndated = Boolean(snapshot) && groups.length > 0 && !fetchedOn;
-  const canShowList = Boolean(snapshot) && groups.length > 0 && Boolean(fetchedOn);
+  const canShowList = Boolean(fetchedOn);
 
   // `snapshot` and `errorMessage` are never both set: `load` writes one
   // and clears the other on every path. So the three branches below do
@@ -249,6 +257,11 @@ const TrialsScreen = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Rides the list, because every sentence in it is about the
+              list:「这一页是那一天抄下来的副本」and「要点开原始记录才看
+              得到」both need records under them. A snapshot whose rows
+              all failed to parse still carries a `fetched_at`, so this
+              block used to appear, dated, over the empty state. */}
           {fetchedOn ? (
             <View style={styles.freshness}>
               <Text style={styles.freshnessValue}>{`拉取于 ${fetchedOn}`}</Text>

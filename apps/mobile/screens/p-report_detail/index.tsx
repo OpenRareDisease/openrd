@@ -39,15 +39,75 @@ import ScreenHeader from '../common/ScreenHeader';
 import SystemMonitoringPanels from '../common/SystemMonitoringPanels';
 import { useAppDialog } from '../common/feedback/AppDialog';
 
-/** Whitelisted OCR fields a patient can hand-correct — mirrors the
- *  backend's EDITABLE_OCR_FIELDS schema exactly. */
-const CORRECTABLE_OCR_FIELDS: Array<{ key: string; label: string; placeholder: string }> = [
-  { key: 'reportName', label: '报告名称', placeholder: '例如：基因检测报告' },
-  { key: 'reportTime', label: '报告时间', placeholder: '例如：2026-03-12' },
-  { key: 'diagnosisType', label: 'FSHD 分型', placeholder: '例如：FSHD1' },
-  { key: 'd4z4Repeats', label: 'D4Z4 重复数', placeholder: '例如：4/22' },
-  { key: 'haplotype', label: '单倍型', placeholder: '例如：4qA' },
-  { key: 'methylationValue', label: '甲基化', placeholder: '例如：12%' },
+/** Every spelling a parse has ever written a given value under, in
+ *  preference order — the same lists the passport, the profile
+ *  autofill and report-insights carry, because they are all reading
+ *  one payload written by one pipeline.
+ *
+ *  There is one list per value and both readers on this screen use it.
+ *  The field table and the correction sheet used to keep their own,
+ *  and they had drifted: the sheet's 单倍型 knew the spelling the
+ *  passport reads and the table's did not, so a report carrying it
+ *  opened a sheet showing a 单倍型 the screen behind the sheet had no
+ *  row for. Two readers of the same value cannot disagree about
+ *  whether it exists. */
+const OCR_FIELD_KEYS = {
+  reportName: ['reportName', 'report_name'],
+  reportTime: ['reportTime', 'report_time'],
+  diagnosisType: ['diagnosisType', 'geneType', 'geneticType', 'diagnosis_type', 'genetic_type'],
+  d4z4Repeats: ['d4z4Repeats', 'd4z4RepeatPathogenic', 'd4z4_repeat_pathogenic', 'd4z4_repeats'],
+  haplotype: ['haplotype', 'haplotype4q', 'haplotype_4q'],
+  methylationValue: ['methylationValue', 'methylation_value'],
+} as const;
+
+/** Whitelisted OCR fields a patient can hand-correct — `key` mirrors
+ *  the backend's EDITABLE_OCR_FIELDS schema exactly, and is the name
+ *  the PATCH writes back under; `read` is the shared alias list above.
+ *  Every field is rendered whether or not the parse produced it, so a
+ *  value the parse never found gets a box to type into, not only a box
+ *  to correct in. */
+const CORRECTABLE_OCR_FIELDS: Array<{
+  key: string;
+  label: string;
+  placeholder: string;
+  read: readonly string[];
+}> = [
+  {
+    key: 'reportName',
+    label: '报告名称',
+    placeholder: '例如：基因检测报告',
+    read: OCR_FIELD_KEYS.reportName,
+  },
+  {
+    key: 'reportTime',
+    label: '报告时间',
+    placeholder: '例如：2026-03-12',
+    read: OCR_FIELD_KEYS.reportTime,
+  },
+  {
+    key: 'diagnosisType',
+    label: 'FSHD 分型',
+    placeholder: '例如：FSHD1',
+    read: OCR_FIELD_KEYS.diagnosisType,
+  },
+  {
+    key: 'd4z4Repeats',
+    label: 'D4Z4 重复数',
+    placeholder: '例如：4/22',
+    read: OCR_FIELD_KEYS.d4z4Repeats,
+  },
+  {
+    key: 'haplotype',
+    label: '单倍型',
+    placeholder: '例如：4qA',
+    read: OCR_FIELD_KEYS.haplotype,
+  },
+  {
+    key: 'methylationValue',
+    label: '甲基化',
+    placeholder: '例如：12%',
+    read: OCR_FIELD_KEYS.methylationValue,
+  },
 ];
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
@@ -67,7 +127,165 @@ const isProcessing = (payload: OcrPayload | null) => {
   return status === 'processing' || status === 'pending';
 };
 
-const pickField = (fields: Record<string, string> | undefined, keys: string[]) => {
+/** The pipeline's own count of what it extracted, read the way the
+ *  server's reparse gate reads it: absent or unparseable counts as
+ *  zero. That equivalence is the point — it is what makes a 「识别完成」
+ *  that extracted nothing a report the server will re-run. */
+const countExtractedFields = (payload: OcrPayload | null): number => {
+  const parsed = Number.parseInt(String(payload?.fields?.fieldCount ?? ''), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+/** Keys written into `fields` that are not values read off the report:
+ *  the parse's own status, its counters, its diagnostics, the type
+ *  hint the uploader handed it, its classification of the document,
+ *  the placeholder line the stand-in provider writes when no real OCR
+ *  is configured, and the stamps this app adds afterwards. Everything
+ *  else in `fields` came out of the report.
+ *
+ *  The classification entries sit here rather than among the values
+ *  because a re-run re-derives them from the same file — nothing is
+ *  lost by parsing again — while the reparse gate exists precisely for
+ *  reports the classifier labelled and the extractor came away from
+ *  empty. Treating a type label as extracted evidence would withhold
+ *  the re-run from exactly those reports.
+ *
+ *  THE AI SUMMARY IS THREE KEYS, NOT ONE. `generateDocumentSummary`
+ *  writes the sentence, the producer that wrote it (the model, or the
+ *  rule-based fallback it uses when the model call fails) and the hash
+ *  of the prompt the sentence is cached against, in one write into
+ *  this same record. Listing only the sentence meant an empty parse
+ *  started reading as a report full of data as soon as a summary was
+ *  generated for it — which happens by itself, unattended, the moment
+ *  the parse settles under granted AI consent. It is the whole block
+ *  or none of it: a summary describes the report, it is not a reading
+ *  taken off it, and it survives a re-run because it is regenerated
+ *  from whatever the re-run finds.
+ *
+ *  Only the spelling each writer actually emits is listed. The OCR
+ *  bridge copies its Python fields in under both cases, which is why
+ *  those appear twice; the summary is written by one server-side path
+ *  in camelCase, and `ai_summary` below is the one exception — a
+ *  spelling no current writer emits, kept because payloads on disk
+ *  predate this pipeline. Nothing new is added on that pattern. */
+const PIPELINE_BOOKKEEPING_FIELDS = new Set([
+  'documentType',
+  'document_type',
+  'analysisStatus',
+  'analysis_status',
+  'ocrStatus',
+  'ocr_status',
+  'ocrIssue',
+  'ocr_issue',
+  'extractedTextLength',
+  'extracted_text_length',
+  'reviewRecommendedCount',
+  'review_recommended_count',
+  'fieldCount',
+  'field_count',
+  'classifiedType',
+  'classified_type',
+  'classifiedTypeConfidence',
+  'classified_type_confidence',
+  'reportTypeLabel',
+  'report_type_label',
+  'manuallyEditedAt',
+  'manually_edited_at',
+  'aiSummary',
+  'ai_summary',
+  'aiSummarySource',
+  'aiSummaryInputHash',
+  'hint',
+]);
+
+/** Does this payload still hold something a parse took off the report?
+ *
+ *  Read off the payload, not off the rows this screen drew. The
+ *  passport reads the same `fields` record with its own key list, and
+ *  that list is not this screen's: a 诊断日期 or a 检测方法 has no row
+ *  in the table here and is printed on the passport all the same. A
+ *  guard derived from the table therefore called a report empty while
+ *  the passport was printing it, and put a button beside that sentence
+ *  which blanks `ocr_payload` before re-running. Anything the passport
+ *  can print lives under a key that is not bookkeeping, so this
+ *  question covers it without having to enumerate the passport's
+ *  list. */
+const carriesExtractedValues = (payload: OcrPayload | null): boolean => {
+  const fields = payload?.fields;
+  if (!fields) return false;
+  return Object.entries(fields).some(
+    ([key, value]) => !PIPELINE_BOOKKEEPING_FIELDS.has(key) && String(value ?? '').trim() !== '',
+  );
+};
+
+/** What this row offers, or nothing at all.
+ *
+ *  Eligibility mirrors the reparse endpoint rather than approximating
+ *  it, because the cost of the two drifting apart is a button that
+ *  answers a tap with a 409: a failed parse, a row the pipeline has
+ *  not settled, a parse whose job evidently died, and a 「识别完成」
+ *  holding no extracted fields.
+ *
+ *  `pollTimedOut` is this screen's stand-in for the server's stuck-job
+ *  test, and it is the one input that is a guess: the server judges
+ *  staleness from the upload time, we judge it from ten minutes of
+ *  watching. They usually agree and can disagree at the boundary,
+ *  which is why the refusal path re-reads the row instead of
+ *  insisting.
+ *
+ *  A row the server would re-run is still offered nothing whenever
+ *  `carriesExtractedValues` says the payload holds values some reader
+ *  is printing, because the action here starts by blanking that
+ *  payload. Withholding the offer costs a recovery path the patient
+ *  did not ask for; making it costs them their own numbers.
+ *
+ *  An `uploaded` row splits on whether a parse landed a payload at
+ *  all. It is the only signal that separates the two, and they are
+ *  different situations: nothing has run yet (OCR switched off, or a
+ *  row older than the async pipeline), versus a parse that ran and
+ *  came back with a result the pipeline could not label — which is
+ *  what every provider that files no analysisStatus produces. The
+ *  second one had been reading 「还没有开始识别」 under a button
+ *  labelled 开始识别, so the patient started a parse that had already
+ *  happened and landed back on the same sentence, with nothing on the
+ *  page admitting the round trip. */
+type ReparseOffer = { message: string; retryLabel: string };
+
+const resolveReparseOffer = (
+  rowStatus: string | null | undefined,
+  payload: OcrPayload | null,
+  pollTimedOut: boolean,
+): ReparseOffer | null => {
+  if (pollTimedOut) {
+    return { message: '识别时间超出预期，任务可能已中断。', retryLabel: '重新识别' };
+  }
+  if (rowStatus === 'parse_failed') {
+    return { message: '这份报告识别失败了，可以重新识别一次。', retryLabel: '重新识别' };
+  }
+  if (rowStatus === 'uploaded') {
+    if (!payload) {
+      return { message: '这份报告还没有开始识别。', retryLabel: '开始识别' };
+    }
+    if (carriesExtractedValues(payload)) return null;
+    return {
+      message: '这份报告识别过一次，没有取到报告里的具体数据。再识别一次可能仍是这个结果。',
+      retryLabel: '重新识别',
+    };
+  }
+  if (
+    rowStatus === 'parsed' &&
+    countExtractedFields(payload) === 0 &&
+    !carriesExtractedValues(payload)
+  ) {
+    return {
+      message: '这次识别没有取到报告里的具体数据，可以再识别一次。',
+      retryLabel: '重新识别',
+    };
+  }
+  return null;
+};
+
+const pickField = (fields: Record<string, string> | undefined, keys: readonly string[]) => {
   if (!fields) return undefined;
   for (const key of keys) {
     const raw = fields[key];
@@ -264,7 +482,25 @@ export default function ReportDetailScreen() {
       } catch (error) {
         const message = error instanceof ApiError ? error.message : '无法获取报告详情';
         setErrorMessage(message);
+        // EVERYTHING THE LAST READ PRODUCED GOES WITH IT.
+        //
+        // `payload` was already dropped here; `docStatus` was not, and
+        // that is what stranded the screen. This effect re-runs after
+        // a reparse, and it clears `pollTimedOut` on the way in — so a
+        // failed read left the row's LAST status on the page with
+        // nothing watching it and no way back: the chip still read
+        // 识别中, the spinner still turned, and the line under it still
+        // promised 「识别完成后这里会自动更新」 while no poll was armed
+        // and the timeout that had offered 重新识别 a moment earlier
+        // had been reset. Every one of those is drawn from a status
+        // this screen no longer has any evidence for. A read that
+        // failed tells us nothing about the row, and the honest render
+        // of nothing is nothing — the states below all fall through to
+        // the fetch-failure branch, which is the only thing that
+        // actually happened.
         setPayload(null);
+        setDocStatus(null);
+        setSummary('');
       } finally {
         setIsLoading(false);
       }
@@ -296,6 +532,14 @@ export default function ReportDetailScreen() {
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '重新识别失败，请稍后重试';
       setReparseNotice(message);
+      // A refusal is nearly always the server saying the job is in
+      // fact still running — its staleness test reads the upload
+      // time, ours is ten minutes of watching, and at the boundary
+      // they disagree. The screen had stopped polling by then, so the
+      // patient was left holding 「请稍候」 on a page that would never
+      // change again. Re-read the row and resume tracking it: the
+      // wait is only honest if something is still watching.
+      setPollNonce((n) => n + 1);
     } finally {
       setIsReparsing(false);
     }
@@ -303,10 +547,18 @@ export default function ReportDetailScreen() {
 
   const fields = payload?.fields ?? undefined;
   // Prefer the document-row status: under the async pipeline the
-  // payload (and its analysisStatus) is null for the entire parse,
-  // which used to surface as a bare "unknown" in the hero chip.
-  const status = docStatus ?? getAnalysisStatus(payload) ?? 'unknown';
-  const statusTone = statusChipTone(status);
+  // payload (and its analysisStatus) is null for the entire parse.
+  //
+  // Null when neither source has one, and NOT the string 'unknown'.
+  // That literal was the chip's own text — `formatStatusLabel` has no
+  // case for it and falls through to printing what it was handed — so
+  // the two states where the screen holds no status painted an English
+  // enum into a Chinese chip: the first frame before the fetch
+  // resolves, and every frame after a fetch that failed. The chip is a
+  // claim about the row, so a screen that has not read the row draws
+  // no chip at all.
+  const status = docStatus ?? getAnalysisStatus(payload) ?? null;
+  const statusTone = statusChipTone(status ?? '');
   const reportKind = inferReportKind(payload);
   const mriInference = useMemo(() => inferMriBodyMap(payload), [payload]);
   const activeRegions = mriInference.regions;
@@ -320,8 +572,17 @@ export default function ReportDetailScreen() {
       'report_type',
     ]);
     const reportTime = pickField(fields, ['reportTime', 'report_time']);
+    // The row this screen is showing, handed over whole: the id and
+    // the status ride along because `buildReportInsights` asks which
+    // of its documents is the genetic evidence and will not guess at
+    // either. Here the list is one document long, so the answer is
+    // never in doubt — but only 检查结果 is read out of the result
+    // below, and the values that question governs are not on this
+    // path at all.
     const insights = buildReportInsights([
       {
+        id: documentId ?? '',
+        status: docStatus,
         documentType: classifiedType ?? 'other',
         uploadedAt: reportTime ?? new Date().toISOString(),
         ocrPayload: payload,
@@ -331,12 +592,12 @@ export default function ReportDetailScreen() {
     return insights.systemPanels.filter(
       (panel) => panel.metrics.length > 0 || panel.coverage.length > 0,
     );
-  }, [fields, payload]);
+  }, [documentId, docStatus, fields, payload]);
 
   const openCorrection = () => {
     const current: Record<string, string> = {};
     for (const field of CORRECTABLE_OCR_FIELDS) {
-      current[field.key] = fields ? (pickField(fields, [field.key]) ?? '') : '';
+      current[field.key] = fields ? (pickField(fields, field.read) ?? '') : '';
     }
     setCorrectDraft(current);
     setCorrectError(null);
@@ -349,10 +610,35 @@ export default function ReportDetailScreen() {
     // rejects an empty patch, and untouched keys shouldn't get a
     // manual-edit stamp.
     const changed: Record<string, string> = {};
+    // Emptying a box that held a value is a real edit, and it is one
+    // this sheet cannot carry out. The PATCH merges what it is sent
+    // into the stored fields, so a blank writes a blank under the
+    // canonical key — while every reader, this screen included, falls
+    // through an empty value to the next spelling of the same key. A
+    // value the parse wrote under one of those other spellings would
+    // be back on screen the moment the sheet closed.
+    //
+    // So clearing is refused, and refused the same way whichever
+    // boxes were touched: on its own it used to be reported as 「没有
+    // 需要保存的修改」, which told the patient they had changed
+    // nothing when they had; alongside another edit it went the other
+    // way, saving the other edit and dropping the blank without a
+    // word, which told them the clear had worked. The save is held
+    // back entirely so what the patient typed is still in front of
+    // them, and the fields are named so they know which box to put
+    // back.
+    const blanked: string[] = [];
     for (const field of CORRECTABLE_OCR_FIELDS) {
       const next = (correctDraft[field.key] ?? '').trim();
-      const prev = fields ? (pickField(fields, [field.key]) ?? '') : '';
+      const prev = fields ? (pickField(fields, field.read) ?? '') : '';
       if (next && next !== prev) changed[field.key] = next;
+      if (!next && prev) blanked.push(field.label);
+    }
+    if (blanked.length > 0) {
+      setCorrectError(
+        `${blanked.join('、')}不能清空。改成正确的值就能保存；如果这份报告本身不对，可以删掉它重新上传。`,
+      );
+      return;
     }
     if (Object.keys(changed).length === 0) {
       setCorrectError('没有需要保存的修改。');
@@ -368,13 +654,20 @@ export default function ReportDetailScreen() {
       }
       setCorrectVisible(false);
     } catch (error) {
-      setCorrectError(
-        error instanceof ApiError && error.status === 409
-          ? '当前状态不支持修正（识别中或失败的报告请先完成识别）。'
-          : error instanceof Error
-            ? error.message
-            : '保存失败，请稍后重试。',
-      );
+      if (error instanceof ApiError && error.status === 409) {
+        // The button that opened this sheet is drawn only for rows the
+        // server accepts corrections on, so a 409 means the row moved
+        // underneath us — a reparse started while the sheet sat open.
+        // 「请先完成识别」 told the patient to finish something they
+        // have no control over, and was simply wrong if that reparse
+        // had already failed. Re-read the row instead: whatever it
+        // says now, the screen behind this sheet redraws with the
+        // control that matches it.
+        setCorrectError('这份报告刚刚重新开始识别，现在存不进去。识别结束后再回到这里修正。');
+        setPollNonce((n) => n + 1);
+      } else {
+        setCorrectError(error instanceof Error ? error.message : '保存失败，请稍后重试。');
+      }
     } finally {
       setCorrectBusy(false);
     }
@@ -384,9 +677,21 @@ export default function ReportDetailScreen() {
   // comment at the 提示 row.
   const parseInProgress = isDocumentProcessing(docStatus, payload) && !pollTimedOut;
   const parseFailed = status === 'parse_failed';
+  // A row the pipeline has not touched. Reachable whenever OCR is
+  // switched off, and for rows written before the async pipeline. It
+  // had no branch anywhere in this chain, so it read as 「暂无识别出的
+  // 关键指标」 — a conclusion about the report's contents drawn from a
+  // parse that never ran.
+  //
+  // The missing payload is the whole of the test: an `uploaded` row
+  // that carries one has been parsed, and 「还没有识别过」 would be
+  // the opposite error — denying a parse that happened. Those rows
+  // fall through to the last branch, which claims nothing about
+  // whether anything ran.
+  const notYetParsed = docStatus === 'uploaded' && payload === null;
   // `isLoading` and `errorMessage` come first, and they are the whole
-  // point of this chain. The three parse-state branches below were
-  // correct but only reachable once the document had actually arrived;
+  // point of this chain. The parse-state branches below were correct
+  // but only reachable once the document had actually arrived;
   // before that — and after a failed fetch — `payload` is null, so every
   // branch fell through to 「暂无识别出的关键指标」. The screen was
   // telling the patient their report contained nothing recognisable
@@ -400,7 +705,9 @@ export default function ReportDetailScreen() {
         ? '正在识别，稍等一下'
         : parseFailed
           ? '这份没能识别出来'
-          : '暂无识别出的关键指标';
+          : notYetParsed
+            ? '还没有识别过'
+            : '暂无识别出的关键指标';
   const emptySectionText = isLoading
     ? '正在载入这份报告。'
     : errorMessage
@@ -409,12 +716,35 @@ export default function ReportDetailScreen() {
         ? '正在识别这份报告，完成后这里会显示检查结果。'
         : parseFailed
           ? '这份报告没能识别出来，可以重新识别或换一张更清晰的图。'
-          : '这份报告暂无可归入检查结果的识别指标。';
+          : notYetParsed
+            ? '这份报告还没有识别过，识别之后这里会显示检查结果。'
+            : '这份报告暂无可归入检查结果的识别指标。';
+  // The 识别出的关键信息 section used to answer the same question with
+  // its own sentence — 「暂无识别出的关键指标（或仍在识别中）。」 — and
+  // that parenthetical is the drift made visible. It hedged across
+  // states this screen can tell apart: a report still parsing had not
+  // reached any conclusion yet, one that had failed had reached a
+  // different one, and one never parsed had reached none at all. Same
+  // chain as above, worded for this section.
+  const emptyFieldsText = isLoading
+    ? '正在载入这份报告。'
+    : errorMessage
+      ? '这份报告暂时读取失败，请重试。'
+      : parseInProgress
+        ? '正在识别这份报告，完成后这里会显示识别出的信息。'
+        : parseFailed
+          ? '这份报告没能识别出来，所以这里没有可显示的信息。'
+          : notYetParsed
+            ? '这份报告还没有识别过，所以这里还没有信息。'
+            : '暂无识别出的关键指标。';
 
   const structuredSections = useMemo(() => {
     if (!fields) return [];
     const reportItems: Array<{ label: string; value?: string }> = [
-      { label: '解析状态', value: formatStatusLabel(status) },
+      // Same rule as the chip: the row is filtered out below when its
+      // value is empty, so no status means no row rather than a row
+      // naming a status nobody read.
+      { label: '解析状态', value: status ? formatStatusLabel(status) : undefined },
       {
         label: '识别类型',
         // `reportTypeLabel` is the pipeline's own Chinese name for the
@@ -430,8 +760,8 @@ export default function ReportDetailScreen() {
           pickField(fields, ['classifiedTypeConfidence', 'classified_type_confidence']),
         ),
       },
-      { label: '报告时间', value: pickField(fields, ['reportTime', 'report_time']) },
-      { label: '报告名称', value: pickField(fields, ['reportName', 'report_name']) },
+      { label: '报告时间', value: pickField(fields, OCR_FIELD_KEYS.reportTime) },
+      { label: '报告名称', value: pickField(fields, OCR_FIELD_KEYS.reportName) },
       { label: '医院', value: pickField(fields, ['facility']) },
       { label: '科室', value: pickField(fields, ['department']) },
       { label: '标本', value: pickField(fields, ['specimen']) },
@@ -442,17 +772,8 @@ export default function ReportDetailScreen() {
     ];
 
     const fshdItems: Array<{ label: string; value?: string }> = [
-      {
-        label: 'FSHD 分型',
-        value: pickField(fields, [
-          'diagnosisType',
-          'geneType',
-          'geneticType',
-          'diagnosis_type',
-          'genetic_type',
-        ]),
-      },
-      { label: '单倍型', value: pickField(fields, ['haplotype', 'haplotype4q']) },
+      { label: 'FSHD 分型', value: pickField(fields, OCR_FIELD_KEYS.diagnosisType) },
+      { label: '单倍型', value: pickField(fields, OCR_FIELD_KEYS.haplotype) },
       {
         label: 'EcoRI',
         value: pickField(fields, [
@@ -463,16 +784,8 @@ export default function ReportDetailScreen() {
           'ecoriFragment',
         ]),
       },
-      {
-        label: 'D4Z4 重复',
-        value: pickField(fields, [
-          'd4z4Repeats',
-          'd4z4RepeatPathogenic',
-          'd4z4_repeat_pathogenic',
-          'd4z4_repeats',
-        ]),
-      },
-      { label: '甲基化值', value: pickField(fields, ['methylationValue', 'methylation_value']) },
+      { label: 'D4Z4 重复', value: pickField(fields, OCR_FIELD_KEYS.d4z4Repeats) },
+      { label: '甲基化值', value: pickField(fields, OCR_FIELD_KEYS.methylationValue) },
       { label: 'MRI 印象', value: pickField(fields, ['reportImpression', 'report_impression']) },
       {
         label: '腹部超声提示',
@@ -488,6 +801,8 @@ export default function ReportDetailScreen() {
       { title: 'FSHD 关键结果', items: fshdItems.filter((item) => item.value) },
     ].filter((section) => section.items.length > 0);
   }, [fields, status]);
+
+  const reparseOffer = resolveReparseOffer(docStatus, payload, pollTimedOut);
 
   const highlightItems = useMemo(() => {
     const systemHighlights = relevantSystemPanels.flatMap((panel) =>
@@ -649,11 +964,13 @@ export default function ReportDetailScreen() {
           <View style={styles.heroTopRow}>
             {/* Kind is a real eyebrow — it isn't in the report name. */}
             <Text style={styles.kindEyebrow}>{formatKindLabel(reportKind)}</Text>
-            <View style={[styles.statusChip, statusTone.chip]}>
-              <Text style={[styles.statusChipText, statusTone.text]}>
-                {formatStatusLabel(status)}
-              </Text>
-            </View>
+            {status ? (
+              <View style={[styles.statusChip, statusTone.chip]}>
+                <Text style={[styles.statusChipText, statusTone.text]}>
+                  {formatStatusLabel(status)}
+                </Text>
+              </View>
+            ) : null}
           </View>
           {/* The report's own name, then the classifier's label, then
               a generic. What was here before was 「报告关键指标视图」 —
@@ -683,16 +1000,16 @@ export default function ReportDetailScreen() {
             </View>
           ) : null}
 
-          {docStatus === 'parse_failed' || pollTimedOut ? (
+          {/* Drawn for the rows the server will re-run, minus the ones
+              whose payload is still holding values — see
+              resolveReparseOffer, which decides the sentence and the
+              button together because they are one claim. */}
+          {reparseOffer ? (
             <View style={styles.noticeBlock}>
               <InlineNotice
-                message={
-                  pollTimedOut
-                    ? '识别时间超出预期，任务可能已中断。'
-                    : '这份报告识别失败了，可以重新识别一次。'
-                }
+                message={reparseOffer.message}
                 onRetry={() => void handleReparse()}
-                retryLabel="重新识别"
+                retryLabel={reparseOffer.retryLabel}
                 retryDisabled={isReparsing}
               />
             </View>
@@ -775,7 +1092,7 @@ export default function ReportDetailScreen() {
             />
           ) : null}
           {structuredSections.length === 0 ? (
-            <Text style={styles.smallText}>暂无识别出的关键指标（或仍在识别中）。</Text>
+            <Text style={styles.smallText}>{emptyFieldsText}</Text>
           ) : (
             // A label column and a value column, one hairline per row:
             // the field list is a table, so it is set as one.
@@ -932,9 +1249,26 @@ export default function ReportDetailScreen() {
           </View>
         )}
 
+        {/* A FAILED READ IS RECOVERABLE, AND NOW SAYS SO.
+            This was a line of grey text and nothing else, which was
+            survivable while the only way to reach it was opening the
+            screen on a bad connection — leaving and coming back re-ran
+            the fetch. It stopped being survivable once 重新识别's own
+            failure path started routing through here on purpose: the
+            offer that sent the patient here is drawn from the row's
+            status, the read that would have returned that status is
+            the thing that just failed, and the screen had no way left
+            to ask again. Re-arming the same effect is all the retry
+            does, which is why it is the load's nonce and not a second
+            fetch path. */}
         {errorMessage && (
           <View style={styles.inlineState}>
-            <Text style={styles.smallText}>{errorMessage}</Text>
+            <InlineNotice
+              message={errorMessage}
+              onRetry={() => setPollNonce((n) => n + 1)}
+              retryLabel="重新加载"
+              retryDisabled={isLoading}
+            />
           </View>
         )}
       </ScrollView>
@@ -960,8 +1294,22 @@ export default function ReportDetailScreen() {
           <Pressable style={styles.correctSheet} accessible={false} onPress={() => {}}>
             <View accessibilityViewIsModal>
               <Text style={styles.sectionTitle}>修正识别结果</Text>
+              {/* Was 「保存后档案自动补全会优先使用你修正的值」. There is
+                  no such precedence to promise: the autofill reads the
+                  one document the API picks as this profile's genetic
+                  evidence and fills only the profile fields still
+                  blank, and the manual-edit stamp this save writes has
+                  no reader anywhere. Whether the correction reaches the
+                  profile therefore depends on which document that is —
+                  which can change when a value is added here, since
+                  what a document carries is one of the things the pick
+                  weighs. This sheet knows what it writes and where; it
+                  does not know how the profile ranks documents, so it
+                  says neither. What is left is the list of fields it
+                  can actually carry — the table above shows others,
+                  EcoRI among them, which this sheet cannot touch. */}
               <Text style={styles.smallText}>
-                只需要填写有误或缺失的字段；保存后档案自动补全会优先使用你修正的值。
+                填写有误或缺失的字段，保存后会写回这份报告的识别结果。可以修正的是报告名称、报告时间和下面四项基因结果。
               </Text>
               <ScrollView style={styles.correctList} keyboardShouldPersistTaps="handled">
                 {CORRECTABLE_OCR_FIELDS.map((field) => (

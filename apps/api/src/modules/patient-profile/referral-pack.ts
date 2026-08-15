@@ -1,7 +1,9 @@
+import { TRANSCRIBED_EVIDENCE_LABEL_ZH } from './genetic-evidence.js';
 import {
   buildClinicalPassportSummary,
   withValueOrigin,
   type ClinicalPassportSummaryDTO,
+  type GeneticRecordSource,
   type PassportDiagnosisConfirmation,
   type PassportFieldOriginDTO,
 } from './profile.passport.js';
@@ -126,7 +128,14 @@ export interface ReferralDiagnosisDTO {
    *  different answers on the same sheet. */
   valueOrigins: ClinicalPassportSummaryDTO['diagnosis']['valueOrigins'];
   geneEvidence: string;
+  /** When the document this pack's genetic values were read off was
+   *  uploaded — not when the patient last uploaded anything. Carried
+   *  straight off the passport, where the same caveat is written down. */
   latestSourceDate: string | null;
+  /** WHAT that document is, carried beside its date because the row
+   *  that prints the date has to name it. See
+   *  `EVIDENCE_DOCUMENT_LABEL_ZH`. */
+  latestSourceKind: GeneticRecordSource;
 }
 
 /** What one row of a function-test series can mean. See migration 017. */
@@ -483,6 +492,7 @@ const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisD
     valueOrigins: diagnosis.valueOrigins,
     geneEvidence: diagnosis.geneEvidence,
     latestSourceDate: diagnosis.latestSourceDate,
+    latestSourceKind: diagnosis.geneticEvidence.record.source,
   };
 };
 
@@ -870,6 +880,32 @@ const buildQuestions = (
 export const REFERRAL_PROVENANCE_NOTE =
   '本资料由患者本人在自助管理平台上生成，内容来自患者上传的报告、患者自行填写的记录，以及本平台管理员代为录入的字段（若有，逐条列在第一节末尾），未经医疗机构核对，不是病历，也不构成诊断。第一节里的括号写在哪一项后面，就只说那一项的来源；有的写「来源无法确定」，那是本平台确实没法把它归到某一个来源上。凡写「本平台未能读出」或「本平台没有记录」的条目，都只说明本平台的记录状态，不能推断该项检查没有做过。';
 
+/**
+ * The last row of 一、诊断依据, named for what the document actually is.
+ *
+ * 报告 was hardcoded into it. The document this pack's genetic values
+ * come off is the laboratory's own report for most profiles and a
+ * 病历摘要 quoting a result for the rest — `pickGeneticEvidenceDocument`
+ * takes the transcription on purpose, because for some patients it is
+ * the only copy of the number that exists — and the row is the one a
+ * neurologist reads to decide whether the workup is current. Printing
+ * 「本平台读作基因证据的报告：2026-01-04」 over a 病历摘要 answers that
+ * question with a laboratory report that was never uploaded.
+ *
+ * The transcription row carries the same phrase the passport brackets
+ * its values with and the registry export writes into its provenance
+ * sentences, so a clinician holding two of this app's documents reads
+ * one claim rather than two wordings of it.
+ *
+ * `none` says 文件 as well: there is nothing on file to call anything,
+ * and the value beside it is 本平台无记录.
+ */
+const EVIDENCE_DOCUMENT_LABEL_ZH: Record<GeneticRecordSource, string> = {
+  laboratory_report: '本平台读作基因证据的报告',
+  transcribed: `本平台读作基因证据的文件（${TRANSCRIBED_EVIDENCE_LABEL_ZH}）`,
+  none: '本平台读作基因证据的文件',
+};
+
 const questionBlankLine = '　我的情况 / 想问的：______________________________________';
 
 export const buildReferralPack = (
@@ -915,7 +951,24 @@ export const buildReferralPack = (
       escapeMarkdown(diagnosis.geneEvidence),
       summary.diagnosis.geneEvidenceOrigin,
     )}`,
-    `- 最近一份诊断相关报告：${formatDate(diagnosis.latestSourceDate) ?? '本平台无记录'}`,
+    // NOT 「最近一份诊断相关报告」. This date is the upload time of the
+    // ONE document the platform reads the genetic values off, and that
+    // document is not always the newest: `pickGeneticEvidenceDocument`
+    // puts a laboratory report ahead of a 病历摘要 quoting it, and a
+    // parsed report ahead of one still being read. Rendered against a
+    // profile whose newest upload is a thin report and whose older one
+    // carries the whole assay, the old line printed the OLDER date under
+    // a label promising the newest — telling a neurologist this patient
+    // had brought nothing since, in the section they use to decide
+    // whether the workup is current.
+    //
+    // AND NOT 报告 EITHER, which is what it hardcoded next. The same
+    // picker takes a 病历摘要 quoting the results when the genetics
+    // report read out nothing, so the last line of 诊断依据 promised a
+    // laboratory report and dated it, for a patient who has never
+    // uploaded one — in the row a neurologist reads to decide whether
+    // the workup is current.
+    `- ${EVIDENCE_DOCUMENT_LABEL_ZH[diagnosis.latestSourceKind]}：${formatDate(diagnosis.latestSourceDate) ?? '本平台无记录'}`,
     // The 字段来源 list the passport, the share page, the PDF and all
     // three portable envelopes already carry (§B3), on the one document
     // that is physically handed across a desk. Emitted only when

@@ -4,6 +4,7 @@ import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/pro
 import { locatorsIn } from './__fixtures__/reason-claims.js';
 import { classifyDiagnosisType, normaliseSource } from './export-source.js';
 import { applyAdminBaselineWrite, BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
+import { buildClinicalPassportSummary } from '../profile.passport.js';
 import { buildTreatNmdExport, type TreatNmdSection } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
@@ -359,11 +360,475 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
 
     expect(itemOf(diagnosis, 'diagnosis.type')?.provenanceZh).toContain('不是患者本人填写');
     expect(itemOf(diagnosis, 'diagnosis.d4z4')?.provenanceZh).toContain('管理员');
-    // The fields the administrator did NOT touch keep their old string
+    // The fields the administrator did NOT touch keep their own string
     // exactly — a blanket disclaimer would be the same lie in reverse.
+    // 单倍型 has no box on any patient form, so its string may not offer
+    // the questionnaire as an author; the fixture's genetic report reads
+    // the same 4qA that is in the archive, so what it names instead is
+    // the report, and the marked fields above are what shows the whole
+    // sentence is dropped when a marker refutes it.
     expect(itemOf(diagnosis, 'diagnosis.haplotype')?.provenanceZh).toBe(
-      '基线问卷或基因报告结构化解析',
+      '本平台档案中记录的值。患者的表单不为这一项提供输入框，本平台后台也不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。本平台只从该患者上传的文件中被认定为这份档案基因证据的那一份读取这几项基因结果，其余上传件不参与；那一份的这一项与档案里这个值完全相同，而读取档案时那一份的解析结果会补上档案里空着的这一项，不留记录。所以这个值是基因报告的解析结果 —— 只是没有记录能指出是哪一次读取写进去的。',
     );
+  });
+
+  it('甲基化和单倍型不把基线问卷写成来源，D4Z4 才有那个框', () => {
+    // The shared fixture has no 甲基化 — the field it is truest of is
+    // the one a profile is least likely to carry — so this case puts
+    // one in rather than asserting over a missing item.
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const withMethylation = build({
+      baseline: {
+        ...stored,
+        diseaseBackground: { ...disease, methylation: '25%' },
+      },
+    } as Partial<PatientProfileDTO>);
+    const diagnosis = sectionOf(withMethylation, 'diagnosis');
+    const provenanceOf = (key: string) => {
+      const item = itemOf(diagnosis, key);
+      if (!item) throw new Error(`no item ${key}`);
+      return item.provenanceZh;
+    };
+    const d4z4 = provenanceOf('diagnosis.d4z4');
+    const haplotype = provenanceOf('diagnosis.haplotype');
+    const methylation = provenanceOf('diagnosis.methylation');
+
+    // 建档表单 draws a D4Z4 box and draws none for the other two, and
+    // the back office refuses all three. So the questionnaire may be
+    // offered as a possible author on exactly one of them.
+    expect(d4z4).toContain('基线问卷为这一项提供输入框');
+    expect(haplotype).toContain('不为这一项提供输入框');
+    expect(methylation).toContain('不为这一项提供输入框');
+
+    // 甲基化 is on no report in this fixture, so nothing can be named
+    // as its author and the sentence says so — which is what the
+    // referral pack and the passport print over the same value.
+    expect(methylation).toContain('来源无法确定');
+    // The box is not what decides whether the reading is consulted —
+    // see the case below, which runs D4Z4 through all three report
+    // states. Here it says only that the box has not bought this field
+    // out of reporting one: the fixture's archive reads 「5 个重复单元」
+    // against a report reading 「5」, and the sentence prints the
+    // difference rather than describing the autofill in the abstract.
+    expect(d4z4).toContain('那一份的这一项是「5」');
+
+    // No branch may OPEN by crediting the patient with the number: the
+    // box arrives pre-filled from a baseline the report autofill has
+    // already been through, so what every sentence can lead with is
+    // where the value sits.
+    [d4z4, haplotype, methylation].forEach((provenance) => {
+      expect(provenance.startsWith('本平台档案中记录的值')).toBe(true);
+    });
+  });
+
+  /**
+   * THE SENTENCE MAY NOT DENY A READING THE SAME APP IS SHOWING.
+   *
+   * The tails spoke for 「该患者已上传的基因报告」 — every upload — while
+   * being computed from the one `pickGeneticEvidenceDocument` names.
+   * The state that separates the two: 甲基化 sitting on a 病历摘要 the
+   * picker declines in favour of a genetics report that is silent about
+   * it. The export told a registry no uploaded report of this patient's
+   * carried the value, while 报告详情 printed it, with a correction
+   * control beside it, off that very document — and the passport, the
+   * share page and the referral pack carried the hedged 「不是本平台此刻
+   * 能从报告里读到的值」 over the same string. One 甲基化, two accounts,
+   * decided by which surface the reader was holding.
+   *
+   * Both states are run, because a sentence that cannot tell them apart
+   * is the defect however true it happens to be in one of them.
+   */
+  it('不否认被跳过的那份报告里写着的值 —— 只说自己读的是哪一份', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const methylationOf = (documents: PatientProfileDTO['documents']) => {
+      const result = build({
+        baseline: { ...stored, diseaseBackground: { ...disease, methylation: '25%' } },
+        documents,
+      } as Partial<PatientProfileDTO>);
+      return itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.methylation')?.provenanceZh ?? '';
+    };
+
+    const summaryDocument = {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      id: '88888888-8888-4888-8888-888888888899',
+      documentType: 'medical_record',
+      uploadedAt: '2026-03-01T06:00:00.000Z',
+      ocrPayload: { fields: { classifiedType: 'medical_record', methylationValue: '25%' } },
+    } as PatientProfileDTO['documents'][number];
+
+    const declined = methylationOf([...EXPORT_FIXTURE_PROFILE.documents, summaryDocument]);
+    // The same archive value with nothing to read it off at all. The
+    // 病历摘要 stays, so the difference between the two is only which
+    // document the picker had to choose from — not whether any document
+    // on file carries 甲基化.
+    const nowhere = methylationOf([
+      ...EXPORT_FIXTURE_PROFILE.documents.filter(
+        (document) => document.documentType !== 'genetic_report',
+      ),
+      { ...summaryDocument, ocrPayload: { fields: { classifiedType: 'medical_record' } } },
+    ] as PatientProfileDTO['documents']);
+
+    // The premise: the 病历摘要 is not what the platform reads these off.
+    const picked = buildClinicalPassportSummary({
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: { ...stored, diseaseBackground: { ...disease, methylation: '25%' } },
+      documents: [...EXPORT_FIXTURE_PROFILE.documents, summaryDocument],
+    } as PatientProfileDTO);
+    expect(picked.diagnosis.valueOrigins.d4z4Repeats.documentId).not.toBe(summaryDocument.id);
+
+    // Neither state may carry the claim that spoke for every upload.
+    for (const sentence of [declined, nowhere]) {
+      expect(sentence).not.toContain('也没有从该患者已上传的基因报告里读到这一项');
+    }
+    // The state with a report says which one it read; the state without
+    // one has no scope to state and says that instead.
+    expect(declined).toContain('其余上传件不参与');
+    // And the one where a declined document does carry it says so.
+    expect(declined).toContain('这不等于该患者手里没有写着这一项的报告');
+    // Having no report to read is not the same state as having one that
+    // is silent, and the sentence no longer merges them — the merged
+    // version sent a receiver looking for a report to ask about.
+    expect(declined).not.toBe(nowhere);
+    expect(nowhere).toContain('没有可作为这份档案基因证据来读的文件');
+
+    // And what the clinical surfaces print over the same string stays
+    // the same in both — this fix is about the export catching up to
+    // them, not about moving the bracket.
+    expect(picked.diagnosis.methylationValue).toBe('25%');
+    expect(picked.diagnosis.valueOrigins.methylationValue.labelZh).toBe('来源无法确定');
+  });
+
+  /**
+   * D4Z4 HAS A BOX, AND THAT DECIDES WHAT A MATCH IS WORTH — NOT
+   * WHETHER THE REPORT IS READ AT ALL.
+   *
+   * The branch used to end at the box: every profile got one sentence
+   * about the autofill mechanism, identical whether the evidence report
+   * agreed with the archive, disagreed with it, or did not exist. D4Z4
+   * is the value most likely to reach a registry twice — the passport,
+   * the PDF, the share page and the referral pack print the report's
+   * number while this export prints the archive's — so it was the one
+   * genetic result whose export disclosed nothing about where it came
+   * from.
+   *
+   * All three states, on one profile shape, so the sentences can be
+   * read against each other.
+   */
+  it('D4Z4 的来源句报告读到什么就说什么，不是一句「区分不了」到底', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const d4z4Of = (archived: string, documents = EXPORT_FIXTURE_PROFILE.documents) => {
+      const result = build({
+        baseline: { ...stored, diseaseBackground: { ...disease, d4z4: archived } },
+        documents,
+      } as Partial<PatientProfileDTO>);
+      return itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.d4z4')?.provenanceZh ?? '';
+    };
+
+    // Agreement. The box is why this stops short of attributing the
+    // value: the patient could have typed the same number.
+    const agrees = d4z4Of('5');
+    expect(agrees).toContain('与档案里这个值完全相同');
+    expect(agrees).toContain('本平台区分不了');
+    expect(agrees).not.toContain('来源无法确定');
+
+    // Disagreement — the state a receiver would otherwise resolve by
+    // guessing, holding this export beside a passport printing 5.
+    const disagrees = d4z4Of('4');
+    expect(disagrees).toContain('那一份的这一项是「5」');
+    expect(disagrees).toContain('与档案里这个值不完全一致');
+    // How the comparison was made, so the fixture's own 「5 个重复单元」
+    // against a report's 「5」 is not read as a laboratory disagreeing
+    // with the archive about a repeat count.
+    expect(d4z4Of('5 个重复单元')).toContain('逐字比对');
+    expect(disagrees).toContain('来源无法确定');
+
+    // No reading at all. The old sentence offered the autofill as a
+    // possible author here too, for a profile with no report to autofill
+    // from.
+    const silent = d4z4Of(
+      '4',
+      EXPORT_FIXTURE_PROFILE.documents.filter(
+        (document) => document.documentType !== 'genetic_report',
+      ),
+    );
+    expect(silent).toContain('没有可作为这份档案基因证据来读的文件');
+    expect(silent).not.toContain('本平台区分不了');
+
+    // The three are different sentences, which is the whole finding.
+    expect(new Set([agrees, disagrees, silent]).size).toBe(3);
+  });
+
+  it('单倍型和甲基化的来源句跟着报告走，不是一句「来源无法确定」到底', () => {
+    // The defect this case pins: the sentence branched on whether the
+    // patient's form draws a box and stopped there, so a value the same
+    // read attributes to a document — `reportFields` carries it, the
+    // FHIR bundle emits it as that document's Observation, the passport
+    // brackets it 「报告读取」 — was exported as having no traceable
+    // author at all.
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const haplotypeOf = (baselineHaplotype: string | null) => {
+      const result = build({
+        baseline: {
+          ...stored,
+          diseaseBackground: { ...disease, haplotype: baselineHaplotype },
+        },
+      } as Partial<PatientProfileDTO>);
+      const item = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.haplotype');
+      return item?.provenanceZh ?? null;
+    };
+
+    // The fixture's genetic report reads 4qA. An archive holding the
+    // same string is the state the autofill produces on its own.
+    expect(haplotypeOf('4qA')).toContain('这个值是基因报告的解析结果');
+    expect(haplotypeOf('4qA')).not.toContain('来源无法确定');
+
+    // An archive value the report does not support keeps 来源无法确定,
+    // and the reading is printed rather than left for the receiver to
+    // discover in another document of the same export.
+    const disagrees = haplotypeOf('4qB') ?? '';
+    expect(disagrees).toContain('那一份的这一项是「4qA」');
+    expect(disagrees).toContain('来源无法确定');
+
+    // And with no reading at all the sentence says that too, rather
+    // than leaving the reader to wonder whether a report was consulted.
+    const noReport = build({
+      documents: EXPORT_FIXTURE_PROFILE.documents.filter(
+        (document) => document.documentType !== 'genetic_report',
+      ),
+    });
+    const withoutReport = itemOf(sectionOf(noReport, 'diagnosis'), 'diagnosis.haplotype');
+    expect(withoutReport?.provenanceZh).toContain('没有可作为这份档案基因证据来读的文件');
+    expect(withoutReport?.provenanceZh).toContain('来源无法确定');
+  });
+
+  /**
+   * NO SENTENCE MAY PUT A LABORATORY BEHIND A TRANSCRIPTION.
+   *
+   * `pickGeneticEvidenceDocument` takes a 病历摘要 quoting the results
+   * when the genetics report read out nothing, on purpose, because for
+   * some patients it is the only copy of the number that exists. Every
+   * tail then ended by calling the value 基因报告的解析结果 — and the
+   * same export answers 是否有基因报告 off the same documents, so one
+   * document told a registry both that no genetics report exists and
+   * that one had parsed the number four items down.
+   *
+   * The profile below is that state exactly: one 病历摘要, no genetics
+   * report anywhere, an archive holding what the summary quotes.
+   */
+  it('证据是一份病历摘要时，来源句不把值说成基因报告的解析结果', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const summaryDocument = {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      id: '88888888-8888-4888-8888-888888888897',
+      documentType: 'medical_record',
+      uploadedAt: '2026-03-01T06:00:00.000Z',
+      ocrPayload: {
+        fields: {
+          classifiedType: 'medical_record',
+          d4z4Repeats: '3',
+          haplotype: '4qA',
+          diagnosisDate: '2019-05-03',
+        },
+      },
+    } as PatientProfileDTO['documents'][number];
+    const result = build({
+      baseline: { ...stored, diseaseBackground: { ...disease, d4z4: '3', haplotype: '4qA' } },
+      documents: [
+        summaryDocument,
+        ...EXPORT_FIXTURE_PROFILE.documents.filter(
+          (document) => document.documentType !== 'genetic_report',
+        ),
+      ],
+    } as Partial<PatientProfileDTO>);
+    const diagnosis = sectionOf(result, 'diagnosis');
+    const provenanceOf = (key: string) => itemOf(diagnosis, key)?.provenanceZh ?? '';
+
+    // The premise, and the contradiction the sentences used to sit
+    // beside: this profile has no genetics report at all.
+    expect(itemOf(diagnosis, 'diagnosis.geneticallyConfirmed')?.value).toBe(false);
+
+    // 单倍型 has no box, so its tail is the one that ATTRIBUTES the
+    // value — and what it may attribute it to is this platform's read
+    // of a named document, not a laboratory.
+    const haplotype = provenanceOf('diagnosis.haplotype');
+    expect(haplotype).not.toContain('基因报告的解析结果');
+    expect(haplotype).toContain('本平台对那一份的解析结果');
+    // D4Z4 has one, so its tail still ends at 区分不了 — and the
+    // alternative it offers beside the patient may not be a laboratory
+    // either.
+    const d4z4 = provenanceOf('diagnosis.d4z4');
+    expect(d4z4).toContain('本平台区分不了');
+    expect(d4z4).not.toContain('基因报告的解析结果');
+
+    // And each of them says what the document IS, in the phrase the
+    // passport brackets the same values with.
+    for (const key of ['diagnosis.d4z4', 'diagnosis.haplotype', 'diagnosis.year']) {
+      expect(provenanceOf(key)).toContain('那一份不是基因报告');
+      expect(provenanceOf(key)).toContain('转录自非基因报告文件');
+    }
+
+    // The value still exports. Refusing to call it a laboratory reading
+    // is not the same as dropping the patient's only copy of it.
+    expect(itemOf(diagnosis, 'diagnosis.d4z4')?.value).toBe('3');
+
+    // The same shape on a real genetics report keeps the sentence that
+    // is true there — the point is that the two states differ, not that
+    // 基因报告 is gone from the vocabulary.
+    const fromLaboratory =
+      itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.haplotype')?.provenanceZh ?? '';
+    expect(fromLaboratory).toContain('这个值是基因报告的解析结果');
+    expect(fromLaboratory).not.toContain('转录自非基因报告文件');
+  });
+
+  /**
+   * 诊断 HAS FIVE VALUES AND HAD TWO REGISTERS.
+   *
+   * 分型 said 「患者档案记录为「FSHD1」」 and 确诊年份 said where the
+   * column is, while D4Z4, 单倍型 and 甲基化 beside them each stated
+   * whether this platform's own reading of the evidence report supports
+   * the archived value. A registry reading that block saw two fields
+   * with a stated provenance and two without, and nothing saying which
+   * was which — while the same read-time autofill fills all five from
+   * the same one document.
+   */
+  it('分型和确诊年份的来源句和它们的三个基因兄弟同一个规格', () => {
+    const diagnosis = sectionOf(build(), 'diagnosis');
+    const provenanceOf = (key: string) => itemOf(diagnosis, key)?.provenanceZh ?? '';
+    const type = provenanceOf('diagnosis.type');
+    const year = provenanceOf('diagnosis.year');
+
+    // Neither may stop at where the value sits, which is all the old
+    // strings did.
+    expect(type).not.toBe('患者档案记录为「FSHD1」');
+    expect(year).not.toBe('档案中的确诊年份；该栏位缺失时回退到确诊日期的年份部分');
+
+    // Both name the box AND the read-time autofill as the two live ways
+    // in — the pair that makes the author unprovable — and both end in
+    // the same conclusion the genetic three end in.
+    for (const sentence of [type, year]) {
+      expect(sentence).toContain('基线问卷为这一项提供输入框');
+      expect(sentence).toContain('不留记录');
+      expect(sentence).toContain('其余上传件不参与');
+    }
+    // The fixture's genetics report states neither 分型 nor 诊断日期, so
+    // both land on their 「that one report is silent」 branch rather than
+    // on the branch that names no report at all.
+    expect(type).toContain('那一份没有这一项');
+    expect(year).toContain('那一份没有诊断日期');
+    expect(type).toContain('来源无法确定');
+    expect(year).toContain('来源无法确定');
+
+    // 分型's exported value is a classification, not the stored string,
+    // so its sentence names the string it was classified from.
+    expect(type).toContain('本平台档案中记录的「FSHD1」，本次导出的分型由它归一而来');
+    expect(diagnosis.items.find((item) => item.key === 'diagnosis.type')?.value).toBe('FSHD1');
+  });
+
+  it('分型的来源句报告读到什么就说什么', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const disease = stored.diseaseBackground as Record<string, unknown>;
+    const withReportType = (archived: string, reported: string) => {
+      const [genetic, ...rest] = EXPORT_FIXTURE_PROFILE.documents;
+      const result = build({
+        baseline: { ...stored, diseaseBackground: { ...disease, diagnosisType: archived } },
+        documents: [
+          {
+            ...genetic,
+            ocrPayload: {
+              fields: {
+                ...(genetic.ocrPayload as { fields: Record<string, unknown> }).fields,
+                diagnosisType: reported,
+              },
+            },
+          },
+          ...rest,
+        ] as PatientProfileDTO['documents'],
+      } as Partial<PatientProfileDTO>);
+      return itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.type')?.provenanceZh ?? '';
+    };
+
+    // The report says what the archive says. 分型 has a box, so the
+    // match settles nothing about the author — the patient could have
+    // typed the same string — and the sentence stops there.
+    const agrees = withReportType('FSHD1', 'FSHD1');
+    expect(agrees).toContain('与档案里这个值完全相同');
+    expect(agrees).toContain('本平台区分不了');
+    expect(agrees).not.toContain('来源无法确定');
+
+    // And where they differ, the receiver is handed both strings rather
+    // than discovering the second one in another document of the same
+    // export.
+    const disagrees = withReportType('FSHD2', 'FSHD1');
+    expect(disagrees).toContain('那一份的这一项是「FSHD1」');
+    expect(disagrees).toContain('来源无法确定');
+  });
+
+  /**
+   * 确诊年份 IS A YEAR AND THE REPORT STATES A DATE.
+   *
+   * That is why it is not a fifth entry in the genetic table: the exact
+   * string comparison those four conclude from would read 2014 against
+   * 2014-03-02 as a disagreement and tell a registry the archive is not
+   * that reading. This sentence prints the date and concludes nothing
+   * from comparing them.
+   */
+  it('确诊年份不拿年份去和报告上的日期做逐字比对', () => {
+    const [genetic, ...rest] = EXPORT_FIXTURE_PROFILE.documents;
+    const result = build({
+      documents: [
+        {
+          ...genetic,
+          ocrPayload: {
+            fields: {
+              ...(genetic.ocrPayload as { fields: Record<string, unknown> }).fields,
+              diagnosisDate: '2014-03-02',
+            },
+          },
+        },
+        ...rest,
+      ] as PatientProfileDTO['documents'],
+    } as Partial<PatientProfileDTO>);
+    const year = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year')?.provenanceZh ?? '';
+
+    expect(year).toContain('那一份的诊断日期是「2014-03-02」');
+    expect(year).toContain('本平台取其中的年份');
+    expect(year).toContain('区分不了');
+    // The conclusion the genetic three draw from an exact mismatch, and
+    // the one this pair may not be put through.
+    expect(year).not.toContain('逐字比对');
+    expect(year).not.toContain('不完全一致');
+  });
+
+  it('确诊年份是「记不清了」时不给它安一个来源', () => {
+    const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+    const foundation = stored.foundation as Record<string, unknown>;
+    const result = build({
+      diagnosisDate: null,
+      baseline: { ...stored, foundation: { ...foundation, diagnosisYear: '记不清了' } },
+    } as Partial<PatientProfileDTO>);
+    const item = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year');
+
+    expect(item?.value).toMatchObject({ answer: 'not_remembered' });
+    // 记不清了 is an answer about the question, not a value with an
+    // author: there is nothing for a report to have supplied and
+    // nothing for the autofill to have written.
+    expect(item?.provenanceZh).toBe('档案中的确诊年份；该栏位缺失时回退到确诊日期的年份部分');
+  });
+
+  it('确诊年份在没有基因证据文件时说的是「没有可读的文件」', () => {
+    const result = build({
+      documents: EXPORT_FIXTURE_PROFILE.documents.filter(
+        (document) => document.documentType !== 'genetic_report',
+      ),
+    });
+    const year = itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.year')?.provenanceZh ?? '';
+    expect(year).toContain('没有可作为这份档案基因证据来读的文件');
+    expect(year).not.toContain('那一份没有诊断日期');
   });
 
   it('信封上逐条列出，带管理员账号和时间', () => {

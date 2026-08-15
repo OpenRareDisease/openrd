@@ -206,6 +206,11 @@ const ROUTES = [
   { method: 'get', path: '/api/admin/ops/health', event: 'admin.list', target: null },
 ] as const;
 
+/** A case above, written the way the router registers it:
+ *  「get /patients/:userId」. */
+const routeKey = (route: { method: string; path: string }) =>
+  `${route.method} ${route.path.replace('/api/admin', '').replace(PATIENT_ID, ':userId').split('?')[0]}`;
+
 const call = (route: (typeof ROUTES)[number], token?: string) => {
   const agent = request(app) as unknown as Record<string, (path: string) => request.Test>;
   let test = agent[route.method](route.path);
@@ -429,12 +434,41 @@ describe('route coverage', () => {
       )
       .sort();
 
-    const covered = ROUTES.map(
-      (route) =>
-        `${route.method} ${route.path.replace('/api/admin', '').replace(PATIENT_ID, ':userId').split('?')[0]}`,
-    ).sort();
+    const covered = ROUTES.map(routeKey).sort();
 
     expect(registered).toEqual(covered);
+  });
+
+  it('names the patient in the row of every route that names one in its path', () => {
+    // What this catches that the check above does not: that one
+    // compares PATHS, so a `/patients/:userId/notes` mounted with a
+    // bare `{ event: 'admin.record_read' }` passes it as soon as
+    // somebody adds a case here with `target: null` — and the audit
+    // rows for a route about one patient would carry no patient, while
+    // the banner every back-office screen draws
+    // (screens/p-admin/common.tsx) goes on saying that a request about
+    // one patient records which one.
+    //
+    // The cases above assert the ROW against `target`; this asserts
+    // `target` against the router's own path, so the two together are
+    // 「a `:userId` in the path is in the row」.
+    const router = createAdminRouter(context, {
+      healthSummary: async () => ({ status: 'ok', ready: true, components: {} }),
+    });
+    const inThePath = (
+      router.stack as Array<{ route?: { path: string; methods: Record<string, boolean> } }>
+    )
+      .filter((layer) => layer.route?.path.includes(':userId'))
+      .flatMap((layer) =>
+        Object.keys(layer.route!.methods).map((method) => `${method} ${layer.route!.path}`),
+      )
+      .sort();
+
+    const inTheRow = ROUTES.filter((route) => route.target !== null)
+      .map(routeKey)
+      .sort();
+
+    expect(inThePath).toEqual(inTheRow);
   });
 
   it('mounts requireAuth and the admin gate in front of every handler', () => {

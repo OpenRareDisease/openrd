@@ -215,11 +215,13 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
   });
 
   it('speaks about this document, not about every report the patient uploaded', () => {
-    // `buildReportInsights` opens one genetic document — the most
-    // recently uploaded one — so a repeat count sitting in an EARLIER
-    // report is never read. 「未从任何上传的报告里读到 D4Z4 重复数」 is
-    // false about exactly this patient, and it is the sentence a
-    // neurologist decides on.
+    // `buildReportInsights` opens ONE genetic document — the one that
+    // fills the most of the diagnosis block — so a repeat count that
+    // only a lower-ranked report carries is never read. That residue is
+    // inherent to reading one report rather than merging several, and
+    // it is why 「未从任何上传的报告里读到 D4Z4 重复数」 would be false
+    // about exactly this patient. It is the sentence a neurologist
+    // decides on.
     const result = pack(
       base({
         geneticMutation: 'FSHD1',
@@ -229,7 +231,10 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
             id: 'doc-old',
             uploadedAt: '2019-05-03T12:00:00.000Z',
           },
-          { ...geneticReport({ reportImpression: '未见异常' }), id: 'doc-new' },
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1', diagnosisDate: '2026-01-09' }),
+            id: 'doc-new',
+          },
         ],
       } as never),
     );
@@ -240,6 +245,85 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(result.diagnosis.statement).toContain('本资料里没有从基因报告里读出来的 D4Z4 重复数');
     // And it hands the reader the question this document cannot answer.
     expect(result.markdown).toContain('患者手里可能还有本平台没有读过的报告');
+  });
+
+  /**
+   * THE DATE UNDER THE DIAGNOSIS BLOCK BELONGS TO THE DOCUMENT THE
+   * VALUES WERE READ OFF, AND THAT IS NOT ALWAYS THE NEWEST ONE.
+   *
+   * `pickGeneticEvidenceDocument` ranks a candidate by what it carries
+   * before its upload time, so a thin report uploaded this month loses
+   * to a full assay from two years ago. The line was labelled 「最近一份
+   * 诊断相关报告」 and fed that older date — printing, in the section a
+   * 协作网 neurologist uses to decide whether the workup is current,
+   * that this patient has brought nothing since 2019.
+   */
+  it('dates the report the values were read off, and does not call it the most recent', () => {
+    const result = pack(
+      base({
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4', haplotype: '4qA', methylationValue: '32%' }),
+            id: 'doc-full',
+            uploadedAt: '2019-05-03T12:00:00.000Z',
+          },
+          {
+            ...geneticReport({ d4z4Repeats: '4' }),
+            id: 'doc-thin',
+            uploadedAt: '2026-02-01T12:00:00.000Z',
+          },
+        ],
+      } as never),
+    );
+
+    // The premise: the picked document is the older, fuller one.
+    expect(result.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('doc-full');
+    expect(result.markdown).toContain('本平台读作基因证据的报告：2019-05-03');
+    expect(result.markdown).not.toContain('最近一份诊断相关报告');
+  });
+
+  /**
+   * AND THAT ROW MAY NOT CALL A 病历摘要 A REPORT.
+   *
+   * 报告 was hardcoded into the label. `pickGeneticEvidenceDocument`
+   * takes a 病历摘要 quoting the results when the genetics report read
+   * out nothing — for this patient there is no genetics report at all —
+   * so the last line of 诊断依据 dated a laboratory report that was
+   * never uploaded, in the row a neurologist reads to decide whether
+   * the workup is current, three lines under a 结论 saying no genetic
+   * reading exists.
+   */
+  it('把病历摘要写成文件而不是报告，并带上它的来源', () => {
+    const transcription = {
+      ...geneticReport({ d4z4Repeats: '3', haplotype: '4qA' }),
+      id: 'doc-summary',
+      documentType: 'medical_record',
+      uploadedAt: '2026-03-01T12:00:00.000Z',
+      ocrPayload: {
+        fields: { classifiedType: 'medical_record', d4z4Repeats: '3', haplotype: '4qA' },
+      },
+    };
+    const result = pack(base({ documents: [transcription] } as never));
+
+    // The premise: this is the document the values come off, and it is
+    // not the laboratory's.
+    expect(result.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('doc-summary');
+    expect(result.diagnosis.latestSourceKind).toBe('transcribed');
+
+    expect(result.markdown).toContain(
+      '本平台读作基因证据的文件（转录自非基因报告文件）：2026-03-01',
+    );
+    expect(result.markdown).not.toContain('本平台读作基因证据的报告');
+    // The date is still printed — refusing to call the document a report
+    // is not the same as withholding when it arrived.
+    expect(result.markdown).toContain('2026-03-01');
+  });
+
+  it('没有任何可读作基因证据的文件时，那一行也不承诺一份报告', () => {
+    const result = pack(base());
+    expect(result.diagnosis.latestSourceKind).toBe('none');
+    expect(result.markdown).toContain('本平台读作基因证据的文件：本平台无记录');
+    expect(result.markdown).not.toContain('本平台读作基因证据的报告');
   });
 
   it('says what is missing, not that nothing was ever uploaded', () => {
@@ -278,7 +362,11 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     // confirms — so the line may not say none was received.
     expect(result.diagnosis.statement).not.toContain('本平台未收到基因报告');
     expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
-    expect(result.markdown).toContain('- 诊断日期：2019-05-03（本人填写）');
+    // Two sources on one section, and neither of them is the patient by
+    // name: the column behind 诊断日期 is written by the patient's own
+    // endpoint and by the read-time autofill alike, with nothing
+    // recording which.
+    expect(result.markdown).toContain('- 诊断日期：2019-05-03（来源无法确定）');
   });
 
   it('an administrator marker lands on 诊断日期 alone and names the field it is on', () => {
@@ -425,7 +513,7 @@ describe('基线里的基因数值印在转诊资料上', () => {
     expect(section).toContain('- 甲基化：25%（管理员代填）');
   });
 
-  it('患者自己填的三个值，标的是「本人填写」', () => {
+  it('没有来源记录时，每一行都标「来源无法确定」', () => {
     const result = pack(
       base({
         diagnosisDate: '2019-01-01',
@@ -436,9 +524,13 @@ describe('基线里的基因数值印在转诊资料上', () => {
       } as Partial<PatientProfileDTO>),
     );
 
+    // 这份资料是递到接诊医生手上的。「没有来源记录」说的是本平台没记，
+    // 不是这些值由患者本人录入 —— 档案里的基因数值也可能是读取时由报告
+    // 自动补进去的，那份报告事后还可以被删掉。
     expect(result.diagnosis.confirmation).toBe('self_reported');
-    expect(result.markdown).toContain('- D4Z4 重复数：6（本人填写）');
-    expect(result.markdown).toContain('- 甲基化：25%（本人填写）');
+    expect(result.markdown).toContain('- D4Z4 重复数：6（来源无法确定）');
+    expect(result.markdown).toContain('- 基因类型：FSHD1（来源无法确定）');
+    expect(result.markdown).toContain('- 甲基化：25%（来源无法确定）');
   });
 
   it('报告里有数时印报告那个，标「报告读取」', () => {

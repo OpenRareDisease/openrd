@@ -11,7 +11,9 @@ describe('applyGeneticReportAutofill', () => {
       },
       [
         {
+          id: 'd1',
           documentType: 'genetic_report',
+          status: 'parsed',
           uploadedAt: '2026-04-01T08:00:00.000Z',
           ocrPayload: {
             fields: {
@@ -57,7 +59,9 @@ describe('applyGeneticReportAutofill', () => {
       },
       [
         {
+          id: 'd1',
           documentType: 'genetic_report',
+          status: 'parsed',
           uploadedAt: '2026-04-01T08:00:00.000Z',
           ocrPayload: {
             fields: {
@@ -100,7 +104,9 @@ describe('applyGeneticReportAutofill', () => {
       },
       [
         {
+          id: 'd1',
           documentType: 'genetic_report',
+          status: 'parsed',
           uploadedAt: '2026-04-01T08:00:00.000Z',
           ocrPayload: {
             fields: {

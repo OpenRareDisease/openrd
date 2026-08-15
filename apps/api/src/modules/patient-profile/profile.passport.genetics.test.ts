@@ -4,7 +4,6 @@ import {
   buildClinicalPassportExport,
   buildClinicalPassportSummary,
   isD4Z4GreyZone,
-  isLargeD4Z4Deletion,
   parseD4Z4Reading,
 } from './profile.passport.js';
 import { baselineProfileSchema } from './profile.schema.js';
@@ -118,14 +117,14 @@ describe('parseD4Z4Reading —— 报告怎么印的就怎么读', () => {
 
 describe('isLargeD4Z4Deletion 在改成解析器之后行为一字不变', () => {
   // 这张表和 apps/mobile/lib/surveillance-schedule.ts 里手抄的那一份是同一张。
-  // 值从上传的报告里走一遍再判断：`ReportReadD4Z4` 没有字符串构造器，
-  // 而且要证明的本来就是「报告上印成这样时，指南那一条到底出不出」。
+  // 值从上传的基因报告里走一遍，再看渲染出来的待办：`ReportReadD4Z4` 既没有
+  // 字符串构造器，也不再是 `record.d4z4` 本身 —— 那个字段是给显示用的，
+  // 病历摘要抄来的读数也在里面。要证明的本来就是「基因报告上印成这样时，
+  // 指南那一条到底出不出」，那就照它出现在页面上的样子问。
   const readsAsLargeDeletion = (raw: string) =>
-    isLargeD4Z4Deletion(
-      buildClinicalPassportSummary(
-        base({ documents: [geneticReport({ d4z4Repeats: raw })] } as never),
-      ).diagnosis.geneticEvidence.record.d4z4,
-    );
+    buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: raw })] } as never),
+    ).nextSteps.some((step) => step.title === '问一次眼底检查');
 
   it.each([['1-10'], ['≤10'], ['4~7'], ['1 至 10'], [''], ['—'], ['未检出'], ['0'], ['5']])(
     '%s 不触发',
@@ -553,5 +552,510 @@ describe('灰区说明只把指南说过的话算在指南头上', () => {
   it('灰区之外没有这条说明', () => {
     expect(noteFor('4')).toBe('');
     expect(noteFor('15')).toBe('');
+  });
+});
+
+/**
+ * THE PICKER, AS THE PASSPORT RENDERS IT.
+ *
+ * The ordering itself is pinned in genetic-evidence.test.ts, against
+ * `pickGeneticEvidenceDocument` — the one answer the passport, the
+ * baseline autofill and the portable exports all now ask. What these
+ * add is that the passport's diagnosis block moves with it: the value
+ * printed, the document named beside it and the evidence grade all come
+ * off the document the picker chose, so an ordering change cannot land
+ * in one of the three and not the others.
+ */
+describe('哪一份报告撑起护照的诊断这一段', () => {
+  const fullReport = (over: Record<string, unknown> = {}) => ({
+    ...geneticReport({
+      diagnosisType: 'FSHD1',
+      d4z4Repeats: '4',
+      haplotype: '4qA',
+      ecoRIFragment: '18kb',
+      geneticTestMethod: 'southern_blot',
+    }),
+    id: 'old-full',
+    uploadedAt: '2026-02-01T00:00:00.000Z',
+    ...over,
+  });
+
+  /** What the passport must not lose. */
+  const expectFullReportKept = (profile: PatientProfileDTO) => {
+    const diagnosis = buildClinicalPassportSummary(profile).diagnosis;
+    expect(diagnosis.d4z4Repeats).toBe('4');
+    expect(diagnosis.geneticType).toBe('FSHD1');
+    expect(diagnosis.confirmation).toBe('genetic');
+    expect(diagnosis.latestDocumentId).toBe('old-full');
+    expect(diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('old-full');
+  };
+
+  it('正在识别的新报告不会顶掉已经解析出结果的旧报告', () => {
+    // The reviewer's repro. A row inserted by the upload endpoint sits
+    // in `processing` with no payload until its job lands, and the
+    // reparse path nulls `ocr_payload` before it starts — so 「newest」
+    // and 「has anything to say」 are different questions.
+    expectFullReportKept(
+      base({
+        documents: [
+          fullReport(),
+          {
+            ...geneticReport({}),
+            id: 'new-processing',
+            status: 'processing',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+            ocrPayload: null,
+          },
+        ],
+      } as never),
+    );
+  });
+
+  it('识别失败的新报告也顶不掉', () => {
+    // `parse_failed` is where a raised parse lands and stays. Unlike
+    // `processing` it never resolves on its own, so a passport that let
+    // it win would stay empty until somebody pressed 重新识别.
+    expectFullReportKept(
+      base({
+        documents: [
+          fullReport(),
+          {
+            ...geneticReport({}),
+            id: 'new-failed',
+            status: 'parse_failed',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+            ocrPayload: { provider: 'unknown', error: 'OCR failed' },
+          },
+        ],
+      } as never),
+    );
+  });
+
+  it('更新但读出来的东西更少的报告，也顶不掉更全的那一份', () => {
+    // `parsed` is a statement about the job, not about the document: it
+    // means the extractor returned. The reparse endpoint exists because
+    // a `parsed` row that extracted nothing is a failure wearing a
+    // success label — the file did not change, the parser did. So a
+    // newer report's silence about D4Z4 重复数 is not a measurement, and
+    // it may not delete one.
+    expectFullReportKept(
+      base({
+        documents: [
+          fullReport(),
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1' }),
+            id: 'new-thin',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+      } as never),
+    );
+  });
+
+  it('更新且读出来更多的报告，是会顶上来的 —— 这不是「旧的永远赢」', () => {
+    const diagnosis = buildClinicalPassportSummary(
+      base({
+        documents: [
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1', d4z4Repeats: '4' }),
+            id: 'old-thin',
+            uploadedAt: '2026-02-01T00:00:00.000Z',
+          },
+          {
+            ...geneticReport({
+              diagnosisType: 'FSHD1',
+              d4z4Repeats: '9',
+              haplotype: '4qA',
+              ecoRIFragment: '30kb',
+              geneticTestMethod: 'southern_blot',
+            }),
+            id: 'new-full',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+      } as never),
+    ).diagnosis;
+
+    expect(diagnosis.d4z4Repeats).toBe('9');
+    expect(diagnosis.latestDocumentId).toBe('new-full');
+  });
+
+  it('病历摘要抄得再全，护照印的也是基因报告那一份', () => {
+    // A 病历摘要 quoting a repeat count is a transcription; a genetics
+    // report is the laboratory. Asking how much a document carries
+    // before asking what kind of document it is put the transcription
+    // on the passport — printed as this patient's genetic result, with
+    // the summary named as its source, beside an evidence grade the
+    // laboratory's own 检测方法 was supposed to decide.
+    const diagnosis = buildClinicalPassportSummary(
+      base({
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '4', geneticTestMethod: 'southern_blot' }),
+            id: 'lab',
+            uploadedAt: '2026-02-01T00:00:00.000Z',
+          },
+          {
+            ...geneticReport({}),
+            id: 'summary',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_summary',
+                diagnosisType: 'FSHD1',
+                d4z4Repeats: '7',
+                haplotype: '4qA',
+                methylationValue: '12%',
+              },
+            },
+          },
+        ],
+      } as never),
+    ).diagnosis;
+
+    expect(diagnosis.d4z4Repeats).toBe('4');
+    expect(diagnosis.latestDocumentId).toBe('lab');
+    expect(diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('lab');
+  });
+
+  it('基因报告什么都没解析出来时，带着基因字段的另一份文件才是该读的那一份', () => {
+    // The boundary between the two rules: a genetics report outranks a
+    // transcription, but a genetics report that read out NOTHING is not
+    // the laboratory speaking — it is a file this platform has not
+    // read, and letting it hide the patient's only repeat count is the
+    // same erasure reached by a different road.
+    const diagnosis = buildClinicalPassportSummary(
+      base({
+        documents: [
+          {
+            ...geneticReport({}),
+            id: 'empty-genetic',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+          },
+          {
+            ...geneticReport({}),
+            id: 'summary-with-fields',
+            uploadedAt: '2026-02-01T00:00:00.000Z',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_summary',
+                diagnosisType: 'FSHD1',
+                d4z4Repeats: '4',
+              },
+            },
+          },
+        ],
+      } as never),
+    ).diagnosis;
+
+    expect(diagnosis.d4z4Repeats).toBe('4');
+    expect(diagnosis.latestDocumentId).toBe('summary-with-fields');
+  });
+
+  it('完全平手时按 id 定，所以没改过的档案重新渲染是一模一样的', () => {
+    const documents = [
+      { ...geneticReport({ d4z4Repeats: '4' }), id: 'bbb' },
+      { ...geneticReport({ d4z4Repeats: '7' }), id: 'aaa' },
+    ];
+    const idOf = (docs: unknown[]) =>
+      buildClinicalPassportSummary(base({ documents: docs } as never)).diagnosis.latestDocumentId;
+
+    expect(idOf(documents)).toBe('aaa');
+    expect(idOf([...documents].reverse())).toBe('aaa');
+  });
+
+  it('一份都没解析成功时，护照照旧不假装读到过什么', () => {
+    const diagnosis = buildClinicalPassportSummary(
+      base({
+        documents: [
+          {
+            ...geneticReport({}),
+            id: 'only-processing',
+            status: 'processing',
+            uploadedAt: '2026-06-01T00:00:00.000Z',
+            ocrPayload: null,
+          },
+        ],
+      } as never),
+    ).diagnosis;
+
+    expect(diagnosis.geneticType).toBe('—');
+    expect(diagnosis.d4z4Repeats).toBe('—');
+    expect(diagnosis.confirmation).toBe('none');
+    expect(diagnosis.geneticEvidence.grade).toBe('unknown');
+  });
+});
+
+/**
+ * 病历摘要抄来的读数：照登，但不算实验室说过。
+ *
+ * `pickGeneticEvidenceDocument` takes a 病历摘要 carrying a genetic
+ * result on purpose — for some patients it is the only copy of the
+ * number that exists, and dropping it loses the value entirely. That
+ * decision is about DISPLAY, and the grading path took it as well:
+ * rendered on a profile whose only document was such a summary, this
+ * function returned confirmation 「genetic」, grade 「trial_ready」 and a
+ * headline telling the reader the report already contained what trial
+ * enrolment requires. No laboratory had said any of it.
+ *
+ * Four renders, because the ordering has four cases and the invariant
+ * has to hold in each: the laboratory alone, the transcription alone,
+ * and both with either one richer. Each asks the same three questions —
+ * what grade, what headline, and is the value still on the page.
+ */
+describe('病历摘要抄来的结果：值照登，但不给分级、不替实验室说话', () => {
+  const LAB_RICH = {
+    diagnosisType: 'FSHD1',
+    d4z4Repeats: '3',
+    haplotype: '4qA',
+    geneticTestMethod: 'southern_blot',
+  };
+  const SUMMARY_RICH = {
+    diagnosisType: 'FSHD1',
+    d4z4Repeats: '7',
+    haplotype: '4qA',
+    methylationValue: '12%',
+  };
+
+  /** A 病历摘要 — a clinic's summary that quotes the laboratory. The
+   *  classified type is what decides this, not the uploader's pick. */
+  const medicalSummary = (
+    id: string,
+    fields: Record<string, string>,
+    uploadedAt = '2026-02-01T00:00:00.000Z',
+  ) => ({
+    ...geneticReport({}),
+    id,
+    documentType: 'medical_summary',
+    uploadedAt,
+    ocrPayload: { fields: { classifiedType: 'medical_summary', ...fields } },
+  });
+
+  const lab = (
+    id: string,
+    fields: Record<string, string>,
+    uploadedAt = '2026-02-01T00:00:00.000Z',
+  ) => ({ ...geneticReport(fields), id, uploadedAt });
+
+  const summaryOf = (documents: unknown[], over: Partial<PatientProfileDTO> = {}) =>
+    buildClinicalPassportSummary(base({ documents, ...over } as never));
+
+  describe('一、只有一份基因报告 —— 分级照旧，这一段没有改变它', () => {
+    const summary = summaryOf([lab('lab', LAB_RICH)]);
+
+    it('仍然是基因确诊、可用于入组', () => {
+      expect(summary.diagnosis.confirmation).toBe('genetic');
+      expect(summary.diagnosis.geneticEvidence.grade).toBe('trial_ready');
+      expect(summary.diagnosis.geneticEvidence.headline).toContain('入组');
+      expect(summary.diagnosis.ready).toBe(true);
+    });
+
+    it('值和括号都还是「报告读取」', () => {
+      expect(summary.diagnosis.d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+      expect(summary.diagnosis.geneEvidenceOrigin.labelZh).toBe('报告读取');
+    });
+  });
+
+  describe('二、只有一份病历摘要 —— 值在，分级不在', () => {
+    const summary = summaryOf([medicalSummary('summary', SUMMARY_RICH)]);
+    const evidence = summary.diagnosis.geneticEvidence;
+
+    it('不是基因确诊', () => {
+      expect(summary.diagnosis.confirmation).not.toBe('genetic');
+      expect(summary.diagnosis.ready).toBe(false);
+      // The completion ring counts confirmed diagnoses only; a
+      // transcription must not fill it either.
+      expect(summary.completion.completed).toBe(0);
+    });
+
+    it('分级是「仅有转录结果」，不是可用于入组，也不是未检测', () => {
+      expect(evidence.grade).toBe('transcribed_only');
+      expect(evidence.gradeLabel).toBe('仅有转录结果');
+    });
+
+    it('标题说的是「读的是转录件」，没有一句替实验室说话', () => {
+      expect(evidence.headline).toContain('转录件');
+      expect(evidence.headline).not.toContain('入组');
+      // The sentence the bug printed, in the export a patient hands
+      // across a desk.
+      expect(evidence.reason).not.toContain('这份报告已经包含');
+      expect(evidence.reason).toContain('转录也不是检测');
+    });
+
+    it('依据里点了名是哪一份文件，用的是本平台自己的说法', () => {
+      expect(evidence.reason).toContain('病历摘要');
+    });
+
+    it('值一个都没丢，而且每一个后面都写着来源', () => {
+      const { diagnosis } = summary;
+      expect(diagnosis.d4z4Repeats).toBe('7');
+      expect(diagnosis.geneticType).toBe('FSHD1');
+      expect(diagnosis.methylationValue).toBe('12%');
+      expect(diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('转录自非基因报告文件');
+      expect(diagnosis.valueOrigins.geneticType.labelZh).toBe('转录自非基因报告文件');
+      expect(diagnosis.valueOrigins.methylationValue.labelZh).toBe('转录自非基因报告文件');
+    });
+
+    it('括号既不是「报告读取」也不是「本人填写」', () => {
+      for (const key of ['geneticType', 'd4z4Repeats', 'methylationValue'] as const) {
+        expect(summary.diagnosis.valueOrigins[key].kind).toBe('transcribed');
+        expect(summary.diagnosis.valueOrigins[key].labelZh).not.toBe('报告读取');
+        expect(summary.diagnosis.valueOrigins[key].labelZh).not.toBe('本人填写');
+      }
+    });
+
+    it('拼起来的那一行跟着它的几项走，不会独自升格成报告读取', () => {
+      expect(summary.diagnosis.geneEvidence).toContain('7');
+      expect(summary.diagnosis.geneEvidenceOrigin.labelZh).toBe('转录自非基因报告文件');
+    });
+
+    it('括号写在文件上，来源里也点了那份文件的 id', () => {
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.documentId).toBe('summary');
+      expect(summary.diagnosis.latestDocumentId).toBe('summary');
+    });
+
+    it('导出的 markdown 里，数字在、来源在、入组那句话不在', () => {
+      const markdown = buildClinicalPassportExport(summary).markdown;
+      expect(markdown).toContain('D4Z4 重复数：7（转录自非基因报告文件）');
+      expect(markdown).toContain('分级：仅有转录结果');
+      expect(markdown).not.toContain('可用于入组');
+      // 未经基因确诊, and asserted as the positive claim it is: a bare
+      // `not.toContain('基因确诊')` passes on the string that contains
+      // it, which is this one.
+      expect(markdown).toContain('未经基因确诊');
+    });
+
+    it('《检查申请说明》改成「报告上需要写明的内容」—— 不是叫诊所再开一次单', () => {
+      const request = evidence.testRequest;
+      const headings = request?.sections.map((section) => section.heading) ?? [];
+      expect(headings).toEqual(['报告上需要写明的内容']);
+      expect(request?.intro).toContain('报告原件不在本平台手上');
+      expect(headings.some((heading) => heading.includes('全外显子'))).toBe(false);
+    });
+
+    it('待办让人去取报告，不承诺「传了才能显示这个数」—— 数就在页面上', () => {
+      const step = summary.nextSteps.find((item) => item.title.includes('补充基因'));
+      expect(step?.description).toContain('标着「转录自非基因报告文件」');
+      expect(step?.description).not.toContain('护照才能显示 D4Z4 重复数');
+      expect(step?.description).not.toContain('护照才能展示 D4Z4 重复数');
+    });
+  });
+
+  it('那句话只在页面上真有这个括号时才说', () => {
+    // A 病历摘要 carrying only a 单倍型, on a profile whose 分型 and
+    // D4Z4 重复数 come out of the archive. The grade is still the
+    // transcription's — that is decided by which document was read —
+    // but no printed row wears the transcription bracket: the 单倍型
+    // appears inside the joined 基因证据 row, and that row's bracket
+    // belongs to the join. Addressing 「标着…的那几项」 here points the
+    // reader at rows that are not on the page.
+    const summary = summaryOf([medicalSummary('summary', { haplotype: '4qA' })], {
+      baseline: { diseaseBackground: { d4z4: '6', diagnosisType: 'FSHD1' } },
+    } as never);
+
+    expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('来源无法确定');
+    const step = summary.nextSteps.find((item) => item.title.includes('补充基因'));
+    expect(step?.description).not.toContain('转录自非基因报告文件');
+    // And the transcribed value is still on the page, in the row that
+    // does carry it.
+    expect(summary.diagnosis.geneEvidence).toContain('4qA');
+  });
+
+  describe('三、两份都有，病历摘要抄得更全（基因报告什么都没读出来）', () => {
+    // The boundary case the picker yields on: a genetics report that
+    // read out nothing is a file this platform has not read, so the
+    // transcription is what there is. The value survives; the grade
+    // still does not follow it.
+    const summary = summaryOf([
+      lab('lab-empty', {}, '2026-06-01T00:00:00.000Z'),
+      medicalSummary('summary', SUMMARY_RICH),
+    ]);
+
+    it('页面读的是病历摘要，值没有丢', () => {
+      expect(summary.diagnosis.latestDocumentId).toBe('summary');
+      expect(summary.diagnosis.d4z4Repeats).toBe('7');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('转录自非基因报告文件');
+    });
+
+    it('哪怕档案里确实有一份基因报告，分级也不跟着它走', () => {
+      expect(summary.diagnosis.confirmation).not.toBe('genetic');
+      expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+      expect(summary.diagnosis.geneticEvidence.headline).not.toContain('入组');
+    });
+  });
+
+  describe('四、两份都有，基因报告更全 —— 分级和值都归实验室那一份', () => {
+    const summary = summaryOf([
+      lab('lab', LAB_RICH),
+      medicalSummary('summary', SUMMARY_RICH, '2026-06-01T00:00:00.000Z'),
+    ]);
+
+    it('印的是报告的 3，不是摘要的 7', () => {
+      expect(summary.diagnosis.d4z4Repeats).toBe('3');
+      expect(summary.diagnosis.latestDocumentId).toBe('lab');
+    });
+
+    it('照常基因确诊、可用于入组，括号是报告读取', () => {
+      expect(summary.diagnosis.confirmation).toBe('genetic');
+      expect(summary.diagnosis.geneticEvidence.grade).toBe('trial_ready');
+      expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+    });
+  });
+
+  describe('按重复数分组的那几条指南建议，转录来的数字一条都不进', () => {
+    it('抄来的是 3 时不发眼底那一条 —— 发的是「要看报告原件」', () => {
+      const summary = summaryOf([medicalSummary('summary', { d4z4Repeats: '3' })]);
+      const titles = summary.nextSteps.map((step) => step.title);
+      expect(titles).not.toContain('问一次眼底检查');
+      expect(titles).toContain('眼底检查这一条要看报告原件');
+    });
+
+    it('那一条不说「取自你的档案」—— 这个数是从一份文件上读来的', () => {
+      const summary = summaryOf([medicalSummary('summary', { d4z4Repeats: '3' })]);
+      const step = summary.nextSteps.find((item) => item.title.includes('眼底'));
+      expect(step?.description).toContain('3（转录自非基因报告文件）');
+      expect(step?.description).toContain('不是基因报告本身');
+      expect(step?.description).not.toContain('取自你的档案');
+    });
+
+    it('抄来的是 8 时不判灰区，也不发灰区那条待办', () => {
+      const summary = summaryOf([medicalSummary('summary', { d4z4Repeats: '8' })]);
+      expect(summary.diagnosis.geneticEvidence.record.greyZone).toBe(false);
+      expect(summary.diagnosis.geneticEvidence.greyZoneNote).toBeNull();
+      expect(summary.nextSteps.some((step) => step.title.includes('灰区'))).toBe(false);
+    });
+
+    it('抄来的长度加单倍型也凑不出入组齐备', () => {
+      const summary = summaryOf([
+        medicalSummary('summary', { d4z4Repeats: '8', haplotype: '4qA' }),
+      ]);
+      expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+    });
+
+    it('病历摘要抄了「短读长测序」也不降级 —— 方法要由报告本身写明', () => {
+      // The downgrade tells somebody their test was the wrong test.
+      // Reading that off a clinic letter's transcription of a method is
+      // the same mistake as reading a result off one.
+      const summary = summaryOf([
+        medicalSummary('summary', {
+          geneticTestMethod: 'short_read_sequencing',
+          d4z4Repeats: '5',
+        }),
+      ]);
+      expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+      expect(summary.nextSteps.map((step) => step.title)).not.toContain(
+        '这份报告用的方法测不到 FSHD',
+      );
+    });
+  });
+
+  it('自述「还没做过基因检测」时也不写成未检测 —— 数字就印在同一页上', () => {
+    const summary = summaryOf([medicalSummary('summary', { d4z4Repeats: '7' })], {
+      baseline: withLadder('untested_wants_test'),
+    } as never);
+    expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
+    expect(summary.diagnosis.d4z4Repeats).toBe('7');
   });
 });

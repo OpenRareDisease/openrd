@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto';
 
 import type { ExportFieldOrigin, ExportOmission } from './envelope.js';
 import { baselineFieldLabelZh, listBaselineFieldOrigins } from '../baseline-provenance.js';
+import {
+  GENETIC_FIELD_KEYS,
+  TRANSCRIBED_EVIDENCE_LABEL_ZH,
+  pickReading,
+  readGeneticEvidence,
+} from '../genetic-evidence.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import { decodeFirstYear, type YearAnswer } from './year-value.js';
 import type { PatientDocumentDTO, PatientProfileDTO } from '../profile.service.js';
@@ -116,6 +122,47 @@ export interface NormalisedSource {
     readonly methylation: string | null;
     readonly hasGeneticReport: boolean;
   };
+  /**
+   * What this platform reads for those same three fields right now, off
+   * the ONE document that is this profile's genetic evidence.
+   *
+   * Not a second copy of `geneticEvidence`: that one is the archive's
+   * value, which is what the exports print, and this one is the
+   * report's reading, which is what decides whether the archive's value
+   * can be attributed to anything. See `geneticValueProvenanceZh`.
+   *
+   * `documentId` travels with the values because the prose needs it.
+   * 「no reading」 has two causes a receiver must not have merged — this
+   * platform holds no report it reads these off at all, and the one it
+   * does read is silent about this item — and a sentence written from
+   * the values alone cannot tell them apart.
+   */
+  readonly geneticEvidenceReading: {
+    readonly documentId: string | null;
+    /**
+     * Whether that one document is the genetics laboratory's own
+     * report, carried off `readGeneticEvidence` rather than re-derived.
+     *
+     * Read by the provenance sentences, which used to end 「所以这个值是
+     * 基因报告的解析结果」 in every state. `pickGeneticEvidenceDocument`
+     * takes a 病历摘要 quoting a repeat count when the genetics report
+     * read out nothing, so for those profiles the sentence put a
+     * laboratory behind a transcription — three lines under this same
+     * export's 是否有基因报告, answered false off the same documents.
+     */
+    readonly laboratory: boolean;
+    readonly values: Record<GeneticBaselineField, string | null>;
+    /**
+     * The 诊断日期 the same document states, as it printed it.
+     *
+     * Beside `values` rather than inside it: it is not a genetic result
+     * and `GeneticBaselineField` is what the genetic sentences are
+     * keyed by, but it comes off the same one document, through the
+     * same reader, and it is what `applyGeneticReportAutofill` puts in
+     * an empty 确诊年份. See `diagnosisYearProvenanceZh`.
+     */
+    readonly diagnosisDate: string | null;
+  };
   readonly familyHistoryStatement: string | null;
   readonly currentStatus: {
     readonly ambulation: string | null;
@@ -176,8 +223,13 @@ export const originNoteZh = (source: NormalisedSource, fieldPath: string): strin
  * no way to tell which half is current. A call site whose base sentence
  * makes that claim passes the sentence to use instead when the field
  * carries a marker; one whose base sentence says only WHERE the value
- * sits (「基线问卷」, 「基因报告结构化解析」) stays true either way and
- * omits it.
+ * sits (「本平台档案中记录的姓名」) stays true either way and omits it.
+ *
+ * 「Says only where it sits」 is narrower than it looks, and a sentence
+ * that merely AVOIDS naming the patient can still contradict the note.
+ * 「本平台没有留下这个值如何进入档案的记录」 names nobody and is refuted
+ * by a marker, which is exactly such a record. Read the base sentence
+ * against both marker states, not against the patient alone.
  */
 export const withOriginNote = (
   source: NormalisedSource,
@@ -206,6 +258,383 @@ export const withOriginNote = (
  * are three chances for one of them to be the stronger one.
  */
 export const NO_ADMIN_FIELD_ORIGIN_NOTE_ZH = '本次导出的基线字段没有本平台工作人员代填的记录。';
+
+/**
+ * The three genetic results a serialiser reads out of
+ * `diseaseBackground`, and who could have put one there.
+ *
+ * WHY THIS IS NOT ONE SENTENCE. All three used to be labelled 「基线
+ * 问卷或基因报告结构化解析」, and for two of them the first half names
+ * an author who cannot exist. 建档表单
+ * (apps/mobile/screens/p-register_profile) draws a D4Z4 重复数 box out
+ * of this section and draws none for 单倍型 or 甲基化; it spreads the
+ * baseline it loaded, so those two round-trip through a save untouched
+ * and no sequence of taps puts a patient's typing into either. The
+ * other desk is not a fallback: neither is in
+ * `ADMIN_WRITABLE_BASELINE_FIELDS`, and `applyAdminBaselineWrite`
+ * refuses a write that changes one — a clear counts as a change. A
+ * registry weights a questionnaire answer differently from a
+ * laboratory reading, and the disjunction told it to take the former
+ * as live for a value nobody at this platform can type. Meanwhile the
+ * referral pack and the passport print 来源无法确定 over the same
+ * value, so the same app was shipping two answers about it.
+ *
+ * WHAT THE SENTENCE IS BUILT FROM. Two things, and the box is only the
+ * first.
+ *
+ * The box is a fact about the software: whether the patient's own app
+ * draws a control for the field at all. A field with a control has two
+ * live origins and no way to tell them apart; a field without one has
+ * neither of the two authors this platform can name.
+ *
+ * The second is the origin of the value actually in front of the
+ * reader, which this module CAN see and for one round did not look at.
+ * `geneticEvidenceReading` is what the evidence report says today, and
+ * when the archive's value is that reading, 「来源无法确定」 is a denial
+ * the same read refutes: `collectReportFields` is at that moment
+ * attributing 4q 单倍型 to a named document, the FHIR bundle emits it as
+ * an Observation of that document, and the passport prints 「报告读取」
+ * over the same string. One app was shipping two answers about one
+ * value again, in the opposite direction from the one this block was
+ * written to fix.
+ *
+ * NO SENTENCE CLAIMS THE PATIENT TYPED THE NUMBER, including the one
+ * for a field that has a box. The box arrives PRE-FILLED from the
+ * baseline the form loaded, and that baseline has been through
+ * `applyGeneticReportAutofill` — so a report's reading lands in the
+ * box, gets posted back by an ordinary save, and is thereafter stored
+ * with nothing recording how. 「患者填写」 over that value would be
+ * this export inventing self-report out of an OCR read. Which is also
+ * why matching the report leaves the field WITH a box at 「区分不了」:
+ * the patient could have typed that same string.
+ *
+ * THE BOX DECIDES THE CONCLUSION, NOT WHETHER THE REPORT IS CONSULTED.
+ * It used to decide both, and the field that has a box is the one whose
+ * value a registry is most likely to receive twice: this export printed
+ * D4Z4 4 out of the archive while the passport, the PDF and the share
+ * page printed D4Z4 7 off the report, and the only sentence attached to
+ * the 4 described the autofill mechanism in the abstract — the same
+ * string for a profile whose report reads 7, for one whose report reads
+ * 4, and for one with no report at all. Every field now carries what
+ * the reading says; the box decides only what may be concluded from a
+ * match.
+ *
+ * A `Record` over all three rather than a list of the ones with a box,
+ * so a fourth genetic field fails the build until somebody has
+ * answered the question for it.
+ */
+export type GeneticBaselineField = 'diagnosisType' | 'd4z4' | 'haplotype' | 'methylation';
+
+/**
+ * 分型 IS IN THIS TABLE, and joined it for the reason the other three
+ * are in it.
+ *
+ * 诊断 printed 「患者档案记录为「FSHD1」」 beside it — where the value
+ * sits, and not one word about who could have put it there — directly
+ * above three siblings that each spell out whether this platform's own
+ * reading of the evidence report supports the archived value. A
+ * registry reading that section saw two registers in one block and no
+ * statement of which fields were in which. And the question is the same
+ * question: `applyGeneticReportAutofill` fills
+ * `diseaseBackground.diagnosisType` from the evidence report's own
+ * 分型 reading, at read time, before this module sees the profile, and
+ * leaves nothing behind saying it did.
+ *
+ * `archived` and `locationZh` are per field because 分型 is the one
+ * whose exported value is not the archived string: `value` is the
+ * classified enum, so the sentence has to name the string it was
+ * classified from. The other three print the archived string itself.
+ */
+const GENETIC_BASELINE_VALUE_ORIGINS: Record<
+  GeneticBaselineField,
+  {
+    readonly path: string;
+    readonly patientFormDrawsABox: boolean;
+    /** The archived value this sentence is about, as the export holds
+     *  it — the string compared against the report's reading. */
+    readonly archived: (source: NormalisedSource) => string | null;
+    /** How the sentence opens: where the value sits. */
+    readonly locationZh: (source: NormalisedSource) => string;
+  }
+> = {
+  diagnosisType: {
+    path: 'diseaseBackground.diagnosisType',
+    patientFormDrawsABox: true,
+    archived: (source) => source.diagnosisTypeRawZh,
+    locationZh: (source) =>
+      `本平台档案中记录的「${source.diagnosisTypeRawZh}」，本次导出的分型由它归一而来`,
+  },
+  d4z4: {
+    path: 'diseaseBackground.d4z4',
+    patientFormDrawsABox: true,
+    archived: (source) => source.geneticEvidence.d4z4,
+    locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+  },
+  haplotype: {
+    path: 'diseaseBackground.haplotype',
+    patientFormDrawsABox: false,
+    archived: (source) => source.geneticEvidence.haplotype,
+    locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+  },
+  methylation: {
+    path: 'diseaseBackground.methylation',
+    patientFormDrawsABox: false,
+    archived: (source) => source.geneticEvidence.methylation,
+    locationZh: () => GENETIC_VALUE_LOCATION_ZH,
+  },
+};
+
+/** The base sentence when a marker IS on record. Location only: the
+ *  marker's own note says who, and every branched sentence below denies
+ *  the marker in one clause or another. */
+const GENETIC_VALUE_LOCATION_ZH = '本平台档案中记录的值';
+
+/** What follows the location for a field the patient's own form draws a
+ *  box for. Stops before any conclusion: what a match is worth is the
+ *  tail's business, and the tail is where the reading is. */
+const GENETIC_VALUE_WITH_BOX_CLAUSE_ZH =
+  '基线问卷为这一项提供输入框；同时本平台在读取档案时会用这份档案基因证据的解析结果补上档案里空着的这一项，不留记录，而问卷的输入框预填的正是读取到的档案值，保存时一并写回。';
+
+/** What follows it for a field with no box anywhere. What it rules out
+ *  holds whatever the reports say. */
+const GENETIC_VALUE_NO_BOX_CLAUSE_ZH =
+  '患者的表单不为这一项提供输入框，本平台后台也不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。';
+
+/**
+ * HOW FAR THIS PLATFORM'S READING REACHES, in the sentences that report
+ * it. Every tail below opens with it.
+ *
+ * The tails used to open 「本平台此刻从该患者已上传的基因报告里读到的
+ * 这一项…」 — a claim about the patient's uploads, written from one
+ * document. `pickGeneticEvidenceDocument` names ONE, and the rest of
+ * the patient's reports are not read for these items at all. Rendered
+ * against a profile whose 甲基化 sits on a 病历摘要 the picker declined:
+ * the export told a registry 「本平台此刻也没有从该患者已上传的基因报告里
+ * 读到这一项」 about a value that is printed, with a correction control
+ * beside it, on that document's own page — while the passport, the
+ * share page and the referral pack carried the hedged 「不是本平台此刻能
+ * 从报告里读到的值」 over the same string. One 甲基化, two accounts of
+ * where it came from, decided by which surface the reader was holding.
+ *
+ * The scope is stated rather than implied, because a receiver cannot
+ * see the picker: without this clause 「那一份没有这一项」 reads as 「no
+ * report of this patient's has it」, which is the claim that was false.
+ *
+ * SAYS 文件 AND NOT 报告, for the reason `DIAGNOSIS_DATE_READ_SCOPE_ZH`
+ * below already said 「那一份上面的」: the document this platform reads
+ * as a profile's genetic evidence is not always a genetics report, and
+ * a clause that draws it out of 「该患者上传的报告」 has put a laboratory
+ * behind a 病历摘要 before the sentence reaches its verb.
+ */
+const GENETIC_EVIDENCE_READ_SCOPE_ZH =
+  '本平台只从该患者上传的文件中被认定为这份档案基因证据的那一份读取这几项基因结果，其余上传件不参与';
+
+/** …and there is no such document at all. Distinct from the evidence
+ *  being silent: nothing was declined and nothing was read, and a
+ *  sentence that merged the two would send a receiver looking for a
+ *  report to ask about. */
+const GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH =
+  '本平台此刻没有可作为这份档案基因证据来读的文件，所以这一项没有任何来自上传件的读数。它当初如何进入档案，本平台没有留下记录，来源无法确定。';
+
+/** …and the evidence document is silent about this item. */
+const GENETIC_VALUE_EVIDENCE_SILENT_TAIL_ZH = `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份没有这一项。这不等于该患者手里没有写着这一项的报告。它当初如何进入档案，本平台没有留下记录，来源无法确定。`;
+
+/**
+ * WHAT THE DOCUMENT THE READING CAME OFF IS, in the clause that
+ * attributes a value to it.
+ *
+ * Every tail that reports a reading ended by naming 基因报告, and the
+ * document is one only when `laboratory` says so. Rendered against a
+ * profile whose one upload is a 病历摘要 quoting a repeat count and a
+ * haplotype: 诊断 told a registry 「所以这个值是基因报告的解析结果」 under
+ * 4q 单倍型, four items below its own 是否有基因报告 answered false off
+ * the same documents — one export, two accounts of whether a laboratory
+ * exists, and the false one attached to the number.
+ *
+ * The transcription branch names the source with the phrase every other
+ * surface uses for it, so a receiver holding this beside the passport
+ * or the referral pack reads one claim and not two wordings of one.
+ */
+const evidenceParseZh = (laboratory: boolean) =>
+  laboratory ? '基因报告的解析结果' : '本平台对那一份的解析结果';
+
+/**
+ * …and what 那一份 is, in the same sentence, whenever it is not the
+ * laboratory's report.
+ *
+ * Its own trailing sentence rather than a clause inside the
+ * attribution: 「还是本平台对那一份的解析结果，本平台区分不了」 has a
+ * verb waiting at the end of it, and a parenthetical about the document
+ * wedged in front of that verb is a sentence a receiver has to read
+ * twice. Appended by every tail that reports a READING — an absence has
+ * nothing to attribute, so the silent and no-document tails say nothing
+ * about the register of a document they read nothing off.
+ */
+const EVIDENCE_IS_TRANSCRIPTION_NOTE_ZH = `那一份不是基因报告：本平台给它标的来源是「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」，上面写着的内容是从别处转录来的，不是实验室出的结论。`;
+
+/** The note, or nothing, folded on where a tail ends. */
+const transcriptionNoteZh = (laboratory: boolean) =>
+  laboratory ? '' : EVIDENCE_IS_TRANSCRIPTION_NOTE_ZH;
+
+/**
+ * …and the evidence document reads the same thing, for a field with no
+ * box.
+ *
+ * Ends in an attribution rather than in 来源无法确定, and stops short of
+ * naming WHICH read wrote it: an earlier read of a different document
+ * whose value happened to match would leave the archive looking exactly
+ * like this, and nothing recorded the write either way. What is left —
+ * that it is this platform's reading of a named document — is exactly
+ * what the passport puts in brackets over the same string.
+ */
+const geneticValueFromEvidenceTailZh = (laboratory: boolean) =>
+  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项与档案里这个值完全相同，而读取档案时那一份的解析结果会补上档案里空着的这一项，不留记录。所以这个值是${evidenceParseZh(laboratory)} —— 只是没有记录能指出是哪一次读取写进去的。${transcriptionNoteZh(laboratory)}`;
+
+/** …and the evidence document reads the same thing, for a field that
+ *  has a box. The match settles nothing about the author here — the
+ *  patient could have typed that same string into the box, so 「区分
+ *  不了」 is still the whole of what is known — but the receiver is told
+ *  the reading agrees, which is what keeps this sentence from being the
+ *  same string in the state where it does not. */
+const geneticValueMatchesEvidenceWithBoxTailZh = (laboratory: boolean) =>
+  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项与档案里这个值完全相同。所以这个值是患者自己填的，还是${evidenceParseZh(laboratory)}，本平台区分不了。${transcriptionNoteZh(laboratory)}`;
+
+/**
+ * …and the evidence document supplies a DIFFERENT reading.
+ *
+ * Prints the reading, because this document is going to a registry that
+ * receives the report's value too — the FHIR bundle emits it as an
+ * Observation of the document it came off, and every clinical surface
+ * prints it — and 「来源无法确定」 beside a silently different number is
+ * the state a receiver resolves by guessing.
+ *
+ * SAYS HOW THE TWO WERE COMPARED, because 「不同」 alone invites the
+ * wrong reading of the commonest case. The comparison is exact and over
+ * the strings as recorded: the shared fixture holds 「5 个重复单元」
+ * against a report reading 「5」, one measurement written two ways, and
+ * a bare 「与档案里这个值不同」 over that pair tells a registry the
+ * laboratory and the archive disagree about a repeat count. Loosening
+ * the comparison instead would be worse — it is the direction in which
+ * 5 and 15 become the same reading — so the export states the rule and
+ * hands the receiver both strings.
+ */
+const geneticValueReportDiffersTailZh = (reading: string, laboratory: boolean) =>
+  `${GENETIC_EVIDENCE_READ_SCOPE_ZH}；那一份的这一项是「${reading}」，与档案里这个值不完全一致（本平台按两边记录的原样逐字比对，不做单位换算或写法归一），所以档案里这一份不是那次读取的结果。它当初如何进入档案，本平台没有留下记录，来源无法确定。${transcriptionNoteZh(laboratory)}`;
+
+/**
+ * The provenance sentence for one genetic baseline value, marker
+ * folded in.
+ *
+ * Goes through `withOriginNote` like every other provenance string, and
+ * passes `whenMarkedZh` because EVERY branch contradicts a marker: one
+ * offers the patient as a possible author, one attributes the value to
+ * a report, and the rest say no record exists of how it arrived.
+ */
+export const geneticValueProvenanceZh = (
+  source: NormalisedSource,
+  field: GeneticBaselineField,
+): string => {
+  const spec = GENETIC_BASELINE_VALUE_ORIGINS[field];
+  const printed = spec.archived(source);
+  const { documentId, laboratory, values } = source.geneticEvidenceReading;
+  const reading = values[field];
+  // The order below only ever decides between the states a RENDERED
+  // value can be in. A null `printed` beside a live reading is not
+  // reachable through the service — `getProfileByUserId` runs the
+  // autofill before this module sees the baseline, so a report's
+  // reading is already sitting in the slot — and `textItem` drops an
+  // item with no value, so no sentence is shown for it either way.
+  //
+  // The reading is consulted for every field, the box only decides what
+  // a match is worth. Reading it on one branch and discarding it on the
+  // other is what left D4Z4 — the one genetic value a patient can also
+  // type — with a single sentence for three different states.
+  const tail =
+    reading === null
+      ? documentId === null
+        ? GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH
+        : GENETIC_VALUE_EVIDENCE_SILENT_TAIL_ZH
+      : reading === printed
+        ? spec.patientFormDrawsABox
+          ? geneticValueMatchesEvidenceWithBoxTailZh(laboratory)
+          : geneticValueFromEvidenceTailZh(laboratory)
+        : geneticValueReportDiffersTailZh(reading, laboratory);
+  const base =
+    `${spec.locationZh(source)}。` +
+    (spec.patientFormDrawsABox
+      ? GENETIC_VALUE_WITH_BOX_CLAUSE_ZH
+      : GENETIC_VALUE_NO_BOX_CLAUSE_ZH) +
+    tail;
+  // The marked sentence keeps the location and drops everything after
+  // it — including 分型's own longer location, which says which string
+  // the exported value was classified from and stays true of an
+  // administrator's entry.
+  return withOriginNote(source, spec.path, base, spec.locationZh(source));
+};
+
+/**
+ * 确诊年份, WHICH IS THE SAME QUESTION IN A DIFFERENT SHAPE.
+ *
+ * It sat beside the genetic three with 「档案中的确诊年份；该栏位缺失时
+ * 回退到确诊日期的年份部分」 — where the value sits, and nothing about
+ * what could have put it there — while they each stated whether this
+ * platform's own reading supports the archived value. The autofill
+ * fills `foundation.diagnosisYear` from the evidence report's 诊断日期,
+ * at read time, leaving no record, exactly as it fills the other four.
+ *
+ * WHY THIS IS NOT `geneticValueProvenanceZh` WITH A FIFTH ENTRY. That
+ * function concludes from an exact string comparison, and the two
+ * strings here are not the same shape: the export prints a YEAR and the
+ * report states a DATE. 「与档案里这个值不完全一致，所以档案里这一份不是
+ * 那次读取的结果」 over 2014 against 2014-03-02 is a false conclusion
+ * drawn from a true comparison, and loosening the comparison for one
+ * caller would loosen it for the four that need it exact. So this
+ * sentence prints the report's date and draws no conclusion from
+ * comparing them — the receiver has both, and 「本平台没有留下记录」
+ * holds whether they agree or not.
+ */
+const DIAGNOSIS_YEAR_LOCATION_ZH = '档案中的确诊年份；该栏位缺失时回退到确诊日期的年份部分';
+
+const DIAGNOSIS_YEAR_BOX_CLAUSE_ZH =
+  '基线问卷为这一项提供输入框；同时本平台在读取档案时会用这份档案基因证据上的诊断日期补上档案里空着的这一项，不留记录，而问卷的输入框预填的正是读取到的档案值，保存时一并写回。';
+
+/** The read scope, plus the clause that puts 诊断日期 inside it — the
+ *  shared constant enumerates the genetic results, and a receiver
+ *  cannot be left to assume the date came off the same document.
+ *
+ *  Says 「那一份上面的」 rather than 「报告上的」: the document this
+ *  platform reads as a profile's genetic evidence is not always a
+ *  genetics report — `pickGeneticEvidenceDocument` takes a 病历摘要
+ *  quoting the results when that is the only copy — and a sentence
+ *  calling it one puts a laboratory behind a transcription. */
+const DIAGNOSIS_DATE_READ_SCOPE_ZH = `${GENETIC_EVIDENCE_READ_SCOPE_ZH}，那一份上面的诊断日期同样只从它读取`;
+
+const DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH = `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份没有诊断日期。这不等于该患者手里没有写着确诊时间的报告。这个年份当初如何进入档案，本平台没有留下记录，来源无法确定。`;
+
+const diagnosisYearFromReportTailZh = (reading: string, laboratory: boolean) =>
+  `${DIAGNOSIS_DATE_READ_SCOPE_ZH}；那一份的诊断日期是「${reading}」，本平台取其中的年份。所以这个年份是患者在问卷里填的，还是某一次读取用那个日期补上的，本平台没有留下记录，区分不了。${transcriptionNoteZh(laboratory)}`;
+
+export const diagnosisYearProvenanceZh = (source: NormalisedSource): string => {
+  // 记不清了 and 「never asked」 are answers about the question, not
+  // values with an author: there is nothing for a report reading to
+  // have supplied and nothing for the autofill to have written.
+  if (source.diagnosisYear.kind !== 'year') {
+    return withOriginNote(source, 'foundation.diagnosisYear', DIAGNOSIS_YEAR_LOCATION_ZH);
+  }
+  const { documentId, laboratory, diagnosisDate } = source.geneticEvidenceReading;
+  const tail =
+    diagnosisDate === null
+      ? documentId === null
+        ? GENETIC_VALUE_NO_EVIDENCE_REPORT_TAIL_ZH
+        : DIAGNOSIS_YEAR_EVIDENCE_SILENT_TAIL_ZH
+      : diagnosisYearFromReportTailZh(diagnosisDate, laboratory);
+  return withOriginNote(
+    source,
+    'foundation.diagnosisYear',
+    `${DIAGNOSIS_YEAR_LOCATION_ZH}。${DIAGNOSIS_YEAR_BOX_CLAUSE_ZH}${tail}`,
+    DIAGNOSIS_YEAR_LOCATION_ZH,
+  );
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -260,15 +689,17 @@ const CHALLENGE_LABELS: Record<string, string> = {
 /**
  * OCR field aliases.
  *
- * These duplicate the alias tables in profile.passport.ts, and that
- * duplication is deliberate for now rather than accidental: this lane
- * may not edit passport, and importing its private `pickField` is not
- * possible because it is not exported. The tables should be pulled
- * into one module — noted in the handoff. What must NOT happen in the
- * meantime is this file quietly recognising a KEY that passport does
- * not, so that the anesthesia card and the registry export disagree
- * about the same report. Every alias below is copied from
- * profile.passport.ts, and nothing has been invented.
+ * The genetic entries take their keys from `GENETIC_FIELD_KEYS`, which
+ * is the one table the passport reads from too. The laboratory and
+ * pulmonary aliases below are still copied from profile.passport.ts
+ * rather than shared, and until they are, what must NOT happen is this
+ * file quietly recognising a KEY that the passport does not, so that
+ * the anesthesia card and the registry export disagree about the same
+ * report. Every alias below is copied, and nothing has been invented.
+ *
+ * `geneticEvidenceOnly` marks the entries that may be read ONLY off
+ * the document `pickGeneticEvidenceDocument` names. See
+ * `collectReportFields`.
  */
 const REPORT_FIELD_SPECS: ReadonlyArray<{
   keys: readonly string[];
@@ -276,6 +707,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
   labelZh: string;
   category: ReportField['category'];
   codingKey: string | null;
+  geneticEvidenceOnly?: true;
 }> = [
   {
     key: 'creatineKinase',
@@ -349,19 +781,56 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
   },
   {
     key: 'd4z4Repeats',
-    keys: ['d4z4Repeats', 'd4z4RepeatPathogenic', 'd4z4_repeat_pathogenic', 'd4z4_repeats'],
+    keys: GENETIC_FIELD_KEYS.d4z4Repeats,
     labelZh: 'D4Z4 重复单元数',
     category: 'laboratory',
     codingKey: null,
+    geneticEvidenceOnly: true,
   },
   {
     key: 'haplotype',
-    keys: ['haplotype', 'haplotype4q', 'haplotype_4q'],
+    keys: GENETIC_FIELD_KEYS.haplotype,
     labelZh: '4q 单倍型',
     category: 'laboratory',
     codingKey: null,
+    geneticEvidenceOnly: true,
   },
 ];
+
+/**
+ * What this platform reads off the patient's genetic report for the
+ * genetic baseline fields, right now, and which document that was.
+ *
+ * `readGeneticEvidence` names the one document that is this profile's
+ * genetic evidence and reads the values off it — the same call the
+ * baseline autofill makes before writing any of them into an empty
+ * slot, and the same document the passport builds its diagnosis block
+ * from. A second document-picking rule here is how this export would
+ * come to disagree with the page the patient is looking at about which
+ * report is 「the」 report, which is the class of defect the whole
+ * module exists to prevent.
+ *
+ * Called ONCE per export, with the id handed to `collectReportFields`
+ * rather than re-picked there: two calls cannot disagree today, and the
+ * reason they cannot is that they are the same function — which is
+ * exactly what the last four call sites had going for them.
+ */
+const readGeneticEvidenceForExport = (
+  documents: readonly PatientDocumentDTO[],
+): NormalisedSource['geneticEvidenceReading'] => {
+  const reading = readGeneticEvidence(documents);
+  return {
+    documentId: reading.documentId,
+    laboratory: reading.laboratory,
+    values: {
+      diagnosisType: reading.diagnosisType,
+      d4z4: reading.d4z4,
+      haplotype: reading.haplotype,
+      methylation: reading.methylation,
+    },
+    diagnosisDate: reading.diagnosisDate,
+  };
+};
 
 const documentFields = (document: PatientDocumentDTO): Record<string, unknown> | null => {
   const payload = document.ocrPayload;
@@ -370,19 +839,10 @@ const documentFields = (document: PatientDocumentDTO): Record<string, unknown> |
   return isRecord(fields) ? fields : null;
 };
 
-const pickAlias = (fields: Record<string, unknown>, keys: readonly string[]): string | null => {
-  for (const key of keys) {
-    const value = fields[key];
-    if (typeof value === 'string') {
-      const trimmed = value.trim();
-      if (trimmed) return trimmed;
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  }
-  return null;
-};
-
-const collectReportFields = (documents: readonly PatientDocumentDTO[]): ReportField[] => {
+const collectReportFields = (
+  documents: readonly PatientDocumentDTO[],
+  geneticEvidenceDocumentId: string | null,
+): ReportField[] => {
   const out: ReportField[] = [];
   // Newest first so a consumer taking the head of each key gets the
   // most recent reading; `documents` already arrives sorted by
@@ -391,12 +851,27 @@ const collectReportFields = (documents: readonly PatientDocumentDTO[]): ReportFi
   const ordered = [...documents].sort(
     (a, b) => Date.parse(b.uploadedAt) - Date.parse(a.uploadedAt),
   );
+  /**
+   * A GENETIC reading is published off this document and no other.
+   *
+   * Every OTHER field here is a measurement with a time: two CK values
+   * off two blood panels are two real results, and a receiver wants
+   * both, each dated and each pointing at its own report. A repeat
+   * count is not that. It is one assay's answer about this person, and
+   * every clinical surface prints exactly one — so a bundle carrying a
+   * second one off a 病历摘要 hands a registry a 4q 单倍型 the passport
+   * does not print and the evidence grade was computed to be WITHOUT.
+   * The id is the one `readGeneticEvidenceForExport` already named, and
+   * it is the same answer the passport, the PDF, the referral pack and
+   * the share page are built on.
+   */
   ordered.forEach((document) => {
     const fields = documentFields(document);
     if (!fields) return;
-    const reportTime = pickAlias(fields, ['reportTime', 'report_time']);
+    const reportTime = pickReading(fields, ['reportTime', 'report_time']);
     REPORT_FIELD_SPECS.forEach((spec) => {
-      const value = pickAlias(fields, spec.keys);
+      if (spec.geneticEvidenceOnly && document.id !== geneticEvidenceDocumentId) return;
+      const value = pickReading(fields, spec.keys);
       if (value === null) return;
       out.push({
         key: spec.key,
@@ -449,6 +924,8 @@ export const normaliseSource = (
       };
     });
 
+  const geneticEvidenceReading = readGeneticEvidenceForExport(profile.documents);
+
   return {
     profile,
     options,
@@ -467,6 +944,7 @@ export const normaliseSource = (
         (document) => document.documentType === 'genetic_report',
       ),
     },
+    geneticEvidenceReading,
     familyHistoryStatement: text(disease?.familyHistory),
     currentStatus: {
       ambulation: text(status?.independentlyAmbulatory),
@@ -502,7 +980,7 @@ export const normaliseSource = (
         severity: text(event.severity),
         descriptionZh: text(event.description),
       })),
-    reportFields: collectReportFields(profile.documents),
+    reportFields: collectReportFields(profile.documents, geneticEvidenceReading.documentId),
   };
 };
 

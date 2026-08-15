@@ -1,13 +1,31 @@
 import { inferMriBodyMap, type BodyRegionMap } from './clinical-visuals';
+import {
+  DIAGNOSIS_DATE_KEYS,
+  GENETIC_FIELD_KEYS,
+  TRANSCRIBED_EVIDENCE_LABEL_ZH,
+  isLaboratoryGeneticReport,
+  pickGeneticEvidenceDocument,
+  type GeneticEvidenceDocumentLike,
+} from './genetic-evidence';
 
 export type OcrPayload = {
   extractedText?: string;
   fields?: Record<string, string | number>;
 } | null;
 
-export type DocumentLike = {
-  documentType?: string | null;
-  uploadedAt?: string | null;
+/**
+ * A document row as this module reads it.
+ *
+ * Declared as an extension of what the genetic-evidence picker needs
+ * rather than as a shape that happens to satisfy it, so that dropping
+ * `id` or `status` from here is a compile error and not a silently
+ * defaulted answer. `status` is the only thing separating a report
+ * whose parse came back empty from one whose parse has not come back,
+ * and `id` is the tiebreak that keeps an unchanged profile rendering
+ * identically; a caller that cannot supply either cannot be asked
+ * which of its documents is this profile's genetic evidence.
+ */
+export type DocumentLike = GeneticEvidenceDocumentLike & {
   ocrPayload?: OcrPayload;
 };
 
@@ -57,7 +75,10 @@ export type LatestMriVisualization = {
   sourceDocument: DocumentLike | null;
 };
 
-const pickField = (fields: Record<string, string | number> | undefined, keys: string[]) => {
+const pickField = (
+  fields: Record<string, string | number> | undefined,
+  keys: readonly string[],
+) => {
   if (!fields) return undefined;
   for (const key of keys) {
     const value = fields[key];
@@ -554,7 +575,25 @@ export const buildStrengthSummary = (fields?: Record<string, string | number>) =
 };
 
 export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike | null) => {
-  const latestGenetic = latestDocByType(docs, 'genetic_report');
+  /**
+   * THE ONE DOCUMENT THE GENETIC BLOCK BELOW READS.
+   *
+   * This used to be two expressions — the newest document typed
+   * `genetic_report`, else the newest document carrying any genetic
+   * key — and it was one of four private answers to the same question.
+   * The API's is now the only one, and `pickGeneticEvidenceDocument`
+   * is it (see lib/genetic-evidence.ts for why a copy of the rule
+   * lives in this bundle). 我的档案 prints these values ahead of the
+   * passport's own, so while the two rules disagreed, one profile's
+   * repeat count could be read off one report on 我的档案 and off
+   * another on 临床护照, with neither page mentioning the other.
+   *
+   * Everything else in this function still ranks per system by upload
+   * time, and should: two CK values off two blood panels are two real
+   * results and both belong on the page. The genetic values are the
+   * exception because they are one assay's reading — see the picker.
+   */
+  const geneticDoc = pickGeneticEvidenceDocument(docs);
   const latestMri = collectMriDocuments(docs)[0];
   const latestBlood = latestDocByTypes(docs, [
     'blood_panel',
@@ -569,62 +608,39 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
   ]);
   const latestPhysicalExam = latestDocByType(docs, 'physical_exam');
 
-  const fallbackGeneticDoc = latestDocWithFields(docs, [
-    'diagnosisType',
-    'diagnosis_type',
-    'd4z4Repeats',
-    'd4z4RepeatPathogenic',
-    'd4z4_repeat_pathogenic',
-    'd4z4_repeats',
-    'ecoRIFragment',
-    'ecoriFragmentKb',
-    'ecori_fragment_kb',
-    'EcoRI_kb',
-    'haplotype',
-    'haplotype4q',
-  ]);
-
-  const geneticFields = latestGenetic?.ocrPayload?.fields ?? fallbackGeneticDoc?.ocrPayload?.fields;
-  const geneticTypeFromReport = pickField(geneticFields, [
-    'diagnosisType',
-    'geneticType',
-    'geneType',
-    'diagnosis_type',
-    'genetic_type',
-  ]);
-  // Which side of the fallback won, kept rather than discarded. The
-  // 诊断与分型 panel prints its summary directly under that panel's
-  // `latestDate`, which is the genetic report's upload date — so a
-  // 分型 the patient typed into their profile would appear to have been
-  // read off that report. `profile.geneticMutation` is free text the
-  // patient maintains, and `applyGeneticReportAutofill` can also fill
-  // it from OCR without recording that it did, so 「came from the
-  // column」 is not the same claim as 「the patient typed it」 and this
-  // says only the first.
+  const geneticFields = geneticDoc?.ocrPayload?.fields;
+  /**
+   * WHOSE PAGE THE VALUES BELOW ARE ON.
+   *
+   * The picker takes a 病历摘要 quoting a repeat count when the genetics
+   * report read out nothing, and 病程 → 检查结果 then printed 分型, D4Z4,
+   * 单倍型 and 甲基化 in the panel a laboratory's numbers get, under a
+   * summary that named 这份报告 and a date that dated it. Nothing on the
+   * tab said a clinic had written the page.
+   */
+  const geneticFromLaboratory = geneticDoc ? isLaboratoryGeneticReport(geneticDoc) : false;
+  const geneticTypeFromReport = pickField(geneticFields, GENETIC_FIELD_KEYS.geneticType);
+  // Whether the picked document supplied the 分型 or the profile column
+  // did, kept rather than discarded. The 诊断与分型 panel prints its
+  // summary directly under that panel's `latestDate`, which is the
+  // upload date of the picked document — so a 分型 the patient typed
+  // into their profile would appear to have been read off it.
+  // `profile.geneticMutation` is free text the patient maintains, and
+  // `applyGeneticReportAutofill` can also fill it from OCR without
+  // recording that it did, so 「came from the column」 is not the same
+  // claim as 「the patient typed it」 and this says only the first.
   const geneticTypeFromProfile = geneticTypeFromReport
     ? undefined
     : (profile?.geneticMutation ?? undefined);
   const geneticType = geneticTypeFromReport || geneticTypeFromProfile;
-  const haplotype = pickField(geneticFields, ['haplotype', 'haplotype4q', 'haplotype_4q']);
-  const ecoRIFragment = pickField(geneticFields, [
-    'ecoRIFragment',
-    'ecoriFragment',
-    'ecoriFragmentKb',
-    'ecori_fragment_kb',
-    'EcoRI_kb',
-    'EcoRIFragment',
-  ]);
-  const d4z4Repeats = pickField(geneticFields, [
-    'd4z4Repeats',
-    'd4z4RepeatPathogenic',
-    'd4z4_repeat_pathogenic',
-    'd4z4_repeats',
-  ]);
-  const methylationValue = pickField(geneticFields, ['methylationValue', 'methylation_value']);
+  const haplotype = pickField(geneticFields, GENETIC_FIELD_KEYS.haplotype);
+  const ecoRIFragment = pickField(geneticFields, GENETIC_FIELD_KEYS.ecoRIFragment);
+  const d4z4Repeats = pickField(geneticFields, GENETIC_FIELD_KEYS.d4z4Repeats);
+  const methylationValue = pickField(geneticFields, GENETIC_FIELD_KEYS.methylationValue);
 
   const diagnosisDate =
     formatDate(profile?.diagnosisDate ?? null) ||
-    formatDate(pickField(geneticFields, ['diagnosisDate', 'diagnosis_date'])) ||
+    formatDate(pickField(geneticFields, DIAGNOSIS_DATE_KEYS)) ||
     null;
 
   const mriDoc = latestMri;
@@ -722,26 +738,44 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     .filter((value): value is string => Boolean(value))
     .map((value) => compactText(value, value));
 
+  /** The upload date of the document the values below were read off.
+   *
+   *  It reaches a reader as the 诊断与分型 panel's `latestDate`, printed
+   *  on 病程 in the same row as the panel title and above the values —
+   *  a date over a set of numbers is a claim about those numbers. It
+   *  used to be the newest `genetic_report`'s date instead, which was
+   *  the date of a report whose fields were not necessarily the ones
+   *  on screen: the fallback could take the values off an entirely
+   *  different document and this line went on naming the typed one, or
+   *  printed 「—」 when no typed report existed at all. One document
+   *  supplies the values and the date now.
+   *
+   *  It is also written onto each metric, where nothing reads it —
+   *  `ReportInsightMetric.date` has no renderer on any screen. Set
+   *  from the same source anyway rather than left pointing at the old
+   *  one, because a stale field is worse than an unused one. */
+  const geneticEvidenceDate = formatDate(geneticDoc?.uploadedAt ?? null);
+
   const diagnosisPanelMetrics: ReportInsightMetric[] = [
     {
       label: '分型',
       value: geneticType ?? '—',
-      date: formatDate(latestGenetic?.uploadedAt ?? null),
+      date: geneticEvidenceDate,
     },
     {
       label: 'D4Z4',
       value: d4z4Repeats ?? '—',
-      date: formatDate(latestGenetic?.uploadedAt ?? null),
+      date: geneticEvidenceDate,
     },
     {
       label: '单倍型',
       value: haplotype ?? '—',
-      date: formatDate(latestGenetic?.uploadedAt ?? null),
+      date: geneticEvidenceDate,
     },
     {
       label: '甲基化',
       value: methylationValue ?? '—',
-      date: formatDate(latestGenetic?.uploadedAt ?? null),
+      date: geneticEvidenceDate,
     },
   ].filter((item) => item.value && item.value !== '—');
 
@@ -1060,18 +1094,44 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
   const respiratoryState = getPanelState(respiratorySections);
   const cardiacState = getPanelState(cardiacSections);
 
+  /**
+   * The bracket after the values, and the two things it has to be able
+   * to say.
+   *
+   * 分型 CAN COME OFF THE PROFILE COLUMN while the rest come off the
+   * document, which is what the first note is for. It said 「不是这份
+   * 报告读出来的」 and called the document a 报告 while doing it.
+   *
+   * AND THE DOCUMENT IS NOT ALWAYS A REPORT. `pickGeneticEvidenceDocument`
+   * takes a 病历摘要 quoting the results when the genetics report read
+   * out nothing, so 检查结果 printed a clinic's transcription of a repeat
+   * count in the panel a laboratory's number gets — same title, same
+   * date line, same metric grid — with nothing on the tab saying who
+   * wrote the page. 临床护照, one tap away, brackets each of those values
+   * with the API's own phrase, which is the phrase repeated here.
+   *
+   * OUTSIDE `compactText`, and that is the point of building it
+   * separately. The helper cuts its input at 88 characters, so a note
+   * concatenated onto the values before the cut is the part that
+   * disappears on exactly the profiles that carry the most values —
+   * which the 分型 note already did.
+   */
+  const diagnosisSummaryNoteZh = [
+    geneticTypeFromProfile ? '分型来自档案，不是从这份文件里读出来的' : null,
+    geneticDoc && !geneticFromLaboratory
+      ? `本平台读作基因证据的那一份不是基因报告，给它标的来源是「${TRANSCRIBED_EVIDENCE_LABEL_ZH}」，上面的结果是转录来的，不是实验室出的结论`
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join('；');
+
   const diagnosisPanel: ReportInsightPanel = {
     key: 'diagnosis',
     title: '诊断与分型',
-    summary: compactText(
-      geneEvidence
-        ? geneticTypeFromProfile
-          ? `${geneEvidence}（分型来自档案，不是这份报告读出来的）`
-          : geneEvidence
-        : geneticType,
-      '暂无可直接展示的诊断证据',
-    ),
-    latestDate: formatDate(latestGenetic?.uploadedAt ?? null) ?? '—',
+    summary: `${compactText(geneEvidence || geneticType, '暂无可直接展示的诊断证据')}${
+      diagnosisSummaryNoteZh ? `（${diagnosisSummaryNoteZh}）` : ''
+    }`,
+    latestDate: geneticEvidenceDate ?? '—',
     metrics: diagnosisPanelMetrics,
   };
 

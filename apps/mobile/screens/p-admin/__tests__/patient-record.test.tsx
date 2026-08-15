@@ -92,6 +92,7 @@ jest.mock('../download', () => {
   };
 });
 
+import { ADMIN_AUDIT_NOTICE } from '../common';
 import AdminPatientRecordScreen from '../patient-record';
 import styles from '../styles';
 
@@ -332,28 +333,39 @@ describe('a genetic result has no box, and the screen says why', () => {
     }
   });
 
-  it('routes the ones with no box to the correction that exists', async () => {
+  it('gives the ones with no box no script to read out', async () => {
     // 单倍型 and 甲基化 have no box on this screen and none on the
     // patient's form, and the server refuses them from an
-    // administrator. But they are read off a report, and the patient
-    // can correct that reading himself — 报告详情 has a 手动修正 control
-    // and the server's editable-OCR allowlist takes both fields. So the
-    // row must not send the operator to promise a back-office fix, and
-    // must not send the patient to upload the report over again.
+    // administrator. The row used to hand the operator the steps for
+    // correcting the report instead — 「打开那份报告，点「识别有误？手动
+    // 修正」」 — and that control is drawn only for a `parsed` or
+    // `needs_review` row, which this screen cannot vouch for: it holds
+    // the status as of page load and a 重新识别 tap moves it. So the row
+    // names where the decision is made and describes no control.
     const actual = jest.requireActual('../../../lib/admin-api');
     mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
     const tree = await render();
 
     for (const label of ['单倍型', '甲基化']) {
       const row = rowFor(tree, label);
-      expect(row).toContain('识别有误？手动修正');
-      // Says a re-upload is NOT needed. Asserting on the bare word would
-      // fail against the sentence that rules it out.
-      expect(row).toContain('不用让他重新上传');
+      expect(row).not.toContain('识别有误');
+      expect(row).not.toContain('手动修正');
+      // No promise either way about a re-upload: whether one is needed
+      // is the same thing this screen cannot see.
+      expect(row).not.toContain('不用让他重新上传');
       expect(row).not.toContain('请他上传新的报告');
       // The remedy that works for the other pair does not work here:
       // pointing at 编辑资料 is pointing at a screen with no box.
       expect(row).not.toContain('请他自己在编辑资料里改');
+      // Nor does it claim the value has no recorded origin: the row
+      // carries an origin chip and a legacy marker can sit on these
+      // paths, so a sentence saying nothing was recorded would deny
+      // what the same row is showing.
+      expect(row).not.toContain('没有留下记录');
+      // What is left: nobody here can type it, and the report's own
+      // page is where a correction to a reading is decided.
+      expect(row).toContain('本平台这边现在没有人能改');
+      expect(row).toContain('那份报告自己的页面');
     }
   });
 
@@ -544,7 +556,40 @@ describe('saving', () => {
         String(node.props.accessibilityLabel).startsWith('保存'),
     );
     expect(hasSave).toHaveLength(0);
-    expect(textContent(tree.root)).toContain('基因报告自动补全');
+    expect(textContent(tree.root)).toContain('经过了自动补全');
+  });
+});
+
+/**
+ * NOTHING ON THIS SCREEN MAY TELL AN OPERATOR A GENETIC REPORT SUPPLIED
+ * A VALUE.
+ *
+ * The three notices about the read-time autofill each named 基因报告 as
+ * where the filled value comes from. `pickGeneticEvidenceDocument` takes
+ * a 病历摘要 quoting the results whenever the genetics report read out
+ * nothing, and a large share of these patients have never uploaded a
+ * genetics report at all — so the sentence an operator reads out on the
+ * phone asserted a document that does not exist, on the one screen whose
+ * whole job is to keep him from saying something the record cannot back.
+ *
+ * This screen cannot see which document was picked: it renders the
+ * stored column and a list of rows. So the claim is gone rather than
+ * qualified, and what stays is the instruction — look at the list.
+ */
+describe('后台不替某一类文件背书', () => {
+  it('说自动补全是从上传的文件来的，不说是从基因报告来的', async () => {
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const tree = await render();
+    const screen = textContent(tree.root);
+
+    expect(screen).toContain('会用他上传的文件里读到的值补上缺的基因结果');
+    expect(screen).not.toContain('会用他已上传的基因报告里的值');
+    expect(screen).not.toContain('从他已上传的基因报告里自动补上');
+
+    // The instruction the note exists for is untouched: an empty row
+    // here is not 「你没填」, and the answer is in the list below.
+    expect(screen).toContain('别在电话里说「你没填」');
   });
 });
 
@@ -755,5 +800,21 @@ describe('§B4 导出：单个患者', () => {
     const screen = textContent((await render()).root);
     expect(screen).toContain('自动补上');
     expect(screen).toContain('编辑框里是数据库存的原值');
+  });
+});
+
+describe('the audit banner is true on the one page whose rows do name a patient', () => {
+  it('draws the one notice over the record whose read was audited with this patient', async () => {
+    // The half of the banner that survives: `getPatientRecord` is
+    // mounted with `targetParam: 'userId'`, so the row written before
+    // this screen got its data carries this patient's id. The
+    // subtitle says the same thing in the first person, and the two
+    // are the reason the banner still mentions a patient at all
+    // instead of the sentence being deleted outright.
+    const actual = jest.requireActual('../../../lib/admin-api');
+    mockGetRecord.mockResolvedValue(actual.readAdminPatientRecord(recordBody()));
+    const screen = textContent((await render()).root);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).toContain('打开这一页时已经写了一条读取审计记录');
   });
 });

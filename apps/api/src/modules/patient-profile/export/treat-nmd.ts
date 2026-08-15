@@ -1,6 +1,8 @@
 import { buildCodingProvenance, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
+  diagnosisYearProvenanceZh,
+  geneticValueProvenanceZh,
   instrumentOmission,
   withOriginNote,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
@@ -155,23 +157,36 @@ export const buildTreatNmdExport = (
         key: 'diagnosis.type',
         labelZh: 'FSHD 分型',
         value: source.diagnosisType,
-        provenanceZh: withOriginNote(
-          source,
-          'diseaseBackground.diagnosisType',
+        // 「患者档案记录为「FSHD1」」 said where the value sits and
+        // stopped, in a section where its three genetic siblings each
+        // state whether this platform's own reading of the evidence
+        // report supports the archived value. Same question, same
+        // machinery: see GENETIC_BASELINE_VALUE_ORIGINS. The
+        // 未采集到 branch keeps its own sentence — there is no archived
+        // value to attribute, only a classification of its absence.
+        provenanceZh:
           source.diagnosisTypeRawZh === null
-            ? '未采集到分型；unspecified 表示「未确定是哪一型」，不是默认为 1 型'
-            : `患者档案记录为「${source.diagnosisTypeRawZh}」`,
-        ),
+            ? withOriginNote(
+                source,
+                'diseaseBackground.diagnosisType',
+                '未采集到分型；unspecified 表示「未确定是哪一型」，不是默认为 1 型',
+              )
+            : geneticValueProvenanceZh(source, 'diagnosisType'),
       },
       {
         key: 'diagnosis.year',
         labelZh: '确诊年份',
         value: serialiseYear(source.diagnosisYear),
-        provenanceZh: withOriginNote(
-          source,
-          'foundation.diagnosisYear',
-          '基线问卷的确诊年份，缺失时回退到确诊日期的年份部分',
-        ),
+        // 「基线问卷的」 came off this sentence for the reason the
+        // genetic three lost it: `applyGeneticReportAutofill` fills an
+        // empty `foundation.diagnosisYear` from an uploaded report's
+        // date, at read time, before this exporter sees the profile —
+        // so the questionnaire is one possible author here, not the
+        // author. What replaces it says the same thing the genetic
+        // siblings say, from the same reading of the same document; the
+        // year-against-a-date comparison is why it is its own sentence
+        // rather than a fifth entry in their table.
+        provenanceZh: diagnosisYearProvenanceZh(source),
       },
       {
         key: 'diagnosis.geneticallyConfirmed',
@@ -179,23 +194,28 @@ export const buildTreatNmdExport = (
         value: source.geneticEvidence.hasGeneticReport,
         provenanceZh: '依据患者是否上传过基因检测报告文件判断，不代表报告内容已被人工核对',
       },
+      // The three genetic results do not share one provenance sentence,
+      // and geneticValueProvenanceZh is where the reason is written
+      // down: 甲基化 and 单倍型 have no box on any patient form and no
+      // back-office write either, so 基线问卷 named an author who cannot
+      // exist for them.
       textItem(
         'diagnosis.d4z4',
         'D4Z4 重复单元数',
         source.geneticEvidence.d4z4,
-        withOriginNote(source, 'diseaseBackground.d4z4', '基线问卷或基因报告结构化解析'),
+        geneticValueProvenanceZh(source, 'd4z4'),
       ),
       textItem(
         'diagnosis.haplotype',
         '4q 单倍型',
         source.geneticEvidence.haplotype,
-        withOriginNote(source, 'diseaseBackground.haplotype', '基线问卷或基因报告结构化解析'),
+        geneticValueProvenanceZh(source, 'haplotype'),
       ),
       textItem(
         'diagnosis.methylation',
         '甲基化',
         source.geneticEvidence.methylation,
-        withOriginNote(source, 'diseaseBackground.methylation', '基线问卷或基因报告结构化解析'),
+        geneticValueProvenanceZh(source, 'methylation'),
       ),
     ]),
     noteZh: null,
@@ -292,8 +312,14 @@ export const buildTreatNmdExport = (
             key: 'motor.ambulation',
             labelZh: '当前行走能力',
             value: source.currentStatus.ambulation,
+            // 「基线问卷记录的」 is gone from the fallback here and in
+            // 轮椅使用 below. `InstrumentsService` writes this exact
+            // field with a nested jsonb_set when a patient ticks
+            // 「把结果同步到我的档案」 on a Vignos administration, so the
+            // questionnaire is not the only author — and this document
+            // says so itself, in the omission a few lines down.
             provenanceZh:
-              AMBULATION_LABELS[source.currentStatus.ambulation] ?? '基线问卷记录的行走状态',
+              AMBULATION_LABELS[source.currentStatus.ambulation] ?? '档案中记录的行走状态',
           },
       boolItem(
         'motor.armRaiseDifficulty',
@@ -374,7 +400,7 @@ export const buildTreatNmdExport = (
             provenanceZh:
               source.currentStatus.ambulation === 'assisted'
                 ? '注意：2022 年迁移 022 之前，「需要辅助」是无法行走者唯一可选的答案，历史值不能当作「借助器具仍可行走」的证据'
-                : (AMBULATION_LABELS[source.currentStatus.ambulation] ?? '基线问卷记录的行走状态'),
+                : (AMBULATION_LABELS[source.currentStatus.ambulation] ?? '档案中记录的行走状态'),
           },
       ...wheelchairMilestones.map(milestoneItem),
     ]),

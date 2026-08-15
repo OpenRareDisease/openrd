@@ -23,6 +23,15 @@ import { AppError } from '../utils/app-error.js';
  *    handler runs, so a route added next month cannot forget to call
  *    anything.
  *
+ *    WHAT A ROW CAN ANSWER, exactly — `ADMIN_AUDIT_NOTICE` promises
+ *    it to operators on every back-office screen, so it has to be
+ *    stated rather than assumed: the administrator, the time
+ *    (`audit_logs.occurred_at`), the method and the path, ALWAYS; and
+ *    which patient, only where `targetParam` names one. A route whose
+ *    subject is a page of patients, or nobody, or the whole cohort has
+ *    no single id to record and records none. Reading 「看了谁」 out of
+ *    those rows is reading something that was never written.
+ *
  * 2. THE ROLE COMES FROM THE DATABASE, NOT FROM THE TOKEN. The JWT
  *    carries `role` (see require-auth.ts) and it is a snapshot from
  *    sign-in time. Reading it here would mean `npm run admin:revoke`

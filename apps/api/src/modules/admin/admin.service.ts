@@ -177,8 +177,9 @@ export interface AdminExportRow {
    * The STORED `baseline_payload`, exactly as it sits in the column.
    *
    * Not the payload the app renders: `applyGeneticReportAutofill` fills
-   * a missing D4Z4 / haplotype / diagnosis year from the patient's
-   * latest genetic report at READ time, and that merge is deliberately
+   * a missing D4Z4 / haplotype / diagnosis year off the report
+   * `pickGeneticEvidenceDocument` names, at READ time, and that merge is
+   * deliberately
    * not applied here so that this file answers「数据库里有什么」rather
    * than「界面上显示什么」. A blank d4z4 column therefore means the
    * baseline does not hold one — the patient may still have uploaded a

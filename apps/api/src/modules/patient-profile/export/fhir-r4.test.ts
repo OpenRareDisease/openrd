@@ -676,3 +676,81 @@ describe('FHIR R4 — §B3：管理员代填的值不能记成患者自述', () 
     expect(build().notes.字段来源).toContain('没有本平台工作人员代填');
   });
 });
+
+/**
+ * A genetic value is published off ONE document, and it is the one
+ * every clinical surface names.
+ *
+ * The other Observations in this bundle are measurements with times: a
+ * second CK off a second blood panel is a second real result and a
+ * receiver wants both. A repeat count is not that — it is one assay's
+ * answer about this person, and the passport, the referral pack, the
+ * share page and the PDF each print exactly one. A bundle that also
+ * carried a 病历摘要's transcription handed a registry a second reading
+ * nobody on this platform is looking at, and in the case below a 4q
+ * 单倍型 the evidence grade was computed to be WITHOUT.
+ */
+describe('FHIR R4 —— 基因读数只从被点名的那一份报告出', () => {
+  const summaryTranscription: PatientProfileDTO['documents'][number] = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    id: '88888888-8888-4888-8888-888888888899',
+    documentType: 'medical_summary',
+    title: '门诊病历摘要',
+    uploadedAt: '2025-09-01T06:00:00.000Z',
+    ocrPayload: {
+      fields: {
+        classifiedType: 'medical_summary',
+        d4z4Repeats: '9',
+        haplotype: '4qB',
+        methylationValue: '30%',
+      },
+    },
+  };
+
+  const geneticObservations = (result: ReturnType<typeof build>) =>
+    resourcesOf(result, 'Observation')
+      .filter((resource) => /D4Z4|单倍型/.test((resource.code as { text?: string }).text ?? ''))
+      .map((resource) => ({
+        label: (resource.code as { text: string }).text,
+        value: resource.valueString,
+      }));
+
+  it('病历摘要抄的重复数和单倍型不会另开一条 Observation', () => {
+    const withSummary = build({
+      documents: [...EXPORT_FIXTURE_PROFILE.documents, summaryTranscription],
+    });
+
+    expect(geneticObservations(withSummary)).toEqual([
+      { label: 'D4Z4 重复单元数', value: '5' },
+      { label: '4q 单倍型', value: '4qA' },
+    ]);
+    expect(JSON.stringify(withSummary)).not.toContain('4qB');
+  });
+
+  it('病历摘要仍然作为上传文件出现 —— 抹掉的是它的读数，不是它本身', () => {
+    // The patient uploaded it and a receiver should see that they did.
+    // What it may not do is state this patient's genetic result.
+    const withSummary = build({
+      documents: [...EXPORT_FIXTURE_PROFILE.documents, summaryTranscription],
+    });
+    expect(JSON.stringify(resourcesOf(withSummary, 'DocumentReference'))).toContain('门诊病历摘要');
+  });
+
+  it('被点名的报告换人时，读数跟着换', () => {
+    // Same two documents, except the genetics report parsed to nothing
+    // — so the transcription is the only reading there is, and it is
+    // the one every other surface prints too.
+    const emptyGenetic = {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      ocrPayload: { fields: { reportTime: '2024-01-28' } },
+    };
+    const flipped = build({
+      documents: [emptyGenetic, ...EXPORT_FIXTURE_PROFILE.documents.slice(1), summaryTranscription],
+    });
+
+    expect(geneticObservations(flipped)).toEqual([
+      { label: 'D4Z4 重复单元数', value: '9' },
+      { label: '4q 单倍型', value: '4qB' },
+    ]);
+  });
+});

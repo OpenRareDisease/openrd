@@ -31,9 +31,27 @@ import styles from './styles';
  * request with a 503 if that write fails. So this sentence is a
  * description of the mechanism, and an operator who reads it and keeps
  * browsing has been told the truth.
+ *
+ * IT NAMES A PATIENT ONLY WHERE A ROW CAN CARRY ONE, and that is the
+ * whole shape of the sentence. `targetUserId` is filled from
+ * `AdminAuditSpec.targetParam` — a patient id in the route's OWN PATH —
+ * so the routes behind `getPatientRecord`, `updatePatientBaseline` and
+ * `exportPatient` name a patient, and the others cannot: `listPatients`
+ * answers with a page of many, the ops panels are about nobody, and
+ * `exportAllPatientsCsv` is about everybody (the extra row
+ * `recordFullExportAudit` writes says how many, not who).
+ *
+ * `AdminScreen` draws this banner on EVERY back-office screen, so a
+ * sentence that promised 「看了哪位患者」 was false on each screen whose
+ * rows carry none — including the one an operator opens to take the
+ * whole database. It now says which requests carry a patient and what
+ * the rest carry, and each screen's test asserts that THIS string is
+ * the text drawn there, so a screen cannot end up under a different
+ * promise from the one the audit rows keep.
  */
-const ADMIN_AUDIT_NOTICE =
-  '你在这里打开的每一页都会记进审计：哪个管理员账号、什么时间、看了哪位患者的哪个接口。' +
+export const ADMIN_AUDIT_NOTICE =
+  '你在这里打开的每一页都会记进审计：哪个管理员账号、什么时间、请求了哪个接口。' +
+  '针对某一位患者的请求还会记下是哪一位；患者列表、运维面板和全量导出不针对某一位患者，记录里就没有患者这一项。' +
   '记录写不进去时，服务端会直接拒绝这次访问，而不是先给你看。';
 
 const AdminAuditBanner = () => (

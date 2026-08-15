@@ -90,7 +90,17 @@ export const createAdminRouter = (context: RouteContext, deps: AdminRouterDeps) 
   });
 
   // ------------------------------------------------------------ patients
-
+  //
+  // No `targetParam`, and it is not an omission: a page of patients
+  // matching a search is not one patient, and `targetUserId` holds one
+  // id. Recording the page's ids instead would write a roster of this
+  // cohort INTO audit_logs — the table whose own masking module
+  // (services/audit/identity-masking.ts) exists to keep such values out
+  // of it, and the reason `_auditPathOf` drops this route's `?q=`.
+  // The trail still answers 「谁看了谁」 for anyone who was actually
+  // looked at: the list hands back masked names and phone numbers, and
+  // turning one row into a person costs an `admin.record_read` row on
+  // the route below.
   router.get(
     '/patients',
     ...requireAdmin(context, { event: 'admin.list' }),
@@ -141,6 +151,14 @@ export const createAdminRouter = (context: RouteContext, deps: AdminRouterDeps) 
   // does name patients (it has to — the point is to go and look at the
   // failing document), and it is still not a record read: it discloses
   // that a document failed to parse, not what is in it.
+  //
+  // So none of them declares a `targetParam` and none of their rows
+  // names a patient. The queue is the one worth saying out loud: the
+  // ids in its RESPONSE are the query's answer rather than an operator
+  // choosing whose document to look at, and recording them would put
+  // 「这些人的报告解析失败了」 into audit_logs as a list. The act the
+  // trail is for happens next, when the operator opens one of those
+  // records — and that request is audited with the patient.
   router.get(
     '/ops/corpus',
     ...requireAdmin(context, { event: 'admin.list' }),

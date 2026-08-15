@@ -426,7 +426,10 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
     const html = rendered(p);
 
     expect(buildClinicalPassportSummary(p).diagnosis.confirmation).toBe('genetic');
-    expect(rowOf(html, '分型')).toContain('我猜是 FSHD1（本人填写）');
+    // Not 「本人填写」 either: `patient_profiles.genetic_mutation` is
+    // written by the patient's own endpoint AND by the read-time
+    // autofill, and nothing records which — see `resolveValueOrigin`.
+    expect(rowOf(html, '分型')).toContain('我猜是 FSHD1（来源无法确定）');
     expect(rowOf(html, 'D4Z4 重复数')).toContain('4（报告读取）');
     expect(html).not.toContain('以下诊断信息来自患者上传的基因检测报告，由系统自动读取');
   });
@@ -493,18 +496,22 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
 
   it('基因证据只剩分型时，跟分型那一行印同一个来源', () => {
     // Nothing was read off a report at all, so the joined row IS 分型.
-    // 「来源无法确定」 here would contradict the 分型 row two lines up.
+    // Two different brackets over one string, two lines apart, is the
+    // page disagreeing with itself in front of a clinician.
     const html = rendered(profile({ geneticMutation: '我猜是FSHD1' } as never));
 
-    expect(rowOf(html, '分型')).toContain('我猜是FSHD1（本人填写）');
-    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1（本人填写）');
-    expect(rowOf(html, '基因证据')).not.toContain('来源无法确定');
+    expect(rowOf(html, '分型')).toContain('我猜是FSHD1（来源无法确定）');
+    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1（来源无法确定）');
   });
 
   it('横幅不替没读过的报告说话', () => {
-    // The page reads one genetic document. 「没有从该患者上传的任何报告里
-    // 读到」 is a claim about every report the patient has uploaded, and
-    // an earlier report carrying a repeat count is never opened.
+    // The page reads ONE genetic document, and `pickGeneticDocument`
+    // picks the one that fills the most of the block rather than the
+    // newest — so the report that loses can still be the only one
+    // carrying a repeat count. That is the residue of reading a single
+    // report instead of merging several, and it is what makes
+    // 「没有从该患者上传的任何报告里读到」 a claim this page cannot make:
+    // it is a claim about every report, and one of them was not opened.
     const html = rendered(
       profile({
         geneticMutation: 'FSHD1',
@@ -514,7 +521,10 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
             id: 'd-old',
             uploadedAt: '2019-05-03T00:00:00.000Z',
           },
-          { ...geneticReport({ reportImpression: '未见异常' }), id: 'd-new' },
+          {
+            ...geneticReport({ diagnosisType: 'FSHD1', diagnosisDate: '2026-01-09' }),
+            id: 'd-new',
+          },
         ],
       } as never),
     );
@@ -533,14 +543,19 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
     expect(rowOf(html, '诊断日期')).not.toContain('本人填写');
   });
 
-  it('档案里有日期、任何报告都没带日期时，才说「本人填写」', () => {
+  it('档案里有日期、任何报告都没带日期时，也还是说不出是谁填的', () => {
+    // 「手上一份报告都没带日期」 rules out today's documents and not the
+    // history: the autofill writes this column at read time and its
+    // source report can be deleted or re-parsed afterwards, which lands
+    // exactly here. This used to be the one road to 「本人填写」.
     const html = rendered(
       profile({
         diagnosisDate: '2019-05-03',
         documents: [geneticReport({ d4z4Repeats: '4' })],
       } as never),
     );
-    expect(rowOf(html, '诊断日期')).toContain('2019-05-03（本人填写）');
+    expect(rowOf(html, '诊断日期')).toContain('2019-05-03（来源无法确定）');
+    expect(rowOf(html, '诊断日期')).not.toContain('本人填写');
   });
 
   it('两边都有日期时说「来源无法确定」，不猜', () => {
@@ -882,7 +897,7 @@ describe('基线里的基因数值印在分享页上', () => {
     expect(effective(html, typed, 'font-variant-numeric')).toBe('normal');
   });
 
-  it('患者自己填的同样印出来，标「本人填写」', () => {
+  it('没有来源记录时，每一行都标「来源无法确定」，一行都不记到患者名下', () => {
     const html = rendered(
       profile({
         diagnosisDate: '2019-01-01',
@@ -893,8 +908,13 @@ describe('基线里的基因数值印在分享页上', () => {
       } as never),
     );
 
-    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（本人填写）');
-    expect(rowOf(html, '甲基化')).toContain('25%（本人填写）');
+    // 「没有来源记录」 是关于本平台记了什么的一句话，不是关于这个值是谁
+    // 敲进去的。医生扫码看到的这一行如果写着「本人填写」，那是本平台替
+    // 患者认下了一件自己查不出来的事。
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('6（来源无法确定）');
+    expect(rowOf(html, '分型')).toContain('FSHD1（来源无法确定）');
+    expect(rowOf(html, '甲基化')).toContain('25%（来源无法确定）');
+    expect(html).not.toContain('本人填写');
   });
 
   /**

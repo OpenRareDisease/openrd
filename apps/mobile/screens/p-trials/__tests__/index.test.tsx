@@ -91,7 +91,12 @@ import { Linking } from 'react-native';
 import TrialsScreen from '../index';
 import styles from '../styles';
 import { MIN_TOUCH_TARGET } from '../../../lib/a11y';
-import { formatInstantAsDay, type TrialRecord, type TrialSourceStatus } from '../../../lib/trials';
+import {
+  formatInstantAsDay,
+  type TrialRecord,
+  type TrialSourceStatus,
+  type TrialsSnapshot,
+} from '../../../lib/trials';
 
 const FETCHED_AT = '2026-08-12T02:00:00.000Z';
 const FETCHED_DAY = formatInstantAsDay(FETCHED_AT) as string;
@@ -405,6 +410,203 @@ describe('取不到的时候', () => {
     expect(rendered).not.toContain('A Study of Something in FSHD');
     expect(rendered).not.toContain(`拉取于 ${FETCHED_DAY}`);
     expect(rendered).toContain('暂时读不到试验名单');
+  });
+});
+
+/**
+ * 三件事各自变化，横幅却是同一批：国内那半边的抓取结果、境外那半边的
+ * 抓取结果、名单到底有没有画到屏幕上。
+ *
+ * 前两件是 `describeChinaCoverage` 和 `describeCtgovStaleness` 一直在
+ * 看的；第三件它们以前没看，而它们停的位置——名单上方——在空名单和
+ * 「没有抓取时间」那两张卡片下面照样渲染。于是「下面这份名单目前只有
+ * ClinicalTrials.gov 的记录」和「重要的试验请点开原始记录核对」会一起
+ * 出现在一块什么都没有的屏幕上，互相还打架：一句说名单在下面，另一句
+ * 让读者去点名单里的记录。
+ *
+ * 下面把三者铺开渲染，从树上把文案读回来。
+ */
+describe('组合起来时，屏幕上的每一句话都要成立', () => {
+  type RunKind = 'ok' | 'failed' | 'unfinished' | 'never';
+
+  /** `ok = false` 配 `finished_at` 为空是「跑了没回来」，和「跑完了但
+   *  失败」是两句不同的话 —— 迁移 026 让前者只可能是这个意思。 */
+  const runOf = (kind: RunKind) =>
+    kind === 'never'
+      ? null
+      : {
+          startedAt: '2026-08-13T02:00:00.000Z',
+          finishedAt: kind === 'unfinished' ? null : '2026-08-13T02:00:30.000Z',
+          ok: kind === 'ok',
+        };
+
+  const statusOf = (
+    source: TrialSourceStatus['source'],
+    kind: RunKind,
+    overrides: Partial<TrialSourceStatus> = {},
+  ): TrialSourceStatus =>
+    sourceStatus({
+      source,
+      lastRun: runOf(kind),
+      lastSuccessAt: kind === 'ok' ? '2026-08-13T02:00:30.000Z' : '2026-08-01T00:00:05.000Z',
+      ...overrides,
+    });
+
+  const CN_TRIAL = 'A MAINLAND STUDY';
+  const cnTrial = (overrides: Partial<TrialRecord> = {}): TrialRecord =>
+    trial({
+      source: 'chinadrugtrials',
+      sourceId: 'CTR20250001',
+      title: CN_TRIAL,
+      url: 'http://www.chinadrugtrials.org.cn/CTR20250001',
+      ...overrides,
+    });
+
+  type ListKind =
+    | 'shown' // 只有境外记录，带得出抓取时间
+    | 'shown-with-cn' // 两个来源的记录都在名单里
+    | 'empty' // 一条都没有，也没有抓取时间
+    | 'empty-dated' // 一条都没能读出来，来源块却还带着抓取时间
+    | 'undated' // 记录回来了，没有一个可读的抓取时间
+    | 'undated-with-cn'; // 同上，而且国内记录也在里面
+
+  /** 名单真画到屏幕上的只有这两种。 */
+  const DRAWS_A_LIST: ListKind[] = ['shown', 'shown-with-cn'];
+  const DRAWS_NOTHING: ListKind[] = ['empty', 'empty-dated', 'undated', 'undated-with-cn'];
+
+  const snapshotFor = (cn: RunKind, ctgov: RunKind, list: ListKind): TrialsSnapshot => {
+    switch (list) {
+      case 'shown':
+        return {
+          trials: [trial()],
+          sources: [statusOf('ctgov', ctgov), statusOf('chinadrugtrials', cn, { recordCount: 0 })],
+        };
+      case 'shown-with-cn':
+        return {
+          trials: [trial(), cnTrial()],
+          sources: [statusOf('ctgov', ctgov), statusOf('chinadrugtrials', cn)],
+        };
+      case 'empty':
+        return {
+          trials: [],
+          sources: [
+            statusOf('ctgov', ctgov, { recordCount: 0, fetchedAt: null }),
+            statusOf('chinadrugtrials', cn, { recordCount: 0, fetchedAt: null }),
+          ],
+        };
+      case 'empty-dated':
+        // 服务端说它有记录，客户端一条都没解析出来（lib/trials-api.ts
+        // 的 asTrialRecord）。名单是空的，抓取时间却还在来源块上。
+        return {
+          trials: [],
+          sources: [
+            statusOf('ctgov', ctgov, { recordCount: 92 }),
+            statusOf('chinadrugtrials', cn, { recordCount: 0, fetchedAt: null }),
+          ],
+        };
+      case 'undated':
+        return {
+          trials: [trial({ fetchedAt: null })],
+          sources: [
+            statusOf('ctgov', ctgov, { fetchedAt: null }),
+            statusOf('chinadrugtrials', cn, { recordCount: 0, fetchedAt: null }),
+          ],
+        };
+      default:
+        return {
+          trials: [trial({ fetchedAt: null }), cnTrial({ fetchedAt: null })],
+          sources: [
+            statusOf('ctgov', ctgov, { fetchedAt: null }),
+            statusOf('chinadrugtrials', cn, { fetchedAt: null }),
+          ],
+        };
+    }
+  };
+
+  /** 指着屏幕上的名单说话的句子。名单没画出来，一句都不该出现。 */
+  const POINTS_AT_THE_LIST = [
+    '下面这份名单',
+    '请点开原始记录核对',
+    '要点开原始记录才看得到',
+    '本列表',
+    '其中国内登记的试验',
+    '国内这几条',
+  ];
+
+  const RUNS: RunKind[] = ['ok', 'failed', 'unfinished', 'never'];
+  const cellsOf = (lists: ListKind[]) =>
+    lists.flatMap((list) => RUNS.flatMap((cn) => RUNS.map((ctgov) => ({ list, cn, ctgov }))));
+
+  const renderWith = async (snapshot: TrialsSnapshot) => {
+    mockListTrials.mockResolvedValue(snapshot);
+    return screenText(await render());
+  };
+
+  it.each(cellsOf(DRAWS_NOTHING))(
+    '$list · 国内 $cn · 境外 $ctgov —— 名单没画出来，就没有一句话指着名单说',
+    async ({ list, cn, ctgov }) => {
+      const rendered = await renderWith(snapshotFor(cn, ctgov, list));
+      expect(rendered).not.toContain('A Study of Something in FSHD');
+      expect(rendered).not.toContain(CN_TRIAL);
+      for (const phrase of POINTS_AT_THE_LIST) {
+        expect(rendered).not.toContain(phrase);
+      }
+      // 但屏幕不是哑的：为什么什么都没有，一直有人在说。
+      expect(rendered).toMatch(/这次没有取到任何记录|这份名单没有抓取时间，暂不显示/);
+      // 而「去哪儿查」在每一格里都在。
+      expect(rendered).toContain('chinadrugtrials.org.cn');
+      expect(rendered).toContain('主诊医生');
+    },
+  );
+
+  it.each(cellsOf(DRAWS_A_LIST))(
+    '$list · 国内 $cn · 境外 $ctgov —— 名单画出来了，指着名单的话才成立',
+    async ({ list, cn, ctgov }) => {
+      const rendered = await renderWith(snapshotFor(cn, ctgov, list));
+      expect(rendered).toContain('A Study of Something in FSHD');
+      expect(rendered).toContain(`拉取于 ${FETCHED_DAY}`);
+
+      // 境外那半边没抓成时，横幅在，并且报的是名单的日期。
+      const ctgovStale = ctgov === 'failed' || ctgov === 'unfinished';
+      expect(rendered.includes('请点开原始记录核对')).toBe(ctgovStale);
+      if (ctgovStale) expect(rendered).toContain(`下面这份名单是 ${FETCHED_DAY} 抓到的`);
+
+      // 「名单里只有 ClinicalTrials.gov 的记录」只在真是这样的时候说。
+      const onlyCtgov = list === 'shown';
+      if (rendered.includes('下面这份名单目前只有 ClinicalTrials.gov 的记录')) {
+        expect(onlyCtgov).toBe(true);
+      }
+      if (!onlyCtgov) expect(rendered).toContain(CN_TRIAL);
+    },
+  );
+
+  it('国内取不到、名单又是空的：不说名单里有什么，只说国内这次没取到和去哪儿查', async () => {
+    // 这两句以前会同时出现在一块空屏幕上：一句说「下面这份名单目前只有
+    // ClinicalTrials.gov 的记录」，另一句让读者去点名单里的记录。
+    const rendered = await renderWith(snapshotFor('failed', 'failed', 'empty'));
+    expect(rendered).toContain('国内这部分这次没有取到');
+    expect(rendered).toContain('国内登记的试验请直接查');
+    expect(rendered).not.toContain('下面这份名单目前只有 ClinicalTrials.gov 的记录');
+    expect(rendered).not.toContain('请点开原始记录核对');
+    // 空名单那张卡片自己把话说完了，没落下上次成功抓取的日期。
+    expect(rendered).toContain('注册库这次没有取到');
+    expect(rendered).toContain(`上次成功抓取：${formatInstantAsDay('2026-08-01T00:00:05.000Z')}`);
+  });
+
+  it('一条记录都没解析出来时，不在空屏幕上方挂一个「拉取于」', async () => {
+    // 来源块带着 fetched_at，名单却是空的。日期属于一份没画出来的名单，
+    //「这一页是我们在那一天抄下来的副本」下面什么都没有。
+    const rendered = await renderWith(snapshotFor('ok', 'ok', 'empty-dated'));
+    expect(rendered).not.toContain('拉取于');
+    expect(rendered).not.toContain('要点开原始记录才看得到');
+    expect(rendered).toContain('没有一条记录能完整读出来');
+  });
+
+  it('名单读回来了但没有抓取时间时，横幅不越过那张拒绝显示的卡片', async () => {
+    const rendered = await renderWith(snapshotFor('ok', 'failed', 'undated'));
+    expect(rendered).toContain('这份名单没有抓取时间，暂不显示');
+    expect(rendered).not.toContain('最近一次更新没有成功');
+    expect(rendered).not.toContain('请点开原始记录核对');
   });
 });
 

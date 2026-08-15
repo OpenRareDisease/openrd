@@ -272,27 +272,45 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
       // Displayed with its origin beside it, and never classified.
       expect(step?.description).toContain('3（管理员代填）');
       expect(step?.description).not.toContain('属于指南所说的大片段缺失');
-      // Names what would change it.
-      expect(step?.description).toContain('上传');
+      // Ends on the one thing that is true whatever the picker did.
       expect(step?.description).toContain('报告原件');
     });
 
-    it('患者自己填进登记表的重复数：显示，标「本人填写」，同样换不来那一条', () => {
-      // The state the registration form actually produces: a number in
-      // the baseline, no document anywhere, so nothing for the read-time
-      // autofill to have copied it out of.
-      const profile = base({ baseline: { diseaseBackground: { d4z4: '3' } } as never });
-      const summary = buildClinicalPassportSummary(profile);
+    /**
+     * ONE STORED PROFILE, TWO HISTORIES, AND THE PAGE MAY NOT PICK ONE.
+     *
+     * The first fixture is what the registration form produces: a
+     * number typed into the baseline with no document anywhere. The
+     * second is the same stored profile reached the other way — a
+     * genetics report filled the empty baseline at read time
+     * (`applyGeneticReportAutofill` leaves no record that it did), the
+     * form loaded that profile and the patient saved it, and the report
+     * was then deleted. Nothing on disk separates them, which is why
+     * both must come out 「来源无法确定」: the passport used to print
+     * 「本人填写」 over both, and over the second it was naming an author
+     * for a number the patient never typed.
+     */
+    it('登记表里填的重复数，和报告删掉后剩下的那个，本平台分不出来', () => {
+      const typed = base({ baseline: { diseaseBackground: { d4z4: '3' } } as never });
+      const autofilledThenDeleted = base({
+        baseline: autofilledFrom([geneticReport({ d4z4Repeats: '3' })]) as never,
+      });
 
-      expect(summary.diagnosis.d4z4Repeats).toBe('3');
-      expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('patient');
-      expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+      for (const profile of [typed, autofilledThenDeleted]) {
+        const summary = buildClinicalPassportSummary(profile);
 
-      const step = retinaStep(profile);
-      expect(step?.title).toBe('眼底检查这一条要看报告原件');
-      expect(step?.description).toContain('3（本人填写）');
-      expect(step?.description).not.toContain('属于指南所说的大片段缺失');
-      expect(step?.description).toContain('报告原件');
+        expect(summary.diagnosis.d4z4Repeats).toBe('3');
+        expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('indeterminate');
+        expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('来源无法确定');
+        expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+
+        const step = retinaStep(profile);
+        expect(step?.title).toBe('眼底检查这一条要看报告原件');
+        expect(step?.description).toContain('3（来源无法确定）');
+        expect(step?.description).not.toContain('本人填写');
+        expect(step?.description).not.toContain('属于指南所说的大片段缺失');
+        expect(step?.description).toContain('报告原件');
+      }
     });
 
     it('OCR 补进基线的重复数：报告被后一份盖过之后，这个数不再作数', () => {
@@ -348,7 +366,25 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
 
       expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('indeterminate');
       expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
-      expect(retinaStep(profile)?.description).toContain('本平台只读最新的一份基因报告');
+
+      /**
+       * NO ARM OF THIS STEP NAMES THE REPORT THAT WAS READ.
+       *
+       * It used to end 「把写着重复数的那份基因报告上传上来（本平台只读
+       * 最新的一份基因报告），这一条就会有答案」.
+       * `pickGeneticEvidenceDocument` ranks the genetics laboratory's
+       * own report above a document quoting one, a landed parse above
+       * an unlanded one and a richer report above a thinner one before
+       * it looks at upload time at all — so the newest report is
+       * routinely not the one that was read, and an upload carrying the
+       * count wins nothing automatically. Both halves are gone rather
+       * than reworded: the picker's order is not a rule this paragraph
+       * can restate without going stale again.
+       */
+      const step = retinaStep(profile);
+      expect(step?.description).not.toContain('最新');
+      expect(step?.description).not.toContain('就会有答案');
+      expect(step?.description).toContain('这句话要医生看着报告原件说。');
     });
 
     it('报告里读出来的重复数：这一条才成立，句子里引的也是报告上的数', () => {

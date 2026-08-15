@@ -15,6 +15,7 @@ import {
 } from '../../lib/admin-api';
 import { DIAGNOSIS_LADDER_LABELS, type DiagnosisLadderState } from '../../lib/api';
 import { COLOR } from '../../lib/design';
+import { ADMIN_FILLED_BASELINE_FIELDS } from '../../lib/legal-updates';
 import {
   AdminBlock,
   AdminOriginChip,
@@ -58,8 +59,8 @@ import styles from './styles';
  *
  * The payload the patient app reads has been through
  * `applyGeneticReportAutofill`, which fills a missing genetic result
- * or diagnosis year out of the patient's latest genetic report at read
- * time. Editing on top of that merge and saving it would persist the
+ * or diagnosis year at read time out of the one document the server
+ * picks as this profile's genetic evidence. Editing on top of that merge and saving it would persist the
  * inferred diagnosis year into the column under an administrator's
  * name, and would send back genetic values nobody typed — which the
  * server refuses outright, so an operator who came to fix a 备注 would
@@ -138,6 +139,31 @@ const EDITABLE_FIELDS: EditableField[] = [
 ];
 
 /**
+ * The baseline paths the patient's own form draws a control for.
+ *
+ * 「患者自己再改一次就把标记拿回去」 is a promise about a screen this one
+ * is not, and it is false for the fields that screen has no box for:
+ * `applyPatientBaselineWrite` releases a marker only for a leaf path
+ * the patient's save CHANGED, and p-register_profile copies the paths
+ * it draws no control for forward out of the stored baseline verbatim.
+ * No sequence of taps on the patient's form can put those in the
+ * changed set, so the marker stays for the life of the account — and
+ * it prints on the clinical passport, the PDF, the share page and all
+ * three exports.
+ *
+ * Read off `ADMIN_FILLED_BASELINE_FIELDS` rather than re-listed here.
+ * That list is what lib/__tests__/admin-filled-fields.test.tsx renders
+ * BOTH screens against — it drives the patient's form and fails when a
+ * field marked editable is one the patient's save cannot reach — and
+ * admin-filled-fields-parity.test.ts holds its paths to the server's
+ * `ADMIN_WRITABLE_BASELINE_FIELDS`. A second copy beside `EDITABLE_FIELDS`
+ * would be free to disagree with the form the sentence is about.
+ */
+const PATIENT_CONTROLLED_PATHS = new Set(
+  ADMIN_FILLED_BASELINE_FIELDS.filter((field) => field.patientEditable).map((field) => field.path),
+);
+
+/**
  * A read-only field's group: why it has no box here, and what an
  * empty one means.
  *
@@ -164,15 +190,29 @@ interface ReadonlyGroup {
  * That refusal covers every genetic field alike, and one sentence
  * would say it for all of them.
  *
- * THE REMEDY IS WHAT SPLITS THEM, and a remedy is what the operator
- * came for. 分型 and D4Z4 have a box on the patient's own form, so the
- * fix is a minute of his time on a screen he already has. 单倍型 and
- * 甲基化 have a box nowhere — not here, not there — and a new report
- * is the only thing that moves them. One sentence over both has to
- * pick one of those remedies, and it is then wrong about the group it
- * did not pick: it either sends an operator to re-upload a laboratory
- * report for a value the patient could retype, or lets them offer a
- * correction that nobody, this office included, can carry out.
+ * WHAT SPLITS THEM IS THE BOX, not the remedy. 分型 and D4Z4 have one
+ * on the patient's own form, so an operator can name a screen he
+ * already has and a control that is on it whatever else is true of his
+ * record. 单倍型 and 甲基化 have a box nowhere — not here, not there —
+ * and that half gets no instruction at all.
+ *
+ * WHY THAT HALF LOST ITS SCRIPT. It used to end 「让他打开那份报告，点
+ * 「识别有误？手动修正」，改完保存。不用让他重新上传一份。」 Whether
+ * that works is decided by the report row's `status`: 报告详情 draws the
+ * control for `parsed` and `needs_review` and for nothing else, and
+ * `patchDocumentOcrFields` answers 409 on the same test. So the script
+ * was empty for a report still parsing, one whose parse failed, one the
+ * pipeline never touched. This screen prints that same status a few
+ * blocks down and still cannot stand behind the sentence: what it holds
+ * is the value as of the moment the page loaded, and one tap on
+ * 重新识别 moves the row out from under it.
+ *
+ * WHAT THE STRING MAY NOT DO EITHER is describe where the value came
+ * from. The row already carries an origin chip, a legacy marker can
+ * still sit on one of these paths, and a sentence saying nothing was
+ * recorded would be denying, in the same row, what that chip is
+ * displaying. It says where the decision is made and stops, and the
+ * phone script in docs/runbooks stops in the same place.
  */
 const PATIENT_CAN_TYPE_IT_REASON =
   '这一项后台不能填：电话里听来、照片上认出来的数字，看着像化验结果但不是。' +
@@ -180,17 +220,22 @@ const PATIENT_CAN_TYPE_IT_REASON =
   '要更正，通常请他自己在编辑资料里改最快。';
 
 const NOBODY_CAN_TYPE_IT_REASON =
-  '这一项后台没有输入框，患者的「我的 → 编辑资料」里也没有——它是从他上传的基因报告里读出来的。' +
-  '但读错了他自己能改：让他打开那份报告，点「识别有误？手动修正」，改完保存。' +
-  '不用让他重新上传一份。';
+  '这一项后台没有输入框，患者的「我的 → 编辑资料」里也没有——这一栏里的值，本平台这边现在' +
+  '没有人能改，别答应「你告诉我，我帮你改」。' +
+  '患者要更正的如果是报告上的读数，那要在那份报告自己的页面上，' +
+  '能不能改由那一页按报告当时的状态决定——下面「报告」里的状态只是这一页打开时的快照，' +
+  '患者点一次「重新识别」就变了。所以别在电话里说该点哪儿，也别保证一定改得动。';
 
 /**
  * What an EMPTY genetic row means, which is not what 未填 means.
  *
  * This page shows the stored column. The patient's own screens and the
  * export do not: `applyGeneticReportAutofill` fills a missing genetic
- * result out of his latest genetic report on the way out of
- * `getProfileByUserId` and `getBaselineByUserId`. So a genetic field
+ * result out of the one document the server picks as this profile's
+ * genetic evidence, on the way out of `getProfileByUserId` and
+ * `getBaselineByUserId` — a pick that is not made by upload time, so
+ * the document behind a filled value is not necessarily the last one in
+ * the list below. So a genetic field
  * can be empty here and printed on his passport at the same time —
  * and for 单倍型 and 甲基化, where nothing writes the column, that is
  * the ordinary case rather than the odd one.
@@ -199,7 +244,22 @@ const NOBODY_CAN_TYPE_IT_REASON =
  * filled it in, about a value he is looking at.
  */
 const GENETIC_ABSENT_NOTE =
-  '这不代表患者那边也是空的：患者端和导出会用他最近一份基因报告里的值补上缺的基因结果，' +
+  // 「最近一份」 was the autofill's old rule. The server now reads the
+  // one document it picks as this profile's genetic evidence, and that
+  // pick is not by upload time — so the document the operator would
+  // have to open is not necessarily the last one in the list. Naming a
+  // report at all is what went stale; the instruction that matters is
+  // to look at the list rather than at this row, and it is unchanged.
+  //
+  // AND IT IS NOT ALWAYS A 基因报告 EITHER, which is what this sentence
+  // said next. `pickGeneticEvidenceDocument` takes a 病历摘要 quoting
+  // the results when the genetics report read out nothing, so the
+  // sentence told an operator — in the copy written for what to say on
+  // the phone — that a genetic report had supplied a value for a
+  // patient who has never uploaded one. What the operator has to do is
+  // the same either way, so the clause names 上传的文件 rather than
+  // qualifying a claim this screen cannot check.
+  '这不代表患者那边也是空的：患者端和导出会用他上传的文件里读到的值补上缺的基因结果，' +
   '这一页只显示基线里存的那一份。所以别在电话里说「你没填」——先看这一页的报告列表。';
 
 const GENETIC_PATIENT_CAN_TYPE: ReadonlyGroup = {
@@ -541,14 +601,35 @@ const AdminPatientRecordScreen = () => {
     const clearedLabels = EDITABLE_FIELDS.filter(
       (field) => changedPaths.includes(field.path) && edits[field.path] === null,
     ).map((field) => field.label);
-    const markedLabels = labels.filter((label) => !clearedLabels.includes(label));
+    const markedFields = EDITABLE_FIELDS.filter(
+      (field) => changedPaths.includes(field.path) && edits[field.path] !== null,
+    );
+    const markedLabels = markedFields.map((field) => field.label);
+    // Who can take the marker back is decided per field, not per save.
+    // The dialog used to end every one of them with 「患者自己再改同一个
+    // 字段，标记就回到他名下」, which is an instruction the patient cannot
+    // carry out for 称呼 and 备注 — see PATIENT_CONTROLLED_PATHS. An
+    // operator who read that sentence off a save of those two would tell
+    // the patient on the phone to go and undo it themselves.
+    const releasableLabels = markedFields
+      .filter((field) => PATIENT_CONTROLLED_PATHS.has(field.path))
+      .map((field) => field.label);
+    const stuckLabels = markedFields
+      .filter((field) => !PATIENT_CONTROLLED_PATHS.has(field.path))
+      .map((field) => field.label);
 
     const ok = await confirm({
       title: '保存到这位患者的档案',
       message:
         `${labels.join('、')} 会写进这个人的档案。` +
         (markedLabels.length > 0
-          ? `${markedLabels.join('、')} 会带上一个「管理员代填」标记，标记跟字段一起存进档案里，不只是这块屏幕上的显示。患者自己再改同一个字段，标记就回到他名下。`
+          ? `${markedLabels.join('、')} 会带上一个「管理员代填」标记，标记跟字段一起存进档案里，不只是这块屏幕上的显示。`
+          : '') +
+        (releasableLabels.length > 0
+          ? `${releasableLabels.join('、')} 患者自己在「我的 → 编辑资料」里把同一个字段再改一次，标记就回到他名下。`
+          : '') +
+        (stuckLabels.length > 0
+          ? `${stuckLabels.join('、')} 患者的「编辑资料」里没有这一项的框，他再存一次自己的档案也不会把标记还给他；在这一页把这一格清空能去掉标记，值会跟着一起没。`
           : '') +
         (clearedLabels.length > 0
           ? `${clearedLabels.join('、')} 会被清空。清空不会留下「管理员代填」标记——没有值可以标，留一个标记会在临床护照上显示成「某个不存在的值的来源」。`
@@ -733,8 +814,19 @@ const AdminPatientRecordScreen = () => {
             kind="error"
             title="这份基线不能在这里编辑"
             message={
+              // 「从最近一份报告里补上」 was the autofill's old rule and
+              // is no longer what it does: it reads the one document
+              // the server picks as this profile's genetic evidence,
+              // which is not chosen by upload time, and which is not
+              // always a 基因报告 — the picker takes a 病历摘要 quoting
+              // the results when the genetics report read out nothing.
+              // Which document it is does not change what this notice
+              // is for — the baseline on screen may be an autofilled
+              // one either way — so the clause names 上传的文件 and
+              // stops, and what stays is the part an administrator has
+              // to act on.
               '服务端没有说明它给出的 baseline 是数据库里那一列本身。' +
-              '患者端读到的那份经过了基因报告自动补全（缺的基因结果和确诊年份会从最近一份报告里补上），' +
+              '患者端读到的那份经过了自动补全（缺的基因结果和确诊年份会从一份已上传的文件里补上），' +
               '在那份上面改再存回去，等于把推断出来的值以管理员的名义写进库里。所以这里只读。'
             }
           />
@@ -939,8 +1031,14 @@ const AdminPatientRecordScreen = () => {
             <View style={[styles.field, styles.statDivider]}>
               {/* What an operator has to have before handing one of
                   these to a hospital or a registry. */}
+              {/* 「从他已上传的基因报告里」 was the same over-claim the
+                  两 notices above carried: the document the server reads
+                  as a profile's genetic evidence is a 病历摘要 quoting
+                  the results whenever the genetics report read out
+                  nothing, and this line is what an operator checks
+                  before handing the file to a hospital. */}
               <Text style={styles.blockNote}>
-                文件里的基线字段是患者端读到的那一份：缺的基因结果和确诊年份会从他最近一份基因报告里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
+                文件里的基线字段是患者端读到的那一份：缺的基因结果和确诊年份会从他已上传的文件里自动补上，所以可能和上面编辑框里的原值不一样——编辑框里是数据库存的原值。
               </Text>
               <Text style={styles.blockNote}>
                 三种格式都不写姓名、电话、住址，家族史也不外发（那是他关于亲属的陈述，亲属没有为这次导出同意过）。文件里的

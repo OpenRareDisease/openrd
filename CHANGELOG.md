@@ -35,28 +35,44 @@ Two feature areas and the consent the second one obliges us to ask for.
   existing record is retroactively relabelled. What an administrator may write is
   identity and history — 姓名, 称呼, 所在地区, 出生年份, 确诊年份, 家族史, 起病部位,
   备注 — deny-by-default, and every export format carries the origin through. The clinical
-  passport prints 基因确诊 / 自述 / 管理员代填 as different things because a neurologist
-  reads them differently.
+  passport heads a record 基因确诊 or 未经基因确诊 and brackets an administrator's entry
+  as 管理员代填, because a neurologist reads those differently. 自述 is not among the
+  words it prints: absence of a marker is not a signature, so no page here signs an
+  unmarked value with the patient's name.
 - **No administrator can type a genetic value into a record.** FSHD 分型, D4Z4 重复数,
   单倍型 and 甲基化 are laboratory results; read out over the phone and typed into a back
   office, what lands is a number that looks like laboratory data and is nobody's
   measurement, and it reads as one everywhere downstream — a clinical recommendation, a
   registry export — with nothing in the value to say otherwise. The back office draws no
-  box for them and the server refuses the write with a 400 that names the field —
-  clearing one counts as a change and is refused too.
-- **What that restricts is who may TYPE a genetic value, not where one comes from**, and
-  the fields split in two. 分型 and D4Z4 重复数 have a box on the patient's own 编辑资料
-  form as well as arriving from an uploaded genetic report; the report fills only a field
-  left empty, so a patient corrects a wrong one by retyping it, or empties the box to let
-  the report's reading take over. 单倍型 and 甲基化 arrive from an uploaded report and
-  nowhere else — no form anywhere draws them — so the only correction is a corrected
-  report and nobody can type one in on the patient's behalf. The passport brackets each
-  printed value with where it came from: 本人填写 where no report could have supplied it,
-  报告读取 where one did, 管理员代填 where our own staff typed it. The consequence is
-  recorded rather than papered over: once a value sits in the baseline no later report
-  replaces it, and the patient saving 编辑资料 posts back the 单倍型 and 甲基化 the form
-  had read — so a wrong one can reach a state nobody can correct. See the runbook's §3.4
-  before promising a patient a fix.
+  box for them and the server refuses the write with a 400 that names every field at fault
+  — clearing one counts as a change and is refused too.
+- **What that restricts is who may TYPE a genetic value, not where one comes from.** All
+  four are read off an uploaded genetic report; 分型 and D4Z4 重复数 additionally have a
+  box on the patient's own 编辑资料 form, and 单倍型 and 甲基化 have one nowhere. The
+  passport brackets each printed value with where it CAME FROM: 报告读取 for a value the
+  report supplied, 本人填写 for one typed into 编辑资料, 管理员代填 for one our own staff
+  wrote, and 来源无法确定 where the value is in the record and we cannot say how it got
+  there, rather than crediting the patient with it.
+- **A surface says what the value is and where it came from; it no longer says what to do
+  about it.** Whether 「open that report and fix the row」 is true depends on the report's
+  status — a report still parsing, or one that failed to parse, draws no correction
+  control and the server refuses the write. The passport, the share page and the PDF do
+  not read a document's status, so an instruction on any of them was true for some
+  readers and empty for others. Those pages now stop at the value and its bracket, and the
+  correction lives on the report's own detail screen, which is the surface that knows. The
+  cost is one more tap for a patient who wants to correct something; the gain is that we
+  stop saying things that are false in the reader's situation.
+- **The registry exports name a genetic value's origin per field instead of covering two
+  with an 「or」.** 甲基化 and 单倍型 were labelled 「基线问卷或基因报告结构化解析」 in the
+  TREAT-NMD alignment, and no patient form posts either — the questionnaire named an
+  author who cannot exist, while the referral pack and the passport printed 来源无法确定
+  over the same value. Each value now carries the sentence its own field can support, and
+  none of them credits the patient with a number the report autofill may have supplied.
+- **What is genuinely stuck is recorded rather than papered over:** a patient saving
+  编辑资料 posts back the 单倍型 and 甲基化 the form had read, the report fills only a
+  field left empty, and the exports read the baseline — so that copy keeps the old value
+  after the report is corrected. The runbook's §3.4 says what support may and may not
+  promise about it.
 - **Reads are audited, not just writes.** In a back office, 「谁看了谁的档案」 is the
   event that matters. The audit row is written _before_ the handler and a failed audit
   write is a 503 — an un-loggable read does not happen. The role cannot be self-granted

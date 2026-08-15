@@ -19,13 +19,26 @@
 import TestRenderer, { act } from 'react-test-renderer';
 import { ScrollView } from 'react-native';
 
+// api.ts reaches AsyncStorage through session-storage, which has no
+// native module under jest.
+jest.mock('../../../lib/session-storage', () => ({
+  getSessionValue: jest.fn().mockResolvedValue(null),
+  setSessionValue: jest.fn().mockResolvedValue(undefined),
+  removeSessionValue: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../../../lib/api', () => {
+  // The two requests are stubbed; everything else the screen reads out
+  // of this module — `readPassportValueOrigins`, which decides whether
+  // a value prints its source — stays the shipped implementation.
+  const actual = jest.requireActual('../../../lib/api');
   class ApiError extends Error {
     status?: number;
     data?: unknown;
   }
   return {
     __esModule: true,
+    ...actual,
     ApiError,
     // Never settling keeps the screen in its initial loading state, so
     // the test asserts structure without racing the effect. The header

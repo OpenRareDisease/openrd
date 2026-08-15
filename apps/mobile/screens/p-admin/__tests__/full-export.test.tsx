@@ -71,6 +71,7 @@ jest.mock('../download', () => {
   };
 });
 
+import { ADMIN_AUDIT_NOTICE } from '../common';
 import AdminFullExportScreen from '../full-export';
 
 const PHRASE = '确认导出全部 35 位患者的完整数据 2026-08-13';
@@ -312,5 +313,21 @@ describe('a real failure is reported as one', () => {
     mockRequest.mockResolvedValue(confirmationRequired);
     await press(tree, '重试');
     expect(mockRequest).toHaveBeenLastCalledWith(undefined);
+  });
+});
+
+describe('the audit banner is true on the page that takes every patient', () => {
+  it('draws the one notice, which promises no patient, next to the two-row note', async () => {
+    // The page where the old wording was worst: the file is every
+    // patient in the database, and the promise it carried was that the
+    // trail would say WHICH patient. `exportAllPatientsCsv` is mounted
+    // without a `targetParam` and `recordFullExportAudit` writes
+    // `targetUserId: null` with a count — how many, not who. The
+    // block note is the one that says what the second row holds, and
+    // the two sentences have to agree.
+    const screen = textContent((await render()).root);
+    expect(screen).toContain(ADMIN_AUDIT_NOTICE);
+    expect(screen).not.toContain('看了哪位患者');
+    expect(screen).toContain('一条记下导了多少人和文件名');
   });
 });

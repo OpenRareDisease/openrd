@@ -202,11 +202,19 @@ export const LEGAL_VERSION_NOTES: Record<LegalDocumentId, LegalVersionNote[]> = 
         // 的 API 路径）。姓名、电话、住址：fhir-r4.ts 的 Patient 资源
         // 从不写入，phenopacket 同理，TREAT-NMD 放在 localOnly 节，而
         // AdminController.exportPatient 恒传 includeLocalOnly:false —— 家族史
-        // 也在那一节里（treat-nmd.ts 的 familyHistory）。反过来，测量 /
-        // 功能测试 / 症状评分 / 日常影响是 getPatientRecord 明确不发、
-        // 而导出会写的（fhir-r4.ts 的 buildFhirExport），所以「和页面上
-        // 一样」是假话。
-        '管理员还可以把你这一份档案导成一个 FHIR / Phenopacket / TREAT-NMD 文件（研究与医院系统常用的格式），导出同样单独记一条。这个文件里没有你上传的报告原件，也不写姓名、电话、住址和家族史；但它比后台页面上看到的多——你记录过的肌力测量、功能测试、症状评分与日常影响也在里面。',
+        // 也在那一节里（treat-nmd.ts 的 familyHistory）。
+        //
+        // 肌力测量 / 功能测试 / 症状评分 / 日常影响这四类，getPatientRecord
+        // 一类都不发，所以「和后台页面上一样」是假话；但「三种格式都带」
+        // 同样是假话，逐格式渲染过：
+        //   buildFhirExport —— 四类都写成 Observation。
+        //   buildTreatNmdExport —— symptoms 节写症状评分，motorFunction
+        //     节写 latestFunctionTests；肌力测量只参与该节的 collected
+        //     判定、不产出任何 item，日常影响（dailyImpacts）不进这个格式。
+        //   buildPhenopacketExport —— 四类一类都不写：Measurement.assay 与
+        //     PhenotypicFeature.type 都要求本体项，本导出没有经核对的映射，
+        //     整块留在 omissions 里。
+        '管理员还可以把你这一份档案导成一个 FHIR / Phenopacket / TREAT-NMD 文件（研究与医院系统常用的格式），导出同样单独记一条。这个文件里没有你上传的报告原件，也不写姓名、电话、住址和家族史。你记录过的肌力测量、功能测试、症状评分与日常影响，这四类在后台的档案页上一项都不显示，而导出文件里可能有——具体看格式：FHIR 文件四类都写；TREAT-NMD 文件写其中的功能测试与症状评分；Phenopacket 文件一类都不写。',
         // §10（七）。App 里确实还没有自助入口——「查看 AI 调用记录」
         // 只覆盖 AI 调用。
         '想知道谁看过你的档案，现在要通过隐私政策第 1 条的邮箱或电话问我们，App 里还没有自助入口；能查到的范围是最近 180 天。',

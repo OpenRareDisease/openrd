@@ -668,11 +668,17 @@ describe('§B3：这一页要说出哪些字段不是患者自己填的', () => 
     );
   });
 
-  it('逐条列出被代填的字段，带上是谁、什么时候 —— PDF 和分享页早就列了', async () => {
+  it('逐条列出被代填的字段，带上什么时候 —— PDF 和分享页早就列了', async () => {
     // §10（四）of the privacy policy names 「App 里」 by name. Until this
     // block the screen showed only the aggregate sentence, so the one
     // surface where a patient learns WHICH of their fields was typed
     // for them was a PDF they had to export first.
+    //
+    // WHAT THIS BLOCK DOES NOT PRINT IS 是谁. The DTO carries
+    // `adminUserId` and the markdown export prints it; this screen and
+    // the PDF print the date alone. The assertion below is the whole of
+    // what the patient reads, and a title promising more than it is the
+    // reason profile.passport.ts once pointed here for a name.
     const renderer = await render(summary({ fieldOrigins: [ADMIN_ORIGIN] }));
     const text = allText(renderer);
     expect(text).toContain('这些字段不是你本人填的');

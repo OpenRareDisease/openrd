@@ -12,6 +12,11 @@
  *     down.
  *  3. A date that is one day wrong, or a list with no date at all.
  *  4. 招募中 buried under 已完成.
+ *  5. A sentence about 「下面这份名单」 printed over a screen that is
+ *     showing no list —「所以下面这份名单目前只有 ClinicalTrials.gov 的
+ *     记录」and「重要的试验请点开原始记录核对」both used to fire on the
+ *     empty state, where they contradicted each other and the empty
+ *     card underneath them.
  */
 
 import {
@@ -26,6 +31,7 @@ import {
   hasChinaSite,
   readRegistryDay,
   resolveFetchedOn,
+  shownListFetchedOn,
   sortTrialsForDisplay,
   trialPhaseLabel,
   trialStatusLabel,
@@ -303,6 +309,125 @@ describe('拉取于用的是最旧的那一次', () => {
   });
 });
 
+describe('名单到底有没有画出来', () => {
+  const failedRun = {
+    startedAt: '2026-08-13T02:00:00.000Z',
+    finishedAt: '2026-08-13T02:00:30.000Z',
+    ok: false,
+  };
+
+  it('有记录、也有抓取时间时，报的就是「拉取于」那一天', () => {
+    const snap = snapshot();
+    expect(shownListFetchedOn(snap)).toBe(resolveFetchedOn(snap));
+    expect(shownListFetchedOn(snap)).toBe(formatInstantAsDay('2026-08-12T02:00:00.000Z'));
+  });
+
+  it('一条记录都没读出来时是 null —— 哪怕来源块还带着抓取时间', () => {
+    // 这一格是 `resolveFetchedOn` 单独看不出来的：它连来源块一起读，
+    // 所以服务端说有 92 条、客户端一条都没解析出来的时候，日期还在，
+    // 名单却没了。那个日期属于一份没有画出来的名单。
+    const snap = snapshot([], [sourceStatus({ recordCount: 92 })]);
+    expect(resolveFetchedOn(snap)).not.toBeNull();
+    expect(shownListFetchedOn(snap)).toBeNull();
+  });
+
+  it('记录回来了但读不出抓取时间时是 null —— 屏幕本来就拒绝显示', () => {
+    expect(shownListFetchedOn(snapshot([trial({ fetchedAt: null })], []))).toBeNull();
+  });
+
+  it('和分组给出的是同一个答案 —— 有组可画，才可能有名单', () => {
+    // 屏幕按 `groupTrials` 的结果画名单，按这个函数写名单上方的话。
+    // 两边一旦对不上，横幅就会指着一份不存在的名单。
+    const cases: TrialsSnapshot[] = [
+      snapshot(),
+      snapshot([], [sourceStatus({ recordCount: 92 })]),
+      snapshot([], []),
+      snapshot([trial({ fetchedAt: null })], []),
+      snapshot([trial({ statusRaw: 'UNKNOWN_TO_US', statusZh: null })], [sourceStatus()]),
+    ];
+    for (const snap of cases) {
+      const drawable = groupTrials(snap.trials).length > 0 && resolveFetchedOn(snap) !== null;
+      expect(shownListFetchedOn(snap) !== null).toBe(drawable);
+    }
+  });
+
+  it('固定那句话不声称有一份名单在下面', () => {
+    // 它也是请求还在飞、请求失败、名单为空时印的那一句，那几种情况下
+    // 下面什么都没有。
+    expect(COVERAGE_NOTE_CTGOV_ONLY).not.toContain('本列表');
+    expect(COVERAGE_NOTE_CTGOV_ONLY).not.toContain('下面这份名单');
+    expect(COVERAGE_NOTE_CTGOV_ONLY).toContain('不含仅在国内登记的试验');
+    expect(COVERAGE_NOTE_CTGOV_ONLY).toContain('chinadrugtrials.org.cn');
+  });
+
+  it('国内取不到、名单又画不出来时，不说名单里剩下什么', () => {
+    const noList = [
+      snapshot([], [sourceStatus({ source: 'chinadrugtrials', lastRun: failedRun })]),
+      snapshot(
+        [trial({ fetchedAt: null })],
+        [sourceStatus({ source: 'chinadrugtrials', fetchedAt: null, lastRun: failedRun })],
+      ),
+    ];
+    for (const snap of noList) {
+      const notice = describeChinaCoverage(snap);
+      expect(notice.tone).toBe('warn');
+      expect(notice.text).not.toContain('下面这份名单');
+      // 该说的还是说了：国内这次没取到，以及去哪儿查。
+      expect(notice.text).toContain('国内这部分这次没有取到');
+      expect(notice.text).toContain('chinadrugtrials.org.cn');
+    }
+  });
+
+  it('名单真在下面时，才说它目前只有 ClinicalTrials.gov 的记录', () => {
+    const notice = describeChinaCoverage(
+      snapshot(
+        [trial()],
+        [sourceStatus(), sourceStatus({ source: 'chinadrugtrials', lastRun: failedRun })],
+      ),
+    );
+    expect(notice.text).toContain('所以下面这份名单目前只有 ClinicalTrials.gov 的记录');
+  });
+
+  it('国内记录在手里但名单没画出来时，也不说「其中」「这几条」', () => {
+    // 「其中」和「国内这几条」都是指着屏幕上的行说话。名单没有抓取
+    // 时间、屏幕拒绝显示的时候，行一条都不在。
+    const notice = describeChinaCoverage(
+      snapshot(
+        [
+          trial({ fetchedAt: null }),
+          trial({ source: 'chinadrugtrials', sourceId: 'CTR20250001', fetchedAt: null }),
+        ],
+        [
+          sourceStatus({ fetchedAt: null }),
+          sourceStatus({ source: 'chinadrugtrials', fetchedAt: null, lastRun: failedRun }),
+        ],
+      ),
+    );
+    expect(notice.text).not.toContain('其中');
+    expect(notice.text).not.toContain('国内这几条');
+    // 关于国内那半边本身的话仍然成立，也仍然在。
+    expect(notice.text).toContain('只能按页面抓取，可能不完整');
+    expect(notice.text).toContain('最近一次抓取没有成功');
+  });
+
+  it('境外过期的横幅在没有名单可说时整条不出现', () => {
+    // 「下面这份名单是 X 抓到的」和「重要的试验请点开原始记录核对」都
+    // 以屏幕上的行为主语。空名单那一格由 describeEmptyList 说，没有
+    // 抓取时间那一格由屏幕自己的卡片说，两边都没被留成哑巴。
+    const noList = [
+      snapshot([], [sourceStatus({ recordCount: 0, fetchedAt: null, lastRun: failedRun })]),
+      snapshot([], [sourceStatus({ recordCount: 92, lastRun: failedRun })]),
+      snapshot(
+        [trial({ fetchedAt: null })],
+        [sourceStatus({ fetchedAt: null, lastRun: failedRun })],
+      ),
+    ];
+    for (const snap of noList) {
+      expect(describeCtgovStaleness(snap)).toBeNull();
+    }
+  });
+});
+
 describe('国内那半边', () => {
   it('名单里没有国内记录、也没有抓取记录时，说的是固定那句', () => {
     const notice = describeChinaCoverage(snapshot());
@@ -362,7 +487,7 @@ describe('国内那半边', () => {
     expect(notice.text).toContain('到目前为止还没有成功抓取过');
   });
 
-  it('国内记录还在、但最近一次抓取没成功时，说这几条可能已经不是最新的', () => {
+  it('国内记录还在、但最近一次抓取没成功时，说国内这部分可能已经不是最新的', () => {
     // The rows are the survivors of an older run. Under the calm
     // provenance sentence alone they would read as current, which is
     // the silent-staleness twin of showing an empty list in silence.

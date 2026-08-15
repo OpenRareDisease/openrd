@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
+import { applyGeneticReportAutofill } from './profile.autofill.js';
 import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 
@@ -205,7 +206,16 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     });
   });
 
-  it('still says 本人填写 when the patient really did type it', () => {
+  /**
+   * AND DOES NOT PRINT IT OVER THE PATIENT'S OWN TYPING EITHER, because
+   * it cannot tell that apart from the two other ways a value reaches
+   * this column. `confirmation` still moves — that enum is derived from
+   * the marker on 确诊年份 and an unmarked field really is 「no
+   * administrator on record」 — but the bracket beside the printed date
+   * is a claim about authorship, and no store this platform keeps
+   * records the patient writing one.
+   */
+  it('does not print 本人填写 over an unmarked date either', () => {
     const summary = buildClinicalPassportSummary(
       base({
         diagnosisDate: '2014-01-01',
@@ -214,9 +224,12 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     );
 
     expect(summary.diagnosis.confirmation).toBe('self_reported');
-    expect(summary.diagnosis.valueOrigins.diagnosisDate.kind).toBe('patient');
+    expect(summary.diagnosis.valueOrigins.diagnosisDate.kind).toBe('indeterminate');
     expect(summary.summaryCards.find((item) => item.key === 'diagnosis')?.summary).toContain(
-      '诊断日期（本人填写）',
+      '诊断日期（来源无法确定）',
+    );
+    expect(summary.summaryCards.find((item) => item.key === 'diagnosis')?.summary).not.toContain(
+      '本人填写',
     );
   });
 
@@ -262,28 +275,39 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     expect(step?.description).not.toContain('由本人填写');
     expect(step?.description).toContain('诊断日期（管理员代填）');
     expect(step?.description).toContain('管理员代你录入');
-    // 确诊年份 has a box on 建档表单, so the promise names that value and
-    // nothing else. 家族史 is marked on this profile too and is not
+    // 确诊年份 has a box on 建档表单, and the sentence about it names
+    // that box rather than the row — the row is a date and the box
+    // takes a year. 家族史 is marked on this profile too and is not
     // named: it has no row in the diagnosis block for the sentence to
     // be about.
-    expect(step?.description).toContain('诊断日期如果不对，你可以在「我的 → 编辑资料」里自己改');
+    expect(step?.description).toContain('那张表单上和它有关的只有「确诊年份」，只能填 4 位年份');
+    expect(step?.description).not.toContain(
+      '诊断日期如果不对，你可以在「我的 → 编辑资料」里自己改',
+    );
     expect(step?.description).not.toContain('家族史');
   });
 
   /**
-   * 「改过之后那一项就记回你名下」 IS A CLAIM ABOUT A TEXT BOX.
+   * THE PASSPORT NAMES THE VALUE AND ITS SOURCE. IT DOES NOT SAY WHAT
+   * TO DO ABOUT 甲基化.
    *
-   * `applyPatientBaselineWrite` releases a marker when the patient's own
-   * PUT changes that leaf path, so the promise holds only for the paths
-   * 建档表单 posts. 甲基化 is printed in this block and has no control
-   * anywhere in the patient's app, so a sentence covering every value
-   * sends its owner hunting for a box that does not exist and leaves
-   * the bracket on the page a clinician reads.
+   * Whether 「open the report and press 识别有误？手动修正」 works depends
+   * on the report's status, and no passport surface holds it: the
+   * summary is built from a profile, while the control is drawn by
+   * 报告详情 off the document row, for `parsed` and `needs_review` only.
+   * Four rounds of patches wrote the instruction anyway, and it was
+   * false wherever the only report had not parsed.
+   *
+   * So this profile — marked 分型 and marked 甲基化, no document at all —
+   * gets a bracket on both values, an instruction for the one with a
+   * text box, and nothing at all for the one without. The reduction is
+   * the point: 甲基化 costs its owner one extra tap through 我的报告, and
+   * the page stops asserting something it cannot check.
    *
    * Reached here through `stored`, because a marker on 甲基化 is a
    * marker on disk rather than one this platform can be made to write.
    */
-  it('gives each value the correction route that exists for it, not one that is half true', () => {
+  it('names 甲基化 and its source, and tells nobody to go press anything', () => {
     const step = buildClinicalPassportSummary(
       base({
         baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
@@ -293,20 +317,162 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
       }),
     ).nextSteps.find((item) => item.title === '补充基因检测报告');
 
-    // Both values are on the page and both are marked.
+    // Both values are on the page and both carry their bracket. That is
+    // what this surface knows, and it stays.
     expect(step?.description).toContain('分型（管理员代填）');
     expect(step?.description).toContain('甲基化（管理员代填）');
-    // 分型 has a box on the patient's own form. 甲基化 does not, and is
-    // corrected on the report it was read from. Both routes are real
-    // and they are different, so the step names them separately rather
-    // than giving one instruction that is right for half the values.
+    // 分型 has a box on the patient's own form, so it keeps its one
+    // instruction.
     expect(step?.description).toContain('分型如果不对，你可以在「我的 → 编辑资料」里自己改');
-    expect(step?.description).toContain('甲基化在「编辑资料」里没有这一栏');
-    expect(step?.description).toContain('识别有误？手动修正');
+    // 甲基化 gets no instruction of any shape — not the control, not the
+    // report it might be corrected on, not a second upload, and not a
+    // pointer at 我的报告 either. This profile holds no document, so
+    // 「go and look at that report」 would be false on its face.
+    for (const route of [
+      '识别有误',
+      '手动修正',
+      '打开已经传过的那份报告',
+      '传一份新的',
+      '我的报告',
+      '报告详情',
+      '甲基化在「编辑资料」里没有这一栏',
+    ]) {
+      expect(step?.description).not.toContain(route);
+    }
   });
 
   /**
-   * THE HALF WITH NO BOX GETS NO ADDRESS TO WRITE TO.
+   * THE STATE THAT MADE THE DELETED SENTENCE FALSE, RUN RATHER THAN
+   * DESCRIBED.
+   *
+   * The report exists, so 「打开已经传过的那份报告」 named something real
+   * — and it is in `parse_failed`, where 报告详情 draws no correction
+   * control at all and the correction endpoint refuses the patch. The
+   * instruction had no way to know that, because the status is on the
+   * document row and this summary is built from a profile.
+   */
+  it('says nothing about correcting a report that never parsed', () => {
+    const step = buildClinicalPassportSummary(
+      base({
+        baseline: stored({ diseaseBackground: { methylation: '25%', diagnosisType: 'FSHD1' } }, [
+          'diseaseBackground.methylation',
+        ]),
+        documents: [{ ...geneticReport({}), status: 'parse_failed', ocrPayload: null }],
+      } as never),
+    ).nextSteps.find((item) => item.title === '补充基因检测报告');
+
+    expect(step?.description).toContain('甲基化（管理员代填）');
+    for (const route of ['识别有误', '手动修正', '打开', '那份报告']) {
+      expect(step?.description).not.toContain(route);
+    }
+  });
+
+  /**
+   * 「改过之后那一项就记回你名下」 WAS A CLAIM ABOUT THE BRACKET, AND THE
+   * BRACKET DOES NOT ALWAYS FOLLOW.
+   *
+   * The two halves of the old sentence had different truth conditions.
+   * The value moving is a question about the text box; the attribution
+   * moving is a question about `ocrCouldHaveFilled`, which nothing the
+   * patient types can turn off. This runs both states of the same
+   * profile: marked, then the marker released and the year changed, the
+   * way `applyPatientBaselineWrite` leaves it after the patient's own
+   * PUT. The date moves. 「本人填写」 never arrives.
+   */
+  it('promises the value will change, not that it will be credited to the patient', () => {
+    const withReportedDate = (over: Record<string, unknown>) =>
+      base({
+        documents: [geneticReport({ diagnosisDate: '2021-06-01' })],
+        ...over,
+      } as never);
+
+    const before = buildClinicalPassportSummary(
+      withReportedDate({
+        diagnosisDate: '2019-01-01',
+        baseline: stored({ foundation: { diagnosisYear: 2019 } }, ['foundation.diagnosisYear']),
+      }),
+    );
+    const after = buildClinicalPassportSummary(
+      withReportedDate({
+        diagnosisDate: '2020-01-01',
+        baseline: { foundation: { diagnosisYear: 2020 } },
+      }),
+    );
+
+    const step = (summary: ReturnType<typeof buildClinicalPassportSummary>) =>
+      summary.nextSteps.find((item) => item.title === '补充基因检测报告')?.description;
+
+    // The instruction is on the page before the edit, and it is true:
+    // the printed date is the one the box governs, and it changes —
+    // to 1 January of the year typed, which is what the sentence says
+    // and the only thing the box can produce.
+    expect(step(before)).toContain('那张表单上和它有关的只有「确诊年份」，只能填 4 位年份');
+    expect(before.diagnosis.diagnosisDate).toBe('2019-01-01');
+    expect(after.diagnosis.diagnosisDate).toBe('2020-01-01');
+
+    // What the deleted clause promised, and what actually happens: the
+    // patient types the date themselves and the passport still declines
+    // to credit them, because a document on file carries a date too.
+    expect(after.diagnosis.valueOrigins.diagnosisDate.kind).toBe('indeterminate');
+    expect(step(after)).not.toContain('记回你名下');
+    expect(step(after)).toContain('可能是你自己填的');
+  });
+
+  /**
+   * THE SENTENCE ABOUT 确诊年份 IS READ BY SOMEBODY WHOSE 确诊年份 IS
+   * EMPTY.
+   *
+   * `applyGeneticReportAutofill` fills `foundation.diagnosisYear` from
+   * `patient_profiles.diagnosis_date` at read time, so for most
+   * profiles the box holds the printed date's year by the time the form
+   * loads. It returns the profile untouched when the evidence report
+   * yields nothing at all — and a 诊断日期 reaches the column through
+   * the patient's own profile endpoint without passing through that
+   * field. The profile below is that state: the only genetics report
+   * parsed to a 检测方法 and nothing else, the date sitting on a 病历摘要
+   * that `pickGeneticEvidenceDocument` does not even consider a
+   * candidate. The autofill is run here rather than described, because
+   * the whole state depends on it declining to write.
+   *
+   * The old sentence told this reader the printed date 「对应的是「确诊
+   * 年份」」 and promised 「那一年的 1 月 1 日」. Both presuppose a year in
+   * the box. What survives says what the box is, what it can hold, and
+   * what saving a year into it does — true with the box full or empty.
+   */
+  it('does not tell the patient the printed date is sitting in an empty 确诊年份 box', () => {
+    const documents = [
+      geneticReport({ geneticTestMethod: 'Southern blot' }),
+      {
+        ...geneticReport({ diagnosisDate: '2019-05-03', classifiedType: 'medical_record' }),
+        id: 'd2',
+        documentType: 'medical_record',
+        uploadedAt: '2026-03-01T00:00:00.000Z',
+      },
+    ];
+    const stored = { diagnosisDate: '2019-05-03', geneticMutation: null, baseline: {} };
+    const read = applyGeneticReportAutofill(stored, documents as never);
+    // The premise: nothing refilled the box.
+    expect((read.baseline as Record<string, unknown> | null)?.foundation).toBeUndefined();
+
+    const summary = buildClinicalPassportSummary(
+      base({ diagnosisDate: read.diagnosisDate, baseline: read.baseline, documents } as never),
+    );
+    const step = summary.nextSteps.find((item) => item.title === '补充基因检测报告')?.description;
+
+    expect(summary.diagnosis.diagnosisDate).toBe('2019-05-03');
+    expect(step).toContain('没有一个直接显示它的框');
+    expect(step).toContain('里面填的未必就是这里印的日期');
+    // The two claims that were false here, gone rather than qualified.
+    expect(step).not.toContain('诊断日期在「我的 → 编辑资料」里对应的是「确诊年份」');
+    expect(step).not.toContain('保存之后，护照上的诊断日期会变成那一年的 1 月 1 日');
+    // What is left still tells them what to do, and it still works: the
+    // instruction survives into the state where the box IS full.
+    expect(step).toContain('在那里填一个年份并保存');
+  });
+
+  /**
+   * THE HALF WITH NO BOX GETS NO ADDRESS TO WRITE TO — AND NO OTHER
+   * ADDRESS EITHER.
    *
    * 甲基化 is outside `ADMIN_WRITABLE_BASELINE_FIELDS`, so
    * `applyAdminBaselineWrite` refuses both a write and a clear of it —
@@ -315,8 +481,11 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
    * sentence sending the patient to an inbox or a phone number asks
    * them to request something no one here can perform, about a value a
    * clinician is reading off the same page.
+   *
+   * The inbox was never the answer, and neither is the report: this
+   * step now sends the patient nowhere at all about this value.
    */
-  it('sends the patient to the correction that exists, not to the inbox or a re-upload', () => {
+  it('sends the patient nowhere about a value it cannot vouch for', () => {
     const step = buildClinicalPassportSummary(
       base({
         baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
@@ -331,16 +500,18 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
     for (const route of ['找我们', '《隐私政策》第 1 条', '邮箱', '电话']) {
       expect(step?.description).not.toContain(route);
     }
-    // And not 「upload another report」 either. The value already came
-    // off a report the patient uploaded; what it needs is a correction
-    // to that report's reading, which 报告详情 offers by that name and
-    // ocrFieldsPatchSchema accepts for this field.
-    expect(step?.description).toContain('识别有误？手动修正');
-    expect(step?.description).not.toContain('重新上传');
-    // The marker is not offered along with it. The row in 字段来源 is
-    // written off the baseline field, which correcting a report's
-    // reading does not touch.
-    expect(step?.description).toContain('「字段来源」里已经记下的那一条会留在那里');
+    // Not a re-upload, and not the correction on a report already
+    // uploaded either. Both were written as routes that always exist;
+    // both depend on a report status this summary never sees.
+    for (const route of ['重新上传', '传一份新的', '识别有误', '手动修正']) {
+      expect(step?.description).not.toContain(route);
+    }
+    // And no account of where the value came from beyond its bracket.
+    // 「来自你的档案」 was written to avoid claiming a report as the
+    // source; with no instruction left to justify, the bracket says it.
+    expect(step?.description).toContain('甲基化（管理员代填）');
+    expect(step?.description).not.toContain('它是从你上传的基因报告里读出来的');
+    expect(step?.description).not.toContain('这条路不会动「字段来源」里的记录');
   });
 
   it('refuses the back-office write and the back-office clear of 甲基化', () => {
@@ -358,15 +529,19 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
   });
 
   /**
-   * The upload the sentence above offers, carried out.
+   * The route the step no longer names, still working.
    *
-   * `methylationFromReport` wins over the baseline, so the printed value
-   * and its bracket both change — and with the value no longer the
-   * patient's to correct by hand, the whole no-box sentence drops off
-   * the step. The 字段来源 row is written off the baseline field, which
-   * the upload leaves alone, so it stays exactly as the sentence says.
+   * Deleting the sentence did not delete the mechanism: a report this
+   * platform can read 甲基化 off still wins over the baseline, so the
+   * printed value and its bracket both move. What changed is who says
+   * so — 报告详情 is rendered from the document row and knows whether
+   * the correction is reachable on it; this page does not, so it prints
+   * the value and its source and leaves the instruction there.
+   *
+   * The 字段来源 row is written off the baseline field, which the upload
+   * leaves alone, so it survives the value being superseded.
    */
-  it('keeps the offer it makes: a report carrying 甲基化 changes the printed value', () => {
+  it('a report carrying 甲基化 still changes the printed value and its bracket', () => {
     const summary = buildClinicalPassportSummary(
       base({
         baseline: stored({ diseaseBackground: { diagnosisType: 'FSHD1', methylation: '25%' } }, [
@@ -511,10 +686,14 @@ describe('每个诊断值自带来源', () => {
     });
   });
 
-  it('基因确诊时的分型仍可能是患者自己打的字', () => {
+  it('基因确诊时的分型可能是患者自己打的字 —— 但确定不了，所以不这么写', () => {
     // The mirror of the case above: the D4Z4 count earns `genetic`
     // while 分型 is the free-text column, and no document carries a
-    // 分型 field for the autofill to have copied.
+    // 分型 field for the autofill to have copied. That last clause used
+    // to buy the row 「本人填写」; it buys nothing, because
+    // `applyGeneticReportAutofill` also writes that column and its
+    // source report can be deleted or re-parsed afterwards. Two rows,
+    // two sources, and the grade belongs to neither of them.
     const summary = buildClinicalPassportSummary(
       base({
         geneticMutation: '我猜是 FSHD1',
@@ -523,7 +702,8 @@ describe('每个诊断值自带来源', () => {
     );
 
     expect(summary.diagnosis.confirmation).toBe('genetic');
-    expect(summary.diagnosis.valueOrigins.geneticType.kind).toBe('patient');
+    expect(summary.diagnosis.valueOrigins.geneticType.kind).toBe('indeterminate');
+    expect(summary.diagnosis.valueOrigins.geneticType.labelZh).toBe('来源无法确定');
     expect(summary.diagnosis.valueOrigins.d4z4Repeats).toMatchObject({
       kind: 'report',
       documentId: 'd1',
@@ -556,7 +736,19 @@ describe('每个诊断值自带来源', () => {
     expect(summary.diagnosis.valueOrigins.diagnosisDate.detail).toContain('分不清');
   });
 
-  it('没有任何报告带日期时，档案里的日期才算本人填写', () => {
+  /**
+   * 「没有任何报告带日期」 IS NOT 「没有任何报告带过日期」.
+   *
+   * This state used to be the one road to 「本人填写」, on the reasoning
+   * that with nothing on file carrying a date there was nothing for the
+   * autofill to have copied. The reasoning holds only for the documents
+   * on file NOW: the autofill runs at read time, the registration form
+   * saves the profile it returns, and the report behind the write can be
+   * deleted or re-parsed to nothing afterwards — which lands exactly
+   * here. The detail says where the value is and that nothing recorded
+   * how it arrived, and stops.
+   */
+  it('没有任何报告带日期时，也只能说值在档案里，说不出是谁填的', () => {
     const summary = buildClinicalPassportSummary(
       base({
         diagnosisDate: '2019-05-03',
@@ -564,7 +756,12 @@ describe('每个诊断值自带来源', () => {
       } as never),
     );
 
-    expect(summary.diagnosis.valueOrigins.diagnosisDate.kind).toBe('patient');
+    expect(summary.diagnosis.valueOrigins.diagnosisDate.kind).toBe('indeterminate');
+    expect(summary.diagnosis.valueOrigins.diagnosisDate.detail).toContain('值在档案里');
+    // Not the other two 「来源无法确定」 sentences: this row's box exists,
+    // and no report on file carries a date.
+    expect(summary.diagnosis.valueOrigins.diagnosisDate.detail).not.toContain('没有输入框');
+    expect(summary.diagnosis.valueOrigins.diagnosisDate.detail).not.toContain('分不清');
   });
 
   it('没有值的行是 absent，不是「本人填写」', () => {
@@ -593,15 +790,15 @@ describe('每个诊断值自带来源', () => {
 
   it('拼起来只有分型时，证据摘要跟分型那一行写同一个来源', () => {
     // 单倍型, EcoRI 片段 and D4Z4 重复数 are all absent, so the join is
-    // 分型 and nothing else. Two brackets on one page over the same
-    // string — 「本人填写」 on 基因类型 and 「来源无法确定」 on 证据摘要 —
-    // is the page disagreeing with itself in front of a clinician.
+    // 分型 and nothing else. Two different brackets on one page over the
+    // same string is the page disagreeing with itself in front of a
+    // clinician, whatever the two say.
     const markdown = buildClinicalPassportExport(
       buildClinicalPassportSummary(base({ geneticMutation: '我猜是FSHD1' } as never)),
     ).markdown;
 
-    expect(markdown).toContain('- 基因类型：我猜是FSHD1（本人填写）');
-    expect(markdown).toContain('- 证据摘要：我猜是FSHD1（本人填写）');
+    expect(markdown).toContain('- 基因类型：我猜是FSHD1（来源无法确定）');
+    expect(markdown).toContain('- 证据摘要：我猜是FSHD1（来源无法确定）');
   });
 
   it('拼进去的每一项都来自报告时，证据摘要才写「报告读取」', () => {
@@ -633,7 +830,7 @@ describe('每个诊断值自带来源', () => {
 
     expect(markdown).toContain('- 基因类型：FSHD1（报告读取）');
     expect(markdown).toContain('- D4Z4 重复数：4（报告读取）');
-    expect(markdown).toContain('- 诊断日期：2019-05-03（本人填写）');
+    expect(markdown).toContain('- 诊断日期：2019-05-03（来源无法确定）');
     // Nothing to attribute, so nothing in brackets.
     expect(markdown).toContain('- 甲基化值：—\n');
   });
@@ -675,7 +872,10 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
       ...over,
     });
 
-  /** 同样三个值，患者自己在登记表里填的。 */
+  /** 同样三个值在基线里，没有任何来源记录压着 —— 而这不等于三个都是患者
+   *  自己填的。登记表为 分型 和 D4Z4 重复数 画了框，甲基化 没有：那一格只
+   *  能是自动补全从某份报告里写进去的，而这份档案上一份报告都没有，报告
+   *  被删掉或重新识别之后就是这个样子。 */
   const patientTypedGenetics = () =>
     base({
       diagnosisDate: '2019-01-01',
@@ -712,12 +912,25 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
     expect(summary.diagnosis.ready).toBe(false);
   });
 
-  it('患者自己填的同样印出来，标的是「本人填写」', () => {
+  /**
+   * 三个值都印出来，三个都标「来源无法确定」，但说不出口的原因不一样：
+   * D4Z4 和 分型 在建档表单上有框，患者可能真的是自己敲的 —— 只是本平台
+   * 没有任何记录能证明；甲基化 连框都没有，患者根本无从录入。两种情况在
+   * `detail` 里是两句话，在括号里是同一个词。
+   */
+  it('三项都印出来，且没有一项被记到患者名下', () => {
     const summary = buildClinicalPassportSummary(patientTypedGenetics());
 
     expect(summary.diagnosis.d4z4Repeats).toBe('6');
-    expect(summary.diagnosis.valueOrigins.d4z4Repeats.kind).toBe('patient');
-    expect(summary.diagnosis.valueOrigins.methylationValue.kind).toBe('patient');
+    expect(summary.diagnosis.methylationValue).toBe('25%');
+    for (const key of ['d4z4Repeats', 'geneticType', 'methylationValue'] as const) {
+      expect(summary.diagnosis.valueOrigins[key].kind).toBe('indeterminate');
+      expect(summary.diagnosis.valueOrigins[key].labelZh).toBe('来源无法确定');
+    }
+    // 有框的那两项：说得出「可能是你自己填的」。
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.detail).toContain('值在档案里');
+    // 没框的那一项：连这个可能性都不能提。
+    expect(summary.diagnosis.valueOrigins.methylationValue.detail).toContain('没有输入框');
     expect(summary.diagnosis.confirmation).toBe('self_reported');
     expect(summary.diagnosis.ready).toBe(false);
   });
@@ -789,7 +1002,10 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
     );
 
     expect(fallback.diagnosis.geneticType).toBe('我猜是 FSHD1');
-    expect(fallback.diagnosis.valueOrigins.geneticType.kind).toBe('patient');
+    // 那一列上没有标记可用 —— 而「没有标记」不是「患者自己填的」：
+    // `applyGeneticReportAutofill` 也写这一列，写完不留记录。
+    expect(fallback.diagnosis.valueOrigins.geneticType.kind).toBe('indeterminate');
+    expect(fallback.diagnosis.valueOrigins.geneticType.adminUserId).toBeNull();
   });
 
   it('导出的 markdown 上，值和来源印在同一行', () => {

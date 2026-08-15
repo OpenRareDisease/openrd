@@ -290,15 +290,15 @@ const monitoringItem = (summary: ClinicalPassportSummary, key: 'respiratory' | '
 declare const REPORT_READ_REPEATS: unique symbol;
 
 /**
- * A D4Z4 REPEAT COUNT THIS PLATFORM READ OFF AN UPLOADED REPORT.
+ * A D4Z4 REPEAT COUNT THIS PLATFORM READ OFF AN UPLOADED DOCUMENT.
  *
  * THE RULE THIS TYPE IS: a value that was not read out of an uploaded
- * report may be DISPLAYED, always with its origin beside it. It may
+ * document may be DISPLAYED, always with its origin beside it. It may
  * never decide a recommendation, a threshold, a guideline citation or a
  * screening interval.
  *
  * `summary.diagnosis.d4z4Repeats` is a merged value — the passport
- * resolves it from a report OR from the baseline, where an
+ * resolves it from an uploaded document OR from the baseline, where an
  * administrator's transcription of a report read out over the phone
  * lands beside the patient's own typing. Both are `string`, so nothing
  * but a rule in someone's head kept the merged one out of the branch
@@ -306,16 +306,31 @@ declare const REPORT_READ_REPEATS: unique symbol;
  * rule did not hold. The brand is that rule expressed as a type:
  * `readReportReadRepeatCount` is the only expression that mints one and
  * it mints nothing unless the API's own `valueOrigins` says the value
- * came off a report.
+ * was read off a document.
+ *
+ * WHAT THE BRAND DOES NOT PROVE: that a laboratory issued the number.
+ * The API resolves 「read off a document」 against the ONE document
+ * `pickGeneticEvidenceDocument` names, and that picker takes a 病历摘要
+ * quoting a repeat count when it is the only copy the patient has — on
+ * purpose, because dropping it loses the value entirely. The current
+ * API separates the two: a transcription arrives under its own origin
+ * kind, which this expression does not accept and which the app prints
+ * as the server words it. That separation is one build old, and this
+ * bundle ships as a web export WeChat caches for days against a rolling
+ * deploy, so a handset can still be shown a passport built before the
+ * line was drawn. So no sentence built on this brand speaks in a
+ * laboratory's voice: the rows below say what this platform did — read
+ * a number off something the patient uploaded — and stop there.
  */
 export interface ReportReadRepeatCount {
-  /** The count as the report printed it — free text, not a number. */
+  /** The count as the document printed it — free text, not a number. */
   readonly raw: string;
   readonly [REPORT_READ_REPEATS]: true;
 }
 
 /**
- * The printed repeat count, but only when a report supplied it.
+ * The printed repeat count, but only when an uploaded document supplied
+ * it.
  *
  * Null covers every other way a number reaches this page —
  * an administrator's transcription, the patient's own typing, a value
@@ -372,50 +387,99 @@ export const isLargeD4Z4Deletion = (count: ReportReadRepeatCount | null): boolea
 
 /**
  * The 判断不了 sentence for a count this page is showing but did not get
- * off a report.
+ * off an uploaded document.
  *
- * ONE SENTENCE PER ORIGIN, because a single flat 「它不是本平台从基因报告
- * 里读出来的」 is false in the state that fires most. `indeterminate` is
+ * ONE SENTENCE PER ORIGIN, and only where the origin itself is the
+ * evidence for the sentence. A flat 「它不是本平台从基因报告里读出来的」
+ * is false in one of the states that reach here — `indeterminate` is
  * the API's answer for 「the read-time OCR autofill copies a report's
  * value into an empty baseline field and leaves no record, so this
- * platform cannot tell that apart from the patient's own typing」 — a
- * state an FSHD2 methylation workup uploaded after the sizing report
- * produces on its own, because the passport only ever opens the newest
- * genetic report. Asserting the negative there contradicts the server's
- * own record of what it does not know.
+ * platform cannot tell that apart from the patient's own typing」, and
+ * asserting the negative there contradicts the server's own record of
+ * what it does not know.
  *
- * What IS true in every arm is the slot: this passport took the number
- * out of the archive rather than reading it off a report, which is what
- * `origins.d4z4Repeats.kind !== 'report'` says and all any of these
- * sentences claims.
+ * NOR MAY THIS FILE NARRATE THE MECHANISM BEHIND `indeterminate`. It
+ * used to: 「读取档案时系统会拿报告里的值补上空着的栏位」 was printed for
+ * every indeterminate value, and the API resolves that kind down two
+ * roads, only one of which is the autofill. The other is 「the archive
+ * holds it, a box exists, and NOTHING on file carries a repeat count at
+ * all」 — the state a patient who typed a number into the registration
+ * form and uploaded nothing is in, and the sentence named them a report
+ * they have never had. The server distinguishes the two in `detail`,
+ * written for a reader; it is written ABOUT the patient rather than TO
+ * them, so this row prints the server's `labelZh` — the phrase the API
+ * words for exactly this purpose, and the same one the passport, the
+ * share page and the referral pack put beside the value — and claims
+ * nothing further.
+ *
+ * That is also what keeps this row honest against an origin kind this
+ * bundle has never heard of: `readPassportValueOrigin` falls an
+ * unrecognised kind to `indeterminate` and carries the server's own
+ * `labelZh` with it, so the default arm below prints the newer API's
+ * words instead of inventing an account of a state it cannot know.
  */
 const unverifiedRepeatEvidence = (printed: string, origin: PassportValueOrigin | null): string => {
-  const head = `你档案里的 D4Z4 重复数是 ${printed}`;
-  // 「只读最新的一份」 is the passport's actual behaviour: its genetic
-  // values all come out of one document, so a count printed on an
-  // earlier report is not read at all. Naming that is what makes the
-  // instruction actionable instead of 「上传报告」 to someone who has.
-  const askDoctor =
-    '这一条要不要做，请医生看着报告原件判断。本平台只读你上传的最新一份基因报告 —— 重复数写在别的报告上的话，把那一份重新上传一次，这一行就会跟着改。';
-  switch (origin?.kind) {
+  // 「你的记录里」 rather than 「你档案里」, because one of the origins that
+  // reaches here is a number this platform read off an uploaded 病历摘要
+  // — not something in the archive at all. The arms whose origin does
+  // prove the archive slot say so themselves, in their own clause.
+  const head = `你的记录里 D4Z4 重复数是 ${printed}`;
+  // THIS ROW NO LONGER TELLS THE PATIENT WHICH REPORT WAS READ.
+  //
+  // It used to end 「本平台只读你上传的最新一份基因报告 —— 重复数写在
+  // 别的报告上，这一行就读不到它」, and both halves described a rule the
+  // API has stopped having. `pickGeneticEvidenceDocument` prefers the
+  // genetics laboratory's own report over a document quoting one, a
+  // report whose parse landed over one whose parse did not, and a
+  // richer report over a thinner one, reaching upload time only to
+  // break a tie between equals. So the newest report may well not be
+  // the one that was read, and a count printed on an earlier one may
+  // well be exactly what this page is showing.
+  //
+  // What replaces it is not a corrected version of the sentence. This
+  // module is handed a passport summary — values and their origins,
+  // and not one word about the documents behind them. It cannot see
+  // which report was picked, so any sentence it writes on the subject
+  // is a rule quoted from memory, which is what went stale the first
+  // time. Every arm below says where the number on THIS page came
+  // from, which is what `origin` actually answers, and stops there.
+  const askDoctor = '这一条要不要做，请医生看着报告原件判断。';
+  // No `valueOrigins` on the wire: this app ships as a web export that
+  // WeChat's in-app browser caches for days, so a handset can be
+  // running today's bundle against an API build that sends none.
+  // 「不是从报告里读出来的」 would be inventing the answer the server did
+  // not give — and so would the arms below, every one of which is a
+  // reading of something the server said.
+  if (!origin) {
+    return `${head}，但本平台这次没有拿到这个数的来源，所以说不出它是从上传的文件里读出来的，还是填在档案里的。${askDoctor}`;
+  }
+  switch (origin.kind) {
     case 'admin_entered':
-      return `${head}，它是本平台的管理员代你录进来的 —— 是谁、什么时候，护照的「字段来源」那一栏里有。这个数是从你的档案里取的，本平台没有打开基因报告读过它。${askDoctor}`;
+      return `${head}，它是本平台的管理员代你录进来的 —— 是谁、什么时候，护照的「字段来源」那一栏里有。这个数是从你的档案里取的，本平台没有从你上传的文件里读出过它。${askDoctor}`;
     case 'admin_unreadable':
       // The marker exists and cannot be parsed. 「不是你自己填的」 is
       // the whole of what it proves — naming an author it does not name
       // is the direction this row exists to avoid.
-      return `${head}，它不是你自己填的，但那条来源记录本平台读不出来，原因写在护照的「字段来源」里。这个数是从你的档案里取的，本平台没有打开基因报告读过它。${askDoctor}`;
+      return `${head}，它不是你自己填的，但那条来源记录本平台读不出来，原因写在护照的「字段来源」里。这个数是从你的档案里取的，本平台没有从你上传的文件里读出过它。${askDoctor}`;
     case 'patient':
-      return `${head}，它填在你的档案里，而本平台手上没有任何一份能读出重复数的基因报告。这一条要不要做，请医生看着报告原件判断 —— 把写着重复数的基因报告上传上来，这一行就会跟着改。`;
-    case 'indeterminate':
-      return `${head}。本平台分不清它是你自己填的，还是系统从你上传的报告里读来的 —— 读取档案时系统会拿报告里的值补上空着的栏位，而且不留记录。所以这个数可能就是报告上写的那个，也可能不是。${askDoctor}`;
+      // The one arm that may still say something about the documents,
+      // because this origin kind IS a statement about them: the server
+      // resolves `patient` only when nothing it holds carries a repeat
+      // count at all, so 「没有任何一份能读出重复数的」 is the condition
+      // being reported rather than a rule being restated. Which document
+      // would have been read had one existed is still not said, and
+      // 「把报告传上来，这一行就会跟着改」 is still gone — that needs a
+      // parse this file cannot see.
+      return `${head}，它填在你的档案里，而本平台手上没有任何一份能读出重复数的文件。${askDoctor}`;
     default:
-      // No `valueOrigins` on the wire: this app ships as a web export
-      // that WeChat's in-app browser caches for days, so a handset can
-      // be running today's bundle against an API build that sends none.
-      // 「不是从报告里读出来的」 would be inventing the answer the server
-      // did not give.
-      return `${head}，但本平台这次没有拿到这个数的来源，所以说不出它是从报告里读出来的，还是填在档案里的。${askDoctor}`;
+      // `indeterminate`, plus any kind this bundle has no sentence for
+      // — including the API's `transcribed`, whose whole point is that
+      // the number was read off a page a laboratory did not write. The
+      // server's own phrase, and nothing added to it: see the header.
+      // 「你可能是自己填的」 and 「系统可能从报告里读来的」 are both states
+      // the API answers with `indeterminate`, and it also answers that
+      // way for a patient who has uploaded nothing at all.
+      return `${head}，本平台给它标的来源是「${origin.labelZh}」。${askDoctor}`;
   }
 };
 
@@ -668,15 +732,28 @@ const buildEyeAndEarRows = (
   today: Date,
 ): SurveillanceRow[] => {
   /**
-   * A REPORT'S REPEAT COUNT, OR NOTHING.
+   * A COUNT THIS PLATFORM READ OFF A DOCUMENT, OR NOTHING.
    *
    * This row decides whether a guideline about vision loss applies, so
    * its input is `ReportReadRepeatCount` — a value the merged
-   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. 「你的基因
-   * 报告里 D4Z4 重复数是 6」 would be a sentence about a report nobody
-   * here has opened. A transcribed number sends this to the 判断不了
-   * branch, which asks for the original — the same answer a range gets,
-   * and for the same reason.
+   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. A number
+   * out of the archive sends this to the 判断不了 branch, which asks for
+   * the original — the same answer a range gets, and for the same
+   * reason.
+   *
+   * AND THE SENTENCE STOPS SHORT OF THE LABORATORY. It used to open
+   * 「你的基因报告里 D4Z4 重复数是 3」, which is a claim about who
+   * measured the number, and the brand does not carry one:
+   * `pickGeneticEvidenceDocument` takes a 病历摘要 transcribing a repeat
+   * count when it is the only copy the patient has, and rendered
+   * against such a profile that sentence had this app telling a patient
+   * their genetics report says something no genetics report here has
+   * said. The API now hands a transcription its own origin kind, which
+   * never reaches these two arms — but a bundle this old talking to an
+   * API that old is a state a rolling deploy produces, and the wording
+   * has to hold there too. What the brand proves either way is that
+   * this platform read the number off something the patient uploaded,
+   * and that is what the two arms below say.
    */
   // Read here for the wording only. `readReportReadRepeatCount` reads it
   // again rather than being handed this: what may decide a
@@ -707,12 +784,12 @@ const buildEyeAndEarRows = (
       '指南建议：D4Z4 大片段缺失（缺失后片段 10–20 kb，约 1–4 个重复）的患者，转有经验的眼科医生（最好是视网膜专科）做一次散瞳间接检眼镜。渗出性视网膜病变（Coats 病）在 FSHD 里很少见，但几乎只出现在这一组人身上；不处理可能造成明显的视力损失，早发现能挡住。之后多久复查一次，由第一次的结果决定。',
     applicability: isLarge ? 'matched' : hasPlainCount ? 'not_matched' : 'unknown',
     evidence: isLarge
-      ? `你的基因报告里 D4Z4 重复数是 ${reportRaw}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
+      ? `本平台从你上传的文件里读到的 D4Z4 重复数是 ${reportRaw}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
       : hasPlainCount
-        ? `你的基因报告里 D4Z4 重复数是 ${reportRaw}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
+        ? `本平台从你上传的文件里读到的 D4Z4 重复数是 ${reportRaw}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
         : showsUnverifiedRepeats
           ? unverifiedRepeatEvidence(printedRepeats, origins?.d4z4Repeats ?? null)
-          : '本平台读不出你的 D4Z4 重复数：可能是还没上传基因报告，或者报告上写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
+          : '本平台读不出你的 D4Z4 重复数：可能是还没上传写着它的文件，或者上面写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
     ask: '可以问：「按我的基因结果，需要做一次散瞳眼底检查吗？」',
     source: SURVEILLANCE_SOURCE,
   };

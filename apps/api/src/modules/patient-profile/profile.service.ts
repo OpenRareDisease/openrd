@@ -928,9 +928,10 @@ export class PatientProfileService {
    * screen polls this on every open.
    *
    * It does genuinely need the documents: `applyGeneticReportAutofill`
-   * fills a missing diagnosis date or D4Z4 result from the most recent
-   * genetic report, so a baseline built without them would show blanks
-   * the full profile fills in. The other seven tables it never touched.
+   * fills a missing diagnosis date or D4Z4 result off the report
+   * `pickGeneticEvidenceDocument` names, so a baseline built without
+   * them would show blanks the full profile fills in. The other seven
+   * tables it never touched.
    */
   async getBaselineByUserId(userId: string): Promise<BaselineProfileDTO | null> {
     const profileResult = await this.pool.query<PatientProfileRecord>(
@@ -947,7 +948,7 @@ export class PatientProfileService {
 
     const profile = profileResult.rows[0];
     const documentsResult = await this.pool.query(
-      `SELECT id, document_type, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
+      `SELECT id, document_type, status, uploaded_at, ${PROFILE_OCR_PAYLOAD_PROJECTION}
        FROM patient_documents
        WHERE profile_id = $1
        ORDER BY uploaded_at DESC`,
@@ -960,8 +961,14 @@ export class PatientProfileService {
         geneticMutation: profile.genetic_mutation,
         baseline: asRecord(profile.baseline_payload),
       },
+      // `status` is selected for the picker, which will not take a
+      // document whose parse has not landed over one that has. A
+      // projection that dropped it would have this screen filling from
+      // a report the passport does not read.
       documentsResult.rows.map((row) => ({
+        id: row.id,
         documentType: row.document_type,
+        status: row.status,
         uploadedAt: toTimestampString(row.uploaded_at),
         ocrPayload: row.ocr_payload ?? null,
       })),
