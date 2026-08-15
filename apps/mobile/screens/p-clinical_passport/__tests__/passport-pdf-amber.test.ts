@@ -203,12 +203,15 @@ describe('PDF：基线里的基因数值', () => {
     expect(cardText(html, '基因类型')).toBe('基因类型 FSHD1 管理员代填');
   });
 
-  it('横幅说的是没有报告可读，不是「这一节里没有这个数」', () => {
+  it('横幅说的是没有可作确诊依据的结果，不是「这一节里没有这个数」', () => {
     const html = buildClinicalPassportPdfHtml(adminTyped());
 
-    expect(html).toContain('没有从基因报告里读出来的 D4Z4 重复数');
+    expect(html).toContain('没有从基因报告里读出来的、可作确诊依据的基因结果');
     // 这句话与同一节里那张印着 6 的卡片直接矛盾。
     expect(html).not.toContain('本节里没有 D4Z4 重复数');
+    // 横幅不再逐条点名读数：确诊靠的是长度和单倍型两项同时具备，报告
+    // 只写了其中一项时那一项就印在横幅下面，点名它就是自相矛盾。
+    expect(html).not.toContain('4q 单倍型或 EcoRI 片段');
   });
 
   it('卡片上的值和节末那份清单说的是同一批字段', () => {

@@ -86,9 +86,26 @@ export interface PassportSummaryCardDTO {
 /**
  * HOW WELL BACKED the diagnosis on this passport is. NOT who typed it.
  *
- * `genetic` — a D4Z4 repeat count, 4q haplotype or EcoRI fragment was
- *   extracted from THE GENETICS LABORATORY'S OWN REPORT. This is
- *   evidence, and it is the only state on this list that is.
+ * `genetic` — THE GENETICS LABORATORY'S OWN REPORT states both of the
+ *   items the guideline defines FSHD's genetic analysis as: a
+ *   determinate D4Z4 length — a repeat count or an EcoRI fragment — and
+ *   a 4q haplotype that is the permissive 4qA. This is evidence, and it
+ *   is the only state on this list that is.
+ *
+ *   NOT ANY ONE OF THEM ALONE, which is what it used to be. This
+ *   platform prints the guideline's own sentence on the same document
+ *   (`WHAT_THE_REPORT_MUST_SAY`: 「只有 4qA 是允许型，缺了这一项，重复
+ *   单元数本身不足以下结论」) and then graded a lone repeat count as a
+ *   molecular diagnosis a few rows above it. The conjunction is not
+ *   restated here: it is `GeneticEvidenceGrade.trial_ready`, read off
+ *   that grade, so 可用于入组 and 基因确诊 cannot come apart.
+ *
+ *   AND ON WHAT THE CELLS SAY, not on whether they are filled. The test
+ *   was `hasMeaningfulValue` over the raw strings, which is true of
+ *   「未检出」: a report whose only genetic content was a D4Z4 cell
+ *   reading 未检出 came out 基因确诊, and so did one whose EcoRI cell
+ *   read it. `determinateSize` parses both cells, so 未检出, a range
+ *   like 「1-10」 and a bound like 「>50kb」 are each what they are.
  *
  *   Not 「off an uploaded document」, which is what it used to be and is
  *   a weaker thing. `pickGeneticEvidenceDocument` accepts a 病历摘要
@@ -124,20 +141,29 @@ export interface PassportSummaryCardDTO {
  *   guideline branches keyed to a repeat count — not the result, which
  *   is a real laboratory finding and the one that decides what gets
  *   tested next.
- * `self_reported` — a 分型 or a 诊断日期 is on the page and no such
- *   measurement off the laboratory's own report is. That is the
- *   commonest state: the literature puts the FSHD diagnostic odyssey
- *   near a decade with a majority misdiagnosed along the way, so the
- *   realistic holder of an unconfirmed passport is someone carrying
- *   「可能是肌病」 or an outright wrong label.
+ * `self_reported` — a 分型 or a 诊断日期 is on the page and the
+ *   laboratory's own report does not carry both of the items above.
+ *   That is the commonest state: the literature puts the FSHD
+ *   diagnostic odyssey near a decade with a majority misdiagnosed along
+ *   the way, so the realistic holder of an unconfirmed passport is
+ *   someone carrying 「可能是肌病」 or an outright wrong label. It is
+ *   also where a real laboratory report that stops at a repeat count
+ *   lands — 「这一步很常见，大多数报告都停在这里」 is this platform's own
+ *   copy about that report — and 「结果不全」 is what the evidence grade
+ *   beside this state says about it.
  *
  *   IT ALSO COVERS THE TRANSCRIPTION, whose repeat count is printed on
  *   the same page — and the name is the reason this enum's authorship
  *   warning below is not a formality. Every sentence written off this
- *   member says 「没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或
- *   EcoRI 片段」 and hands each value its own bracket, which stays true
- *   of a transcribed number; none of them says the patient reported
- *   anything, and none may be made to.
+ *   member says 「没有从基因报告里读出来的、可作确诊依据的基因结果」 and
+ *   hands each value its own bracket, which stays true of a transcribed
+ *   number AND of a report that states one item and not the other; none
+ *   of them says the patient reported anything, and none may be made
+ *   to. The sentences used to name the readings instead — a second copy
+ *   of this state's own definition, in prose, on pages that are printed
+ *   and handed over — and they went false the moment the definition
+ *   moved. See `buildDiagnosisStatement` in referral-pack.ts, which is
+ *   where the wording they all now share was settled.
  * `admin_entered` — the same as `self_reported` on evidence, plus a
  *   provenance marker on ONE baseline field, `foundation.diagnosisYear`
  *   (see the derivation in `buildClinicalPassportSummary`). A marker
@@ -1137,7 +1163,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   // string from the one printed.
   //
   // `geneticRecord` AND NOT the printed strings, for the reason
-  // `geneticallyConfirmed` gives: `d4z4Repeats` below carries the
+  // `ReportReadD4Z4` states in full: `d4z4Repeats` below carries the
   // baseline too, and a bracket naming the picked document is one this
   // join earns only when that document supplied one of these three.
   // WHICH bracket — 报告读取 or 转录自非基因报告文件 — is the same
@@ -1851,14 +1877,68 @@ const SOURCE_ZHANG_2019 =
 const SOURCE_XIA_2024 =
   'Xia X 等（复旦大学附属华山医院）摘要 642P，Neuromuscular Disorders 2024;43:104441';
 
-/** 4qA / 4qB, read strictly. See `permissiveHaplotype`. */
+/**
+ * A LABORATORY CELL THAT NAMES SOMETHING IN ORDER TO SAY IT IS NOT
+ * THERE.
+ *
+ * The readers below match a cell by substring, and a substring match
+ * cannot tell 「4qA」 apart from 「未检出 4qA 等位基因」. Rendered: that
+ * cell parsed as the permissive allele, and the passport came out
+ * 可用于入组 under a headline telling the reader their report already
+ * holds what trial enrolment requires. The size cells have the same
+ * shape, because a number survives a negation —「未检出10kb以下片段」has
+ * a number in it — so this is one predicate applied once per cell
+ * rather than a rule three readers remember.
+ *
+ * IT ONLY EVER WITHHOLDS. A cell it matches is read as no result, which
+ * is already this file's answer for a missing cell and for a cell
+ * naming both probes rather than stating one; nothing downstream can
+ * turn a negation into a finding of its own. So the copy a cell it
+ * matches falls to is the copy that was already written for a report
+ * that has not stated this item — 「还没有看到」 — and not a sentence
+ * about a result.
+ */
+const CELL_REPORTS_ABSENCE =
+  /未检出|未检测|未检到|未见|未测出|未测到|未获|阴性|not\s*detected|undetected|negative/i;
+
+const reportsAbsence = (raw: string | null | undefined): boolean =>
+  typeof raw === 'string' && CELL_REPORTS_ABSENCE.test(raw);
+
+/** 4qA / 4qB, read strictly, and read for what the cell SAYS. See
+ *  `permissiveHaplotype`. */
 const parsePermissiveHaplotype = (raw: string | null): boolean | null => {
-  if (!raw) return null;
+  if (!raw || reportsAbsence(raw)) return null;
   const hasA = /4\s*q\s*a/i.test(raw);
   const hasB = /4\s*q\s*b/i.test(raw);
   if (hasA && !hasB) return true;
   if (hasB && !hasA) return false;
   return null;
+};
+
+/**
+ * A SIZE CELL — 「D4Z4 重复数」 or 「EcoRI 片段」 — read for what it says.
+ *
+ * `parseD4Z4Reading` answers 「what number is in this string」, which is
+ * the right question for a cell that states a measurement and the wrong
+ * one for a cell that states an absence carrying a number of its own.
+ *
+ * Wrapped around that parser rather than folded into it, because the
+ * parser's rule has a hand-kept twin in the mobile bundle
+ * (`isLargeD4Z4Deletion` in apps/mobile/lib/surveillance-schedule.ts)
+ * and nothing in the build links them. The negation line is on both —
+ * it had to be, or the app would call a negated cell a large deletion
+ * while this file called it no length at all — and it went onto each of
+ * them where that copy reads a cell.
+ *
+ * `raw` is kept as the report printed it, because the passport shows
+ * the cell either way. What a negated cell loses is the `value`, which
+ * is the only part of a reading that decides a grade, a guideline
+ * branch or a gray-zone note.
+ */
+const readSizeCell = (raw: string | null | undefined): D4Z4Reading | null => {
+  if (raw === null || raw === undefined) return null;
+  const reading = parseD4Z4Reading(raw);
+  return reportsAbsence(reading.raw) ? { ...reading, value: null, isRange: false } : reading;
 };
 
 const buildGeneticRecord = (
@@ -1873,7 +1953,7 @@ const buildGeneticRecord = (
   // reports nothing would have the passport printing a value the export
   // says no report supplies.
   const d4z4Raw = pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats);
-  const d4z4 = d4z4Raw ? parseD4Z4Reading(d4z4Raw) : null;
+  const d4z4 = readSizeCell(d4z4Raw);
   const haplotype = pickReading(fields, GENETIC_FIELD_KEYS.haplotype);
   const permissiveHaplotype = parsePermissiveHaplotype(haplotype);
   const methodRaw = pickReading(fields, GENETIC_FIELD_KEYS.testMethod);
@@ -1967,12 +2047,13 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
  * report whose `ecoRIFragment` read 「未检出」 came out 可用于入组 with
  * 「D4Z4 长度 未检出，单倍型 4qA」 as its 依据 — a sentence handed to a
  * neurologist saying the array was both unmeasurable and measured. Same
- * parser as the repeat count, so 「未检出」, 「>50kb」 and a blank are all
- * what they are.
+ * reader as the repeat count — `readSizeCell`, which is where a
+ * negation carrying a number of its own is refused — so 「未检出」,
+ * 「>50kb」 and a blank are all what they are.
  */
 const determinateSize = (record: LaboratoryGeneticRecord): string | null => {
   if (record.d4z4 && record.d4z4.value !== null) return record.d4z4.raw;
-  const fragment = record.ecoRIFragment ? parseD4Z4Reading(record.ecoRIFragment) : null;
+  const fragment = readSizeCell(record.ecoRIFragment);
   return fragment && fragment.value !== null ? fragment.raw : null;
 };
 
@@ -2852,61 +2933,47 @@ export const buildClinicalPassportSummary = (
     null,
   );
 
+  const diagnosisLadder = readDiagnosisLadder(profile);
+  const diagnosisLadderOrigin = readBaselineFieldOrigin(
+    profile.baseline,
+    'diseaseBackground.diagnosisLadder',
+  );
+  const geneticEvidence = buildGeneticEvidence(reportInsights.geneticRecord, diagnosisLadder);
   // Confirmation rests on a MEASUREMENT read off an uploaded report: a
-  // D4Z4 repeat count, a 4q haplotype, an EcoRI fragment. 分型 and
-  // 诊断日期 are excluded because neither is reliably the report's —
-  // each falls back to a profile column (see DiagnosisValueSlot), and
-  // which source actually supplied it on this passport is answered per
-  // value in `valueOrigins` below rather than assumed here.
+  // D4Z4 length and the haplotype of the allele it was measured on.
+  // 分型 and 诊断日期 are excluded because neither is reliably the
+  // report's — each falls back to a profile column (see
+  // DiagnosisValueSlot), and which source actually supplied it on this
+  // passport is answered per value in `valueOrigins` below rather than
+  // assumed here.
   //
-  // READ OFF `geneticRecord`, NOT off the printed strings. Those
-  // strings also carry the baseline, where a number the patient typed
-  // into the registration form lands. Grading that as 基因确诊 would put
-  // 「基因确诊」 on a referral pack over a number nobody at this platform
-  // has seen a report for — the one direction this whole record exists
-  // to prevent. `geneticRecord` reads document fields and nothing else,
-  // so this stays a claim about a document; who supplied the printed
-  // value is answered per value in `valueOrigins`.
+  // AND IT IS THE EVIDENCE GRADE, NOT A SECOND READING OF THE SAME
+  // RECORD. This used to be its own expression over `geneticRecord`,
+  // and the two answers were not the same answer: it was an OR, so a
+  // report carrying one item earned 基因确诊 while `gradeGeneticEvidence`
+  // — reading the guideline's own conjunction, size AND permissive
+  // haplotype — graded the identical report 方法对，但结果不全. Rendered:
+  // a report whose only genetic content was a repeat count came out
+  // 基因确诊 and filled the diagnosis slot of the completion ring, on a
+  // page that also printed this platform's own quotation of 「只有 4qA
+  // 是允许型，缺了这一项，重复单元数本身不足以下结论」. The
+  // OR also asked whether the D4Z4 and EcoRI cells were FILLED rather
+  // than what they said, so a cell reading 未检出 earned the same grade.
   //
-  // AND OFF THE LABORATORY'S RECORD, not any document's. A claim about
-  // a document is still not a claim about a laboratory: the picker
-  // takes a 病历摘要 quoting a repeat count when the genetics report
-  // read out nothing, and this test — three fields, all of them
-  // transcribable — then read 基因确诊 off the clinic's letter. The
-  // number stays on the page with 「转录自非基因报告文件」 beside it;
-  // what it stops earning is this.
-  //
-  // AND ON WHAT THE LABORATORY SAID, not on whether it filled the
-  // field. `hasMeaningfulValue(record.haplotype)` asked the second
-  // question while the sentences written off this flag make the first
-  // claim, and the gap between them is the whole finding: a 4qB is the
-  // non-permissive allele, so a contraction reported on it is not the
-  // FSHD1 mechanism at all — and it satisfied this test, filled the
-  // completion ring, and put 「面肩肱型肌营养不良症（FSHD），基因确诊；
-  // D4Z4 重复数 3」 into a referral pack. It now takes the state of its
-  // own, `genetic_non_permissive`, whose copy says what the reading is.
-  //
-  // The same substitution retires a second reading of that field: a
-  // report whose haplotype cell says 「4qA/4qB」 is naming its probes,
-  // which `parsePermissiveHaplotype` refuses to call a result — and
-  // which nonetheless came out 基因确诊, under a grade whose own
-  // headline was 「暂时判断不出你做的是哪一种基因检测」.
-  //
-  // THE TWO SIZE ARMS STILL ASK THE FIRST QUESTION, and knowingly. A
-  // report whose `ecoRIFragment` cell reads 「未检出」 satisfies
-  // `hasMeaningfulValue` and earns 基因确诊 — the same defect in the
-  // same shape, and `determinateSize` above already answers it. It is
-  // not substituted here because the states such a profile would fall
-  // to say 「没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI
-  // 片段」, and a range reading like 「1-10」 — which the same
-  // substitution demotes — makes that sentence false on the passport
-  // card, the share banner and the exported PDF. That sentence is being
-  // reworded elsewhere; the substitution belongs in the change that
-  // finishes it, not in this one.
+  // `trial_ready` is that conjunction, and it is the right one to read
+  // rather than a second one to write: the guideline sentence this
+  // platform quotes for enrolment is 「临床试验的入组无一例外要求已确认的
+  // 分子遗传学诊断」, so 可用于入组 and 基因确诊 are one fact. Everything
+  // the previous expression checked separately is inside it —
+  // `gradeGeneticEvidence` reaches `trial_ready` only through
+  // `laboratoryRecord` (a 病历摘要 quoting a count grades
+  // `transcribed_only`, and its number stays on the page with 「转录自非
+  // 基因报告文件」 beside it), only past the 4qB return, and only on
+  // `determinateSize`, which parses both size cells instead of counting
+  // them as present.
   const geneticSource = reportInsights.geneticRecord.source;
   const laboratoryGeneticRecord = laboratoryRecord(reportInsights.geneticRecord);
-  const nonPermissiveLaboratoryHaplotype =
-    laboratoryGeneticRecord !== null && haplotypeNonPermissive(laboratoryGeneticRecord);
+  const nonPermissiveLaboratoryHaplotype = geneticEvidence.grade === 'non_permissive_haplotype';
   /** The 4qB as the report printed it, for the sentences that name it.
    *  Empty unless the flag above is set — `parsePermissiveHaplotype`
    *  reads `false` only out of a string — so no branch guarded by that
@@ -2915,12 +2982,7 @@ export const buildClinicalPassportSummary = (
   const nonPermissiveHaplotypeText = nonPermissiveLaboratoryHaplotype
     ? (laboratoryGeneticRecord?.haplotype ?? '')
     : '';
-  const geneticallyConfirmed =
-    laboratoryGeneticRecord !== null &&
-    !nonPermissiveLaboratoryHaplotype &&
-    (hasMeaningfulValue(laboratoryGeneticRecord.d4z4?.raw) ||
-      haplotypePermissive(laboratoryGeneticRecord) ||
-      hasMeaningfulValue(laboratoryGeneticRecord.ecoRIFragment));
+  const geneticallyConfirmed = geneticEvidence.grade === 'trial_ready';
   const diagnosisClaimed =
     hasMeaningfulValue(reportInsights.geneticType) ||
     hasMeaningfulValue(reportInsights.diagnosisDate);
@@ -3074,12 +3136,6 @@ export const buildClinicalPassportSummary = (
         diagnosisValueOrigins[key].kind === 'indeterminate',
     )
     .map((key) => PASSPORT_DIAGNOSIS_VALUE_LABELS_ZH[key]);
-  const diagnosisLadder = readDiagnosisLadder(profile);
-  const diagnosisLadderOrigin = readBaselineFieldOrigin(
-    profile.baseline,
-    'diseaseBackground.diagnosisLadder',
-  );
-  const geneticEvidence = buildGeneticEvidence(reportInsights.geneticRecord, diagnosisLadder);
   // Completion counts confirmed diagnoses only — a progress ring that
   // fills on a self-entered date teaches the patient the document is
   // finished when its most load-bearing field is unverified.
@@ -3177,19 +3233,31 @@ export const buildClinicalPassportSummary = (
       description: `${geneticEvidence.reason}${geneticEvidence.action}`,
     });
   } else if (geneticEvidence.grade === 'non_permissive_haplotype') {
-    // AHEAD OF THE RECORD STEP BELOW, WHICH IS FALSE HERE TWICE OVER.
-    // That step opens 「护照上还没有从基因报告里读出来的 D4Z4 重复数、
-    // 4q 单倍型或 EcoRI 片段」 over a page printing a laboratory's
-    // haplotype, and closes by asking for an upload of the report this
-    // reader already sent. Same shape as the 方法不适用 step above: the
-    // patient has done the test and paid for it, and what is left is a
-    // sentence to take to a doctor — which is what `clinical` means.
+    // AHEAD OF THE RECORD STEP BELOW, WHICH IS FALSE HERE. That step
+    // closes by asking for an upload of the report this reader already
+    // sent. Same shape as the 方法不适用 step above: the patient has
+    // done the test and paid for it, and what is left is a sentence to
+    // take to a doctor — which is what `clinical` means.
     nextSteps.push({
       title: '带着报告原件问一次这个单倍型',
       kind: 'clinical',
       description: `${geneticEvidence.reason}${geneticEvidence.action}`,
     });
-  } else if (!geneticallyConfirmed) {
+  } else if (!geneticallyConfirmed && geneticEvidence.grade !== 'method_right_incomplete') {
+    // WHY 「结果不全」 IS ON THAT CONDITION. It is the third grade that
+    // means the laboratory's report is on file and has been read, so it
+    // is excluded for the same reason as the two arms above: this step
+    // opens by asking for 补充基因检测报告 over a report already
+    // uploaded, and closes with 「上传基因检测报告后，护照才能显示 D4Z4
+    // 重复数」 over a passport already printing one off that report.
+    //
+    // It reached this step at all only because 基因确诊 stopped being an
+    // OR — a report stating a repeat count and no haplotype lands on
+    // that grade now — and this platform's own copy for it says 「这一步
+    // 很常见，大多数报告都停在这里」, so the false ask would have been the
+    // common one. What that reader needs is 「问一下报告里缺的那一项」
+    // further down, which fires on the same grade and names the missing
+    // item; a second one here would be a second wording for one thing.
     nextSteps.push({
       title: diagnosisClaimed ? '补充基因检测报告' : '补充基因或诊断依据',
       kind: 'record',
@@ -3211,6 +3279,17 @@ export const buildClinicalPassportSummary = (
       // here, so the bare 「护照上还没有」 would contradict a number the
       // reader can see. What is missing is a report this platform read
       // it off, which is also what `geneticallyConfirmed` tests.
+      //
+      // AND 「可作确诊依据的」 IS THE REST OF IT. The sentence used to
+      // name the readings — D4Z4 重复数、4q 单倍型或 EcoRI 片段 — which
+      // is a second copy of `geneticallyConfirmed`'s own definition,
+      // kept in prose, on a page that is exported and handed over. That
+      // copy went false the moment the definition became a conjunction:
+      // a report stating a repeat count and no haplotype reaches this
+      // step with the count printed above it, in a bracket reading
+      // 报告读取. The claim this platform can make is the one the
+      // referral pack settled on and the anesthesia card already made,
+      // and it is the same claim in all three places.
       //
       // WHAT THIS STEP MAY SAY, AND WHY THAT IS LESS THAN IT USED TO.
       //
@@ -3245,7 +3324,7 @@ export const buildClinicalPassportSummary = (
       // reader's situation.
       description: diagnosisClaimed
         ? [
-            `目前护照上的诊断信息：${diagnosisOriginPhrase}；护照上还没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段，所以不能写成已确诊。`,
+            `目前护照上的诊断信息：${diagnosisOriginPhrase}；护照上还没有从基因报告里读出来的、可作确诊依据的基因结果，所以不能写成已确诊。`,
             // 什么时候 and not 是谁, because this sentence travels to
             // renderers that print one and not the other. The DTO
             // carries `adminUserId`, the markdown export prints it, and
@@ -3540,15 +3619,22 @@ export const buildClinicalPassportSummary = (
           ? compactText(reportInsights.geneEvidence, reportInsights.geneticType, 86)
           : // Names the reading and stops. The card is one line in the
             // markdown export's 核心摘要 table as well as a tile on the
-            // screen, and 「未经基因确诊（本护照内没有从基因报告里读出来
-            // 的……4q 单倍型……）」 below is false of this profile: the
-            // haplotype IS off the laboratory's report. The values and
-            // their brackets are the rows' job; the grade block says
-            // what the reading means.
+            // screen, and 「未经基因确诊」 alone would be true of this
+            // profile but silent about the one thing its reader must
+            // not miss. The values and their brackets are the rows'
+            // job; the grade block says what the reading means.
             diagnosisConfirmation === 'genetic_non_permissive'
             ? `未构成基因确诊：报告上的 4q 单倍型是「${nonPermissiveHaplotypeText}」，不是允许型 4qA`
             : diagnosisClaimed
-              ? `未经基因确诊（本护照内没有从基因报告里读出来的 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— ${diagnosisOriginPhrase}`
+              ? // 「可作确诊依据的」 AND NOT THE LIST OF READINGS. The
+                // list restated `confirmation`'s definition in prose,
+                // and the definition is now a conjunction: a laboratory
+                // report stating a repeat count and no haplotype prints
+                // that count on the row under this card, 报告读取 in its
+                // bracket, while this line denied it. What is absent is
+                // a result that could confirm, which is what the
+                // referral pack and the anesthesia card already say.
+                `未经基因确诊（本护照内没有从基因报告里读出来的、可作确诊依据的基因结果）—— ${diagnosisOriginPhrase}`
               : // 「缺少」 is a claim about this card's own subject, and
                 // the 证据摘要 row can be carrying a string while it is
                 // made: a genetics report whose haplotype cell names its

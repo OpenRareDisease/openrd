@@ -9,7 +9,11 @@ import {
   readGeneticEvidence,
 } from '../genetic-evidence.js';
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
-import { buildClinicalPassportSummary } from '../profile.passport.js';
+import {
+  buildClinicalPassportSummary,
+  type PassportDiagnosisConfirmation,
+  type PassportGeneticRecordDTO,
+} from '../profile.passport.js';
 import { decodeFirstYearFrom, type YearAnswer } from './year-value.js';
 import type { PatientDocumentDTO, PatientProfileDTO } from '../profile.service.js';
 
@@ -187,9 +191,26 @@ export interface NormalisedSource {
     readonly methylation: string | null;
   };
   /**
-   * WHETHER THIS PROFILE IS GENETICALLY CONFIRMED, as the clinical
-   * passport answers it — `buildClinicalPassportSummary`'s
-   * `diagnosis.confirmation`, asked here rather than re-derived.
+   * HOW WELL BACKED THE DIAGNOSIS IS, as the clinical passport answers
+   * it — `buildClinicalPassportSummary`'s `diagnosis.confirmation`,
+   * carried whole rather than reduced to a yes/no here.
+   *
+   * THE STATE THE BOOLEAN BELOW CANNOT HOLD is the one where a
+   * laboratory read the 4q haplotype and it is not the permissive
+   * allele. Flattened to 「not confirmed」, that profile received the
+   * same sentence as a profile with no report at all — 「本平台没有从基因
+   * 检测报告里读到可作确诊依据的基因结果」 — so a registry could not tell
+   * a negative finding from an absent one, and the receiver of the
+   * first is the one who has to act on it. See
+   * `geneticConfirmationReasonZh`, which branches on this rather than
+   * on the boolean.
+   */
+  readonly diagnosisConfirmation: PassportDiagnosisConfirmation;
+  /**
+   * WHETHER THIS PROFILE IS GENETICALLY CONFIRMED — the member above
+   * reduced to the one bit the two formats with a boolean slot emit,
+   * reduced ONCE, in `normaliseSource`, so that neither of them writes
+   * its own `=== 'genetic'`.
    *
    * THE THREE SERIALISERS BELOW ARE NOT ALLOWED A FOURTH ANSWER. Each
    * of them used to ask `hasGeneticReport`, which was 「is ANY document
@@ -257,6 +278,23 @@ export interface NormalisedSource {
      */
     readonly diagnosisDate: string | null;
   };
+  /**
+   * WHAT THIS PLATFORM READS THOSE CELLS AS — the passport's own
+   * `diagnosis.geneticEvidence.record`, carried whole rather than
+   * re-parsed here.
+   *
+   * A DIFFERENT QUESTION FROM `geneticEvidenceReading`, which holds the
+   * STRINGS the evidence document prints. A 4q 单倍型 cell reading
+   * 「4qA/4qB」 is a string and it is not a haplotype: it names the
+   * probes the laboratory used, and `permissiveHaplotype` is null for
+   * it. A D4Z4 cell reading 「1-10」 or 「未检出」 is a string and it is
+   * not a count. Those answers are what the passport's gates are
+   * computed from, and a second reading of the same cells written here
+   * — a regex of this module's own — is how a registry would come to
+   * receive a genotype the passport does not print. See
+   * `geneticResultValue`.
+   */
+  readonly geneticEvidenceRecord: PassportGeneticRecordDTO;
   readonly familyHistoryStatement: string | null;
   readonly currentStatus: {
     readonly ambulation: string | null;
@@ -648,7 +686,7 @@ const transcriptionNoteZh = (laboratory: boolean) =>
  * WHAT 基因确诊 MEANS ON THIS PLATFORM, in the one wording every export
  * states it in.
  *
- * `geneticallyConfirmed` is one boolean and the three formats each have
+ * `diagnosisConfirmation` is one answer and the three formats each have
  * a slot that has to explain it — FHIR on `Condition.verificationStatus.text`,
  * TREAT-NMD on the item's `provenanceZh`, Phenopacket in the omission
  * that stands in for a field the format does not have. Three wordings
@@ -680,15 +718,64 @@ export const GENETICALLY_CONFIRMED_REASON_ZH =
  * or on file and silent about every result; the patient is holding it
  * either way, and an export that tells a registry no report exists
  * sends somebody to re-order a test that has already been run.
+ *
+ * NOR MAY IT COVER THE STATE WHERE THE LABORATORY DID ANSWER. It said
+ * 没有读到 for a report whose 4q 单倍型 is an unambiguous 4qB — a result
+ * this platform read, printed, and graded — so a registry received the
+ * same sentence for 「we have read nothing」 and for 「we have read a
+ * finding that argues against this mechanism」. Those two receivers do
+ * different things next. The one below is the second one's.
  */
 export const NOT_GENETICALLY_CONFIRMED_REASON_ZH =
   '本平台没有把这份档案判定为基因确诊：本平台没有从基因检测报告里读到可作确诊依据的基因结果。这不表示该患者没有做过基因检测，也不表示他手里没有报告 —— 只表示本平台没有读到';
 
-/** One of the two, chosen by the shared answer. */
-export const geneticConfirmationReasonZh = (source: NormalisedSource): string =>
-  source.geneticallyConfirmed
-    ? GENETICALLY_CONFIRMED_REASON_ZH
-    : NOT_GENETICALLY_CONFIRMED_REASON_ZH;
+/**
+ * …and the state where a laboratory answered, and the answer was 4qB.
+ *
+ * NOT AN ABSENCE, and the sentence opens by saying so, because the
+ * whole defect it closes is a receiver reading it as one. FSHD1 is a
+ * contracted D4Z4 array on a PERMISSIVE 4qA allele, so a contraction
+ * reported on 4qB is not less evidence towards the diagnosis — it is a
+ * finding pointing the other way, and it is on the report the patient
+ * is holding.
+ *
+ * AND IT REFUSES THE OPPOSITE CONCLUSION IN THE SAME BREATH. A registry
+ * told 「非允许型」 with nothing after it can file this patient as 排除
+ * FSHD. The report states the haplotype of the allele it looked at;
+ * whether that rules the disease out is not a question this platform
+ * answers, and it says so. Same two refusals the share banner and the
+ * referral pack make, in the export's own register.
+ */
+export const NON_PERMISSIVE_HAPLOTYPE_REASON_ZH =
+  '本平台没有把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，报告上的 4q 单倍型不是允许型 4qA。这是读到的一条结果，不是没有读到 —— FSHD1 指的是 D4Z4 重复序列在允许型 4qA 等位基因上的缩短，所以这一条不构成可作确诊依据的基因结果。这也不表示已排除 FSHD：报告写的是它所检测的那条等位基因，这份结果如何解读以报告原件与临床判断为准';
+
+/**
+ * One of the three, chosen by the shared answer.
+ *
+ * A `switch` and not a chain of ternaries: a state added to
+ * `PassportDiagnosisConfirmation` has to fail the build here rather
+ * than fall into the negative, which is how the 4qB state came to be
+ * described as an absence on three exports at once.
+ */
+export const geneticConfirmationReasonZh = (source: NormalisedSource): string => {
+  switch (source.diagnosisConfirmation) {
+    case 'genetic':
+      return GENETICALLY_CONFIRMED_REASON_ZH;
+    case 'genetic_non_permissive':
+      return NON_PERMISSIVE_HAPLOTYPE_REASON_ZH;
+    // The three states in which nothing was read off a laboratory's
+    // report at all. They differ in who typed the archived values, which
+    // is `fieldOrigins` and the provenance sentences, not this one.
+    case 'self_reported':
+    case 'admin_entered':
+    case 'none':
+      return NOT_GENETICALLY_CONFIRMED_REASON_ZH;
+    default: {
+      const _never: never = source.diagnosisConfirmation;
+      return _never;
+    }
+  }
+};
 
 /**
  * WHICH DOCUMENT THIS PLATFORM ACTUALLY READ THE GENETIC VALUES OFF,
@@ -812,6 +899,114 @@ export const geneticValueProvenanceZh = (
   // the exported value was classified from and stays true of an
   // administrator's entry.
   return withOriginNote(source, markerPath, base, spec.locationZh(source));
+};
+
+/**
+ * ONE ARCHIVED GENETIC RESULT, TOGETHER WITH WHETHER THIS PLATFORM
+ * READS IT AS ONE.
+ *
+ * THE FAILURE THIS SHAPE PREVENTS. These items used to be the archived
+ * string and nothing else, in a field a registry ingests as this
+ * patient's genotype. A 4q 单倍型 whose cell reads 「4qA/4qB」 went out
+ * as that patient's haplotype; so did 「未检出」, and so did a D4Z4
+ * 重复单元数 of 「1-10」. Every one of those is a string this platform's
+ * own parser refuses to read as a result — the passport prints them
+ * with 报告读取 in a bracket and grades the profile as having no
+ * confirmatory reading — so the export was handing a receiver prose
+ * under a key it maps as data, and doing it in the one direction that
+ * cannot be caught downstream: 「未检出」 ingested as a genotype is
+ * indistinguishable from a real allele name.
+ *
+ * SO THE STRING STAYS AND THE CLAIM GOES. `recordedZh` is the archive's
+ * own line, verbatim, unnormalised — the Phenopacket export tells its
+ * receiver these readings appear here 「按其本来面目」 and that has to
+ * stay true — and `reading` is the only part of this value a receiver
+ * may map as a result.
+ *
+ * THE READING IS THE PASSPORT'S, NOT A SECOND ONE. `reading` is
+ * `result` only when the archived line IS the line this platform read
+ * off the profile's genetic evidence AND that read produced a result.
+ * The two halves are separate on purpose:
+ *
+ *   `no_result` — read, and not a result. A probe list, a 未检出, an
+ *     interval. This is a statement about that string.
+ *   `not_read` — the archive holds something this platform has not
+ *     read: no evidence document supplied it, or the one that did says
+ *     something else. It is NOT a statement about the string, and
+ *     merging it into `no_result` would make one — over, for instance,
+ *     a repeat count a patient typed into their own registration form,
+ *     which this platform has no report for and no quarrel with.
+ *     `provenanceZh` beside the item says which of those two it is.
+ *
+ * 甲基化 IS NOT IN HERE, and its absence is not an oversight: no gate
+ * on this platform reads it and no parser refuses it, so there is no
+ * reading to report and the archived string is the whole of what is
+ * known. A `reading` invented for it would be this module answering a
+ * question nothing else asks.
+ */
+/* A `type` and not an `interface`, so it stays assignable to the
+ * TREAT-NMD document's own value union — an interface has no implicit
+ * index signature and would have to be listed there by name. */
+export type SerialisedGeneticResult = {
+  /** The archived line, verbatim. */
+  readonly recordedZh: string;
+  readonly reading: 'result' | 'no_result' | 'not_read';
+  /** The same answer in the language the rest of this document is in. */
+  readonly readingZh: string;
+};
+
+const GENETIC_RESULT_READING_LABELS_ZH: Record<SerialisedGeneticResult['reading'], string> = {
+  result: '本平台把档案里这一行读作这一项的检测结果',
+  no_result:
+    '档案里这一行就是本平台从这份档案的基因证据上读到的那一行，但本平台从它读不出这一项的结果',
+  not_read: '本平台没有读过档案里这一行：它不是本平台从这份档案的基因证据上读到的那一行',
+};
+
+/**
+ * Which of the two items this shape covers, and what answers it for
+ * each — both answers taken off `geneticEvidenceRecord`, which is the
+ * passport's own read.
+ *
+ * `D4Z4Reading.value` is non-null only for a single unambiguous number:
+ * that is the parser's own verdict on its own string, not a second
+ * reading of it. `permissiveHaplotype` is the same for 4qA / 4qB, with
+ * null covering both a missing cell and a cell naming the probes.
+ */
+const GENETIC_RESULT_ITEMS: Record<
+  'd4z4' | 'haplotype',
+  {
+    readonly evidenceLineZh: (record: PassportGeneticRecordDTO) => string | null;
+    readonly isAResult: (record: PassportGeneticRecordDTO) => boolean;
+  }
+> = {
+  d4z4: {
+    evidenceLineZh: (record) => record.d4z4?.raw ?? null,
+    isAResult: (record) => record.d4z4?.value != null,
+  },
+  haplotype: {
+    evidenceLineZh: (record) => record.haplotype,
+    isAResult: (record) => record.permissiveHaplotype !== null,
+  },
+};
+
+/** The value for one such item, or null when the archive holds nothing
+ *  — which is the drop, not a `reading` of its own: there is no line to
+ *  report a reading of. */
+export const geneticResultValue = (
+  source: NormalisedSource,
+  field: 'd4z4' | 'haplotype',
+): SerialisedGeneticResult | null => {
+  const recordedZh = GENETIC_BASELINE_VALUE_ORIGINS[field].archived(source);
+  if (recordedZh === null) return null;
+  const spec = GENETIC_RESULT_ITEMS[field];
+  const record = source.geneticEvidenceRecord;
+  const reading: SerialisedGeneticResult['reading'] =
+    recordedZh !== spec.evidenceLineZh(record)
+      ? 'not_read'
+      : spec.isAResult(record)
+        ? 'result'
+        : 'no_result';
+  return { recordedZh, reading, readingZh: GENETIC_RESULT_READING_LABELS_ZH[reading] };
 };
 
 /**
@@ -1263,6 +1458,11 @@ export const normaliseSource = (
     });
 
   const geneticEvidenceReading = readGeneticEvidenceForExport(profile.documents);
+  // ONE PASSPORT, READ ONCE. The confirmation state and the reading of
+  // the evidence document's own cells are two answers off one build, and
+  // building it twice is two chances for this export to describe a
+  // passport the patient is not looking at.
+  const passportDiagnosis = buildClinicalPassportSummary(profile).diagnosis;
 
   return {
     profile,
@@ -1285,9 +1485,11 @@ export const normaliseSource = (
       haplotype: text(disease?.haplotype),
       methylation: text(disease?.methylation),
     },
-    geneticallyConfirmed:
-      buildClinicalPassportSummary(profile).diagnosis.confirmation === 'genetic',
+    diagnosisConfirmation: passportDiagnosis.confirmation,
+    // The one place the enum is reduced to the bit two formats emit.
+    geneticallyConfirmed: passportDiagnosis.confirmation === 'genetic',
     geneticEvidenceReading,
+    geneticEvidenceRecord: passportDiagnosis.geneticEvidence.record,
     familyHistoryStatement: text(disease?.familyHistory),
     currentStatus: {
       ambulation: text(status?.independentlyAmbulatory),

@@ -452,7 +452,9 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
   });
 
   it('states the genetic result when there is one, and drops the warning', () => {
-    const result = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
+    const result = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
 
     expect(result.diagnosis.confirmation).toBe('genetic');
     expect(result.diagnosis.statement).toContain('基因确诊');
@@ -467,7 +469,9 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
       '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果',
     );
 
-    const confirmed = pack(base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never));
+    const confirmed = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
     expect(confirmed.questions.some((question) => question.id === 'confirm-diagnosis')).toBe(false);
   });
 
@@ -650,7 +654,11 @@ describe('基线里的基因数值印在转诊资料上', () => {
   it('结论里的重复数只写报告读出来的那个', () => {
     const result = pack(
       markedGenetics({
-        documents: [geneticReport({ haplotype: '4qA' })],
+        // Both required items off the report — the length as an EcoRI
+        // fragment — and no `d4z4Repeats` field on it, so the 重复数 the
+        // pack prints is the marked baseline's and the 结论 may not
+        // carry it.
+        documents: [geneticReport({ haplotype: '4qA', ecoRIFragment: '18kb' })],
       } as unknown as Partial<PatientProfileDTO>),
     );
 

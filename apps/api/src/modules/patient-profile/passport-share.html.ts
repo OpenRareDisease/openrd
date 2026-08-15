@@ -75,12 +75,13 @@ const day = (value: string | null | undefined): string => {
  *
  * `confirmation` is an evidence grade — see its doc comment in
  * profile.passport.ts — and a sentence about who typed the 诊断信息
- * block cannot be read off it. 基因确诊 is earned by a D4Z4 count, a
- * haplotype or an EcoRI fragment alone, so it sits over a 分型 that may
- * be the patient's own free text; and a report parsed to nothing but
- * `diagnosisType` lands in `self_reported`, whose name says the patient
- * wrote a value OCR read off a report. Authorship is per value, in
- * `diagnosis.valueOrigins`, printed in brackets on the row itself.
+ * block cannot be read off it. 基因确诊 is earned by the laboratory's
+ * report carrying a D4Z4 length and a permissive 4qA haplotype, so it
+ * sits over a 分型 that may be the patient's own free text; and a
+ * report parsed to nothing but `diagnosisType` lands in
+ * `self_reported`, whose name says the patient wrote a value OCR read
+ * off a report. Authorship is per value, in `diagnosis.valueOrigins`,
+ * printed in brackets on the row itself.
  *
  * NOR DOES IT QUANTIFY OVER UPLOADED REPORTS. `buildReportInsights`
  * takes its genetic values out of ONE document, so a repeat count in an
@@ -95,6 +96,16 @@ const day = (value: string | null | undefined): string => {
  * 「没有可作确诊依据的基因结果」 would then sit above a number the
  * clinician can read. The qualifier is still a claim about this page
  * and not about the patient's other reports.
+ *
+ * AND 「可作确诊依据的」 IS NOT PADDING EITHER. These banners named the
+ * readings — 「D4Z4 重复数、4q 单倍型或 EcoRI 片段」 — which restated the
+ * grade's own definition in prose, on a page a clinician opens on a
+ * phone at a desk. The definition is now a conjunction, so a laboratory
+ * report stating a repeat count and no haplotype reaches the
+ * unconfirmed banners with that count printed under them in a row
+ * whose bracket reads 报告读取. Same wording as
+ * `buildDiagnosisStatement` in referral-pack.ts, which is where it was
+ * settled: one patient can be carrying both documents.
  */
 const CONFIRMATION_BANNER: Record<
   ClinicalPassportSummaryDTO['diagnosis']['confirmation'],
@@ -125,7 +136,7 @@ const CONFIRMATION_BANNER: Record<
   self_reported: {
     tone: 'warn',
     title: '未经基因确诊',
-    body: '这份摘要里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段），下面的诊断信息不构成诊断依据。括号写在哪一行后面就只说那一行 —— 每一行的来源写在它自己的括号里，本平台说不上来的那几行也照实写着。FSHD 的误诊率很高，请勿据此锚定。患者手里可能还有本平台没有读过的报告，值得当面问一句。',
+    body: '这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果，下面的诊断信息不构成诊断依据。括号写在哪一行后面就只说那一行 —— 每一行的来源写在它自己的括号里，本平台说不上来的那几行也照实写着。FSHD 的误诊率很高，请勿据此锚定。患者手里可能还有本平台没有读过的报告，值得当面问一句。',
   },
   // The fourth source (baseline-provenance.ts). The title names the
   // FIELD, because the field is all the marker covers: this state is
@@ -135,7 +146,7 @@ const CONFIRMATION_BANNER: Record<
   admin_entered: {
     tone: 'warn',
     title: '未经基因确诊 —— 档案里的「确诊年份」由本平台工作人员代填',
-    body: '这份摘要里没有从基因报告里读出来的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条本平台管理员代为录入的记录：那是我们的工作人员根据患者的电话或消息转述录入的，患者本人可能没有看过，也没有核对过。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
+    body: '这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。这份档案的「确诊年份」带着一条本平台管理员代为录入的记录：那是我们的工作人员根据患者的电话或消息转述录入的，患者本人可能没有看过，也没有核对过。这一句只说这一个字段 —— 下面的括号写在哪一行后面，就只说那一行。FSHD 的误诊率很高，请勿据此锚定，具体以患者手中的病历与报告单为准。',
   },
   none: {
     tone: 'warn',
@@ -145,7 +156,7 @@ const CONFIRMATION_BANNER: Record<
     // D4Z4 重复数 that reached the record without one of those two, so
     // both can be printed below with their own source in brackets while
     // this banner stands.
-    body: '这份摘要里没有可展示的分型或诊断日期，也没有从基因报告里读出来的基因结果，患者手里可能还有本平台没有读过的报告。下面的括号写在哪一行后面，就只说那一行。',
+    body: '这份摘要里没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果，患者手里可能还有本平台没有读过的报告。下面的括号写在哪一行后面，就只说那一行。',
   },
 };
 

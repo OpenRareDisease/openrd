@@ -572,11 +572,14 @@ describe('标题和提示只说证据，不说是谁填的', () => {
     expect(text).not.toContain('没有从基因报告里读出来的基因结果');
   });
 
-  it('提示说的是被检查过的那三项，不是「本平台尚未收到基因报告」', async () => {
+  it('提示说的是没有可作确诊依据的结果，不是「本平台尚未收到基因报告」', async () => {
     const text = joinedText(await render(summary()));
     expect(text).toContain('未经基因确诊');
-    expect(text).toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+    expect(text).toContain('没有从基因报告里读出来的、可作确诊依据的基因结果');
     expect(text).not.toContain('尚未收到');
+    // 不再逐条点名读数：确诊要报告同时写明长度和允许型单倍型，只写了
+    // 其中一项的报告会带着那一项走到这条提示下面。
+    expect(text).not.toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
   });
 
   it('只解析出甲基化值时，不说「没有可展示的证据」而下面正印着那个值', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { buildPassportSharePage } from './passport-share.html.js';
 import {
   buildClinicalPassportExport,
   buildClinicalPassportSummary,
@@ -1288,5 +1289,240 @@ describe('长度这一项也要读出来才算读到', () => {
     const card = summary.summaryCards.find((item) => item.key === 'diagnosis');
     expect(summary.diagnosis.geneEvidence).toContain('4qA/4qB');
     expect(card?.summary).toContain('4qA/4qB');
+  });
+});
+
+/**
+ * THE WHOLE MATRIX, BECAUSE 基因确诊 IS A CONJUNCTION AND A CONJUNCTION
+ * IS WHERE 「the cell has something in it」 HIDES.
+ *
+ * The guideline this platform prints on the passport itself defines the
+ * genetic analysis as two items and says what happens when one is
+ * missing — 「只有 4qA 是允许型，缺了这一项，重复单元数本身不足以下结论」.
+ * The gate was an OR over three fields tested with `hasMeaningfulValue`,
+ * so it disagreed with that sentence in every direction at once: a lone
+ * repeat count earned 基因确诊, a cell reading 未检出 earned it too
+ * because the string was non-empty, and 「未检出 4qA 等位基因」 matched the
+ * bare substring 4qA and earned 可用于入组 under a headline saying the
+ * report already holds what trial enrolment requires.
+ *
+ * So the three cells are crossed here rather than sampled: each of them
+ * present, absent, saying the thing was NOT found, and holding something
+ * this platform cannot parse — plus, for the length, a range, which is a
+ * real finding that is not a size. Every combination is rendered and
+ * every surface a human reads is read off it.
+ */
+describe('三格读数的全矩阵 —— 有值 / 空着 / 否定句 / 读不出', () => {
+  /** 长度这一格。`isSize` 是「指南要的那个确定长度」，不是「这一格有字」。 */
+  const D4Z4_CELLS = [
+    { name: '空着', value: null, isSize: false },
+    { name: '确定的重复数', value: '3', isSize: true },
+    { name: '区间', value: '1-10', isSize: false },
+    { name: '否定句', value: '未检出', isSize: false },
+    { name: '读不出的字', value: '见附页', isSize: false },
+  ] as const;
+
+  const ECORI_CELLS = [
+    { name: '空着', value: null, isSize: false },
+    { name: '确定的片段长度', value: '18kb', isSize: true },
+    { name: '否定句', value: '未检出 EcoRI 片段', isSize: false },
+    { name: '读不出的字', value: '见附页', isSize: false },
+  ] as const;
+
+  const HAPLOTYPE_CELLS = [
+    { name: '空着', value: null, verdict: 'none' },
+    { name: '允许型', value: '4qA', verdict: 'permissive' },
+    { name: '非允许型', value: '4qB', verdict: 'non_permissive' },
+    { name: '否定句', value: '未检出 4qA 等位基因', verdict: 'none' },
+    { name: '只列了探针', value: '4qA/4qB', verdict: 'none' },
+  ] as const;
+
+  const rows = D4Z4_CELLS.flatMap((d4z4) =>
+    ECORI_CELLS.flatMap((ecoRI) =>
+      HAPLOTYPE_CELLS.map((haplotype) => {
+        const fields: Record<string, string> = {};
+        if (d4z4.value) fields.d4z4Repeats = d4z4.value;
+        if (ecoRI.value) fields.ecoRIFragment = ecoRI.value;
+        if (haplotype.value) fields.haplotype = haplotype.value;
+        // 分型 is on the page so the unconfirmed states land on
+        // `self_reported` rather than `none` — that is the branch whose
+        // copy names the printed values, and it is the one that used to
+        // deny a reading this same page prints.
+        const summary = buildClinicalPassportSummary(
+          base({ geneticMutation: 'FSHD1', documents: [geneticReport(fields)] } as never),
+        );
+        return {
+          label: `长度=${d4z4.name} / EcoRI=${ecoRI.name} / 单倍型=${haplotype.name}`,
+          hasSize: d4z4.isSize || ecoRI.isSize,
+          verdict: haplotype.verdict,
+          /** The cell strings this report did NOT state a result in.
+           *  Nothing written in a laboratory's voice may quote one. */
+          unreadCells: [
+            ...(d4z4.isSize || !d4z4.value ? [] : [d4z4.value]),
+            ...(ecoRI.isSize || !ecoRI.value ? [] : [ecoRI.value]),
+            ...(haplotype.verdict === 'none' && haplotype.value ? [haplotype.value] : []),
+          ],
+          summary,
+          share: buildPassportSharePage(summary, { expiresAt: '2026-09-01T00:00:00.000Z' }),
+          markdown: buildClinicalPassportExport(summary).markdown,
+        };
+      }),
+    ),
+  );
+
+  /** Every sentence this passport writes in a laboratory's voice. The
+   *  printed VALUES are deliberately not in here: a cell is shown as the
+   *  report wrote it, bracket and all, and that is not a claim. */
+  const prose = (row: (typeof rows)[number]) =>
+    [
+      row.summary.diagnosis.geneticEvidence.headline,
+      row.summary.diagnosis.geneticEvidence.reason,
+      row.summary.diagnosis.geneticEvidence.action,
+      ...row.summary.nextSteps.map((step) => `${step.title}${step.description}`),
+    ].join('\n');
+
+  it('基因确诊当且仅当报告同时给出确定的长度和允许型 4qA', () => {
+    for (const row of rows) {
+      const confirmed = row.hasSize && row.verdict === 'permissive';
+      expect(row.summary.diagnosis.confirmation, row.label).toBe(
+        row.verdict === 'non_permissive'
+          ? 'genetic_non_permissive'
+          : confirmed
+            ? 'genetic'
+            : 'self_reported',
+      );
+      // 可用于入组 and 基因确诊 are one fact — the guideline sentence
+      // this platform quotes for enrolment is 「临床试验的入组无一例外
+      // 要求已确认的分子遗传学诊断」 — so they are read off one
+      // expression and cannot come apart.
+      expect(row.summary.diagnosis.geneticEvidence.grade === 'trial_ready', row.label).toBe(
+        confirmed,
+      );
+      expect(row.summary.diagnosis.ready, row.label).toBe(confirmed);
+    }
+  });
+
+  it('没确诊的那些行，没有一句说它可用于入组', () => {
+    for (const row of rows.filter((item) => item.summary.diagnosis.confirmation !== 'genetic')) {
+      const everything = `${prose(row)}\n${row.share}\n${row.markdown}`;
+      expect(everything, row.label).not.toContain('可用于入组');
+      expect(everything, row.label).not.toContain('入组通常要求');
+      // 「未经基因确诊」/「未构成基因确诊」 carry 基因确诊 inside them, so
+      // the share banner's own heading is what gets ruled out rather
+      // than the substring — on a confirmed row that heading is
+      // 「<h2>基因确诊</h2>」 and nothing else on any of these surfaces
+      // produces the same bytes.
+      expect(everything, row.label).not.toContain('>基因确诊<');
+    }
+  });
+
+  it('没读出结果的那一格，不会被任何一句当成读数引用', () => {
+    for (const row of rows) {
+      for (const cell of row.unreadCells) {
+        // The value itself still prints — 「未检出」 is what the report
+        // says and the row shows it with 报告读取 in its bracket. What
+        // may not happen is a sentence quoting it as a length or a
+        // haplotype, which is how 「D4Z4 长度 未检出，单倍型 4qA」 came to
+        // be handed to a neurologist as a 依据.
+        expect(prose(row), `${row.label} :: ${cell}`).not.toContain(cell);
+      }
+    }
+  });
+
+  it('每一行的横幅和确认状态说的是同一件事', () => {
+    for (const row of rows) {
+      const { confirmation } = row.summary.diagnosis;
+      if (confirmation === 'genetic') {
+        expect(row.share, row.label).toContain('<div class="banner ok">');
+        expect(row.share, row.label).toContain('基因确诊');
+      } else if (confirmation === 'genetic_non_permissive') {
+        expect(row.share, row.label).toContain('<div class="banner warn">');
+        expect(row.share, row.label).toContain('4q 单倍型不是允许型');
+      } else {
+        expect(row.share, row.label).toContain('<div class="banner warn">');
+        expect(row.share, row.label).toContain('未经基因确诊');
+      }
+    }
+  });
+
+  it('否定读数没有一行能进灰区或大片段缺失那两条指南分支', () => {
+    for (const row of rows) {
+      const grey = row.summary.diagnosis.geneticEvidence.record.greyZone;
+      expect(grey, row.label).toBe(false);
+      expect(row.summary.diagnosis.geneticEvidence.greyZoneNote, row.label).toBeNull();
+    }
+    // 上面那一格的长度只有 3 和 18kb 两种确定值，都不在 8–10，所以灰区
+    // 全表为假是应该的 —— 这一条断言的是「否定句里的 8 不算 8」。
+    const negatedEight = buildClinicalPassportSummary(
+      base({
+        documents: [geneticReport({ d4z4Repeats: '未检出8个单元', haplotype: '4qA' })],
+      } as never),
+    );
+    expect(negatedEight.diagnosis.geneticEvidence.record.greyZone).toBe(false);
+    expect(negatedEight.diagnosis.confirmation).not.toBe('genetic');
+    const realEight = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: '8', haplotype: '4qA' })] } as never),
+    );
+    expect(realEight.diagnosis.geneticEvidence.record.greyZone).toBe(true);
+  });
+
+  it('全表都不再逐条点名那三项读数 —— 那是把评级规则抄进了纸面', () => {
+    for (const row of rows) {
+      const everything = `${prose(row)}\n${row.share}\n${row.markdown}\n${
+        row.summary.summaryCards.find((card) => card.key === 'diagnosis')?.summary ?? ''
+      }`;
+      expect(everything, row.label).not.toContain('D4Z4 重复数、4q 单倍型或 EcoRI 片段');
+      expect(everything, row.label).not.toContain('4q 单倍型或 EcoRI 片段');
+    }
+  });
+
+  it('报告在手上、只是缺一项时，不会再让人去上传一份已经传过的报告', () => {
+    for (const row of rows.filter(
+      (item) => item.summary.diagnosis.geneticEvidence.grade === 'method_right_incomplete',
+    )) {
+      const titles = row.summary.nextSteps.map((step) => step.title);
+      expect(titles, row.label).toContain('问一下报告里缺的那一项');
+      expect(titles, row.label).not.toContain('补充基因检测报告');
+      expect(titles, row.label).not.toContain('补充基因或诊断依据');
+    }
+  });
+});
+
+/**
+ * 否定句里带着数字，是这三格上同一个缺陷的最后一种形状。
+ *
+ * `parsePermissiveHaplotype` matched the bare substring 4qA, and the
+ * size cells were parsed for 「what number is in this string」 — so a
+ * cell whose whole content is a statement that nothing was found still
+ * handed over the number inside it.
+ */
+describe('否定句里的数字不是读数', () => {
+  const readingOf = (fields: Record<string, string>) =>
+    buildClinicalPassportSummary(base({ documents: [geneticReport(fields)] } as never)).diagnosis
+      .geneticEvidence;
+
+  it('「未检出 4qA 等位基因」不是允许型', () => {
+    const e = readingOf({ d4z4Repeats: '3', haplotype: '未检出 4qA 等位基因' });
+    expect(e.record.permissiveHaplotype).toBeNull();
+    expect(e.grade).not.toBe('trial_ready');
+  });
+
+  it('「未检出3个重复单元的缩短」不是长度', () => {
+    const e = readingOf({ d4z4Repeats: '未检出3个重复单元的缩短', haplotype: '4qA' });
+    expect(e.record.d4z4?.value).toBeNull();
+    expect(e.record.d4z4?.raw).toBe('未检出3个重复单元的缩短');
+    expect(e.grade).toBe('method_right_incomplete');
+  });
+
+  it('「未检出10kb以下片段」不是 EcoRI 片段长度', () => {
+    const e = readingOf({ ecoRIFragment: '未检出10kb以下片段', haplotype: '4qA' });
+    expect(e.grade).toBe('method_right_incomplete');
+    expect(e.reason).not.toContain('10kb');
+  });
+
+  it('英文的 not detected 一样拦得住', () => {
+    const e = readingOf({ d4z4Repeats: '3', haplotype: '4qA not detected' });
+    expect(e.record.permissiveHaplotype).toBeNull();
+    expect(e.grade).not.toBe('trial_ready');
   });
 });

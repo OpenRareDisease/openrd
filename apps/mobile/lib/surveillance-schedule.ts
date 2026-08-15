@@ -374,10 +374,25 @@ export const readReportReadRepeatCount = (
  * one takes `ReportReadRepeatCount`. If either version's rule changes,
  * the other has to change with it — the two are checked against the
  * same cases but nothing in the build links them.
+ *
+ * THE NEGATION LINE IS THE THIRD OF THOSE REASONS, and it arrived after
+ * the other two. A cell can name the thing in order to say it was not
+ * found — 「未检出3个重复单元的缩短」 — and the number inside it survived
+ * every test above: rendered, this row came out 对得上 with 「本平台从你
+ * 上传的文件里读到的 D4Z4 重复数是 未检出3个重复单元的缩短，落在指南说的
+ * 大片段缺失范围（1–4）内」, about a report that had found no contraction
+ * at all. The API refuses the same strings in `readSizeCell`; the two
+ * lists are the same list.
  */
 export const isLargeD4Z4Deletion = (count: ReportReadRepeatCount | null): boolean => {
   const text = count?.raw.trim() ?? '';
   if (!text || text === '—') return false;
+  if (
+    /未检出|未检测|未检到|未见|未测出|未测到|未获|阴性|not\s*detected|undetected|negative/i.test(
+      text,
+    )
+  )
+    return false;
   if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
   const numbers = text.match(/\d+(?:\.\d+)?/g);
   if (!numbers || numbers.length !== 1) return false;
@@ -789,7 +804,13 @@ const buildEyeAndEarRows = (
         ? `本平台从你上传的文件里读到的 D4Z4 重复数是 ${reportRaw}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
         : showsUnverifiedRepeats
           ? unverifiedRepeatEvidence(printedRepeats, origins?.d4z4Repeats ?? null)
-          : '本平台读不出你的 D4Z4 重复数：可能是还没上传写着它的文件，或者上面写的是一个范围（例如「1-10」）而不是一个确定的数字。范围我们不猜 —— 这一条要不要做，请医生看着报告原件判断。',
+          : // 「或者上面写的是一个范围」 named one of the two ways a file
+            // on record fails to give a number, and a cell reading
+            // 未检出 is the other one — that reader was told the file
+            // might not have been uploaded, about a file whose reading
+            // is printed on the passport. Both ways are named now, and
+            // the sentence ends where it did.
+            '本平台读不出你的 D4Z4 重复数：可能是还没上传写着它的文件，也可能是文件上那一格写的不是一个确定的数字 —— 比如一个范围（「1-10」），或者一句「未检出」。不是确定的数字我们就不猜 —— 这一条要不要做，请医生看着报告原件判断。',
     ask: '可以问：「按我的基因结果，需要做一次散瞳眼底检查吗？」',
     source: SURVEILLANCE_SOURCE,
   };

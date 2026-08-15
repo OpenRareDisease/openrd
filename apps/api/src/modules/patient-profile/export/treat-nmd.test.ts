@@ -674,7 +674,7 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
 
     // The value still exports. Refusing to call it a laboratory reading
     // is not the same as dropping the patient's only copy of it.
-    expect(itemOf(diagnosis, 'diagnosis.d4z4')?.value).toBe('3');
+    expect(itemOf(diagnosis, 'diagnosis.d4z4')?.value).toMatchObject({ recordedZh: '3' });
 
     // The same shape on a real genetics report keeps the sentence that
     // is true there — the point is that the two states differ, not that
@@ -1000,7 +1000,7 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
               {
                 ...EXPORT_FIXTURE_PROFILE.documents[0],
                 documentType,
-                ocrPayload: { fields: { classifiedType, d4z4Repeats: '5' } },
+                ocrPayload: { fields: { classifiedType, d4z4Repeats: '5', haplotype: '4qA' } },
               },
             ] as PatientProfileDTO['documents'],
           } as Partial<PatientProfileDTO>),
@@ -1089,5 +1089,143 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
     expect(itemOf(sectionOf(result, 'diagnosis'), 'diagnosis.type')?.provenanceZh).toContain(
       '不是患者本人填写',
     );
+  });
+});
+
+/**
+ * 诊断.haplotype IS THE FIELD A REGISTRY FILES AS THIS PATIENT'S
+ * GENOTYPE, and it used to be whatever string the archive held.
+ *
+ * The archive holds what the read-time autofill put there, and what the
+ * autofill puts there is the evidence report's cell as OCR read it. A
+ * 4q 单倍型 cell can hold the laboratory's PROBES —「4qA/4qB」— and it
+ * can hold a sentence saying the assay found nothing. This platform's
+ * own parser refuses both: the passport prints them with 报告读取 in a
+ * bracket and grades the profile as carrying no confirmatory result,
+ * and every clinical surface says so. The export said nothing, in the
+ * one place where 「未检出」 and a real allele name are indistinguishable
+ * once ingested.
+ *
+ * The cases below are built the way a real profile reaches this module:
+ * the report's cell in the archive, because the autofill has already
+ * run by the time an export is built.
+ */
+describe('基因结果项：把读数和「本平台读不读得出结果」一起发出去', () => {
+  const stored = EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>;
+  const disease = stored.diseaseBackground as Record<string, unknown>;
+
+  /** One laboratory report, with the same cells sitting in the archive
+   *  — which is where `applyGeneticReportAutofill` puts them. */
+  const reported = (cells: { d4z4?: string; haplotype?: string }) =>
+    build({
+      baseline: {
+        ...stored,
+        diseaseBackground: {
+          ...disease,
+          d4z4: cells.d4z4 ?? null,
+          haplotype: cells.haplotype ?? null,
+        },
+      },
+      documents: [
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          documentType: 'genetic_report',
+          status: 'parsed',
+          ocrPayload: {
+            fields: {
+              ...(cells.d4z4 === undefined ? {} : { d4z4Repeats: cells.d4z4 }),
+              ...(cells.haplotype === undefined ? {} : { haplotype: cells.haplotype }),
+            },
+          },
+        },
+      ],
+    } as Partial<PatientProfileDTO>);
+
+  const valueOf = (result: ReturnType<typeof build>, key: string) =>
+    itemOf(sectionOf(result, 'diagnosis'), key)?.value;
+
+  it('探针名不是单倍型 —— 原样发出，但不发成结果', () => {
+    expect(valueOf(reported({ haplotype: '4qA/4qB' }), 'diagnosis.haplotype')).toEqual({
+      recordedZh: '4qA/4qB',
+      reading: 'no_result',
+      readingZh: expect.stringContaining('读不出'),
+    });
+  });
+
+  it('「未检出」不是单倍型，也不是重复单元数', () => {
+    expect(valueOf(reported({ haplotype: '未检出' }), 'diagnosis.haplotype')).toMatchObject({
+      recordedZh: '未检出',
+      reading: 'no_result',
+    });
+    expect(valueOf(reported({ d4z4: '未检出' }), 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '未检出',
+      reading: 'no_result',
+    });
+  });
+
+  it('区间是一个真实的发现，但不是一个重复单元数', () => {
+    expect(valueOf(reported({ d4z4: '1-10' }), 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '1-10',
+      reading: 'no_result',
+    });
+  });
+
+  it('实验室确实读出结果时，就说读出来了', () => {
+    const result = reported({ d4z4: '5', haplotype: '4qA' });
+    expect(valueOf(result, 'diagnosis.haplotype')).toMatchObject({
+      recordedZh: '4qA',
+      reading: 'result',
+    });
+    expect(valueOf(result, 'diagnosis.d4z4')).toMatchObject({ recordedZh: '5', reading: 'result' });
+    // 非允许型 is a result too. This item reports what the laboratory
+    // determined; whether it supports the diagnosis is
+    // diagnosis.geneticallyConfirmed, and its own sentence.
+    expect(valueOf(reported({ haplotype: '4qB' }), 'diagnosis.haplotype')).toMatchObject({
+      reading: 'result',
+    });
+  });
+
+  /**
+   * 「本平台读不出结果」 AND 「本平台没有读过这一行」 ARE DIFFERENT ANSWERS.
+   * The first is a statement about the string; the second is a
+   * statement about this platform. Merged, a repeat count a patient
+   * typed into their own registration form — which no report on file
+   * says anything about — would go out under a sentence calling it
+   * unreadable.
+   */
+  it('档案里的值不是本平台读到的那一行时，说的是「没读过」而不是「读不出」', () => {
+    const typedByPatient = build({
+      baseline: { ...stored, diseaseBackground: { ...disease, d4z4: '5 个重复单元' } },
+      documents: [],
+    } as Partial<PatientProfileDTO>);
+
+    expect(valueOf(typedByPatient, 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '5 个重复单元',
+      reading: 'not_read',
+    });
+  });
+
+  it('档案里没有这一项时，整条不发 —— 不发成一个空结果', () => {
+    const nothing = build({
+      baseline: { ...stored, diseaseBackground: { ...disease, d4z4: null, haplotype: null } },
+      documents: [],
+    } as Partial<PatientProfileDTO>);
+
+    expect(valueOf(nothing, 'diagnosis.haplotype')).toBeUndefined();
+    expect(valueOf(nothing, 'diagnosis.d4z4')).toBeUndefined();
+  });
+
+  /**
+   * 甲基化 IS DELIBERATELY NOT ONE OF THESE. No gate on this platform
+   * reads it and no parser refuses it, so there is no reading to
+   * report and inventing one here would be this module answering a
+   * question nothing else asks.
+   */
+  it('甲基化仍然是一个字符串，因为本平台对它没有判读', () => {
+    const withMethylation = build({
+      baseline: { ...stored, diseaseBackground: { ...disease, methylation: '32%' } },
+    } as Partial<PatientProfileDTO>);
+
+    expect(valueOf(withMethylation, 'diagnosis.methylation')).toBe('32%');
   });
 });

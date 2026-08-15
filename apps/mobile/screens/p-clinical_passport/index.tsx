@@ -560,6 +560,14 @@ const ClinicalPassportScreen = () => {
    * transcription or the patient's own typing — each with its source
    * under it, and the flat sentence would deny a number on the same
    * screen.
+   *
+   * 「可作确诊依据的」 cannot be dropped either, and it replaced the list
+   * of readings this line used to carry. That list was the server's
+   * grading rule copied into prose here, and the rule is a conjunction:
+   * a laboratory report stating a repeat count and no haplotype is
+   * unconfirmed, with that count in the grid below this sentence and
+   * 报告读取 under it. Same wording the API's own share page and
+   * referral pack use.
    */
   const valueOriginsClause = valueOrigins
     ? '基因类型、D4Z4 重复数、甲基化值和诊断日期，本平台能说明来源的，来源就写在那个值下面。'
@@ -577,7 +585,7 @@ const ClinicalPassportScreen = () => {
         // reader must not miss while scrolling past the values.
         passport.diagnosis.confirmation === 'genetic_non_permissive'
         ? `未构成基因确诊：基因报告读到的 4q 单倍型不是允许型 4qA，这一条不支持 FSHD1 的致病机制。这不是排除诊断 —— 下面「证据分级」里写了指南怎么说、以及该问医生什么。${valueOriginsClause}`
-        : `未经基因确诊：这份护照里没有从基因报告里读出来的基因结果（D4Z4 重复数、4q 单倍型或 EcoRI 片段）。${valueOriginsClause}`;
+        : `未经基因确诊：这份护照里没有从基因报告里读出来的、可作确诊依据的基因结果。${valueOriginsClause}`;
   /**
    * One diagnosis cell: the value, the typographic register its own
    * source has earned, and that source under it.

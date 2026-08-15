@@ -246,6 +246,12 @@ describe('大片段缺失分支', () => {
     ['≤10', false],
     ['—', false],
     ['', false],
+    // 否定句里的数字不是读数。同一张表也钉在 API 那一份上。
+    ['未检出', false],
+    ['未检出3个重复单元的缩短', false],
+    ['未见 4 个重复', false],
+    ['阴性', false],
+    ['not detected', false],
   ])('D4Z4「%s」→ %s', (raw, expected) => {
     expect(isLargeD4Z4Deletion(reportSays(raw))).toBe(expected);
   });
@@ -428,6 +434,21 @@ describe('大片段缺失分支', () => {
     const retina = row('retinal_screening');
     expect(retina.applicability).toBe('not_matched');
     expect(retina.evidence).toContain('视力变化');
+  });
+
+  it('那一格写着「未检出」时是「判断不了」，且不说「可能还没上传」就完事', () => {
+    const notDetected = summary({
+      diagnosis: {
+        confirmation: 'self_reported',
+        d4z4Repeats: '未检出3个重复单元的缩短',
+        valueOrigins: valueOrigins(REPORT_ORIGIN),
+      },
+    });
+    const retina = row('retinal_screening', notDetected);
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).not.toContain('大片段缺失范围');
+    expect(retina.evidence).toContain('未检出');
+    expect(retina.evidence).toContain('报告原件');
   });
 
   it('读不出重复数时是「判断不了」，不是「不适用」 —— 范围我们不猜', () => {

@@ -436,13 +436,14 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
   });
 
   it('基因确诊时分型仍可能是患者打的字 —— 标出来，且不排进化验值那一档', () => {
-    // 确诊 is decided by the D4Z4 count alone. The report carries no
-    // 分型 at all and no document carries one, so the value on the page
-    // is the patient's own free text — under a banner that used to say
-    // the whole diagnosis block had been read off the report.
+    // 确诊 is decided by the D4Z4 length and the haplotype. The report
+    // carries no 分型 at all and no document carries one, so the value
+    // on the page is the patient's own free text — under a banner that
+    // used to say the whole diagnosis block had been read off the
+    // report.
     const p = profile({
       geneticMutation: '我猜是 FSHD1',
-      documents: [geneticReport({ d4z4Repeats: '4' })],
+      documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
     } as never);
     const html = rendered(p);
 
@@ -498,20 +499,25 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
   });
 
   it('基因确诊的横幅不能说「只有标报告读取的来自那份报告」 —— 基因证据那一行就不是', () => {
-    // 基因确诊 is earned by the D4Z4 count while 分型 is the free-text
-    // column, so 基因证据 joins one value from the report with one that
-    // is not, and the row is marked 来源无法确定. A banner promising that
-    // the report's contribution is confined to the 报告读取 rows is
-    // contradicted by a row on the same page.
+    // 基因确诊 is earned by the report's D4Z4 length and haplotype while
+    // 分型 is the free-text column, so 基因证据 joins values from the
+    // report with one that is not, and the row is marked 来源无法确定. A
+    // banner promising that the report's contribution is confined to
+    // the 报告读取 rows is contradicted by a row on the same page.
     const html = rendered(
       profile({
         geneticMutation: '我猜是FSHD1',
-        documents: [geneticReport({ d4z4Repeats: '4' })],
+        documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
       } as never),
     );
 
+    // 「未经基因确诊」 carries 「基因确诊」 inside it, so the confirmed
+    // banner has to be asserted by ruling the unconfirmed one out —
+    // otherwise this test stays green on the state it exists to
+    // exclude.
     expect(html).toContain('基因确诊');
-    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1 · 4（来源无法确定）');
+    expect(html).not.toContain('未经基因确诊');
+    expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1 · 4qA · 4（来源无法确定）');
     expect(html).not.toContain('只有标「报告读取」的来自那份报告');
   });
 
@@ -552,7 +558,7 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
 
     expect(html).toContain('未经基因确诊');
     expect(html).not.toContain('上传的任何报告');
-    expect(html).toContain('这份摘要里没有从基因报告里读出来的基因结果');
+    expect(html).toContain('这份摘要里没有从基因报告里读出来的、可作确诊依据的基因结果');
     expect(html).toContain('患者手里可能还有本平台没有读过的报告');
   });
 

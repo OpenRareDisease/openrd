@@ -4,6 +4,7 @@ import {
   diagnosisYearProvenanceZh,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
+  geneticResultValue,
   geneticValueProvenanceZh,
   instrumentOmission,
   withOriginNote,
@@ -119,22 +120,28 @@ const NOT_COLLECTED_SECTION = (key: string, titleZh: string, noteZh: string): Tr
   noteZh,
 });
 
-const boolItem = (
+/**
+ * An item, or nothing at all when there is no value to report.
+ *
+ * `null` IS THE DROP AND NOT A VALUE. An item present with a null value
+ * tells a registry this platform asked and got nothing; an absent item
+ * tells it nothing was asked. `collected` on the section is where that
+ * distinction is made for a whole section, and it is made per item by
+ * emitting or not emitting one.
+ *
+ * One helper and not one per value type: the rule is the same for every
+ * item in this file, and the second copy of it is where a third copy
+ * comes from.
+ */
+const item = <T extends TreatNmdValue>(
   key: string,
   labelZh: string,
-  value: boolean | null,
-  provenanceZh: string,
-): TreatNmdItem | null => (value === null ? null : { key, labelZh, value, provenanceZh });
-
-const textItem = (
-  key: string,
-  labelZh: string,
-  value: string | null,
+  value: T | null,
   provenanceZh: string,
 ): TreatNmdItem | null => (value === null ? null : { key, labelZh, value, provenanceZh });
 
 const compact = (items: ReadonlyArray<TreatNmdItem | null>): TreatNmdItem[] =>
-  items.filter((item): item is TreatNmdItem => item !== null);
+  items.filter((entry): entry is TreatNmdItem => entry !== null);
 
 const milestoneItem = (milestone: MilestoneEvent): TreatNmdItem => ({
   key: `milestone.${milestone.kind}`,
@@ -213,19 +220,27 @@ export const buildTreatNmdExport = (
       // down: 甲基化 and 单倍型 have no box on any patient form and no
       // back-office write either, so 基线问卷 named an author who cannot
       // exist for them.
-      textItem(
+      //
+      // THE FIRST TWO ARE NOT BARE STRINGS, and the key is why: a
+      // registry ingesting `diagnosis.haplotype` files what it finds
+      // there as this patient's genotype. What it used to find was the
+      // archived line and nothing else — including 「4qA/4qB」, which
+      // names the laboratory's probes, and 「未检出」. `geneticResultValue`
+      // keeps the line and adds this platform's own reading of it, which
+      // is the passport's; 甲基化 has no such reading and stays a string.
+      item(
         'diagnosis.d4z4',
         'D4Z4 重复单元数',
-        source.geneticEvidence.d4z4,
+        geneticResultValue(source, 'd4z4'),
         geneticValueProvenanceZh(source, 'd4z4'),
       ),
-      textItem(
+      item(
         'diagnosis.haplotype',
         '4q 单倍型',
-        source.geneticEvidence.haplotype,
+        geneticResultValue(source, 'haplotype'),
         geneticValueProvenanceZh(source, 'haplotype'),
       ),
-      textItem(
+      item(
         'diagnosis.methylation',
         '甲基化',
         source.geneticEvidence.methylation,
@@ -245,7 +260,7 @@ export const buildTreatNmdExport = (
         titleZh: '家族史',
         collected: source.familyHistoryStatement !== null,
         items: compact([
-          textItem(
+          item(
             'familyHistory.statement',
             '患者对自身家族史的陈述',
             source.familyHistoryStatement,
@@ -335,20 +350,15 @@ export const buildTreatNmdExport = (
             provenanceZh:
               AMBULATION_LABELS[source.currentStatus.ambulation] ?? '档案中记录的行走状态',
           },
-      boolItem(
+      item(
         'motor.armRaiseDifficulty',
         '上举手臂困难',
         source.currentStatus.armRaiseDifficulty,
         '患者自述',
       ),
-      boolItem(
-        'motor.facialWeakness',
-        '面部肌无力',
-        source.currentStatus.facialWeakness,
-        '患者自述',
-      ),
-      boolItem('motor.footDrop', '足下垂', source.currentStatus.footDrop, '患者自述'),
-      boolItem(
+      item('motor.facialWeakness', '面部肌无力', source.currentStatus.facialWeakness, '患者自述'),
+      item('motor.footDrop', '足下垂', source.currentStatus.footDrop, '患者自述'),
+      item(
         'motor.breathingSymptoms',
         '呼吸相关症状',
         source.currentStatus.breathingSymptoms,
@@ -493,19 +503,19 @@ export const buildTreatNmdExport = (
           // of writers, and this file is downstream of every one of
           // them. Where a marker IS present the note is appended, which
           // is the one authorship statement the export can make.
-          textItem(
+          item(
             'local.fullName',
             '姓名',
             profile.fullName,
             withOriginNote(source, 'foundation.fullName', '本平台档案中记录的姓名'),
           ),
-          textItem(
+          item(
             'local.preferredName',
             '希望被称呼的名字',
             profile.preferredName,
             withOriginNote(source, 'foundation.preferredName', '本平台档案中记录的称呼'),
           ),
-          textItem(
+          item(
             'local.diagnosingPhysician',
             '确诊医生 / 主诊医生',
             profile.primaryPhysician,

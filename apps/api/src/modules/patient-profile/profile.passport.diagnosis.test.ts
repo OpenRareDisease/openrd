@@ -118,15 +118,25 @@ describe('护照的诊断确认状态', () => {
     expect(s.diagnosis.ready).toBe(false);
   });
 
-  it('报告里提取出 D4Z4 重复数才算确诊', () => {
-    const s = buildClinicalPassportSummary(
+  it('确诊要报告同时写明长度和允许型单倍型，只有其中一项不算', () => {
+    // The guideline this platform quotes on the same document says it in
+    // its own words: 「只有 4qA 是允许型，缺了这一项，重复单元数本身不足
+    // 以下结论」. A repeat count on its own used to come out 基因确诊 /
+    // 完整度 4/4 anyway.
+    const countOnly = buildClinicalPassportSummary(
       base({ documents: [geneticReport({ d4z4Repeats: '6' })] } as never),
     );
-    expect(s.diagnosis.confirmation).toBe('genetic');
-    expect(s.diagnosis.ready).toBe(true);
+    expect(countOnly.diagnosis.confirmation).not.toBe('genetic');
+    expect(countOnly.diagnosis.ready).toBe(false);
+
+    const both = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
+    expect(both.diagnosis.confirmation).toBe('genetic');
+    expect(both.diagnosis.ready).toBe(true);
   });
 
-  it('4q 单倍型或 EcoRI 片段也算', () => {
+  it('长度那一半可以由 EcoRI 片段补上，单倍型那一半不能空着', () => {
     // Annotated rather than inferred. An inline array of two object literals
     // with disjoint keys widens to `{haplotype: string; ecoRIFragment?:
     // undefined} | {ecoRIFragment: string; haplotype?: undefined}`, and
@@ -135,18 +145,19 @@ describe('护照的诊断确认状态', () => {
     // checking them — so this was red only under `npm run typecheck`, which is
     // the hole tsconfig.test.json exists to close. The annotation gives each
     // literal a contextual type, so no `?: undefined` is synthesised.
-    const geneticEvidence: Record<string, string>[] = [
-      { haplotype: '4qA' },
-      { ecoRIFragment: '18kb' },
-    ];
-    for (const f of geneticEvidence) {
+    const halves: Record<string, string>[] = [{ haplotype: '4qA' }, { ecoRIFragment: '18kb' }];
+    for (const f of halves) {
       const s = buildClinicalPassportSummary(base({ documents: [geneticReport(f)] } as never));
       // Name the arm. The loop aborts on the first failing iteration, so a
-      // bare toBe reports `expected 'none' to be 'genetic'` and nothing about
-      // which of the two kinds of evidence stopped counting; with the label
-      // the same run reads `haplotype: expected 'none' to be 'genetic'`.
-      expect(s.diagnosis.confirmation, Object.keys(f).join(',')).toBe('genetic');
+      // bare toBe reports `expected 'genetic' not to be 'genetic'` and nothing
+      // about which half stopped being enough on its own.
+      expect(s.diagnosis.confirmation, Object.keys(f).join(',')).not.toBe('genetic');
     }
+
+    const fragmentAndHaplotype = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ ecoRIFragment: '18kb', haplotype: '4qA' })] } as never),
+    );
+    expect(fragmentAndHaplotype.diagnosis.confirmation).toBe('genetic');
   });
 
   it('未确诊时卡片明说「未经基因确诊」，不留给读者去推断', () => {
@@ -697,7 +708,7 @@ describe('每个诊断值自带来源', () => {
     const summary = buildClinicalPassportSummary(
       base({
         geneticMutation: '我猜是 FSHD1',
-        documents: [geneticReport({ d4z4Repeats: '4' })],
+        documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })],
       } as never),
     );
 
@@ -956,8 +967,13 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
    * 「D4Z4 重复数」那一行上的仍然是后台代填的数字。这两件事必须各说各的。
    */
   it('报告只够确诊、数字来自基线时，数字仍标「管理员代填」', () => {
+    // The report carries both required items — a length as an EcoRI
+    // fragment, and the permissive haplotype — and no `d4z4Repeats`
+    // field, so the printed 重复数 is still the marked baseline's.
     const summary = buildClinicalPassportSummary(
-      markedGenetics({ documents: [geneticReport({ haplotype: '4qA' })] } as never),
+      markedGenetics({
+        documents: [geneticReport({ haplotype: '4qA', ecoRIFragment: '18kb' })],
+      } as never),
     );
 
     expect(summary.diagnosis.confirmation).toBe('genetic');

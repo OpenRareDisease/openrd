@@ -240,4 +240,37 @@ describe('基因确诊 — 五个界面读同一个答案', () => {
       });
     });
   });
+
+  /**
+   * A NEGATIVE FINDING IS NOT AN ABSENT ONE, and the machine exports
+   * used to hand a registry the same sentence for both.
+   *
+   * 未确诊 is one flag with two very different stories behind it. In one
+   * this platform has read nothing off a laboratory's report; in the
+   * other it has read the 4q haplotype, printed it, graded it, and the
+   * answer argues against the mechanism FSHD1 is. Both went out as
+   * 「本平台没有从基因检测报告里读到可作确诊依据的基因结果」 — so a
+   * registry could not tell them apart, and the receiver of the second
+   * is the one who has something to act on.
+   */
+  it('实验室读到 4qB 时，三份导出说的不是「什么都没读到」', () => {
+    const nonPermissive = render(
+      profileWith([laboratoryReport({ d4z4Repeats: '3', haplotype: '4qB' })]),
+    );
+    const nothingRead = render(profileWith([]));
+
+    Object.entries(nonPermissive.sentences).forEach(([format, sentence]) => {
+      expect(sentence, format).not.toBe(
+        nothingRead.sentences[format as keyof typeof nothingRead.sentences],
+      );
+      // It says a result was read, and names what makes it one.
+      expect(sentence, format).toContain('不是允许型 4qA');
+      expect(sentence, format).toContain('这是读到的一条结果，不是没有读到');
+      // And refuses the conclusion a hurried receiver would draw next.
+      expect(sentence, format).toContain('这也不表示已排除 FSHD');
+      // It is still not a confirmation, in the same words the other
+      // states use for that.
+      expect(sentence, format).toContain('没有把这份档案判定为基因确诊');
+    });
+  });
 });
