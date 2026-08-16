@@ -213,6 +213,20 @@ describe('眼底：只给大片段缺失的那一组 [AAN Level B]', () => {
   });
 
   /**
+   * 以 kb 写的长度也不触发，理由和上面那些都不一样：这一格没读错，它读
+   * 的是另一个单位。同一句指南把界限的 kb 形式写成 10–20、重复单元形式
+   * 写成 1–4，「3kb」要落进 1–4 只能靠一次两边都没写过的换算。
+   *
+   * 单独一条而不是并进上面那张表：那张表叫「读不准」，而这一格读得很准。
+   * `isLargeD4Z4Deletion` 的注释说这条 kb 规则同时进了两份手抄件的两张
+   * 表 —— apps/mobile/lib/surveillance-schedule.ts 那份进了，这一份没有，
+   * 于是那句话自己成了本仓库里唯一没被钉住的说法。
+   */
+  it.each([['3kb'], ['3 kb']])('%s 是以 kb 写的长度，不触发', (raw) => {
+    expect(readsAsLargeDeletion(raw)).toBe(false);
+  });
+
+  /**
    * THE INVARIANT, AT EVERY STATE A REPEAT COUNT CAN REACH THIS PAGE
    * IN.
    *

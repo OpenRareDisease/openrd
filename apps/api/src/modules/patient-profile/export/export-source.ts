@@ -11,6 +11,7 @@ import {
 import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js';
 import {
   buildClinicalPassportSummary,
+  isDeterminateRepeatCount,
   type PassportDiagnosisConfirmation,
   type PassportGeneticRecordDTO,
 } from '../profile.passport.js';
@@ -151,16 +152,17 @@ export interface ReportField {
    * the passport's own answer, carried here rather than asked again,
    * and `null` for every field that has no such answer.
    *
-   * Only the two genetic items have one. A 4q 单倍型 cell reading
-   * 「4qA/4qB」 names the laboratory's probes and is not a haplotype; a
-   * D4Z4 cell reading 「未检出」 or 「1-10」 is not a repeat count. This
-   * platform's own parser refuses all three — the passport prints them
-   * and grades the profile as carrying no confirmatory reading — so a
-   * serialiser that published one of them as the observation's value
-   * would hand a receiver prose under a key it maps as data, in the one
-   * direction that cannot be caught downstream. Same reading as
-   * `geneticResultValue` reports to the TREAT-NMD document, so the two
-   * exports cannot describe one cell differently in one run.
+   * Only the two genetic items have one, and `GENETIC_RESULT_ITEMS` is
+   * where it is answered — a 4q 单倍型 cell naming the laboratory's
+   * probes, a D4Z4 cell holding an interval or a length in kb, and the
+   * rest of what a real report puts in those two boxes. The passport
+   * prints every one of them and grades the profile as carrying no
+   * confirmatory reading, so a serialiser that published one as the
+   * observation's value would hand a receiver prose under a key it maps
+   * as data, in the one direction that cannot be caught downstream.
+   * Same reading as `geneticResultValue` reports to the TREAT-NMD
+   * document, so the two exports cannot describe one cell differently
+   * in one run.
    *
    * NULL FOR EVERY OTHER FIELD, and that is not 「not filled in yet」:
    * nothing on this platform refuses a CK string, so there is no
@@ -951,8 +953,9 @@ export const geneticValueProvenanceZh = (
  * off the profile's genetic evidence AND that read produced a result.
  * The two halves are separate on purpose:
  *
- *   `no_result` — read, and not a result. A probe list, a 未检出, an
- *     interval. This is a statement about that string.
+ *   `no_result` — read, and not a result: a probe list, a 未检出, an
+ *     interval, a length the report wrote in kb. `GENETIC_RESULT_ITEMS`
+ *     is where that is decided. This is a statement about that string.
  *   `not_read` — the archive holds something this platform has not
  *     read: no evidence document supplied it, or the one that did says
  *     something else. It is NOT a statement about the string, and
@@ -990,10 +993,32 @@ const GENETIC_RESULT_READING_LABELS_ZH: Record<SerialisedGeneticResult['reading'
  * each — both answers taken off `geneticEvidenceRecord`, which is the
  * passport's own read.
  *
- * `D4Z4Reading.value` is non-null only for a single unambiguous number:
- * that is the parser's own verdict on its own string, not a second
- * reading of it. `permissiveHaplotype` is the same for 4qA / 4qB, with
- * null covering both a missing cell and a cell naming the probes.
+ * NEITHER ANSWER IS WRITTEN HERE. `isDeterminateRepeatCount` is the
+ * passport's own rule for the repeat-count cell, and
+ * `permissiveHaplotype` is the passport's own verdict on the haplotype
+ * cell — true only for an unambiguous 4qA, false only for an
+ * unambiguous 4qB, null for a missing cell and for one naming the
+ * probes. A predicate of this module's own would be a second reading of
+ * a cell the passport has already read, which is how a registry comes
+ * to receive a genotype the patient's own page does not print.
+ *
+ * AND THE HAPLOTYPE IS NOT ROUTED THROUGH `haplotypeDetermined`, which
+ * is the same expression over the same field and a DIFFERENT QUESTION:
+ * it asks 「is this report missing an item」, to decide what the passport
+ * still owes a patient to go and ask a laboratory for. They agree
+ * today. They must not be wired together, because the day an ambiguous
+ * cell comes to count as 「the item is present, take it up with the
+ * laboratory」 is not the day it becomes a genotype a registry may
+ * ingest — that is the shape of the defect this whole table exists to
+ * close, one predicate standing in for a question it was not written
+ * to answer.
+ *
+ * THE REPEAT COUNT ASKED 「does the cell parse to a number」 FOR ONE
+ * ROUND, which is not that rule. A cell the report wrote in kb parses,
+ * and so does a 0 — so a length the passport prints and judges by
+ * nothing went out as this patient's D4Z4 重复单元数, and so did a
+ * reading the passport flags for a clinician to check against the
+ * original. See `isDeterminateRepeatCount` for why neither is a count.
  *
  * `isAResult` HAS TWO CALLERS AND ONE ANSWER. `geneticResultValue`
  * asks it about the line in the archive, for the TREAT-NMD item;
@@ -1011,7 +1036,7 @@ const GENETIC_RESULT_ITEMS: Record<
 > = {
   d4z4: {
     evidenceLineZh: (record) => record.d4z4?.raw ?? null,
-    isAResult: (record) => record.d4z4?.value != null,
+    isAResult: (record) => isDeterminateRepeatCount(record.d4z4),
   },
   haplotype: {
     evidenceLineZh: (record) => record.haplotype,

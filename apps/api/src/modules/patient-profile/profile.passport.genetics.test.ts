@@ -187,7 +187,10 @@ describe('8–10 单元灰区 [Giardina 2024]', () => {
 });
 
 describe('分级：可用于入组', () => {
-  it('长度 + 单倍型齐了才算', () => {
+  // 「齐了才算」 stood here, and 齐 is presence: a report reading D4Z4
+  // 30 / 4qA has both items and is not FSHD1. What earns this grade is
+  // what the two cells SAY, which is the matrix at the end of this file.
+  it('长度说的是缩短、单倍型是允许型 4qA 时才算', () => {
     const e = evidence({
       documents: [geneticReport({ d4z4Repeats: '3', haplotype: '4qA' })],
     } as never);

@@ -43,7 +43,14 @@ const summary = (confirmation: 'genetic' | 'self_reported' | 'admin_entered' | '
         key: 'diagnosis',
         title: '诊断证据',
         ready: false,
-        summary: '未经基因确诊，尚无基因报告佐证 —— 分型（报告读取）、诊断日期（本人填写）',
+        // The server's own wording for this state. 「尚无基因报告佐证」
+        // stood here and the API has never been able to send it: it
+        // denies a document rather than a reading, which is false of
+        // the patient holding an unreadable report, and it is the claim
+        // every surface in this product was walked off. A fixture is
+        // where the next reader learns what the wire looks like.
+        summary:
+          '未经基因确诊（本护照内没有从基因报告里读出来的、可作确诊依据的基因结果）—— 分型（报告读取）、诊断日期（本人填写）',
         meta: '诊断日期 2023-05-01',
       },
       {
@@ -209,7 +216,7 @@ describe('PDF：基线里的基因数值', () => {
     expect(html).toContain('没有从基因报告里读出来的、可作确诊依据的基因结果');
     // 这句话与同一节里那张印着 6 的卡片直接矛盾。
     expect(html).not.toContain('本节里没有 D4Z4 重复数');
-    // 横幅不再逐条点名读数：确诊靠的是长度和单倍型两项同时具备，报告
+    // 横幅不再逐条点名读数：确诊要报告同时写明长度和允许型单倍型，报告
     // 只写了其中一项时那一项就印在横幅下面，点名它就是自相矛盾。
     expect(html).not.toContain('4q 单倍型或 EcoRI 片段');
   });

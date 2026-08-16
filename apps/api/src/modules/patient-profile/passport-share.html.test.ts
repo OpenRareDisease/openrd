@@ -417,11 +417,11 @@ const storedMarkers = (
 
 describe('诊断这一段：每一行印自己的来源，一行都不靠推断', () => {
   it('报告里只读到分型时，标「报告读取」，不是「本人填写」', () => {
-    // The report says FSHD1 and nothing else. That is not enough for
-    // 基因确诊 (which takes a D4Z4 count, a haplotype or an EcoRI
-    // fragment), so this profile lands in `self_reported` — and that
-    // branch printed 「（本人填写）」 over a string nobody typed, under a
-    // banner that said the same thing about the whole block.
+    // The report says FSHD1 and nothing else. 分型 is not one of the
+    // items 基因确诊 is graded on, so this profile lands in
+    // `self_reported` — and that branch printed 「（本人填写）」 over a
+    // string nobody typed, under a banner that said the same thing
+    // about the whole block.
     const p = profile({ documents: [geneticReport({ diagnosisType: 'FSHD1' })] } as never);
     const html = rendered(p);
 
@@ -436,7 +436,8 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
   });
 
   it('基因确诊时分型仍可能是患者打的字 —— 标出来，且不排进化验值那一档', () => {
-    // 确诊 is decided by the D4Z4 length and the haplotype. The report
+    // 确诊 is decided by the D4Z4 repeat count and the 4q haplotype —
+    // by what each cell says, not by 分型. The report
     // carries no 分型 at all and no document carries one, so the value
     // on the page is the patient's own free text — under a banner that
     // used to say the whole diagnosis block had been read off the

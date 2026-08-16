@@ -154,6 +154,35 @@ const CASES: ReadonlyArray<{
     confirmed: false,
   },
   {
+    // Both items stated, both determinate, and the count is not a
+    // contraction — the guideline's own instruction above 10 is to go
+    // and evaluate FSHD2. 「有这两项」 and 「这两项说的是 FSHD1」 are
+    // different questions, and this row is where the first one stops
+    // standing in for the second across all five documents.
+    name: '实验室报告读到的重复数大于指南所说的 10',
+    documents: [laboratoryReport({ d4z4Repeats: '30', haplotype: '4qA' })],
+    confirmed: false,
+  },
+  {
+    // The length is stated in kb. This repo's boundary is written in
+    // repeat units and the two kb sentences it carries do not agree as
+    // a conversion, so the number is printed and weighed by nothing —
+    // including by the four documents built off this passport.
+    name: '实验室报告的长度是以 kb 写的',
+    documents: [laboratoryReport({ d4z4Repeats: '18kb', haplotype: '4qA' })],
+    confirmed: false,
+  },
+  {
+    // 0 repeat units is not an FSHD1 allele, so the cell was misread or
+    // is about something else. Neither a confirmation nor an exclusion
+    // — and a registry that received `confirmed` off it would be
+    // receiving a molecular diagnosis built on a number this platform
+    // has said out loud it cannot make sense of.
+    name: '实验室报告读到的重复数是 0',
+    documents: [laboratoryReport({ d4z4Repeats: '0', haplotype: '4qA' })],
+    confirmed: false,
+  },
+  {
     // A report naming its probes has stated no haplotype at all.
     name: '报告的单倍型栏写的是探针名而不是结果',
     documents: [laboratoryReport({ haplotype: '4qA/4qB' })],

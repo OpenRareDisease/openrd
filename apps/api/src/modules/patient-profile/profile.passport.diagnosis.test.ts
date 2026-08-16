@@ -709,9 +709,9 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
 describe('每个诊断值自带来源', () => {
   it('报告里读出来的分型是报告的，即使这份报告不足以构成基因确诊', () => {
     // A report parsed to `diagnosisType` alone does not reach
-    // `genetic` — that takes a D4Z4 count, a haplotype or an EcoRI
-    // fragment — so this landed in `self_reported`, and every renderer
-    // printed 「本人填写」 over a string nobody typed.
+    // `genetic` — 分型 is not one of the items that grade is decided on
+    // — so this landed in `self_reported`, and every renderer printed
+    // 「本人填写」 over a string nobody typed.
     const summary = buildClinicalPassportSummary(
       base({ documents: [geneticReport({ diagnosisType: 'FSHD1' })] } as never),
     );
@@ -939,8 +939,8 @@ describe('基线里的基因数值：印出来，并且印明是谁填的', () =
 
   /**
    * 印出来不等于升级成证据。`confirmation` 是证据等级，靠的是本平台从
-   * 上传的报告里读到的 D4Z4 / 单倍型 / EcoRI 片段；档案里的一个数字不是
-   * 报告。这一条要是反了，转诊资料上会直接写「基因确诊」。
+   * 实验室报告上读到的那两格写着什么；档案里的一个数字不是报告。这一条
+   * 要是反了，转诊资料上会直接写「基因确诊」。
    */
   it('代填的数值不会把诊断升级成基因确诊', () => {
     const summary = buildClinicalPassportSummary(markedGenetics());

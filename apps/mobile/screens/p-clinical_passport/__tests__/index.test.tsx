@@ -179,7 +179,13 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummary =>
         key: 'diagnosis',
         title: '诊断证据',
         ready: false,
-        summary: '未经基因确诊（未读到 D4Z4 重复数、4q 单倍型或 EcoRI 片段）—— 分型（报告读取）',
+        // The server's own wording. The parenthesis used to name the
+        // readings, which was this card carrying a copy of the rule
+        // 基因确诊 is graded by — a copy that went false the moment the
+        // rule became a conjunction, and that the API dropped. A
+        // fixture is where the next reader learns what the wire holds.
+        summary:
+          '未经基因确诊（本护照内没有从基因报告里读出来的、可作确诊依据的基因结果）—— 分型（报告读取）',
         meta: '诊断日期 2023-05-01',
       },
     ],

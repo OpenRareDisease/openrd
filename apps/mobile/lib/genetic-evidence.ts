@@ -22,8 +22,10 @@
  * this repository's layout allows; four private ones is what it had.
  *
  * WHAT THIS FILE DOES NOT DECIDE: whether a value may drive a clinical
- * recommendation. That is `readReportReadRepeatCount`'s question and it
- * is answered off the API's own `valueOrigins`, not off a document.
+ * recommendation. That is `readLaboratoryRepeatCount`'s question and it
+ * is not answered here or from a document at all — the API answers it
+ * once, in `determinateRepeatCount`, and sends the answer as
+ * `diagnosis.laboratoryRepeatCount`.
  */
 
 /**

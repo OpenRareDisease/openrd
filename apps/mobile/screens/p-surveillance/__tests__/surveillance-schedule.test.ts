@@ -32,7 +32,7 @@ import {
   ANESTHESIA_CARD_HREF,
   buildSurveillanceSchedule,
   isLargeD4Z4Deletion,
-  readReportReadRepeatCount,
+  readLaboratoryRepeatCount,
   type SurveillanceRow,
 } from '../../../lib/surveillance-schedule';
 import { buildAnesthesiaCard } from '../../../lib/anesthesia-card';
@@ -45,9 +45,9 @@ const daysAgo = (days: number) => new Date(TODAY.getTime() - days * 86_400_000).
 
 /** A `diagnosis.valueOrigins` map naming one source for every printed
  *  value — the shape a real API build sends. The retina row reads
- *  `d4z4Repeats` out of it, because the passport resolves that number
- *  from an uploaded report OR from the baseline and only the first can
- *  carry a guideline decision. */
+ *  `d4z4Repeats` out of it to say WHERE the number it is showing came
+ *  from; what it decides on is `diagnosis.laboratoryRepeatCount`, which
+ *  is the server's own reading of the report's count cell. */
 const valueOrigins = (d4z4: { kind: string; labelZh: string }) => ({
   geneticType: { kind: 'report', labelZh: '报告读取' },
   d4z4Repeats: d4z4,
@@ -79,6 +79,12 @@ const UNREADABLE_ORIGIN = { kind: 'admin_unreadable', labelZh: '非本人填写�
  * a laboratory said it.
  */
 const TRANSCRIBED_ORIGIN = { kind: 'transcribed', labelZh: '转录自非基因报告文件' };
+/**
+ * 报告上根本没有这一格时的来源，同样抄自真实护照：
+ * `buildClinicalPassportSummary` 跑在一份只写了 4q 单倍型的基因报告上，
+ * D4Z4 重复数那一行印「—」，来源就是这一对。
+ */
+const ABSENT_ORIGIN = { kind: 'absent', labelZh: '未填' };
 
 const summary = (over: Record<string, unknown> = {}) =>
   ({
@@ -86,6 +92,7 @@ const summary = (over: Record<string, unknown> = {}) =>
     diagnosis: {
       confirmation: 'genetic',
       d4z4Repeats: '7',
+      laboratoryRepeatCount: '7',
       valueOrigins: valueOrigins(REPORT_ORIGIN),
     },
     monitoring: {
@@ -219,77 +226,197 @@ describe('指南的否定推荐必须在页面上', () => {
 });
 
 describe('大片段缺失分支', () => {
-  /** The same table the API's copy is checked against, driven through
-   *  the only expression that mints a decidable count: a passport whose
-   *  own `valueOrigins` says a report supplied the number. There is no
-   *  string overload left to call — a merged value cannot be handed to
-   *  the predicate at all. */
-  const reportSays = (raw: string) =>
-    readReportReadRepeatCount(
-      summary({
-        diagnosis: {
-          confirmation: 'genetic',
-          d4z4Repeats: raw,
-          valueOrigins: valueOrigins(REPORT_ORIGIN),
-        },
-      }),
-    );
+  /**
+   * A passport as the API builds one for a genetics report whose
+   * repeat-count cell reads `cell`.
+   *
+   * The `laboratoryRepeatCount` beside each cell is not invented here:
+   * every pair used below was read off `buildClinicalPassportSummary`
+   * run on a laboratory report carrying that cell. It is the server's
+   * `determinateRepeatCount` — null for a length in kb, for a 0, for a
+   * range and for a cell that names a count in order to say it was not
+   * found, and the cell as printed otherwise. This app no longer holds
+   * an opinion about any of those, which is what the table below pins.
+   */
+  const reportCell = (cell: string, laboratoryRepeatCount: string | null, confirmation = 'none') =>
+    summary({
+      diagnosis: {
+        confirmation,
+        d4z4Repeats: cell,
+        laboratoryRepeatCount,
+        valueOrigins: valueOrigins(REPORT_ORIGIN),
+      },
+    });
 
-  it.each<[string, boolean]>([
+  /** The band, driven through the only expression that mints a count.
+   *  There is no string overload left to call: the printed row cannot be
+   *  handed to the predicate at all, whatever its origin says. */
+  const laboratoryCount = (sent: string | null) => {
+    const reading = readLaboratoryRepeatCount(reportCell(sent ?? '—', sent));
+    return reading.state === 'count' ? reading.count : null;
+  };
+
+  it.each<[string | null, boolean]>([
     ['1', true],
     ['4', true],
     ['3个', true],
     ['5', false],
     ['10', false],
-    ['0', false],
-    ['1-10', false],
-    ['≤10', false],
     ['—', false],
     ['', false],
-    // 否定句里的数字不是读数。同一张表也钉在 API 那一份上。
-    ['未检出', false],
-    ['未检出3个重复单元的缩短', false],
-    ['未见 4 个重复', false],
-    ['阴性', false],
-    ['not detected', false],
-    // kb 是另一个单位、另一个界限：同一句指南把 kb 的界写成 10–20，
-    // 「3kb」要落进 1–4 只能靠一次两边都没写过的换算。
-    ['3kb', false],
-    ['3 kb', false],
-  ])('D4Z4「%s」→ %s', (raw, expected) => {
-    expect(isLargeD4Z4Deletion(reportSays(raw))).toBe(expected);
+    // 服务端说「这一格没有可判断的重复数」时，本页什么也不判。
+    [null, false],
+  ])('服务端给的重复数「%s」→ %s', (sent, expected) => {
+    expect(isLargeD4Z4Deletion(laboratoryCount(sent))).toBe(expected);
   });
 
-  it('重复数在 1–4 时才把眼底检查标成对得上', () => {
-    const large = summary({
+  /**
+   * THE CELLS THE SERVER REFUSES TO CALL A COUNT, AND WHAT THIS ROW MAY
+   * SAY ABOUT THEM.
+   *
+   * A kb length, a 0, a range and a negated cell are all printed on the
+   * passport and all arrive here with `laboratoryRepeatCount: null`.
+   * This file used to classify each of them itself, off a hand-kept copy
+   * of the API's parser, and the copy is what drifted: 「0」 came out
+   * 「按你的记录不适用」 on a row about vision loss, from a reading the
+   * server calls one it cannot make sense of.
+   */
+  it.each<[string, string | null, SurveillanceRow['applicability']]>([
+    ['3', '3', 'matched'],
+    ['3个', '3个', 'matched'],
+    ['3kb', null, 'unknown'],
+    ['0', null, 'unknown'],
+    ['30', '30', 'not_matched'],
+    ['9', '9', 'not_matched'],
+    ['未检出3个重复单元的缩短', null, 'unknown'],
+    ['1-10', null, 'unknown'],
+  ])('报告那一格是「%s」、服务端读出 %s 时 → %s', (cell, sent, expected) => {
+    const retina = row('retinal_screening', reportCell(cell, sent));
+    expect(retina.applicability).toBe(expected);
+    if (expected !== 'matched') {
+      expect(retina.evidence).not.toContain('落在指南说的大片段缺失范围');
+    }
+    if (expected === 'unknown') {
+      // 判断不了 的每一句都要说出下一步，并且不能说成「不适用」。
+      expect(retina.evidence).toContain('报告原件');
+      expect(retina.evidence).not.toContain('不适用');
+      // 页面上印着什么，这一句就说什么 —— 读者能对着报告核。
+      expect(retina.evidence).toContain(cell);
+    }
+  });
+
+  /**
+   * 0 个重复单元：既不是确诊，也不是排除。
+   *
+   * The API reads that cell, says it cannot make sense of it and asks
+   * for the original; this row said 「按你的记录不适用」 and cited the
+   * guideline's band as the reason. The sentence is pinned whole because
+   * every clause in it was wrong in the old one.
+   */
+  it('那一格写着 0 时不下判断，也不说成「不适用」', () => {
+    const retina = row('retinal_screening', reportCell('0', null));
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toBe(
+      '报告上那一格写的是「0」，本平台没有从它读出一个能用来判断这一条的重复单元数 —— 指南这一条的界限是按重复单元数（1–4）写的，读不出这样一个数我们就不猜。这一条要不要做，请医生看着报告原件判断。',
+    );
+  });
+
+  /**
+   * 同一个数写成 kb：印出来，不参与判断。
+   *
+   * 1–4 是重复单元数那一半的界；同一句指南里 kb 那一半写的是 10–20，两边
+   * 不换算。旧文案还把它说成「可能是还没上传写着它的文件」—— 文件传了，
+   * 数也读出来了，只是单位不是这一条用的那个。
+   */
+  it('同一个数写成 kb 时不参与判断，也不说成「还没上传」', () => {
+    const retina = row('retinal_screening', reportCell('3kb', null));
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toContain('3kb');
+    expect(retina.evidence).not.toContain('落在指南说的大片段缺失范围');
+    expect(retina.evidence).not.toContain('还没上传');
+  });
+
+  /**
+   * 4qB：数在范围内，但这一条限定的那一组人不包括这份报告说的情况。
+   *
+   * The passport's own step steps aside here and says why. Before this
+   * the two surfaces disagreed on one profile: the passport declined the
+   * recommendation, this page marked it 对得上.
+   */
+  it('重复数在范围内、同一份报告写的是 4qB 时，不把人归进那一组', () => {
+    const retina = row('retinal_screening', reportCell('3', '3', 'genetic_non_permissive'));
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toContain('不是允许型 4qA');
+    expect(retina.evidence).toContain('报告原件');
+    expect(retina.evidence).not.toContain('值得在下次就诊时主动提出来');
+  });
+
+  /**
+   * THE BARRIER, STATED AS BEHAVIOUR.
+   *
+   * The printed row reads 3 in every case below and no build has sent a
+   * reading of the report's cell — the state a WeChat-cached bundle is in
+   * against an API from before the field. Nothing on the page may stand
+   * in for that reading, whatever its origin says, including the origin
+   * that means a genetics report supplied it.
+   */
+  it('页面上印着的那个数，来源是什么都不能自己变成判断依据', () => {
+    for (const origin of [
+      ADMIN_ORIGIN,
+      PATIENT_ORIGIN,
+      INDETERMINATE_ORIGIN,
+      TRANSCRIBED_ORIGIN,
+      REPORT_ORIGIN,
+    ]) {
+      const noReading = summary({
+        diagnosis: {
+          confirmation: 'self_reported',
+          d4z4Repeats: '3',
+          valueOrigins: valueOrigins(origin),
+        },
+      });
+      expect(readLaboratoryRepeatCount(noReading).state).toBe('unanswered');
+      const retina = row('retinal_screening', noReading);
+      expect(retina.applicability).toBe('unknown');
+      expect(retina.evidence).not.toContain('落在指南说的大片段缺失范围');
+      expect(retina.evidence).toContain('报告原件');
+    }
+  });
+
+  /** 报告读的是这个数，但这一版 API 还不发那个读数 —— 说的是本平台没能
+   *  确认，而不是报告没写。 */
+  it('API 还没发这个读数时，不拿页面上的数替它判断', () => {
+    const retina = row(
+      'retinal_screening',
+      summary({
+        diagnosis: {
+          confirmation: 'genetic',
+          d4z4Repeats: '3',
+          valueOrigins: valueOrigins(REPORT_ORIGIN),
+        },
+      }),
+    );
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toContain('没能确认');
+    expect(retina.evidence).toContain('报告原件');
+  });
+
+  /** 一格都没有的那种报告：护照印「—」，来源是「未填」。这时才是「手上
+   *  没有」，也只有这时能这么说。 */
+  it('完全没有读数时说「手上没有」，不说「不适用」', () => {
+    const nothing = summary({
       diagnosis: {
-        confirmation: 'genetic',
-        d4z4Repeats: '3',
-        valueOrigins: valueOrigins(REPORT_ORIGIN),
+        confirmation: 'none',
+        d4z4Repeats: '—',
+        laboratoryRepeatCount: null,
+        valueOrigins: valueOrigins(ABSENT_ORIGIN),
       },
     });
-    expect(row('retinal_screening', large).applicability).toBe('matched');
-  });
-
-  it('报告没给的数，连算都算不进来', () => {
-    // The barrier, stated as behaviour rather than as a type error:
-    // every non-report origin yields nothing to decide on, so no
-    // wording change can accidentally re-open the branch.
-    // TRANSCRIBED_ORIGIN is in the list because the picker hands this
-    // page a 病历摘要's number on purpose: displayed, never decisive.
-    for (const origin of [ADMIN_ORIGIN, PATIENT_ORIGIN, INDETERMINATE_ORIGIN, TRANSCRIBED_ORIGIN]) {
-      expect(
-        readReportReadRepeatCount(
-          summary({
-            diagnosis: {
-              confirmation: 'self_reported',
-              d4z4Repeats: '3',
-              valueOrigins: valueOrigins(origin),
-            },
-          }),
-        ),
-      ).toBeNull();
-    }
+    const retina = row('retinal_screening', nothing);
+    expect(retina.applicability).toBe('unknown');
+    expect(retina.evidence).toContain('本平台手上没有你的 D4Z4 重复数');
+    expect(retina.evidence).not.toContain('不适用');
+    expect(retina.evidence).toContain('报告原件');
   });
 
   /**
@@ -313,6 +440,7 @@ describe('大片段缺失分支', () => {
       diagnosis: {
         confirmation: 'self_reported',
         d4z4Repeats: '3',
+        laboratoryRepeatCount: null,
         valueOrigins: valueOrigins(origin),
       },
     });
@@ -346,6 +474,7 @@ describe('大片段缺失分支', () => {
         diagnosis: {
           confirmation: 'self_reported',
           d4z4Repeats: '3',
+          laboratoryRepeatCount: null,
           valueOrigins: valueOrigins(INDETERMINATE_ORIGIN),
         },
       }),
@@ -374,6 +503,7 @@ describe('大片段缺失分支', () => {
         diagnosis: {
           confirmation: 'self_reported',
           d4z4Repeats: '3',
+          laboratoryRepeatCount: null,
           valueOrigins: valueOrigins(TRANSCRIBED_ORIGIN),
         },
       }),
@@ -393,6 +523,7 @@ describe('大片段缺失分支', () => {
         diagnosis: {
           confirmation: 'admin_entered',
           d4z4Repeats: '3',
+          laboratoryRepeatCount: null,
           valueOrigins: valueOrigins(ADMIN_ORIGIN),
         },
       }),
@@ -411,6 +542,7 @@ describe('大片段缺失分支', () => {
         diagnosis: {
           confirmation: 'admin_entered',
           d4z4Repeats: '3',
+          laboratoryRepeatCount: null,
           valueOrigins: valueOrigins(UNREADABLE_ORIGIN),
         },
       }),
@@ -443,8 +575,9 @@ describe('大片段缺失分支', () => {
   it('那一格写着「未检出」时是「判断不了」，且不说「可能还没上传」就完事', () => {
     const notDetected = summary({
       diagnosis: {
-        confirmation: 'self_reported',
+        confirmation: 'none',
         d4z4Repeats: '未检出3个重复单元的缩短',
+        laboratoryRepeatCount: null,
         valueOrigins: valueOrigins(REPORT_ORIGIN),
       },
     });
@@ -458,8 +591,9 @@ describe('大片段缺失分支', () => {
   it('读不出重复数时是「判断不了」，不是「不适用」 —— 范围我们不猜', () => {
     const ranged = summary({
       diagnosis: {
-        confirmation: 'genetic',
+        confirmation: 'none',
         d4z4Repeats: '1-10',
+        laboratoryRepeatCount: null,
         valueOrigins: valueOrigins(REPORT_ORIGIN),
       },
     });
@@ -483,17 +617,25 @@ describe('大片段缺失分支', () => {
    * other: this row is not the place either question is settled.
    *
    * All of them print 3, which is inside the range the guideline calls
-   * a large deletion. Only the laboratory report's may act on it.
+   * a large deletion. Only the one the laboratory's report supplied
+   * comes with the server's own reading of that cell, and that reading
+   * is the only thing this row acts on.
    */
   describe('这个数是从哪来的，决定这一行能说什么', () => {
-    const retinaFor = (origin: { kind: string; labelZh: string } | null) =>
+    /** 印的都是 3。除了报告那一份，其余每一份都带着服务端的答复「这张护照
+     *  上没有可用来判断的重复数」—— 数不是从实验室报告那一格来的时候，API
+     *  给的就是这个。`origin: null` 是更旧的一版 API：两个字段都不发。 */
+    const retinaFor = (
+      origin: { kind: string; labelZh: string } | null,
+      sent: string | null = null,
+    ) =>
       row(
         'retinal_screening',
         summary({
           diagnosis: {
             confirmation: 'self_reported',
             d4z4Repeats: '3',
-            ...(origin ? { valueOrigins: valueOrigins(origin) } : {}),
+            ...(origin ? { laboratoryRepeatCount: sent, valueOrigins: valueOrigins(origin) } : {}),
           },
         }),
       );
@@ -562,7 +704,7 @@ describe('大片段缺失分支', () => {
     });
 
     it('从基因报告里读出来的：这一行才对得上，也才引指南的范围', () => {
-      const retina = retinaFor(REPORT_ORIGIN);
+      const retina = retinaFor(REPORT_ORIGIN, '3');
       expect(retina.applicability).toBe('matched');
       expect(retina.evidence).toContain('本平台从你上传的文件里读到的 D4Z4 重复数是 3');
       expect(retina.evidence).toContain('大片段缺失范围（1–4）');

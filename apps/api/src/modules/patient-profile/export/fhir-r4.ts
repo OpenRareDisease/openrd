@@ -683,13 +683,14 @@ export const buildFhirExport = (
         // AND ONLY WHERE THE CELL IS A RESULT AT ALL. `value[x]` is the
         // element a receiver ingests as this observation's answer, and
         // the genetic cells are the ones this platform's own parser
-        // refuses: a 4q 单倍型 reading 「4qA/4qB」 names the laboratory's
-        // probes, a D4Z4 reading 「未检出」 or 「1-10」 is not a count.
-        // Every one of those went out as `valueString` under a code
-        // that says 「4q 单倍型」, and 「未检出」 filed as a genotype is
-        // indistinguishable from an allele name once ingested — the one
-        // direction that cannot be caught downstream, and the one the
-        // TREAT-NMD document already refuses for the same cell.
+        // refuses — a 4q 单倍型 naming the laboratory's probes, a D4Z4
+        // cell holding an interval or a length in kb, and the rest of
+        // what `GENETIC_RESULT_ITEMS` reads no result off. Every one of
+        // them went out as `valueString` under a code that says 「4q
+        // 单倍型」 or 「D4Z4 重复单元数」, and 「未检出」 filed as a genotype
+        // is indistinguishable from an allele name once ingested — the
+        // one direction that cannot be caught downstream, and the one
+        // the TREAT-NMD document already refuses for the same cell.
         // `readsAsResult` is that same reading, not a second one.
         //
         // `status` STAYS `final`, and so does the category. R4 defines
@@ -857,11 +858,21 @@ export const buildFhirExport = (
   // certain Observations IN THIS BUNDLE carry no `value[x]`, and an
   // element that is simply missing is otherwise indistinguishable from
   // an exporter that never had one.
+  //
+  // IT NO LONGER LISTS WHAT THOSE CELLS HOLD. The sentence used to walk
+  // the receiver through a probe name, an interval and a 未检出 and end
+  // 「都不是这一项的结果」 — a closed list of a set that is decided
+  // elsewhere and had already grown past it: a length the report wrote
+  // in kb and a repeat count of 0 both land here now, and neither was
+  // in it. The one true statement is the one that was already in front
+  // of the list, and each Observation's own `dataAbsentReason.text`
+  // carries the cell it is about, verbatim, which is what a receiver
+  // deciding what to do with it actually needs.
   if (declared.hasGeneticNonResult) {
     omissions.push({
       field: 'Observation.value[x]（基因结果）',
       reasonZh:
-        '本 Bundle 中有基因结果的 Observation 没有给出结果值：报告上那一项写着东西，但本平台从它读不出这一项的结果。那一栏可能写的是实验室用的探针名（例如「4qA/4qB」，那是两个探针，不是一个单倍型结果）、一个区间，或者一句表示没有检出的话——都不是这一项的结果。这类条目按 FHIR 的写法给出 dataAbsentReason（data-absent-reason 取值集，code=unknown），报告上那一项的原文原样放在同一个元素的 text 里供人阅读。请不要把那段原文当作该项的检测结果导入。',
+        '本 Bundle 中有基因结果的 Observation 没有给出结果值：报告上那一项写着东西，但本平台从它读不出这一项的结果。这类条目按 FHIR 的写法给出 dataAbsentReason（data-absent-reason 取值集，code=unknown），报告上那一项的原文原样放在同一个元素的 text 里供人阅读。请不要把那段原文当作该项的检测结果导入。',
     });
   }
 

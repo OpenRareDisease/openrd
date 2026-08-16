@@ -2068,6 +2068,25 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
 };
 
 /**
+ * THE SAME QUESTION `determinateRepeatCount` ANSWERS, ASKED OF A
+ * READING RATHER THAN OF A RECORD — for a caller holding one cell and
+ * deciding whether to publish it as this item's result.
+ *
+ * EXPORTED SO THERE IS ONE ANSWER TO IT. The portable-export module
+ * asked only that the cell parse to a non-null value, and that is a
+ * different question: a kb length and a 0 both satisfy it, so both went
+ * out as 「本平台把档案里这一行读作这一项的检测结果」 — into the TREAT-NMD
+ * item a registry files as this patient's genotype, and into the FHIR
+ * Observation's `valueString`, where a length in kb ingested under
+ * 「D4Z4 重复单元数」 is indistinguishable from a count. The block below
+ * is why neither is one.
+ */
+export const isDeterminateRepeatCount = (
+  reading: D4Z4Reading | null | undefined,
+): reading is D4Z4Reading & { value: number } =>
+  reading != null && reading.value !== null && reading.unit !== 'kb' && reading.value !== 0;
+
+/**
  * THE D4Z4 REPEAT COUNT THE LABORATORY'S REPORT STATES, as the report
  * printed it, or null. The only length reading anything in this file
  * may reason from.
@@ -2101,12 +2120,8 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
  * where a negation carrying a number of its own is refused, so
  * 「未检出」, 「>50kb」 and a blank are all what they are.
  */
-const determinateRepeatCount = (record: LaboratoryGeneticRecord): string | null => {
-  const count = record.d4z4;
-  if (count === null || count.value === null) return null;
-  if (count.unit === 'kb' || count.value === 0) return null;
-  return count.raw;
-};
+const determinateRepeatCount = (record: LaboratoryGeneticRecord): string | null =>
+  isDeterminateRepeatCount(record.d4z4) ? record.d4z4.raw : null;
 
 /**
  * DID THE REPORT STATE A LENGTH AT ALL, in either cell and in any unit.

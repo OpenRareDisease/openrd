@@ -1046,6 +1046,26 @@ describe('FHIR R4 —— 读不出结果的基因栏位，不发成结果', () =
       labelZh: 'D4Z4 重复单元数',
       isResult: false,
     },
+    /* THE TWO THAT PARSE AND ARE STILL NOT COUNTS. Both of these hand
+     * `parseD4Z4Reading` a single unambiguous number, so a check for
+     * 「the cell parses」 published them under a code that says 「D4Z4
+     * 重复单元数」: a length in kb, which this platform prints and judges
+     * by nothing because it holds no boundary in that unit to compare
+     * it against, and a 0, which is not a viable FSHD1 allele and means
+     * somebody should look at the original page. Ingested off this
+     * element, neither is distinguishable from a repeat count. */
+    {
+      name: '写成 kb 的长度',
+      cells: { d4z4Repeats: '18kb' },
+      labelZh: 'D4Z4 重复单元数',
+      isResult: false,
+    },
+    {
+      name: '读成 0 的重复数',
+      cells: { d4z4Repeats: '0' },
+      labelZh: 'D4Z4 重复单元数',
+      isResult: false,
+    },
     { name: '允许型单倍型', cells: { haplotype: '4qA' }, labelZh: '4q 单倍型', isResult: true },
     { name: '非允许型单倍型', cells: { haplotype: '4qB' }, labelZh: '4q 单倍型', isResult: true },
     {

@@ -287,125 +287,146 @@ const normalizedScore = (item: {
 const monitoringItem = (summary: ClinicalPassportSummary, key: 'respiratory' | 'cardiac') =>
   summary.monitoring.items.find((item) => item.key === key) ?? null;
 
-declare const REPORT_READ_REPEATS: unique symbol;
+declare const LABORATORY_REPEAT_COUNT: unique symbol;
 
 /**
- * A D4Z4 REPEAT COUNT THIS PLATFORM READ OFF AN UPLOADED DOCUMENT.
+ * THE D4Z4 REPEAT COUNT THE SERVER HAS ALREADY RULED MAY BE JUDGED.
  *
- * THE RULE THIS TYPE IS: a value that was not read out of an uploaded
- * document may be DISPLAYED, always with its origin beside it. It may
- * never decide a recommendation, a threshold, a guideline citation or a
- * screening interval.
+ * `summary.diagnosis.laboratoryRepeatCount` is the API's
+ * `determinateRepeatCount` on the wire: the repeat-count cell of the
+ * laboratory's own report, parsed there, and sent only when it came out
+ * as one plain number that is neither a length in kb nor a 0. A range, a
+ * comparison operator, a cell that names a count in order to say it was
+ * not found, a kb length, a 0, an administrator's transcription of a
+ * report read out over the phone, the patient's own typing and a count
+ * quoted in a 病历摘要 all arrive as null — each for the reason the API's
+ * own note gives, and not one of them by a rule kept on this side.
  *
- * `summary.diagnosis.d4z4Repeats` is a merged value — the passport
- * resolves it from an uploaded document OR from the baseline, where an
- * administrator's transcription of a report read out over the phone
- * lands beside the patient's own typing. Both are `string`, so nothing
- * but a rule in someone's head kept the merged one out of the branch
- * that tells a patient to go pay for a dilated fundus exam, and the
- * rule did not hold. The brand is that rule expressed as a type:
- * `readReportReadRepeatCount` is the only expression that mints one and
- * it mints nothing unless the API's own `valueOrigins` says the value
- * was read off a document.
- *
- * WHAT THE BRAND DOES NOT PROVE: that a laboratory issued the number.
- * The API resolves 「read off a document」 against the ONE document
- * `pickGeneticEvidenceDocument` names, and that picker takes a 病历摘要
- * quoting a repeat count when it is the only copy the patient has — on
- * purpose, because dropping it loses the value entirely. The current
- * API separates the two: a transcription arrives under its own origin
- * kind, which this expression does not accept and which the app prints
- * as the server words it. That separation is one build old, and this
- * bundle ships as a web export WeChat caches for days against a rolling
- * deploy, so a handset can still be shown a passport built before the
- * line was drawn. So no sentence built on this brand speaks in a
- * laboratory's voice: the rows below say what this platform did — read
- * a number off something the patient uploaded — and stop there.
+ * WHAT THIS REPLACED, AND WHY IT HAD TO BE REPLACED. This file used to
+ * mint its own decidable reading out of the printed `d4z4Repeats` row
+ * and `valueOrigins`, then classify it with a hand-kept copy of the
+ * API's parser — the unit rule, the range rule, the negation rule and
+ * the zero rule, restated in a second set of regular expressions on the
+ * far side of a wire. Rendered against a cell reading 「0」, the copy and
+ * the server disagreed about the same passport: the server called that
+ * reading one it could not make sense of and asked for the original,
+ * while this page put 「按你的记录不适用」 on a card recommending an eye
+ * examination and told the reader the number fell outside the
+ * guideline's band — an exclusion drawn from a reading that excludes
+ * nothing. There is one parser now, it runs on the server, and this file
+ * cannot re-open the question because it no longer holds anything to
+ * re-open it with.
  */
-export interface ReportReadRepeatCount {
-  /** The count as the document printed it — free text, not a number. */
+export interface LaboratoryRepeatCount {
+  /** The count as the report printed it —「3」,「3个」. */
   readonly raw: string;
-  readonly [REPORT_READ_REPEATS]: true;
+  readonly [LABORATORY_REPEAT_COUNT]: true;
 }
 
 /**
- * The printed repeat count, but only when an uploaded document supplied
- * it.
+ * WHAT THE SERVER SAID ABOUT THE REPEAT COUNT — three answers this row
+ * has to keep apart, because they owe the reader different sentences.
  *
- * Null covers every other way a number reaches this page —
- * an administrator's transcription, the patient's own typing, a value
- * the API cannot attribute, an API build old enough to send no
- * `valueOrigins` at all — and deliberately does not tell them apart,
- * because none of them may reach a guideline branch. The row's evidence
- * text is where they are told apart for the reader; this function only
- * answers 「may this decide anything」.
+ *  count      — a determinate laboratory count. The only reading the
+ *               guideline branch below may see.
+ *  none       — the server answered, and its answer is that no count on
+ *               this passport may decide anything. The number the page
+ *               prints may still be there; what it is not is decidable.
+ *  unanswered — the field is not on the wire. This bundle ships as a web
+ *               export WeChat's in-app browser caches for days, so a
+ *               handset can be running today's code against an API build
+ *               that predates the field, and 「报告没有给出确定的重复数」
+ *               would be this app answering for a server that said
+ *               nothing.
  */
-export const readReportReadRepeatCount = (
+export type LaboratoryRepeatCountReading =
+  | { readonly state: 'count'; readonly count: LaboratoryRepeatCount }
+  | { readonly state: 'none' }
+  | { readonly state: 'unanswered' };
+
+/**
+ * THE ONLY EXPRESSION THAT MINTS A DECIDABLE COUNT, and it mints one
+ * only out of the field the API sends for exactly this purpose.
+ *
+ * `getClinicalPassportSummary` is an `apiRequest<T>` call and that type
+ * parameter is an unchecked assertion over whatever the server sent, so
+ * the bytes are checked here rather than trusted: anything that is not a
+ * string — the field missing, or a shape this bundle has no reading for
+ * — is 「the server did not answer」 and never 「there is no count」.
+ */
+export const readLaboratoryRepeatCount = (
   summary: ClinicalPassportSummary,
-): ReportReadRepeatCount | null => {
-  const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
-  if (origins?.d4z4Repeats.kind !== 'report') return null;
-  const raw = (summary.diagnosis.d4z4Repeats ?? '').trim();
-  if (!raw || raw === '—') return null;
-  return { raw } as ReportReadRepeatCount;
+): LaboratoryRepeatCountReading => {
+  const sent = summary.diagnosis.laboratoryRepeatCount;
+  if (sent === null) return { state: 'none' };
+  if (typeof sent !== 'string') return { state: 'unanswered' };
+  const raw = sent.trim();
+  if (!raw || raw === '—') return { state: 'none' };
+  return { state: 'count', count: { raw } as LaboratoryRepeatCount };
 };
 
 /**
- * True only when the D4Z4 repeat count is unambiguously in the range
- * the guideline calls a large deletion.
+ * THE BAND, AND IT IS THE ONE THING THIS FILE STILL COMPUTES.
  *
- * Ported from the API's `isLargeD4Z4Deletion`
- * (apps/api/src/modules/patient-profile/profile.passport.ts) because
- * the mobile bundle cannot import from the API package. Same rule,
- * same reasons, and the table in the test file is the same table:
+ * Nothing on the wire answers 「is this count inside the range the
+ * guideline calls a large deletion」 — the passport sends the count and
+ * decides the classification privately, in its own
+ * `isLargeD4Z4Deletion` — so the band is here, and it is the guideline's
+ * own pairing quoted in the unit the number arrives in: 「contracted
+ * D4Z4 allele of 10–20 kb or 1–4 repeats」. Nothing here converts the kb
+ * half into the repeat half, and nothing here needs to: the only reading
+ * that reaches this predicate is one the server has already withheld
+ * for a stated kb.
  *
- *  - the guideline supplies both forms of the threshold in one
- *    sentence — 「contracted D4Z4 allele of 10–20 kb or 1–4 repeats」 —
- *    so nothing here converts kb to repeats on its own authority, and
- *    a cell that STATES kb is refused outright: 1–4 is the repeat form,
- *    the kb form is 10–20, and the only way 「3kb」 reaches this range is
- *    a conversion nobody wrote;
- *  - the input is OCR'd off a genetics report and arrives as free
- *    text (「3」,「3个」,「1-10」,「≤10」). A range or a comparison
- *    operator means the number is not known, and this gates a
- *    recommendation to go pay for an ophthalmology appointment, so
- *    anything short of a single plain integer is treated as unknown;
- *  - 0 repeats is not a viable FSHD1 allele. Reading one means the
- *    extraction is wrong, not that the deletion is enormous.
- *
- * The API's copy takes its own branded reading for the same reason this
- * one takes `ReportReadRepeatCount`. If either version's rule changes,
- * the other has to change with it — the two are checked against the
- * same cases but nothing in the build links them.
- *
- * THE NEGATION LINE IS THE THIRD OF THOSE REASONS, and it arrived after
- * the other two. A cell can name the thing in order to say it was not
- * found — 「未检出3个重复单元的缩短」 — and the number inside it survived
- * every test above: rendered, this row came out 对得上 with 「本平台从你
- * 上传的文件里读到的 D4Z4 重复数是 未检出3个重复单元的缩短，落在指南说的
- * 大片段缺失范围（1–4）内」, about a report that had found no contraction
- * at all. The API refuses the same strings in `readSizeCell`; the two
- * lists are the same list.
+ * SO IF THE API'S BAND MOVES, THESE TWO NUMBERS HAVE TO MOVE WITH IT,
+ * and they are the whole of what can drift now — the parse that used to
+ * sit beside them, and that is what actually drifted, is gone. The
+ * sentence the row prints is built out of these same two numbers, so a
+ * change to the band rewrites the copy instead of leaving yesterday's
+ * range printed under today's decision.
  */
-export const isLargeD4Z4Deletion = (count: ReportReadRepeatCount | null): boolean => {
-  const text = count?.raw.trim() ?? '';
-  if (!text || text === '—') return false;
-  if (
-    /未检出|未检测|未检到|未见|未测出|未测到|未获|阴性|not\s*detected|undetected|negative/i.test(
-      text,
-    )
-  )
-    return false;
-  if (/[<>≤≥~]|--|–|—|~|至|到/.test(text)) return false;
-  // A stated kb is a different measurement with a different threshold —
-  // the API's copy refuses it on `unit === 'kb'`, out of the same
-  // `parseD4Z4Reading` pattern.
-  if (/kb|千碱基|kilobase/i.test(text)) return false;
-  const numbers = text.match(/\d+(?:\.\d+)?/g);
-  if (!numbers || numbers.length !== 1) return false;
-  const repeats = Number(numbers[0]);
-  return Number.isInteger(repeats) && repeats >= 1 && repeats <= 4;
+const LARGE_DELETION_MIN_REPEATS = 1;
+const LARGE_DELETION_MAX_REPEATS = 4;
+
+/** The band as the row says it out loud, from the numbers it judges by. */
+const LARGE_DELETION_RANGE_ZH = `${LARGE_DELETION_MIN_REPEATS}–${LARGE_DELETION_MAX_REPEATS}`;
+
+/**
+ * The number back out of the string the server vetted.
+ *
+ * `determinateRepeatCount` hands over the cell as the report printed it
+ *  —「3」or「3个」— and hands over nothing at all unless that cell parsed
+ * to a single plain number in repeat units, so taking the number out
+ * again is the whole of the reading. A string that does not hold exactly
+ * one number is refused rather than guessed at, which can only withhold
+ * the recommendation.
+ */
+const repeatCountValue = (count: LaboratoryRepeatCount | null): number | null => {
+  const numbers = count?.raw.match(/\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length !== 1) return null;
+  const value = Number(numbers[0]);
+  return Number.isFinite(value) ? value : null;
 };
+
+/** True only for a laboratory count inside the band above. */
+export const isLargeD4Z4Deletion = (count: LaboratoryRepeatCount | null): boolean => {
+  const value = repeatCountValue(count);
+  return (
+    value !== null &&
+    Number.isInteger(value) &&
+    value >= LARGE_DELETION_MIN_REPEATS &&
+    value <= LARGE_DELETION_MAX_REPEATS
+  );
+};
+
+/**
+ * WHERE EVERY UNDECIDED ARM OF THE RETINA ROW ENDS.
+ *
+ * One sentence, at module scope, because more than one arm needs it and
+ * two wordings of 「this is the doctor's call, with the original in front
+ * of them」 on one row is two things to keep in step.
+ */
+const ASK_DOCTOR_ZH = '这一条要不要做，请医生看着报告原件判断。';
 
 /**
  * The 判断不了 sentence for a count this page is showing but did not get
@@ -465,7 +486,7 @@ const unverifiedRepeatEvidence = (printed: string, origin: PassportValueOrigin |
   // is a rule quoted from memory, which is what went stale the first
   // time. Every arm below says where the number on THIS page came
   // from, which is what `origin` actually answers, and stops there.
-  const askDoctor = '这一条要不要做，请医生看着报告原件判断。';
+  const askDoctor = ASK_DOCTOR_ZH;
   // No `valueOrigins` on the wire: this app ships as a web export that
   // WeChat's in-app browser caches for days, so a handset can be
   // running today's bundle against an API build that sends none.
@@ -754,48 +775,85 @@ const buildEyeAndEarRows = (
   today: Date,
 ): SurveillanceRow[] => {
   /**
-   * A COUNT THIS PLATFORM READ OFF A DOCUMENT, OR NOTHING.
+   * A COUNT THE SERVER RULED DECIDABLE, OR NOTHING.
    *
    * This row decides whether a guideline about vision loss applies, so
-   * its input is `ReportReadRepeatCount` — a value the merged
-   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. A number
-   * out of the archive sends this to the 判断不了 branch, which asks for
-   * the original — the same answer a range gets, and for the same
-   * reason.
+   * its input is `LaboratoryRepeatCount` — a value the printed
+   * `summary.diagnosis.d4z4Repeats` cannot be assigned to. A number out
+   * of the archive, a length in kb, a 0, a range and a cell saying the
+   * contraction was not found all send this to the 判断不了 branch, which
+   * asks for the original; not one of those states is decided here.
    *
    * AND THE SENTENCE STOPS SHORT OF THE LABORATORY. It used to open
    * 「你的基因报告里 D4Z4 重复数是 3」, which is a claim about who
-   * measured the number, and the brand does not carry one:
-   * `pickGeneticEvidenceDocument` takes a 病历摘要 transcribing a repeat
-   * count when it is the only copy the patient has, and rendered
-   * against such a profile that sentence had this app telling a patient
-   * their genetics report says something no genetics report here has
-   * said. The API now hands a transcription its own origin kind, which
-   * never reaches these two arms — but a bundle this old talking to an
-   * API that old is a state a rolling deploy produces, and the wording
-   * has to hold there too. What the brand proves either way is that
-   * this platform read the number off something the patient uploaded,
-   * and that is what the two arms below say.
+   * measured the number, and rendered against a profile whose only
+   * document was a 病历摘要 quoting a count, that sentence had this app
+   * telling a patient their genetics report says something no genetics
+   * report here has said. The API now keeps a transcription out of this
+   * field entirely — but a bundle this old talking to an API that old is
+   * a state a rolling deploy produces, and the wording has to hold there
+   * too. What is true on every build is that this platform read the
+   * number off something the patient uploaded, and that is what the
+   * decided arms below say.
    */
-  // Read here for the wording only. `readReportReadRepeatCount` reads it
-  // again rather than being handed this: what may decide a
-  // recommendation must not depend on a caller having checked the
-  // origin correctly, and the two reads are of the same bytes by the
-  // same pure parser.
   const origins = readPassportValueOrigins(summary.diagnosis.valueOrigins);
-  const reportCount = readReportReadRepeatCount(summary);
-  const reportRaw = reportCount?.raw ?? '';
-  const isLarge = isLargeD4Z4Deletion(reportCount);
-  const hasPlainCount = /^\d+$/.test(reportRaw);
-  /** The printed number, when the page is showing one that no report
-   *  supplied — so the 判断不了 sentence can say which state it is in
-   *  rather than claiming the platform has nothing. */
+  const origin = origins?.d4z4Repeats ?? null;
+  const reading = readLaboratoryRepeatCount(summary);
+  const laboratoryCount = reading.state === 'count' ? reading.count : null;
+  const isLarge = isLargeD4Z4Deletion(laboratoryCount);
+  /**
+   * THE REPORT THIS COUNT CAME OFF STATES 4qB.
+   *
+   * The passport's own answer, read rather than derived: the API sets
+   * this confirmation out of the same laboratory record the count comes
+   * out of, and its own retina step steps aside on it — the guideline
+   * limits the dilated exam to the large-deletion group INSIDE FSHD, and
+   * a contraction reported on the non-permissive allele is not this
+   * platform's to place in that group. Without this the two surfaces
+   * disagreed on one passport: the clinical passport declined to
+   * recommend the examination and said why, while this page put 「和你的
+   * 记录对得上」 on it.
+   */
+  const nonPermissiveHaplotype = summary.diagnosis.confirmation === 'genetic_non_permissive';
+  /** The number the page is showing, decidable or not — so the 判断不了
+   *  sentences can name what the reader is looking at instead of
+   *  claiming this platform has nothing. */
   const printedRepeats = (summary.diagnosis.d4z4Repeats ?? '').trim();
-  const showsUnverifiedRepeats =
-    !reportCount &&
-    printedRepeats !== '' &&
-    printedRepeats !== '—' &&
-    origins?.d4z4Repeats.kind !== 'absent';
+  const showsRepeats = printedRepeats !== '' && printedRepeats !== '—' && origin?.kind !== 'absent';
+
+  const retinaEvidence = (() => {
+    if (laboratoryCount) {
+      if (!isLarge) {
+        return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，不在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`;
+      }
+      if (nonPermissiveHaplotype) {
+        return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，落在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内；但同一份报告上的 4q 单倍型不是允许型 4qA。指南把这一条限定在 FSHD 患者里大片段缺失的那一组人身上，本平台不拿一个非允许型的结果把你归进那一组。下次就诊时把这两项一起提出来，由医生看着报告原件说。`;
+      }
+      return `本平台从你上传的文件里读到的 D4Z4 重复数是 ${laboratoryCount.raw}，落在指南说的大片段缺失范围（${LARGE_DELETION_RANGE_ZH}）内。这不是急事，但值得在下次就诊时主动提出来。`;
+    }
+    if (showsRepeats && origin?.kind === 'report') {
+      // THE PAGE IS SHOWING A NUMBER THE REPORT'S OWN CELL SUPPLIED AND
+      // THIS ROW IS STILL NOT DECIDING ON IT. One sentence for the four
+      // states that reach here — a length in kb, a 0, a range, a cell
+      // that names a count in order to say it was not found — because
+      // this file cannot tell them apart any more and would have to
+      // re-open the parse to try. What it can say is true of all four
+      // and is the reason none of them decides: the guideline's boundary
+      // is written in repeat units and the cell did not yield one.
+      //
+      // The sentence it replaced named the two states it knew about —
+      // 「可能是还没上传写着它的文件，也可能是文件上那一格写的不是一个确定
+      // 的数字」 — and both halves were false of a cell reading 「3kb」 or
+      // 「0」: the file is on file and the number in it is perfectly
+      // definite. It is in another unit, or it is a reading the server
+      // could not make sense of.
+      return reading.state === 'none'
+        ? `报告上那一格写的是「${printedRepeats}」，本平台没有从它读出一个能用来判断这一条的重复单元数 —— 指南这一条的界限是按重复单元数（${LARGE_DELETION_RANGE_ZH}）写的，读不出这样一个数我们就不猜。${ASK_DOCTOR_ZH}`
+        : `你的记录里 D4Z4 重复数是 ${printedRepeats}，本平台这次没能确认它是不是一个可以用来判断这一条的读数。${ASK_DOCTOR_ZH}`;
+    }
+    if (showsRepeats) return unverifiedRepeatEvidence(printedRepeats, origin);
+    return `本平台手上没有你的 D4Z4 重复数：可能是还没上传写着它的文件，也可能是上传的文件上没有这一格。${ASK_DOCTOR_ZH}`;
+  })();
 
   const retina: SurveillanceRow = {
     id: 'retinal_screening',
@@ -804,20 +862,14 @@ const buildEyeAndEarRows = (
     polarity: 'do',
     guideline:
       '指南建议：D4Z4 大片段缺失（缺失后片段 10–20 kb，约 1–4 个重复）的患者，转有经验的眼科医生（最好是视网膜专科）做一次散瞳间接检眼镜。渗出性视网膜病变（Coats 病）在 FSHD 里很少见，但几乎只出现在这一组人身上；不处理可能造成明显的视力损失，早发现能挡住。之后多久复查一次，由第一次的结果决定。',
-    applicability: isLarge ? 'matched' : hasPlainCount ? 'not_matched' : 'unknown',
-    evidence: isLarge
-      ? `本平台从你上传的文件里读到的 D4Z4 重复数是 ${reportRaw}，落在指南说的大片段缺失范围（1–4）内。这不是急事，但值得在下次就诊时主动提出来。`
-      : hasPlainCount
-        ? `本平台从你上传的文件里读到的 D4Z4 重复数是 ${reportRaw}，不在指南说的大片段缺失范围（1–4）内。眼底检查这一条按指南对你不适用 —— 但如果出现视力变化，那是另一回事，该查还是要查。`
-        : showsUnverifiedRepeats
-          ? unverifiedRepeatEvidence(printedRepeats, origins?.d4z4Repeats ?? null)
-          : // 「或者上面写的是一个范围」 named one of the two ways a file
-            // on record fails to give a number, and a cell reading
-            // 未检出 is the other one — that reader was told the file
-            // might not have been uploaded, about a file whose reading
-            // is printed on the passport. Both ways are named now, and
-            // the sentence ends where it did.
-            '本平台读不出你的 D4Z4 重复数：可能是还没上传写着它的文件，也可能是文件上那一格写的不是一个确定的数字 —— 比如一个范围（「1-10」），或者一句「未检出」。不是确定的数字我们就不猜 —— 这一条要不要做，请医生看着报告原件判断。',
+    applicability: laboratoryCount
+      ? isLarge
+        ? nonPermissiveHaplotype
+          ? 'unknown'
+          : 'matched'
+        : 'not_matched'
+      : 'unknown',
+    evidence: retinaEvidence,
     ask: '可以问：「按我的基因结果，需要做一次散瞳眼底检查吗？」',
     source: SURVEILLANCE_SOURCE,
   };

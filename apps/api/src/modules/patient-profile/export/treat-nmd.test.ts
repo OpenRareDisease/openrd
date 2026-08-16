@@ -1170,6 +1170,35 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
     });
   });
 
+  /**
+   * A LENGTH IN kb IS A MEASUREMENT AND IT IS NOT THIS ITEM'S. The
+   * repeat-count cell parses to one unambiguous number either way, so a
+   * check for 「the cell parses」 sent 「18kb」 to a registry as this
+   * patient's D4Z4 重复单元数 — the item is written in repeat units, this
+   * platform holds no boundary in kb to compare a length against, and
+   * every clinical surface prints such a length with a sentence saying
+   * it decided nothing.
+   */
+  it('报告上写成 kb 的长度不是重复单元数', () => {
+    expect(valueOf(reported({ d4z4: '18kb' }), 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '18kb',
+      reading: 'no_result',
+    });
+  });
+
+  /**
+   * AND A 0 IS A READING SOMEBODY HAS TO GO AND CHECK. 0 repeat units
+   * is not a viable FSHD1 allele, so it is neither a confirmation nor
+   * an exclusion — it says the cell was misread or is about something
+   * else. It parsed, so it went out as a count.
+   */
+  it('重复单元数读成 0 时，不发成这一项的结果', () => {
+    expect(valueOf(reported({ d4z4: '0' }), 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '0',
+      reading: 'no_result',
+    });
+  });
+
   it('实验室确实读出结果时，就说读出来了', () => {
     const result = reported({ d4z4: '5', haplotype: '4qA' });
     expect(valueOf(result, 'diagnosis.haplotype')).toMatchObject({

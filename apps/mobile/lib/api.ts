@@ -638,15 +638,32 @@ export interface PassportFreshness {
   daysSince: number | null;
 }
 
-/** The four grades plus 未知 — the API's `GeneticEvidenceGrade`. It
- *  grades the EVIDENCE, never the person. */
-/** The five the API can send. Kept as a value so the reader below can
- *  actually check against it — a type alone validates nothing at
- *  runtime, which is how the bare `as` got in. */
+/**
+ * The API's `GeneticEvidenceGrade`, mirrored member for member. It
+ * grades the EVIDENCE, never the person.
+ *
+ * Kept as a value so the reader below can actually check against it — a
+ * type alone validates nothing at runtime, which is how the bare `as`
+ * got in.
+ *
+ * MIRRORED MEANS ALL OF THEM, AND THE FALL-THROUGH IS NOT A PLACE TO
+ * PUT A GRADE WE KNOW ABOUT. An unlisted member lands on 未知 down in
+ * `readPassportGeneticEvidence`, and 未知 is the grade whose own copy
+ * opens 「还没有上传过基因报告」 — false of `transcribed_only`, which is
+ * reached with a transcribed reading printed on the same screen, and
+ * false of `non_permissive_haplotype`, which is reached with a
+ * laboratory's own 4qB on the page. Nothing branches on `grade` today,
+ * so the drift was invisible; the next reader to write
+ * `grade === 'trial_ready'` is who it would have cost.
+ * lib/__tests__/genetic-evidence-grade-parity.test.ts holds this list
+ * to the server's union.
+ */
 export const GENETIC_EVIDENCE_GRADES = [
   'not_tested',
   'method_not_applicable',
   'method_right_incomplete',
+  'transcribed_only',
+  'non_permissive_haplotype',
   'trial_ready',
   'unknown',
 ] as const;
@@ -751,12 +768,15 @@ export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEviden
   return {
     // Validated, not asserted. Every sibling field in this reader is
     // checked; `grade` was the one bare `as`, so any string the server
-    // sent would have typed as one of five enum members. It happens to
-    // be unread today (the screen renders `gradeLabel`), which is
-    // exactly why it was worth fixing now: the next person to branch on
+    // sent would have typed as a member of the enum. It happens to be
+    // unread today (the screen renders `gradeLabel`), which is exactly
+    // why it was worth fixing now: the next person to branch on
     // `grade === 'not_tested'` would reasonably assume it had been
     // checked. Unrecognised falls to 'unknown', which is a real member
-    // and the one that promises nothing.
+    // and the one that promises nothing — so a grade this bundle
+    // simply has not been told about is indistinguishable from a
+    // garbage string, and that is why GENETIC_EVIDENCE_GRADES is held
+    // to the server's union by a test rather than by a comment.
     grade: GENETIC_EVIDENCE_GRADES.includes(record.grade as GeneticEvidenceGrade)
       ? (record.grade as GeneticEvidenceGrade)
       : 'unknown',
