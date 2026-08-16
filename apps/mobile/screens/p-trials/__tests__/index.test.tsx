@@ -359,6 +359,32 @@ describe('名单本身', () => {
     }
   });
 
+  it('国内登记平台那张卡也拿得到中国站点的标签，期别按它自己的词写', async () => {
+    // 该平台 各参加机构信息 的 国家或地区 列写「中国」，试验分期 写
+    //「I期」，两样都原样存进 trial_records。只认英文 China 的时候，这
+    // 枚标签在它抓回来的每一条上都不亮 —— 而这枚标签就是用来说「这一
+    // 条够得着」的。
+    mockListTrials.mockResolvedValue({
+      trials: [
+        trial({
+          source: 'chinadrugtrials',
+          sourceId: 'CTR20250001',
+          statusRaw: '进行中 招募中',
+          statusZh: null,
+          phase: 'I期',
+          countries: ['中国'],
+          url: 'http://www.chinadrugtrials.org.cn/CTR20250001',
+          sourceUpdatedAt: null,
+        }),
+      ],
+      sources: [sourceStatus({ source: 'chinadrugtrials' })],
+    });
+    const rendered = screenText(await render());
+    expect(rendered).toContain('注册库列有中国站点');
+    expect(rendered).toContain('I期');
+    expect(rendered).toContain('CTR20250001');
+  });
+
   it('没有翻译的状态词原样显示英文，而且不藏在收起的组里', async () => {
     // ENROLLING_BY_INVITATION is 3 of the 92 rows cached on 2026-08-14
     // and those studies are still taking participants. §A4 forbids
@@ -507,12 +533,23 @@ describe('组合起来时，屏幕上的每一句话都要成立', () => {
     });
 
   const CN_TRIAL = 'A MAINLAND STUDY';
+  /**
+   * Written the way that registry's fetcher writes a row: its own
+   * status word with `status_zh` NULL, its own 试验分期 token, the
+   * 国家或地区 cell in Chinese, and no last-changed date — it publishes
+   * none.
+   */
   const cnTrial = (overrides: Partial<TrialRecord> = {}): TrialRecord =>
     trial({
       source: 'chinadrugtrials',
       sourceId: 'CTR20250001',
       title: CN_TRIAL,
+      statusRaw: '进行中 招募中',
+      statusZh: null,
+      phase: 'I期',
+      countries: ['中国'],
       url: 'http://www.chinadrugtrials.org.cn/CTR20250001',
+      sourceUpdatedAt: null,
       ...overrides,
     });
 
@@ -620,10 +657,16 @@ describe('组合起来时，屏幕上的每一句话都要成立', () => {
       expect(rendered).toContain('A Study of Something in FSHD');
       expect(rendered).toContain(`拉取于 ${FETCHED_DAY}`);
 
-      // 境外那半边没抓成时，横幅在，并且报的是名单的日期。
+      // 境外那半边没抓成时，横幅在，并且报的是它自己那些记录的日期。
+      // 这两格里它都有记录在名单上；一行都没贡献的时候整条不出现，那
+      // 一格在 lib/__tests__/trials.test.ts 里。
       const ctgovStale = ctgov === 'failed' || ctgov === 'unfinished';
       expect(rendered.includes('请点开原始记录核对')).toBe(ctgovStale);
-      if (ctgovStale) expect(rendered).toContain(`下面这份名单是 ${FETCHED_DAY} 抓到的`);
+      if (ctgovStale) {
+        expect(rendered).toContain(
+          `下面这份名单里 ClinicalTrials.gov 的记录是 ${FETCHED_DAY} 抓到的`,
+        );
+      }
 
       // 「名单里只有 ClinicalTrials.gov 的记录」只在真是这样的时候说。
       const onlyCtgov = list === 'shown';
@@ -667,8 +710,8 @@ describe('组合起来时，屏幕上的每一句话都要成立', () => {
 describe('境外那半边过期时', () => {
   it('横幅真的渲染出来，说明名单停在哪一天', async () => {
     // The only thing on screen saying the ClinicalTrials.gov half
-    // stopped refreshing. `describeCtgovStaleness` is unit-tested five
-    // ways in lib/__tests__/trials.test.ts; this is the wiring.
+    // stopped refreshing. Which states earn that sentence is settled in
+    // lib/__tests__/trials.test.ts; this is the wiring.
     mockListTrials.mockResolvedValue({
       trials: [trial()],
       sources: [

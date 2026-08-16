@@ -189,10 +189,12 @@ describe('renderChunkForPrompt — patient profile, strict mode (regression fenc
     assertNoLeak(rendered.content);
 
     // Clinicalised forms should be present so the LLM still has
-    // something clinical to talk about.
-    expect(rendered.content).toContain('low_repeat_severe');
-    expect(rendered.content).toContain('hypomethylated_severe');
-    expect(rendered.content).toContain('pathogenic_haplotype_permissive');
+    // something clinical to talk about. What each one may claim is
+    // pii-redactor.test.ts's subject; this row's D4Z4 cell holds two
+    // numbers, which is not a count.
+    expect(rendered.content).toContain('unspecified');
+    expect(rendered.content).toContain('value_withheld');
+    expect(rendered.content).toContain('permissive_haplotype');
     expect(rendered.content).toContain('2023'); // diagnosisYear from foundation is allowed.
 
     // fieldsUsed feeds the audit log; sanity check it does not name

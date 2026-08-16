@@ -11,11 +11,17 @@
  *
  *   Layer 2 — clinicalise: only in `strict` mode. Numeric / dated
  *             clinical fields gain a `_clinical` sibling holding a
- *             coarse category label (e.g. D4Z4 "3/22" -> "low_repeat
- *             _severe"). The raw original is then dropped.
+ *             coarse label (e.g. D4Z4 "3" -> "within_fshd1_repeat
+ *             _range"). The raw original is then dropped.
  *             In `precise` mode the user has explicitly opted in to
  *             sharing the raw value, so this layer is a no-op and the
  *             original passes through.
+ *
+ *             WHAT A LABEL MAY CLAIM. It is answered to a patient by
+ *             the assistant, so it may say only what this repo says
+ *             elsewhere: the genetics cells are read with the
+ *             passport's own readers and banded on the one repeat-count
+ *             boundary this platform states. See `clinicaliseD4Z4`.
  *
  *   Layer 3 — allowlist: only keys enumerated in
  *             `PROMPT_ALLOWLIST[scope][mode]` survive. Anything else
@@ -31,6 +37,12 @@ import {
   PROMPT_ALLOWLIST,
 } from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
+import {
+  FSHD1_MAX_REPEAT_UNITS,
+  isDeterminateRepeatCount,
+  parsePermissiveHaplotype,
+  readSizeCell,
+} from '../../patient-profile/profile.passport.js';
 
 export type { RedactionMode, RedactionScope } from './allowlist.js';
 
@@ -112,49 +124,120 @@ const ageGroupFromDate = (raw: unknown): string | null => {
   return '70_plus';
 };
 
-/** Bucket the D4Z4 repeat count (e.g. "3/22", "3", "3 repeats") into
- *  a clinical category. FSHD1 is typically caused by repeats <= 10 on
- *  a permissive allele; the buckets reflect commonly cited severity
- *  ranges. The label is descriptive, not diagnostic. */
+/**
+ * Is this value a qualitative result rather than a measurement?
+ *
+ * Qualitative results survive strict mode — see `projectOcrFields` for
+ * the OCR blob and `clinicaliseMethylation` for the genetics cell. The
+ * test is deliberately conservative: anything carrying a digit is
+ * treated as a measurement, so「1.02」stays withheld and so does a
+ * borderline string like「阳性(1:8)」whose titre is the number the
+ * patient did not consent to share.
+ */
+const isQualitativeResult = (value: unknown): boolean => {
+  if (typeof value === 'boolean') return true;
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!text || text.length > 24) return false;
+  return !/\d/.test(text);
+};
+
+/**
+ * THE D4Z4 CELL, READ BY THE READER THE REST OF THE PLATFORM READS IT
+ * WITH, and banded only when it is a repeat count.
+ *
+ * IT USED TO PARSE THE CELL ITSELF — the first digits in the string,
+ * mapped onto a severity ladder, with no unit check and no zero check.
+ * Every reading the passport, the app and the exports were moved off
+ * came through here intact and was answered to the patient by the
+ * assistant: 「3kb」 as the most severe contraction there is, when a
+ * length in kb is printed and judged by nothing everywhere else on this
+ * platform; 「0」 the same way, when 0 units is not an FSHD1 allele at
+ * all; and 「未检出3个重复单元」 as a count of 3, because a negation
+ * carries a number of its own. `readSizeCell` is what the cell says and
+ * `isDeterminateRepeatCount` is whether that is a count — the same two
+ * questions the passport asks, asked here rather than answered again by
+ * a regular expression of this file's own.
+ *
+ * THE BANDS NAME A RANGE, NOT A PROGNOSIS. The ladder they replace ran
+ * low_repeat_severe / _moderate / _mild / borderline / normal_range on
+ * edges written nowhere else in this repo, and its top edge called a
+ * count of 30 borderline while `countAboveFshd1Range` has the guideline
+ * sending anything past `FSHD1_MAX_REPEAT_UNITS` off to evaluate FSHD2
+ * — two answers to one question, and the wrong one was the one a
+ * patient heard. What is left is that boundary and no severity word:
+ * the platform's own 孕前 page says the count tracks onset and severity
+ * 「在群体层面」 and 「不是对某一个孩子的预测」, and this label is read to
+ * exactly one patient.
+ */
 const clinicaliseD4Z4 = (raw: unknown): string | null => {
   if (raw === null || raw === undefined || raw === '') return null;
-  const text = String(raw);
-  const match = text.match(/(\d{1,3})/);
-  if (!match) return 'unspecified';
-  const n = Number(match[1]);
-  if (!Number.isFinite(n)) return 'unspecified';
-  if (n <= 3) return 'low_repeat_severe';
-  if (n <= 7) return 'low_repeat_moderate';
-  if (n <= 10) return 'low_repeat_mild';
-  if (n <= 30) return 'borderline';
-  return 'normal_range';
+  const reading = readSizeCell(String(raw));
+  if (reading === null) return null;
+  if (isDeterminateRepeatCount(reading)) {
+    return reading.value > FSHD1_MAX_REPEAT_UNITS
+      ? 'above_fshd1_repeat_range'
+      : 'within_fshd1_repeat_range';
+  }
+  // The kb branch comes first, because a kb cell reading 0 is a length
+  // and not an unreadable count — the same order `zeroRepeatCount`
+  // keeps by gating itself on the unit.
+  if (reading.unit === 'kb' && reading.value !== null) return 'length_in_kb_not_a_repeat_count';
+  if (reading.value === 0) return 'zero_repeat_count_not_a_valid_reading';
+  return 'unspecified';
 };
 
-/** Methylation values are usually percentages or decimals. Lower
- *  values are associated with FSHD2. Buckets are descriptive. */
+/**
+ * A METHYLATION CELL, WITHHELD RATHER THAN GRADED.
+ *
+ * IT HAD THE SAME SHAPE AS THE D4Z4 LADDER AND ONE DEFECT MORE. The
+ * first number in the string decided a band — so a range read as its
+ * lower bound, a negation read as the number inside it, and a 0 read as
+ * the worst band there is — and before that the number was converted:
+ * anything at or below 1 was multiplied out as a ratio, anything above
+ * it taken as a percent. The report parser defaults this cell's unit to
+ * %, so 「甲基化 0.35」 left the parser as 0.35% and reached the patient
+ * as 35%.
+ *
+ * AND NOTHING IN THIS REPO STATES A METHYLATION BOUNDARY. Those edges
+ * are this file's own invention. The passport prints the value and
+ * grades it with nothing; the discipline everywhere else is that a
+ * threshold is quoted rather than converted, and there is no quote to
+ * hand. So the band is deleted rather than qualified, and what is left
+ * is the true statement: there is a methylation result on file and the
+ * number is not being shared.
+ *
+ * A CELL THAT IS NOT A NUMBER IS THE LABORATORY'S OWN WORD, and it
+ * survives — the same rule `projectOcrFields` applies to every other
+ * qualitative result, for the same reason. What the patient withheld is
+ *「精确数值」, and 未检出 is not one.
+ */
 const clinicaliseMethylation = (raw: unknown): string | null => {
   if (raw === null || raw === undefined || raw === '') return null;
-  const text = String(raw);
-  const match = text.match(/(\d+(?:\.\d+)?)/);
-  if (!match) return 'unspecified';
-  const n = Number(match[1]);
-  if (!Number.isFinite(n)) return 'unspecified';
-  // Accept both percentage and decimal inputs.
-  const pct = n > 1 ? n : n * 100;
-  if (pct < 25) return 'hypomethylated_severe';
-  if (pct < 35) return 'hypomethylated';
-  if (pct < 50) return 'low_normal';
-  return 'normal_range';
+  if (typeof raw === 'string' && isQualitativeResult(raw)) return raw.trim();
+  return 'value_withheld';
 };
 
-/** 4qA permissive haplotypes carry the FSHD-associated polyadenylation
- *  signal; 4qB does not. Anything else is unspecified rather than
- *  silently passed through. */
+/**
+ * 4qA / 4qB, READ BY THE PASSPORT'S OWN READER.
+ *
+ * It matched the cell on a bare substring, which cannot tell 「4qA」
+ * apart from 「未检出 4qA 等位基因」 and reads a cell naming both probes
+ * as the permissive one. `parsePermissiveHaplotype` refuses both, and
+ * refuses them the way the passport already refuses them.
+ *
+ * THE PERMISSIVE LABEL NO LONGER SAYS PATHOGENIC. 4qA is the permissive
+ * haplotype; on its own it is not a finding of disease — this platform's
+ * own statement of the report requirements has the haplotype as the item
+ * WITHOUT which 「重复单元数本身不足以下结论」, which is the opposite
+ * claim. `non_permissive_haplotype` is left as it is: it is the word the
+ * passport's own grade uses.
+ */
 const clinicaliseHaplotype = (raw: unknown): string | null => {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
-  const trimmed = raw.trim().toLowerCase();
-  if (trimmed.includes('4qa')) return 'pathogenic_haplotype_permissive';
-  if (trimmed.includes('4qb')) return 'non_permissive_haplotype';
+  const permissive = parsePermissiveHaplotype(raw);
+  if (permissive === true) return 'permissive_haplotype';
+  if (permissive === false) return 'non_permissive_haplotype';
   return 'unspecified_haplotype';
 };
 
@@ -225,23 +308,6 @@ const isUntrustworthyValue = (value: unknown): boolean => {
   const text = value.trim();
   if (text.length > SAFE_VALUE_MAX_LENGTH) return true;
   return ID_PATTERNS.some((pattern) => pattern.test(text));
-};
-
-/**
- * Is this OCR value a qualitative result rather than a measurement?
- *
- * Qualitative results survive strict mode (see projectOcrFields). The
- * test is deliberately conservative: anything carrying a digit is
- * treated as a measurement, so「1.02」stays withheld and so does a
- * borderline string like「阳性(1:8)」whose titre is the number the
- * patient did not consent to share.
- */
-const isQualitativeResult = (value: unknown): boolean => {
-  if (typeof value === 'boolean') return true;
-  if (typeof value !== 'string') return false;
-  const text = value.trim();
-  if (!text || text.length > 24) return false;
-  return !/\d/.test(text);
 };
 
 /** Project an OCR fields blob through a mode-specific filter.

@@ -215,19 +215,40 @@ const describeSource = (status: TrialSourceStatus): string => {
   }
 };
 
-/** The §A5 boundaries, restated to the model every call. Neither the
- *  eligibility text nor the results section is in the chunks (see the
- *  file header), so those two lines exist only to stop the model
- *  answering from its own memory. The other three are requests. */
+/**
+ * The §A5 boundaries, restated to the model every call. Neither the
+ * eligibility text nor the results section is in the chunks (see the
+ * file header), so those two lines exist only to stop the model
+ * answering from its own memory. The other three are requests.
+ *
+ * THE CLOSED LIST IS THE RECORD'S OWN FIELD LIST, AND IT IS ABOUT ONE
+ * TRIAL. It was neither, and each half of that broke the rule under it.
+ *
+ * It left out 「本平台读取时间」 and 「标题」 — two lines `renderTrial`
+ * prints on every record — while the very next rule orders the model to
+ * give the read time for any trial it mentions, and `search_medical_kb`
+ * orders the same thing from the other side whenever a 2025 snapshot
+ * chunk is in the same prompt. A model holding a closed list and a rule
+ * demanding a fact outside it has to resolve the contradiction itself,
+ * and both resolutions cost the patient something the platform promised:
+ * either the read time disappears from an answer served out of a cache,
+ * or the model states a fact it was told it may not state and stops
+ * believing the list. The freshness half of this tool is built on the
+ * date being unavoidable, so it is the half that must not be optional.
+ *
+ * And read as a rule about the whole answer — which is how it was
+ * written — it forbade nearly everything else in this block: how many
+ * matches the limit left out, which registries the list does and does
+ * not cover, the closing sentence about talking to a doctor. None of
+ * those is a fact about a trial. Scoping the list to one trial is what
+ * makes it a field list rather than a gag.
+ *
+ * Kept in step with the record by this file's test, which renders one
+ * through the real retriever and checks every label on it is named here.
+ */
 const BOUNDARY_RULES = [
   '硬性要求：',
-  // 登记库 is on this list because `renderTrial` puts it on every
-  // record, and because the mainland line `describeRetrieval` prints
-  // just above these rules orders the model to say which registry a
-  // row came from. A closed list of permitted facts that leaves out
-  // the one another rule demands is two instructions that cannot both
-  // be followed.
-  '- 只能陈述上面列出的事实：登记库、登记号、状态、期别、申办方、国家、登记库最后更新日期、链接。',
+  '- 关于某一条试验，只能陈述记录里写明的这几项：登记库、登记号、标题、状态、期别、申办方、国家/地区、登记库最后更新、本平台读取时间、链接。',
   '- 提到任何一条试验时，必须同时给出它的登记号、状态、和「本平台读取时间」，并且带上链接。',
   '- 不要判断用户是否符合入组条件，不要说「你可能符合」「你应该能参加」。本工具不提供入组标准，你手上也没有。',
   '- 不要陈述任何疗效或结果结论。本工具不提供试验结果、摘要或结论，你手上同样没有。',

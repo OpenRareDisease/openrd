@@ -18,7 +18,15 @@
  *     showing no list —「所以下面这份名单目前只有 ClinicalTrials.gov 的
  *     记录」and「重要的试验请点开原始记录核对」both used to fire on the
  *     empty state, where they contradicted each other and the empty
- *     card underneath them.
+ *     card underneath them. Its sibling: a sentence about ONE
+ *     registry's records printed over a list that has none of them,
+ *     dating the other registry's rows by a fetch that never touched
+ *     them.
+ *  6. One registry's spelling used as the test for both. The country
+ *     chip asked for the literal `China`, which is the word only
+ *     ClinicalTrials.gov writes, so no record from the mainland
+ *     registry could earn it — the chip says a study is reachable and
+ *     it was dark on exactly the half most likely to be.
  */
 
 import {
@@ -224,40 +232,74 @@ describe('分组', () => {
 });
 
 describe('期别', () => {
+  const ctgov = (phase: string | null) => trialPhaseLabel(trial({ phase }));
+  const cn = (phase: string | null) =>
+    trialPhaseLabel(trial({ source: 'chinadrugtrials', sourceId: 'CTR20252821', phase }));
+
   it('把 ClinicalTrials.gov 的枚举写成中文', () => {
-    expect(trialPhaseLabel('PHASE2')).toBe('2 期');
-    expect(trialPhaseLabel('EARLY_PHASE1')).toBe('早期 1 期');
-    expect(trialPhaseLabel('NA')).toBe('不按期别划分');
+    expect(ctgov('PHASE2')).toBe('2 期');
+    expect(ctgov('EARLY_PHASE1')).toBe('早期 1 期');
+    expect(ctgov('NA')).toBe('不按期别划分');
   });
 
   it('跨两期的研究两个都写出来', () => {
-    expect(trialPhaseLabel('PHASE1|PHASE2')).toBe('1 期 / 2 期');
+    expect(ctgov('PHASE1|PHASE2')).toBe('1 期 / 2 期');
   });
 
   it('不认识的词原样带过去', () => {
-    expect(trialPhaseLabel('II期')).toBe('II期');
+    expect(ctgov('II期')).toBe('II期');
   });
 
   it('空的期别是 null，不是空字符串', () => {
     // The card renders「注册库未标注」on null. An empty string would
     // render as a blank value, which reads as a rendering bug rather
     // than as a fact about the registry.
-    expect(trialPhaseLabel(null)).toBeNull();
-    expect(trialPhaseLabel('  ')).toBeNull();
+    expect(ctgov(null)).toBeNull();
+    expect(ctgov('  ')).toBeNull();
+    expect(cn(null)).toBeNull();
+    expect(cn('  ')).toBeNull();
+  });
+
+  it('国内登记平台的期别不套 ClinicalTrials.gov 那一套读法', () => {
+    // 这一栏装着两套词汇，哪一套都不是给人看的字符串：ctgov 写
+    // PHASE1/PHASE2、NA，国内平台写它自己的 试验分期 —— 抓取器夹具
+    // 上那一条是「I期」。映射和切分都是 ctgov 的：映射的键是它的枚举
+    // 成员，切分是因为它的 phases 本来是个数组。
+    expect(cn('I期')).toBe('I期');
+    // 带斜杠那一条不是从注册库上抄来的值，是用来钉住「原样带过去」
+    // 的形状：这个平台自己的受控词汇里确实有带斜杠的单词 ——
+    // 「IEC/IRB终止」就在上面那张状态词表里 —— 所以这个形状不是假想
+    // 出来的，而切分会把注册库写的词重新拼一遍。
+    expect(cn('生物等效性试验/生物利用度试验')).toBe('生物等效性试验/生物利用度试验');
+    // NA 是 ctgov 说「这个研究不按期别划分」的词，不是这个平台的词。
+    expect(cn('NA')).toBe('NA');
   });
 });
 
 describe('中国站点', () => {
-  it('注册库写了 China 才算', () => {
+  const cn = (countries: string[]) =>
+    hasChinaSite(trial({ source: 'chinadrugtrials', sourceId: 'CTR20252821', countries }));
+
+  it('ClinicalTrials.gov 写了 China 才算', () => {
     expect(hasChinaSite(trial({ countries: ['United States', 'China'] }))).toBe(true);
+  });
+
+  it('国内登记平台写的是中文，一样算 —— 否则这枚标签在它那半边永远不亮', () => {
+    // 该平台 各参加机构信息 的 国家或地区 列写的是「中国」，抓取器
+    // 原样存下来。只认英文那个字面量的时候，它抓回来的每一条都拿不到
+    // 这枚标签 —— 而这枚标签正是用来告诉一个在国内的读者「这一条够得
+    // 着」，被关掉的偏偏是最够得着的那半边。
+    expect(cn(['中国'])).toBe(true);
   });
 
   it('香港、台湾不算 —— 这条只复述注册库写的字，不做地理判断', () => {
     expect(hasChinaSite(trial({ countries: ['Hong Kong', 'Taiwan'] }))).toBe(false);
+    expect(cn(['中国台湾', '中国香港'])).toBe(false);
   });
 
   it('没有地点就不算', () => {
     expect(hasChinaSite(trial({ countries: [] }))).toBe(false);
+    expect(cn([])).toBe(false);
   });
 });
 
@@ -703,22 +745,37 @@ describe('国内那次抓取成功了，却一条都没带回来', () => {
 });
 
 describe('境外那半边过期时', () => {
+  const failedRun = {
+    startedAt: '2026-08-12T02:00:00.000Z',
+    finishedAt: '2026-08-12T02:00:30.000Z',
+    ok: false,
+  };
+
+  /** 一条国内登记平台抓回来的记录，按它自己的词写。 */
+  const cnTrial = (overrides: Partial<TrialRecord> = {}): TrialRecord =>
+    trial({
+      source: 'chinadrugtrials',
+      sourceId: 'CTR20252821',
+      statusRaw: '进行中 招募中',
+      statusZh: null,
+      phase: 'I期',
+      countries: ['中国'],
+      sourceUpdatedAt: null,
+      ...overrides,
+    });
+
   it('抓取成功时不出横幅', () => {
     expect(describeCtgovStaleness(snapshot())).toBeNull();
   });
 
-  it('抓取失败时说明名单停在哪一天', () => {
+  it('抓取失败时说明这半边的记录停在哪一天', () => {
     const notice = describeCtgovStaleness(
       snapshot(
         [trial({ fetchedAt: '2026-08-01T00:00:00.000Z' })],
         [
           sourceStatus({
             fetchedAt: '2026-08-01T00:00:00.000Z',
-            lastRun: {
-              startedAt: '2026-08-12T02:00:00.000Z',
-              finishedAt: '2026-08-12T02:00:30.000Z',
-              ok: false,
-            },
+            lastRun: failedRun,
             lastSuccessAt: '2026-08-01T00:00:05.000Z',
           }),
         ],
@@ -727,6 +784,74 @@ describe('境外那半边过期时', () => {
     expect(notice?.tone).toBe('warn');
     expect(notice?.text).toContain('最近一次更新没有成功');
     expect(notice?.text).toContain(formatInstantAsDay('2026-08-01T00:00:00.000Z') as string);
+  });
+
+  it('这半边一条记录都没进名单时，不解释一个什么都没贡献的来源', () => {
+    // 这个注册库第一次抓就失败：refresh 只在翻 ok 的那条路上写行，所
+    // 以 trial_records 里没有它的任何一行。国内那半边正常抓回来了，屏
+    // 幕是满的。旧的门问的是「有没有画出名单」，于是横幅解释了一个一
+    // 行都没贡献的来源的新鲜度，还把国内那份名单说成是
+    // ClinicalTrials.gov 抓的 —— 它一次都没抓成过。
+    const snap = snapshot(
+      [cnTrial()],
+      [
+        sourceStatus({
+          recordCount: 0,
+          fetchedAt: null,
+          lastRun: failedRun,
+          lastSuccessAt: null,
+        }),
+        sourceStatus({ source: 'chinadrugtrials' }),
+      ],
+    );
+    expect(shownListFetchedOn(snap)).not.toBeNull();
+    expect(describeCtgovStaleness(snap)).toBeNull();
+  });
+
+  it('名单是两边合起来的时候，说的日期是这半边自己的抓取时间', () => {
+    // 两半是两次抓取，日期可以差几个月。「下面这份名单是 X 抓到的」
+    // 把一个日期按在两边身上，其中一边是错的；说的是哪一半，就只报
+    // 哪一半的日期。国内那半边的日期由 describeChinaCoverage 自己说。
+    const snap = snapshot(
+      [
+        trial({ fetchedAt: '2026-06-01T00:00:00.000Z' }),
+        cnTrial({ fetchedAt: '2026-08-12T02:00:00.000Z' }),
+      ],
+      [
+        sourceStatus({
+          fetchedAt: '2026-06-01T00:00:00.000Z',
+          lastRun: failedRun,
+          lastSuccessAt: '2026-06-01T00:00:05.000Z',
+        }),
+        sourceStatus({ source: 'chinadrugtrials' }),
+      ],
+    );
+    const notice = describeCtgovStaleness(snap);
+    expect(notice?.text).toContain(
+      `下面这份名单里 ClinicalTrials.gov 的记录是 ${formatInstantAsDay('2026-06-01T00:00:00.000Z')} 抓到的`,
+    );
+    // 国内那半边是 8 月抄的，这句话不替它说话，也不把它的日期说成 6 月。
+    expect(notice?.text).not.toContain(formatInstantAsDay('2026-08-12T02:00:00.000Z') as string);
+  });
+
+  it('这半边的抓取时间读不出来时整条不出现 —— 不拿另一半的日期顶上', () => {
+    // 名单画出来了（国内那半边带着能读的抓取时间），但这半边的来源块
+    // 和它自己的行都没有能读的时间。此时唯一能拿到的日期是整份名单
+    // 的，而那可能是国内那半边的日期 —— 把它按在这句话上，就是刚刚
+    // 拆掉的那个错。
+    const snap = snapshot(
+      [trial({ fetchedAt: null }), cnTrial()],
+      [
+        sourceStatus({
+          fetchedAt: null,
+          lastRun: failedRun,
+          lastSuccessAt: '2026-06-01T00:00:05.000Z',
+        }),
+        sourceStatus({ source: 'chinadrugtrials' }),
+      ],
+    );
+    expect(shownListFetchedOn(snap)).not.toBeNull();
+    expect(describeCtgovStaleness(snap)).toBeNull();
   });
 });
 

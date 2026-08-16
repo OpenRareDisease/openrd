@@ -1942,8 +1942,14 @@ const reportsAbsence = (raw: string | null | undefined): boolean =>
   typeof raw === 'string' && CELL_REPORTS_ABSENCE.test(raw);
 
 /** 4qA / 4qB, read strictly, and read for what the cell SAYS. See
- *  `permissiveHaplotype`. */
-const parsePermissiveHaplotype = (raw: string | null): boolean | null => {
+ *  `permissiveHaplotype`.
+ *
+ *  EXPORTED SO THERE IS ONE ANSWER TO IT. The redactor that prepares a
+ *  profile for the assistant matched the cell on a bare substring, so
+ *  「未检出 4qA 等位基因」 and a cell naming both probes each reached the
+ *  patient as the permissive allele — the same misreading this
+ *  predicate was written to end on the passport. */
+export const parsePermissiveHaplotype = (raw: string | null): boolean | null => {
   if (!raw || reportsAbsence(raw)) return null;
   const hasA = /4\s*q\s*a/i.test(raw);
   const hasB = /4\s*q\s*b/i.test(raw);
@@ -1971,8 +1977,14 @@ const parsePermissiveHaplotype = (raw: string | null): boolean | null => {
  * the cell either way. What a negated cell loses is the `value`, which
  * is the only part of a reading that decides a grade, a guideline
  * branch or a gray-zone note.
+ *
+ * EXPORTED FOR THE READER THAT ASKS `isDeterminateRepeatCount` ABOUT A
+ * CELL IT HOLDS AS TEXT. The predicate takes a `D4Z4Reading`, and a
+ * caller holding the raw string has to get one from somewhere; the
+ * assistant's redactor got one from a regular expression of its own,
+ * which is how 「未检出3个重复单元」 reached a patient as a count.
  */
-const readSizeCell = (raw: string | null | undefined): D4Z4Reading | null => {
+export const readSizeCell = (raw: string | null | undefined): D4Z4Reading | null => {
   if (raw === null || raw === undefined) return null;
   const reading = parseD4Z4Reading(raw);
   return reportsAbsence(reading.raw) ? { ...reading, value: null, isRange: false } : reading;
@@ -2198,8 +2210,14 @@ const KB_LENGTH_NOT_JUDGED_ZH = (lengths: readonly string[]) =>
  *  requirements stops describing FSHD1 above. `WHAT_THE_REPORT_MUST_SAY`
  *  item 三, printed on the page a patient hands across a clinic desk:
  *  「若重复单元数大于 10 而临床仍高度怀疑，需加做 D4Z4 甲基化分析与
- *  SMCHD1 测序，以评估 FSHD2」. */
-const FSHD1_MAX_REPEAT_UNITS = 10;
+ *  SMCHD1 测序，以评估 FSHD2」.
+ *
+ *  EXPORTED BECAUSE IT IS THE ONLY REPEAT-COUNT BOUNDARY THIS REPO
+ *  STATES. The assistant's redactor had its own ladder of severity
+ *  bands whose edges are written nowhere else, and the top of that
+ *  ladder called a count of 30 borderline while this constant has the
+ *  guideline sending anything above it off to evaluate FSHD2. */
+export const FSHD1_MAX_REPEAT_UNITS = 10;
 
 /**
  * DOES THE COUNT SAY A CONTRACTION — the different question, which

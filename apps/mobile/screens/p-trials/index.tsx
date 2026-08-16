@@ -70,7 +70,7 @@ import {
  */
 
 const TrialCard = ({ trial }: { trial: TrialRecord }) => {
-  const phase = trialPhaseLabel(trial.phase);
+  const phase = trialPhaseLabel(trial);
   const updatedOn = readRegistryDay(trial.sourceUpdatedAt);
   const registry = TRIAL_SOURCE_NAMES[trial.source];
 
@@ -81,10 +81,11 @@ const TrialCard = ({ trial }: { trial: TrialRecord }) => {
           <Text style={styles.statusChipText}>{trialStatusLabel(trial)}</Text>
         </View>
         {/* A fact off the registry's location list, not a judgement
-            about this reader: `hasChinaSite` matches the literal
-            "China" and nothing else. It is here because it is the one
-            thing on the card that changes whether the rest is worth
-            reading for someone in mainland China. */}
+            about this reader: `hasChinaSite` matches one literal per
+            registry — "China" and 中国 — and nothing else. It is here
+            because it is the one thing on the card that changes
+            whether the rest is worth reading for someone in mainland
+            China. */}
         {hasChinaSite(trial) ? (
           <View style={styles.siteChip}>
             <Text style={styles.siteChipText}>注册库列有中国站点</Text>

@@ -70,9 +70,11 @@ describe('redactFields (profile, strict mode)', () => {
     expect(fields.d4z4).toBeUndefined();
     expect(fields.methylation).toBeUndefined();
     expect(fields.haplotype).toBeUndefined();
-    expect(fields.d4z4_clinical).toBe('low_repeat_severe');
-    expect(fields.methylation_clinical).toBe('hypomethylated_severe');
-    expect(fields.haplotype_clinical).toBe('pathogenic_haplotype_permissive');
+    // 「3/22」 is two numbers, so it is not a count — see the D4Z4 block
+    // below for the cell that is.
+    expect(fields.d4z4_clinical).toBe('unspecified');
+    expect(fields.methylation_clinical).toBe('value_withheld');
+    expect(fields.haplotype_clinical).toBe('permissive_haplotype');
   });
 
   it('replaces diagnosisDate with diagnosisYear', () => {
@@ -118,6 +120,96 @@ describe('redactFields (profile, strict mode)', () => {
     expect(fields.onsetRegion).toBe('肩胛带');
     expect(fields.independentlyAmbulatory).toBe('unable');
     expect(fields.assistiveDevices).toEqual(['AFO']);
+  });
+});
+
+/**
+ * What the assistant is allowed to say about a genetics cell.
+ *
+ * These labels are not internal: `renderChunkForPrompt` prints each one
+ * into the prompt and the model answers the patient off it, so every
+ * case here is a sentence somebody hears.
+ */
+describe('the genetics cells the assistant is handed', () => {
+  const d4z4 = (raw: unknown): unknown =>
+    redactFields({ d4z4: raw }, { scope: 'profile', mode: 'strict' }).fields.d4z4_clinical;
+
+  it('bands a repeat count on the one boundary this repo states', () => {
+    // 指南 item 三: above 10 the instruction is to go and evaluate FSHD2,
+    // which is not FSHD1's contraction.
+    expect(d4z4('3')).toBe('within_fshd1_repeat_range');
+    expect(d4z4('10')).toBe('within_fshd1_repeat_range');
+    expect(d4z4('10个重复单元')).toBe('within_fshd1_repeat_range');
+    expect(d4z4('11')).toBe('above_fshd1_repeat_range');
+    expect(d4z4('30')).toBe('above_fshd1_repeat_range');
+  });
+
+  it('does not read a length in kb as a repeat count', () => {
+    // 「3kb」 used to come out as the most severe band there is. The
+    // guideline's kb form of the same threshold is 10–20, this repo
+    // converts between the two nowhere, and the passport prints a kb
+    // length and judges it with nothing.
+    expect(d4z4('3kb')).toBe('length_in_kb_not_a_repeat_count');
+    expect(d4z4('18 kb')).toBe('length_in_kb_not_a_repeat_count');
+    expect(d4z4('0kb')).toBe('length_in_kb_not_a_repeat_count');
+  });
+
+  it('flags a count of zero instead of grading it', () => {
+    // 0 repeat units is not an FSHD1 allele, so the cell was misread or
+    // is about something else. Neither a confirmation nor an exclusion.
+    expect(d4z4('0')).toBe('zero_repeat_count_not_a_valid_reading');
+    expect(d4z4('0个')).toBe('zero_repeat_count_not_a_valid_reading');
+  });
+
+  it('reads a negation as a negation even when it carries a number', () => {
+    // A number survives a negation, and the old digit-grab read this
+    // cell as a count of 3.
+    expect(d4z4('未检出3个重复单元')).toBe('unspecified');
+    expect(d4z4('未检出')).toBe('unspecified');
+    expect(d4z4('阴性')).toBe('unspecified');
+  });
+
+  it('refuses a bound and a range, which pin down no count', () => {
+    expect(d4z4('1-10')).toBe('unspecified');
+    expect(d4z4('≤10')).toBe('unspecified');
+    expect(d4z4('4~7')).toBe('unspecified');
+    expect(d4z4('3/22')).toBe('unspecified');
+  });
+
+  it('says a methylation value is on file without grading it', () => {
+    const methylation = (raw: unknown): unknown =>
+      redactFields({ methylation: raw }, { scope: 'profile', mode: 'strict' }).fields
+        .methylation_clinical;
+    // No methylation boundary is stated anywhere in this repo, and the
+    // band that used to be computed here also guessed the unit: 0.35
+    // was multiplied out to 35% while the report parser reads that same
+    // cell as 0.35%.
+    expect(methylation('12%')).toBe('value_withheld');
+    expect(methylation('0.35')).toBe('value_withheld');
+    expect(methylation('0')).toBe('value_withheld');
+    expect(methylation('20-30%')).toBe('value_withheld');
+    // The laboratory's own word is not a number the patient withheld.
+    expect(methylation('未检出')).toBe('未检出');
+    expect(methylation('低甲基化')).toBe('低甲基化');
+  });
+
+  it('reads the haplotype cell for what it says', () => {
+    const haplotype = (raw: unknown): unknown =>
+      redactFields({ haplotype: raw }, { scope: 'profile', mode: 'strict' }).fields
+        .haplotype_clinical;
+    expect(haplotype('4qA')).toBe('permissive_haplotype');
+    expect(haplotype('4qB')).toBe('non_permissive_haplotype');
+    // A negation and a probe list are both read as the permissive
+    // allele by a bare substring match. Neither states a result.
+    expect(haplotype('未检出 4qA 等位基因')).toBe('unspecified_haplotype');
+    expect(haplotype('4qA/4qB')).toBe('unspecified_haplotype');
+  });
+
+  it('says nothing at all about a cell that is not there', () => {
+    const { fields } = redactFields({ gender: 'female' }, { scope: 'profile', mode: 'strict' });
+    expect(fields.d4z4_clinical).toBeUndefined();
+    expect(fields.methylation_clinical).toBeUndefined();
+    expect(fields.haplotype_clinical).toBeUndefined();
   });
 });
 
@@ -179,7 +271,10 @@ describe('redactFields (reports)', () => {
     fields: {
       classifiedType: 'genetic_report',
       diagnosisType: 'FSHD1',
-      d4z4Repeats: '3/22',
+      // A cell the report states as one number, so the OCR path has a
+      // determinate count to band — which is what these tests are
+      // about. The cells that are NOT a count are covered above.
+      d4z4Repeats: '3',
       haplotype: '4qA',
       methylationValue: '12%',
       reportIssueDate: '2026-04-01',
@@ -196,9 +291,9 @@ describe('redactFields (reports)', () => {
     expect(fields.reportDate_year).toBe(2026);
     const fc = fields.fields_clinical as Record<string, unknown>;
     expect(fc).toBeDefined();
-    expect(fc.d4z4Repeats_clinical).toBe('low_repeat_severe');
-    expect(fc.haplotype_clinical).toBe('pathogenic_haplotype_permissive');
-    expect(fc.methylationValue_clinical).toBe('hypomethylated_severe');
+    expect(fc.d4z4Repeats_clinical).toBe('within_fshd1_repeat_range');
+    expect(fc.haplotype_clinical).toBe('permissive_haplotype');
+    expect(fc.methylationValue_clinical).toBe('value_withheld');
     expect(fc.reportIssueDate_year).toBe(2026);
   });
 
@@ -224,7 +319,7 @@ describe('redactFields (reports)', () => {
     // it was reading — it called a stool panel「血液检测报告」.
     expect(fc.classifiedType).toBe('genetic_report');
     // Known-pattern keys still survive as clinicalised siblings.
-    expect(fc.d4z4Repeats_clinical).toBe('low_repeat_severe');
+    expect(fc.d4z4Repeats_clinical).toBe('within_fshd1_repeat_range');
   });
 
   it('strict mode keeps qualitative results but withholds measurements', () => {
@@ -371,7 +466,7 @@ describe('redactFields (reports)', () => {
     });
     const f = fields.fields as Record<string, unknown>;
     expect(f).toBeDefined();
-    expect(f.d4z4Repeats).toBe('3/22');
+    expect(f.d4z4Repeats).toBe('3');
     expect(f.haplotype).toBe('4qA');
     expect(fields.fields_clinical).toBeUndefined();
   });

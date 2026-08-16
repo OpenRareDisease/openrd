@@ -207,10 +207,10 @@ describe('what the model is told this tool holds', () => {
   });
 
   it('lets the model state the registry it is elsewhere required to name', async () => {
-    // 只能陈述上面列出的事实 is a closed list, and the mainland line
-    // printed above it says 必须说明…来自 that registry. With 登记库
-    // missing from the list, those two rules contradicted each other
-    // on exactly the answer that has rows from both registries in it.
+    // The closed list and the mainland line printed above it are two
+    // rules about the same answer: 必须说明…来自 that registry. With
+    // 登记库 missing from the list they contradicted each other on
+    // exactly the answer that has rows from both registries in it.
     const { tool } = toolWith(
       result(snapshotMeta({ sources: [SOURCES[0], CN_WITH_ROWS] }), [
         chunk('ctgov', 'NCT00000001'),
@@ -218,8 +218,66 @@ describe('what the model is told this tool holds', () => {
       ]),
     );
     const { display } = await tool.execute({ notes: [] }, ctx);
-    expect(display).toContain('只能陈述上面列出的事实：登记库、登记号');
+    expect(display).toContain('关于某一条试验，只能陈述记录里写明的这几项：登记库、登记号');
     expect(display).toContain(`这份名单里国内登记的那部分来自${CHINA}`);
+  });
+});
+
+/**
+ * The closed list against the record it is a list of.
+ *
+ * Written this way round because the failure is silent from either
+ * side: a field added to `renderTrial` is a fact the model is shown and
+ * forbidden to repeat, and a fact demanded by a rule but missing from
+ * the list is a contradiction the model resolves by dropping one of
+ * them. Nothing in the build links the two files, so this renders a
+ * real record through the real retriever and reads the labels off it.
+ */
+describe('the closed list is the record’s own field list', () => {
+  const REAL_TRIAL = {
+    source: 'ctgov' as const,
+    sourceId: 'NCT04635891',
+    title: 'Validation of Motor Outcome Assessments in FSHD',
+    statusRaw: 'RECRUITING',
+    statusZh: '招募中',
+    phase: 'N/A',
+    sponsor: 'University of Kansas Medical Center',
+    countries: ['United States'],
+    url: 'https://clinicaltrials.gov/study/NCT04635891',
+    sourceUpdatedAt: '2025-06-01',
+    fetchedAt: '2026-08-13T04:00:07Z',
+  };
+
+  /** Every 「标签：」 the renderer puts at the head of a line, with the
+   *  parenthetical off 「状态（登记库原词）」 — the rule names the fact,
+   *  not each spelling of it. */
+  const labelsOn = (content: string): string[] => [
+    ...new Set(
+      content
+        .split('\n')
+        .map((line) => /^([^：]+)：/.exec(line)?.[1])
+        .filter((label): label is string => label !== undefined)
+        .map((label) => label.replace(/（.*?）/g, '')),
+    ),
+  ];
+
+  it('names every fact a rendered record states, and no other', async () => {
+    snapshotMock.mockReset();
+    snapshotMock.mockResolvedValue({ trials: [REAL_TRIAL], sources: SOURCES });
+    const tool = new ListClinicalTrialsTool(new ClinicalTrialsRetriever({} as Pool));
+    const { retrieval, display } = await tool.execute({ notes: [] }, ctx);
+
+    const labels = labelsOn(retrieval.chunks[0].content);
+    // The renderer prints something. A record that rendered no labels
+    // at all would satisfy a set comparison against an empty list.
+    expect(labels).toContain('本平台读取时间');
+    expect(labels).toContain('标题');
+
+    const rule = display.split('\n').find((line) => line.startsWith('- 关于某一条试验'));
+    expect(rule).toBeDefined();
+    // The list is what stands between the colon and the full stop.
+    const listed = (rule ?? '').split('：')[1].split('。')[0].split('、');
+    expect(new Set(listed)).toEqual(new Set(labels));
   });
 });
 

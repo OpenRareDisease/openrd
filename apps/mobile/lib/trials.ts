@@ -64,6 +64,18 @@
  * under 其他状态, with the group whose header is spelled with that same
  * word sitting above it, and a 已完成 study sitting outside 已完成或已
  * 停止 under a note explaining that we had no Chinese for its status.
+ *
+ * AND `status_raw` IS NOT THE ONLY SUCH COLUMN. Every free-text column
+ * on this record holds two vocabularies, because two fetchers write it
+ * and each copies its own registry's words: `countries` is `China` from
+ * one and 中国 from the other, `phase` is `PHASE1/PHASE2` or `NA` from
+ * one and a 试验分期 token from the other. A comparison written
+ * against one registry's spelling and run over the whole list reads as
+ * a fact about the study and is really a fact about which registry
+ * happened to publish it — `hasChinaSite` said no about every mainland
+ * record there is, and it said it on the half of the list a reader in
+ * China can actually reach. Where a rule is genuinely one registry's,
+ * `source` is on the row and the function takes the row.
  */
 
 /* ------------------------------------------------------------------ */
@@ -355,7 +367,8 @@ export const trialStatusLabel = (trial: TrialRecord): string => {
  * An unrecognised token is passed through untouched. The API stores
  * `phase` as free text (migration 026) and the mainland registry does
  * not use this vocabulary, so this map is a courtesy for one source,
- * not a parser.
+ * not a parser — and `trialPhaseLabel` runs it over that one source's
+ * rows only.
  */
 const PHASE_LABELS: Record<string, string> = {
   EARLY_PHASE1: '早期 1 期',
@@ -366,12 +379,31 @@ const PHASE_LABELS: Record<string, string> = {
   NA: '不按期别划分',
 };
 
-/** A study may be registered across two phases; ctgov's `phases` is an
- *  array, and whichever separator the refresher joined it with, each
- *  token is looked up on its own. */
-export const trialPhaseLabel = (phase: string | null): string | null => {
-  const raw = phase?.trim();
+/**
+ * The registry's own phase token, rendered.
+ *
+ * TAKES THE ROW, NOT THE COLUMN, because `phase` holds two vocabularies
+ * and neither of them is a display string — apps/api's refresh.ts says
+ * so on the column itself: ctgov writes `PHASE1`, `PHASE1/PHASE2` or
+ * `NA`, chinadrugtrials writes its 试验分期 cell, which is `I期` on the
+ * record captured for that fetcher's test. Both things done below are
+ * ctgov's and only ctgov's. The map's keys are its enum members. The
+ * split is there because its `phases` is an ARRAY — a study registered
+ * across two phases — and each element has to be looked up on its own
+ * whichever separator the refresher joined them with.
+ *
+ * Run over a mainland token that pair can only do damage, never good:
+ * no Chinese word is a key of the map, so the lookup can never fire,
+ * while a 试验分期 spelled with one of those separators would come back
+ * respelled with spaces around a slash. That registry does write `/`
+ * inside single words of its own controlled vocabularies —
+ * `IEC/IRB终止` is one of the status words listed above — and this page
+ * does not get to change the spelling of a word a registry wrote.
+ */
+export const trialPhaseLabel = (trial: TrialRecord): string | null => {
+  const raw = trial.phase?.trim();
   if (!raw) return null;
+  if (trial.source !== 'ctgov') return raw;
   const parts = raw
     .split(/[|,/、]/)
     .map((part) => part.trim())
@@ -383,16 +415,31 @@ export const trialPhaseLabel = (phase: string | null): string | null => {
 /**
  * True when the registry lists a site in mainland China.
  *
- * Exact match on the registry's literal `China`, because that is the
- * only string this can check without inventing geography: a study
- * listing only `Taiwan` or `Hong Kong` does NOT get this chip, and a
- * study whose locations the refresher could not read does not either.
- * It says where the registry says the study runs. It says nothing
- * about whether a given patient can join, which is the sentence this
- * page is not allowed to write.
+ * ONE LITERAL PER REGISTRY, in the vocabulary that registry writes its
+ * locations in. ClinicalTrials.gov's `location.country` is English and
+ * spells it `China`; the mainland platform's 各参加机构信息 table has a
+ * 国家或地区 column and spells it 中国 — the fetcher takes that cell
+ * verbatim, so the Chinese string is what reaches this list.
+ *
+ * Checking only the English one is what this used to do, and it turned
+ * the chip off for the registry it matters most on: every record from
+ * chinadrugtrials.org.cn writes 中国 there and not one of them could
+ * earn the chip. The chip exists to tell a reader in mainland China
+ * that the rest of the card is worth reading, and the half of the list
+ * most likely to be worth reading was the half that never got it.
+ *
+ * Still an exact match on the string itself, because that is the only
+ * check available that does not invent geography: a study listing only
+ * `Taiwan`, `Hong Kong` or a 中国台湾 / 中国香港 spelling does NOT get
+ * this chip, and neither does a study whose locations the refresher
+ * could not read. It says where the registry says the study runs. It
+ * says nothing about whether a given patient can join, which is the
+ * sentence this page is not allowed to write.
  */
+const CHINA_SITE_LITERALS = ['china', '中国'];
+
 export const hasChinaSite = (trial: TrialRecord): boolean =>
-  trial.countries.some((country) => country.trim().toLowerCase() === 'china');
+  trial.countries.some((country) => CHINA_SITE_LITERALS.includes(country.trim().toLowerCase()));
 
 /* ------------------------------------------------------------------ */
 /* Dates                                                               */
@@ -510,6 +557,12 @@ export const resolveFetchedOn = (snapshot: TrialsSnapshot): string | null => {
  * It returns the date rather than a boolean so the screen dates its
  * header off the same call that decides the list is drawable, instead
  * of arithmetic of its own that could drift from what the copy claims.
+ *
+ * IT IS THE FLOOR, NOT THE WHOLE TEST. A sentence about ONE registry's
+ * rows needs to know that registry put rows in the list, which this
+ * cannot answer — the list is a union and either half can be all of
+ * it. `describeCtgovStaleness` asks the stronger question instead, and
+ * gets this one's answer with it.
  */
 export const shownListFetchedOn = (snapshot: TrialsSnapshot): string | null =>
   snapshot.trials.length > 0 ? resolveFetchedOn(snapshot) : null;
@@ -734,36 +787,68 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
  * every successful cron run would train the reader to skip the banner
  * that matters.
  *
- * Note this is about the refresh, not about the list: the records
+ * Note this is about the refresh, not about the rows: the records
  * shown are still real records, they are just older than the date the
- * cron was supposed to make them. So the sentence names the age of the
- * list rather than telling the reader to distrust it.
+ * cron was supposed to make them. So the sentence names their age
+ * rather than telling the reader to distrust them.
  *
- * WHICH IS ALSO WHY IT IS WITHHELD WHEN NOTHING IS SHOWN. Every clause
- * left in it has the records on screen for its subject —
- *「下面这份名单是 X 抓到的」and「重要的试验请点开原始记录核对」both
- * point at rows, and the second asks the reader to go open one. Over an
- * empty list that is an instruction with nothing to carry it out on,
- * and over the undated refusal it contradicts the card underneath,
- * which is the page declining to show those very records. Neither state
- * is left silent by returning null: a failed run over an empty list is
- * exactly what `describeEmptyList` says, and the undated card says why
- * a list that did come back is not being drawn. A banner narrower than
- * its premise is a second, quieter phrasing of what those two already
- * say, and it would be the one that is wrong.
+ * WHICH IS ALSO WHY IT IS WITHHELD UNLESS CLINICALTRIALS.GOV RECORDS
+ * ARE ON SCREEN. Every clause left in it has those records for its
+ * subject —「…的记录是 X 抓到的」and「重要的试验请点开原始记录核对」
+ * both point at rows, and the second asks the reader to go open one.
+ *
+ * Asking only whether A list was drawn is not that test, and the gap
+ * between the two is a whole state: this registry's first run failing
+ * leaves `trial_records` with nothing of its own in it — the refresh
+ * writes rows only on the path that flips `ok` — while the mainland
+ * half fetches normally and fills the screen. Over that snapshot the
+ * banner explained the staleness of a source contributing not one row
+ * to what the reader sees, and dated the mainland registry's list by a
+ * ClinicalTrials.gov fetch that had never once succeeded. So the gate
+ * is `trialsFromSource`, and the day is this source's own copy time —
+ * `describeChinaCoverage` reads its half the same way, off the source
+ * block with a record of that source as the fallback.
+ *
+ * Naming the half is the other half of the same fix. The list can be a
+ * union whose two halves were copied on different days, and 「下面这份
+ * 名单是 X 抓到的」 claimed one day for all of it. The noun phrase that
+ * narrows it is the one `CHINA_ABSENT_LIST_SCOPE` already uses for
+ * exactly these rows, not a second wording for them. The mainland
+ * half's own date is stated by `describeChinaCoverage`, in the notice
+ * above this one.
+ *
+ * The two states that already have a voice keep it, and this cannot
+ * fire over either: a failed run over an empty list is exactly what
+ * `describeEmptyList` says, and the undated card says why a list that
+ * did come back is not being drawn — naming the day these rows were
+ * copied means an instant `resolveFetchedOn` can read, and these rows
+ * are in `trials`, so `shownListFetchedOn` is non-null and the screen
+ * draws the list.
+ *
+ * ONE STATE IS LEFT SILENT ON PURPOSE: rows from this registry are
+ * drawn and neither their own copy time nor their source block's can
+ * be read. Both are the one `fetched_at` column — NOT NULL on the
+ * table, one `to_char` on the way out — so the pair being unreadable
+ * is a payload we cannot read rather than a fetch we can date. The
+ * only other day available is `shownListFetchedOn`, which on a union
+ * is whichever half was copied first and may be the mainland
+ * registry's, and putting that day on a ClinicalTrials.gov sentence is
+ * the thing this function stopped doing.
  */
 export const describeCtgovStaleness = (snapshot: TrialsSnapshot): CoverageNotice | null => {
   const status = sourceStatusOf(snapshot, 'ctgov');
   const lastRun = status?.lastRun ?? null;
   if (!lastRun || lastRun.ok) return null;
-  const fetchedOn = shownListFetchedOn(snapshot);
+  const records = trialsFromSource(snapshot, 'ctgov');
+  if (records.length === 0) return null;
+  const fetchedOn = formatInstantAsDay(status?.fetchedAt ?? records[0]?.fetchedAt ?? null);
   if (!fetchedOn) return null;
   const detail = lastRun.finishedAt ? '最近一次更新没有成功' : '最近一次更新还没有返回结果';
   return {
     tone: 'warn',
     text:
       `${detail}（${lastSuccessClause(status)}）。` +
-      `下面这份名单是 ${fetchedOn} 抓到的，` +
+      `下面这份名单里 ClinicalTrials.gov 的记录是 ${fetchedOn} 抓到的，` +
       `注册库上此后的变化不会反映在这里，重要的试验请点开原始记录核对。`,
   };
 };
