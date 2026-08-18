@@ -209,6 +209,31 @@ describe('只有年月日的日期，设备时区不能改掉它', () => {
     ]);
   });
 
+  // 生成日期 WAS THE UNWATCHED LINE. The assertion above filters to
+  // 最近…, so the one date on this card built from an instant rather
+  // than from a bare 「YYYY-MM-DD」 went unchecked while the docblock at
+  // the top of this file claimed instants were already on the product's
+  // calendar. 02:00Z is 08-05 in Beijing and 08-04 here, and the card is
+  // printed and folded into a wallet: its own date sits beside the two
+  // 最近… lines above and is what the anesthetist measures the interval
+  // from, so the two cannot come off different calendars.
+  it('麻醉卡的生成日期按产品时区，不跟着手机走', () => {
+    const card = buildAnesthesiaCard(summary, new Date('2026-08-05T02:00:00.000Z'));
+
+    expect(card.patientLines).toContain('生成日期：2026-08-05');
+    expect(card.patientLines.join('\n')).not.toContain('2026-08-04');
+  });
+
+  // Beijing midnight, so a shift of the wrong size or direction cannot
+  // pass: 15:59:59.999Z is still the 8th in Shanghai and the 8th here.
+  it('麻醉卡的生成日期在北京时间零点两侧翻页', () => {
+    const before = buildAnesthesiaCard(summary, new Date(BOUNDARY_BEFORE));
+    const after = buildAnesthesiaCard(summary, new Date(BOUNDARY_AFTER));
+
+    expect(before.patientLines).toContain('生成日期：2026-02-08');
+    expect(after.patientLines).toContain('生成日期：2026-02-09');
+  });
+
   it('随访计划里的检查日期是报告上的那一天', () => {
     const schedule = buildSurveillanceSchedule(summary, null, new Date('2026-08-05T02:00:00.000Z'));
     const serialized = JSON.stringify(schedule);

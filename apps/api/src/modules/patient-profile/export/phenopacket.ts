@@ -355,14 +355,29 @@ export const buildPhenopacketExport = (
       'Phenopacket 消息本身没有家族史字段：v2 里承载它的是另一个顶层消息 Family 及其 Pedigree，需要逐个亲属的结构化谱系（亲缘关系、是否患病），而本平台持有的是一段中文自述，把它拆成谱系条目等于替患者的亲属编造结构化病史。',
     ),
   );
-  // TWO YEARS, AND NEITHER HAS A TRUTHFUL SLOT HERE.
+  // TWO DATES, AND NEITHER HAS A TRUTHFUL SLOT HERE.
   //
-  // `Individual.dateOfBirth` is a protobuf Timestamp — an instant. This
-  // platform holds a birth YEAR (`year-value.ts` keeps 已知 / 记不清了 /
-  // 未采集 apart on purpose), and writing 1988-01-01T00:00:00Z would
-  // manufacture a day and a month nobody stated. The FHIR bundle has
-  // somewhere to put a year-only answer and uses it; this format does
-  // not, which is a fact worth telling a receiver rather than hiding.
+  // `Individual.dateOfBirth` is a protobuf Timestamp — an instant, so
+  // this format writes nothing either way: a Timestamp needs a time of
+  // day, and midnight is as invented as 1 January.
+  //
+  // WHAT THE SENTENCE MAY NOT SAY IS WHY IT BRANCHES. It used to open
+  // 「本平台记录的是出生年份与确诊年份」 for every profile, and that is
+  // a claim about the PLATFORM which two DATE columns falsify:
+  // `patient_profiles.date_of_birth` and `patient_profiles.diagnosis_date`
+  // are both filled to the day on ordinary archives. `year-value.ts`
+  // keeps 已知 / 记不清了 / 未采集 apart for the questionnaire's
+  // 出生年份, and that is the answer this exporter's `birthYear` sees —
+  // but the FHIR bundle built from the SAME `NormalisedSource` in the
+  // same request reads `profile.dateOfBirth` first and prints
+  // 1988-04-02 on `Patient.birthDate`. A receiver told the platform
+  // records only a year stops asking for a date the platform has.
+  //
+  // THE VALUES ARE NOT QUOTED HERE. This packet withholds the birth
+  // date on purpose and the reason travels inside the same JSON, so
+  // printing the date to explain not printing it would hand the
+  // receiver the exact thing the field refuses. The branch states the
+  // PRECISION held, never the value.
   //
   // `Disease.onset` is the trap on the other side: it is the slot a
   // reader reaches for when they see 确诊年份 missing, and it means
@@ -370,10 +385,30 @@ export const buildPhenopacketExport = (
   // it, routinely a decade later in this disease. Writing one into the
   // other would not be a rounding error; it would move this patient's
   // onset by ten years in every cohort built off the packet.
+  //
+  // AND THE MONTH AND DAY OF 确诊日期 REACH NO PORTABLE EXPORT.
+  // `Condition.recordedDate` is `String(source.diagnosisYear.year)` and
+  // TREAT-NMD's `diagnosis.year` is the same answer, so an archive
+  // holding 2014-06-01 — printed in full on the passport, the markdown
+  // export, the share page and the referral pack — arrives at all three
+  // documents as 2014. Nothing declared that, in any of the three. This
+  // entry declares it for the one document it belongs to; the pointer
+  // it hands a receiver (「去 Condition.recordedDate 取确诊年份」) is
+  // this file's sentence to keep honest.
+  const holdsFullBirthDate = profile.dateOfBirth !== null;
+  const holdsFullDiagnosisDate = profile.diagnosisDate !== null;
   omissions.push({
     field: 'subject.dateOfBirth / diseases[].onset（出生年份与确诊年份）',
-    reasonZh:
-      '本文件不写出生日期，也不写发病时间。本平台记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。确诊年份也没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它；确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上。',
+    reasonZh: [
+      '本文件不写出生日期，也不写发病时间。',
+      holdsFullBirthDate
+        ? '本档案上不只有出生年份，还有精确到日的出生日期（这里不复述它的值：本文件本就不写出生日期，在说明里印出来等于绕开这一条）。即便如此本文件也不写，因为 Individual.dateOfBirth 是一个精确到时刻的时间戳，写成当天零点仍要补出一个没人记录过的时刻。完整的出生日期在 FHIR 导出的 Patient.birthDate 上，该字段按档案的实际精度写出（档案只有年份时写年份，有完整日期时写完整日期）；TREAT-NMD 对齐导出不承载它。'
+        : '本档案上记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它。',
+      '确诊时间同样没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。',
+      holdsFullDiagnosisDate
+        ? '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上——但这两处都只写到年。本档案上的确诊日期是精确到日的，临床护照、Markdown 导出、分享页与转诊资料都按日打印；确诊日期的月和日三份可携带导出都不承载，需要请直接向患者索取。'
+        : '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上，两处都只写到年。',
+    ].join(''),
   });
   // MedicalAction is the v2 slot for all three of these, and all three
   // would need an ontology-coded agent or procedure to fill it — the

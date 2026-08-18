@@ -6,8 +6,10 @@
  * Context Builder, so the redactor never has to grep prose.
  *
  *   Layer 1 — hard delete: every key in `HARD_DELETE_KEYS` is removed
- *             unconditionally, in both strict and precise mode.
- *             These are pure identifiers with no clinical value.
+ *             unconditionally, in both strict and precise mode, AT ANY
+ *             DEPTH AND INSIDE ARRAYS AS WELL AS OBJECTS. These are
+ *             pure identifiers with no clinical value. See `hardDelete`
+ *             for the array half, which is the one that was missing.
  *
  *   Layer 2 — clinicalise: THIS PLATFORM'S OWN READING OF A CELL, and
  *             it runs in BOTH modes. A genetics cell gains a
@@ -58,6 +60,31 @@
  *             (including any field added to a retriever but not yet
  *             reviewed) is dropped with a logger warning so the
  *             oversight is visible.
+ *
+ * ACROSS ALL THREE, ONE INVARIANT: NO VALUE THIS MODULE READS OR
+ * PUBLISHES SKIPS EXAMINATION BY VIRTUE OF ITS TYPE.
+ *
+ * Both walks over a cell used to stop at the first thing that was not a
+ * string or a plain object. Layer 1 said so in as many words — 「arrays
+ * and primitives are left as-is — they cannot have keys to match」 — and
+ * `isUntrustworthyValue` opened with `typeof value !== 'string' → false`.
+ * An array can hold an object, and an object can hold a hard-delete key,
+ * so `fields.d4z4Repeats = [{ patientName, idCard }]` walked past layer 1
+ * whole, was declared trustworthy without being looked at, was published
+ * raw by `publishGeneticCell` under precise consent, and left
+ * `formatScalar` as JSON: a name and an ID card number in an LLM prompt,
+ * under a key on the precise allowlist, on both scopes and through both
+ * callers. The claim it broke is layer 1's own, quoted above it: 「hard-
+ * delete keys never reach a prompt regardless of mode」.
+ *
+ * The invariant is enforced in exactly two total functions rather than
+ * per branch — `hardDelete` for layer 1 and `isUntrustworthyValue` for
+ * the examination — and each of them says, type by type, what it makes
+ * of an array, an object, a number, a boolean, null, undefined and a
+ * nested mixture, including what it does when the walk cannot finish.
+ * The one place the examination is NOT asked is named on
+ * `isUntrustworthyValue`, so this paragraph does not have to be taken on
+ * trust.
  */
 
 import type { RedactionMode, RedactionScope } from './allowlist.js';
@@ -105,41 +132,119 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 
 // ---------------------------------------------------------------- layer 1
 
-/** Strip every key in HARD_DELETE_KEYS at any depth.
+/**
+ * HOW FAR EITHER TOTAL WALK IN THIS FILE GOES BEFORE IT REFUSES THE REST.
  *
- *  The previous implementation only inspected top-level keys, which
- *  meant nested OCR payloads (e.g. `metadata.fields.fields.patientName`
- *  from the patient_reports retriever) slipped through whenever the
- *  enclosing key itself was on the allowlist. Recursive removal closes
- *  that contract: "hard-delete keys never reach a prompt regardless of
- *  mode" now actually holds for nested objects too.
+ * Layer 1's strip and the examination below are both recursive walks
+ * over a value this module did not build, and such a walk has two ways
+ * not to finish: a cycle, and a depth nobody bounded. Neither may end in
+ * a value reaching a prompt unexamined, so both answer 「refuse」 rather
+ * than 「pass」 at this line — layer 1 drops the subtree and records the
+ * drop in `stats.hardDeleted`, the examination calls the cell
+ * untrustworthy. A bound that fails open is the same defect as no bound.
  *
- *  Only plain objects are descended into; arrays and primitives are
- *  left as-is — they cannot have keys to match.
+ * An OCR blob is two levels deep (`fields.fields.<cell>`) and a baseline
+ * payload three, so this is headroom rather than a limit anything real
+ * meets.
  */
+const MAX_NESTING_DEPTH = 12;
+
+/** Strip every key in HARD_DELETE_KEYS at any depth, INSIDE ARRAYS AS
+ *  WELL AS OBJECTS.
+ *
+ *  The first implementation inspected top-level keys only, which meant
+ *  nested OCR payloads (e.g. `metadata.fields.fields.patientName` from
+ *  the patient_reports retriever) slipped through whenever the enclosing
+ *  key itself was on the allowlist. Recursion into plain objects closed
+ *  that half and stated the other half as a reason: 「Only plain objects
+ *  are descended into; arrays and primitives are left as-is — they
+ *  cannot have keys to match」.
+ *
+ *  AN ARRAY CANNOT HOLD A KEY AND AN OBJECT INSIDE ONE CAN, and that is
+ *  the shape the extractor writes whenever a page prints more than one
+ *  of something. So `fields.d4z4Repeats = [{ patientName: '张三', idCard:
+ *  '…' }]` passed layer 1 untouched, was handed to `publishGeneticCell`,
+ *  and — the examination below having short-circuited on
+ *  `typeof value !== 'string'` — was published raw under precise consent
+ *  and JSON-stringified into the prompt by `formatScalar`. The contract
+ *  this function is here to keep, 「hard-delete keys never reach a prompt
+ *  regardless of mode」, was false for every genetics cell and every safe
+ *  key on both scopes.
+ *
+ *  THE WALK IS THEREFORE TOTAL, and here is every type it can meet:
+ *
+ *    - an object — descended key by key; a hard-delete key is removed
+ *      and recorded, everything else is descended into in turn. 「Object」
+ *      here means own enumerable entries, which is what a `Date` or a
+ *      `Map` has none of: those walk as empty and come out as `{}`,
+ *      exactly as they did before arrays were added to this walk.
+ *    - an array — descended element by element, under the element's
+ *      index, so a removal inside one is recorded as `cell.0.patientName`
+ *      rather than silently.
+ *    - a string, a number, a boolean, null, undefined, a symbol, a
+ *      function — leaves. They carry no keys, so there is nothing here
+ *      to remove; whether their CONTENT may be published is the
+ *      examination's question, not this one's.
+ *    - a nested mixture — objects in arrays in objects, to
+ *      `MAX_NESTING_DEPTH`.
+ *    - a cycle, or nesting past that depth — the subtree is DROPPED and
+ *      recorded, never passed through. See `MAX_NESTING_DEPTH`.
+ */
+const hardDeleteValue = (
+  value: unknown,
+  path: string[],
+  removed: string[],
+  depth: number,
+  ancestors: Set<object>,
+): { keep: boolean; value: unknown } => {
+  if (!isPlainObject(value) && !Array.isArray(value)) return { keep: true, value };
+  if (depth >= MAX_NESTING_DEPTH || ancestors.has(value)) {
+    removed.push(path.join('.'));
+    return { keep: false, value: undefined };
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const cleaned: unknown[] = [];
+      value.forEach((item, index) => {
+        const inner = hardDeleteValue(
+          item,
+          [...path, String(index)],
+          removed,
+          depth + 1,
+          ancestors,
+        );
+        if (inner.keep) cleaned.push(inner.value);
+      });
+      return { keep: true, value: cleaned };
+    }
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (HARD_DELETE_KEYS_LOWER.has(key.toLowerCase())) {
+        removed.push([...path, key].join('.'));
+        continue;
+      }
+      const inner = hardDeleteValue(item, [...path, key], removed, depth + 1, ancestors);
+      if (inner.keep) cleaned[key] = inner.value;
+    }
+    return { keep: true, value: cleaned };
+  } finally {
+    ancestors.delete(value);
+  }
+};
+
 const hardDelete = (
   input: Record<string, unknown>,
-  path: string[] = [],
 ): {
   cleaned: Record<string, unknown>;
   removed: string[];
 } => {
-  const cleaned: Record<string, unknown> = {};
   const removed: string[] = [];
-  for (const [key, value] of Object.entries(input)) {
-    if (HARD_DELETE_KEYS_LOWER.has(key.toLowerCase())) {
-      removed.push([...path, key].join('.'));
-      continue;
-    }
-    if (isPlainObject(value)) {
-      const nested = hardDelete(value, [...path, key]);
-      cleaned[key] = nested.cleaned;
-      for (const r of nested.removed) removed.push(r);
-    } else {
-      cleaned[key] = value;
-    }
-  }
-  return { cleaned, removed };
+  const walked = hardDeleteValue(input, [], removed, 0, new Set<object>());
+  return {
+    cleaned: walked.keep ? (walked.value as Record<string, unknown>) : {},
+    removed,
+  };
 };
 
 // ---------------------------------------------------------------- layer 2
@@ -697,6 +802,18 @@ const methylationCell = (
  * cell EXISTS and this platform cannot read it — which is what
  * `unspecified_haplotype` already says about 「4qA/4qB」 written as a
  * string, and it is the same fact.
+ *
+ * THAT IS HALF THE ANSWER, AND THE OTHER HALF WAS MISSING FOR LONGER.
+ * A reading beside the cell does not stop the cell being printed:
+ * precise mode went on publishing the array, so the prompt carried
+ * 「单倍型: 4qA、4qB」 with `unspecified_haplotype` directly beneath it —
+ * one line asserting a haplotype and the next refusing to read one. The
+ * refusal of the raw half lives on the shared publish path, where it
+ * covers every genetics cell on both scopes at once, and it is THIS
+ * function's own reader that decides it: `publishGeneticCell` prints a
+ * cell only where `readGeneticCell` returned text, so the two halves
+ * cannot come apart again. See `isScalarCell` for the same rule at the
+ * category cell's width.
  */
 const clinicaliseHaplotype = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
   const cell = readGeneticCell(raw);
@@ -710,7 +827,25 @@ const clinicaliseHaplotype = (raw: unknown, fromLaboratoryReport: boolean): stri
 };
 
 /** Strip the day from any date-looking string, keeping only the year
- *  as a structured field. */
+ *  as a structured field.
+ *
+ *  THIS ONE COERCES WITH `String(raw)` AND IS ALLOWED TO, which is the
+ *  opposite of the rule every genetics reader here follows. The
+ *  difference is what escapes: those readers publish the cell beside
+ *  their reading, so a coercion there puts the cell's own bytes in the
+ *  prompt; this one publishes a four-digit integer and nothing else. An
+ *  array stringifies to its joined elements and an object to
+ *  「[object Object]」, and either way the only thing that can leave is a
+ *  year between 1901 and next year. A cell holding `['2019-03-01']`
+ *  therefore still yields 2019 rather than losing the date, and no part
+ *  of the value it came from travels with it.
+ *
+ *  The upper bound reads the process clock, and it is the one date
+ *  expression in this file that may: it is a sanity ceiling on a parsed
+ *  integer, never a date this platform prints, and its `+ 1` slack is
+ *  wider than the eight hours between UTC and the Asia/Shanghai calendar
+ *  the product declares — so no value's fate can turn on which of the
+ *  two the host happens to be in. */
 const yearFromDate = (raw: unknown): number | null => {
   if (raw === null || raw === undefined) return null;
   const text = String(raw);
@@ -814,16 +949,156 @@ const ID_PATTERNS: readonly RegExp[] = [
   /\b\d{9,}\b/,
 ];
 
-/** The length ceiling lives on `allowlist.ts` beside the key list whose
- *  premise it states, and is imported by the write-path schema as well
- *  — see `SAFE_VALUE_MAX_LENGTH` there for why it is not declared in
- *  this file. */
-const isUntrustworthyValue = (value: unknown): boolean => {
-  if (typeof value !== 'string') return false;
-  const text = value.trim();
-  if (text.length > SAFE_VALUE_MAX_LENGTH) return true;
-  return ID_PATTERNS.some((pattern) => pattern.test(text));
+/** The two questions asked of one piece of text — a value, or a key
+ *  naming one. The length ceiling lives on `allowlist.ts` beside the key
+ *  list whose premise it states, and is imported by the write-path
+ *  schema as well — see `SAFE_VALUE_MAX_LENGTH` there for why it is not
+ *  declared in this file. */
+const isUntrustworthyText = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (trimmed.length > SAFE_VALUE_MAX_LENGTH) return true;
+  return ID_PATTERNS.some((pattern) => pattern.test(trimmed));
 };
+
+/**
+ * THE EXAMINATION, AND IT IS TOTAL OVER TYPES.
+ *
+ * IT USED TO OPEN `if (typeof value !== 'string') return false` — a
+ * DECLARATION OF TRUSTWORTHINESS FOR EVERYTHING IT DID NOT RECOGNISE,
+ * written as though the only alternative to a string were a number. An
+ * array and an object are the two shapes that can hold a whole record,
+ * and both answered 「trustworthy」 without being looked at. Paired with
+ * layer 1 not descending into arrays, that put a `patientName` and an
+ * `idCard` inside `fields.d4z4Repeats` into the prompt verbatim — see
+ * the invariant at the top of this file, and `hardDelete` for the other
+ * half of the walk.
+ *
+ * WHAT THE TEST MEANS FOR EACH TYPE:
+ *
+ *   - a string — the length ceiling and the identifier patterns, which
+ *     is what this function always was.
+ *   - a number, a bigint — the same two questions asked of the printed
+ *     form. An ID card number is 18 digits and a barcode 9 or more, and
+ *     JSON carries either as a number as readily as a string;
+ *     `\b\d{9,}\b` is what catches them. No cell any allowlist here
+ *     names is a nine-digit measurement.
+ *   - a boolean — trustworthy. Two values, and neither can carry an
+ *     identifier.
+ *   - null, undefined — trustworthy: there is no value to carry one, and
+ *     nothing is published for such a cell in any case.
+ *   - an ARRAY — untrustworthy if ANY element is, and trustworthy when
+ *     none are. The container is not itself the offence: an array of
+ *     short strings is a real shape on this platform (`assistiveDevices`
+ *     is one by construction, and the extractor writes a cell as a list
+ *     whenever a page prints two of something), so refusing every array
+ *     outright would delete clinical content rather than protect it.
+ *     What it HOLDS is examined, to the bottom.
+ *   - an OBJECT — untrustworthy if any KEY is a hard-delete key or itself
+ *     reads as an identifier, or if any VALUE is. The key half is belt
+ *     and braces after layer 1 for the publish paths, and it is not
+ *     redundant on the profile haplotype gate, which asks this question
+ *     about a cell in order to decide whether to READ it.
+ *
+ *     WHAT IS WALKED IS THE OWN ENUMERABLE ENTRIES, and that is not an
+ *     approximation of the object — it is exactly the set `formatScalar`
+ *     in render.ts can put in a prompt, because that is what
+ *     `JSON.stringify` prints. A `Date` or a `Map` therefore examines as
+ *     empty and renders as empty: there is no entry to refuse and no
+ *     byte of its state that could have escaped either. A class instance
+ *     with own fields IS its fields, and they are examined.
+ *   - a FUNCTION or a SYMBOL — untrustworthy. Neither has entries to
+ *     walk and neither is a value a laboratory printed, so 「cannot be
+ *     examined」 answers 「refuse」 rather than 「pass」.
+ *   - a NESTED MIXTURE — objects inside arrays inside objects, examined
+ *     to `MAX_NESTING_DEPTH`.
+ *   - a CYCLE, or nesting past that depth — untrustworthy, for the same
+ *     reason as the line above: a walk that cannot finish has not
+ *     examined anything, and a bound that fails open is no bound.
+ *
+ * WHERE IT IS ASKED, so the invariant is checkable rather than asserted:
+ * `publishGeneticCell`, `publishMethylationCell` and
+ * `publishDiagnosisTypeCell` — the whole of the shared publish path, so
+ * both scopes and every genetics cell — plus the
+ * `OCR_FIELDS_SAFE_KEYS_PRECISE` branch of `projectOcrFields`, and the
+ * profile scope's haplotype gate in `clinicalise`.
+ *
+ * AND WHERE IT IS NOT, because the sentence above would otherwise
+ * overclaim. The profile scope's non-genetics cells — `familyHistory`,
+ * `onsetRegion`, `assistiveDevices`, `gender`, `diagnosisStage`,
+ * `independentlyAmbulatory` — travel from the retriever to layer 3
+ * untouched by any layer of this file, and layer 3 is a gate on KEYS.
+ * That is not a typeof short-circuit and it is not what this fix was
+ * about: it reads identically for a bare string and for an array, and
+ * closing it needs a decision about free text the patient typed
+ * (`familyHistory` is unbounded by design, so this function's ceiling is
+ * not its ceiling) that does not belong to this function.
+ */
+const isUntrustworthyValue = (
+  value: unknown,
+  depth: number = 0,
+  ancestors: Set<object> = new Set<object>(),
+): boolean => {
+  if (value === null || value === undefined || typeof value === 'boolean') return false;
+  if (typeof value === 'string') return isUntrustworthyText(value);
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return isUntrustworthyText(String(value));
+  }
+  if (typeof value !== 'object') return true;
+  if (depth >= MAX_NESTING_DEPTH || ancestors.has(value)) return true;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.some((item) => isUntrustworthyValue(item, depth + 1, ancestors));
+    }
+    if (!isPlainObject(value)) return true;
+    return Object.entries(value).some(
+      ([key, inner]) =>
+        HARD_DELETE_KEYS_LOWER.has(key.toLowerCase()) ||
+        isUntrustworthyText(key) ||
+        isUntrustworthyValue(inner, depth + 1, ancestors),
+    );
+  } finally {
+    ancestors.delete(value);
+  }
+};
+
+/**
+ * A VALUE THIS PLATFORM CAN PRINT AS A CELL, WHICH IS THE OTHER HALF OF
+ * THE QUESTION AND NOT THE SAME ONE.
+ *
+ * `isUntrustworthyValue` asks whether a value carries something that may
+ * not be shown. This asks whether it is a value at all. A container that
+ * survives the examination — `['4qA', '4qB']`, `{ probes: ['4qA'] }` —
+ * still is not a reading of anything: `formatScalar` joins the first
+ * into 「单倍型: 4qA、4qB」 and JSON-stringifies the second, and
+ * `pickReading` refuses exactly that coercion everywhere else on this
+ * platform, 「there is no sensible coercion, so there is none」. The
+ * comment on `clinicaliseHaplotype` already described that line as
+ * something the file no longer does, and precise mode was still doing it
+ * — the reading beside it said `unspecified_haplotype` while the cell
+ * above it asserted a haplotype.
+ *
+ * So a cell is published as itself only when it IS a scalar, and a
+ * container gets what an unreadable cell gets: no raw cell, and this
+ * platform's statement beside the space where it would have been.
+ * `methylationCell` already took this position in words — 「AND A CELL
+ * THAT IS NOT A SCALAR IS NEITHER」 — for the one cell that has no
+ * `_clinical` sibling; this is the same rule for the cells that do.
+ *
+ * THIS IS THE CATEGORY CELL'S VERSION OF THE QUESTION, and a boolean
+ * passes it because `isQualitativeResult` has always counted one as a
+ * result the strict mode may keep. The SIZE cells ask a stricter one:
+ * `publishGeneticCell` prints a cell only where `readGeneticCell`
+ * returned text, so a `d4z4Repeats` holding `true` is withheld rather
+ * than rendered by `formatScalar` as 「是」 under a reading that says the
+ * cell could not be read. Same reason as the container, one type
+ * further in — and a non-finite number is refused by both, for the same
+ * reason again.
+ */
+const isScalarCell = (value: unknown): boolean =>
+  typeof value === 'string' ||
+  typeof value === 'boolean' ||
+  (typeof value === 'number' && Number.isFinite(value));
 
 /**
  * A KEY MINTED FROM WHATEVER THE TABLE HAPPENED TO PRINT, AND THEREFORE
@@ -964,7 +1239,17 @@ const publishGeneticCell = (
     sink.withholdRaw(key);
     return;
   }
-  if (mode === 'precise' && value !== null && value !== undefined && value !== '') {
+  // A CELL IS PRINTED ONLY WHERE THIS PLATFORM COULD READ IT AS ONE, and
+  // that is `readGeneticCell`'s question rather than a second answer to
+  // it. Precise consent buys the value the laboratory printed, not
+  // `formatScalar`'s join of a list, its JSON dump of an object or its
+  //「是」 for a boolean — each of which used to be printed as this
+  // patient's haplotype or repeat count with the `_clinical` sibling
+  // directly beneath saying the cell could not be read. See
+  // `isScalarCell` for the same rule at the category cell's width. The
+  // reading is published either way, so a withheld container leaves the
+  // model told the cell exists rather than told there is none.
+  if (mode === 'precise' && readGeneticCell(value).kind === 'text') {
     sink.publish(key, value);
   } else {
     sink.withholdRaw(key);
@@ -1075,7 +1360,15 @@ const publishDiagnosisTypeCell = (
   // classification because 「FSHD1」 is a category label rather than a
   // measurement. That is a PII decision and it stands; what changed is
   // that both scopes now make it.
-  if (mode === 'precise' || isQualitativeResult(value) || isCategoryLabel(key, value)) {
+  //
+  // AND IT HAS TO BE A CELL BEFORE IT CAN BE A CATEGORY LABEL. Both
+  // strict tests already require a string, so only precise mode ever
+  // published a container here — as `formatScalar`'s join or JSON dump,
+  // asserted as this patient's 分型. See `isScalarCell`.
+  if (
+    isScalarCell(value) &&
+    (mode === 'precise' || isQualitativeResult(value) || isCategoryLabel(key, value))
+  ) {
     sink.publish(key, value);
     stated = true;
   } else {
@@ -1198,9 +1491,42 @@ const projectOcrFields = (
   // ever produced for the cell, and reading it here with the passport's
   // own reader is what keeps 「is this a 4qA array」 one question with
   // one answer. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
-  const haplotypePermissive = parsePermissiveHaplotype(
-    pickReading(rawFields, GENETIC_FIELD_KEYS.haplotype),
-  );
+  //
+  // AND A CELL THIS PLATFORM WOULD NOT SHOW CANNOT GATE ANYTHING — the
+  // same rule, and the same `isUntrustworthyValue`, that the profile
+  // scope's copy of this gate states in `clinicalise` and that
+  // `publishGeneticCell` enforces before any reader runs. The sentence
+  // above was untrue without it. Executed on one blob whose 单倍型 cell
+  // held a hand-correction paste — 「4q单倍型:4qB 姓名:张三 科别:神经内
+  // 科 住院号:R000000」, the live case `publishMethylationCell` already
+  // names — the loop below REFUSED that cell (no `haplotype`, no
+  // `haplotype_clinical`, `fieldsDroppedAsUnsafe: 1`) while this line
+  // read 4qB off the very same string and banded a count of 9 as
+  // `repeat_count_not_read_against_fshd1_range_non_permissive_haplotype`
+  // — a refusal whose documented content is 「the report this count came
+  // off states 4qB」 published with no 4qB anywhere on the block to refer
+  // to, over a run prompt that tells the model to answer 「我的单倍型是不
+  // 是允许型」 straight off these fields. The profile scope, handed the
+  // identical cell in the identical run, said
+  // `within_fshd1_repeat_range_grey_zone_8_to_10`.
+  //
+  // IT WAS NOT ONLY INCONSISTENT, IT WAS WRONG. `parsePermissiveHaplotype`
+  // matches 4qA / 4qB as bare substrings, so a paste that never states
+  // THIS patient's allele decides it anyway: a 检测方法/说明 block pasted
+  // into the 单倍型 box, whose only 4qB is the boilerplate 「4qB 型等位基
+  // 因不具有致病性」, read `false` and told a grey-zone FSHD1 candidate
+  // that their count is not read against the FSHD1 range. That is the
+  // same defect `publishGeneticCell` records for the size cells — an
+  // inpatient record number's DIGITS becoming a repeat count — one cell
+  // further along.
+  //
+  // `null`, not `false`, for a refused cell: 「unknown」 is what this
+  // platform has, and `!== false` keeps the grey-zone note, the only
+  // direction that adds uncertainty rather than removing it.
+  const haplotypeCell = pickReading(rawFields, GENETIC_FIELD_KEYS.haplotype);
+  const haplotypePermissive = isUntrustworthyValue(haplotypeCell)
+    ? null
+    : parsePermissiveHaplotype(haplotypeCell);
 
   /**
    * This scope's half of the shared publish path. The blob is built from
@@ -1276,7 +1602,11 @@ const projectOcrFields = (
       if (value === null || value === undefined || value === '') continue;
       // A safe key is not a safe value — see isUntrustworthyValue. The
       // check is asked once, here, so the strict branch below cannot
-      // publish what the precise branch refused.
+      // publish what the precise branch refused. It is total over types:
+      // a list cell is examined element by element rather than declared
+      // trustworthy for not being a string, which is how a 住院号 pasted
+      // into `ecgSummary` used to reach the prompt as soon as the
+      // extractor wrapped it in an array.
       if (isUntrustworthyValue(value)) {
         droppedUntrusted.push(key);
         continue;

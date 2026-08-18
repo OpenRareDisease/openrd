@@ -831,16 +831,69 @@ export const formatProductDate = (value?: string | null) => {
  *  dates in twenty-odd places and none of them is a different rule. */
 const formatDate = formatProductDate;
 
+/**
+ * The compact `MM-DD` chip — FOR THE SCREENS, AND FOR NOTHING THIS
+ * PLATFORM PRINTS.
+ *
+ * A chip on a scrolling card can drop the year: the card around it says
+ * which record it belongs to and the cell is narrow. A DOCUMENT cannot,
+ * and every document this module feeds — the markdown export, the share
+ * page, the referral pack, the passport PDF the handset renders from
+ * `summaryCards[].meta` — is read beside the others. So the only
+ * remaining caller is `metrics[]`, which apps/mobile's
+ * p-clinical_passport screen renders as a row of chips and no printed
+ * artefact reads.
+ *
+ * IT USED TO BUILD THREE `summaryCards[].meta` STRINGS, and the mobile
+ * PDF prints those verbatim. Rendered from one fixture, the top of that
+ * sheet read 「诊断日期 2014-01-01」 · 「最近记录 03-03」 · 「最近 MRI
+ * 02-13」 · 「最近监测 02-15」 — three of the four hero cards undatable by
+ * the person holding the paper, in a document whose own 时间轴 two
+ * sections below spans three years. Measured, not reasoned about:
+ * apps/mobile/test-support/passport-date-parity-suite.ts renders the
+ * sheet and asserts every date on it.
+ *
+ * Slice the string `formatDate` just built rather than re-parsing it:
+ * re-parsing is where the day was lost a second time, for the same
+ * reason it was lost the first time.
+ */
 const formatDateLabel = (value?: string | null) => {
   const formatted = formatDate(value);
   if (!formatted) return '—';
-  // Slice the string `formatDate` just built rather than re-parsing it:
-  // re-parsing is where the day was lost a second time, for the same
-  // reason it was lost the first time.
   const parts = DATE_ONLY.exec(formatted);
   if (!parts) return formatted;
   return `${parts[2]}-${parts[3]}`;
 };
+
+/**
+ * 1 January, which is the shape a YEAR takes once this product has
+ * stored it in a column that can only hold a day.
+ *
+ * `patient_profiles.diagnosis_date` is a `date` column, and the only
+ * DIAGNOSIS-TIME CONTROL this product draws anywhere is the baseline
+ * questionnaire's 确诊年份 box — four digits, nothing else accepted.
+ * `upsertBaseline` (profile.service.ts) turns that year into
+ * `${year}-01-01` on the way in. The day in such a value is the
+ * column's shape, not an observation.
+ *
+ * It is not the only writer of the column — `updateProfile` serves the
+ * patient's own profile endpoint and `applyGeneticReportAutofill`
+ * copies a report's 诊断日期 into an empty one — which is why the reader
+ * at the use site compares against the report's own reading rather than
+ * trusting this shape on its own.
+ */
+const YEAR_START = /^(\d{4})-01-01$/;
+
+/**
+ * A date this archive only knows to the year, written as a year.
+ *
+ * The same string referral-pack.ts's `milestoneDateZh` prints for a
+ * year-pinned `patient_followup_events.occurred_at`, and deliberately
+ * so: a clinician reading the pack and the passport side by side must
+ * not have to work out whether 「2014 年」 and 「2014-01-01」 are two
+ * records or one.
+ */
+const yearOnlyDateZh = (year: string) => `${year} 年`;
 
 const compactText = (value?: string | null, fallback = '暂无摘要', limit = 88) => {
   const text = value?.trim();
@@ -938,6 +991,43 @@ const getDocumentDisplayTitle = (document: PatientDocumentDTO) => {
   }
 
   return documentLabels[document.documentType] ?? '临床报告';
+};
+
+/**
+ * WHAT THIS PLATFORM WILL CALL THE DOCUMENT ITS GENETIC VALUES CAME
+ * OFF, for the one sentence that names it.
+ *
+ * `documentLabels` is our own vocabulary, but the KEY it is read with
+ * is `documentClassifiedType` — the parser's `classifiedType`, which is
+ * exactly the label `isLaboratoryGeneticReport` has just refused to
+ * believe whenever the source comes out `transcribed`. Reading it
+ * anyway printed 「本平台这次读的是你上传的「基因报告」……但它不是基因
+ * 报告本身」: the grade's own 依据 naming the document 基因报告 and
+ * denying it in the same breath, on the passport screen, in the
+ * markdown export a patient hands across a desk, and in the 下一步
+ * card. And on precisely the population the gate exists for — an
+ * archived 门诊病历摘要 that the old keyword classifier labelled
+ * `genetic_report`, which nothing re-parses — so the reader most likely
+ * to see it is the one who most needs the denial believed. Beside it
+ * the same page brackets every value with 转录自非基因报告文件.
+ *
+ * So this label is printed only where this platform stands behind it.
+ * Where the only class on offer is the one the gate refused there is no
+ * name to print, and this returns null rather than putting a rejected
+ * classification in quotation marks — the copy says 文件 instead. Every
+ * other class is untouched, 病历摘要 above all, which is what most of
+ * these documents actually are and which the sentence should keep
+ * saying.
+ *
+ * `laboratory_report` keeps 基因报告: there the gate agreed.
+ */
+const geneticDocumentLabelZh = (
+  document: PatientDocumentDTO,
+  source: GeneticRecordSource,
+): string | null => {
+  const type = getDocumentType(document);
+  if (source !== 'laboratory_report' && type === 'genetic_report') return null;
+  return documentLabels[type] ?? '上传的文件';
 };
 
 const latestDocByType = (documents: PatientDocumentDTO[], type: string) =>
@@ -1132,7 +1222,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     geneticFields,
     geneticDoc?.id ?? null,
     geneticSource,
-    geneticDoc ? (documentLabels[getDocumentType(geneticDoc)] ?? '上传的文件') : null,
+    geneticDoc ? geneticDocumentLabelZh(geneticDoc, geneticSource) : null,
   );
   // Each of the values below picks a source and, until this block
   // existed, threw away which one it picked — the defect every renderer
@@ -1165,7 +1255,51 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   const diagnosisDateFromDocument = formatDate(pickReading(geneticFields, DIAGNOSIS_DATE_KEYS));
   const diagnosisDateValue = diagnosisDateFromColumn || diagnosisDateFromDocument || null;
   const geneticType = geneticTypeValue || '—';
-  const diagnosisDate = diagnosisDateValue || '—';
+
+  /**
+   * THE YEAR THE PATIENT WAS ASKED FOR, PRINTED AS A YEAR.
+   *
+   * The questionnaire's only diagnosis-time control is 确诊年份 — four
+   * digits and nothing else — and `upsertBaseline` mirrors it into
+   * `patient_profiles.diagnosis_date` as `${year}-01-01` because that
+   * column cannot hold a year. This row reads that column, so for every
+   * profile whose date came from the questionnaire it printed a
+   * 1 January the patient never gave: on the passport screen, on the
+   * share page a clinician opens, in the markdown export the patient
+   * downloads, in the referral pack, and on the PDF that gets printed
+   * and handed over. Meanwhile the two machine-readable exports of the
+   * SAME profile emit the bare year — `recordedDate: "2014"` in
+   * fhir-r4.ts, `{ answer: 'known', year: 2014 }` in treat-nmd.ts — so
+   * the registry was told 2014 and the neurologist was told 2014-01-01.
+   *
+   * export/occurrence-date.ts states the rule this row was breaking in
+   * as many words: pinning an unknown month to January 「writes
+   * 2019-01-01 into a medical record as though someone had observed
+   * it」, and a reader 「will reasonably take it at face value」. It is
+   * the one date a patient is asked for at every appointment.
+   *
+   * WHY THE REPORT'S OWN READING IS THE EXEMPTION. A year-start in the
+   * column is only evidence of a day when a document says the same
+   * thing: `applyGeneticReportAutofill` copies the evidence report's
+   * 诊断日期 into an empty column verbatim, so a laboratory that really
+   * did print 2014-01-01 lands here too. Comparing against
+   * `diagnosisDateFromDocument` keeps that one — the day is on a report
+   * — and reduces every other year-start, which is what a questionnaire
+   * answer, an administrator's entry and a bare `${year}-01-01` from
+   * the profile endpoint all look like.
+   *
+   * ONLY THE PRINTED STRING CHANGES. `diagnosisDateValue` above still
+   * decides whether the row has a value at all and which store it came
+   * out of, so `diagnosisValueSlots.diagnosisDate` — and every
+   * provenance sentence built off it — is untouched.
+   */
+  const diagnosisDateYearOnly =
+    diagnosisDateFromColumn && diagnosisDateFromColumn !== diagnosisDateFromDocument
+      ? (YEAR_START.exec(diagnosisDateFromColumn)?.[1] ?? null)
+      : null;
+  const diagnosisDate = diagnosisDateYearOnly
+    ? yearOnlyDateZh(diagnosisDateYearOnly)
+    : diagnosisDateValue || '—';
 
   /** True when an uploaded document carries a field of this kind, which
    *  is the `ocrCouldHaveFilled` question. See DiagnosisValueSlot for
@@ -1820,8 +1954,10 @@ export type D4Z4Unit = 'repeats' | 'kb';
  * What a D4Z4 measurement OCR'd off a genetics report actually says.
  *
  * `value` is non-null only for a single unambiguous number. Everything
- * else a real report prints —「1-10」,「≤10」,「4~7」,「1 至 10」,「未检出」—
- * lands as `value: null`, with `isRange` recording *why* so a caller can
+ * else a real report prints —「1-10」,「≤10」,「＜10」,「大于10」,「10 以上」,
+ *「4~7」,「1 至 10」,「未检出」— lands as `value: null`, with the bound
+ * spellings counted in both widths because a Chinese laboratory types
+ * the full-width one. `isRange` records *why* so a caller can
  * tell「the lab gave an interval」apart from「there was nothing to read」.
  * That distinction is the whole reason this returns a record rather than
  * a number: an interval is a real, reportable finding that happens not
@@ -1854,7 +1990,25 @@ export const parseD4Z4Reading = (raw: string | null | undefined): D4Z4Reading =>
   // A comparison operator or a dash/CJK range word means the lab gave a
   // bound, not a count. Two numbers in the string mean the same thing
   //（「1-10」uses a plain hyphen, which is not in the operator class）.
-  const bounded = /[<>≤≥~]|--|–|—|~|至|到/.test(text);
+  //
+  // BOTH SPELLINGS OF EVERY OPERATOR, AND THE WORDS. A Chinese report is
+  // typed in a full-width IME and this repo's own copy of the guideline
+  // writes the bound out —「若重复单元数大于 10」— so the half-width class
+  // alone refused「<10」and accepted its twin「＜10」/「大于10」as a count of
+  // 10. That is the worst direction available: a cell whose whole content
+  // is 「this array is NOT contracted」 came out 基因确诊 / 可用于入组 with
+  // the 8–10 灰区 note attached, and 「＜4」 earned the AAN dilated-fundus
+  // recommendation off a bound nobody measured.
+  //
+  // WHAT THIS DOES NOT CATCH, said out loud so the next reader does not
+  // trust it further than it goes: an approximation（「约10」）and a
+  // trailing-plus（「10+」）still parse as the count 10. Neither is a
+  // spelling of a bound this repo has seen on a report, and both would
+  // need their own decision about what 「approximately」 may earn.
+  const bounded =
+    /[<>≤≥~＜＞≦≧⩽⩾﹤﹥～〜]|--|–|—|[大小高低多少]于|[大小高低多少]於|超过|超過|不足|以上|以下|至少|最多|至|到/.test(
+      text,
+    );
   const numbers = text.match(/\d+(?:\.\d+)?/g);
   if (bounded || (numbers?.length ?? 0) > 1) {
     return { raw: text, value: null, isRange: true, unit };
@@ -2068,8 +2222,15 @@ export interface PassportGeneticRecordDTO {
   /** What this platform calls the document, for the one sentence that
    *  has to name it. Our own vocabulary (`documentLabels`) and never
    *  the OCR's own words, which reach a patient's screen elsewhere but
-   *  have no business inside a sentence about evidence. Null when there
-   *  is no document. */
+   *  have no business inside a sentence about evidence.
+   *
+   *  Null when there is no document, AND null when the only name on
+   *  offer is a classification this platform has refused — a document
+   *  whose `source` is `transcribed` while its `classifiedType` still
+   *  says `genetic_report`. Naming it 基因报告 in the same sentence that
+   *  says it is not the report is the defect `geneticDocumentLabelZh`
+   *  exists to stop; a reader of this field must have copy for the
+   *  no-name case rather than a fallback that quotes one. */
   documentLabelZh: string | null;
 }
 
@@ -3109,7 +3270,16 @@ const buildGeneticEvidence = (
       // 「这个数字可能不对」 is not what this platform knows either. What
       // it knows is which page it read, and that the page is not the
       // report.
-      const from = record.documentLabelZh ?? '上传的文件';
+      // AND WHERE IT HAS NO NAME IT WILL STAND BEHIND, IT USES NONE.
+      // `documentLabelZh` is null for a document still carrying the
+      // classification this grade is the refusal of — see
+      // `geneticDocumentLabelZh` — and the old fallback here put a
+      // label in quotation marks regardless, so the sentence read
+      // 「你上传的「基因报告」……但它不是基因报告本身」. 文件 is the same
+      // noun the referral pack uses for this state, and it is the one
+      // thing true of every document that reaches this branch.
+      const from = record.documentLabelZh;
+      const fromZh = from ? '「' + from + '」' : '文件';
       // SAYS WHICH DOCUMENT WAS READ, AND DOES NOT QUANTIFY OVER THE
       // PAGE. 「护照上的基因结果都来自这份文件」 is false in a state
       // that is not rare: a 病历摘要 carrying only a 单倍型, on a
@@ -3118,7 +3288,7 @@ const buildGeneticEvidence = (
       // a document it never touched. What is true is which document
       // this platform read, and what that document is.
       headline = '这一段读的是转录件，本平台没有读到基因报告本身';
-      reason = `本平台这次读的是你上传的「${from}」：上面转录了基因检测的结果，但它不是基因报告本身，转录也不是检测。${GUIDELINE_TWO_ITEMS_ZH}；这两项该由做检测的实验室在报告上写明。没有读到报告本身，本平台就不给这份证据评级，也不拿转录来的数字去套指南里按重复数分组的建议。`;
+      reason = `本平台这次读的是你上传的${fromZh}：上面转录了基因检测的结果，但它不是基因报告本身，转录也不是检测。${GUIDELINE_TWO_ITEMS_ZH}；这两项该由做检测的实验室在报告上写明。没有读到报告本身，本平台就不给这份证据评级，也不拿转录来的数字去套指南里按重复数分组的建议。`;
       action =
         '转录来的内容仍然印在护照上 —— 每一行后面的括号写着那一行的来源。如果基因报告在你手上，拍照上传，护照就会按报告本身来读；如果不在，可以向做这次检测的医院或医生要一份复印件——下面这份说明列出了报告上需要写明的内容，可以一起带去核对。';
       break;
@@ -3316,7 +3486,15 @@ const PATIENT_DIAGNOSIS_VALUE_CONTROL: Record<PassportDiagnosisValueKey, Patient
      * form whose box cannot be made to say anything but a year.
      * 「你可以自己改」 sends that reader to a screen with no 诊断日期 on
      * it, and if they save a year the date they were looking at silently
-     * becomes 1 January of it.
+     * becomes that year and stops being a date at all.
+     *
+     * WHAT THE ROW PRINTS FOR A SAVED YEAR IS NOW THE YEAR. The mirror
+     * still writes 1 January into the column — that is profile
+     * .service.ts's business and this module cannot change it — but
+     * `buildReportInsights` reduces a year-start the evidence report
+     * does not corroborate back to 「2019 年」 before anything renders
+     * it. The sentence below therefore says 「变成那一年的年份」, and it
+     * is the after state that was measured, not the intent.
      *
      * AND THE BOX CAN BE EMPTY WHILE THIS ROW PRINTS A DATE, which is
      * what the sentence used to deny. It said the date 「对应的是
@@ -3345,7 +3523,7 @@ const PATIENT_DIAGNOSIS_VALUE_CONTROL: Record<PassportDiagnosisValueKey, Patient
     diagnosisDate: {
       kind: 'narrower',
       sentenceZh:
-        '护照上的诊断日期，在「我的 → 编辑资料」里没有一个直接显示它的框：那张表单上和它有关的只有「确诊年份」，只能填 4 位年份，里面填的未必就是这里印的日期。在那里填一个年份并保存，护照上的诊断日期就会变成那一年的 1 月 1 日。',
+        '护照上的诊断日期，在「我的 → 编辑资料」里没有一个直接显示它的框：那张表单上和它有关的只有「确诊年份」，只能填 4 位年份，里面填的未必就是这里印的日期。在那里填一个年份并保存，护照上的诊断日期就只写那一年的年份 —— 本平台不知道是哪一天，也不会替你补一个。',
     },
   };
 
@@ -4202,9 +4380,9 @@ export const buildClinicalPassportSummary = (
             // value is what the row prints — every kind in
             // NOT_PATIENT_ORIGIN_KINDS is a kind where the slot was
             // `profile_column`, so no report's value is sitting in front
-            // of it. Rendered: a marked 确诊年份 prints 2019-01-01, and
-            // the same profile with the marker released and the year
-            // changed prints the new date. The box wins.
+            // of it. Rendered: a marked 确诊年份 of 2019 prints
+            // 「2019 年」, and the same profile with the marker released
+            // and the year changed prints the new year. The box wins.
             //
             // IT WINS WITH THE WRONG SHAPE OF ANSWER FOR 诊断日期,
             // which is why that value is no longer in this list and
@@ -4287,7 +4465,25 @@ export const buildClinicalPassportSummary = (
   // Both are in the corpus under 02.临床管理与治疗. Changing any of these
   // means reading them again — not reasoning from other dystrophies,
   // where the answers are different.
-  if (!hasMeaningfulValue(reportInsights.respiratorySummary)) {
+  // READ OFF `state`, NOT OFF THE SUMMARY STRING. This gate used to be
+  // `!hasMeaningfulValue(reportInsights.respiratorySummary)` — two
+  // states where the slot has three. A patient who HAS uploaded a
+  // pulmonary function report that the parser got nothing structured
+  // out of lands on an empty summary exactly like a patient who never
+  // had the test, and this step then told a clinician to go and obtain
+  // the baseline that is already sitting in the patient's bag.
+  //
+  // That is not a wording quibble: it is the same request contradicting
+  // itself. `buildReferralPack` and `buildAnesthesiaCard` read `state`
+  // and print 「已上传…但未能自动读出数值 —— 请向患者索取原件」 off the
+  // very same DTO, while this step printed 「补充肺功能基线」 into the
+  // markdown export's 待补项, the share page's 「按指南，这位患者值得确认
+  // 的事」 and the mobile PDF's 待补项. `buildMonitoringItem` derives the
+  // three states centrally so no consumer has to infer them; this was
+  // the consumer still inferring, and it lives in the same builder.
+  const respiratoryState =
+    monitoringItems.find((item) => item.key === 'respiratory')?.state ?? 'absent';
+  if (respiratoryState === 'absent') {
     nextSteps.push({
       title: '补充肺功能基线',
       kind: 'clinical',
@@ -4298,6 +4494,18 @@ export const buildClinicalPassportSummary = (
       // everyone, which is the follow-up schedule of the risk group.
       description:
         '指南建议所有 FSHD 患者做一次肺功能基线（FVC / FEV1）。是否需要定期复查，取决于基线是否异常，以及有没有明显的近端无力、脊柱侧弯、轮椅依赖或其他肺部疾病 —— 由医生判断，不是每个人都要长期反复做。',
+    });
+  } else if (respiratoryState === 'unreadable') {
+    nextSteps.push({
+      // The Level B baseline is still the open question — what changed
+      // is who has to do something about it. The test may already be
+      // done; what is missing is a value this platform could read. So
+      // the ask is the original report, matching word for word what the
+      // referral pack and the anesthesia card say about this same slot.
+      title: '把肺功能报告原件带给医生看',
+      kind: 'clinical',
+      description:
+        '你上传过肺功能报告，但本平台未能自动读出其中的数值，所以这里无法显示 FVC / FEV1。指南建议所有 FSHD 患者有一次肺功能基线 —— 这一份算不算、要不要复查，请把报告原件给医生看，由医生判断。',
     });
   }
   // Cardiac is deliberately NOT requested. AAN Level C: 「routine cardiac
@@ -4440,6 +4648,24 @@ export const buildClinicalPassportSummary = (
     });
   }
 
+  /**
+   * THE FOUR HERO CARDS, AND WHY THEIR `meta` IS A DOCUMENT'S DATE AND
+   * NOT A CHIP'S.
+   *
+   * `meta` arrives at the handset as a finished sentence and
+   * apps/mobile/lib/clinical-passport-pdf.ts prints it VERBATIM, into
+   * `.metric-meta` at the top of the sheet that gets printed and handed
+   * to a clinician. That renderer cannot repair what it is given: it
+   * would have to pull a date back out of a server-authored sentence
+   * and re-render it, which is a second date parser on the far side of
+   * a wire. So the year has to be on the string when it leaves here.
+   *
+   * Three of these four were built with `formatDateLabel`, the `MM-DD`
+   * screen chip, while 诊断日期 went through `formatDate`. Rendered, one
+   * sheet read 「诊断日期 2014-01-01」 · 「最近记录 03-03」 · 「最近 MRI
+   * 02-13」 · 「最近监测 02-15」 — four cards in a row, two date formats,
+   * and three of them undatable by a reader holding the paper.
+   */
   const summaryCards: PassportSummaryCardDTO[] = [
     {
       key: 'diagnosis',
@@ -4494,7 +4720,7 @@ export const buildClinicalPassportSummary = (
           }`
         : '缺少肌力或活动功能记录',
       meta: latestMeasurementAt
-        ? `最近记录 ${formatDateLabel(latestMeasurementAt)}`
+        ? `最近记录 ${formatDate(latestMeasurementAt) ?? '—'}`
         : '尚无时间序列',
     },
     {
@@ -4508,8 +4734,8 @@ export const buildClinicalPassportSummary = (
         : '缺少 MRI 报告或影像提取结果',
       meta:
         mriDocuments.length > 1
-          ? `最近 MRI ${formatDateLabel(reportInsights.latestMriDate)} · 累计 ${mriDocuments.length} 份`
-          : `最近 MRI ${formatDateLabel(reportInsights.latestMriDate)}`,
+          ? `最近 MRI ${formatDate(reportInsights.latestMriDate) ?? '—'} · 累计 ${mriDocuments.length} 份`
+          : `最近 MRI ${formatDate(reportInsights.latestMriDate) ?? '—'}`,
     },
     {
       key: 'monitoring',
@@ -4526,13 +4752,15 @@ export const buildClinicalPassportSummary = (
           // corpus asks for serial CK. An empty panel here means nothing
           // has been uploaded yet — it does not mean tests are overdue.
           '还没有上传过肺功能、心脏或血检报告',
-      meta: `最近监测 ${formatDateLabel(
-        [
-          reportInsights.latestBloodDate,
-          reportInsights.latestRespiratoryDate,
-          reportInsights.latestCardiacDate,
-        ].sort((a, b) => getTimestamp(b) - getTimestamp(a))[0] ?? null,
-      )}`,
+      meta: `最近监测 ${
+        formatDate(
+          [
+            reportInsights.latestBloodDate,
+            reportInsights.latestRespiratoryDate,
+            reportInsights.latestCardiacDate,
+          ].sort((a, b) => getTimestamp(b) - getTimestamp(a))[0] ?? null,
+        ) ?? '—'
+      }`,
     },
   ];
 

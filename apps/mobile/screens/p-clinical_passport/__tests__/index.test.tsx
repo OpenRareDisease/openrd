@@ -1145,3 +1145,128 @@ describe('诊断进度那一格', () => {
     expect(allText(renderer)).not.toContain('诊断进度');
   });
 });
+
+/**
+ * The hero grid, against the `metrics` array the API actually builds.
+ *
+ * Both fixtures below are `buildClinicalPassportSummary`'s own output,
+ * copied off a run of it: one profile with three (muscle group, side)
+ * strength readings and one with none. Everything else on this file's
+ * `summary()` fixture carried `metrics: []`, which is why a filter that
+ * had stopped matching anything, and an insert at a hard-coded index,
+ * survived a rename with 50 passing tests.
+ *
+ * The join these assert is invisible to the compiler: `PassportMetricDTO`
+ * is three `string`s and no discriminant. metric-labels.parity.test.ts
+ * is the other half — it checks the spellings against the API source;
+ * these check what the patient sees once the screen has used them.
+ */
+describe('hero 指标格：顺序和取舍', () => {
+  /** 服务端真发的那四格（有肌力的档案）。 */
+  const API_METRICS_WITH_STRENGTH = [
+    { label: '完整度', value: '1/4', hint: '仍有模块待补齐' },
+    { label: '报告数', value: '2', hint: '已纳入护照' },
+    { label: '肌力项数', value: '3', hint: '平均 3.7 级' },
+    { label: '最近更新', value: '08-01', hint: '用于判断新鲜度' },
+  ];
+  /** 同一段代码，没有任何肌力记录的档案。 */
+  const API_METRICS_NO_STRENGTH = [
+    { label: '完整度', value: '0/4', hint: '仍有模块待补齐' },
+    { label: '报告数', value: '0', hint: '尚无报告来源' },
+    { label: '肌力项数', value: '0', hint: '尚无结构化肌力' },
+    { label: '最近更新', value: '08-01', hint: '用于判断新鲜度' },
+  ];
+
+  /** Each metric tile as `[value, label, hint]`, in rendered order. */
+  const tiles = (renderer: TestRenderer.ReactTestRenderer) =>
+    renderer.root
+      .findAll((node) => node.props.style === styles.metricCard, { deep: false })
+      .map((card) => card.findAllByType(Text).map(readText));
+
+  const labelsOf = (renderer: TestRenderer.ReactTestRenderer) =>
+    tiles(renderer).map(([, label]) => label);
+
+  it('有肌力记录时：四格，肌力项数不在里面，最近记录紧跟着报告数', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_WITH_STRENGTH }));
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新']);
+  });
+
+  it('没有肌力记录时：同样四格，同样的顺序', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_NO_STRENGTH }));
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新']);
+  });
+
+  it('肌力那一格连值带提示都不在屏幕上 —— 它归下面的肌力那一节', async () => {
+    const renderer = await render(summary({ metrics: API_METRICS_WITH_STRENGTH }));
+    expect(tiles(renderer).flat()).not.toContain('肌力项数');
+    expect(joinedText(renderer)).not.toContain('平均 3.7 级');
+  });
+
+  it('最近记录那一格读的是 motor 的时间，不是服务端某一格', async () => {
+    const renderer = await render(
+      summary({
+        metrics: API_METRICS_WITH_STRENGTH,
+        motor: {
+          ready: true,
+          average: '3.7',
+          latestMeasurementAt: '2026-07-20T00:00:00.000Z',
+          latestActivityAt: null,
+          summary: '—',
+          highlights: [],
+          bodyRegions: {},
+          activitySummary: '上周开始上楼要扶栏杆',
+        },
+      }),
+    );
+    const record = tiles(renderer).find(([, label]) => label === '最近记录');
+    expect(record).toEqual(['07-20', '最近记录', '上周开始上楼要扶栏杆']);
+  });
+
+  it('服务端多发一格没见过的指标时，那一格照常出现在末尾，而不是被吃掉', async () => {
+    // 这个屏幕只对「肌力项数」做取舍，其余的原样透出。新指标静默消失
+    // 比多出一格更难被发现。
+    const renderer = await render(
+      summary({
+        metrics: [...API_METRICS_WITH_STRENGTH, { label: '随访次数', value: '5', hint: '含线上' }],
+      }),
+    );
+    expect(labelsOf(renderer)).toEqual(['完整度', '报告数', '最近记录', '最近更新', '随访次数']);
+  });
+
+  it('服务端没发报告数那一格时，最近记录落到末尾，不硬塞进第三位', async () => {
+    const renderer = await render(
+      summary({
+        metrics: API_METRICS_WITH_STRENGTH.filter((item) => item.label !== '报告数'),
+      }),
+    );
+    expect(labelsOf(renderer)).toEqual(['完整度', '最近更新', '最近记录']);
+  });
+});
+
+describe('「N 份来源报告」那一行：零是一个说法，不是一个占位符', () => {
+  const chipText = (renderer: TestRenderer.ReactTestRenderer) =>
+    allText(renderer).find((text) => text.includes('份来源报告') || text === '报告数 —');
+
+  it('服务端说 0 的时候就印 0', async () => {
+    const renderer = await render(
+      summary({ metrics: [{ label: '报告数', value: '0', hint: '尚无报告来源' }] }),
+    );
+    expect(chipText(renderer)).toBe('0 份来源报告');
+  });
+
+  it('服务端说 7 的时候就印 7', async () => {
+    const renderer = await render(
+      summary({ metrics: [{ label: '报告数', value: '7', hint: '已纳入护照' }] }),
+    );
+    expect(chipText(renderer)).toBe('7 份来源报告');
+  });
+
+  it('服务端没发这一格时印破折号 —— 不替患者宣布他一份报告都没有', async () => {
+    // 一次改名就是这个状态。旧代码在这里写着 `?? '0'`，于是一个上传了
+    // 七份报告的患者，会把一张写着「0 份来源报告」的护照递给医生。
+    const renderer = await render(
+      summary({ metrics: [{ label: '完整度', value: '1/4', hint: '仍有模块待补齐' }] }),
+    );
+    expect(chipText(renderer)).toBe('报告数 —');
+  });
+});

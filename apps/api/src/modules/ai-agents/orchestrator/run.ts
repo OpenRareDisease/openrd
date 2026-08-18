@@ -11,7 +11,9 @@
  *      next LLM round receives the results *with the tools still
  *      advertised* — so it either answers or asks for another lookup.
  *      At `maxToolRounds` the tools are withheld and an answer is
- *      forced.
+ *      forced. Each answer round also carries the strict-mode
+ *      visibility notice, built from the fields that round's tool
+ *      messages actually carry — see `buildVisibilityNotice`.
  *
  * On why this loops now
  * ---------------------
@@ -164,15 +166,51 @@ export const FINAL_TURN_DIRECTIVE = `【现在是最后一步：作答】
  * answered the part that did not need the failed source — this is the
  * caveat. Neither version claims the whole answer is wrong, because
  * that is not knowable from here.
+ *
+ * AND IT USED TO CLAIM EXACTLY THAT. `failures.corpus` is sticky across
+ * gather rounds, so a turn whose first knowledge-base lookup failed and
+ * whose second one succeeded — the ordinary shape when the KB service is
+ * restarting, and the shape the model itself produces when it rephrases
+ * after 「这次没查成」 — raised the flag with citations in hand. Driven
+ * through the orchestrator: the patient got 「所以下面的内容没有资料出
+ * 处」 printed directly above an answer ending in [1], with the source
+ * card for [1] rendered underneath it. The banner and the answer
+ * contradicting each other on the one question the banner exists to
+ * settle is worse than either alone, and it teaches a patient to ignore
+ * the banner.
+ *
+ * So the caveat is scoped to the sentences that actually have no source
+ * — which is every sentence when nothing got through, and exactly the
+ * uncited ones when something did. It needs no new signal to be true,
+ * which is why it is a rewording rather than a second constant: a flag
+ * for 「how much of the corpus got through」 does not exist in
+ * `BuiltContext`, and inventing one here from citation sources would be
+ * a second copy of context-builder's source classification.
  */
 export const CORPUS_UNAVAILABLE_NOTICE =
-  '⚠️ 这次没能查到医学知识库（不是「库里没有」，是这次没查成）。' +
-  '所以下面的内容没有资料出处，涉及 FSHD 医学结论的部分请先别当依据——' +
+  '⚠️ 这次医学知识库没查成（不是「库里没有」，是这次没查成）。' +
+  '所以下面凡是没有标出处编号的 FSHD 医学结论，都请先别当依据——' +
   '过一会儿再问一次，或者跟你的主治医生确认。';
 
+/**
+ * Two of them, because `failures.personal` is a THREE-retriever flag.
+ *
+ * It is set when the profile OR the reports OR the follow-up read
+ * failed, and 「所以下面的回答没有用到你本人的数据」 is only true when
+ * none of the three got through. A patient whose profile read timed out
+ * while their reports came back fine was shown that sentence directly
+ * above an answer quoting their own report — the banner and the answer
+ * contradicting each other on the one question the banner exists to
+ * settle. `BuiltContext.usedPersonalData` is exactly 「at least one
+ * personal source returned chunks」, so it picks which sentence is true.
+ */
 export const PERSONAL_DATA_UNAVAILABLE_NOTICE =
   '⚠️ 这次没能读到你的档案 / 报告 / 记录，所以下面的回答没有用到你本人的数据。' +
   '这不代表你没有记录，只是这次没读出来，稍后再问一次通常就好了。';
+
+export const PERSONAL_DATA_PARTIAL_NOTICE =
+  '⚠️ 你的档案 / 报告 / 记录里有一部分这次没读出来，下面的回答只用到了读出来的那部分。' +
+  '这不代表缺的那部分不存在，只是这次没读出来，稍后再问一次通常就好了。';
 
 /**
  * Appended when the model stopped because it ran out of tokens.
@@ -283,30 +321,129 @@ const noticeFieldLabel = (scope: RedactionScope, key: string): string =>
 
 const NOTICE_SCOPES = Object.keys(NOTICE_SCOPE_TITLES) as RedactionScope[];
 
-const noticeInventory = (pick: (scope: RedactionScope) => readonly string[]): string =>
-  NOTICE_SCOPES.map((scope) => {
-    const keys = pick(scope);
-    if (keys.length === 0) return null;
-    const labels = keys.map((key) => noticeFieldLabel(scope, key)).join('、');
-    return `- ${NOTICE_SCOPE_TITLES[scope]}：${labels}`;
-  })
-    .filter((line): line is string => line !== null)
+/**
+ * Which scope an emitted field name belongs to.
+ *
+ * `BuiltContext.fieldsUsed` is scope-blind — the renderer reports
+ * `Object.keys(redacted)` per chunk and the builder unions them — so the
+ * only way back to a scope is the allowlist, which is also the table the
+ * projection was driven by. The three scopes' key sets are disjoint
+ * today and `run.test.ts` fails if they ever stop being; without that
+ * fence a key added to two scopes would be printed under both headings,
+ * and one of the two would be a field the model never received.
+ */
+const scopeOfNoticeField = (key: string): RedactionScope | null =>
+  NOTICE_SCOPES.find(
+    (scope) =>
+      PROMPT_ALLOWLIST[scope].strict.includes(key) || PROMPT_ALLOWLIST[scope].precise.includes(key),
+  ) ?? null;
+
+/** Group emitted field names by scope, in allowlist order rather than
+ *  retrieval order, so the same projection always renders the same
+ *  bytes and the prompt digest stays stable across runs. */
+const groupNoticeFields = (fieldsUsed: readonly string[]): Map<RedactionScope, string[]> => {
+  const emitted = new Set(fieldsUsed);
+  const byScope = new Map<RedactionScope, string[]>();
+  for (const scope of NOTICE_SCOPES) {
+    const ordered = [
+      ...new Set([...PROMPT_ALLOWLIST[scope].strict, ...PROMPT_ALLOWLIST[scope].precise]),
+    ].filter((key) => emitted.has(key) && scopeOfNoticeField(key) === scope);
+    if (ordered.length > 0) byScope.set(scope, ordered);
+  }
+  return byScope;
+};
+
+const noticeInventory = (byScope: Map<RedactionScope, readonly string[]>): string =>
+  [...byScope.entries()]
+    .map(
+      ([scope, keys]) =>
+        `- ${NOTICE_SCOPE_TITLES[scope]}：${keys.map((key) => noticeFieldLabel(scope, key)).join('、')}`,
+    )
     .join('\n');
 
-/** What strict mode already hands the model, read off the allowlist it
- *  is projected through. */
-const STRICT_FIELDS_ZH = noticeInventory((scope) => PROMPT_ALLOWLIST[scope].strict);
+/**
+ * WHAT THE EMISSION HAS TO CONTAIN BEFORE 「turn the switch on」 IS A
+ * TRUE THING TO SAY ABOUT A FIELD.
+ *
+ * A precise key missing from this turn has two possible causes and they
+ * call for opposite answers: strict withheld it, or the patient has no
+ * such cell. The notice's job is to tell them apart. A patient whose
+ * profile records only 性别 / 首发部位 / 家族史 was told 「开启精确数值后
+ * 才会多出来：D4Z4 重复数、单倍型」 — a switch that would produce
+ * nothing, because there is no D4Z4 cell on that profile to unlock.
+ *
+ * So each key is paired with the sibling the projection emits WHEN THE
+ * CELL EXISTS, and is named only when one of those siblings is in this
+ * turn's emission:
+ *   - `d4z4` / `haplotype`: their `_clinical` sibling, which
+ *     `clinicaliseD4Z4` / `clinicaliseHaplotype` return `null` for — and
+ *     so the redactor does not publish — only on an empty cell.
+ *   - `methylation`: `methylation_withheld` (a number on file, withheld)
+ *     or `methylation_origin`. This is the entry a difference over key
+ *     names cannot produce: `methylation` is on BOTH profile lists, so
+ *     it never looked consent-gated, while strict in fact emits
+ *     `methylation_withheld` under 甲基化数值 and drops the number that
+ *     precise prints under 甲基化值. A qualitative cell (未检出) is
+ *     published under `methylation` itself in both modes and is excluded
+ *     before this table is consulted, by already being in the emission.
+ *   - `fields`: the clinicalised blob `fields_clinical`.
+ *   - `latestValue` / `series`: `count`, which the follow-up retriever
+ *     emits only for a metric that survived `allPoints.length === 0`,
+ *     i.e. one with at least one real number behind it.
+ *   - `unit`: NOTHING, deliberately. It is published only when every
+ *     point in the series carries the same recognised unit (see UNIT IS
+ *     PART OF WHICH CURVE in patient-followups.ts), and no strict-mode
+ *     field says whether they do — so this is the one precise key whose
+ *     arrival the switch cannot be promised to produce. Under-naming it
+ *     costs a suffix; naming it would be the same false promise this
+ *     table exists to stop. The number itself is named, which is what a
+ *     patient asks for.
+ *
+ * `run.test.ts` fails if a key on a `precise` list that `strict` cannot
+ * carry is missing from here, so a raw-value key added later cannot go
+ * quietly unadvertised, and if a key here is not on its scope's
+ * `precise` list at all.
+ */
+export const PRECISE_KEY_EVIDENCE: Record<
+  RedactionScope,
+  Readonly<Record<string, readonly string[]>>
+> = {
+  profile: {
+    d4z4: ['d4z4_clinical'],
+    haplotype: ['haplotype_clinical'],
+    methylation: ['methylation_withheld', 'methylation_origin'],
+  },
+  reports: {
+    fields: ['fields_clinical'],
+  },
+  followups: {
+    unit: [],
+    latestValue: ['count'],
+    series: ['count'],
+  },
+};
 
-/** What 「精确数值」 consent actually ADDS — the set DIFFERENCE, not the
- *  precise list, so a key carried in both modes can never be advertised
- *  as something the patient has to go and switch on. Reading the precise
- *  list directly would name `methylation`, `methylation_origin`,
- *  `methylation_withheld`, `d4z4_clinical`, `haplotype_clinical` and
- *  every report field — all of them already in the strict projection. */
-const PRECISE_ONLY_FIELDS_ZH = noticeInventory((scope) => {
-  const strict = new Set<string>(PROMPT_ALLOWLIST[scope].strict);
-  return PROMPT_ALLOWLIST[scope].precise.filter((key) => !strict.has(key));
-});
+/**
+ * What 「精确数值」 consent would add ON TOP OF WHAT THIS TURN ACTUALLY
+ * CARRIES — derived from the emission, not from a difference over key
+ * names.
+ *
+ * A KEY NAME IS NOT WHAT THE MODE CARRIES. The list used to be
+ * `precise` minus `strict` over key names, and the two modes put
+ * different things under the same name: strict emits
+ * `methylation_withheld: value_withheld` under 甲基化数值 and drops the
+ * number, precise emits `methylation: 12%` under 甲基化值. Both lists
+ * carry the name `methylation`, so the difference never named it — and
+ * the strict inventory listed 甲基化值 as already in hand, over a tool
+ * message with no 甲基化值 row in it. Verified by running the redactor
+ * over one profile in both modes.
+ */
+const preciseOnlyFields = (scope: RedactionScope, emitted: ReadonlySet<string>): string[] =>
+  Object.entries(PRECISE_KEY_EVIDENCE[scope])
+    .filter(
+      ([key, evidence]) => !emitted.has(key) && evidence.some((sibling) => emitted.has(sibling)),
+    )
+    .map(([key]) => key);
 
 /** The exact tokens a `_clinical` genetics key holds when this platform
  *  declines to read the cell, named so the model recognises them as
@@ -314,9 +451,16 @@ const PRECISE_ONLY_FIELDS_ZH = noticeInventory((scope) => {
  *  own set; sorted only so the prompt digest is stable. */
 const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
 
+/** Keys that carry this platform's reading of a cell, or its refusal to
+ *  read one — `fields_clinical` included, by its suffix. Only when one
+ *  of these is actually in the emission does the notice explain what
+ *  such a value means. */
+const isPlatformReadingField = (key: string): boolean =>
+  key.endsWith('_clinical') || key.endsWith('_origin');
+
 /**
- * Tell the model what redaction mode it is working under, and — for
- * strict — what that mode actually carries.
+ * Tell the model what strict mode is withholding — AFTER the tools have
+ * run, and about the fields the projection actually emitted this turn.
  *
  * WHY THE NOTICE EXISTS. Under `strict` the redactor withholds raw
  * MEASUREMENTS. The model has no way to distinguish a withheld number
@@ -335,42 +479,89 @@ const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、
  * and every qualitative laboratory result verbatim. A notice is an
  * INSTRUCTION a model obeys, so a strict-consent patient asking whether
  * their D4Z4 count sits in the FSHD1 range was told to go turn on a
- * consent switch for an answer already in the prompt — and the readings
- * it was told it did not get are exactly the refusals
- * (`length_in_kb_not_a_repeat_count`, the 4qB refusal, the 8–10 grey
- * zone) that this pipeline exists to deliver.
+ * consent switch for an answer already in the prompt.
  *
- * So the inventory is computed from `PROMPT_ALLOWLIST` and labelled
- * from `SCOPE_LABELS` — the same two tables the redactor and the
- * renderer read — and the second list is the set DIFFERENCE rather than
- * the precise list, so no field carried in both modes can be advertised
- * as locked. Adding or removing an allowlist key rewrites this notice;
- * it cannot drift away from the projection again.
+ * WHY IT IS BUILT HERE AND NOT ON THE SYSTEM PROMPT. Its first sentence
+ * is 「本轮工具消息里你已经拿到的字段」, and it used to be concatenated
+ * onto the system prompt BEFORE PLANNING — so round 1 handed the model a
+ * full inventory of profile / report / follow-up fields at a point where
+ * the conversation contained ZERO tool messages, and the inventory was
+ * the ALLOWLIST rather than the retrieval, so it stayed false in round 2
+ * for every patient missing those fields. Run against an empty profile
+ * it claimed 性别、诊断阶段、确诊年份… over three tool messages that all
+ * read 「（无内容）」. A sentence telling a model it already has data it
+ * does not have is an instruction to answer from nothing, which is the
+ * one thing this product exists not to do.
+ *
+ * So it is built from `BuiltContext.fieldsUsed` — the keys the redactor
+ * actually published this turn — and injected into the answer round,
+ * after the tool messages it describes. When the projection emitted no
+ * patient field at all it returns '', because there is then nothing
+ * strict is withholding and a notice about strict would invite the model
+ * to blame consent for an empty profile: the inverse of the error it was
+ * written to prevent.
  */
-const redactionNotice = (mode: 'strict' | 'precise'): string =>
-  mode === 'precise'
-    ? ''
-    : [
-        '',
-        '',
-        '【当前数据可见范围】用户尚未开启「精确数值」授权，本轮所有工具结果按 strict 允许清单投影。' +
-          'strict 扣下的只是原始测量数值本身，不是报告内容，更不是解析失败。',
-        '',
-        '本轮工具消息里你已经拿到的字段：',
-        STRICT_FIELDS_ZH,
-        '',
-        '其中「本平台判读」「来源」这类字段和 OCR 字段（临床化），装的是本平台对该项的判读结论，' +
-          `或本平台拒绝判读的结论（${GENETIC_REFUSAL_TOKENS_ZH}）；报告里的定性结果（如 阴性(-)、阳性）按原文给你。` +
-          '凡是这些字段能回答的问题——包括「我的 D4Z4 重复数在不在 FSHD1 范围内」「我的单倍型是不是允许型」' +
-          '——直接照工具消息里的判读回答，不要让用户去开授权。',
-        '',
-        '开启「精确数值」授权后才会新增的字段，只有这些：',
-        PRECISE_ONLY_FIELDS_ZH,
-        '',
-        '只有当用户要的确实是上面这几项原始数值本身时，才说明需要在「我的 › 隐私设置」里开启精确数值授权。' +
-          'numericValuesWithheld 是被扣下的测量值个数，不是解析失败；任何情况下都不要凭空推测数值，' +
-          '也不要把 strict 说成是报告本身的问题。',
-      ].join('\n');
+export const buildVisibilityNotice = (
+  mode: 'strict' | 'precise',
+  fieldsUsed: readonly string[],
+): string => {
+  if (mode === 'precise') return '';
+  const byScope = groupNoticeFields(fieldsUsed);
+  if (byScope.size === 0) return '';
+
+  const emitted = new Set(fieldsUsed);
+  const preciseOnly = new Map<RedactionScope, string[]>();
+  for (const scope of byScope.keys()) {
+    const keys = preciseOnlyFields(scope, emitted);
+    if (keys.length > 0) preciseOnly.set(scope, keys);
+  }
+
+  const lines: string[] = [
+    '【当前数据可见范围】用户尚未开启「精确数值」授权，上面的工具结果按 strict 允许清单投影。' +
+      'strict 扣下的只是原始测量数值本身，不是报告内容，更不是解析失败。',
+    '',
+    '本轮工具消息里你已经拿到的字段：',
+    noticeInventory(byScope),
+  ];
+
+  if ([...emitted].some(isPlatformReadingField)) {
+    lines.push(
+      '',
+      // 凡是, not 其中…有: which KINDS of reading field are above varies
+      // by what was retrieved — a reports-only turn has the clinicalised
+      // OCR blob and no 本平台判读 row — so the sentence is written as a
+      // rule over whichever of them are there rather than as a claim
+      // that all of them are.
+      '上面凡是「本平台判读」「来源」这类字段、以及 OCR 字段（临床化），装的是本平台对该项的判读结论，' +
+        `或本平台拒绝判读的结论（${GENETIC_REFUSAL_TOKENS_ZH}）；报告里的定性结果（如 阴性(-)、阳性）按原文给你。` +
+        '凡是这些字段能回答的问题——包括「我的 D4Z4 重复数在不在 FSHD1 范围内」「我的单倍型是不是允许型」' +
+        '——直接照上面工具消息里的判读回答，不要让用户去开授权。',
+    );
+  }
+
+  if (preciseOnly.size === 0) {
+    lines.push(
+      '',
+      '本轮这些字段之外，开启「精确数值」授权也不会再多给你任何字段——' +
+        '所以不要因为回答不了什么就让用户去开授权。',
+    );
+  } else {
+    lines.push(
+      '',
+      '本轮开启「精确数值」授权后才会多出来的字段，只有这些：',
+      noticeInventory(preciseOnly),
+      '',
+      '只有当用户要的确实是上面这几项原始数值本身时，才说明需要在「我的 › 隐私设置」里开启精确数值授权。',
+    );
+  }
+
+  if (emitted.has('fields_clinical')) {
+    lines.push('', 'numericValuesWithheld 是被扣下的测量值个数，不是解析失败。');
+  }
+  lines.push('', '任何情况下都不要凭空推测数值，也不要把 strict 说成是报告本身的问题。');
+
+  return lines.join('\n');
+};
 
 const buildUserPrompt = (input: OrchestratorRunInput): string => {
   if (!input.userContextHint?.trim()) return input.question;
@@ -439,7 +630,11 @@ export class Orchestrator {
     const tools = this.registry.availableFor(input.consentLevel);
     const userPrompt = buildUserPrompt(input);
 
-    const systemPrompt = `${this.systemPrompt}${redactionNotice(redactionMode)}`;
+    // NO VISIBILITY NOTICE HERE. It describes what the tool messages
+    // carry, and at this point there are none — see
+    // `buildVisibilityNotice`, which the answer round injects after the
+    // retrieval it is about.
+    const systemPrompt = this.systemPrompt;
 
     emit({ type: 'planning' });
     const plan = await this.planner.plan({
@@ -596,9 +791,18 @@ export class Orchestrator {
       // identical query is the obvious next move.
       const stalled = !executedThisRound;
       const atCeiling = toolRounds >= maxToolRounds || stalled;
-      round2Messages = atCeiling
-        ? [...messages, { role: 'system', content: FINAL_TURN_DIRECTIVE }]
-        : [...messages];
+      // Rebuilt every iteration, from the context as it stands AFTER
+      // this round's tool messages were appended — so 「本轮工具消息里你
+      // 已经拿到的字段」 names the fields sitting immediately above it,
+      // and a round that retrieved nothing gets no notice at all.
+      // Discarded and recomputed if the model asks for another lookup,
+      // so a stale inventory can never survive into a later round.
+      const visibility = buildVisibilityNotice(redactionMode, context.fieldsUsed);
+      round2Messages = [
+        ...messages,
+        ...(visibility ? [{ role: 'system' as const, content: visibility }] : []),
+        ...(atCeiling ? [{ role: 'system' as const, content: FINAL_TURN_DIRECTIVE }] : []),
+      ];
 
       emit({ type: 'answering' });
       const round = await this.askRound({
@@ -728,8 +932,19 @@ export class Orchestrator {
         { role: 'assistant', content: scrubbed.text || '(empty)' },
         {
           role: 'system',
+          // TWO PREMISES, BECAUSE THIS PATH HAS TWO CAUSES. The retry
+          // fires whenever nothing usable survived, and
+          // `isPreambleOnly('')` is false — so a round that returned no
+          // text at all, or whose entire content was tool-call markup
+          // the scrubber removed, lands here too. It was told
+          //「它只是宣布要再检索一次」 about a turn recorded one line
+          // above as `(empty)`, which is a statement about this turn
+          // that this turn does not support. The instruction after the
+          // dash is the operative half and is the same either way.
           content:
-            '上一条回复没有回答用户的问题——它只是宣布要再检索一次，而这里没有下一轮。' +
+            (scrubbed.text.trim()
+              ? '上一条回复没有回答用户的问题——它只是宣布要再检索一次，而这里没有下一轮。'
+              : '上一条回复是空的，没有回答用户的问题，而这里没有下一轮。') +
             '现在请直接用已有资料给出面向用户的完整回答；资料不足就说明哪部分不足，' +
             '不要再提检索。',
         },
@@ -808,7 +1023,10 @@ export class Orchestrator {
     }
 
     const finalAnswer = answerText
-      ? this.markCutOff(this.markDegraded(answerText, context.failures), answerCutOff)
+      ? this.markCutOff(
+          this.markDegraded(answerText, context.failures, context.usedPersonalData),
+          answerCutOff,
+        )
       : '抱歉，AI 这次没能把回答整理出来，请再问一次。';
 
     const result = this.composeResult({
@@ -863,10 +1081,18 @@ export class Orchestrator {
    * a patient scanning a long answer on a phone reads the top; a caveat
    * at the bottom is one they meet after they have already believed it.
    */
-  private markDegraded(answer: string, failures: { corpus: boolean; personal: boolean }): string {
+  private markDegraded(
+    answer: string,
+    failures: { corpus: boolean; personal: boolean },
+    usedPersonalData: boolean,
+  ): string {
     const notices: string[] = [];
     if (failures.corpus) notices.push(CORPUS_UNAVAILABLE_NOTICE);
-    if (failures.personal) notices.push(PERSONAL_DATA_UNAVAILABLE_NOTICE);
+    if (failures.personal) {
+      notices.push(
+        usedPersonalData ? PERSONAL_DATA_PARTIAL_NOTICE : PERSONAL_DATA_UNAVAILABLE_NOTICE,
+      );
+    }
     if (notices.length === 0) return answer;
     return `${notices.join('\n\n')}\n\n---\n\n${answer}`;
   }
@@ -1073,12 +1299,20 @@ export class Orchestrator {
     finalMessages: LlmMessage[];
     llmUsage?: LlmUsage;
   }): OrchestratorRunResult {
-    const systemMessage = args.finalMessages.find((m) => m.role === 'system');
+    // EVERY system message, not the first one. `finalPrompt.system` is
+    // documented as the final round's system prompt, and `find` returned
+    // only the opening one — so FINAL_TURN_DIRECTIVE, the visibility
+    // notice and the retry's corrective instruction were all absent from
+    // the audit row while being part of what the model was told. Joined
+    // in order, which is the order the provider received them in.
+    const systemContent = args.finalMessages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
     // The CURRENT question is the LAST user message: with multi-turn
     // history in the message list, `find` would return the oldest
     // replayed turn instead.
     const userMessage = [...args.finalMessages].reverse().find((m) => m.role === 'user');
-    const systemContent = systemMessage?.role === 'system' ? systemMessage.content : '';
     const userContent = userMessage?.role === 'user' ? userMessage.content : '';
 
     // Hash the *exact* message set submitted to the LLM, including the

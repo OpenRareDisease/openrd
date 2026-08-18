@@ -65,12 +65,23 @@ import { buildReferralPack } from './referral-pack.js';
  *
  * WHY THE DEVICE SIDE IS A FORMATTER AND NOT THE PDF ITSELF.
  * apps/mobile/lib/clinical-passport-pdf.ts reaches AsyncStorage through
- * api.ts and cannot load outside jest-expo; every date it prints goes
- * through its `safeDate`, which is `formatDateLabel` from
- * clinical-visuals.ts and nothing else. `deviceDates` below calls that
- * function on exactly the summary fields the PDF passes it, in the same
- * order. The whole PDF is rendered against the same expectations in
- * apps/mobile/lib/__tests__/date-only-timezone.test.ts.
+ * api.ts and cannot load outside jest-expo, so this file calls the
+ * formatter the PDF's `safeDate` wraps — `formatProductDate` from
+ * clinical-visuals.ts — on exactly the summary fields the PDF passes
+ * it, in the same order.
+ *
+ * IT IS `formatProductDate` AND NOT `formatDateLabel`, and this block
+ * said `formatDateLabel` for as long as that was true. The PDF stopped
+ * printing the `MM-DD` chip when it stopped being a screen; a comment
+ * here still naming the chip would have this file asserting that the
+ * printed sheet drops its years while the sheet carries them. The whole
+ * PDF is rendered, bytes and all, in
+ * apps/mobile/test-support/passport-date-parity-suite.ts.
+ *
+ * WHAT `deviceDates` STILL CANNOT SEE. Four of the strings on that
+ * sheet are built HERE and printed there verbatim — `summaryCards[]
+ * .meta` — so they are not a formatter question at all and are pinned
+ * separately below, against the same days.
  *
  * AND WHY THE TWO ZONES ARE RUN ONE AFTER THE OTHER RATHER THAN AT THE
  * SAME TIME. A Node process has one TZ, so a single run cannot put the
@@ -234,8 +245,11 @@ const deviceModulePath = new URL('../../../../mobile/lib/clinical-visuals.ts', i
   .href;
 const device = (await import(deviceModulePath)) as {
   PRODUCT_TIME_ZONE: string;
-  formatDateLabel: (value?: string | null) => string;
+  formatProductDate: (value?: string | null) => string | null;
 };
+
+/** What `safeDate` does with a value the summary did not carry. */
+const deviceDate = (value?: string | null) => device.formatProductDate(value) ?? '—';
 
 /**
  * Every date the mobile PDF prints, taken off the same summary and
@@ -248,17 +262,15 @@ const device = (await import(deviceModulePath)) as {
  * handset receives, which is why the device's zone reached them at all.
  */
 const deviceDates = (summary: ClinicalPassportSummaryDTO) => ({
-  生成时间: device.formatDateLabel(summary.generatedAt),
-  最近更新: device.formatDateLabel(summary.latestUpdatedAt),
-  timeline: summary.timeline.map((item) => device.formatDateLabel(item.timestamp)),
+  生成时间: deviceDate(summary.generatedAt),
+  最近更新: deviceDate(summary.latestUpdatedAt),
+  timeline: summary.timeline.map((item) => deviceDate(item.timestamp)),
   admin: summary.fieldOrigins
     .filter((origin) => origin.state === 'admin_entered')
-    .map((origin) => device.formatDateLabel(origin.at)),
-  mri: device.formatDateLabel(summary.imaging.latestMriDate),
-  motor: device.formatDateLabel(
-    summary.motor.latestActivityAt || summary.motor.latestMeasurementAt,
-  ),
-  monitoring: summary.monitoring.items.map((item) => device.formatDateLabel(item.latestDate)),
+    .map((origin) => deviceDate(origin.at)),
+  mri: deviceDate(summary.imaging.latestMriDate),
+  motor: deviceDate(summary.motor.latestActivityAt || summary.motor.latestMeasurementAt),
+  monitoring: summary.monitoring.items.map((item) => deviceDate(item.latestDate)),
 });
 
 const build = (timeZone: string) => {
@@ -272,12 +284,6 @@ const build = (timeZone: string) => {
     device: deviceDates(summary),
   };
 };
-
-/** The three server documents print `YYYY-MM-DD`; the handset prints
- *  `MM-DD` because the PDF's cells are narrow. Comparing them is
- *  comparing the last five characters, and nothing else about this
- *  suite depends on that difference. */
-const mmdd = (value: string) => value.slice(-5);
 
 /** Every 最近来源 row's date, in the order the document prints them. */
 const exportTimelineDates = (markdown: string) =>
@@ -329,14 +335,14 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(line(built.exported.markdown, '生成时间')).toBe(`- 生成时间：${expected}`);
       expect(built.pack.markdown).toContain(`- 生成时间：${expected}`);
       expect(built.share).toContain(`生成时间 ${expected}`);
-      expect(built.device.生成时间).toBe(mmdd(expected));
+      expect(built.device.生成时间).toBe(expected);
     });
 
     it('all four documents print 最近更新 as the same clinic day', () => {
       const expected = '2026-03-06';
       expect(line(built.exported.markdown, '最近更新')).toBe(`- 最近更新：${expected}`);
       expect(built.pack.markdown).toContain(`- 平台内最近更新：${expected}`);
-      expect(built.device.最近更新).toBe(mmdd(expected));
+      expect(built.device.最近更新).toBe(expected);
     });
 
     it('prints the same 最近来源 days, in the same order, on all four', () => {
@@ -346,7 +352,7 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(dates).toEqual(['2026-03-05', '2026-03-03', '2026-02-15', '2026-02-13', '2026-02-11']);
       // The row the handset prints for the same record, in the same
       // order. This is the comparison that was missing.
-      expect(built.device.timeline).toEqual(dates.map(mmdd));
+      expect(built.device.timeline).toEqual(dates);
     });
 
     it('prints the administrator entry date the same way on all four', () => {
@@ -354,7 +360,7 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(built.exported.markdown).toContain(`本平台管理员于 ${expected} 代为录入`);
       expect(built.share).toContain(`本平台管理员于 ${expected} 代为录入`);
       expect(built.pack.markdown).toContain(`本平台管理员于 ${expected} 代为录入`);
-      expect(built.device.admin).toEqual([mmdd(expected)]);
+      expect(built.device.admin).toEqual([expected]);
     });
 
     it('hands the handset the same 最近 MRI and 最近监测 days the server printed', () => {
@@ -362,15 +368,45 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       // survived the split — and they are asserted anyway, because the
       // fix must not have moved them either.
       expect(built.summary.imaging.latestMriDate).toBe('2026-02-13');
-      expect(built.device.mri).toBe('02-13');
+      expect(built.device.mri).toBe('2026-02-13');
       expect(built.summary.monitoring.items.map((item) => item.latestDate)).toEqual([
         null,
         '2026-02-15',
         null,
       ]);
-      expect(built.device.monitoring).toEqual(['—', '02-15', '—']);
+      expect(built.device.monitoring).toEqual(['—', '2026-02-15', '—']);
       // 最近记录 in the info grid: an instant, so it was a day out.
-      expect(built.device.motor).toBe('03-05');
+      expect(built.device.motor).toBe('2026-03-05');
+    });
+
+    /**
+     * THE FOUR STRINGS THE HANDSET CANNOT REPAIR.
+     *
+     * `summaryCards[].meta` leaves this module as a finished sentence
+     * and apps/mobile/lib/clinical-passport-pdf.ts prints it verbatim
+     * into `.metric-meta` at the head of the printed sheet. Three of
+     * the four were built with `formatDateLabel`, the screens' `MM-DD`
+     * chip, so one page carried 「诊断日期 2019-05-03」 beside
+     * 「最近记录 03-03」, 「最近 MRI 02-13」 and 「最近监测 02-15」 — two
+     * date formats in one row of four cards, three of them undatable
+     * by the person holding the paper, above a 时间轴 spanning years.
+     *
+     * Pinned as whole strings rather than as「contains a year」: what a
+     * clinician reads is the sentence.
+     */
+    it('每张卡片的 meta 都带年份 —— 这四句是原样印在纸上的', () => {
+      expect(built.summary.summaryCards.map((card) => card.meta)).toEqual([
+        '诊断日期 2019-05-03',
+        '最近记录 2026-03-03',
+        '最近 MRI 2026-02-13',
+        '最近监测 2026-02-15',
+      ]);
+      // The days themselves are the ones the other three documents
+      // print for the same records, which is the whole point of
+      // building them here.
+      expect(built.summary.summaryCards.map((card) => card.meta).join('\n')).not.toMatch(
+        /(?<![\d-])\d{2}-\d{2}(?![\d-])/,
+      );
     });
 
     it('answers with the product calendar and not with the host', () => {
@@ -410,6 +446,132 @@ describe('the summary clock', () => {
 });
 
 /**
+ * 确诊年份 IS A YEAR, AND EVERY DOCUMENT NOW SAYS SO.
+ *
+ * The baseline questionnaire's only diagnosis-time control takes four
+ * digits. `upsertBaseline` (profile.service.ts) mirrors it into
+ * `patient_profiles.diagnosis_date`, which is a `date` column, as
+ * `${year}-01-01` — and this module read that column and printed the
+ * pin back. So a patient who answered 「2014」 was handed a passport,
+ * a share link, a markdown export and a printed PDF all stating a
+ * diagnosis on 1 JANUARY 2014, a day nobody ever recorded, while the
+ * two machine-readable exports of the same profile emitted the bare
+ * year (`recordedDate: '2014'` in fhir-r4.ts, `{ year: 2014 }` in
+ * treat-nmd.ts). export/occurrence-date.ts refuses exactly this pin
+ * for wheelchair and NIV milestones and says why; 诊断日期 is the one
+ * date a patient is asked for at every appointment.
+ *
+ * Rendered, not reasoned about: the three SERVER documents are built
+ * here from one profile and the assertion is on the bytes each of them
+ * carries. The handset's two strings are the summary fields its PDF
+ * prints verbatim — see the proxy below, and the sheet itself in
+ * apps/mobile/test-support/passport-date-parity-suite.ts.
+ */
+describe('a 确诊年份 the patient gave as a year', () => {
+  const yearOnly = (over: Partial<PatientProfileDTO> = {}): PatientProfileDTO =>
+    ({
+      ...profile(),
+      // What `upsertBaseline` writes for 确诊年份 = 2014.
+      diagnosisDate: '2014-01-01',
+      ...over,
+    }) as unknown as PatientProfileDTO;
+
+  /** The value cell of one 诊断证据 row, as the share page prints it. */
+  const shareRow = (html: string, label: string) =>
+    new RegExp(`<dt>${label}</dt>\\s*<dd>([\\s\\S]*?)</dd>`).exec(html)?.[1] ?? '';
+
+  const documents = (p: PatientProfileDTO) => {
+    const summary = buildClinicalPassportSummary(p, NOW);
+    return {
+      summary,
+      exported: buildClinicalPassportExport(summary).markdown,
+      share: buildPassportSharePage(summary, { expiresAt: T('2026-03-20') }),
+      pack: buildReferralPack(p, NOW).markdown,
+      device: buildClinicalPassportPdfHtmlProxy(summary),
+    };
+  };
+
+  /** The PDF itself cannot load here (see the header). What it prints
+   *  for this row is `summary.diagnosis.diagnosisDate` through
+   *  `safeText`, i.e. verbatim, and its hero card prints
+   *  `summaryCards[0].meta` verbatim — so those two strings ARE the
+   *  handset's answer. The whole sheet is rendered in
+   *  apps/mobile/test-support/passport-date-parity-suite.ts. */
+  function buildClinicalPassportPdfHtmlProxy(summary: ClinicalPassportSummaryDTO) {
+    return {
+      诊断日期: summary.diagnosis.diagnosisDate,
+      卡片: summary.summaryCards.find((card) => card.key === 'diagnosis')?.meta ?? '',
+    };
+  }
+
+  it('prints the year, and no 1 January, on all four documents', () => {
+    process.env.TZ = 'UTC';
+    // The genetic report on this fixture states 2019-05-03, a different
+    // date entirely, so nothing here corroborates a January day.
+    const built = documents(yearOnly());
+
+    expect(built.summary.diagnosis.diagnosisDate).toBe('2014 年');
+    expect(built.exported).toContain('- 诊断日期：2014 年');
+    expect(built.pack).toContain('- 诊断日期：2014 年');
+    // The 诊断日期 <dd> itself, not just「2014 年」 loose in the page —
+    // the 出处 citations further down carry 「… 2019 年 5 月 …」.
+    expect(shareRow(built.share, '诊断日期')).toContain('2014 年');
+    expect(built.device.诊断日期).toBe('2014 年');
+    expect(built.device.卡片).toBe('诊断日期 2014 年');
+
+    for (const document of [built.exported, built.share, built.pack]) {
+      expect(document).not.toContain('2014-01-01');
+    }
+  });
+
+  it('answers the same under every host zone — a year has no instant', () => {
+    for (const timeZone of ['UTC', 'Asia/Shanghai', 'America/Los_Angeles']) {
+      process.env.TZ = timeZone;
+      expect(buildClinicalPassportSummary(yearOnly(), NOW).diagnosis.diagnosisDate).toBe('2014 年');
+    }
+  });
+
+  /**
+   * THE ONE 1 JANUARY THIS MAY NOT SWALLOW. `applyGeneticReportAutofill`
+   * copies the evidence report's 诊断日期 into an empty column verbatim,
+   * so a laboratory that really did print 2014-01-01 arrives in exactly
+   * the same shape. Reducing that one would throw away a day a document
+   * states, which is the opposite failure.
+   */
+  it('keeps 1 January when a report on file states that day', () => {
+    process.env.TZ = 'UTC';
+    const withReportedJanuaryFirst = yearOnly({
+      documents: profile().documents.map((document) =>
+        document.id === 'doc-gene'
+          ? {
+              ...document,
+              ocrPayload: {
+                fields: {
+                  classifiedType: 'genetic_report',
+                  d4z4RepeatCount: '5',
+                  haplotype: '4qA',
+                  diagnosisDate: '2014-01-01',
+                },
+              },
+            }
+          : document,
+      ),
+    } as Partial<PatientProfileDTO>);
+
+    expect(
+      buildClinicalPassportSummary(withReportedJanuaryFirst, NOW).diagnosis.diagnosisDate,
+    ).toBe('2014-01-01');
+  });
+
+  it('leaves a date that is not a year start alone', () => {
+    process.env.TZ = 'UTC';
+    // The unmodified fixture: 2019-05-03 in the column, and a report
+    // stating the same day.
+    expect(buildClinicalPassportSummary(profile(), NOW).diagnosis.diagnosisDate).toBe('2019-05-03');
+  });
+});
+
+/**
  * WHERE THE PRODUCT'S DAY STARTS, ON BOTH SIDES, TO THE MILLISECOND.
  *
  * The suites above would still pass if both sides shared a wrong offset
@@ -436,8 +598,8 @@ describe.each(['UTC', 'America/Los_Angeles', 'Asia/Shanghai', 'Australia/Lord_Ho
 
       expect(summary('2026-03-06T15:59:59.999Z')).toBe('- 生成时间：2026-03-06');
       expect(summary('2026-03-06T16:00:00.000Z')).toBe('- 生成时间：2026-03-07');
-      expect(device.formatDateLabel('2026-03-06T15:59:59.999Z')).toBe('03-06');
-      expect(device.formatDateLabel('2026-03-06T16:00:00.000Z')).toBe('03-07');
+      expect(deviceDate('2026-03-06T15:59:59.999Z')).toBe('2026-03-06');
+      expect(deviceDate('2026-03-06T16:00:00.000Z')).toBe('2026-03-07');
     });
 
     it('does not shift a value that is already a calendar day', () => {
@@ -445,8 +607,8 @@ describe.each(['UTC', 'America/Los_Angeles', 'Asia/Shanghai', 'Australia/Lord_Ho
       // nothing to convert and converting is how the day gets lost.
       expect(formatProductDate('2019-05-03')).toBe('2019-05-03');
       expect(formatProductDate(' 2019-05-03 ')).toBe('2019-05-03');
-      expect(device.formatDateLabel('2019-05-03')).toBe('05-03');
-      expect(device.formatDateLabel(' 2019-05-03 ')).toBe('05-03');
+      expect(deviceDate('2019-05-03')).toBe('2019-05-03');
+      expect(deviceDate(' 2019-05-03 ')).toBe('2019-05-03');
     });
   },
 );

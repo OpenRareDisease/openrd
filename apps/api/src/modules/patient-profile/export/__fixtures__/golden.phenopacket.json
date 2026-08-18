@@ -91,7 +91,7 @@
     },
     {
       "field": "subject.dateOfBirth / diseases[].onset（出生年份与确诊年份）",
-      "reasonZh": "本文件不写出生日期，也不写发病时间。本平台记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。确诊年份也没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它；确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上。"
+      "reasonZh": "本文件不写出生日期，也不写发病时间。本档案上记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它。确诊时间同样没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上，两处都只写到年。"
     },
     {
       "field": "medicalActions（用药、辅助器具与里程碑事件）",

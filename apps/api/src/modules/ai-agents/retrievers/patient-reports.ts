@@ -234,6 +234,13 @@ const FINDINGS_SUMMARY_MAX = 120;
  * raw impression is dropped by the redactor, so the model has nothing
  * to correct itself against — whatever this function says is the only
  * version of the report it will ever see.
+ *
+ * THIS LIST IS NO LONGER WHERE NEGATION IS DECIDED, and it is not
+ * complete — five rounds of additions say it never will be. It is a
+ * cheap first pass that discards a clause whole; the answer that has to
+ * be right is computed per occurrence from NEGATION_ROOT_CHARS. The
+ * 排除 of the second example above now comes from EXCLUSION_PATTERN,
+ * because the negated spelling means the opposite.
  */
 const NEGATION_MARKERS = [
   '未见',
@@ -244,18 +251,120 @@ const NEGATION_MARKERS = [
   // BELT AND BRACES, ADDED WITH THE MATCH-SITE TEST BELOW. Each of
   // these is a form the list missed: 不明显 was here only as 无明显, and
   // 未受累 / 未累及 / 未及 are the bare 未 prefix, which no entry covered.
-  // They are not what makes the negation correct — the match-site test
-  // is — but a clause carrying one of them asserts nothing, and killing
-  // it whole is cheaper than reading it.
+  // They are not what makes the negation correct — the computed scope
+  // of NEGATION_ROOT_CHARS is — but a clause carrying one of them
+  // asserts nothing, and killing it whole is cheaper than reading it.
+  //
+  // THE PRICE OF KILLING IT WHOLE, STATED. A listed marker discards its
+  // clause even where the clause turns round afterwards, so
+  // 「未见水肿而双侧大腿肌群脂肪浸润明显」 yields nothing while its
+  // synonym 「没有水肿但双侧大腿肌群脂肪浸润明显」 — which only the
+  // computed scope reads, and which honours NEGATION_SCOPE_RESETS —
+  // yields 脂肪浸润. Two spellings of one sentence, two answers. It is a
+  // dropped finding rather than an asserted negative, so it is the
+  // direction this file is wrong in on purpose, but it is not a
+  // property anything should rely on.
   '不明显',
   '未受累',
   '未累及',
   '未及',
-  '排除',
+  // 排除 IS NOT HERE, IT IS IN EXCLUSION_PATTERN. A bare list entry
+  // killed the negated form too, and 不排除 / 不能排除 mean the OPPOSITE
+  // of 排除 — see EXCLUSION_PATTERN.
   '阴性',
   '否认',
   '不支持',
 ];
+
+/**
+ * 排除 AND 除外 MEAN OPPOSITE THINGS DEPENDING ON ONE CHARACTER IN FRONT
+ * OF THEM, AND THIS FILE READ BOTH HALVES WRONG.
+ *
+ * 不除外 / 未除外 are HEDGE_MARKERS — 「I cannot rule this out」, a
+ * finding kept on the table. Their synonyms 不排除 / 不能排除 / 不能除外
+ * were not, and the two spellings of one sentence rendered three
+ * different ways on the shipped code:
+ *
+ *   「不除外脂肪浸润。」   → 「影像/报告印象: 脂肪浸润（不除外）」  ✓
+ *   「不排除脂肪浸润。」   → no line at all — the bare 排除 entry above
+ *                          killed the clause, so a finding the report
+ *                          kept open vanished.
+ *   「不能除外脂肪浸润。」 → 「影像/报告印象: 脂肪浸润」 — BYTE-IDENTICAL
+ *                          to a definite finding, which is the exact
+ *                          failure HEDGE_MARKERS says it exists to end.
+ *
+ * And the un-negated 除外, which really is a rule-out, was in neither
+ * place: 「基本除外脂肪浸润。」 emitted 「影像/报告印象: 脂肪浸润」, the
+ * excluded finding as the report's conclusion.
+ *
+ * So the exclusion verb kills its clause only where nothing negates it,
+ * and the negated spellings are all in HEDGE_MARKERS.
+ *
+ * AND THE TWO SIDES OF THAT SENTENCE WERE TWO HAND-KEPT LISTS, WHICH
+ * DISAGREED IN BOTH DIRECTIONS. The lookbehinds used to spell the
+ * exempted prefixes out (「a negation root, optionally plus 能」) while
+ * HEDGE_MARKERS spelled the same set out again as seven literals, and
+ * NEGATION_ROOT_HEDGING spelled it out a third time as 「[能可]?」.
+ * Executed against the family, three of the three lists were wrong:
+ *
+ *   「未能排除脂肪浸润。」     → 「影像/报告印象: 脂肪浸润」 — exempted by
+ *                              the lookbehind, absent from the seven
+ *                              literals, so it survived the clause
+ *                              filter with NO hedge and reached the
+ *                              model BYTE-IDENTICAL to a definite
+ *                              finding. The 8th member of a set the
+ *                              comment called complete at seven.
+ *   「不可除外脂肪浸润。」     → no line at all — NEGATION_ROOT_HEDGING
+ *                              knew 可, the lookbehind did not.
+ *   「不能完全排除脂肪浸润。」 → no line at all. 完全 between the root and
+ *   「不能完全除外脂肪浸润。」    the verb is how a Chinese radiologist
+ *   「不完全排除脂肪浸润。」      actually writes this, and one word in
+ *   「无法除外脂肪浸润。」        the middle put every spelling of it
+ *                              outside all three lists at once.
+ *   「脂肪浸润待除外。」       → no line at all, while its synonym
+ *   「脂肪浸润待排除。」          「脂肪浸润待排」 rendered 「（待排）」.
+ *
+ * So the set is written ONCE, here, and the clause filter, the hedge
+ * vocabulary and the occurrence-level root test are all DERIVED from
+ * it. A spelling added below cannot be exempted from the kill without
+ * also gaining a hedge to be emitted with, which is the invariant the
+ * three lists asserted and none of them enforced.
+ */
+const EXCLUSION_VERBS: readonly string[] = ['除外', '排除'];
+
+/**
+ * Everything a report writes in front of an exclusion verb to mean the
+ * OPPOSITE of it — 「I could not rule this out」, 「this is still to be
+ * ruled out」. Both are findings kept on the table.
+ *
+ * 待 is not a negation and is here anyway: 待除外 / 待排除 is the same
+ * statement as 待排, which HEDGE_MARKERS has always carried, and it
+ * turns the verb the same way round. It is skipped when the occurrence
+ * level derives its own view below, because 待 is not a negation root.
+ */
+const EXCLUSION_HEDGE_PREFIXES: readonly string[] = [
+  '不',
+  '未',
+  '不能',
+  '未能',
+  '不可',
+  '无法',
+  '不完全',
+  '不能完全',
+  '未能完全',
+  '待',
+];
+
+/** Every negated spelling of the exclusion verbs, as literals, so the
+ *  hedge HEDGE_MARKERS emits is still a word from a list rather than
+ *  one copied out of the report. */
+const EXCLUSION_HEDGES: readonly string[] = EXCLUSION_HEDGE_PREFIXES.flatMap((prefix) =>
+  EXCLUSION_VERBS.map((verb) => prefix + verb),
+);
+
+const EXCLUSION_PATTERN = new RegExp(
+  '(?<!(?:' + EXCLUSION_HEDGE_PREFIXES.join('|') + '))(?:' + EXCLUSION_VERBS.join('|') + ')',
+);
 
 /**
  * A NEGATED HEDGE IS A RULE-OUT, AND IT IS THE STANDARD ONE.
@@ -266,7 +375,8 @@ const NEGATION_MARKERS = [
  * hedge and the finding came out asserted with a qualifier that says
  * the opposite of the report. None contains a listed negation marker,
  * and the 不 is not adjacent to the term, so neither the clause filter
- * nor the match-site test caught them either. Executed:
+ * nor the single-adjacent-character match-site test of the time caught
+ * them either. Executed:
  *
  *   - 「双侧大腿肌群改变不考虑肌营养不良」 → 「影像/报告印象:
  *     肌营养不良（考虑）」
@@ -278,18 +388,44 @@ const NEGATION_MARKERS = [
  * report had just excluded.
  *
  * These are patterns rather than list entries because the negation is
- * a CHARACTER against the hedge word, on either side of it: 不/未/无/非
- * in front (不考虑, 未考虑, 不倾向于, 不可能), or 性不大 / 性小 / 性低
- * behind (可能性不大, 可能性较小). 不除外 / 未除外 are NOT matched —
- * they are hedges in their own right and 除外 is not one of the words
- * below.
+ * a CHARACTER against the hedge word rather than a word of its own:
+ * 不/未/无/非 in front (不考虑, 未考虑, 不倾向于, 不可能), or a
+ * diminishing tail behind 可能性 (可能性不大, 可能性较小).
+ *
+ * THE TAIL IS NOT ADJACENT TO 可能性 AND THE PATTERN MAY NOT ASSUME IT
+ * IS. This read 可能性(?:不大|不高|较小|较低|小|低), which requires the
+ * diminishing word to start at the character after 性, and an
+ * intensifier is the ordinary way to write this rule-out:
+ * 可能性极小 / 可能性极低 / 可能性甚小 / 可能性很小 / 可能性偏低 /
+ * 可能性最小 / 可能性不太大 / 可能性并不大 all walked past it, and
+ * every one of them then matched 可能 from HEDGE_MARKERS. Executed on
+ * the shipped code, 「双侧大腿脂肪浸润可能性极小。」 reached the model as
+ * 「影像/报告印象: 脂肪浸润（可能）」 in strict AND precise mode — the
+ * finding the report had just ruled out, delivered as one still on the
+ * table, with the raw impression dropped so nothing downstream could
+ * correct it.
+ *
+ * The intensifier is optional and the polarity lives in the TAIL, so
+ * 可能性极大 / 可能性很高 / 可能性较高 — the same intensifiers on an
+ * ASSERTION — still survive the filter and are read as the hedges they
+ * are. Only 小 / 低 / 不大 / 不高 (and 微乎其微) end a rule-out.
+ *
+ * 除外 IS ON THIS LIST NOW, AND WITH THE POLARITY THE OTHER WAY ROUND.
+ * This block used to end 「不除外 / 未除外 are NOT matched — they are
+ * hedges in their own right and 除外 is not one of the words below」,
+ * and the second half of that stopped being true when EXCLUSION_PATTERN
+ * arrived. The first half still is: for 考虑 / 倾向 / 可能 the BARE word
+ * is the hedge and the negated one is the rule-out, and for 除外 / 排除
+ * it is the reverse, so EXCLUSION_PATTERN matches the bare verb and
+ * excludes the negated spellings, which live in HEDGE_MARKERS.
  *
  * A matching clause is killed whole, like every other negation here: a
  * clause that rules a finding out asserts nothing this channel wants.
  */
 const NEGATION_PATTERNS: readonly RegExp[] = [
   /[不未无非](?:考虑|倾向|可能)/,
-  /可能性(?:不大|不高|较小|较低|小|低)/,
+  /可能性(?:[极甚很颇较偏最稍略]?[小低]|(?:并|太)?不(?:太)?[大高]|微乎其微)/,
+  EXCLUSION_PATTERN,
 ];
 
 /**
@@ -319,9 +455,54 @@ const NEGATION_PATTERNS: readonly RegExp[] = [
  * diagnosed first, so 其兄 / 其姐 / 其弟 / 其妹 are at least as common in
  * these reports as 其母.
  *
- * 其子 / 其女 are here for the same reason and cost a false kill on
- * 其子宫: that drops a pelvic clause this vocabulary has almost nothing
- * to say about anyway, which is the cheap direction of the trade.
+ * AND SPELLING OUT EIGHT RELATIVES DID NOT MAKE THE LIST A FAMILY
+ * EITHER — the paragraph above asserted a whole family and the code
+ * under it held a nuclear one, so the next ring of the pedigree walked
+ * through exactly as 其兄 had. Executed, each returning
+ * 「影像/报告印象: 肌营养不良」 with the patient's own negative in the
+ * next clause correctly dropped, i.e. the relative's diagnosis as the
+ * ONLY thing the model was told about the report:
+ *
+ *   「堂兄确诊肌营养不良，本人双侧大腿未见脂肪浸润。」
+ *   「同胞确诊肌营养不良，本人双侧大腿未见脂肪浸润。」
+ *   「其姑母确诊肌营养不良，本人双侧大腿未见脂肪浸润。」
+ *   「表姐确诊肌营养不良。」「侄子确诊肌营养不良。」
+ *   「舅舅确诊肌营养不良。」「姑姑确诊肌营养不良。」
+ *   「先证者之弟确诊肌营养不良。」
+ *
+ * 同胞 is the clinical word for sibling, so it defeated the very
+ * argument the paragraph above makes; and an autosomal dominant disease
+ * is precisely the one whose reports name COLLATERAL relatives — the
+ * affected cousin, aunt, uncle, nephew — which no enumeration of the
+ * nuclear family can reach.
+ *
+ * So the possessive constructions (其X, X之Y, X的Y) and the collateral
+ * prefixes (堂/表/胞 + a sibling word) are PATTERNS below rather than
+ * entries, and the kinship morphemes that spell nothing else in
+ * clinical Chinese — 侄 甥 舅 姨 叔 婶 嫂 — are bare markers.
+ *
+ * THIS IS STILL NOT EVERY RELATIVE, AND NOTHING HERE CLAIMS IT IS.
+ * Chinese kinship is open-ended and a relative written in none of these
+ * shapes still walks through; what the patterns buy is that the common
+ * shapes no longer have to be discovered one funeral at a time. The
+ * structured `familyHistory` on the profile, not this channel, is where
+ * a family history is supposed to be read.
+ *
+ * THREE THINGS ARE DELIBERATELY LEFT ALIVE, EACH FOR A REASON:
+ *   - Bare 先证者. The proband usually IS this patient, so killing on it
+ *     would drop the patient's own findings. Only the possessive
+ *     先证者之X / 先证者的X names someone else.
+ *   - 姑息 / 姑且. 姑 is kinship everywhere else, but 姑息 is
+ *     「palliative」 and killing it would drop a real clause.
+ *   - Bare 孙. It is one of the commonest Chinese surnames, so only
+ *     孙子 / 孙女 / 外孙 are read as kin; 孙 alone would kill the clause
+ *     that names the reporting radiologist along with its finding.
+ *
+ * 其子 / 其女 cost a false kill on 其子宫: that drops a pelvic clause
+ * this vocabulary has almost nothing to say about anyway, which is the
+ * cheap direction of the trade. The X之Y / X的Y pattern deliberately
+ * does NOT carry 子 / 女 for the same reason in reverse — 「的子宫」 is
+ * a far likelier string than 「的子」 meaning a son.
  */
 const THIRD_PARTY_MARKERS: readonly string[] = [
   '家族史',
@@ -329,14 +510,6 @@ const THIRD_PARTY_MARKERS: readonly string[] = [
   '家系',
   '患者母亲',
   '患者父亲',
-  '其母',
-  '其父',
-  '其兄',
-  '其姐',
-  '其弟',
-  '其妹',
-  '其子',
-  '其女',
   '母亲',
   '父亲',
   '哥哥',
@@ -347,12 +520,46 @@ const THIRD_PARTY_MARKERS: readonly string[] = [
   '姐妹',
   '儿子',
   '女儿',
+  '同胞',
   '家属',
   '亲属',
+  '家人',
+  '亲人',
   '祖母',
   '祖父',
   '外祖母',
   '外祖父',
+  '爷爷',
+  '奶奶',
+  '外公',
+  '外婆',
+  '姥姥',
+  '姥爷',
+  '侄',
+  '甥',
+  '舅',
+  '姨',
+  '叔',
+  '婶',
+  '嫂',
+  '妻子',
+  '丈夫',
+  '配偶',
+];
+
+/** The kinship shapes an enumeration cannot hold. See the block above
+ *  for what each one is for and what it deliberately spares. */
+const THIRD_PARTY_PATTERNS: readonly RegExp[] = [
+  // 其母 / 其兄 / 其女 / 其祖父 — the possessive that started this.
+  /其[母父兄姐弟妹子女祖孙]/,
+  // 先证者之弟 / 患者的姐姐 — the same possessive spelled out.
+  /[之的][母父兄姐弟妹]/,
+  // 堂兄 / 表姐 / 胞弟 — the collateral branches of the pedigree.
+  /[堂表胞][兄弟姐妹哥姊]/,
+  // 姑母 / 姑姑 / 其姑, but not 姑息 (palliative) or 姑且.
+  /姑(?![息且])/,
+  /伯[父母]|大伯/,
+  /孙[子女]|外孙/,
 ];
 
 /**
@@ -402,7 +609,11 @@ const CLAUSE_KILL_MARKERS: readonly string[] = [
   ...METHYLATION_MARKERS,
 ];
 
-const CLAUSE_KILL_PATTERNS: readonly RegExp[] = [...NEGATION_PATTERNS, ...HISTORY_PATTERNS];
+const CLAUSE_KILL_PATTERNS: readonly RegExp[] = [
+  ...NEGATION_PATTERNS,
+  ...THIRD_PARTY_PATTERNS,
+  ...HISTORY_PATTERNS,
+];
 
 const clauseIsDisqualified = (clause: string): boolean => {
   const lowered = clause.toLowerCase();
@@ -431,7 +642,24 @@ const clauseIsDisqualified = (clause: string): boolean => {
  * standard Chinese rule-out (不考虑 / 可能性不大), which is why
  * NEGATION_PATTERNS is tested against the clause BEFORE any of this
  * runs. Adding a marker to this list means checking whether the same
- * characters also spell a rule-out.
+ * characters also spell a rule-out. The 除外 / 排除 family is the same
+ * question answered the other way round — the BARE verb is the rule-out
+ * and the NEGATED one is the hedge — and the whole of that family is
+ * SPLICED IN FROM EXCLUSION_HEDGES rather than copied out here, so the
+ * spellings this list carries and the spellings EXCLUSION_PATTERN
+ * spares are the same strings by construction. Hand-copied, they were
+ * not: see EXCLUSION_PATTERN for the four ways the two lists drifted,
+ * including 未能排除, which the clause filter spared and this list did
+ * not carry, so it reached the model with no hedge at all.
+ *
+ * MATCHED LONGEST FIRST, WHICH THE ORDER BELOW NO LONGER DECIDES. Two
+ * callers take the FIRST entry that matches at a position
+ * (`resolveHedge`, `readMeasurement`), and the family brings in
+ * 待排除 while 待排 was already here — a prefix of it. Sorted by
+ * descending length, 「脂肪浸润待排除」 resolves to 待排除 rather than
+ * being read as 待排 with a stray 除 left over. Nothing else here is a
+ * prefix of anything else, so the sort is the only thing keeping that
+ * true as entries arrive.
  *
  * THE HEDGE IS RESOLVED AT THE OCCURRENCE, NOT OVER THE CLAUSE — see
  * `resolveHedge`. Resolved once per clause and glued onto every term in
@@ -444,13 +672,16 @@ const HEDGE_MARKERS: readonly string[] = [
   '待排',
   '可疑',
   '疑似',
-  '不除外',
-  '未除外',
+  // ONE STATEMENT, TWENTY SPELLINGS, AND NOT ONE OF THEM WRITTEN TWICE.
+  // See EXCLUSION_PATTERN: this used to be seven literals kept by hand
+  // against a lookbehind that spelled the same set out differently, and
+  // the two drifted in both directions.
+  ...EXCLUSION_HEDGES,
   '倾向于',
   '考虑',
   '可能',
   '建议随访',
-];
+].sort((a, b) => b.length - a.length);
 
 /**
  * Severity, emitted ONLY glued to the occurrence it sits against.
@@ -526,10 +757,17 @@ const MEASUREMENT_BRIDGES: readonly string[] = ['运动度', '运动', '水平',
  * BUT WHITESPACE IS ONLY A BOUNDARY WHERE THE PHRASE ALREADY ENDED —
  * see `healWrappedClauseMarkers`, which runs first.
  */
-const CLAUSE_SPLIT = /[，,。.；;、\r\n\t 　]/;
+/** The punctuation half of the boundary set, named separately because
+ *  `endsMidKillPhrase` has to ask where the CURRENT clause began — a
+ *  negation two clauses back is not dangling over this wrap — and the
+ *  whitespace half is exactly what is in question at that point. One
+ *  definition, so the two tests cannot drift apart. */
+const CLAUSE_PUNCTUATION = '，,。.；;、';
+const CLAUSE_SPLIT = new RegExp('[' + CLAUSE_PUNCTUATION + '\\r\\n\\t 　]');
 
 /**
- * THE NEGATION IS TESTED AT THE MATCH SITE, not at the clause.
+ * THE NEGATION IS COMPUTED AT THE MATCH SITE, not looked up over the
+ * clause.
  *
  * A marker list scanned over a whole clause answers 「does this clause
  * contain a negating word」, and Chinese negates a term by touching it:
@@ -543,26 +781,144 @@ const CLAUSE_SPLIT = /[，,。.；;、\r\n\t 　]/;
  * summary is the ONLY version of the report the model ever sees, in
  * both modes; there is nothing downstream to correct it against.
  *
- * So the question asked is about the characters either side of THIS
- * occurrence. A term preceded by 未 / 无 / 非 / 不, or followed
- * immediately by 不明显 / 未见 / 阴性 / 正常 / a resolution verb, is
- * ruled out at that occurrence and the search moves on.
+ * AND THE MATCH-SITE TEST WAS A SINGLE ADJACENT CHARACTER, WHICH IS
+ * THE SAME MISTAKE ONE SIZE DOWN. It asked only about `clause[start-1]`,
+ * so it saw 未受累 and 无水肿 and nothing else: every Chinese negation
+ * that puts a verb between the negating character and the finding —
+ * which is most of them — walked through both this test and the marker
+ * list above and was emitted as the report's conclusion. Executed, on
+ * the shipped code:
  *
- * WHAT THIS TEST DOES AND DOES NOT BUY, stated correctly. It was
- * documented here as keeping 「未见脂肪浸润 右侧脂肪浸润明显」 asserted
- * 「inside one clause」, and executing that exact string produced
- * nothing — because a clause carrying a LISTED marker (未见) is
- * discarded whole by `clauseIsDisqualified` before this function is
- * ever called, and no per-occurrence test can rescue it. (That string
- * does now yield 脂肪浸润, but from CLAUSE_SPLIT: the space between the
- * halves makes them two clauses and only the first is discarded.)
+ *   「没有脂肪浸润。」   → 「影像/报告印象: 脂肪浸润」
+ *   「未出现肌肉萎缩。」 → 「影像/报告印象: 肌肉萎缩」
+ *   「不伴水肿。」       → 「影像/报告印象: 水肿」
+ *   「未合并炎性改变。」 → 「影像/报告印象: 炎性改变」
+ *   「未伴水肿。」       → 「影像/报告印象: 水肿」
+ *   「无明确脂肪浸润。」 → 「影像/报告印象: 脂肪浸润」
  *
- * What this test actually buys is the forms that are NOT listed
- * markers — a bare 无 / 非 / 不 glued to the term, or a qualifier glued
- * behind it. 「左侧无水肿而右侧水肿明显」 is genuinely one clause,
- * carries no listed marker, and is still asserted.
+ * 无明确 is the one that says the list was never going to be finished:
+ * NEGATION_MARKERS carries 无明显 and 不明显, its two nearest neighbours,
+ * and radiology writes 明确 at least as often as 明显.
+ *
+ * THIS IS THE FIFTH NEGATION-VOCABULARY MISS IN FIVE ROUNDS, SO THE
+ * VOCABULARY IS THE DEFECT. The scope of a negation is now COMPUTED
+ * from the span between the negating character and the term rather than
+ * looked up: see `negationScopes`. A negation root — 未 / 无 / 不 / 非 /
+ * 没 / 否, the closed set Chinese actually builds negations out of —
+ * that reaches a finding across a short span of ordinary predicate
+ * material negates that finding and everything after it in the clause.
+ * No entry has to be added for the next 未探及 / 未描述 / 不合并 / 无确切.
+ *
+ * WHAT COSTS THE STRUCTURE MONEY IS THE OPPOSITE DIRECTION: a negating
+ * character that is part of a WORD rather than an operator. 肌营养不良,
+ * 心律不齐 and 不对称 are the vocabulary's own entries and would have
+ * negated everything written after them; 不同程度 (「双侧大腿肌群不同程
+ * 度脂肪浸润」 — a definite positive finding), 非特异性 and 不完全性
+ * are the same thing outside the vocabulary. Both are excluded by
+ * `negationScopes`, the first structurally (a root inside a matched term
+ * span is part of that term's name, so adding a vocabulary entry that
+ * contains 不 cannot reopen this) and the second by
+ * NEGATION_ROOT_LEXICAL, which is a list — a much smaller and much more
+ * closed one than the negation vocabulary it replaces, because it names
+ * adjectives rather than verbs.
  */
-const NEGATION_PREFIX_CHARS: ReadonlySet<string> = new Set(['未', '无', '非', '不']);
+const NEGATION_ROOT_CHARS: ReadonlySet<string> = new Set(['未', '无', '非', '不', '没', '否']);
+
+/**
+ * How far a negation root may reach to pick up its first finding.
+ *
+ * The material between them is the predicate it negates plus, very
+ * often, the region the report is talking about: 未见 / 没有 / 不伴 /
+ * 未合并 is one to three characters, and 双侧大腿肌群 / 双侧肩胛带肌 /
+ * 明显的 is another six to eight. Executed at five, the predicates were
+ * caught and the region was not, so
+ * 「没有双侧大腿肌群脂肪浸润。」 → 「影像/报告印象: 脂肪浸润」 and
+ * 「未出现双侧肩胛带肌肉萎缩。」 → 「影像/报告印象: 肌肉萎缩」 — the
+ * same inversion the reach exists to stop, moved one topic phrase to
+ * the right.
+ *
+ * Twelve covers the region phrases these reports actually write. What
+ * it costs is the other direction — a clause whose 不 is lexical, is
+ * not one of the NEGATION_ROOT_LEXICAL adjectives and is not inside a
+ * vocabulary term will now drop a finding up to twelve characters
+ * behind it (「双侧大腿肌群显示不满意伴脂肪浸润」). That is a dropped
+ * finding rather than an asserted negative, which is the direction this
+ * file is wrong in on purpose.
+ */
+const NEGATION_REACH = 12;
+
+/**
+ * Root characters that are the first character of a WORD, not a
+ * negation operator. See NEGATION_ROOT_CHARS: these are the adjectives,
+ * and an adjective negates the syllable behind it rather than the
+ * finding in front of it.
+ *
+ * 不完 is 不完全性右束支传导阻滞 — an incomplete block IS a block, and
+ * reading the 不 as an operator would have deleted the finding the line
+ * exists to report.
+ */
+const NEGATION_ROOT_LEXICAL: readonly string[] = [
+  '不同',
+  '不均',
+  '不规',
+  '不完',
+  '不典',
+  '不清',
+  '不佳',
+  '不良',
+  '不对',
+  '不齐',
+  '不适',
+  '不定',
+  '非特',
+  '非典',
+  '非均',
+  '无创',
+  '无痛',
+];
+
+/**
+ * A root followed by 除外 / 排除 is a HEDGE, not a negation: 不除外 and
+ * 未除外 say the finding may be there, and both are in HEDGE_MARKERS.
+ * Reading their 不 / 未 as an operator would invert the one construction
+ * radiologists use to keep a finding on the table.
+ *
+ * THE CLAUSE FILTER SPARING A SPELLING BUYS NOTHING IF THIS KILLS IT AT
+ * THE OCCURRENCE. This was a third hand-kept copy of the exclusion
+ * family — 「[能可]?」 — and it did not agree with either of the other
+ * two: it knew the 可 of 不可除外 that EXCLUSION_PATTERN did not, and
+ * neither knew the 完全 of 不能完全排除. So 「不能完全排除脂肪浸润」
+ * survives the clause filter only if the 不 at position 0 is also read
+ * as part of the hedge here; otherwise its computed scope covers
+ * 脂肪浸润 and the finding is dropped one layer further down, with the
+ * clause filter's exemption having achieved nothing visible.
+ *
+ * Tested against the text AFTER the root character, so it is
+ * EXCLUSION_HEDGE_PREFIXES with that character removed — and only the
+ * prefixes that START with a negation root, because 待 never reaches
+ * this test. The empty tail that 不除外 / 未除外 leave behind is what
+ * used to be the 「?」 on 「[能可]?」.
+ */
+const EXCLUSION_HEDGE_ROOT_TAILS: readonly string[] = [
+  ...new Set(
+    EXCLUSION_HEDGE_PREFIXES.filter((prefix) => NEGATION_ROOT_CHARS.has(prefix[0])).map((prefix) =>
+      prefix.slice(1),
+    ),
+  ),
+].sort((a, b) => b.length - a.length);
+
+const NEGATION_ROOT_HEDGING = new RegExp(
+  '^(?:' + EXCLUSION_HEDGE_ROOT_TAILS.join('|') + ')(?:' + EXCLUSION_VERBS.join('|') + ')',
+);
+
+/**
+ * Where a negation's scope ENDS before the clause does. Chinese resets
+ * polarity with a contrastive: 「左侧无水肿而右侧水肿明显」 is one
+ * clause, and the 水肿 after 而 is asserted. Without this the rightward
+ * scope would swallow it.
+ */
+const NEGATION_SCOPE_RESETS: ReadonlySet<string> = new Set(['而', '但', '然', '余', '另']);
+
 const NEGATION_SUFFIXES: readonly string[] = ['不明显', '未见', '阴性', '正常'];
 
 /**
@@ -622,36 +978,156 @@ const OCCURRENCE_KILL_SUFFIXES: readonly string[] = [...NEGATION_SUFFIXES, ...RE
  *
  * So a whitespace run is healed away — treated as the wrap it is —
  * whenever the text to its LEFT ends mid-kill-phrase: on a clause-kill
- * marker (未见 / 其母 / 既往 / 甲基化 …), on the bare 未 / 无 / 非 / 不
- * that a wrap through the middle of 未见 leaves dangling, or on the 原
- * whose 原发 lookahead cannot see across a break. Everything else keeps
- * its boundary, so 「双侧大腿脂肪浸润明显 未见肌肉萎缩」 — whitespace
- * AFTER a completed finding, before the marker — still splits and still
- * yields 脂肪浸润.
+ * marker or kinship pattern (未见 / 其母 / 堂兄 / 既往 / 甲基化 …) — see
+ * THIRD_PARTY_WRAP_PATTERNS for the pattern half — on the 原 whose 原发
+ * lookahead cannot see across a break, or on a NEGATION THAT HAS NOT YET REACHED
+ * ITS OBJECT — see `endsInReachingNegation`. Everything else keeps its
+ * boundary, so 「双侧大腿脂肪浸润明显 未见肌肉萎缩」 — whitespace AFTER a
+ * completed finding, before the marker — still splits and still yields
+ * 脂肪浸润.
  *
  * ONLY THE MARKERS THAT GOVERN WHAT COMES AFTER THEM. 不明显 / 未受累 /
  * 未累及 / 阴性 negate the finding to their LEFT, which is already in
  * the same fragment, so a wrap cannot strand them from anything and
  * healing there would only swallow the NEXT clause: 「基因检测阴性 双侧
  * 大腿脂肪浸润」 would lose a definite finding to a marker that was
- * never about it. They are excluded.
+ * never about it. They are excluded — and none of them is reachable
+ * through `endsInReachingNegation` either, because each has already met
+ * its object by the time the wrap arrives.
  *
  * A wrap we heal wrongly costs a dropped finding; a wrap we split
  * wrongly asserts the negative of one. This file is wrong in the first
- * direction on purpose.
+ * direction on purpose — and until `endsInReachingNegation` existed it
+ * was wrong in the SECOND direction for every negation the file had
+ * just finished moving off the marker list. See that function.
  */
 const WHITESPACE_RUN = /[\r\n\t 　]+/g;
 const TRAILING_KILL_MARKERS: readonly string[] = ['不明显', '未受累', '未累及', '阴性'];
 const WRAP_DANGLING_MARKERS: readonly string[] = [
   ...CLAUSE_KILL_MARKERS.filter((marker) => !TRAILING_KILL_MARKERS.includes(marker)),
   '原',
+  // The exclusion verbs govern rightward like the rest of this list,
+  // and they are no longer on CLAUSE_KILL_MARKERS — see
+  // EXCLUSION_PATTERN — so a wrap between 排除 and its object would
+  // split the rule-out off the finding it rules out and emit it.
+  '排除',
+  '除外',
 ];
+
+/**
+ * The kinship kills that are PATTERNS govern rightward exactly like the
+ * markers above — 「其母\n确诊肌营养不良」 is one wrapped sentence — and
+ * a marker list cannot see them. Moving 其母 / 其父 / 其兄 … off
+ * THIRD_PARTY_MARKERS and into THIRD_PARTY_PATTERNS silently took them
+ * out of this heal, and executing 「其母\n确诊肌营养不良」 returned
+ * 「影像/报告印象: 肌营养不良」 again — the mother's diagnosis as the
+ * patient's imaging conclusion, the very first failure in this file's
+ * third-party block, reopened by the fix for its successor.
+ *
+ * Each pattern is re-anchored to the END of the left-hand text. The
+ * group is explicit because these patterns contain alternations, and
+ * 「伯[父母]|大伯$」 would anchor the last branch only.
+ */
+const THIRD_PARTY_WRAP_PATTERNS: readonly RegExp[] = THIRD_PARTY_PATTERNS.map(
+  (pattern) => new RegExp('(?:' + pattern.source + ')$'),
+);
+
+/**
+ * THE HEAL HAS TO BE COMPUTED FOR THE SAME REASON THE SCOPE IS.
+ *
+ * The marker list above answers 「does the left-hand text end on a
+ * negating WORD」, and the negations this file reads are no longer
+ * words — `NEGATION_ROOT_CHARS` moved them to a root plus whatever
+ * predicate the radiologist happened to write. Every one of those ends
+ * on an ordinary character (没有, 不伴, 未出现, 未合并, 无明确 end on
+ * 有 / 伴 / 现 / 并 / 确), so the list matched none of them and the bare
+ * single-character test matched none of them either: it asked only
+ * about `before[before.length - 1]`, which is a root only when the wrap
+ * falls INSIDE 未见. Executed on the shipped code, through the
+ * retriever and the strict renderer:
+ *
+ *   「双侧大腿肌群没有明显\n脂肪浸润」  → 「影像/报告印象: 脂肪浸润」
+ *   「双侧大腿肌群没有　明显脂肪浸润」  → 「影像/报告印象: 脂肪浸润」
+ *   「双侧大腿脂肪浸润明显\n不伴\n水肿」→ 「影像/报告印象: 脂肪浸润、水肿」
+ *   「未出现\n肌肉萎缩」                → 「影像/报告印象: 肌肉萎缩」
+ *   「未合并\n炎性改变」                → 「影像/报告印象: 炎性改变」
+ *   「无明确\n脂肪浸润」                → 「影像/报告印象: 脂肪浸润」
+ *
+ * — the ruled-OUT finding as the report's conclusion, in both redaction
+ * modes, with the raw impression dropped so nothing downstream
+ * disagrees. That is the second direction, the one the block above says
+ * this file is never wrong in. The unwrapped spelling of every one of
+ * those strings returns null.
+ *
+ * So the question asked is the one `negationScopes` asks, minus the
+ * half that lives on the other side of the break: is there a negation
+ * root in the current clause that has NOT yet met an object? Same three
+ * exemptions — a root inside a matched term is part of that term's name
+ * (肌营养不良, 心律不齐), a root beginning a lexical adjective
+ * (NEGATION_ROOT_LEXICAL) or a hedge (NEGATION_ROOT_HEDGING) is not an
+ * operator — plus: a root that has already reached a vocabulary term,
+ * or whose polarity a contrastive (NEGATION_SCOPE_RESETS) has already
+ * reset, is finished with, and a root further back than NEGATION_REACH
+ * could not govern across the wrap even if it were healed.
+ *
+ * WHAT THIS COSTS, STATED. A negation whose object is real but is not
+ * in this vocabulary reads as still-reaching, so the wrap heals, the
+ * fragments merge and a definite finding on the far side is dropped:
+ * 「双侧大腿肌群未见明显异常 肩胛带肌脂肪浸润」 and
+ * 「双侧大腿肌群未见积液 肩胛带肌脂肪浸润」 both returned 脂肪浸润 before
+ * and return null now — 异常 and 积液 are objects this vocabulary
+ * deliberately does not carry (see the 未见明显异常 note in
+ * CLINICAL_FINDING_TERMS), so nothing here can see that the 未见 is
+ * already finished with them. That is not a new hole: NEGATION_REACH
+ * already drops those findings for the same two sentences written
+ * without the space, so the space-separated spelling now answers the
+ * same way instead of differently. And it is a dropped finding, which
+ * is the direction stated above — the alternative, a closure list of
+ * normality nouns, buys them back by splitting 「未见异常\n信号增高」 and
+ * asserting the increased signal the report just ruled out.
+ */
+const endsInReachingNegation = (before: string): boolean => {
+  // A LEFTWARD MARKER HAS ALREADY MET ITS OBJECT, and its object is on
+  // this side of the wrap. 不明显 / 未累及 / 未受累 / 阴性 all end on a
+  // negation root plus a couple of characters that name no vocabulary
+  // term, so the reaching test below would read every one of them as
+  // still looking for something and heal a boundary the block above
+  // spends a paragraph saying must stay: 「大腿萎缩不明显 肩胛带肌重度萎
+  // 缩」 would merge and lose 重度萎缩 to a 不明显 that was never about
+  // it. Same list, same reason, one test earlier.
+  if (TRAILING_KILL_MARKERS.some((marker) => before.endsWith(marker))) return false;
+  let clauseStart = 0;
+  for (let i = 0; i < before.length; i += 1) {
+    if (CLAUSE_PUNCTUATION.includes(before[i])) clauseStart = i + 1;
+  }
+  const segment = before.slice(clauseStart);
+  const terms = termOccurrences(segment);
+  for (let i = 0; i < segment.length; i += 1) {
+    if (!NEGATION_ROOT_CHARS.has(segment[i])) continue;
+    if (segment.length - (i + 1) > NEGATION_REACH) continue;
+    if (terms.some((term) => i >= term.start && i < term.end)) continue;
+    const after = segment.slice(i);
+    if (NEGATION_ROOT_LEXICAL.some((word) => after.startsWith(word))) continue;
+    if (NEGATION_ROOT_HEDGING.test(segment.slice(i + 1))) continue;
+    if (terms.some((term) => term.start > i)) continue;
+    if (
+      after
+        .slice(1)
+        .split('')
+        .some((char) => NEGATION_SCOPE_RESETS.has(char))
+    )
+      continue;
+    return true;
+  }
+  return false;
+};
 
 const endsMidKillPhrase = (before: string): boolean => {
   if (before.length === 0) return false;
-  if (NEGATION_PREFIX_CHARS.has(before[before.length - 1])) return true;
   const lowered = before.toLowerCase();
-  return WRAP_DANGLING_MARKERS.some((marker) => lowered.endsWith(marker));
+  if (WRAP_DANGLING_MARKERS.some((marker) => lowered.endsWith(marker))) return true;
+  if (THIRD_PARTY_WRAP_PATTERNS.some((pattern) => pattern.test(lowered))) return true;
+  return endsInReachingNegation(before);
 };
 
 const healWrappedClauseMarkers = (raw: string): string =>
@@ -669,23 +1145,56 @@ const stripLeadingAdverbs = (text: string): string => {
 };
 
 /**
- * The direction word a measurement noun is carrying, or null. Steps
- * over the adverbs, the severity qualifier and the measurement bridges
- * that can sit between the noun and its direction; see
- * MEASUREMENT_DIRECTIONS for why the null answer drops the finding.
+ * What a measurement noun is carrying: its direction word, any hedge
+ * written INSIDE the noun-to-direction span, and how many characters
+ * past the noun the whole phrase ends. Null when no direction word is
+ * reached — see MEASUREMENT_DIRECTIONS for why that drops the finding.
+ *
+ * Steps over the adverbs, the severity qualifier and the measurement
+ * bridges that can sit between the noun and its direction.
+ *
+ * AND OVER THE HEDGE, WHICH IT DID NOT. 「射血分数可能降低」 puts the
+ * hedge exactly where this walk stopped, so `rest` began 可能降低, no
+ * direction matched, and an equivocal ejection fraction produced no
+ * 影像/报告印象 line at all — a cardiac finding on a cohort screened for
+ * cardiomyopathy, deleted. It is carried out as `hedge` instead.
+ *
+ * `end` EXISTS BECAUSE THE HEDGE SCOPE NEEDS IT. The caller used to ask
+ * `resolveHedge` what was written behind the NOUN while emitting a
+ * phrase that runs on through the bridge and the direction word, so a
+ * hedge written behind the direction — the only place Chinese can put
+ * one for these nouns — was never in the window that was searched:
+ * 「射血分数降低待排」 rendered 「影像/报告印象: 射血分数降低」,
+ * byte-identical to the definite 「射血分数降低」. That is the failure
+ * HEDGE_MARKERS says it exists to end, on the three nouns whose entire
+ * clinical content is the direction word.
  */
-const readMeasurementDirection = (after: string): string | null => {
+interface MeasurementReading {
+  direction: string;
+  hedge: string;
+  end: number;
+}
+
+const readMeasurement = (after: string): MeasurementReading | null => {
   let rest = after;
+  let hedge = '';
   for (;;) {
-    let next = stripLeadingAdverbs(rest);
-    const severity = SEVERITY_QUALIFIERS.find((q) => next.startsWith(q));
-    if (severity) next = next.slice(severity.length);
-    const bridge = MEASUREMENT_BRIDGES.find((b) => next.startsWith(b));
-    if (bridge) next = next.slice(bridge.length);
-    if (next === rest) break;
-    rest = next;
+    const before = rest;
+    rest = stripLeadingAdverbs(rest);
+    const severity = SEVERITY_QUALIFIERS.find((q) => rest.startsWith(q));
+    if (severity) rest = rest.slice(severity.length);
+    const bridge = MEASUREMENT_BRIDGES.find((b) => rest.startsWith(b));
+    if (bridge) rest = rest.slice(bridge.length);
+    const marker = HEDGE_MARKERS.find((m) => rest.startsWith(m));
+    if (marker) {
+      if (!hedge) hedge = marker;
+      rest = rest.slice(marker.length);
+    }
+    if (rest === before) break;
   }
-  return MEASUREMENT_DIRECTIONS.find((direction) => rest.startsWith(direction)) ?? null;
+  const direction = MEASUREMENT_DIRECTIONS.find((d) => rest.startsWith(d));
+  if (!direction) return null;
+  return { direction, hedge, end: after.length - rest.length + direction.length };
 };
 
 /**
@@ -740,15 +1249,74 @@ const termOccurrences = (clause: string): TermOccurrence[] => {
 };
 
 /**
- * Whether the clause asserts the finding AT THIS OCCURRENCE — a term
- * preceded by 未 / 无 / 非 / 不, or followed by 不明显 / 未见 / 阴性 /
- * 正常 / a resolution verb, is ruled out where it stands even though
- * its clause survived the marker filter. See NEGATION_PREFIX_CHARS for
- * what this test does and does not buy on top of that filter.
+ * The character ranges of this clause that a negation governs.
+ *
+ * COMPUTED, NOT LOOKED UP — see NEGATION_ROOT_CHARS for why the list
+ * approach is the defect rather than any particular missing entry.
+ * Every negation root in the clause is offered the job of operator and
+ * three tests decide whether it has it:
+ *
+ *   1. A root INSIDE a matched vocabulary span is part of a finding's
+ *      NAME (肌营养不良, 心律不齐, 不对称), not an operator over what
+ *      follows it. This is why the exclusion cannot rot: a vocabulary
+ *      entry containing 不 exempts itself.
+ *   2. A root that begins a lexical adjective (NEGATION_ROOT_LEXICAL)
+ *      or a hedge (NEGATION_ROOT_HEDGING) is likewise not an operator.
+ *   3. A root that is an operator has to REACH a finding: the first
+ *      vocabulary occurrence at or after it must start within
+ *      NEGATION_REACH characters, which is the length of the predicate
+ *      it negates. A root with nothing but prose after it governs
+ *      nothing.
+ *
+ * A root that passes all three governs from that first finding to the
+ * end of the clause or to the next contrastive (NEGATION_SCOPE_RESETS),
+ * whichever comes first. Rightward to the clause end rather than to the
+ * next term, because Chinese conjoins the objects of one negated verb
+ * (「没有脂肪浸润及肌肉萎缩」) far more often than it restarts polarity
+ * without a contrastive, and stopping at the first object would emit
+ * the second one as asserted — the inversion this whole file exists to
+ * prevent.
  */
-const occurrenceIsAsserted = (clause: string, at: TermOccurrence): boolean => {
-  const before = at.start > 0 ? clause[at.start - 1] : '';
-  if (NEGATION_PREFIX_CHARS.has(before)) return false;
+interface NegationScope {
+  start: number;
+  end: number;
+}
+
+const negationScopes = (clause: string, terms: readonly TermOccurrence[]): NegationScope[] => {
+  const scopes: NegationScope[] = [];
+  for (let i = 0; i < clause.length; i += 1) {
+    if (!NEGATION_ROOT_CHARS.has(clause[i])) continue;
+    if (terms.some((term) => i >= term.start && i < term.end)) continue;
+    const after = clause.slice(i);
+    if (NEGATION_ROOT_LEXICAL.some((word) => after.startsWith(word))) continue;
+    if (NEGATION_ROOT_HEDGING.test(clause.slice(i + 1))) continue;
+    const governed = terms.find((term) => term.start > i);
+    if (!governed || governed.start - (i + 1) > NEGATION_REACH) continue;
+    let end = clause.length;
+    for (let j = governed.end; j < clause.length; j += 1) {
+      if (NEGATION_SCOPE_RESETS.has(clause[j])) {
+        end = j;
+        break;
+      }
+    }
+    scopes.push({ start: governed.start, end });
+  }
+  return scopes;
+};
+
+/**
+ * Whether the clause asserts the finding AT THIS OCCURRENCE — a term
+ * inside a negation's computed scope, or followed by 不明显 / 未见 /
+ * 阴性 / 正常 / a resolution verb, is ruled out where it stands even
+ * though its clause survived the marker filter. See NEGATION_ROOT_CHARS
+ * for why the scope is computed and `negationScopes` for how.
+ */
+const occurrenceIsAsserted = (
+  clause: string,
+  at: TermOccurrence,
+  scopes: readonly NegationScope[],
+): boolean => {
+  if (scopes.some((scope) => at.start >= scope.start && at.start < scope.end)) return false;
   const after = stripLeadingAdverbs(clause.slice(at.end));
   return !OCCURRENCE_KILL_SUFFIXES.some((suffix) => after.startsWith(suffix));
 };
@@ -795,6 +1363,16 @@ const stripLeadingHedgeLead = (text: string): string => {
  * 「双侧大腿脂肪浸润明显伴可疑炎性改变」 from downgrading the definite
  * 脂肪浸润 to 脂肪浸润（可疑）.
  *
+ * BEHIND MEANS BEHIND THE PHRASE THIS FILE EMITS, NOT BEHIND THE TERM.
+ * `spanEnd` is where the emitted finding actually ends, and for the
+ * MEASUREMENT_NOUNS that is several characters past `at.end` — the
+ * bridge and the direction word are inside the phrase. Searching from
+ * `at.end` looked at 「降低待排」, found no hedge at position zero, and
+ * rendered 「射血分数降低待排」 as 「影像/报告印象: 射血分数降低」: an
+ * equivocal ejection fraction, byte-identical to a definite one, on the
+ * three nouns whose whole content is the direction word. Callers pass
+ * the end of the span they are about to print.
+ *
  * WHAT THIS DOES NOT SETTLE, stated rather than implied: a hedge
  * written behind finding A is also in front of a finding B later in the
  * SAME clause, and B is hedged too. Chinese normally closes the clause
@@ -806,8 +1384,9 @@ const resolveHedge = (
   clause: string,
   hedges: readonly TermOccurrence[],
   at: TermOccurrence,
+  spanEnd: number,
 ): string => {
-  const behind = stripLeadingHedgeLead(clause.slice(at.end));
+  const behind = stripLeadingHedgeLead(clause.slice(spanEnd));
   const trailing = HEDGE_MARKERS.find((marker) => behind.startsWith(marker));
   if (trailing) return trailing;
   let nearest: TermOccurrence | null = null;
@@ -854,8 +1433,10 @@ const capFindings = (phrases: readonly string[]): string => {
  * Extract the recognised clinical findings a report actually asserts.
  *
  * Deny-by-default three times over: every character of the output comes
- * from `CLINICAL_FINDING_TERMS`, `SEVERITY_QUALIFIERS` or
- * `HEDGE_MARKERS` and never from the text (so no name can pass); a
+ * from `CLINICAL_FINDING_TERMS`, `SEVERITY_QUALIFIERS`, `HEDGE_MARKERS`
+ * or `MEASUREMENT_DIRECTIONS` — four lists, not the three this said
+ * while `readMeasurement` was already emitting from the fourth — and
+ * never from the text (so no name can pass); a
  * clause naming a negation, a third party, a past study or methylation
  * is discarded before any term is matched; and a term inside a
  * surviving clause is kept only where the occurrence itself is not
@@ -900,14 +1481,22 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
 
   for (const clause of assertedClauses) {
     const hedges = hedgeOccurrences(clause);
+    const occurrences = termOccurrences(clause);
+
+    // What a negation in this clause governs, computed from the span
+    // between the negating character and the finding rather than looked
+    // up in a list of negating words. See `negationScopes`; the term
+    // occurrences go in because a root inside a term's own name
+    // (肌营养不良, 心律不齐, 不对称) is not an operator.
+    const scopes = negationScopes(clause, occurrences);
 
     // Where in THIS clause an occurrence has already been read. A
     // shorter term overlapping one of these spans is not a second
     // finding, it is the same characters read again — see below.
     const claimed: { start: number; end: number }[] = [];
 
-    for (const at of termOccurrences(clause)) {
-      if (!occurrenceIsAsserted(clause, at)) continue;
+    for (const at of occurrences) {
+      if (!occurrenceIsAsserted(clause, at, scopes)) continue;
 
       // ONE PHRASE IS ONE FINDING, AND THE TEST FOR THAT IS THE SPAN,
       // NOT THE QUALIFIER.
@@ -949,20 +1538,29 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
         SEVERITY_QUALIFIERS.find((q) => after.startsWith(q)) ??
         '';
 
-      // The hedge governing THIS occurrence — in front of it, or written
-      // directly against its back. See `resolveHedge`: resolved once per
-      // clause instead, a hedge on one finding downgraded every definite
-      // finding beside it.
-      const hedge = resolveHedge(clause, hedges, at);
-
       // A measurement noun says nothing without its direction word, and
       // the qualifier belongs to the direction rather than to the noun.
+      // Read FIRST, because the phrase it produces is longer than the
+      // term and the hedge is resolved against the end of the PHRASE.
       let body = `${qualifier}${at.term}`;
+      let spanEnd = at.end;
+      let spanHedge = '';
       if (MEASUREMENT_NOUNS.has(at.term)) {
-        const direction = readMeasurementDirection(after);
-        if (!direction) continue;
-        body = `${at.term}${qualifier}${direction}`;
+        const measured = readMeasurement(after);
+        if (!measured) continue;
+        body = `${at.term}${qualifier}${measured.direction}`;
+        spanEnd = at.end + measured.end;
+        spanHedge = measured.hedge;
       }
+
+      // The hedge governing THIS occurrence — in front of it, written
+      // inside the measurement phrase (射血分数可能降低), or written
+      // directly against the back of the phrase this file is about to
+      // print. See `resolveHedge`: resolved once per clause instead, a
+      // hedge on one finding downgraded every definite finding beside
+      // it; resolved at the TERM rather than at the span, an equivocal
+      // 射血分数降低待排 printed as a definite one.
+      const hedge = spanHedge || resolveHedge(clause, hedges, at, spanEnd);
 
       // ONE FINDING, THE LONGEST READING OF IT, WHICHEVER CLAUSE SAID IT
       // FIRST.

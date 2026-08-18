@@ -444,7 +444,12 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
 
     expect(result.diagnosis.confirmation).toBe('admin_entered');
     expect(result.diagnosis.statement).toContain('「确诊年份」不是患者本人填写的');
-    expect(result.markdown).toContain('- 诊断日期：2014-01-01（管理员代填）');
+    // 2014 年, not 2014-01-01: `upsertBaseline` mirrors the
+    // questionnaire's four-digit 确诊年份 into the `date` column as
+    // `${year}-01-01`, and no report on this profile states that day.
+    // profile.passport.ts reduces the pin back to the year before any
+    // document renders it — see `diagnosisDateYearOnly` there.
+    expect(result.markdown).toContain('- 诊断日期：2014 年（管理员代填）');
     expect(result.markdown).toContain('- 基因类型：FSHD1（报告读取）');
   });
 

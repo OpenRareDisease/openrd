@@ -130,6 +130,97 @@ const toIsoDate = (value: string) => {
   return new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000).toISOString().slice(0, 10);
 };
 
+/**
+ * THE CALENDAR DAY BEFORE `date`, ON THE PRODUCT'S CALENDAR.
+ *
+ * The only question this answers is 「are these two buckets adjacent
+ * days」, and it is asked of keys `toIsoDate` produced — bare
+ * 「YYYY-MM-DD」 already resolved on Asia/Shanghai. A bare calendar date
+ * has no zone left to convert between, so the arithmetic is done at UTC
+ * midnight purely because `Date.UTC` and `toISOString` are the pair of
+ * accessors that never consult the handset's zone. Nothing here shifts
+ * a day; subtracting 86 400 000 ms from a UTC midnight lands on the
+ * previous UTC midnight in every month and across every leap day,
+ * because UTC has no daylight saving to skip.
+ *
+ * An unparseable or impossible key (「2026-02-30」) returns null, which
+ * every caller reads as 「not adjacent」 — the answer that shortens a
+ * streak rather than lengthening one.
+ */
+const previousProductDay = (date: string): string | null => {
+  if (!DATE_ONLY.test(date)) {
+    return null;
+  }
+  const at = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)) - 1,
+    Number(date.slice(8, 10)),
+  );
+  if (!Number.isFinite(at)) {
+    return null;
+  }
+  // Rejects 2026-02-30, which `Date.UTC` rolls forward into March
+  // instead of refusing.
+  if (new Date(at).toISOString().slice(0, 10) !== date) {
+    return null;
+  }
+  return new Date(at - 86_400_000).toISOString().slice(0, 10);
+};
+
+/**
+ * THE RUN AT THE END OF A DAY SERIES, MEASURED IN THE TWO UNITS THIS
+ * FILE IS ALLOWED TO PRINT — because they are different numbers and
+ * 天 is only one of them.
+ *
+ * Every series here is keyed by calendar day, so a bucket is a day; but
+ * buckets exist only on days the patient recorded. Counting buckets and
+ * printing 「连续 N 天」 asserted N CONSECUTIVE CALENDAR DAYS out of a
+ * number that never carried that claim: three daily records filed in
+ * December, March and July came out as 「最近连续 3 天有日常记录，都没
+ * 有跌倒」, and on 上楼计时 — the card whose whole subject is the 能做 →
+ * 做不了 transition — two 做不了 readings seven months apart read as
+ * 「最近连续 2 天的记录都是「上不了 10 级台阶」」, an acute loss over a
+ * weekend that never happened.
+ */
+interface TrailingRun {
+  /** Day buckets in the run. Each is a distinct calendar day the
+   *  patient recorded on; they need not be adjacent. */
+  recordedDays: number;
+  /** How many of those, counting back from the newest, sit on
+   *  CONSECUTIVE calendar days. Never more than `recordedDays`, and 1
+   *  as soon as the two newest days in the run have a gap between them.
+   *  This is the only number a 「连续 N 天」 sentence may be built on. */
+  calendarDays: number;
+}
+
+const trailingRun = <T extends { date: string }>(
+  days: T[],
+  matches: (item: T) => boolean,
+): TrailingRun => {
+  let recordedDays = 0;
+  let calendarDays = 0;
+  let contiguous = true;
+
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const day = days[index];
+    if (!matches(day)) {
+      break;
+    }
+    recordedDays += 1;
+    if (recordedDays === 1) {
+      calendarDays = 1;
+      continue;
+    }
+    if (contiguous && previousProductDay(days[index + 1].date) === day.date) {
+      calendarDays += 1;
+    } else {
+      contiguous = false;
+    }
+  }
+
+  return { recordedDays, calendarDays };
+};
+
 const roundOne = (value: number) => Number(value.toFixed(1));
 
 const average = (values: number[]) => {
@@ -545,9 +636,10 @@ const buildStairSeries = (profile: PatientProfile | null): StairSeries => {
 interface StairState {
   current: StairReading | null;
   previous: StairReading | null;
-  /** How many of the most recent days in a row came back 做不了.
-   *  Counted over the full history, like the fall-card streak. */
-  unableDayStreak: number;
+  /** The trailing run of 做不了 days, over the full history — both
+   *  units, because this card printed 天 off the bucket count and
+   *  meant records. See `TrailingRun`. */
+  unableRun: TrailingRun;
   /** The newest reading that actually carries seconds, if any. */
   lastMeasuredSeconds: number | null;
 }
@@ -556,13 +648,7 @@ const resolveStairState = (readings: StairReading[]): StairState => {
   const current = readings.length ? readings[readings.length - 1] : null;
   const previous = readings.length > 1 ? readings[readings.length - 2] : null;
 
-  let unableDayStreak = 0;
-  for (let index = readings.length - 1; index >= 0; index -= 1) {
-    if (readings[index].seconds !== null) {
-      break;
-    }
-    unableDayStreak += 1;
-  }
+  const unableRun = trailingRun(readings, (reading) => reading.seconds === null);
 
   let lastMeasuredSeconds: number | null = null;
   for (let index = readings.length - 1; index >= 0; index -= 1) {
@@ -573,7 +659,7 @@ const resolveStairState = (readings: StairReading[]): StairState => {
     }
   }
 
-  return { current, previous, unableDayStreak, lastMeasuredSeconds };
+  return { current, previous, unableRun, lastMeasuredSeconds };
 };
 
 /**
@@ -648,10 +734,19 @@ const getStairSummary = (
   }
 
   if (state.current.seconds === null) {
+    // 连续 N 天 ONLY WHEN THE DAYS REALLY ARE CONSECUTIVE. This card's
+    // subject is the 能做 → 做不了 transition, so the difference between
+    // 「两天连着做不了」 and 「七个月里有两次记录都是做不了」 is the
+    // difference between an acute loss and a slow one, and the second
+    // sentence is the one this run answers when the days have gaps.
+    // Neither number is dropped: the days are still days, and the count
+    // of them is still printed — it just stops being called 连续.
     const head =
-      state.unableDayStreak > 1
-        ? `最近连续 ${state.unableDayStreak} 天的记录都是「${series.unableZh}」。`
-        : `最近一次记录是「${series.unableZh}」，这是一条记录，不是空白。`;
+      state.unableRun.calendarDays > 1
+        ? `最近连续 ${state.unableRun.calendarDays} 天的记录都是「${series.unableZh}」。`
+        : state.unableRun.recordedDays > 1
+          ? `最近有记录的 ${state.unableRun.recordedDays} 天都是「${series.unableZh}」 —— 这几天不是连着的。`
+          : `最近一次记录是「${series.unableZh}」，这是一条记录，不是空白。`;
     const tail =
       state.lastMeasuredSeconds === null
         ? '目前还没有过带秒数的记录。'
@@ -688,7 +783,65 @@ const getStairSummary = (
   };
 };
 
-const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。';
+/**
+ * WHAT THIS CARD READS, SAID ON THE CARD, because the two forms that
+ * write a `fall` row answer different questions and the number would
+ * otherwise look like it read both.
+ *
+ * The second sentence is the patient-facing half of
+ * `readRecordedFallCount`: a 事件 record counts as one fall, and a
+ * count typed into 「发生了什么」 is not read. Without it a patient who
+ * wrote 「这周摔了 3 次」 into the 事件 form and saw 1 次 here would have
+ * no way to tell whether the app had misread them or lost the record.
+ */
+const FALL_HELPER_TEXT =
+  '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。单独记一条「跌倒」事件的，这里按 1 次算 —— 你在描述里写的数字不会被读成次数，要记次数请填在日常记录里。';
+
+/**
+ * THE ONE DESCRIPTION SHAPE THAT CARRIES A FALL COUNT.
+ *
+ * `最近跌倒 N 次` is a TEMPLATE THIS APP COMPOSES, not a sentence a
+ * patient writes: p-data_entry `handleFollowupSubmit` builds it out of
+ * the 最近跌倒次数 stepper and posts nothing else in that field. So the
+ * whole trimmed description has to BE the template — anchored at both
+ * ends, no `\b` anywhere near the digits — and everything else is
+ * prose that this file does not read a number out of.
+ *
+ * WHAT IT USED TO DO. It took the FIRST NUMBER ANYWHERE in the
+ * description, with a `severity` fallback of 3 / 2 / 1 when there was
+ * none. The standalone 事件 form posts whatever the patient typed into
+ * 「发生了什么」 and 跌倒 is one of its event types, so the number it
+ * found was routinely not a count at all. Run over real phrasings:
+ *
+ *   「早上 7 点在浴室滑倒」        → 跌倒 7 次
+ *   「2026年5月3日在楼梯上摔了」   → 跌倒 2026 次
+ *   「下楼时第 3 级台阶踩空」      → 跌倒 3 次
+ *   「摔了一下，膝盖擦伤 1 处」    → 跌倒 1 次
+ *   「0 点多起夜的时候摔了」       → 跌倒 0 次
+ *   「这周没有摔，只是差点」       → 跌倒 2 次   (the severity fallback)
+ *
+ * A clock time, a date, a step number, an injury count — and the last
+ * two are the ones that compound: a 0 read off 「0 点多」 makes a day
+ * the patient reported falling on join the zero run below, so the card
+ * told them 「最近连续 N 天有日常记录，都没有跌倒」 about a fall they
+ * had just filed. And `severity` is not a count either — it is how bad
+ * the fall was — so 「这周没有摔」 came out as two falls.
+ *
+ * WHEN THERE IS NO TEMPLATE the reading is the record itself: the 事件
+ * form files one row per event, so one row is one fall. That is a count
+ * of what was recorded rather than a guess at what the prose says, and
+ * `FALL_HELPER_TEXT` tells the patient it is the rule.
+ */
+const DAILY_RECORD_FALL_COUNT = /^最近跌倒\s*(\d+(?:\.\d+)?)\s*次$/;
+
+const readRecordedFallCount = (description: string | null | undefined): number | null => {
+  const match = DAILY_RECORD_FALL_COUNT.exec((description ?? '').trim());
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+};
 
 /**
  * THIS CARD COUNTS DAYS, AND IT USED TO SAY IT COUNTED RECORDS.
@@ -717,6 +870,15 @@ const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，
  * carries a bare date, so 「latest wins」 would keep every zero and
  * throw away every fall reported on the same day.
  *
+ * 连续 IS A SECOND CLAIM ON TOP OF 天, AND IT USED TO BE UNCHECKED.
+ * The run below was a count of BUCKETS, and a bucket exists only on a
+ * day the patient recorded — so three daily records filed in December,
+ * March and July rendered as 「最近连续 3 天有日常记录，都没有跌倒」,
+ * byte for byte what a patient who really recorded three days running
+ * is shown. Adjacency is now checked against the product calendar
+ * (`trailingRun`), and a run whose days have gaps says so instead of
+ * dropping the count.
+ *
  * WHICH DAY a fall lands on is decided by the submission it was filed
  * with rather than by that bare date, which the write side stamps in
  * the device's UTC — see the comment at the `fallBuckets` event loop.
@@ -729,7 +891,7 @@ const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，
 const getFallSummary = (
   currentValue: number | null,
   previousValue: number | null,
-  zeroRecordDayStreak: number,
+  zeroRun: TrailingRun,
 ): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
   // Only "no daily record has ever been made" lands here. A record
   // that answered 0 is a result, and is handled below.
@@ -745,12 +907,20 @@ const getFallSummary = (
     return {
       latestDisplay: '0 次',
       summary:
-        zeroRecordDayStreak > 1
-          ? `最近连续 ${zeroRecordDayStreak} 天有日常记录，都没有跌倒。`
-          : previousValue === null
-            ? '最近一天的日常记录没有跌倒。'
-            : // A streak of 1 means the day before it wasn't zero.
-              '最近一天的日常记录没有跌倒，比上一个有记录的日子更少。',
+        zeroRun.calendarDays > 1
+          ? `最近连续 ${zeroRun.calendarDays} 天有日常记录，都没有跌倒。`
+          : zeroRun.recordedDays > 1
+            ? `最近有日常记录的 ${zeroRun.recordedDays} 天都没有跌倒 —— 这几天不是连着的。`
+            : // The run is one day. `previousValue` is read directly
+              // rather than inferred from the run's length: a run of 1
+              // used to mean 「the day before it wasn't zero」, and it
+              // stopped meaning that the moment the run started
+              // requiring adjacency — two zero days with a gap between
+              // them now end the run too, and 「比上一个有记录的日子更
+              // 少」 would be 0 called fewer than 0.
+              previousValue === null || previousValue === 0
+              ? '最近一天的日常记录没有跌倒。'
+              : '最近一天的日常记录没有跌倒，比上一个有记录的日子更少。',
       helperText: FALL_HELPER_TEXT,
     };
   }
@@ -829,24 +999,17 @@ const collectFollowupRecordDays = (profile: PatientProfile | null): FollowupReco
   return { days, daysBySubmission };
 };
 
-/** How many of the most recent DAYS in a row came back zero. Counted
- *  over the full history, not the charted window, so a patient who has
- *  gone twenty days without a fall gets told twenty.
+/** The trailing run of zero-fall days, over the full history rather
+ *  than the charted window, so a patient who has gone twenty days
+ *  without a fall gets told twenty.
  *
- *  It said 「records」 and it has always counted points, and a point is
- *  a day: two daily records filed the same afternoon are one bucket.
- *  The sentence it feeds says 天 for the same reason — see
+ *  A point is a day: two daily records filed the same afternoon are one
+ *  bucket. What a point is NOT is proof of the day before it, which is
+ *  why this returns both units — `calendarDays` is the only one a
+ *  「连续 N 天」 sentence may be built on. See `TrailingRun` and
  *  `getFallSummary`. */
-const countTrailingZeroDays = (points: DomainTrendPoint[]): number => {
-  let streak = 0;
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (points[index].value !== 0) {
-      break;
-    }
-    streak += 1;
-  }
-  return streak;
-};
+const trailingZeroDayRun = (points: DomainTrendPoint[]): TrailingRun =>
+  trailingRun(points, (point) => point.value === 0);
 
 export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTrendCard[] => {
   const empty = [
@@ -967,15 +1130,11 @@ export const buildPatientVisualizationCards = (
       return;
     }
 
-    const countMatch = item.description?.match(/(\d+(?:\.\d+)?)/);
-    const count =
-      countMatch?.[1] !== undefined
-        ? Number(countMatch[1])
-        : item.severity === 'severe'
-          ? 3
-          : item.severity === 'moderate'
-            ? 2
-            : 1;
+    // The written count when the record carries one, and otherwise the
+    // record itself: one filed `fall` event is one fall. Nothing here
+    // reads a number out of prose, and `severity` — how bad the fall
+    // was — is no longer read as how many. See `readRecordedFallCount`.
+    const count = readRecordedFallCount(item.description) ?? 1;
 
     // THE DAY OF THE RECORD IT WAS FILED WITH, when it came from one.
     // The daily form stamps `occurredAt` with the DEVICE's UTC date
@@ -1022,7 +1181,30 @@ export const buildPatientVisualizationCards = (
   // the same window as every other card.
   const fallHistory = finalizeScalarPoints(fallBuckets, fallBuckets.size);
   const fallPoints = fallHistory.slice(-CHART_POINT_LIMIT);
-  const latestLegacyStairs = profile?.dailyImpacts.find((item) => item.adlKey === 'stairs') ?? null;
+  // 待量化 — 「this platform already holds that stairs are hard for you,
+  // it just has no seconds」 — and it used to be reachable from one
+  // column only.
+  //
+  // `dailyImpacts` is written by the daily form. The baseline
+  // questionnaire writes the same fact into
+  // `baseline.currentChallenges.stairs` instead, on the API's 0–5
+  // difficulty scale (profile.schema.ts `difficultyScoreSchema`), and
+  // this file PRINTS that number two functions down — 「上下楼 4/5」 in
+  // `buildDiseaseBackgroundFacts`. So a patient who had answered the
+  // baseline question and never filed a daily impact read 「最近还没有
+  // 新的标准化上楼计时」 under 未记录, on the same screen that was showing
+  // their own 上下楼 4/5.
+  //
+  // A ZERO IS NOT 「已记录上楼变化」 on either column. 0 on both scales is
+  // 「no difficulty」, and 待量化 says this platform is holding a change
+  // that has not been timed yet — which is not what a 0 records. This
+  // used to accept any `stairs` row whatever its `difficultyLevel`.
+  const hasUntimedStairDifficulty =
+    (profile?.dailyImpacts.some(
+      (item) => item.adlKey === 'stairs' && Number(item.difficultyLevel) > 0,
+    ) ??
+      false) ||
+    Number(profile?.baseline?.currentChallenges?.stairs ?? 0) > 0;
 
   const sleepCurrent = sleepPoints.length ? sleepPoints[sleepPoints.length - 1].value : null;
   const sleepPrevious = sleepPoints.length > 1 ? sleepPoints[sleepPoints.length - 2].value : null;
@@ -1030,8 +1212,8 @@ export const buildPatientVisualizationCards = (
   const fallPrevious = fallPoints.length > 1 ? fallPoints[fallPoints.length - 2].value : null;
 
   const sleepText = getSleepSummary(sleepCurrent, sleepPrevious);
-  const stairText = getStairSummary(stairSeries, stairState, Boolean(latestLegacyStairs));
-  const fallText = getFallSummary(fallCurrent, fallPrevious, countTrailingZeroDays(fallHistory));
+  const stairText = getStairSummary(stairSeries, stairState, hasUntimedStairDifficulty);
+  const fallText = getFallSummary(fallCurrent, fallPrevious, trailingZeroDayRun(fallHistory));
 
   return [
     {

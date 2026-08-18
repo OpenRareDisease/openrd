@@ -1,5 +1,7 @@
+import re
 import unittest
 
+import app.services.fshd_report_service as fshd_report_service
 from app.services.fshd_report_service import (
     MEDICAL_SUMMARY_STRUCTURE_MARKERS,
     analyze_fshd_report,
@@ -1629,6 +1631,493 @@ class TheTypeTheReportStatesTest(unittest.TestCase):
             "检测结论: 符合 FSHD1, D4Z4 重复单元数 3。",
         )
         self.assertEqual(self._summary(result)["diagnosis_type"], "FSHD1")
+
+
+class ChineseLaboratoriesPrintWithoutSpacesTest(unittest.TestCase):
+    r"""`\b` NEVER FIRES BETWEEN A CJK CHARACTER AND A LATIN ONE.
+
+    Python's `\w` is Unicode-aware, so 型 and 诊 are word characters and
+    `\b(4qA|4qB)\b` has no boundary to find in 「4q35单倍型4qB」. Every
+    Latin token in this file was anchored that way, so on the real
+    spelling the report's own result row, its own exclusion clause, its
+    method name and the kb refusal were all invisible — silently, and in
+    the direction that publishes a reading.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    @staticmethod
+    def _fields(result):
+        return {f["field_name"]: f for f in result["fshd"]["structured_fields"]}
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_the_result_row_is_read_and_not_the_footnote_defining_the_term(self):
+        """THE MEASURED CASE. 4qA was published off a definition.
+
+        The report states 4qB on its own 单倍型 row, no space around the
+        token — which the anchored pattern could not see — so the only
+        allele the reader could find was the one the FOOTNOTE names. The
+        passport called it `permissive_haplotype` and read the count
+        against the FSHD1 range; FSHD1 cannot be the mechanism on 4qB.
+        """
+        result = self._analyze(
+            "XX大学附属医院医学检验报告",
+            "4q35单倍型4qB",
+            "D4Z4重复单元数6",
+            "附注: 4qA 为允许型单倍型",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_the_exclusion_clause_is_visible_to_the_type_reader(self):
+        result = self._analyze(
+            "XX大学附属医院医学检验报告",
+            "检测项目:FSHD1基因检测",
+            "D4Z4重复单元数8",
+            "检测结论:本次检测不支持FSHD1诊断",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_a_length_in_kb_with_no_space_is_still_not_a_count(self):
+        r"""`(kb|bp|mb)\b` could not see 「38kb的片段」."""
+        result = self._analyze(
+            "XX医院 FSHD1 基因检测报告",
+            "检测结果:D4Z4 EcoRI片段长度38kb的片段",
+        )
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertEqual(self._summary(result)["ecori_fragment_kb"], 38.0)
+
+    def test_no_pattern_in_the_module_keeps_a_raw_word_boundary(self):
+        """The class fix has to hold for patterns added later, too.
+
+        Every precompiled pattern goes through `_cjk_safe_compile`, so a
+        surviving `\\b` means somebody reached for `re.compile` directly
+        — which is how the four in this module were written in the first
+        place.
+        """
+        offenders = [
+            name
+            for name, value in vars(fshd_report_service).items()
+            if isinstance(value, re.Pattern) and "\\b" in value.pattern
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_the_method_name_with_no_space_is_still_recognised(self):
+        r"""`\becor\s*[i1]\b` could not see 「EcoRI酶切」."""
+        result = self._analyze(
+            "XX医院 基因检测报告",
+            "检测方法:采用EcoRI酶切后行Southern印迹",
+        )
+        self.assertEqual(self._summary(result)["genetic_test_method"], "southern_blot")
+
+
+class ATitleIsNotAResultTest(unittest.TestCase):
+    """A REPORT IS TITLED AFTER THE TYPE IT WAS ORDERED TO LOOK FOR.
+
+    The per-token refusal only reaches a title when the conclusion
+    repeats the token and negates it, and the ordinary Chinese negative
+    conclusion does not repeat it. So on the commonest negative wording
+    there was nothing to refuse and the title won.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def test_the_ordinary_negative_wording_leaves_no_diagnosis(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "FSHD1 基因检测报告",
+                "送检单位: 神经内科",
+                "检测方法: Southern blot, EcoRI 酶切",
+                "检测结果: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        self.assertIsNone(self._summary(result)["diagnosis_type"])
+        # And the sentence that says so is still what the patient reads.
+        self.assertIn("未见", self._summary(result)["interpretation_summary"])
+
+
+class TheDedicatedResultRowOutranksAProseSentenceTest(unittest.TestCase):
+    """On the cell-per-line layout the patient's own row scored LOWEST.
+
+    「检测结果:」 is its own line and the analyte rows below it carry no
+    label, so they ranked unlabelled — while any 结论 sentence quoting a
+    threshold carries 结论 and ranked as a result row.
+    """
+
+    ROWS = (
+        "XX医学检验所 FSHD1 基因检测报告",
+        "项目 结果 单位",
+        "检测结果:",
+        "D4Z4重复单元数",
+        "5",
+        "个",
+        "结论: D4Z4 重复单元数低于 10 个即为缩短, 本例符合 FSHD1",
+    )
+
+    def test_the_count_is_the_rows_and_not_the_conclusions_threshold(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 5)
+
+
+class TheReferenceColumnIsNotTheResultTest(unittest.TestCase):
+    """项目 / 参考区间 / 结果 is an ordinary Chinese column order.
+
+    A comparator-prefixed cell counted as a value and the row reader
+    took the first one, so the FSHD1 reference limit became the reading
+    and the reading became the row's UNIT.
+    """
+
+    ROWS = (
+        "XX医院 FSHD1 D4Z4 基因检测报告",
+        "项目 参考区间 结果 单位",
+        "D4Z4重复单元数",
+        ">10",
+        "3",
+        "个",
+    )
+
+    def test_the_bound_is_the_reference_and_the_bare_number_the_result(self):
+        rows = extract_lab_table_rows(list(self.ROWS))
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(by_name["D4Z4重复单元数"]["value"], "3")
+        self.assertEqual(by_name["D4Z4重复单元数"]["reference"], ">10")
+        # A bare number is never a unit.
+        self.assertNotEqual(by_name["D4Z4重复单元数"]["unit"], "3")
+
+    def test_the_published_count_is_the_patients_and_not_the_limit(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+    def test_a_one_sided_limit_alone_is_still_the_reading(self):
+        """Refusing a bound outright would lose a genuine 「<0.01」."""
+        rows = extract_lab_table_rows([
+            "检验报告单",
+            "超敏肌钙蛋白I", "<0.01", "ng/mL",
+        ])
+        self.assertEqual(rows[0]["value"], "<0.01")
+
+
+class TheConclusionIsNotTruncatedByItsOwnRecommendationTest(unittest.TestCase):
+    """建议 is a block stop keyword and the standard negative carries it.
+
+    「结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。」 — the block stopped
+    one line short of the exclusion, answered with the result row above
+    it, and the fallback that would have found the exclusion never ran.
+    """
+
+    def test_the_exclusion_is_the_sentence_the_patient_reads(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "FSHD1 基因检测报告",
+                "检测结果: D4Z4 重复单元数 18",
+                "结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("不支持", summary["interpretation_summary"])
+        # The count on the result row is still read.
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 18)
+
+    def test_a_conclusion_stating_nothing_does_not_displace_the_block(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "基因检测报告",
+                "检测结果",
+                "检出 D4Z4 重复单元数缩短",
+                "结论: 详见上述",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("缩短", summary["interpretation_summary"])
+
+
+class ANegationIsNotASignatureTest(unittest.TestCase):
+    """A two-to-four-character Chinese word alone was 「a doctor's name」.
+
+    So a conclusion ending in the clause that MAKES IT NEGATIVE had that
+    clause deleted — as a block line and as a trailing token.
+    """
+
+    def _interpretation(self, *body):
+        result = analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+        return result["fshd"]["normalized_summary"]["genetic_summary"]["interpretation_summary"]
+
+    def test_the_negation_survives_to_the_end_of_the_conclusion(self):
+        summary = self._interpretation(
+            "XX医院 FSHD 基因检测报告",
+            "检测方法: Southern blot",
+            "检测结论:",
+            "4q35区域D4Z4阵列",
+            "未见缩短",
+        )
+        self.assertIn("未见缩短", summary)
+
+    def test_a_positive_finding_ending_in_the_finding_survives_too(self):
+        summary = self._interpretation(
+            "XX医院 FSHD 基因检测报告",
+            "检测结论:",
+            "4q35区域D4Z4",
+            "阵列缩短",
+        )
+        self.assertIn("阵列缩短", summary)
+
+    def test_the_radiologists_name_is_still_dropped(self):
+        """The scenario the docstring describes: a finished clause."""
+        text = "\n".join([
+            "磁共振检查报告单",
+            "印象:",
+            "1. 双侧胫骨前肌脂肪浸润,请结合临床. 钱医",
+        ])
+        result = analyze_fshd_report(text, "mri", "M.jpeg")
+        impression = next(
+            (f["field_value"] for f in result["fshd"]["structured_fields"]
+             if f["field_name"] == "report_impression"),
+            "",
+        )
+        self.assertIn("脂肪浸润", impression)
+        self.assertNotIn("钱医", impression)
+
+
+class NoGeneticsCellIsPublishedTwiceTest(unittest.TestCase):
+    """The `table_*` refusal was four LATIN substrings on a Chinese row.
+
+    「甲基化水平」 carries none of them, so it was minted as
+    `table_甲基化水平` beside the canonical `methylation_value` read off
+    the identical cell: one reading, two analytes, both on
+    `observations` and `latest_summary.by_analyte`.
+    """
+
+    ROWS = (
+        "XX医学检验所 FSHD2 甲基化检测报告",
+        "项目 结果 单位",
+        "甲基化水平",
+        "35",
+        "%",
+        "D4Z4重复单元数",
+        "28",
+        "个",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.ROWS), "genetic_report", "T.pdf")
+
+    def test_a_chinese_named_genetics_row_mints_no_table_key(self):
+        names = {f["field_name"] for f in self._result()["fshd"]["structured_fields"]}
+        self.assertIn("methylation_value", names)
+        self.assertFalse([n for n in names if n.startswith("table_")], names)
+
+    def test_the_reading_appears_once_on_every_numeric_channel(self):
+        result = self._result()
+        by_analyte = result["latest_summary"]["by_analyte"]
+        thirty_five = [k for k, v in by_analyte.items() if v["value_num"] == 35.0]
+        self.assertEqual(thirty_five, ["methylation_value"])
+
+
+class ZeroIsRefusedOnBothSidesOfAPairTest(unittest.TestCase):
+    """The refusal was asked only of `d4z4_repeat_pathogenic`.
+
+    `d4z4_repeat_other` comes off the SAME match and was typed
+    unconditionally, so 「D4Z4 重复数 3/0」 published a laboratory repeat
+    count of zero on `result.value_num` and `latest_summary.by_analyte`
+    — the two channels the `NO_NORMALIZED_VALUE` note names as the whole
+    reason the refusal exists.
+    """
+
+    def _result(self):
+        return analyze_fshd_report(
+            "\n".join((
+                "XX医院 FSHD1 基因检测报告",
+                "检测方法: 分子梳",
+                "检测结果: D4Z4 重复数 3/0",
+            )),
+            "genetic_report",
+            "G.pdf",
+        )
+
+    def test_the_other_allele_is_kept_visible_and_never_typed(self):
+        result = self._result()
+        field = next(
+            f for f in result["fshd"]["structured_fields"]
+            if f["field_name"] == "d4z4_repeat_other"
+        )
+        self.assertEqual(field["field_value"], "0")
+        self.assertIsNone(field["normalized_value"])
+        self.assertLess(field["confidence"], 0.75)
+        self.assertIn(
+            "d4z4_repeat_other",
+            [q["field_name"] for q in result["fshd"]["review_queue"]],
+        )
+
+    def test_zero_is_not_a_number_on_any_channel(self):
+        result = self._result()
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["d4z4_repeat_other"])
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["d4z4_repeat_other"]["value_num"]
+        )
+        # The pathogenic side is a real reading and is untouched.
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class AnAbbreviationIsNotReadInsideAWordTest(unittest.TestCase):
+    r"""The same `\b` defect, in a substring test.
+
+    The analyte keywords include single Latin letters — `k` for 钾, `p`
+    for 无机磷 — matched with `keyword in line`. On 「肌酸激酶(CK): 890
+    U/L」 the `k` of `(CK)` matched and the patient's creatine kinase was
+    republished as a potassium of 890.
+    """
+
+    @staticmethod
+    def _panel(result):
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_ck_is_not_also_a_potassium(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "肌酸激酶(CK): 890 U/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertEqual(self._panel(result)["ck"], 890.0)
+        self.assertNotIn("potassium", self._panel(result))
+
+    def test_plt_is_not_also_an_inorganic_phosphorus(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化全套报告", "血小板计数(PLT): 210 10^9/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertNotIn("phosphorus", self._panel(result))
+
+    def test_a_ck_mb_row_is_not_also_a_ck_and_a_myoglobin(self):
+        """THE WORST ONE ON AN FSHD REPORT.
+
+        肌酸激酶 is a prefix of 肌酸激酶同工酶, the CK-MB row's own
+        printed name, and the first line carrying a keyword wins — so a
+        patient whose creatine kinase is 890, an order of magnitude
+        above the reference range, had it published as the CK-MB's 25.
+        A NORMAL CK, on the marker this platform exists to track.
+        """
+        result = analyze_fshd_report(
+            "\n".join((
+                "XX医院 生化检验报告",
+                "肌酸激酶同工酶(CK-MB): 25 U/L",
+                "肌酸激酶(CK): 890 U/L",
+                "肌红蛋白(MYO): 45 ng/mL",
+            )),
+            "other",
+            "B.jpeg",
+        )
+        panel = self._panel(result)
+        self.assertEqual(panel["ck"], 890.0)
+        self.assertEqual(panel["ckmb"], 25.0)
+        self.assertEqual(panel["mb"], 45.0)
+
+    def test_the_other_prefix_collisions_in_the_map_are_closed_too(self):
+        """One rule, computed from the map, not four written-out cases."""
+        for body, expected in (
+            (
+                ("极低密度脂蛋白胆固醇(VLDL-C): 0.45 mmol/L",
+                 "低密度脂蛋白胆固醇(LDL-C): 3.10 mmol/L"),
+                {"ldl_c": 3.1, "vldl_c": 0.45},
+            ),
+            (
+                ("碱性磷酸酶(ALP): 80 U/L", "无机磷(P): 1.2 mmol/L"),
+                {"alp": 80.0, "phosphorus": 1.2},
+            ),
+            (
+                ("载脂蛋白A1(ApoA1): 1.35 g/L", "脂蛋白a(Lp(a)): 210 mg/L"),
+                {"apo_a1": 1.35, "lp_a": 210.0},
+            ),
+        ):
+            with self.subTest(body=body):
+                result = analyze_fshd_report(
+                    "\n".join(("XX医院 生化检验报告",) + body), "other", "B.jpeg"
+                )
+                panel = self._panel(result)
+                for key, value in expected.items():
+                    self.assertEqual(panel.get(key), value)
+
+    def test_a_real_potassium_row_still_reads(self):
+        result = analyze_fshd_report(
+            "\n".join(("XX医院 生化检验报告", "钾(K): 4.1 mmol/L")),
+            "other",
+            "B.jpeg",
+        )
+        self.assertEqual(self._panel(result)["potassium"], 4.1)
+
+
+class AGapMayNotOpenABracketTest(unittest.TestCase):
+    r"""`游离T3(?:\(FT3\))?[^\d\n]{0,16}(\d+)` captured the 3 of the NAME.
+
+    The optional parenthetical backtracks, the gap runs into it, and the
+    digit inside the analyte's own abbreviation is taken as the result —
+    so a thyroid panel whose value sat on the next line published
+    `ft3: 3` and `ft4: 4`.
+    """
+
+    ROWS = (
+        "XX医院 甲状腺功能报告",
+        "项目 结果 单位",
+        "游离T3(FT3)",
+        "5.2",
+        "pmol/L",
+        "游离T4(FT4)",
+        "16.8",
+        "pmol/L",
+    )
+
+    def test_the_value_comes_from_the_value_cell_not_the_name(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["ft3"], 5.2)
+        self.assertEqual(panel["ft4"], 16.8)
+
+
+class ADecimalSurvivesTheNarrativePathTest(unittest.TestCase):
+    """`_extract_sentences` kept its own splitter, and it split on 「.」.
+
+    「病程 18.5 年」 became 「病程 18」 and 「5 年」, so the duration regex
+    — which needs 病程 and 年 in one sentence — found nothing,
+    `progression_node` was published truncated, and the timeline gained
+    a phantom event.
+    """
+
+    BODY = (
+        "病历摘要",
+        "主诉: 双上肢抬举无力",
+        "现病史: 患者15岁起病, 病程 18.5 年, 逐渐加重",
+    )
+
+    def _summary(self):
+        result = analyze_fshd_report("\n".join(self.BODY), "other", "S.pdf")
+        return result["fshd"]["normalized_summary"]
+
+    def test_the_duration_is_the_one_the_record_states(self):
+        medical = self._summary()["medical_summary"]
+        self.assertEqual(medical["disease_duration"], 18.5)
+        self.assertEqual(medical["onset_age"], 15)
+
+    def test_the_sentence_is_not_cut_mid_number(self):
+        medical = self._summary()["medical_summary"]
+        self.assertIn("18.5", medical["progression_node"])
+
+    def test_no_phantom_event_is_minted_from_the_fraction(self):
+        timeline = self._summary()["timeline"]
+        self.assertEqual(len(timeline), 1)
 
 
 if __name__ == "__main__":

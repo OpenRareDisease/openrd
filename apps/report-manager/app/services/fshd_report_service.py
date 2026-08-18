@@ -1,5 +1,57 @@
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+
+
+#: `\b` NEVER FIRES BETWEEN A CHINESE CHARACTER AND A LATIN ONE, AND A
+#: CHINESE LABORATORY PRINTS WITHOUT SPACES.
+#:
+#: Python's `\w` is Unicode-aware for `str` patterns, so every CJK
+#: character is a word character — and `\b` is a transition between word
+#: and non-word. 「不支持FSHD1诊断」 has 持 before the F and 诊 after the
+#: 1: both sides word, no transition, NO BOUNDARY. So every pattern in
+#: this file that anchored a Latin or digit token with `\b` was invisible
+#: on the real spelling, silently, in the direction that costs a reading:
+#:
+#:   - `\b(4qA|4qB)\b` could not see 「4q35单倍型4qB」, the report's own
+#:     result row, so `_read_haplotype` fell through to the explanatory
+#:     footnote and answered with whichever allele the FOOTNOTE names.
+#:     FSHD1 cannot be the mechanism on 4qB.
+#:   - `\bFSHD\s*([12])\b` could not see 「不支持FSHD1诊断」, the exclusion
+#:     clause, so the report's own refusal never reached the type reader.
+#:   - `(kb|bp|mb)\b` could not see 「38kb的片段」, so the `length_in_kb`
+#:     refusal — the one that stops a fragment length being published as
+#:     a repeat count — did not fire on the no-space spelling.
+#:   - `\becor\s*[i1]\b` could not see 「EcoRI酶切」, so a Southern blot
+#:     report reported no method at all.
+#:
+#: The replacement is a boundary defined on the ASCII word alphabet
+#: alone. At the head of a Latin token the second alternative is always
+#: false (the next character is the token's own first letter), so it
+#: reduces to 「the character before is not ASCII-alphanumeric」; at the
+#: tail the first is always false and it reduces to the mirror image.
+#: That is exactly what `\b` was written to mean here, and it holds
+#: whether the neighbouring character is a space, a bracket or 型.
+#:
+#: Applied CENTRALLY: every pattern in this module reaches `re` through
+#: `_find_regex`, `_read_cell`, `_detect_genetic_method` or
+#: `_cjk_safe_compile`, and all four rewrite it first — so a `\b`
+#: written in a new pattern is fixed by construction rather than by
+#: remembering. Do not call `re` on a pattern from this file without one
+#: of them. `test_no_pattern_in_the_module_keeps_a_raw_word_boundary`
+#: holds the precompiled half of that line.
+_ASCII_WORD_BOUNDARY = r"(?:(?<![0-9A-Za-z_])|(?![0-9A-Za-z_]))"
+
+
+@lru_cache(maxsize=512)
+def _cjk_safe(pattern: str) -> str:
+    """`pattern` with every `\\b` rewritten to survive Chinese typesetting."""
+    return pattern.replace(r"\b", _ASCII_WORD_BOUNDARY)
+
+
+def _cjk_safe_compile(pattern: str, flags: int = 0) -> "re.Pattern":
+    """`re.compile`, for the patterns this module keeps precompiled."""
+    return re.compile(_cjk_safe(pattern), flags)
 
 
 REPORT_TYPE_LABELS: Dict[str, str] = {
@@ -561,9 +613,35 @@ def _build_line_windows(lines: List[str], max_window: int = 2) -> List[str]:
     return windows
 
 
+#: A SENTENCE END, AND NEVER A DECIMAL POINT.
+#:
+#: `_normalize_text` folds 「。」 to 「.」 before any of this runs, so the
+#: full stop and the decimal point are the same character by the time a
+#: block gets here — and splitting on a bare 「.」 cuts a report's own
+#: sentence mid-number. Measured on the sentence a patient reads
+#: verbatim under 报告详情 → 来源追溯: an EcoRI fragment of 18.5 kb came
+#: out as 「5 kb」 (roughly one repeat unit — a severely contracted
+#: array — where 18.5 kb is not), and a methylation level of 0.35 came
+#: out as 「0」.
+#:
+#: A dot is a decimal point only with a digit on BOTH sides. Requiring a
+#: non-digit before it is not enough on its own: a clause ending in a
+#: number — 「重复数为 3.单倍型: 4qA」 — would then never split.
+#:
+#: ONE SPLITTER, BECAUSE THE SECOND COPY HAD THE SAME BUG. This lived
+#: only in `_pick_finding_sentence`, and `_extract_sentences` — the
+#: 病历摘要 / 查体 / MRI path — kept its own `[\n.;。；]+`, on which
+#: 「病程 18.5 年」 split into 「病程 18」 and 「5 年」: the duration regex
+#: needs 病程 and 年 in one sentence, so `disease_duration` came out
+#: EMPTY on the ordinary spelling, `progression_node` was published as
+#: the truncated 「…病程 18」, and the timeline gained a phantom event
+#: 「5 年, 逐渐加重」 with no age attached.
+_SENTENCE_BREAK = re.compile(r"[。;；\n]|(?<!\d)\.|\.(?!\d)")
+
+
 def _extract_sentences(text: str) -> List[str]:
-    chunks = re.split(r"[\n.;。；]+", _normalize_text(text))
-    return [chunk.strip() for chunk in chunks if chunk.strip()]
+    chunks = _SENTENCE_BREAK.split(_normalize_text(text))
+    return [chunk.strip() for chunk in chunks if chunk and chunk.strip()]
 
 
 def _exact_float(value: Any) -> Optional[float]:
@@ -623,7 +701,7 @@ def _find_best_line(lines: Iterable[str], keywords: Iterable[str]) -> Optional[s
 
 def _find_regex(text: str, patterns: Iterable[str], flags: int = re.IGNORECASE) -> Tuple[Optional[re.Match], Optional[str]]:
     for pattern in patterns:
-        match = re.search(pattern, text, flags)
+        match = re.search(_cjk_safe(pattern), text, flags)
         if match:
             return match, pattern
     return None, None
@@ -633,7 +711,7 @@ def _find_regex(text: str, patterns: Iterable[str], flags: int = re.IGNORECASE) 
 #: the label is naming the ASSAY rather than labelling a result.
 #: 甲基化分析 is the standard Chinese name of the FSHD2 test, so
 #: 「检测项目: FSHD 甲基化分析」 is a 检测项目 line and not a methylation
-#: reading — see `_find_adjacent_regex`.
+#: reading — see `_read_cell`.
 _METHOD_GAP_WORDS = ("分析", "检测", "检验", "测序", "方法", "项目", "技术", "平台", "试验")
 
 #: What a gap may contain and still be only whitespace and punctuation.
@@ -708,7 +786,7 @@ def _gap_names_another_analyte(gap: str, analyte: Optional[str]) -> bool:
     the laboratory had printed a count of zero, with 报告读取 beside it.
 
     Refusing the match rather than refusing the VALUE, because
-    `_find_adjacent_regex` goes on to the next candidate: a report that
+    `_read_cell` goes on to the next candidate: a report that
     prints a methylation row above a genuine count still reads the
     count. It also keeps the `length_in_kb` refusal in `_extract_genetic`
     live for the spelling this cannot see — 「D4Z4: 38 kb」 has a gap of
@@ -755,11 +833,24 @@ _METHOD_VALUE_LABELS: Tuple[str, ...] = (
     "探针", "probe", "引物", "primer", "method", "reference",
 )
 
-#: Ranking of a numeric match by the label that governs it. Lower wins;
+#: Ranking of a reading by the ROW IT SITS ON. Lower wins;
 #: `_REFUSED_ROW` never wins at all.
-_RESULT_ROW = 0
-_UNLABELLED_ROW = 1
-_REFUSED_ROW = 2
+#:
+#: `_DEDICATED_ROW` IS WHY THIS IS A FOUR-WAY RANK AND NOT A THREE-WAY
+#: ONE. With only 结果-label / unlabelled / refused, the report's own
+#: dedicated result row was ALWAYS the lowest rank that can win: on the
+#: cell-per-line layout this module documents as the norm, 「检测结果:」
+#: is its own line and the analyte rows below it carry no label of their
+#: own, so they scored unlabelled — while any 结论 PROSE SENTENCE
+#: quoting a threshold carries 结论 and scored the result rank. Measured:
+#: a report whose own row reads 5 and whose conclusion reads 「D4Z4 重复
+#: 单元数低于 10 个即为缩短」 published 10. A dedicated analyte row
+#: outranks a sentence that merely mentions the analyte, which is what
+#: the words 「the report's own result row」 were always supposed to mean.
+_DEDICATED_ROW = 0
+_RESULT_ROW = 1
+_UNLABELLED_ROW = 2
+_REFUSED_ROW = 3
 
 
 def _line_span(text: str, index: int) -> Tuple[str, int]:
@@ -769,7 +860,211 @@ def _line_span(text: str, index: int) -> Tuple[str, int]:
     return (text[start:] if end == -1 else text[start:end]), start
 
 
-def _governing_row_rank(line: str, value_start: int) -> int:
+# --------------------------------------------------------------------
+# THE PAGE AS LABELLED ROWS
+#
+# WHAT KEPT FAILING WAS THE SHAPE OF THE READER, NOT THE INDIVIDUAL
+# PATTERNS. Every genetics reader in this file used to run over one
+# flat blob — every line of the page joined together — and decide which
+# match to keep by re-deriving, from the characters around it, which
+# kind of row it had landed on. Three rounds of fixes have all been the
+# same fix: another label added to `_METHOD_VALUE_LABELS`, another
+# lookahead, another gap test. They are individually right and they do
+# not compose, because the blob throws away the one thing that settles
+# every one of these questions — WHICH ROW OF THE REPORT THIS IS.
+#
+# So the page is segmented into rows and each row is LABELLED ONCE,
+# before any pattern runs:
+#
+#   TITLE       what the test was ORDERED to look for. Never a result.
+#   METHOD      the assay, its limits, its reference interval, its
+#               probes. Never a reading of this patient.
+#   NOTE        a footnote defining a term. Never a reading either.
+#   RESULT      a row inside the report's 检测结果 section.
+#   TABLE       a row rebuilt from the cell-per-line OCR layout.
+#   PLAIN       everything else; ranked by its own in-line label.
+#
+# and every reader then asks the ROW, not the characters. A title is
+# refused because it is a title, not because the conclusion below it
+# happened to repeat the token and negate it — which is the difference
+# between D2 being fixed and D2 being fixed for the wordings we have
+# seen. Two of the eleven defects this pass was written for are not
+# reachable at all once the rows carry their own kind.
+# --------------------------------------------------------------------
+
+#: What a document is NAMED. A report is titled after the type it was
+#: ordered to look for, so its title says nothing about what was found —
+#: and `_read_diagnosis_type` refused per TOKEN, which only helps when
+#: the conclusion happens to repeat the token. The ordinary Chinese
+#: negative conclusion does not: 「未见 4q35 D4Z4 阵列缩短, 结果在正常
+#: 范围」 names no type at all, so 「FSHD1 基因检测报告」 was left as the
+#: only candidate and won at the unlabelled rank — published as this
+#: patient's 分型, on the passport, in the exports, and written into
+#: `patient_profiles` by `applyGeneticReportAutofill`.
+_TITLE_ROW_SUFFIXES: Tuple[str, ...] = (
+    "报告", "报告单", "报告书", "检验单", "检查单", "申请单", "记录单",
+)
+
+#: Section headers that open a run of rows. Matched only against a line
+#: that is NOTHING BUT the header, so 「检测方法: …」 with its own content
+#: keeps being ranked by its in-line label and does not open a section.
+#:
+#: NO ENTRY IN THESE TUPLES OPENS A SECTION ON A BARE
+#: `_TABLE_HEADER_CELLS` CELL. The bare column headings 项目 / 结果 /
+#: 单位 are absent from the lists below, but absence is not what enforces
+#: that rule and never could be: 检测项目 / 检验项目 / 参考区间 / 参考值
+#: are column headings AND the names of method-ish things, so they
+#: legitimately belong in `_METHOD_SECTION_HEADERS` while a lone one of
+#: them on a line is a table heading. `_section_kind` refuses them there,
+#: for every string in both tuples at once, rather than leaving a list to
+#: stay in sync by hand.
+_RESULT_SECTION_HEADERS: Tuple[str, ...] = (
+    "检测结果", "检测结论", "检验结果", "报告结果", "结果分析",
+)
+_METHOD_SECTION_HEADERS: Tuple[str, ...] = (
+    "检测方法", "检验方法", "检测项目", "检验项目", "送检项目",
+    "参考区间", "参考值", "参考范围",
+)
+_NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明")
+
+#: A footnote that carries its own content — 「附注: 4qA 为允许型单倍型」.
+_NOTE_ROW_PREFIXES: Tuple[str, ...] = ("附注", "备注", "注释", "说明", "注:")
+
+_KIND_TITLE = "title"
+_KIND_METHOD = "method"
+_KIND_NOTE = "note"
+_KIND_RESULT = "result"
+_KIND_TABLE = "table"
+_KIND_PLAIN = "plain"
+
+#: Kinds that ASSERT nothing about this patient, whatever they contain.
+#: A reading is never taken off one. A REFUSAL still is — the absence
+#: and hedge tests in `_read_diagnosis_type` run over every row before
+#: the kind is consulted, because a report that excludes a type on its
+#: 检测项目 line has still excluded it. Refusing to read and refusing to
+#: hear the report's own 「no」 are opposite things.
+_REFUSED_ROW_KINDS = frozenset({_KIND_TITLE, _KIND_METHOD, _KIND_NOTE})
+
+
+class _Row(NamedTuple):
+    """One row of the page, with the kind that was decided for it."""
+
+    text: str
+    kind: str
+
+
+def _is_title_row(line: str) -> bool:
+    """Is this line the document's NAME rather than one of its rows?
+
+    A title is short, carries no value separator — 「报告日期: …」 is
+    metadata, not the title — and ends in the word for a report. That
+    last test is what keeps 「FSHD1 基因检测报告」 out of every reader
+    while leaving 「结论: … 符合 FSHD1」 alone.
+    """
+    stripped = line.strip()
+    if not stripped or len(stripped) > 30 or ":" in stripped:
+        return False
+    return stripped.endswith(_TITLE_ROW_SUFFIXES)
+
+
+def _section_kind(line: str) -> Optional[str]:
+    """The section a header-only line opens, if it opens one.
+
+    A COLUMN HEADING IS NOT A SECTION, whatever else the string also
+    spells. Four members of `_METHOD_SECTION_HEADERS` are also members of
+    `_TABLE_HEADER_CELLS` — 检测项目, 检验项目, 参考区间, 参考值 — and
+    PaddleOCR emits a table heading as a line of its own, which is the
+    only shape this function ever sees. Asked section-first, a lone
+    「检测项目」 cell opened a METHOD run that then propagated down the
+    rest of the page: `_KIND_METHOD` is in `_REFUSED_ROW_KINDS`, so
+    `_read_cell`, `_read_diagnosis_type` and `_read_haplotype` skipped
+    every row under it, and a genetically confirmed report came back with
+    `d4z4_repeat_pathogenic`, `haplotype` and `diagnosis_type` all None
+    — the whole genetic finding erased by ONE extra OCR line, with an
+    empty `review_queue` reporting nothing amiss. The three-column
+    orders 项目 / 结果 / 参考区间 and 项目 / 结果 / 单位 / 参考值 are
+    ordinary on Chinese laboratory reports and put one of these four
+    LAST in the heading run, so the closing cell that should have ended
+    the header opened a refusal over the data instead.
+
+    So `_TABLE_HEADER_CELLS` wins here — which is what the note above
+    `_RESULT_SECTION_HEADERS` and `_page_rows`'s own docstring have
+    always claimed happens. This costs those four strings nothing they
+    were doing: a method label WITH content after it never reaches this
+    function at all, it is ranked by `_inline_row_rank`, and
+    `_METHOD_VALUE_LABELS` carries all four.
+    """
+    stripped = line.strip().rstrip(":").strip()
+    if not stripped or len(stripped) > 10 or re.search(r"\d", stripped):
+        return None
+    if stripped in _TABLE_HEADER_CELLS:
+        return None
+    if stripped in _RESULT_SECTION_HEADERS:
+        return _KIND_RESULT
+    if stripped in _METHOD_SECTION_HEADERS:
+        return _KIND_METHOD
+    if stripped in _NOTE_SECTION_HEADERS:
+        return _KIND_NOTE
+    return None
+
+
+def _page_rows(lines: List[str]) -> List[_Row]:
+    """The report's lines, each labelled with the kind of row it is.
+
+    Sections propagate: a bare 「检测结果」 line makes the analyte rows
+    beneath it result rows even though they carry no label of their own,
+    which is exactly the layout on which the old rank put the patient's
+    real count below a conclusion sentence.
+
+    A `_TABLE_HEADER_CELLS` line CLOSES the open section rather than
+    opening one, so a column heading between the section header and the
+    data does not turn the data into part of the heading. That is decided
+    inside `_section_kind`, not by the ordering here, because four of
+    those cells are ALSO in `_METHOD_SECTION_HEADERS` and this loop asks
+    for the section first.
+
+    A header-only line that is not a section header closes the section
+    too. ONE THAT IS A SECTION HEADER STILL OPENS ITS SECTION — 送检项目
+    satisfies `_is_header_only` and opens a METHOD run all the same, and
+    a bare 送检项目 above the result rows therefore refuses the whole page
+    beneath it. That is the design for 检测方法, whose bare line really
+    does head a method block; whether it is the design for 送检项目 is not
+    something this function decides, and nothing here should be read as
+    promising that every header-shaped line is harmless.
+
+    The rows rebuilt by `_table_row_lines` are appended last and carry
+    `_KIND_TABLE`: they are, by construction, an analyte cell paired with
+    its own value cell, which is the most dedicated result row a report
+    has.
+    """
+    rows: List[_Row] = []
+    section: Optional[str] = None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        opened = _section_kind(stripped)
+        if opened is not None:
+            section = opened
+            rows.append(_Row(stripped, opened))
+            continue
+        if _is_title_row(stripped):
+            section = None
+            rows.append(_Row(stripped, _KIND_TITLE))
+            continue
+        if any(stripped.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
+            rows.append(_Row(stripped, _KIND_NOTE))
+            continue
+        if stripped in _TABLE_HEADER_CELLS or _is_header_row(stripped) or _is_header_only(stripped):
+            section = None
+            rows.append(_Row(stripped, _KIND_PLAIN))
+            continue
+        rows.append(_Row(stripped, section or _KIND_PLAIN))
+    rows.extend(_Row(text, _KIND_TABLE) for text in _table_row_lines(lines))
+    return rows
+
+
+def _inline_row_rank(line: str, value_start: int) -> int:
     """Rank a number by the LABEL NEAREST TO ITS LEFT on its own line.
 
     The same rule `_haplotype_tokens_on` applies to the allele tokens: a
@@ -784,7 +1079,9 @@ def _governing_row_rank(line: str, value_start: int) -> int:
     families is ordinary in an OCR that flattened a table row, and a
     line-contains test has to guess which one it belongs to.
 
-    `value_start` is an offset into `line`.
+    `value_start` is an offset into `line`. This answers only the three
+    ranks a LINE can decide on its own; `_row_rank` is what combines it
+    with the kind the row was labelled with.
     """
     lowered = line.lower()
     best_rank = _UNLABELLED_ROW
@@ -801,13 +1098,43 @@ def _governing_row_rank(line: str, value_start: int) -> int:
     return best_rank
 
 
-def _find_adjacent_regex(
-    text: str,
+def _row_rank(row: _Row, value_start: int) -> int:
+    """What a reading found at `value_start` on `row` is worth.
+
+    THE KIND DECIDES FIRST. A title, a method row and a footnote are
+    refused whatever they contain — that is the whole point of labelling
+    the rows — and a table row is the dedicated result row it was
+    rebuilt from.
+
+    Inside a 检测结果 section the row's own in-line label still governs
+    when it HAS one, so a 结论 sentence printed under the results heading
+    is read as the sentence it is; it is only a row with no label of its
+    own that inherits the section's, and that is the promotion from
+    unlabelled to dedicated the old rank could not express.
+    """
+    if row.kind in _REFUSED_ROW_KINDS:
+        return _REFUSED_ROW
+    if row.kind == _KIND_TABLE:
+        return _DEDICATED_ROW
+    rank = _inline_row_rank(row.text, value_start)
+    if row.kind == _KIND_RESULT and rank == _UNLABELLED_ROW:
+        return _DEDICATED_ROW
+    return rank
+
+
+def _read_cell(
+    rows: List[_Row],
     patterns: Iterable[str],
     flags: int = re.IGNORECASE,
     analyte: Optional[str] = None,
 ) -> Tuple[Optional[re.Match], Optional[str]]:
-    """`_find_regex`, for patterns that carry a `(?P<gap>…)` group.
+    """Read one cell off the page, ROW BY ROW, best row wins.
+
+    Returns `(match, row_text)` — the row is returned because everything
+    the caller does next is a question about the row the number sits on:
+    whether that row asserts an absence, and whether a length unit
+    follows the number ON IT. Handing back the whole page for those
+    tests is how a marker on a neighbouring line used to answer them.
 
     A NUMBER BELONGS TO THE LABEL NEXT TO IT, NOT TO THE NEAREST ONE.
     Every cell pattern in `_extract_genetic` used to be written
@@ -828,12 +1155,21 @@ def _find_adjacent_regex(
         confidence 0.97, while the report's own count sat unread below
         it.
 
-    So the gap may not cross a line, a gap that is only the name of the
-    method is not a label-to-value gap at all, and — `analyte` — a gap
-    that names a DIFFERENT measurement belongs to that measurement's row
-    rather than to this one. Where every candidate fails those tests the
-    answer is no reading, which is the honest one: the cell this platform
-    could not locate is a cell it has not read.
+    Matching per ROW is what makes that structural rather than
+    remembered: there is no page-wide string for a gap to run off the
+    end of. The gap classes still exclude `\\n` — a row rebuilt from
+    table cells is one string — and they now exclude `(` as well,
+    because a gap that opens a bracket puts the number INSIDE the
+    analyte's own abbreviation: `游离T3(?:\\(FT3\\))?[^\\d\\n]{0,16}(\\d+)`
+    backtracked out of the optional 「(FT3)」 and captured the 3 of the
+    NAME, publishing `ft3: 3` while the row's real 5.2 sat unread.
+
+    A gap that is only the name of the method is not a label-to-value
+    gap at all, and — `analyte` — a gap that names a DIFFERENT
+    measurement belongs to that measurement's row rather than to this
+    one. Where every candidate fails those tests the answer is no
+    reading, which is the honest one: the cell this platform could not
+    locate is a cell it has not read.
 
     `analyte` names what the patterns read, as a key of
     `_ANALYTE_GAP_WORDS`. Left unset the third test does not run, which
@@ -841,34 +1177,41 @@ def _find_adjacent_regex(
     every caller today is in `_extract_genetic` and every one of them
     sets it.
 
-    AND THE FIRST ACCEPTED MATCH NO LONGER DECIDES. A number on a
-    method, detection-limit or reference row is not read at all, and a
-    number on the report's own result row outranks one on an unlabelled
-    line however far down the page it sits — see `_governing_row_rank`.
-    Within one rank the earliest match still wins, and pattern order
-    still outranks everything, because both encode a preference a caller
-    wrote down deliberately.
+    AND THE FIRST ACCEPTED MATCH DOES NOT DECIDE. A number on a title, a
+    method row, a detection-limit row, a reference row or a footnote is
+    not read at all; a number on the report's own dedicated result row
+    outranks one in a conclusion sentence, which outranks one on an
+    unlabelled line, however far down the page each sits — see
+    `_row_rank`. Within one rank the earliest match still wins, and
+    pattern order still outranks everything, because both encode a
+    preference a caller wrote down deliberately.
     """
     for pattern in patterns:
+        compiled = re.compile(_cjk_safe(pattern), flags)
         best: Optional[re.Match] = None
+        best_row: Optional[str] = None
         best_rank = _REFUSED_ROW
-        for match in re.finditer(pattern, text, flags):
-            gap = match.groupdict().get("gap") or ""
-            if _gap_names_a_method(gap):
+        for row in rows:
+            if row.kind in _REFUSED_ROW_KINDS:
                 continue
-            if _gap_names_another_analyte(gap, analyte):
-                continue
-            line, line_start = _line_span(text, match.start())
-            value_at = match.start("value") if "value" in match.groupdict() else match.start()
-            rank = _governing_row_rank(line, value_at - line_start)
-            if rank >= _REFUSED_ROW:
-                continue
-            if rank < best_rank:
-                best, best_rank = match, rank
-                if best_rank == _RESULT_ROW:
-                    break
+            for match in compiled.finditer(row.text):
+                gap = match.groupdict().get("gap") or ""
+                if _gap_names_a_method(gap):
+                    continue
+                if _gap_names_another_analyte(gap, analyte):
+                    continue
+                value_at = match.start("value") if "value" in match.groupdict() else match.start()
+                rank = _row_rank(row, value_at)
+                if rank >= _REFUSED_ROW:
+                    continue
+                if rank < best_rank:
+                    best, best_row, best_rank = match, row.text, rank
+                    if best_rank == _DEDICATED_ROW:
+                        break
+            if best_rank == _DEDICATED_ROW:
+                break
         if best is not None:
-            return best, pattern
+            return best, best_row
     return None, None
 
 
@@ -1000,10 +1343,22 @@ def _panel_haystacks(text: str, lines: List[str]) -> List[str]:
     reached past the end of their own line and picked up whatever number
     came next, with no two-line ceiling at all. That is how a 甲基化 cell
     read 4 out of the 单倍型: 4qA line below it, and how a D4Z4 cell read
-    a repeat count out of the same token; see `_find_adjacent_regex`.
+    a repeat count out of the same token; see `_read_cell`.
     Every gap class in this module now excludes `\\n`, so crossing a line
     happens only through the bounded windows, which is what this
     docstring always claimed. Do not write a new gap class without it.
+
+    AND THEY EXCLUDE `(` FOR THE SAME KIND OF REASON. A gap that opens a
+    bracket puts the captured number inside the analyte's OWN
+    abbreviation: `(?:游离T3(?:\\(FT3\\))?)[^\\d\\n]{0,16}(\\d+)` over the
+    row 「游离T3(FT3)」 backtracks out of the optional parenthetical, runs
+    the gap into 「(FT」 and captures the 3 of the NAME — so a panel whose
+    values sat on their own OCR lines published `ft3: 3` and `ft4: 4`,
+    numbers no assay produced, while the row's real 5.2 and 16.8 were
+    read only by the generic table reader under `table_*` keys. With `(`
+    out of the gap the whole-text haystack simply misses and the
+    two-line window pairs the name with its value, which is what these
+    windows are for.
     """
     return [text, *_build_line_windows(lines, max_window=2)]
 
@@ -1571,21 +1926,62 @@ def _is_disclaimer(text: str) -> bool:
 
 
 def _looks_like_signature(text: str) -> bool:
+    """Is this short line a person's name rather than a statement?
+
+    A REFUSAL AND A FINDING ARE BOTH STATEMENTS, AND `_NOT_A_NAME` COULD
+    NOT SAY SO. It is a list of whole phrases, so it answers only for the
+    phrases somebody thought of — and the negation vocabulary of a
+    genetics conclusion was not among them. 「未见缩短」 and 「阵列缩短」
+    are four CJK characters alone on a line, which is the entire test
+    `_BARE_NAME` applies, so a conclusion whose last line is the clause
+    that MAKES IT NEGATIVE had that clause deleted: as a block line by
+    `_extract_block_after_header`, and as a trailing token by
+    `_strip_trailing_signature`. The report said the array was not
+    shortened; the patient was shown a sentence that no longer said it.
+
+    So the two vocabularies this file already keeps are asked as well —
+    `_ABSENCE_MARKERS`, what was NOT found, and `_FINDING_MARKERS`, what
+    was. Either of them present means the line is reporting, and a
+    reporting line is not a signature whatever its length. Both are
+    defined below this point in the file and resolved when this runs.
+    """
     stripped = text.strip()
-    return bool(_BARE_NAME.match(stripped)) and stripped not in _NOT_A_NAME
+    if not _BARE_NAME.match(stripped) or stripped in _NOT_A_NAME:
+        return False
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in _ABSENCE_MARKERS):
+        return False
+    return not any(marker.lower() in lowered for marker in _FINDING_MARKERS)
 
 
 def _strip_trailing_signature(text: str) -> str:
     """Drop a doctor's name from the tail of a conclusion.
 
-    The signature is usually its own OCR line and gets joined onto the
+    The signature is its own OCR line and gets joined onto the
     conclusion with a space —「…请结合临床. 钱医」. It is the reporting
     physician's name: a third party's identifier, in a field that is
     shown to the patient and sent to the model.
+
+    THE CODE NOW DOES ONLY WHAT THAT SENTENCE JUSTIFIES. It used to pop
+    every trailing token `_looks_like_signature` accepted, which is any
+    two-to-four-character Chinese word — so 「…D4Z4阵列 未见缩短」 shipped
+    as 「…D4Z4阵列」, a negative conclusion with the negation removed. The
+    scenario the docstring describes has a mark of its own: the clause
+    before the name has ENDED. A name appended to a finished clause is
+    dropped; a word continuing an unfinished one is part of the finding
+    and stays, whether or not anybody listed it.
+
+    A value that is nothing but a name is still nothing but a name, and
+    goes entirely.
     """
     parts = text.strip().split()
-    while parts and _looks_like_signature(parts[-1]):
+    while len(parts) > 1 and _looks_like_signature(parts[-1]):
+        head = " ".join(parts[:-1]).rstrip()
+        if not head or head[-1] not in _CLAUSE_TERMINATORS:
+            break
         parts.pop()
+    if len(parts) == 1 and _looks_like_signature(parts[0]):
+        return ""
     return " ".join(parts).strip()
 
 
@@ -1759,23 +2155,6 @@ _FINDING_MARKERS: Tuple[str, ...] = (
 )
 
 
-#: A SENTENCE END, AND NEVER A DECIMAL POINT.
-#:
-#: `_normalize_text` folds 「。」 to 「.」 before any of this runs, so the
-#: full stop and the decimal point are the same character by the time a
-#: block gets here — and splitting on a bare 「.」 cut the report's own
-#: conclusion mid-number. Measured on the sentence a patient reads
-#: verbatim under 报告详情 → 来源追溯: an EcoRI fragment of 18.5 kb came
-#: out as 「5 kb」 (roughly one repeat unit — a severely contracted
-#: array — where 18.5 kb is not), and a methylation level of 0.35 came
-#: out as 「0」.
-#:
-#: A dot is a decimal point only with a digit on BOTH sides. Requiring a
-#: non-digit before it is not enough on its own: a clause ending in a
-#: number — 「重复数为 3.单倍型: 4qA」 — would then never split.
-_SENTENCE_BREAK = re.compile(r"[。;；\n]|(?<!\d)\.|\.(?!\d)")
-
-
 def _pick_finding_sentence(block: Optional[str]) -> Optional[str]:
     """Reduce a results section to the sentence that states the result.
 
@@ -1877,7 +2256,7 @@ def _detect_genetic_method(body_lines: List[str]) -> Optional[str]:
     matched = [
         family
         for family, patterns in _GENETIC_METHOD_PATTERNS.items()
-        if any(re.search(pattern, haystack, re.IGNORECASE) for pattern in patterns)
+        if any(re.search(_cjk_safe(pattern), haystack, re.IGNORECASE) for pattern in patterns)
     ]
     if not matched:
         return None
@@ -1931,7 +2310,26 @@ _HEDGE_MARKERS = (
 
 #: A number followed by one of these is a length. Anchored with `\b` so
 #: a 「kb」 that opens the next word is not read as this number's unit.
-_LENGTH_UNIT_AFTER = re.compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
+_LENGTH_UNIT_AFTER = _cjk_safe_compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
+
+#: A COMPARATOR IMMEDIATELY BEFORE THE NUMBER MAKES IT A BOUND.
+#:
+#: `_BOUND_CELL` already states this doctrine for the table reader — a
+#: one-sided limit is a REFERENCE, and 「D4Z4重复单元数 >10」 read as a
+#: count of 10 drops the comparator and lands the patient exactly on the
+#: boundary that sends a reader off to evaluate FSHD2. The prose reader
+#: had no such test: its gap class `[^\d\n(]{0,16}` happily swallows the
+#: 「>」 or the 「大于」 and hands back the bare digits, so the same row
+#: reached `d4z4_repeat_pathogenic: 10` at 0.97 whenever it was not
+#: sitting under a section header that refused it wholesale.
+#:
+#: The Chinese spellings are here because a laboratory writes the
+#: reference in words as often as in symbols, and — see `_cjk_safe` —
+#: they are matched without `\b`, which would never fire against CJK.
+_BOUND_BEFORE_VALUE = re.compile(
+    r"(?:[<>≤≥⩽⩾]|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
+    r"|大于|小于|超过|多于|少于|至少|最多)\s*$"
+)
 
 
 def _line_around(text: str, index: int) -> str:
@@ -1952,10 +2350,10 @@ def _is_hedged(text: str, match: "re.Match") -> bool:
 
 
 #: The FSHD type token, on its own and not inside a longer one.
-_DIAGNOSIS_TYPE_TOKEN = re.compile(r"\bFSHD\s*([12])\b", re.IGNORECASE)
+_DIAGNOSIS_TYPE_TOKEN = _cjk_safe_compile(r"\bFSHD\s*([12])\b", re.IGNORECASE)
 
 
-def _read_diagnosis_type(text: str) -> Tuple[Optional[str], Optional[re.Match]]:
+def _read_diagnosis_type(rows: List[_Row]) -> Tuple[Optional[str], Optional[re.Match]]:
     """THE TYPE THE REPORT STATES, WHICH IS NOT THE TYPE IT IS NAMED FOR.
 
     This was `re.search` for the first FSHD1/FSHD2 token anywhere on the
@@ -1972,30 +2370,40 @@ def _read_diagnosis_type(text: str) -> Tuple[Optional[str], Optional[re.Match]]:
     prints under 分型, the exports carry and `applyGeneticReportAutofill`
     writes into `patient_profiles`. Every FSHD report is titled after the
     type it was ordered to look for, so this fired on the negative ones
-    as a class, not on an edge case. The comment above the old call
-    already said 「A report that excludes a type, or only suspects one,
-    has not stated one」; it was the code that did not.
+    as a class, not on an edge case.
 
-    So: A TYPE NAMED IN A NEGATING OR HEDGING CLAUSE ANYWHERE IS NOT
-    STATED, however many other times the page prints it. Kept per token,
-    so 「符合 FSHD1，不支持 FSHD2」 still reports FSHD1 — the two are
-    different claims and refusing both would lose a real diagnosis.
-    Among what is left, a token on the report's own result row outranks
-    one on an unlabelled line, and one governed by a method or 检测项目
-    label is not read at all — see `_governing_row_rank`.
+    THE PER-TOKEN REFUSAL WAS NOT ENOUGH, AND COULD NOT BE. It only
+    reaches a title when the conclusion happens to repeat the token and
+    negate it. The ordinary Chinese negative conclusion does not repeat
+    it — 「检测结果: 未见 4q35 D4Z4 阵列缩短, 结果在正常范围」 states the
+    exclusion without naming a type at all — so on that wording the
+    title was the only candidate left and won at the unlabelled rank.
+    A title is now refused BECAUSE IT IS A TITLE, before any token is
+    read off it: see `_page_rows`.
+
+    The per-token refusal stays, for what it does cover: a type named in
+    a negating or hedging clause anywhere is not stated, however many
+    other times the page prints it. Kept per token, so 「符合 FSHD1，不
+    支持 FSHD2」 still reports FSHD1 — the two are different claims and
+    refusing both would lose a real diagnosis. Among what is left, a
+    token on a dedicated result row outranks one in a conclusion
+    sentence, which outranks one on an unlabelled line — see `_row_rank`.
     """
     refused: set = set()
     candidates: List[Tuple[int, int, str, re.Match]] = []
-    for match in _DIAGNOSIS_TYPE_TOKEN.finditer(text):
-        token = f"FSHD{match.group(1)}"
-        if _asserts_absence(text, match) or _is_hedged(text, match):
-            refused.add(token)
-            continue
-        line, line_start = _line_span(text, match.start())
-        rank = _governing_row_rank(line, match.start() - line_start)
-        if rank >= _REFUSED_ROW:
-            continue
-        candidates.append((rank, match.start(), token, match))
+    for position, row in enumerate(rows):
+        for match in _DIAGNOSIS_TYPE_TOKEN.finditer(row.text):
+            token = f"FSHD{match.group(1)}"
+            if _asserts_absence(row.text, match) or _is_hedged(row.text, match):
+                # A refusal printed on a title or a method row is still
+                # this report refusing the type, so it is collected
+                # before the kind is consulted.
+                refused.add(token)
+                continue
+            rank = _row_rank(row, match.start())
+            if rank >= _REFUSED_ROW:
+                continue
+            candidates.append((rank, position, token, match))
     for _, _, token, match in sorted(candidates, key=lambda item: (item[0], item[1])):
         if token not in refused:
             return token, match
@@ -2003,7 +2411,7 @@ def _read_diagnosis_type(text: str) -> Tuple[Optional[str], Optional[re.Match]]:
 
 
 #: The 4q35 allele token, matched on its own and not inside a word.
-_HAPLOTYPE_TOKEN = re.compile(r"\b(4qA|4qB)\b", re.IGNORECASE)
+_HAPLOTYPE_TOKEN = _cjk_safe_compile(r"\b(4qA|4qB)\b", re.IGNORECASE)
 
 #: Labels of a row WHOSE SUBJECT IS THE HAPLOTYPE — a dedicated result
 #: row, where the token that follows is the answer and the only answer.
@@ -2055,7 +2463,7 @@ def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str], List[str]]:
     printed above it. The label sits AFTER the token there and BEFORE it
     on every real result row — 「4q35 单倍型: 4qA」, 「结果示 … 单倍型
     4qA」 — which is the same 「the value belongs to the label next to
-    it」 rule `_find_adjacent_regex` applies to the numeric cells.
+    it」 rule `_read_cell` applies to the numeric cells.
 
     WHICH label is the tier: the NEAREST one to the token's left, so a
     line carrying both — 「结论: … 单倍型为 4qA」 — is read as the
@@ -2091,7 +2499,7 @@ def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str], List[str]]:
     return dedicated, result, unlabelled
 
 
-def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
+def _read_haplotype(rows: List[_Row]) -> Tuple[Optional[str], Optional[str]]:
     """THE HAPLOTYPE IS WHAT THE RESULT SECTION STATES.
 
     This was `re.search(r"\\b(4qA|4qB)\\b")` over the whole document —
@@ -2143,16 +2551,28 @@ def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
     withholding is for. Both tokens stated, or nothing stated outside
     the method line, returns no haplotype rather than whichever came
     first.
+
+    A TITLE, A METHOD ROW AND A FOOTNOTE ARE OUT BEFORE ANY TIER IS
+    CONSIDERED, because `_page_rows` labelled them. That is what keeps
+    the third tier honest: 「附注: 4qA 为允许型单倍型」 is a definition of
+    the term, and on a report printing 「4q35单倍型4qB」 — the no-space
+    spelling, invisible to the old `\\b`-anchored token — the footnote
+    was the only allele the reader could see, so the ONE test that says
+    FSHD1 cannot be the mechanism here answered 4qA. The nearest-label
+    rule inside `_haplotype_tokens_on` handles a footnote that mentions
+    the term; the row kind handles one that IS a footnote.
     """
     tiers: Tuple[List[str], List[str], List[str]] = ([], [], [])
     sources: List[Optional[str]] = [None, None, None]
-    for line in lines:
-        for index, tokens in enumerate(_haplotype_tokens_on(line)):
+    for row in rows:
+        if row.kind in _REFUSED_ROW_KINDS:
+            continue
+        for index, tokens in enumerate(_haplotype_tokens_on(row.text)):
             for token in tokens:
                 if token not in tiers[index]:
                     tiers[index].append(token)
             if tokens and sources[index] is None:
-                sources[index] = line.strip()
+                sources[index] = row.text.strip()
     for index, tokens in enumerate(tiers):
         if not tokens:
             continue
@@ -2161,20 +2581,33 @@ def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
-    # THE CELL-PER-LINE TABLE IS REBUILT BEFORE ANY PATTERN RUNS.
+    # THE PAGE IS SEGMENTED INTO LABELLED ROWS BEFORE ANY PATTERN RUNS.
     #
-    # Every gap in this extractor is `[^\d\n]{0,N}` — deliberately, so a
-    # label on one line cannot reach a number on the next — and the OCR
-    # layout this module documents as the norm emits ONE TEXT BOX PER
-    # TABLE CELL. So on a genetics report whose repeat count sits in a
-    # table, the label and its number are on separate lines and not one
-    # pattern here can see them: the count was read only by
-    # `_append_generic_table_fields`, which slugged 「D4Z4甲基化水平」 and
-    # 「D4Z4重复单元数」 onto the SAME key and dropped the second.
-    # `_table_row_lines` puts the row back together as one line so the
-    # canonical readers — the gap tests, the absence test, the kb test,
-    # the zero refusal — get the cell they were written for.
-    text = "\n".join(lines + _table_row_lines(lines))
+    # `_page_rows` gives every line of the report body the kind of row it
+    # is — title, method, footnote, a row inside the 检测结果 section,
+    # or a row rebuilt from the cell-per-line OCR layout — and every
+    # reader below asks the ROW rather than re-deriving the answer from
+    # the characters around a match. See the note above `_page_rows`.
+    #
+    # THE CELL-PER-LINE TABLE IS REBUILT INTO THAT LIST. Every gap in
+    # this extractor is `[^\d\n(]{0,N}` — deliberately, so a label on one
+    # line cannot reach a number on the next — and the OCR layout this
+    # module documents as the norm emits ONE TEXT BOX PER TABLE CELL. So
+    # on a genetics report whose repeat count sits in a table, the label
+    # and its number are on separate lines and not one pattern here can
+    # see them: the count was read only by `_append_generic_table_fields`,
+    # which slugged 「D4Z4甲基化水平」 and 「D4Z4重复单元数」 onto the SAME
+    # key and dropped the second. `_table_row_lines` puts the row back
+    # together as one row so the canonical readers — the gap tests, the
+    # absence test, the kb test, the zero refusal — get the cell they
+    # were written for.
+    #
+    # THE BOILERPLATE TAIL IS CUT FIRST, for the readers as well as for
+    # the conclusion. A limitations paragraph is full of numbers that
+    # answer somebody else's question, and this extractor used to run
+    # over the whole page including it.
+    body = _before_disclaimer_section(lines)
+    rows = _page_rows(body)
     # NAMING A TYPE IS NOT DIAGNOSING IT. 「本次检测不支持 FSHD1」 and
     # 「临床怀疑 FSHD1，请进一步检查」 both named FSHD1 and both came out
     # as this patient's diagnosis at 0.98 — the value the passport
@@ -2184,17 +2617,17 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # `interpretation_summary`, which is displayed and not graded.
     #
     # AND NEITHER IS BEING TITLED AFTER IT — see `_read_diagnosis_type`,
-    # which is where the tests above are asked of every occurrence of the
-    # token rather than of the first one on the page.
-    diagnosis_type, diagnosis_match = _read_diagnosis_type(text)
+    # where a title is refused because `_page_rows` labelled it one,
+    # rather than because the conclusion happened to repeat the token.
+    diagnosis_type, diagnosis_match = _read_diagnosis_type(rows)
 
     # 4qA is the token the whole FSHD1 reading rests on — FSHD1 cannot be
     # the mechanism on a 4qB allele — so it is read off the RESULT, never
     # off the first place the page happens to print it. See
     # `_read_haplotype`.
-    haplotype, haplotype_source = _read_haplotype(lines)
+    haplotype, haplotype_source = _read_haplotype(rows)
 
-    # EVERY NUMERIC CELL BELOW IS READ WITH `_find_adjacent_regex`, which
+    # EVERY NUMERIC CELL BELOW IS READ WITH `_read_cell`, which
     # is where the 「a number near the label is the label's number」 bug
     # is fixed for all of them at once. Each pattern names its gap so
     # that helper can judge it; each names its value so the group
@@ -2213,23 +2646,23 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # platform has one length cell and that is its name; what any reader
     # does with it is 「a length in kb, not a repeat count」, which is
     # true whichever enzyme cut it.
-    ecori_match, _ = _find_adjacent_regex(
-        text,
+    ecori_match, _ = _read_cell(
+        rows,
         [
-            r"EcoRI(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
-            r"片段长度(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
-            r"大小(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
-            r"\bsize(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"EcoRI(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"片段长度(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"大小(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"\bsize(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
         ],
         analyte="fragment_length",
     )
     ecori_fragment = ecori_match.group("value") if ecori_match else None
 
-    d4z4_pair_match, _ = _find_adjacent_regex(
-        text,
+    d4z4_pair_match, d4z4_row = _read_cell(
+        rows,
         [
-            r"D4Z4(?P<gap>[^\d\n]{0,24})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
-            r"重复数(?P<gap>[^\d\n]{0,20})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
+            r"D4Z4(?P<gap>[^\d\n(]{0,24})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
+            r"重复数(?P<gap>[^\d\n(]{0,20})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
         ],
         analyte="repeat_count",
     )
@@ -2269,25 +2702,27 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # anchor to fall back to) and the range still answers.
     d4z4_is_range = False
     if not d4z4_pathogenic:
-        d4z4_single_match, _ = _find_adjacent_regex(
-            text,
-            [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"],
+        d4z4_single_match, d4z4_single_row = _read_cell(
+            rows,
+            [r"D4Z4(?P<gap>[^\d\n(]{0,16})(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"],
             analyte="repeat_count",
         )
         if d4z4_single_match:
             d4z4_pathogenic = d4z4_single_match.group("value")
             d4z4_source_text = d4z4_single_match.group(0)
             d4z4_match = d4z4_single_match
+            d4z4_row = d4z4_single_row
         else:
-            d4z4_range_match, _ = _find_adjacent_regex(
-                text,
-                [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
+            d4z4_range_match, d4z4_range_row = _read_cell(
+                rows,
+                [r"D4Z4(?P<gap>[^\d\n(]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
                 analyte="repeat_count",
             )
             if d4z4_range_match:
                 d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group("value"))
                 d4z4_source_text = d4z4_range_match.group(0)
                 d4z4_match = d4z4_range_match
+                d4z4_row = d4z4_range_row
                 d4z4_is_range = True
 
     # WHAT IS BESIDE THE NUMBER DECIDES WHETHER IT IS A COUNT.
@@ -2321,12 +2756,42 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # `latest_summary.by_analyte.d4z4_repeat_pathogenic.value_num` was
     # 0.0 — a laboratory count of zero, on the two channels a model and
     # the passport read numbers off.
+    #
+    # AND THE REFUSAL APPLIES TO BOTH SIDES OF A PAIR. It was asked only
+    # of `d4z4_pathogenic`, while `d4z4_other` comes off the SAME match
+    # and was typed unconditionally — so 「D4Z4 重复数 3/0」 published
+    # `d4z4_repeat_other` = 0 with `normalized_value: 0`, and
+    # `_build_observations` carried it to `result.value_num: 0.0` and
+    # `latest_summary.by_analyte`: the two channels the note on
+    # `NO_NORMALIZED_VALUE` names as the whole reason this refusal
+    # exists. A repeat count of zero is not a valid reading on either
+    # allele.
+    #
+    # AND A BOUND IS KEPT, ON THE SAME TERMS AS THE 0. 「D4Z4重复单元数
+    # >10」 is either the population reference or a genuinely one-sided
+    # result — a Southern blot that could not resolve a large array
+    # really does report 「>10」 — and the two are not distinguishable
+    # from the row. What IS certain either way is that 10 is not this
+    # patient's count: it is the grey-zone boundary, so publishing it
+    # types a patient the report places ABOVE the FSHD1 range as sitting
+    # on its edge. The comparator is put back on `field_value` so the
+    # cell reads 「>10」 and not 「10」 to the reviewer and the model.
     d4z4_refusal: Optional[str] = None
+    d4z4_bound: Optional[str] = None
     if d4z4_match is not None and d4z4_pathogenic and not d4z4_is_range:
-        if _asserts_absence(text, d4z4_match):
+        value_at = (
+            d4z4_match.start("value")
+            if "value" in d4z4_match.groupdict()
+            else d4z4_match.start()
+        )
+        bound_before = _BOUND_BEFORE_VALUE.search((d4z4_row or "")[:value_at])
+        if _asserts_absence(d4z4_row or "", d4z4_match):
             d4z4_refusal = "negated"
-        elif _LENGTH_UNIT_AFTER.match(text, d4z4_match.end()):
+        elif _LENGTH_UNIT_AFTER.match(d4z4_row or "", d4z4_match.end()):
             d4z4_refusal = "length_in_kb"
+        elif bound_before is not None:
+            d4z4_refusal = "reference_bound"
+            d4z4_bound = bound_before.group(0).strip()
         elif d4z4_pathogenic.isdigit() and int(d4z4_pathogenic) == 0:
             d4z4_refusal = "zero"
     if d4z4_refusal in {"negated", "length_in_kb"}:
@@ -2335,6 +2800,16 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         d4z4_pathogenic = None
         d4z4_other = None
         d4z4_source_text = None
+    elif d4z4_refusal == "reference_bound" and d4z4_bound:
+        # Shown as the report printed it. `normalized_value` is already
+        # `NO_NORMALIZED_VALUE` for any refusal, so nothing downstream
+        # does arithmetic on either half of this string.
+        d4z4_pathogenic = f"{d4z4_bound}{d4z4_pathogenic}"
+        d4z4_other = None
+    # Kept visible and never typed, on the same terms as the pathogenic
+    # side: a reviewer has to see that the row was read and refused
+    # rather than find it missing.
+    d4z4_other_refused = bool(d4z4_other) and d4z4_other.isdigit() and int(d4z4_other) == 0
 
     # 甲基化分析 IS THE NAME OF THE TEST, NOT A READING OF IT.
     #
@@ -2349,9 +2824,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # mode hands it to the assistant verbatim and strict mode counts it
     # in `numericValuesWithheld`, and a 4 in that cell is a claim about
     # this patient either way.
-    methylation_match, _ = _find_adjacent_regex(
-        text,
-        [r"甲基化(?P<gap>[^\d\n]{0,8})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%?)"],
+    methylation_match, _ = _read_cell(
+        rows,
+        [r"甲基化(?P<gap>[^\d\n(]{0,8})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%?)"],
         analyte="methylation",
     )
     methylation_value = methylation_match.group("value") if methylation_match else None
@@ -2365,18 +2840,43 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # false.
     methylation_unit = (methylation_match.group("unit") or None) if methylation_match else None
 
-    body = _before_disclaimer_section(lines)
     genetic_method = _detect_genetic_method(body)
-    interpretation = _pick_finding_sentence(
+    # THE SENTENCE THE PATIENT READS IS THE ONE THE REPORT CONCLUDED
+    # WITH, WHEN IT STATES A FINDING.
+    #
+    # This tried the 检测结果 block first and only fell through to the
+    # 结论 line when the block came back empty — and 建议 is one of the
+    # block's stop keywords. The standard Chinese negative conclusion
+    # carries it in the middle of the sentence: 「结论: 本次检测不支持
+    # FSHD1, 建议评估 FSHD2。」 So the block stopped ONE LINE SHORT of the
+    # exclusion, answered with the result row above it, and the fallback
+    # that would have found the exclusion never ran. Measured on exactly
+    # that report: `interpretation_summary` came out 「D4Z4 重复单元数
+    # 18」 — a bare number, with the sentence saying the test does not
+    # support FSHD1 nowhere in the payload at all. That sentence is what
+    # the patient reads under 报告详情 → 来源追溯 and what the assistant
+    # is given as the report's own words.
+    #
+    # So the conclusion line is preferred WHEN IT STATES A FINDING —
+    # `_FINDING_MARKERS`, the same test `_pick_finding_sentence` applies
+    # inside a block. A bare 「结论: 详见下述」 states nothing and does
+    # not displace the block; a conclusion that excludes, confirms or
+    # hedges a type does.
+    conclusion_line = _extract_summary_line(
+        body,
+        ["检测结论", "结论", "结果分析", "解读", "提示", "interpretation", "impression"],
+    )
+    block_sentence = _pick_finding_sentence(
         _extract_block_after_header(
             body,
             ["检测结果", "检测结论", "结果分析"],
             ["遗传咨询", "建议", "变异位点", "检测方法"],
         )
-    ) or _extract_summary_line(
-        body,
-        ["检测结论", "结论", "结果分析", "解读", "提示", "interpretation", "impression"],
     )
+    if conclusion_line and any(marker in conclusion_line for marker in _FINDING_MARKERS):
+        interpretation = conclusion_line
+    else:
+        interpretation = block_sentence or conclusion_line
     # `genetic_positive` WAS DERIVED HERE AND IS GONE.
     #
     # It read `「yes」 if diagnosis_type or d4z4_pathogenic else
@@ -2487,9 +2987,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         _build_field(
             "d4z4_repeat_other",
             d4z4_other,
-            normalized_value=int(d4z4_other) if d4z4_other else None,
+            normalized_value=(
+                NO_NORMALIZED_VALUE if d4z4_other_refused else int(d4z4_other)
+            ),
             source_text=d4z4_pair_match.group(0) if d4z4_pair_match else None,
-            confidence=0.94,
+            confidence=0.30 if d4z4_other_refused else 0.94,
         )
         if d4z4_other
         else None,
@@ -2535,21 +3037,49 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         # None for a range: this key is typed as a count and every
         # consumer of it does arithmetic. The interval itself survives on
         # the `d4z4_repeat_pathogenic` structured field, whose
-        # `field_value` is the raw text. Same for a refused cell — a 0
-        # is what the report printed, not a count anything may use, and
-        # the structured field beside this one now says the same thing
-        # rather than falling back to the printed digit. See
-        # `NO_NORMALIZED_VALUE`.
+        # `field_value` is the raw text. Same for a refused cell on
+        # EITHER side of a pair — a 0 is what the report printed, not a
+        # count anything may use, and the structured fields beside this
+        # one now say the same thing rather than falling back to the
+        # printed digit. See `NO_NORMALIZED_VALUE`.
         "d4z4_repeat_pathogenic": (
             int(d4z4_pathogenic)
             if d4z4_pathogenic and not d4z4_is_range and not d4z4_refusal
             else None
         ),
-        "d4z4_repeat_other": int(d4z4_other) if d4z4_other else None,
+        "d4z4_repeat_other": (
+            int(d4z4_other) if d4z4_other and not d4z4_other_refused else None
+        ),
         "genetic_test_method": genetic_method,
         "methylation_value": _safe_float(methylation_value) if methylation_value else None,
         "interpretation_summary": interpretation,
     }
+
+
+#: A QUANTITY, AND NEVER THE FRACTIONAL HALF OF ONE.
+#:
+#: The third face of the decimal-point defect, and the one that only
+#: became reachable once `_extract_sentences` stopped cutting 「病程 18.5
+#: 年」 in two. `(\d{1,2})\s*年` has nothing to stop it starting AFTER
+#: the decimal point, so the sentence that survived the split was then
+#: read as a disease duration of 5 years — a patient eighteen and a half
+#: years into a progressive myopathy described to the assistant as five,
+#: on `disease_duration`, which the exports carry.
+#:
+#: A digit run is a number only when neither a digit nor a decimal point
+#: sits immediately to its left, which is the same rule `_SENTENCE_BREAK`
+#: applies to the dot itself. The fractional part is captured too: 18.5
+#: years is what the record says, and rounding it here would be this
+#: module inventing precision it was not given.
+_QUANTITY = r"(?<![\d.])(\d{1,3}(?:\.\d+)?)"
+
+
+def _as_number(text: str) -> Any:
+    """A captured quantity as `int` when it is whole, `float` otherwise."""
+    value = _exact_float(text)
+    if value is None:
+        return None
+    return int(value) if value.is_integer() else value
 
 
 def _extract_medical_summary(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -2565,14 +3095,26 @@ def _extract_medical_summary(lines: List[str], fields: List[Dict[str, Any]], nor
 
     for sentence in sentences:
         if onset_age is None:
-            onset_match, _ = _find_regex(sentence, [r"(\d{1,2})\s*岁[^。;；]*(?:起病|发病)", r"(?:起病|发病)[^。;；]*(\d{1,2})\s*岁"])
+            onset_match, _ = _find_regex(
+                sentence,
+                [
+                    rf"{_QUANTITY}\s*岁[^。;；]*(?:起病|发病)",
+                    rf"(?:起病|发病)[^。;；]*{_QUANTITY}\s*岁",
+                ],
+            )
             if onset_match:
-                onset_age = int(onset_match.group(1))
+                onset_age = _as_number(onset_match.group(1))
                 onset_sentence = sentence
         if disease_duration is None:
-            duration_match, _ = _find_regex(sentence, [r"(?:病程|发病|患病)[^。;；]*(\d{1,2})\s*年", r"(\d{1,2})\s*年(?:前|余)[^。;；]*(?:出现|起病|发病)"])
+            duration_match, _ = _find_regex(
+                sentence,
+                [
+                    rf"(?:病程|发病|患病)[^。;；]*{_QUANTITY}\s*年",
+                    rf"{_QUANTITY}\s*年(?:前|余)[^。;；]*(?:出现|起病|发病)",
+                ],
+            )
             if duration_match:
-                disease_duration = int(duration_match.group(1))
+                disease_duration = _as_number(duration_match.group(1))
                 duration_sentence = sentence
         if family_history is None and "家族史" in sentence:
             family_history = sentence
@@ -2582,9 +3124,9 @@ def _extract_medical_summary(lines: List[str], fields: List[Dict[str, Any]], nor
             key_signs.append(sentence)
         if any(keyword in sentence for keyword in ["起病", "发病", "加重", "进展", "确诊", "检查提示"]):
             normalized_age = None
-            age_match, _ = _find_regex(sentence, [r"(\d{1,2})\s*岁"])
+            age_match, _ = _find_regex(sentence, [rf"{_QUANTITY}\s*岁"])
             if age_match:
-                normalized_age = int(age_match.group(1))
+                normalized_age = _as_number(age_match.group(1))
             timeline.append(
                 {
                     "event_type": "progression_node" if "进展" in sentence or "加重" in sentence else "clinical_event",
@@ -2668,8 +3210,8 @@ def _extract_physical_exam(lines: List[str], fields: List[Dict[str, Any]], norma
         canonical_name, body_region = muscle
         side = _canonical_side(sentence)
 
-        left_match, _ = _find_regex(sentence, [r"(?:左|left)[^0-5\n]{0,12}([0-5](?:[+-])?)"])
-        right_match, _ = _find_regex(sentence, [r"(?:右|right)[^0-5\n]{0,12}([0-5](?:[+-])?)"])
+        left_match, _ = _find_regex(sentence, [r"(?:左|left)[^0-5\n(]{0,12}([0-5](?:[+-])?)"])
+        right_match, _ = _find_regex(sentence, [r"(?:右|right)[^0-5\n(]{0,12}([0-5](?:[+-])?)"])
 
         if left_match or right_match:
             if left_match:
@@ -2867,16 +3409,16 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
 def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_patterns = {
-        "fvc": [r"\bFVC\b[^\d\n]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "fvc_pred_pct": [r"FVC(?:[% ]*Pred|占预计值|预计%)?[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "fev1": [r"\bFEV1\b[^\d\n]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "fev1_pred_pct": [r"FEV1(?:[% ]*Pred|占预计值|预计%)?[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "fev1_fvc": [r"FEV1/FVC[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "tlc": [r"\bTLC\b[^\d\n]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "tlc_pred_pct": [r"TLC(?:[% ]*Pred|占预计值|预计%)?[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "dlco": [r"\bDLCO\b[^\d\n]{0,10}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
-        "dlco_pred_pct": [r"DLCO(?:[% ]*Pred|占预计值|预计%)?[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "dlco_va": [r"DLCO/VA[^\d\n]{0,12}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
+        "fvc": [r"\bFVC\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
+        "fvc_pred_pct": [r"FVC(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
+        "fev1": [r"\bFEV1\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
+        "fev1_pred_pct": [r"FEV1(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
+        "fev1_fvc": [r"FEV1/FVC[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
+        "tlc": [r"\bTLC\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
+        "tlc_pred_pct": [r"TLC(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
+        "dlco": [r"\bDLCO\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
+        "dlco_pred_pct": [r"DLCO(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
+        "dlco_va": [r"DLCO/VA[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
     }
     panel: Dict[str, Any] = {}
 
@@ -2988,18 +3530,18 @@ def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings:
 def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_definitions = {
-        "right_qb": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bQB\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "right_db": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bDB\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "right_vs": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bVS\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_qb": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bQB\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_db": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bDB\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_vs": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bVS\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "right_ee": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bEE\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "right_ei": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bEI\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "right_di": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bDI\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_ee": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bEE\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_ei": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bEI\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
-        "left_di": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bDI\b[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
+        "right_qb": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bQB\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "right_db": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bDB\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "right_vs": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bVS\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_qb": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bQB\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_db": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bDB\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_vs": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bVS\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "right_ee": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bEE\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "right_ei": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bEI\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "right_di": [r"(?:右侧|右膈肌|R)[^\n]{0,20}\bDI\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_ee": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bEE\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_ei": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bEI\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
+        "left_di": [r"(?:左侧|左膈肌|L)[^\n]{0,20}\bDI\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
     }
     panel: Dict[str, Any] = normalized_summary.get("cardio_respiratory_panel", {})
 
@@ -3014,8 +3556,8 @@ def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
         )
 
     row_patterns = {
-        "right": [r"右侧膈肌[^\d\n]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
-        "left": [r"左侧膈肌[^\d\n]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "right": [r"右侧膈肌[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
+        "left": [r"左侧膈肌[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"],
     }
     row_field_order = ["qb", "db", "vs", "ee", "ei", "di"]
 
@@ -3074,14 +3616,14 @@ def _extract_diaphragm_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
 def _extract_ecg(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_patterns = {
-        "heart_rate": [r"(?:HR|心率|房率|室率)[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
-        "pr_interval_ms": [r"(?:\bPR\b|P-R间期)[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
-        "qrs_duration_ms": [r"\bQRS\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
-        "qt_ms": [r"\bQT\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
-        "qtc_ms": [r"\bQTc\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
-        "axis_p": [r"P轴[^\d\n-]{0,8}(-?\d+(?:\.\d+)?)"],
-        "axis_qrs": [r"QRS轴[^\d\n-]{0,8}(-?\d+(?:\.\d+)?)"],
-        "axis_t": [r"T轴[^\d\n-]{0,8}(-?\d+(?:\.\d+)?)"],
+        "heart_rate": [r"(?:HR|心率|房率|室率)[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
+        "pr_interval_ms": [r"(?:\bPR\b|P-R间期)[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
+        "qrs_duration_ms": [r"\bQRS\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
+        "qt_ms": [r"\bQT\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
+        "qtc_ms": [r"\bQTc\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(ms|毫秒)?"],
+        "axis_p": [r"P轴[^\d\n(-]{0,8}(-?\d+(?:\.\d+)?)"],
+        "axis_qrs": [r"QRS轴[^\d\n(-]{0,8}(-?\d+(?:\.\d+)?)"],
+        "axis_t": [r"T轴[^\d\n(-]{0,8}(-?\d+(?:\.\d+)?)"],
     }
     panel: Dict[str, Any] = normalized_summary.get("cardio_respiratory_panel", {})
 
@@ -3128,14 +3670,14 @@ def _extract_ecg(lines: List[str], fields: List[Dict[str, Any]], findings: List[
 def _extract_echo(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_patterns = {
-        "lvef": [r"(?:LVEF|EF|射血分数)[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(%)"],
-        "fs": [r"\bFS\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(%)"],
-        "co": [r"\bCO\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*([A-Za-z/]+)?"],
-        "hr": [r"(?:HR|心率)[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
-        "lad": [r"\bLAD\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
-        "aod": [r"\bAOD\b[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
-        "lvd_d": [r"(?:LVDd|LVDD)[^\d\n]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
-        "e_over_e_prime": [r"E/E['′]?[^\d\n]{0,8}(\d+(?:\.\d+)?)"],
+        "lvef": [r"(?:LVEF|EF|射血分数)[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(%)"],
+        "fs": [r"\bFS\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(%)"],
+        "co": [r"\bCO\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*([A-Za-z/]+)?"],
+        "hr": [r"(?:HR|心率)[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(?:bpm|次/分)?"],
+        "lad": [r"\bLAD\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
+        "aod": [r"\bAOD\b[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
+        "lvd_d": [r"(?:LVDd|LVDD)[^\d\n(]{0,8}(\d+(?:\.\d+)?)\s*(mm|cm)?"],
+        "e_over_e_prime": [r"E/E['′]?[^\d\n(]{0,8}(\d+(?:\.\d+)?)"],
     }
     panel: Dict[str, Any] = normalized_summary.get("cardio_respiratory_panel", {})
 
@@ -3187,31 +3729,31 @@ def _extract_blood_routine(lines: List[str], fields: List[Dict[str, Any]], norma
     text = "\n".join(lines)
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
     definitions = {
-        "wbc": {"patterns": [r"(?:白细胞计数|WBC)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞计数", "WBC"]},
-        "neut_pct": {"patterns": [r"(?:中性粒细胞比率|NEUT%|%NEUT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["中性粒细胞比率", "NEUT"]},
-        "neut_abs": {"patterns": [r"(?:中性粒细胞数|NEUT#|#NEUT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["中性粒细胞数", "NEUT"]},
-        "lymph_pct": {"patterns": [r"(?:淋巴细胞比率|LYMPH%|%LYMPH)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["淋巴细胞比率", "LYMPH"]},
-        "lymph_abs": {"patterns": [r"(?:淋巴细胞数|LYMPH#|#LYMPH)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["淋巴细胞数", "LYMPH"]},
-        "mono_pct": {"patterns": [r"(?:单核细胞比率|MONO%|%MONO)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["单核细胞比率", "MONO"]},
-        "mono_abs": {"patterns": [r"(?:单核细胞数|MONO#|#MONO)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["单核细胞数", "MONO"]},
-        "eos_pct": {"patterns": [r"(?:嗜酸细胞百分比|EOS%|%EOS)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜酸细胞百分比", "EOS"]},
-        "eos_abs": {"patterns": [r"(?:嗜酸细胞数|EOS#|#EOS)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜酸细胞数", "EOS"]},
-        "baso_pct": {"patterns": [r"(?:嗜碱细胞百分比|BASO%|%BASO)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜碱细胞百分比", "BASO"]},
-        "baso_abs": {"patterns": [r"(?:嗜碱细胞数|BASO#|#BASO)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜碱细胞数", "BASO"]},
-        "rbc": {"patterns": [r"(?:红细胞计数|RBC)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞计数", "RBC"]},
-        "hgb": {"patterns": [r"(?:血红蛋白量|血红蛋白|HGB)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血红蛋白", "HGB"]},
-        "hct": {"patterns": [r"(?:红细胞比积|HCT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞比积", "HCT"]},
-        "mcv": {"patterns": [r"(?:平均红细胞体积|MCV)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均红细胞体积", "MCV"]},
-        "mch": {"patterns": [r"(?:平均血红蛋白含量|MCH)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白含量", "MCH"]},
-        "mchc": {"patterns": [r"(?:平均血红蛋白浓度|MCHC)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白浓度", "MCHC"]},
-        "rdw_sd": {"patterns": [r"(?:红细胞分布宽度标准差|RDW-SD)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度标准差", "RDW-SD"]},
-        "rdw_cv": {"patterns": [r"(?:红细胞分布宽度变异系数|RDW-CV|RDW)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度变异系数", "RDW"]},
-        "plt": {"patterns": [r"(?:血小板计数|PLT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板计数", "PLT"]},
-        "mpv": {"patterns": [r"(?:血小板平均体积|MPV)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板平均体积", "MPV"]},
-        "pct": {"patterns": [r"(?:血小板比积|PCT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板比积", "PCT"]},
-        "pdw": {"patterns": [r"(?:血小板分布宽度|PDW)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板分布宽度", "PDW"]},
-        "plcr": {"patterns": [r"(?:大型血小板比率|P-LCR|PLCR)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["大型血小板比率", "P-LCR"]},
-        "nrbc": {"patterns": [r"(?:有核红细胞|NRBC)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["有核红细胞", "NRBC"]},
+        "wbc": {"patterns": [r"(?:白细胞计数|WBC)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞计数", "WBC"]},
+        "neut_pct": {"patterns": [r"(?:中性粒细胞比率|NEUT%|%NEUT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["中性粒细胞比率", "NEUT"]},
+        "neut_abs": {"patterns": [r"(?:中性粒细胞数|NEUT#|#NEUT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["中性粒细胞数", "NEUT"]},
+        "lymph_pct": {"patterns": [r"(?:淋巴细胞比率|LYMPH%|%LYMPH)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["淋巴细胞比率", "LYMPH"]},
+        "lymph_abs": {"patterns": [r"(?:淋巴细胞数|LYMPH#|#LYMPH)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["淋巴细胞数", "LYMPH"]},
+        "mono_pct": {"patterns": [r"(?:单核细胞比率|MONO%|%MONO)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["单核细胞比率", "MONO"]},
+        "mono_abs": {"patterns": [r"(?:单核细胞数|MONO#|#MONO)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["单核细胞数", "MONO"]},
+        "eos_pct": {"patterns": [r"(?:嗜酸细胞百分比|EOS%|%EOS)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜酸细胞百分比", "EOS"]},
+        "eos_abs": {"patterns": [r"(?:嗜酸细胞数|EOS#|#EOS)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜酸细胞数", "EOS"]},
+        "baso_pct": {"patterns": [r"(?:嗜碱细胞百分比|BASO%|%BASO)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "unit": "%", "keywords": ["嗜碱细胞百分比", "BASO"]},
+        "baso_abs": {"patterns": [r"(?:嗜碱细胞数|BASO#|#BASO)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["嗜碱细胞数", "BASO"]},
+        "rbc": {"patterns": [r"(?:红细胞计数|RBC)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞计数", "RBC"]},
+        "hgb": {"patterns": [r"(?:血红蛋白量|血红蛋白|HGB)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血红蛋白", "HGB"]},
+        "hct": {"patterns": [r"(?:红细胞比积|HCT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞比积", "HCT"]},
+        "mcv": {"patterns": [r"(?:平均红细胞体积|MCV)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均红细胞体积", "MCV"]},
+        "mch": {"patterns": [r"(?:平均血红蛋白含量|MCH)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白含量", "MCH"]},
+        "mchc": {"patterns": [r"(?:平均血红蛋白浓度|MCHC)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["平均血红蛋白浓度", "MCHC"]},
+        "rdw_sd": {"patterns": [r"(?:红细胞分布宽度标准差|RDW-SD)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度标准差", "RDW-SD"]},
+        "rdw_cv": {"patterns": [r"(?:红细胞分布宽度变异系数|RDW-CV|RDW)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞分布宽度变异系数", "RDW"]},
+        "plt": {"patterns": [r"(?:血小板计数|PLT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板计数", "PLT"]},
+        "mpv": {"patterns": [r"(?:血小板平均体积|MPV)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板平均体积", "MPV"]},
+        "pct": {"patterns": [r"(?:血小板比积|PCT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板比积", "PCT"]},
+        "pdw": {"patterns": [r"(?:血小板分布宽度|PDW)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["血小板分布宽度", "PDW"]},
+        "plcr": {"patterns": [r"(?:大型血小板比率|P-LCR|PLCR)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["大型血小板比率", "P-LCR"]},
+        "nrbc": {"patterns": [r"(?:有核红细胞|NRBC)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["有核红细胞", "NRBC"]},
     }
     _extract_numeric_panel(text, lines, fields, panel, definitions)
     normalized_summary["lab_panel"] = panel
@@ -3221,12 +3763,12 @@ def _extract_thyroid_function(lines: List[str], fields: List[Dict[str, Any]], no
     text = "\n".join(lines)
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
     definitions = {
-        "ft3": {"patterns": [r"(?:游离T3(?:\(FT3\))?|FT3结果?)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T3", "FT3"]},
-        "ft4": {"patterns": [r"(?:游离T4(?:\(FT4\))?|FT4结果?)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T4", "FT4"]},
+        "ft3": {"patterns": [r"(?:游离T3(?:\(FT3\))?|FT3结果?)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T3", "FT3"]},
+        "ft4": {"patterns": [r"(?:游离T4(?:\(FT4\))?|FT4结果?)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["游离T4", "FT4"]},
         "tsh": {
             "patterns": [
-                r"(?:超敏促甲状腺素(?:\(TSH3?\))?|促甲状腺激素(?:\(TSH3?\))?)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)",
-                r"(?:^|\n)\s*(?:TSH3?|sTSH)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)",
+                r"(?:超敏促甲状腺素(?:\(TSH3?\))?|促甲状腺激素(?:\(TSH3?\))?)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)",
+                r"(?:^|\n)\s*(?:TSH3?|sTSH)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)",
             ],
             "keywords": ["促甲状腺激素", "TSH"],
         },
@@ -3239,12 +3781,12 @@ def _extract_coagulation(lines: List[str], fields: List[Dict[str, Any]], normali
     text = "\n".join(lines)
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
     definitions = {
-        "pt": {"patterns": [r"(?:凝血酶原时间|PT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶原时间", "PT"]},
-        "inr": {"patterns": [r"(?:国际标准化比值|PT-INR|INR)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["国际标准化比值", "INR"]},
-        "aptt": {"patterns": [r"(?:活化部分凝血活酶时间|APTT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["活化部分凝血活酶时间", "APTT"]},
-        "fibrinogen": {"patterns": [r"(?:纤维蛋白原|FIB|Fg)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["纤维蛋白原", "FIB", "Fg"]},
-        "tt": {"patterns": [r"(?:凝血酶时间|TT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶时间", "TT"]},
-        "d_dimer": {"patterns": [r"(?:D[ -]?二聚体定量|D-Dimer|D二聚体)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["D-二聚体", "D-Dimer"]},
+        "pt": {"patterns": [r"(?:凝血酶原时间|PT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶原时间", "PT"]},
+        "inr": {"patterns": [r"(?:国际标准化比值|PT-INR|INR)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["国际标准化比值", "INR"]},
+        "aptt": {"patterns": [r"(?:活化部分凝血活酶时间|APTT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["活化部分凝血活酶时间", "APTT"]},
+        "fibrinogen": {"patterns": [r"(?:纤维蛋白原|FIB|Fg)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["纤维蛋白原", "FIB", "Fg"]},
+        "tt": {"patterns": [r"(?:凝血酶时间|TT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["凝血酶时间", "TT"]},
+        "d_dimer": {"patterns": [r"(?:D[ -]?二聚体定量|D-Dimer|D二聚体)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["D-二聚体", "D-Dimer"]},
     }
     _extract_numeric_panel(text, lines, fields, panel, definitions)
     normalized_summary["lab_panel"] = panel
@@ -3266,13 +3808,13 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         "urine_urobilinogen": {"patterns": [r"(?:尿胆原(?:\(URO\))?|URO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["尿胆原", "URO"]},
     }
     numeric_definitions = {
-        "urine_specific_gravity": {"patterns": [r"(?:比重|SG)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["比重", "SG"]},
-        "urine_ph": {"patterns": [r"(?:pH值|pH)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["pH值", "pH"]},
-        "urine_rbc": {"patterns": [r"(?:红细胞\(RBC\)|红细胞/HPF|红细胞)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞", "RBC"]},
-        "urine_wbc": {"patterns": [r"(?:白细胞\(WBC\)|白细胞/HPF|白细胞)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞", "WBC"]},
-        "urine_bacteria": {"patterns": [r"(?:细菌|BACT)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["细菌", "BACT"]},
-        "urine_epithelial_cells": {"patterns": [r"(?:上皮细胞|EC)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["上皮细胞", "EC"]},
-        "urine_mucus": {"patterns": [r"(?:粘液丝|MUCS)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["粘液丝", "MUCS"]},
+        "urine_specific_gravity": {"patterns": [r"(?:比重|SG)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["比重", "SG"]},
+        "urine_ph": {"patterns": [r"(?:pH值|pH)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["pH值", "pH"]},
+        "urine_rbc": {"patterns": [r"(?:红细胞\(RBC\)|红细胞/HPF|红细胞)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["红细胞", "RBC"]},
+        "urine_wbc": {"patterns": [r"(?:白细胞\(WBC\)|白细胞/HPF|白细胞)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["白细胞", "WBC"]},
+        "urine_bacteria": {"patterns": [r"(?:细菌|BACT)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["细菌", "BACT"]},
+        "urine_epithelial_cells": {"patterns": [r"(?:上皮细胞|EC)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["上皮细胞", "EC"]},
+        "urine_mucus": {"patterns": [r"(?:粘液丝|MUCS)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["粘液丝", "MUCS"]},
     }
     _extract_text_panel(text, lines, fields, panel, text_definitions)
     _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
@@ -3296,7 +3838,7 @@ def _extract_infection_screening(lines: List[str], fields: List[Dict[str, Any]],
     _extract_text_panel(text, lines, fields, panel, text_definitions)
 
     numeric_definitions = {
-        "trust_titer": {"patterns": [r"(?:TRUST滴度)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["TRUST滴度"]},
+        "trust_titer": {"patterns": [r"(?:TRUST滴度)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["TRUST滴度"]},
     }
     _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
     normalized_summary["lab_panel"] = panel
@@ -3317,7 +3859,7 @@ def _extract_stool_test(lines: List[str], fields: List[Dict[str, Any]], normaliz
         "hp_result": {"patterns": [r"(?:检测结果|样本次检测结果为)(阴性\+?|阳性\+?)"], "keywords": ["检测结果", "样本次检测结果"]},
     }
     numeric_definitions = {
-        "hp_dob": {"patterns": [r"(?:DOB|DPM值)[^\d\n]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["DOB", "DPM值"]},
+        "hp_dob": {"patterns": [r"(?:DOB|DPM值)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"], "keywords": ["DOB", "DPM值"]},
     }
     _extract_text_panel(text, lines, fields, panel, text_definitions)
     _extract_numeric_panel(text, lines, fields, panel, numeric_definitions)
@@ -3370,8 +3912,122 @@ def _extract_abdominal_ultrasound(lines: List[str], fields: List[Dict[str, Any]]
     }
 
 
-def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+#: `_ASCII_WORD_BOUNDARY` with the hyphen inside the word, for analyte
+#: abbreviations. See `_analyte_keyword_pattern`.
+_ANALYTE_TOKEN_BOUNDARY = r"(?:(?<![0-9A-Za-z_-])|(?![0-9A-Za-z_-]))"
+
+
+@lru_cache(maxsize=512)
+def _analyte_keyword_pattern(keyword: str) -> "re.Pattern":
+    """`keyword`, anchored so a Latin abbreviation is not read inside a word.
+
+    THE SAME `\\b` DEFECT, IN A SUBSTRING TEST. The analyte keywords in
+    `_extract_labs` were matched with `keyword in line`, and several of
+    them are one or two Latin letters: `k` for 钾, `p` for 无机磷, `ca`
+    for 钙, `cr` for 肌酐. On the ordinary Chinese spelling
+    「肌酸激酶(CK): 890 U/L」 the `k` of `(CK)` matched, and the patient's
+    CREATINE KINASE — the muscle-damage marker an FSHD report is
+    uploaded for, and one that runs an order of magnitude above the
+    reference range — was published a second time as
+    `potassium: 890 U/L`, a potassium of 890 being an unsurvivable
+    figure. 「血小板计数(PLT)」 fed its count to 无机磷 the same way.
+
+    A Latin keyword needs a boundary at whichever end is Latin; a
+    Chinese one needs none, because 钾 does not occur inside a longer
+    Latin token. A lookaround rather than `\\b` for the reason the note
+    on `_ASCII_WORD_BOUNDARY` gives: the neighbouring character on a
+    Chinese report is usually CJK, and `\\b` does not fire there.
+
+    THE HYPHEN IS PART OF THE WORD HERE, which `\\b` would not have
+    given either. `mb` — myoglobin — matched inside 「(CK-MB)」, so a
+    CK-MB of 25 was published as this patient's MYOGLOBIN as well, and
+    the 肌红蛋白 row further down never reached the field because the
+    first line carrying a keyword wins. The old keyword list tried to
+    say this by padding the short ones with spaces (「 mb 」), which
+    fails on every Chinese report because there are no spaces to pad
+    against. A hyphenated abbreviation is one token, so `-` joins the
+    alphabet the boundary is defined on.
+
+    A BOUNDARY ONLY ANSWERS FOR THE LATIN NAMES. `ck` inside `CK-MB` is
+    settled here; 肌酸激酶 inside 肌酸激酶同工酶 is the same collision
+    with no boundary to appeal to, and it is settled in
+    `_competing_analyte_keywords`.
+    """
+    stripped = keyword.strip()
+    pattern = re.escape(stripped)
+    if re.match(r"[0-9A-Za-z_-]", stripped):
+        pattern = _ANALYTE_TOKEN_BOUNDARY + pattern
+    if re.search(r"[0-9A-Za-z_-]$", stripped):
+        pattern = pattern + _ANALYTE_TOKEN_BOUNDARY
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _competing_analyte_keywords(
+    analytes: Dict[str, List[str]], field_name: str
+) -> Tuple[str, ...]:
+    """Other analytes' names that CONTAIN one of this analyte's names.
+
+    THE CHINESE HALF OF THE SAME DEFECT AS `_analyte_keyword_pattern`,
+    and the one that costs the most on an FSHD report. A boundary keeps
+    `ck` out of `CK-MB`; nothing kept 肌酸激酶 out of 肌酸激酶同工酶,
+    which is the printed Chinese name of the very same row. Measured on
+    the ordinary panel order:
+
+        肌酸激酶同工酶(CK-MB): 25 U/L
+        肌酸激酶(CK): 890 U/L
+
+    the first line carrying a keyword wins, so `ck` was published as 25
+    — a NORMAL creatine kinase — on a patient whose CK is 890, an order
+    of magnitude above the reference range and the muscle-damage marker
+    this platform exists to track. Three more collisions of the same
+    shape are live in the map below: 低密度脂蛋白 inside 极低密度脂蛋白
+    (an LDL-C of 3.10 published as the VLDL 0.45), 磷 inside 碱性磷酸酶
+    (an ALP of 80 published as a phosphorus of 80), and 脂蛋白a inside
+    载脂蛋白a1.
+
+    This is the same rule `_ANALYTE_GAP_WORDS` states for the genetics
+    cells — a label that is a PREFIX of another cell's name reaches into
+    that other cell's row — computed from the map rather than written
+    out, so an analyte added later is covered without anyone noticing
+    that it needs to be.
+    """
+    mine = [k.strip().lower() for k in analytes[field_name] if k and k.strip()]
+    competing: List[str] = []
+    for other, other_keywords in analytes.items():
+        if other == field_name:
+            continue
+        for keyword in other_keywords:
+            token = (keyword or "").strip().lower()
+            if token and any(m != token and m in token for m in mine):
+                competing.append(token)
+    return tuple(dict.fromkeys(competing))
+
+
+def _extract_lab_value(
+    lines: List[str],
+    keywords: Iterable[str],
+    competing: Tuple[str, ...] = (),
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     keyword_tokens = [keyword.lower().strip() for keyword in keywords if keyword and keyword.strip()]
+
+    def matched_span(lowered_line: str) -> Optional[Tuple[int, int]]:
+        """Where this analyte is named on the line, if it really is.
+
+        A hit COVERED BY a competing analyte's longer name is that other
+        analyte's row, not this one — 肌酸激酶 inside 肌酸激酶同工酶. The
+        line is not refused outright, only that hit: a flattened OCR row
+        naming both still lets each find its own.
+        """
+        for keyword in keyword_tokens:
+            for hit in _analyte_keyword_pattern(keyword).finditer(lowered_line):
+                covered = any(
+                    other.start() <= hit.start() and other.end() >= hit.end()
+                    for token in competing
+                    for other in _analyte_keyword_pattern(token).finditer(lowered_line)
+                )
+                if not covered:
+                    return hit.start(), hit.end()
+        return None
 
     def extract_numeric_value(line: str) -> Tuple[Optional[str], Optional[str]]:
         match = re.search(r"([<>]?\d+(?:\.\d+)?)\s*([A-Za-z/%μµ·/\-]+)?", line)
@@ -3380,14 +4036,10 @@ def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optio
         return match.group(1), (match.group(2) or "").strip() or None
 
     def search_segment(line: str) -> str:
-        lowered_line = line.lower()
-        matched = next((keyword for keyword in keyword_tokens if keyword in lowered_line), None)
-        if not matched:
+        span = matched_span(line.lower())
+        if span is None:
             return line
-        keyword_pos = lowered_line.find(matched)
-        segment = line[keyword_pos + len(matched) :] if keyword_pos >= 0 else line
-        segment = re.sub(r"^\s*\([^)]+\)\s*", "", segment)
-        return segment
+        return re.sub(r"^\s*\([^)]+\)\s*", "", line[span[1] :])
 
     def is_reference_range(line: str) -> bool:
         return bool(
@@ -3401,9 +4053,7 @@ def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optio
         return bool(re.fullmatch(r"[A-Za-z/%μµ·/\-]+", line.strip()))
 
     for index, line in enumerate(lines):
-        lowered = line.lower()
-        matched_keyword = next((keyword for keyword in keyword_tokens if keyword in lowered), None)
-        if not matched_keyword:
+        if matched_span(line.lower()) is None:
             continue
 
         raw_value, unit = extract_numeric_value(search_segment(line))
@@ -3463,20 +4113,53 @@ def _extract_lab_value(lines: List[str], keywords: Iterable[str]) -> Tuple[Optio
 
 #: Header cells that mark a results table. 「项目」 and 「结果」 are the
 #: load-bearing pair; the rest disambiguate.
+#:
+#: 参考范围 IS HERE BECAUSE ITS TWO SYNONYMS ALREADY WERE. This tuple is
+#: now what stops a bare column heading from opening a method section in
+#: `_section_kind`, so a heading missing from it is not merely unread as
+#: a heading — it refuses every data row printed below it. 参考区间 and
+#: 参考值 were listed and 参考范围, the third spelling of the same column,
+#: was not, which made the fix depend on which synonym a laboratory
+#: happens to print.
 _TABLE_HEADER_CELLS: Tuple[str, ...] = (
-    "项目", "结果", "参考区间", "参考值", "单位", "方法", "提示", "结果值",
-    "检验项目", "检测项目", "英文缩写", "No", "NO", "序号",
+    "项目", "结果", "参考区间", "参考值", "参考范围", "单位", "方法",
+    "提示", "结果值", "检验项目", "检测项目", "英文缩写", "No", "NO", "序号",
 )
 
-#: A cell holding a measurement: an optional comparator, digits, and
-#: nothing else. 「6.000」 yes; 「3.5-6.59」 no (that is a range).
-_VALUE_CELL = re.compile(r"^[<>≤≥]?\s*\d+(?:\.\d+)?$")
+#: A cell holding a measurement: digits and nothing else. 「6.000」 yes;
+#: 「3.5-6.59」 no (that is a range); 「>10」 no (see `_BOUND_CELL`).
+_VALUE_CELL = re.compile(r"^\d+(?:\.\d+)?$")
+
+#: A ONE-SIDED LIMIT — 「>10」, 「<0.5」, 「≥11」. IT IS NOT A RESULT WHEN A
+#: RESULT IS ALSO ON THE ROW.
+#:
+#: This shape used to be part of `_VALUE_CELL`, and `extract_lab_table_rows`
+#: takes the FIRST value cell after the analyte name. On the column order
+#: 项目 / 参考区间 / 结果 — ordinary on Chinese laboratory reports, and
+#: the one a genetics table uses because the FSHD1 reference IS one-sided
+#: — the reference limit is that first cell. So on
+#:
+#:     D4Z4重复单元数 | >10 | 3 | 个
+#:
+#: the row came back `value: 「>10」, unit: 「3」`: the limit became this
+#: patient's reading, the patient's reading became the row's unit, and
+#: `_table_row_lines` rebuilt it as 「D4Z4重复单元数 >10 3」, off which
+#: the repeat count read 10 — the comparator dropped, and 10 is the
+#: boundary that sends a reader off to evaluate FSHD2 while the report's
+#: real count of 3 is squarely inside the FSHD1 range.
+#:
+#: A bound is therefore a REFERENCE by default, and is accepted as the
+#: value only when the row prints no bare number at all — which is what
+#: keeps a genuinely one-sided result such as 「<0.01」 readable.
+_BOUND_CELL = re.compile(r"^[<>≤≥]\s*\d+(?:\.\d+)?$")
 
 #: A reference range rather than a result.
 _RANGE_CELL = re.compile(r"^[<>≤≥]?\s*\d+(?:\.\d+)?\s*[-~—]\s*\d+(?:\.\d+)?$")
 
-#: A unit. Deliberately loose — units vary wildly — but never CJK.
-_UNIT_CELL = re.compile(r"^[A-Za-zμµ%/·\^\d\.\*]{1,14}$")
+#: A unit. Deliberately loose — units vary wildly — but never CJK, and
+#: NEVER A BARE NUMBER: the class used to admit `\d` unguarded, so the
+#: result cell of the row above became the unit of the row being read.
+_UNIT_CELL = re.compile(r"^(?=.*[A-Za-zμµ%/·\^])[A-Za-zμµ%/·\^\d\.\*]{1,14}$")
 
 
 #: Assay methods. They sit in the last column, look exactly like an
@@ -3521,7 +4204,7 @@ def _looks_like_analyte(cell: str) -> bool:
         return False
     if cell in _TABLE_HEADER_CELLS or _is_header_only(cell) or _is_header_row(cell):
         return False
-    if _VALUE_CELL.match(cell) or _RANGE_CELL.match(cell):
+    if _VALUE_CELL.match(cell) or _RANGE_CELL.match(cell) or _BOUND_CELL.match(cell):
         return False
     # `label:value` is report metadata — 「申请时间:2023-12-20」 — not a
     # row of the results table.
@@ -3544,7 +4227,18 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
     value cell. The window is what makes this layout-agnostic: whether
     the row is `名称 结果 区间 单位` or `No 名称 结果 单位`, the value is
     the first bare number after the name, and the unit is the first
-    unit-shaped cell after that.
+    unit-shaped cell after it.
+
+    THE ROW'S CELLS ARE COLLECTED FIRST AND CLASSIFIED AFTERWARDS,
+    because 「first cell that looks like a value」 is decided by the
+    column ORDER and the order varies. On 项目 / 参考区间 / 结果 the
+    first numeric-looking cell is the reference limit, so a single
+    forward scan handed back the limit as the reading and the reading as
+    the unit — see `_BOUND_CELL`. Collecting the row and then asking
+    which cell is which is order-independent: a bare number is the
+    result wherever it sits, a range and a one-sided limit are the
+    reference, and the unit is the first unit-shaped cell to the right
+    of the result.
 
     Stops at the boilerplate tail so a page number or a phone number in
     the footer is never read as a result.
@@ -3560,7 +4254,7 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
             index += 1
             continue
 
-        value = unit = ref = None
+        cells: List[str] = []
         cursor = index + 1
         end = min(len(body), index + 6)
         while cursor < end:
@@ -3571,13 +4265,23 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
             # rows 1, 3, 5.
             if _looks_like_analyte(cell) or _is_header_row(cell):
                 break
-            if value is None and _VALUE_CELL.match(cell):
-                value = cell
-            elif value is not None and ref is None and _RANGE_CELL.match(cell):
-                ref = cell
-            elif value is not None and unit is None and _UNIT_CELL.match(cell):
-                unit = cell
+            cells.append(cell)
             cursor += 1
+
+        value = next((cell for cell in cells if _VALUE_CELL.match(cell)), None)
+        bounds = [cell for cell in cells if _BOUND_CELL.match(cell)]
+        if value is None:
+            # No bare number on the row: a one-sided limit is all the
+            # laboratory printed, so it IS the reading.
+            value = bounds[0] if bounds else None
+            bounds = bounds[1:]
+        ref = next((cell for cell in cells if _RANGE_CELL.match(cell)), None) or (
+            bounds[0] if bounds else None
+        )
+        unit = None
+        if value is not None:
+            after = cells[cells.index(value) + 1 :]
+            unit = next((cell for cell in after if _UNIT_CELL.match(cell)), None)
 
         if value is None:
             index += 1
@@ -3598,10 +4302,13 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
 def _table_row_lines(lines: List[str]) -> List[str]:
     """Every table row rebuilt as a single 「name value unit」 line.
 
-    The rebuilt lines carry no row label of their own, so
-    `_governing_row_rank` reads them as unlabelled — below the report's
-    own result row and above nothing, which is what a cell recovered
-    from table geometry is worth. `extract_lab_table_rows` has already
+    The rebuilt lines carry no row label of their own, and
+    `_page_rows` labels them `_KIND_TABLE` for exactly that reason: an
+    analyte cell paired with its own value cell IS the report's
+    dedicated result row, and ranking it as unlabelled — which is what a
+    label-position rank had to do — put the patient's real count below
+    any conclusion sentence that quoted a threshold.
+    `extract_lab_table_rows` has already
     dropped the boilerplate tail, the header cells, the method column
     and the reference intervals, so what comes back is analyte and
     reading.
@@ -3626,7 +4333,10 @@ def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_sum
         "ck": ["肌酸激酶", "ck"],
         "mb": ["肌红蛋白", " myo ", " mb "],
         "ldh": ["乳酸脱氢酶", "ldh"],
-        "ckmb": ["ckmb", "ck-mb"],
+        # 肌酸激酶同工酶 IS THE ROW'S PRINTED NAME, and it was absent
+        # here — so nothing in the map said the CK-MB row is not the CK
+        # row. See `_competing_analyte_keywords`.
+        "ckmb": ["ckmb", "ck-mb", "肌酸激酶同工酶"],
         "creatinine": ["肌酐", "creatinine", "cr"],
         "uric_acid": ["尿酸", "uric acid", "ua"],
         "alt": ["alt", "谷丙转氨酶"],
@@ -3662,7 +4372,9 @@ def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_sum
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
 
     for field_name, keywords in analytes.items():
-        raw_value, unit, source_line = _extract_lab_value(lines, keywords)
+        raw_value, unit, source_line = _extract_lab_value(
+            lines, keywords, _competing_analyte_keywords(analytes, field_name)
+        )
         if raw_value is None:
             continue
         numeric_value = _safe_float(raw_value)
@@ -3707,6 +4419,36 @@ _GENETICS_DISPATCH_SUBSTRINGS: Tuple[str, ...] = (
     "haplotype",
 )
 
+#: THE NAME OF A GENETICS CELL, IN EITHER SCRIPT.
+#:
+#: `_GENETICS_DISPATCH_SUBSTRINGS` is the API's dispatch contract and is
+#: all Latin, and `_append_generic_table_fields` was refusing to mint a
+#: `table_*` key on that list alone — so it refused nothing at all on a
+#: Chinese-named genetics row. 「甲基化水平」 slugs to `table_甲基化水平`,
+#: carries none of the four, and was published beside the canonical
+#: `methylation_value` read off THE IDENTICAL CELL: one laboratory
+#: reading, two analytes, both on `observations` and
+#: `latest_summary.by_analyte`, on a report that measured the level once.
+#:
+#: The docstring stated the guarantee generally — 「a slug is not allowed
+#: to collide with a canonical genetics cell」 — so this is the general
+#: version of the list. It is the union of the API's dispatch substrings
+#: and the Chinese names this file's own genetics readers key on, which
+#: is exactly the set of rows `_extract_genetic` publishes under a
+#: canonical name with the refusals attached.
+_GENETICS_CELL_NAME_WORDS: Tuple[str, ...] = _GENETICS_DISPATCH_SUBSTRINGS + (
+    "甲基化",
+    "单倍型",
+    "重复单元",
+    "重复数",
+    "重复拷贝",
+    "片段长度",
+    "等位基因",
+    "4q35",
+    "p13e-11",
+    "p13e11",
+)
+
 
 def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]]) -> None:
     """Add table rows the type-specific extractors did not already cover.
@@ -3743,17 +4485,29 @@ def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]])
         layout that meant a methylation row printed above the count row
         took the key and THE PATIENT'S REPEAT COUNT WAS DISCARDED.
         The slug keeps CJK now, so two analytes are two keys.
-      - a name carrying one of `_GENETICS_DISPATCH_SUBSTRINGS` is not
-        minted here at all. Those cells belong to `_extract_genetic`,
-        which reads them under canonical keys with the refusals attached
-        — and reads them off the cell-per-line layout too, since
-        `_table_row_lines`. Nothing is lost by declining to publish them
-        a second time under a name the printer chose.
+      - a name that NAMES A GENETICS CELL is not minted here at all.
+        Those cells belong to `_extract_genetic`, which reads them under
+        canonical keys with the refusals attached — and reads them off
+        the cell-per-line layout too, since `_table_row_lines`. Nothing
+        is lost by declining to publish them a second time under a name
+        the printer chose.
+
+        THAT TEST WAS THE FOUR LATIN SUBSTRINGS ALONE, and this
+        paragraph claimed it generally while a Chinese-named row met
+        none of them: 「甲基化水平」 was published as `table_甲基化水平`
+        beside the canonical `methylation_value` read off the identical
+        cell. `_GENETICS_CELL_NAME_WORDS` is the general list, and it is
+        matched against the PRINTED NAME rather than the slug — the slug
+        lower-cases and punctuation-folds, which is one more place a
+        name can stop looking like itself.
     """
     existing = {str(f.get("source_text") or "") for f in fields}
     existing_names = {str(f.get("field_name") or "").lower() for f in fields}
 
     for row in extract_lab_table_rows(lines):
+        printed_name = str(row["name"]).lower()
+        if any(word in printed_name for word in _GENETICS_CELL_NAME_WORDS):
+            continue
         slug = re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "_", row["name"].lower()).strip("_")
         if not slug:
             slug = re.sub(r"\s+", "_", row["name"])[:24]

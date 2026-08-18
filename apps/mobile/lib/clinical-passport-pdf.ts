@@ -22,7 +22,7 @@ const safeText = (value: string | null | undefined, fallback = '—') => {
 };
 
 /**
- * EVERY DATE ON THIS SHEET, WITH ITS YEAR.
+ * EVERY DATE THIS FILE RENDERS, WITH ITS YEAR.
  *
  * This used to be `formatDateLabel`, which is the `MM-DD` chip the
  * screens print, and it stripped the year off the 生成时间 and 最近更新
@@ -41,6 +41,26 @@ const safeText = (value: string | null | undefined, fallback = '—') => {
  *
  * `formatProductDate` also fixes the calendar for the same reason it
  * fixes the year — see PRODUCT_TIME_ZONE in clinical-visuals.ts.
+ *
+ * WHAT IT CANNOT SPEAK FOR, AND WHY THE HEADING NO LONGER SAYS
+ * 「EVERY DATE ON THIS SHEET」. Several of the strings this page prints
+ * arrive from the API already finished — `summaryCards[].meta`,
+ * `monitoring.items[].summary`, `diagnosis.diagnosisDate`, the
+ * 门诊准备 note — and they go out through `safeText`, never through
+ * here. The three hero-card `meta` sentences carried the last yearless
+ * dates on the sheet (「最近记录 03-03」, 「最近 MRI 02-13」,
+ * 「最近监测 02-15」, printed beside 「诊断日期 2019-05-03」) until
+ * profile.passport.ts stopped building them with its own `MM-DD`
+ * slicer. Re-parsing a server-authored sentence here to repair a date
+ * inside it would be a second date parser on the far side of a wire,
+ * which is exactly the mistake this product has already paid for; the
+ * fix belongs where the sentence is built, and it was made there.
+ *
+ * The DOCUMENT-level guarantee is therefore held by a rendering test,
+ * not by this function: apps/mobile/test-support/passport-date-parity
+ * -suite.ts renders the whole sheet under two device zones and asserts
+ * that no bare `MM-DD` survives anywhere in it, `.metric-meta`
+ * included.
  */
 const safeDate = (value: string | null | undefined, fallback = '—') =>
   escapeHtml(formatProductDate(value) ?? fallback);

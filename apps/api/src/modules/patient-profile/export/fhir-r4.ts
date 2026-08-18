@@ -312,13 +312,20 @@ export const buildFhirExport = (
   // classifies the ARCHIVED string; `passportDiagnosisType` classifies
   // the evidence document's own 分型 cell first and the archive after
   // it, which is `buildClinicalPassportSummary`'s chain and therefore
-  // what the patient, their neurologist and the anaesthetist are all
-  // looking at. Over a profile whose questionnaire says FSHD1 and whose
+  // what the patient and their neurologist are looking at on the
+  // passport, the markdown export, the share page and the referral
+  // pack. Over a profile whose questionnaire says FSHD1 and whose
   // genetics report reads FSHD2 — ordinary, because the read-time
   // autofill only ever fills an EMPTY slot — this `Condition` asserted
-  // 158900 with a verified OMIM number while every human-facing surface
-  // said FSHD2. `diagnosisTypeSourceZh` in `note` is where the archived
+  // 158900 with a verified OMIM number while those four surfaces said
+  // FSHD2. `diagnosisTypeSourceZh` in `note` is where the archived
   // string is still reported, so nothing is resolved silently.
+  //
+  // THE ANAESTHESIA CARD IS NOT IN THAT LIST, and the omission is the
+  // point rather than an oversight: it prints a 分型 only on its
+  // unconfirmed branch, so on a genetically confirmed profile it
+  // carries none. See the note on `diagnosisTypeSourceZh`, whose
+  // sentence named it until this round.
   const diseaseEntry =
     source.passportDiagnosisType === 'FSHD1'
       ? verifiedCoding('disease.fshd1')

@@ -54,6 +54,40 @@ import { renderAnesthesiaCardPng, type RenderedCard } from '../../lib/anesthesia
 import { buildLatestMriVisualization, buildReportInsights } from '../../lib/report-insights';
 import { formatDateLabel } from '../../lib/clinical-visuals';
 
+/**
+ * The hero metric labels, spelled the way the API spells them.
+ *
+ * `metrics` arrives as `Array<{ label, value, hint }>` and carries no
+ * discriminant, so every reference to one particular tile is a match on
+ * Chinese prose the API owns. Neither tsc nor eslint can see that join:
+ * both sides are `string`, so a rename on the server compiles clean on
+ * both sides and changes what the patient sees.
+ *
+ * It has already happened. The server renamed 肌力组数 to 肌力项数 once
+ * the count became one of (muscle group, side) pairs rather than of
+ * groups; this screen went on filtering by the old spelling, so the tile
+ * it suppresses came back — and the insert below, written for the
+ * three-element array that filter used to leave, put 最近记录 in the
+ * middle of a four-element one.
+ *
+ * `__tests__/api-string-parity.test.ts` reads the API source and
+ * fails when this table stops matching the labels it emits, in order.
+ * That test is the only thing that checks this join; keep the two in
+ * step or delete both.
+ */
+export const PASSPORT_METRIC_LABELS = {
+  completion: '完整度',
+  documentCount: '报告数',
+  strengthItemCount: '肌力项数',
+  latestUpdate: '最近更新',
+} as const;
+
+/** The tile this screen inserts. Not a metric the API sends — the
+ *  activity/measurement recency is read off `motor`, and it is named
+ *  here so the insert below and the parity test can agree that it is
+ *  ours rather than a server label that went missing. */
+const LATEST_RECORD_LABEL = '最近记录';
+
 const getFreshnessColors = (tone: ClinicalPassportSummary['diagnosis']['freshness']['tone']) => {
   switch (tone) {
     case 'success':
@@ -700,14 +734,38 @@ const ClinicalPassportScreen = () => {
 
   const heroMetrics = useMemo(() => {
     if (!passport) return [];
-    const metrics = passport.metrics.filter((item) => item.label !== '肌力组数');
-    metrics.splice(2, 0, {
-      label: '最近记录',
+    // 肌力项数 is dropped, and dropping it is a removal rather than a
+    // relocation: nothing else on this screen prints that count, and
+    // neither does the PDF it exports. Section 02 says so out loud —
+    // 「不再展示主观肌力体图」 — so a bare count of self-reported readings
+    // has no section left to belong to, while 最近记录 (which the same
+    // section does show) takes the fourth slot in the grid.
+    const metrics = passport.metrics.filter(
+      (item) => item.label !== PASSPORT_METRIC_LABELS.strengthItemCount,
+    );
+    // Anchored to 报告数, not to the index 2 it happens to sit at. The
+    // fixed index was written for the three-tile array the filter used
+    // to leave behind, and it silently became「third of four」the moment
+    // the filter stopped matching. With no 报告数 tile on the wire the
+    // insert goes last rather than guessing a position.
+    const afterDocumentCount = metrics.findIndex(
+      (item) => item.label === PASSPORT_METRIC_LABELS.documentCount,
+    );
+    metrics.splice(afterDocumentCount < 0 ? metrics.length : afterDocumentCount + 1, 0, {
+      label: LATEST_RECORD_LABEL,
       value: formatDateLabel(passport.motor.latestActivityAt ?? passport.motor.latestMeasurementAt),
       hint: passport.motor.activitySummary || '暂无日常记录变化摘要',
     });
     return metrics;
   }, [passport]);
+  /** The 报告数 tile, or nothing. Matched by the same constant the grid
+   *  above uses, so a server rename takes both readers out together and
+   *  the parity test names it once. */
+  const documentCountMetric = useMemo(
+    () =>
+      passport?.metrics.find((item) => item.label === PASSPORT_METRIC_LABELS.documentCount) ?? null,
+    [passport],
+  );
   const reportInsights = useMemo(
     () => buildReportInsights(profile?.documents ?? [], profile),
     [profile],
@@ -872,14 +930,16 @@ const ClinicalPassportScreen = () => {
               </View>
               <View style={styles.heroMetaChip}>
                 <Icon name="file-lines" size={12} color={COLOR.accent} />
-                {/* `?? '0'` answered "the passport hasn't loaded" with
-                    the number zero — a factual claim about the
-                    patient's account, made on the screen they export
-                    for a clinician. An em dash says nothing instead. */}
+                {/* Zero is a claim about this patient's account, made
+                    on the page they hand to a clinician, so it is only
+                    printed when the API actually said zero. Both ways
+                    of not knowing — the passport has not loaded, and it
+                    loaded without a 报告数 tile (an API that renamed the
+                    label, or dropped it) — print an em dash. A `?? '0'`
+                    used to cover the second one and answered a missing
+                    tile with「0 份来源报告」beside a full report list. */}
                 <Text style={styles.heroMetaText}>
-                  {passport
-                    ? `${passport.metrics.find((item) => item.label === '报告数')?.value ?? '0'} 份来源报告`
-                    : '报告数 —'}
+                  {documentCountMetric ? `${documentCountMetric.value} 份来源报告` : '报告数 —'}
                 </Text>
               </View>
             </View>

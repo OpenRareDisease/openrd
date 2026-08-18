@@ -957,6 +957,27 @@ export const geneticConfirmationReasonZh = (source: NormalisedSource): string =>
  * calling it a report puts a laboratory behind a transcription.
  * `geneticEvidenceDocumentZh` is where which-kind-of-document is
  * stated, and both callers already print it beside this one.
+ *
+ * THE LIST OF CORROBORATING SURFACES IS A CHECKED LIST, AND THE
+ * ANAESTHESIA CARD IS NOT ON IT. This sentence used to name five
+ * surfaces — 患者护照, markdown 导出, 分享页, 转诊资料 and 麻醉提示卡 —
+ * as all printing this 分型. Rendered: `buildAnesthesiaCard`
+ * (apps/mobile/lib/anesthesia-card.ts) interpolates its 分型 clause
+ * into the UNCONFIRMED branch only; on `confirmation === 'genetic'` the
+ * diagnosis line is 「诊断：FSHD，基因确诊（D4Z4 重复数 N）」 and carries
+ * no 分型 at all. So over a genetically confirmed profile whose
+ * evidence document states a 分型 — precisely the state in which this
+ * sentence is emitted — the card named here printed nothing to
+ * corroborate, and a registry reading the sentence would have counted
+ * a fifth agreeing document that does not exist. Naming a document
+ * that does not carry the value is worse than naming none.
+ *
+ * The four that remain are all built in this app and are re-rendered
+ * by provenance-surface-claims.test.ts on every run, so this list
+ * cannot go stale silently. The card is deliberately NOT re-added with
+ * a conditional clause: it lives in apps/mobile and no test on this
+ * side can render it, and an unenforceable claim about another app's
+ * branch is the same defect one wording further along.
  */
 export const diagnosisTypeSourceZh = (source: NormalisedSource): string => {
   const reading = source.geneticEvidenceReading.values.diagnosisType;
@@ -966,7 +987,7 @@ export const diagnosisTypeSourceZh = (source: NormalisedSource): string => {
       ? '本文件没有写入 FSHD 分型：档案里没有记录，本平台读作这份档案基因证据的那一份上也没有这一项。'
       : `本文件的 FSHD 分型由档案里记录的「${archived}」归一而来；本平台读作这份档案基因证据的那一份上没有这一项。`;
   }
-  const head = `本文件的 FSHD 分型由本平台读作这份档案基因证据的那一份上写着的「${reading}」归一而来 —— 患者护照、markdown 导出、分享页、转诊资料与麻醉提示卡印的都是这一项，本文件与它们取自同一处。`;
+  const head = `本文件的 FSHD 分型由本平台读作这份档案基因证据的那一份上写着的「${reading}」归一而来 —— 患者护照、markdown 导出、分享页与转诊资料印的都是这一项，本文件与它们取自同一处。`;
   if (archived === null) return `${head}档案里没有另外记录的分型。`;
   if (archived === reading) return `${head}档案里记录的分型与它逐字相同。`;
   return `${head}档案里另外记录着「${archived}」，与那一份上写的不一致。本平台在读取档案时只会用那一份的解析结果补上档案里空着的栏位，不会改写已经填着的栏位，所以一份先填问卷、后上传报告的档案会一直留着旧答案 —— 这不是错误状态，本文件也不据此判断哪一个对。档案里那个值原样出现在 TREAT-NMD 对齐导出的 diagnosis.type 上，连同它自己的来源说明。`;

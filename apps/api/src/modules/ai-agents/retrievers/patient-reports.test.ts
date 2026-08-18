@@ -532,6 +532,42 @@ describe('findings_summary', () => {
       }
     });
 
+    it('reads the rule-out through an intensifier after 可能性', async () => {
+      // The pattern required the diminishing word to start at the
+      // character after 性, and the ordinary spellings put an
+      // intensifier in between. Each of these was rendered
+      // 「影像/报告印象: 脂肪浸润（可能）」 — the ruled-out finding
+      // delivered as one still on the table, in strict AND precise mode.
+      for (const impression of [
+        '双侧大腿脂肪浸润可能性极小。',
+        '脂肪浸润可能性极低。',
+        '炎性改变可能性甚小。',
+        '水肿可能性很小。',
+        '肌营养不良可能性偏低。',
+        '脂肪浸润可能性最小。',
+        '炎性改变可能性不太大。',
+        '水肿可能性并不大。',
+        '脂肪浸润可能性微乎其微。',
+      ]) {
+        expect(await impressionLine({ reportImpression: impression })).toBeUndefined();
+      }
+    });
+
+    it('keeps the same intensifiers on an ASSERTED 可能性', async () => {
+      // The polarity is in the tail, not in the intensifier: 极/很/较 in
+      // front of 大/高 strengthen the finding, and killing those clauses
+      // would drop a report's actual conclusion.
+      for (const impression of ['脂肪浸润可能性极大。', '炎性改变可能性很高。']) {
+        expect(await impressionLine({ reportImpression: impression })).toContain('（可能）');
+      }
+    });
+
+    it('kills only the ruled-out clause, not its definite neighbour', async () => {
+      expect(
+        await impressionLine({ reportImpression: '双侧大腿脂肪浸润明显；炎性改变可能性极小。' }),
+      ).toBe('影像/报告印象: 脂肪浸润');
+    });
+
     it('covers the negated 倾向 and 可能 as well', async () => {
       expect(
         (await fieldsFor({ reportImpression: '不倾向于炎性改变' })).findings_summary,
@@ -553,6 +589,158 @@ describe('findings_summary', () => {
       expect((await fieldsFor({ reportImpression: '倾向于脂肪浸润' })).findings_summary).toBe(
         '脂肪浸润（倾向于）',
       );
+    });
+
+    /**
+     * 除外 AND 排除 MEAN OPPOSITE THINGS DEPENDING ON THE CHARACTER IN
+     * FRONT OF THEM, AND ALL THREE READINGS WERE WRONG.
+     *
+     * 不除外 was carried as a hedge; its synonyms were not, so one
+     * clinical statement had three renderings. Executed on the shipped
+     * code:
+     *
+     *   「不排除脂肪浸润。」   → no 影像/报告印象 line at all: the bare
+     *                          排除 entry on NEGATION_MARKERS killed the
+     *                          clause, so a finding the report was
+     *                          deliberately keeping open disappeared.
+     *   「不能除外脂肪浸润。」 → 「影像/报告印象: 脂肪浸润」, byte-identical
+     *                          to a definite reading.
+     *   「基本除外脂肪浸润。」 → 「影像/报告印象: 脂肪浸润」 — the finding
+     *                          the report EXCLUDED, emitted as its
+     *                          conclusion.
+     */
+    it('reads every spelling of 不除外 as the same hedge', async () => {
+      for (const [impression, expected] of [
+        ['不除外脂肪浸润', '脂肪浸润（不除外）'],
+        ['未除外脂肪浸润', '脂肪浸润（未除外）'],
+        ['不排除脂肪浸润', '脂肪浸润（不排除）'],
+        ['未排除脂肪浸润', '脂肪浸润（未排除）'],
+        ['不能除外脂肪浸润', '脂肪浸润（不能除外）'],
+        ['不能排除脂肪浸润', '脂肪浸润（不能排除）'],
+        ['未能除外脂肪浸润', '脂肪浸润（未能除外）'],
+      ] as const) {
+        expect((await fieldsFor({ reportImpression: impression })).findings_summary).toBe(expected);
+      }
+    });
+
+    it('still rules the finding out when the exclusion verb is not negated', async () => {
+      for (const impression of ['除外脂肪浸润', '基本除外脂肪浸润', '排除脂肪浸润']) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+        ).toBeUndefined();
+      }
+      // The 排除 example the NEGATION_MARKERS docblock is written around,
+      // with the OCR space that used to strand the verb from its object.
+      expect(
+        await impressionLine({ reportImpression: '排除 FSHD1，未检出 D4Z4 重复单元缩短' }),
+      ).toBeUndefined();
+    });
+
+    /**
+     * THE NEGATION VOCABULARY WAS THE DEFECT, NOT ITS MISSING ENTRIES.
+     *
+     * Five rounds added negation words to a list and a sixth kind of
+     * negation walked through every time. The match-site test underneath
+     * the list was a SINGLE ADJACENT CHARACTER, so it saw 未受累 and
+     * 无水肿 and nothing else: every Chinese negation that puts a verb
+     * between the negating character and the finding — which is most of
+     * them — was emitted as the report's conclusion. All six of these
+     * rendered the ruled-OUT finding on the shipped code, and the
+     * redactor drops the raw impression, so that line was the only
+     * version of the report the model ever saw.
+     *
+     * The scope is COMPUTED from the span between the negating character
+     * and the term now, so these are not six new list entries — nothing
+     * in this test's vocabulary is enumerated anywhere.
+     */
+    it('reads a multi-character negation it was never told about', async () => {
+      for (const [impression, was] of [
+        ['没有脂肪浸润', '脂肪浸润'],
+        ['未出现肌肉萎缩', '肌肉萎缩'],
+        ['不伴水肿', '水肿'],
+        ['未合并炎性改变', '炎性改变'],
+        ['未伴水肿', '水肿'],
+        // 无明确 is the one that says the list was never going to be
+        // finished: NEGATION_MARKERS carries 无明显 and 不明显, its two
+        // nearest neighbours, and radiology writes 明确 just as often.
+        ['无明确脂肪浸润', '脂肪浸润'],
+        // Never on any list, in any round, and never will be.
+        ['未探及脂肪浸润', '脂肪浸润'],
+        ['未观察到水肿', '水肿'],
+        ['无确切肌肉萎缩', '肌肉萎缩'],
+        ['不存在脂肪浸润', '脂肪浸润'],
+      ] as const) {
+        const summary = (await fieldsFor({ reportImpression: impression })).findings_summary;
+        expect(summary).not.toBe(was);
+        expect(summary).toBeUndefined();
+      }
+    });
+
+    it('negates every finding the one negated verb governs', async () => {
+      // Stopping the scope at the first object would emit the second as
+      // asserted, which is the inversion this whole function exists to
+      // prevent.
+      expect(
+        (await fieldsFor({ reportImpression: '没有脂肪浸润及肌肉萎缩' })).findings_summary,
+      ).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '未出现脂肪浸润或肌肉萎缩' })).findings_summary,
+      ).toBeUndefined();
+    });
+
+    it('reaches across the region the report is talking about', async () => {
+      // At a five-character reach the predicate was caught and the
+      // region phrase was not, so 「没有双侧大腿肌群脂肪浸润。」 rendered
+      // 「影像/报告印象: 脂肪浸润」 — the same inversion, moved one topic
+      // phrase to the right.
+      for (const impression of [
+        '没有双侧大腿肌群脂肪浸润',
+        '未出现双侧肩胛带肌肉萎缩',
+        '无双侧大腿肌群明显脂肪浸润',
+        '没有明显的双侧大腿肌群脂肪浸润',
+      ]) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+        ).toBeUndefined();
+      }
+    });
+
+    /**
+     * A NEGATING CHARACTER INSIDE A WORD IS NOT AN OPERATOR.
+     *
+     * This is what a computed scope costs if it is computed carelessly:
+     * 肌营养不良, 心律不齐 and 不对称 are the vocabulary's OWN entries and
+     * would have negated everything written after them, and 不同程度 /
+     * 非特异性 / 不完全性 are the same thing outside the vocabulary.
+     * 「双侧大腿肌群不同程度脂肪浸润」 is a definite positive finding and
+     * 不完全性传导阻滞 is still a block.
+     */
+    it('does not read the 不 inside a finding name as a negation', async () => {
+      for (const [impression, expected] of [
+        ['肌营养不良改变伴脂肪浸润', '肌营养不良改变、脂肪浸润'],
+        ['心律不齐伴射血分数降低', '心律不齐、射血分数降低'],
+        ['双侧不对称伴脂肪浸润', '不对称、脂肪浸润'],
+        ['双侧大腿肌群不同程度脂肪浸润伴肌肉萎缩', '脂肪浸润、肌肉萎缩'],
+        ['非特异性信号增高', '信号增高'],
+        ['不完全性右束支传导阻滞伴心律不齐', '传导阻滞、心律不齐'],
+        ['双侧大腿肌群信号不均匀增高伴脂肪浸润', '脂肪浸润'],
+        ['边界不清伴水肿', '水肿'],
+      ] as const) {
+        expect((await fieldsFor({ reportImpression: impression })).findings_summary).toBe(expected);
+      }
+    });
+
+    it('stops the negation at a contrastive, inside one clause', async () => {
+      // 「左侧无水肿而右侧水肿明显」 is genuinely one clause and the 水肿
+      // after 而 is asserted. A scope that ran to the end of the clause
+      // would swallow it.
+      expect(
+        (await fieldsFor({ reportImpression: '左侧无水肿而右侧水肿明显' })).findings_summary,
+      ).toBe('水肿');
+      expect(
+        (await fieldsFor({ reportImpression: '没有水肿但双侧大腿肌群脂肪浸润明显' }))
+          .findings_summary,
+      ).toBe('脂肪浸润');
     });
 
     /**
@@ -758,6 +946,87 @@ describe('findings_summary', () => {
         (await fieldsFor({ reportImpression: '大腿萎缩不明显 肩胛带肌重度萎缩' })).findings_summary,
       ).toBe('重度萎缩');
     });
+
+    /**
+     * THE HEAL WAS STILL A MARKER LIST WHILE THE NEGATION HAD STOPPED
+     * BEING ONE.
+     *
+     * `endsMidKillPhrase` healed a wrap only where the left-hand text
+     * ended on a listed CLAUSE_KILL marker or on a bare negation root,
+     * and every negation that moved to the computed NEGATION_ROOT_CHARS
+     * scope ends on an ordinary character — 没有 / 不伴 / 未出现 /
+     * 未合并 / 无明确 end on 有 / 伴 / 现 / 并 / 确. So the wrap between
+     * the negation and its object became a clause boundary, the
+     * negation fragment was killed to no effect and the RULED-OUT
+     * finding was emitted as the report's conclusion, in both redaction
+     * modes, with the raw impression dropped so nothing downstream
+     * disagrees. This is the direction the block above says the file is
+     * never wrong in.
+     */
+    it('heals a wrap inside a negation that is not on any marker list', async () => {
+      // Each was, byte for byte, 「影像/报告印象: <the excluded finding>」.
+      expect(await impressionLine({ reportImpression: '双侧大腿肌群没有明显\n脂肪浸润' })).toBe(
+        undefined,
+      );
+      const cases: [string, string][] = [
+        ['双侧大腿肌群没有明显\n脂肪浸润', '脂肪浸润'],
+        ['双侧大腿肌群没有　明显脂肪浸润', '脂肪浸润'],
+        ['没有\n脂肪浸润', '脂肪浸润'],
+        ['不伴\n水肿', '水肿'],
+        ['未出现\n肌肉萎缩', '肌肉萎缩'],
+        ['未合并\n炎性改变', '炎性改变'],
+        ['无明确\n脂肪浸润', '脂肪浸润'],
+        // No entry was added for these either — the reach is computed.
+        ['未伴\n水肿', '水肿'],
+        ['未探及\n脂肪浸润', '脂肪浸润'],
+        ['不合并\n水肿', '水肿'],
+        ['无确切\n炎性改变', '炎性改变'],
+        // The region phrase NEGATION_REACH exists to cover, wrapped.
+        ['没有双侧大腿肌群\n脂肪浸润', '脂肪浸润'],
+      ];
+      for (const [impression] of cases) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+          impression,
+        ).toBeUndefined();
+      }
+    });
+
+    it('keeps the asserted half of a report whose second half is wrapped', async () => {
+      // Was 「脂肪浸润、水肿」 — the definite finding plus the one the
+      // next line rules out. The definite one has to survive.
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿脂肪浸润明显\n不伴\n水肿' }))
+          .findings_summary,
+      ).toBe('脂肪浸润');
+    });
+
+    it('does not heal a negation that has already met its object', async () => {
+      // 受累 is in the vocabulary, so the 未 in 未受累 has finished; the
+      // whitespace after it is a real boundary and the next clause is
+      // asserted. Same for a contrastive that has already reset polarity.
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿肌群未受累 双侧肩胛带肌脂肪浸润' }))
+          .findings_summary,
+      ).toBe('脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '左侧无水肿而右侧 水肿明显' })).findings_summary,
+      ).toBe('水肿');
+    });
+
+    it('does not read a negation root that is part of a term name as reaching', async () => {
+      // 肌营养不良 / 心律不齐 carry a root inside the finding's own name,
+      // and 不同程度 is a lexical adjective. None of them is dangling.
+      expect(
+        (await fieldsFor({ reportImpression: '肌营养不良改变 双侧大腿脂肪浸润' })).findings_summary,
+      ).toBe('肌营养不良改变、脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '心律不齐 双侧大腿脂肪浸润' })).findings_summary,
+      ).toBe('心律不齐、脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿肌群不同程度 脂肪浸润' })).findings_summary,
+      ).toBe('脂肪浸润');
+    });
   });
 
   /**
@@ -783,6 +1052,91 @@ describe('findings_summary', () => {
           reportImpression: `${relative}确诊肌营养不良，本人未见脂肪浸润。`,
         });
         expect(f.findings_summary).toBeUndefined();
+      }
+    });
+
+    /**
+     * AND THE FAMILY IS NOT THE NUCLEAR FAMILY.
+     *
+     * With 其母…其女 enumerated one by one, the next ring of the
+     * pedigree walked straight through: 「堂兄确诊肌营养不良，本人双侧
+     * 大腿未见脂肪浸润。」 rendered 「影像/报告印象: 肌营养不良」, the
+     * cousin's diagnosis as this patient's imaging conclusion while
+     * their own negative was correctly dropped. FSHD is autosomal
+     * dominant, so the collateral relatives are exactly the ones these
+     * reports name — and 同胞, the clinical word for sibling, defeated
+     * the sibling argument the fixture above is built on.
+     */
+    it('covers the collateral pedigree, not just the nuclear family', async () => {
+      for (const relative of [
+        '堂兄',
+        '堂弟',
+        '表姐',
+        '表妹',
+        '胞弟',
+        '同胞',
+        '其姑母',
+        '姑姑',
+        '姑父',
+        '舅舅',
+        '姨妈',
+        '叔叔',
+        '伯父',
+        '侄子',
+        '外甥女',
+        '孙子',
+        '外孙',
+        '爷爷',
+        '奶奶',
+        '外婆',
+        '姥爷',
+        '先证者之弟',
+        '患者的姐姐',
+        '妻子',
+      ]) {
+        const f = await fieldsFor({
+          reportImpression: `${relative}确诊肌营养不良，本人双侧大腿未见脂肪浸润。`,
+        });
+        expect(f.findings_summary, relative).toBeUndefined();
+      }
+    });
+
+    /**
+     * THE THREE STRINGS THE KINSHIP PATTERNS DELIBERATELY SPARE.
+     *
+     * A false kill on this channel is a DROPPED finding on a report
+     * whose raw impression the redactor never lets through, so each of
+     * these has to keep reading: 姑息 is 「palliative」 and not an aunt,
+     * 表现 / 表面 are the commonest words in a radiology report, and
+     * 细胞 carries the 胞 the collateral prefix uses.
+     */
+    /**
+     * A WRAPPED RELATIVE IS STILL A RELATIVE.
+     *
+     * The kinship kills that became patterns dropped out of
+     * `WRAP_DANGLING_MARKERS`, which is built from the marker LIST, so
+     * 「其母\n确诊肌营养不良」 emitted 「影像/报告印象: 肌营养不良」 again
+     * — the first failure in this file's third-party block, reopened by
+     * the fix for its successor. See THIRD_PARTY_WRAP_PATTERNS.
+     */
+    it('heals a wrap after a patterned relative, not just a listed one', async () => {
+      for (const relative of ['其母', '其兄', '堂兄', '表姐', '姑姑', '孙子', '伯父']) {
+        const f = await fieldsFor({ reportImpression: `${relative}\n确诊肌营养不良` });
+        expect(f.findings_summary, relative).toBeUndefined();
+      }
+    });
+
+    it('does not read 姑息 / 表现 / 细胞 as a relative', async () => {
+      for (const [impression, expected] of [
+        ['姑息治疗后双侧大腿脂肪浸润明显', '脂肪浸润'],
+        ['影像表现为双侧大腿脂肪浸润', '脂肪浸润'],
+        ['肌肉表面信号增高', '信号增高'],
+        ['肌纤维细胞水肿明显', '水肿'],
+      ] as const) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+          impression,
+        ).toBe(expected);
       }
     });
   });
@@ -1061,6 +1415,69 @@ describe('findings_summary', () => {
       ).toBeUndefined();
     });
 
+    /**
+     * A HEDGE ON A MEASUREMENT NOUN IS WRITTEN BEHIND THE DIRECTION
+     * WORD, WHICH IS THE ONE PLACE NOTHING WAS LOOKING.
+     *
+     * The hedge was resolved at the NOUN while the phrase being printed
+     * ran on through the bridge and the direction word, so the window
+     * searched for a trailing hedge began at 「降低待排」 and found
+     * nothing at position zero. 「射血分数降低待排。」 rendered
+     * 「影像/报告印象: 射血分数降低」 — BYTE-IDENTICAL to the definite
+     * 「射血分数降低」, which is exactly the failure the HEDGE_MARKERS
+     * docblock says it exists to end, on the three nouns whose entire
+     * clinical content is that direction word.
+     *
+     * And Chinese has nowhere else to put it: 射血分数待排降低 is not a
+     * sentence. Behind the direction is where the hedge goes.
+     */
+    it('tells an equivocal ejection fraction from a definite one', async () => {
+      const hedged = await impressionLine({ reportImpression: '射血分数降低待排' });
+      const definite = await impressionLine({ reportImpression: '射血分数降低' });
+      expect(hedged).toBe('影像/报告印象: 射血分数降低（待排）');
+      expect(definite).toBe('影像/报告印象: 射血分数降低');
+      expect(hedged).not.toBe(definite);
+    });
+
+    it('reads the hedge behind the direction word on every measurement noun', async () => {
+      for (const [impression, expected] of [
+        ['射血分数减低可疑', '射血分数减低（可疑）'],
+        ['射血分数轻度降低待排', '射血分数轻度降低（待排）'],
+        ['弥散功能减退不除外', '弥散功能减退（不除外）'],
+        ['膈肌运动受限待排', '膈肌受限（待排）'],
+        ['膈肌运动度受限可疑', '膈肌受限（可疑）'],
+      ] as const) {
+        expect((await fieldsFor({ reportImpression: impression })).findings_summary).toBe(expected);
+      }
+    });
+
+    it('does not delete a measurement whose hedge sits before the direction', async () => {
+      // Was: no 影像/报告印象 line at all. The walk from the noun to the
+      // direction word stepped over adverbs, severity and bridges but
+      // not over a hedge, so 「可能降低」 matched no direction and an
+      // equivocal cardiac finding was dropped whole on a cohort screened
+      // for cardiomyopathy.
+      expect(await impressionLine({ reportImpression: '射血分数可能降低' })).toBe(
+        '影像/报告印象: 射血分数降低（可能）',
+      );
+      expect((await fieldsFor({ reportImpression: '弥散功能可疑减退' })).findings_summary).toBe(
+        '弥散功能减退（可疑）',
+      );
+    });
+
+    it('keeps a negated measurement negated whatever the hedge does', async () => {
+      for (const impression of [
+        '射血分数无明显降低',
+        '没有明显射血分数降低',
+        '膈肌运动未受限',
+        '没有射血分数降低',
+      ]) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+        ).toBeUndefined();
+      }
+    });
+
     it('reads the diaphragm findings that do carry a direction', async () => {
       expect((await fieldsFor({ reportImpression: '双侧膈肌抬高' })).findings_summary).toBe(
         '膈肌抬高',
@@ -1208,5 +1625,111 @@ describe('report date vs upload date', () => {
       expect(await withTz('America/Los_Angeles', fields)).toBe('基因检测报告 · 2019-03');
       expect(await withTz('Asia/Shanghai', fields)).toBe('基因检测报告 · 2019-03');
     });
+  });
+});
+
+/**
+ * THE EXCLUSION FAMILY, EVERY SPELLING, THROUGH THE RENDERER.
+ *
+ * 除外 / 排除 flip meaning on what is written in front of them, and the
+ * three places that had to agree about which prefixes flip them —
+ * EXCLUSION_PATTERN's lookbehind, HEDGE_MARKERS' literals and
+ * NEGATION_ROOT_HEDGING — were three hand-kept copies of one set. They
+ * disagreed in both directions, and both directions reached the model:
+ *
+ *   「未能排除脂肪浸润」     → 「影像/报告印象: 脂肪浸润」, byte-identical
+ *                            to a definite finding. Exempted by the
+ *                            lookbehind, missing from the literals.
+ *   「不能完全排除脂肪浸润」 → no 影像/报告印象 line at all. This is how
+ *   「不能完全除外脂肪浸润」    a Chinese radiologist writes 「cannot be
+ *   「不可除外脂肪浸润」        fully excluded」 — a finding kept ON the
+ *   「无法除外脂肪浸润」        table — and one word between the negation
+ *   「脂肪浸润待除外」          and the verb put it outside all three.
+ *
+ * The three are derived from EXCLUSION_HEDGE_PREFIXES now, so this
+ * table is the fence on the derivation rather than on any one list: a
+ * prefix added there has to produce a hedged line here, and a prefix
+ * NOT there has to keep producing no line at all.
+ */
+describe('除外 / 排除 — negated is a hedge, bare is a rule-out', () => {
+  const impressionFor = async (impression: string): Promise<string | undefined> => {
+    const pool = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          {
+            id: 'doc-1',
+            document_type: 'mri',
+            title: null,
+            uploaded_at: '2026-07-30T00:00:00.000Z',
+            status: 'parsed',
+            ocr_payload: { fields: { classifiedType: 'mri', reportImpression: impression } },
+            classified_type: 'mri',
+          },
+        ],
+        rowCount: 1,
+      }),
+    } as unknown as Pool;
+    const result = await new PatientReportsRetriever(pool).search(
+      { question: '' },
+      {
+        userId: 'u1',
+        consentLevel: 'precise',
+        logger: silentLogger as unknown as RetrieveContext['logger'],
+      },
+    );
+    const rendered = renderChunkForPrompt(result.chunks[0], {
+      mode: 'strict',
+      logger: silentLogger as unknown as RetrieveContext['logger'],
+    });
+    return rendered.content.split('\n').find((line) => line.startsWith('影像/报告印象:'));
+  };
+
+  // Every negated spelling keeps the finding AND says it is equivocal.
+  // A bare 脂肪浸润 here would be the failure HEDGE_MARKERS exists to
+  // end; no line at all would be the other half of it.
+  it.each([
+    ['不除外脂肪浸润。', '不除外'],
+    ['未除外脂肪浸润。', '未除外'],
+    ['不排除脂肪浸润。', '不排除'],
+    ['未排除脂肪浸润。', '未排除'],
+    ['不能除外脂肪浸润。', '不能除外'],
+    ['不能排除脂肪浸润。', '不能排除'],
+    ['未能除外脂肪浸润。', '未能除外'],
+    ['未能排除脂肪浸润。', '未能排除'],
+    ['不可除外脂肪浸润。', '不可除外'],
+    ['不可排除脂肪浸润。', '不可排除'],
+    ['无法除外脂肪浸润。', '无法除外'],
+    ['无法排除脂肪浸润。', '无法排除'],
+    ['不完全排除脂肪浸润。', '不完全排除'],
+    ['不能完全除外脂肪浸润。', '不能完全除外'],
+    ['不能完全排除脂肪浸润。', '不能完全排除'],
+    ['未能完全排除脂肪浸润。', '未能完全排除'],
+    ['待除外脂肪浸润。', '待除外'],
+    ['脂肪浸润待除外。', '待除外'],
+    ['脂肪浸润待排除。', '待排除'],
+    ['脂肪浸润待排。', '待排'],
+    ['双侧大腿肌群改变，不能完全排除脂肪浸润。', '不能完全排除'],
+  ])('keeps %s on the table, hedged', async (impression, hedge) => {
+    expect(await impressionFor(impression)).toBe(`影像/报告印象: 脂肪浸润（${hedge}）`);
+  });
+
+  // The bare verb really is a rule-out, and 已 / 可 / 基本 in front of
+  // it do not negate it. Widening the exempted prefixes must not
+  // resurrect a finding the report excluded.
+  it.each([
+    '除外脂肪浸润。',
+    '排除脂肪浸润。',
+    '基本除外脂肪浸润。',
+    '已除外脂肪浸润。',
+    '可除外脂肪浸润。',
+  ])('drops the clause for the rule-out %s', async (impression) => {
+    expect(await impressionFor(impression)).toBeUndefined();
+  });
+
+  // 待排 is a prefix of 待排除, and both are hedges: whichever the
+  // report wrote, the emitted qualifier is the whole of it. Matched
+  // shortest-first, 待排除 came out as （待排）.
+  it('reads 待排除 whole rather than as 待排 plus a stray 除', async () => {
+    expect(await impressionFor('脂肪浸润待排除。')).toBe('影像/报告印象: 脂肪浸润（待排除）');
   });
 });

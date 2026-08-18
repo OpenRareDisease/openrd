@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RedactionMode } from './allowlist.js';
 import { GENETIC_READING_REFUSALS, redactFields } from './pii-redactor.js';
+import { renderChunkForPrompt } from './render.js';
 import { GENETIC_FIELD_KEYS } from '../../patient-profile/genetic-evidence.js';
+import type { RetrievedChunk } from '../retrievers/base.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -233,6 +235,84 @@ describe('the genetics cells the assistant is handed', () => {
     // It is a refusal, so the 分级 check in tool-descriptions.test.ts
     // has to know about it.
     expect(GENETIC_READING_REFUSALS.has(REFUSED)).toBe(true);
+  });
+
+  it('does not let a haplotype cell it refuses to read gate the repeat count', () => {
+    // ONE CELL, ONE RUN, ONE ANSWER — the rule `clinicalise` states for
+    // the profile scope's copy of this gate 「AND A CELL THIS PLATFORM
+    // WOULD NOT SHOW CANNOT GATE ANYTHING」, asked here too.
+    //
+    // The reports-scope gate read `pickReading(...haplotype)` and never
+    // asked `isUntrustworthyValue`, so the SAME PASS refused to publish
+    // the cell and believed it anyway: a 9 came out
+    // `repeat_count_not_read_against_fshd1_range_non_permissive_haplotype`
+    // — whose documented content is 「the report this count came off
+    // states 4qB」 — with no `haplotype`, no `haplotype_clinical` and no
+    // 4qB anywhere on the block to refer to, over a run prompt that
+    // tells the model to answer 「我的单倍型是不是允许型」 straight off
+    // these fields. The profile scope, on the identical cell, said the
+    // grey-zone note.
+    //
+    // AND IT WAS WRONG, not merely inconsistent.
+    // `parsePermissiveHaplotype` matches the probe names as bare
+    // substrings, so the second paste below — a 检测方法/说明 block whose
+    // only 4qB is the boilerplate 「4qB 型等位基因不具有致病性」, stating
+    // nothing about THIS patient's allele — banded a grey-zone FSHD1
+    // candidate as a count not read against the FSHD1 range. Same defect
+    // `publishGeneticCell` records for the size cells, one cell along.
+    const refusedHaplotypes = [
+      // The live hand-correction paste `publishMethylationCell` names.
+      '4q单倍型:4qB 姓名:张三 科别:神经内科 住院号:R000000',
+      '检测方法:Southern blot（EcoRI/BlnI 双酶切，p13E-11 探针杂交）。' +
+        '说明:4qB 型等位基因不具有致病性，本次检测未对 4q35 区域以外的位点进行分析。' +
+        '送检单位:某某医院神经内科门诊 住院号:R000000 报告医师:李四',
+    ];
+    for (const haplotype of refusedHaplotypes) {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype },
+        },
+        { scope: 'reports', mode: 'precise' },
+      );
+      const projected = fields.fields as Record<string, unknown>;
+      // The cell is refused, which is why it cannot gate: nothing about
+      // it is published, so a refusal minted off it would have no
+      // referent on the block.
+      expect(projected).not.toHaveProperty('haplotype');
+      expect(projected).not.toHaveProperty('haplotype_clinical');
+      expect(projected.fieldsDroppedAsUnsafe).toBe(1);
+      // `null`, not `false` — 「unknown」 keeps the grey-zone note, the
+      // direction that only adds uncertainty.
+      expect(projected.d4z4Repeats_clinical).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+      // ...and the other scope, handed the same cell, agrees.
+      const profile = redactFields(
+        {
+          d4z4: '9',
+          haplotype,
+          d4z4FromLaboratoryReport: true,
+          haplotypeFromLaboratoryReport: true,
+        },
+        { scope: 'profile', mode: 'precise' },
+      );
+      expect(profile.fields.d4z4_clinical).toBe(projected.d4z4Repeats_clinical);
+    }
+    // A cell this platform WILL show still gates, both ways. The guard
+    // is on the refusal, not on the reading.
+    const gatedBy = (haplotype: string): unknown => {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype },
+        },
+        { scope: 'reports', mode: 'strict' },
+      );
+      return (fields.fields_clinical as Record<string, unknown>).d4z4Repeats_clinical;
+    };
+    expect(gatedBy('4qB')).toBe(
+      'repeat_count_not_read_against_fshd1_range_non_permissive_haplotype',
+    );
+    expect(gatedBy('4qA')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
   });
 
   it('does not read a length in kb as a repeat count', () => {
@@ -1495,5 +1575,222 @@ describe('the laboratory gate reads the page the chunk now carries', () => {
       expect.arrayContaining(['extractedText', 'fields.extracted_text']),
     );
     expect(stats.notAllowed).not.toContain('extractedText');
+  });
+});
+
+/**
+ * A CELL HOLDING AN ARRAY OR AN OBJECT WAS PUBLISHED VERBATIM, AND THE
+ * WALK THAT WAS SUPPOSED TO CLEAN IT NEVER LOOKED INSIDE.
+ *
+ * Two short-circuits, one on each layer, and each one written as a
+ * declaration that the type it did not recognise was safe:
+ *
+ *   - layer 1 descended into plain objects only — 「arrays and primitives
+ *     are left as-is — they cannot have keys to match」. An array cannot
+ *     hold a key; an object inside one can.
+ *   - `isUntrustworthyValue` opened `if (typeof value !== 'string')
+ *     return false`, so an array and an object were declared trustworthy
+ *     without being read.
+ *
+ * The extractor writes a cell as a list whenever a page prints two of
+ * something, so `fields.d4z4Repeats = [{ patientName, idCard }]` walked
+ * past both, was published raw by `publishGeneticCell` under precise
+ * consent, and left `formatScalar` as JSON. The claim it broke is layer
+ * 1's own: 「hard-delete keys never reach a prompt regardless of mode」.
+ *
+ * Driven through `renderChunkForPrompt` rather than asserted on the
+ * field map, because the field map is not what the model receives — the
+ * old defect was invisible on `fields.d4z4Repeats` being 「an array」 and
+ * obvious on the line 「d4z4Repeats: {"patientName":"张三",…}」.
+ */
+describe('a container cell reaches no prompt unexamined', () => {
+  const NAME = '张三';
+  const ID_CARD = '110101199001011234';
+
+  const chunkOf = (source: string, fields: Record<string, unknown>): RetrievedChunk => ({
+    id: 'chunk-1',
+    source,
+    content: '',
+    distance: null,
+    metadata: { fields },
+  });
+
+  const CASES: Array<[string, string, Record<string, unknown>]> = [
+    [
+      'an array under a genetics cell',
+      'patient_reports',
+      {
+        documentType: 'genetic_report',
+        fields: {
+          classifiedType: 'genetic_report',
+          d4z4Repeats: [{ patientName: NAME, idCard: ID_CARD }, '3'],
+        },
+      },
+    ],
+    [
+      'a nested object under the haplotype cell',
+      'patient_reports',
+      {
+        documentType: 'genetic_report',
+        fields: {
+          classifiedType: 'genetic_report',
+          haplotype: { probes: [{ patientName: NAME, idCard: ID_CARD }] },
+        },
+      },
+    ],
+    [
+      'an array under an ordinary safe key',
+      'patient_reports',
+      {
+        documentType: 'genetic_report',
+        fields: {
+          classifiedType: 'genetic_report',
+          ecgSummary: [NAME, `住院号:${ID_CARD}`],
+        },
+      },
+    ],
+    [
+      'an array under the profile scope genetics cell',
+      'patient_profile',
+      { d4z4FromLaboratoryReport: true, d4z4: [{ patientName: NAME, idCard: ID_CARD }] },
+    ],
+    [
+      'a nested object under the profile scope haplotype cell',
+      'patient_profile',
+      {
+        haplotypeFromLaboratoryReport: true,
+        haplotype: { probes: [{ patientName: NAME, idCard: ID_CARD }] },
+      },
+    ],
+  ];
+
+  for (const [label, source, fields] of CASES) {
+    for (const mode of ['strict', 'precise'] as const) {
+      it(`publishes nothing of ${label} (${mode})`, () => {
+        const rendered = renderChunkForPrompt(chunkOf(source, fields), { mode });
+        expect(rendered.content).not.toContain(NAME);
+        expect(rendered.content).not.toContain(ID_CARD);
+        // Not merely absent from the rendered text: absent from the
+        // field names the audit log records, so nothing downstream can
+        // print the cell back from a name this pass let through.
+        expect(rendered.fieldsUsed.join(',')).not.toContain(NAME);
+      });
+    }
+  }
+
+  it('records the hard delete at its position inside the array', () => {
+    const { stats, fields } = redactFields(
+      {
+        documentType: 'genetic_report',
+        fields: {
+          classifiedType: 'genetic_report',
+          ecgSummary: [{ patientName: NAME }, '窦性心律'],
+        },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    // The path names the element, so a removal inside a list is visible
+    // in the audit rather than silent.
+    expect(stats.hardDeleted).toContain('fields.ecgSummary.0.patientName');
+    expect(JSON.stringify(fields)).not.toContain(NAME);
+  });
+
+  /**
+   * AND A CONTAINER IS NOT A CELL EVEN WHEN IT IS CLEAN. The reading
+   * beside a cell does not stop the cell being printed: precise mode
+   * went on publishing the probe list, so the prompt carried
+   * 「单倍型: 4qA、4qB」 with `unspecified_haplotype` on the next line —
+   * one line asserting a haplotype and the next refusing to read one.
+   */
+  it('prints no genetics cell that is not a scalar, in either mode', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: {
+            classifiedType: 'genetic_report',
+            haplotype: ['4qA', '4qB'],
+            d4z4Repeats: ['3'],
+            diagnosisType: ['FSHD1'],
+            ecoRIFragment: true,
+          },
+        },
+        { scope: 'reports', mode },
+      );
+      const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+      expect(projected.haplotype).toBeUndefined();
+      expect(projected.d4z4Repeats).toBeUndefined();
+      expect(projected.diagnosisType).toBeUndefined();
+      // A boolean is one type further in and the same self-contradiction:
+      // `formatScalar` prints it 「是」, directly under a reading saying
+      // the cell could not be read.
+      expect(projected.ecoRIFragment).toBeUndefined();
+      // ...and the refusal is still stated, so the model is not told the
+      // report has no haplotype.
+      expect(projected.haplotype_clinical).toBe('unspecified_haplotype');
+      expect(projected.d4z4Repeats_clinical).toBe('unspecified');
+    }
+  });
+
+  /**
+   * A LIST OF SHORT STRINGS IS A REAL SHAPE HERE. `assistiveDevices` is
+   * an array by construction, so the fix cannot be 「refuse every
+   * container」 — what a container HOLDS is examined, and a clean one
+   * survives.
+   */
+  it('keeps a clean list intact', () => {
+    const { fields } = redactFields(
+      { assistiveDevices: ['轮椅', '踝足矫形器'] },
+      { scope: 'profile', mode: 'strict' },
+    );
+    expect(fields.assistiveDevices).toEqual(['轮椅', '踝足矫形器']);
+  });
+
+  /**
+   * THE EXAMINATION IS TOTAL OVER THE REMAINING TYPES TOO. A number is
+   * read as its printed form, because JSON carries an 18-digit ID card
+   * as a number as readily as a string; a walk that cannot finish
+   * answers 「refuse」 rather than 「pass」.
+   */
+  it('reads an identifier written as a number', () => {
+    const { fields } = redactFields(
+      { d4z4FromLaboratoryReport: true, d4z4: 110101199001011234 },
+      { scope: 'profile', mode: 'precise' },
+    );
+    expect(fields.d4z4).toBeUndefined();
+    expect(fields.d4z4_clinical).toBeUndefined();
+    // A real repeat count is untouched by the same test.
+    const ok = redactFields(
+      { d4z4FromLaboratoryReport: true, d4z4: 3 },
+      { scope: 'profile', mode: 'precise' },
+    );
+    expect(ok.fields.d4z4).toBe(3);
+    expect(ok.fields.d4z4_clinical).toBe('within_fshd1_repeat_range');
+  });
+
+  it('refuses a cycle and a nesting deeper than the walk goes', () => {
+    const cyclic: Record<string, unknown> = { patientName: NAME };
+    cyclic.self = cyclic;
+    const cycled = redactFields(
+      {
+        documentType: 'genetic_report',
+        fields: { classifiedType: 'genetic_report', d4z4Repeats: cyclic },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    expect(JSON.stringify(cycled.fields)).not.toContain(NAME);
+
+    let deep: unknown = { patientName: NAME, idCard: ID_CARD };
+    for (let i = 0; i < 30; i += 1) deep = [{ nest: deep }];
+    const nested = redactFields(
+      {
+        documentType: 'genetic_report',
+        fields: { classifiedType: 'genetic_report', d4z4Repeats: deep },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const serialised = JSON.stringify(nested.fields);
+    expect(serialised).not.toContain(NAME);
+    expect(serialised).not.toContain(ID_CARD);
   });
 });

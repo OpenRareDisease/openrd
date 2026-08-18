@@ -98,10 +98,49 @@ describe('parseD4Z4Reading —— 报告怎么印的就怎么读', () => {
     ['≤10', '比较符'],
     ['4~7', '波浪范围'],
     ['1 至 10', '中文范围'],
+    // 中文报告是用全角输入法打的，本仓库自己抄的那句指南也把界限写成
+    //「若重复单元数大于 10」。半角类只认半角，于是「<10」被拒、它的全角
+    // 双胞胎「＜10」却当成了「10 这个计数」—— 一格内容就是「这条臂没有
+    // 收缩」的报告，读出来是基因确诊。
+    ['＜10', '全角小于'],
+    ['＞10', '全角大于'],
+    ['≦10', '全角小于等于'],
+    ['≧10', '全角大于等于'],
+    ['⩽10', '另一种小于等于'],
+    ['⩾10', '另一种大于等于'],
+    ['～10', '全角波浪'],
+    ['大于10', '中文大于'],
+    ['大於10', '繁体大于'],
+    ['小于4', '中文小于'],
+    ['小於4', '繁体小于'],
+    ['高于10', '中文高于'],
+    ['低于4', '中文低于'],
+    ['多于10', '中文多于'],
+    ['少于4', '中文少于'],
+    ['超过10', '中文超过'],
+    ['不足4', '中文不足'],
+    ['10以上', '中文以上'],
+    ['4以下', '中文以下'],
+    ['至少10', '中文至少'],
+    ['最多4', '中文最多'],
   ])('%s（%s）isRange=true 且 value 为空', (raw) => {
     const reading = parseD4Z4Reading(raw);
     expect(reading.isRange).toBe(true);
     expect(reading.value).toBeNull();
+  });
+
+  it('一格界限的两种写法给出同一个判读 —— 半角被拒、全角当计数是最坏的方向', () => {
+    for (const [halfWidth, fullWidth] of [
+      ['<10', '＜10'],
+      ['>10', '＞10'],
+      ['≤10', '≦10'],
+      ['≥10', '≧10'],
+      ['<4', '小于4'],
+      ['>10', '大于10'],
+    ]) {
+      expect(parseD4Z4Reading(fullWidth).value).toBe(parseD4Z4Reading(halfWidth).value);
+      expect(parseD4Z4Reading(fullWidth).isRange).toBe(parseD4Z4Reading(halfWidth).isRange);
+    }
   });
 
   it('读不出数字时 isRange 为 false —— 「给了区间」和「什么都没有」不是一回事', () => {
@@ -141,11 +180,59 @@ describe('isLargeD4Z4Deletion 在改成解析器之后行为一字不变', () =>
     // 「3kb」要落进 1–4 只能靠一次本仓库没写过的换算。
     ['3kb'],
     ['3 kb'],
+    // 界限不是计数，全角和中文的写法也不是。AAN Level B 的散瞳眼底
+    // 建议原本会被「＜4」挣到 —— 那一格里没有任何人量出来的数。
+    ['＜4'],
+    ['小于4'],
+    ['4以下'],
+    ['不足4'],
+    ['≦4'],
   ])('%s 不触发', (raw) => {
     expect(readsAsLargeDeletion(raw)).toBe(false);
   });
   it.each([['1'], ['2'], ['3'], ['4'], ['3个']])('%s 触发', (raw) => {
     expect(readsAsLargeDeletion(raw)).toBe(true);
+  });
+});
+
+describe('一格界限拿不到基因确诊 —— 全角和中文写法跟半角同判', () => {
+  const surfaces = (raw: string) => {
+    const summary = buildClinicalPassportSummary(
+      base({ documents: [geneticReport({ d4z4Repeats: raw, haplotype: '4qA' })] } as never),
+    );
+    return {
+      grade: summary.diagnosis.geneticEvidence.grade,
+      confirmation: summary.diagnosis.confirmation,
+      laboratoryRepeatCount: summary.diagnosis.laboratoryRepeatCount,
+      greyZone: summary.diagnosis.geneticEvidence.record.greyZone,
+      // 报告原样印出来的那一格没有被吞掉 —— 拿走的只有 value。
+      raw: summary.diagnosis.geneticEvidence.record.d4z4?.raw ?? null,
+    };
+  };
+
+  it.each([['＞10'], ['大于10'], ['10以上'], ['≦10'], ['＜4'], ['小于4'], ['4以下'], ['超过10']])(
+    '%s 既不是确诊，也进不了 8–10 灰区',
+    (raw) => {
+      expect(surfaces(raw)).toEqual({
+        grade: 'method_right_incomplete',
+        confirmation: 'none',
+        laboratoryRepeatCount: null,
+        greyZone: false,
+        raw,
+      });
+    },
+  );
+
+  it('半角写法本来就是这个判读，全角只是补齐同一张表', () => {
+    for (const [halfWidth, fullWidth] of [
+      ['>10', '＞10'],
+      ['<4', '小于4'],
+      ['≤10', '≦10'],
+    ]) {
+      const half = surfaces(halfWidth);
+      const full = surfaces(fullWidth);
+      expect({ ...full, raw: null }).toEqual({ ...half, raw: null });
+    }
   });
 });
 
@@ -1144,6 +1231,87 @@ describe('病历摘要抄来的结果：值照登，但不给分级、不替实�
     } as never);
     expect(summary.diagnosis.geneticEvidence.grade).toBe('transcribed_only');
     expect(summary.diagnosis.d4z4Repeats).toBe('7');
+  });
+
+  /**
+   * 依据那句话不许一边点名「基因报告」一边否认它。
+   *
+   * The population this grade exists for is an archived 门诊病历摘要
+   * that the OLD keyword classifier labelled `genetic_report` —
+   * `isLaboratoryGeneticReport` now refuses it on the page's own
+   * 主诉 / 现病史 / 查体, and nothing re-parses the row, so the refused
+   * label stays on the blob forever. The 依据 read its document name out
+   * of `documentLabels[classifiedType]`, i.e. out of that same refused
+   * label, and printed 「本平台这次读的是你上传的「基因报告」……但它不是
+   * 基因报告本身」 on the passport screen, in the markdown export and in
+   * the 下一步 card — with 转录自非基因报告文件 in the brackets beside
+   * every value on the same page. A reader who is told he uploaded the
+   * 基因报告 has been told the upload this grade is asking him to make
+   * is already done.
+   */
+  describe('归档的旧分类还写着 genetic_report —— 依据不拿这个名字称呼它', () => {
+    const NARRATIVE_PAGE = [
+      '门诊病历摘要',
+      '主诉：双上肢无力 5 年',
+      '现病史：患者 5 年前无明显诱因出现双上肢无力',
+      '查体：双侧翼状肩胛',
+      '外院基因检测：D4Z4 重复单元数 3 个，4qA',
+    ].join('\n');
+
+    /** The archived row: classified `genetic_report` by the old rule,
+     *  page is a clinic narrative. `documentType` is varied because the
+     *  gate reaches its last question by two different routes and the
+     *  name printed must not depend on which. */
+    const archivedNarrative = (documentType: string) => ({
+      ...geneticReport({}),
+      id: 'archived',
+      documentType,
+      ocrPayload: {
+        fields: { classifiedType: 'genetic_report', d4z4Repeats: '3', haplotype: '4qA' },
+        extractedText: NARRATIVE_PAGE,
+      },
+    });
+
+    it.each([['other'], ['genetic_report']])(
+      '声明为 %s 时都不叫它「基因报告」，也不留下没名字的空引号',
+      (documentType) => {
+        const summary = summaryOf([archivedNarrative(documentType)]);
+        const evidence = summary.diagnosis.geneticEvidence;
+
+        expect(evidence.grade).toBe('transcribed_only');
+        expect(evidence.record.source).toBe('transcribed');
+        // No name this platform will stand behind, so no name is
+        // printed — not a fallback wearing quotation marks.
+        expect(evidence.record.documentLabelZh).toBeNull();
+        expect(evidence.reason).not.toContain('「基因报告」');
+        expect(evidence.reason).not.toContain('「上传的文件」');
+        expect(evidence.reason).toContain('本平台这次读的是你上传的文件：');
+        // The denial itself is untouched.
+        expect(evidence.reason).toContain('它不是基因报告本身');
+      },
+    );
+
+    it('导出的 markdown 和护照上说的是同一句', () => {
+      const summary = summaryOf([archivedNarrative('other')]);
+      const markdown = buildClinicalPassportExport(summary).markdown;
+      expect(markdown).toContain('本平台这次读的是你上传的文件：');
+      expect(markdown).not.toContain('你上传的「基因报告」');
+      // And the bracket beside the value still says what it always did.
+      expect(markdown).toContain('D4Z4 重复数：3（转录自非基因报告文件）');
+    });
+
+    it('分类是病历摘要时照旧点名 —— 这一条没有把好名字一起删掉', () => {
+      const evidence = summaryOf([medicalSummary('summary', SUMMARY_RICH)]).diagnosis
+        .geneticEvidence;
+      expect(evidence.record.documentLabelZh).toBe('病历摘要');
+      expect(evidence.reason).toContain('你上传的「病历摘要」');
+    });
+
+    it('实验室自己的报告仍然叫基因报告 —— 那一份本平台认', () => {
+      const record = summaryOf([lab('lab', LAB_RICH)]).diagnosis.geneticEvidence.record;
+      expect(record.source).toBe('laboratory_report');
+      expect(record.documentLabelZh).toBe('基因报告');
+    });
   });
 });
 

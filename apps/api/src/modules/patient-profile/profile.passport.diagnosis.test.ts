@@ -431,12 +431,17 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
       summary.nextSteps.find((item) => item.title === '补充基因检测报告')?.description;
 
     // The instruction is on the page before the edit, and it is true:
-    // the printed date is the one the box governs, and it changes —
-    // to 1 January of the year typed, which is what the sentence says
-    // and the only thing the box can produce.
+    // the printed value is the one the box governs, and it changes.
+    //
+    // IT CHANGES TO A YEAR, NOT TO 1 JANUARY. The box takes four
+    // digits, `upsertBaseline` pins them to `${year}-01-01` because the
+    // column cannot hold a year, and the row used to print that pin
+    // back — a day this platform was never told. The uploaded report
+    // here states 2021-06-01, so nothing corroborates 1 January of
+    // either year and both reduce.
     expect(step(before)).toContain('那张表单上和它有关的只有「确诊年份」，只能填 4 位年份');
-    expect(before.diagnosis.diagnosisDate).toBe('2019-01-01');
-    expect(after.diagnosis.diagnosisDate).toBe('2020-01-01');
+    expect(before.diagnosis.diagnosisDate).toBe('2019 年');
+    expect(after.diagnosis.diagnosisDate).toBe('2020 年');
 
     // What the deleted clause promised, and what actually happens: the
     // patient types the date themselves and the passport still declines

@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { FINAL_TURN_DIRECTIVE, Orchestrator } from './run.js';
+import {
+  CORPUS_UNAVAILABLE_NOTICE,
+  DEFAULT_SYSTEM_PROMPT,
+  FINAL_TURN_DIRECTIVE,
+  Orchestrator,
+  PERSONAL_DATA_PARTIAL_NOTICE,
+  PERSONAL_DATA_UNAVAILABLE_NOTICE,
+  PRECISE_KEY_EVIDENCE,
+} from './run.js';
 import { OrchestratorConsentDenied, type OrchestratorEvent } from './types.js';
 import type { ILLMProvider, LlmChatRequest, LlmChatResponse } from '../llm/base.js';
 import type { RetrieveContext, RetrieveResult } from '../retrievers/base.js';
+import { PROMPT_ALLOWLIST } from '../security/allowlist.js';
 import type { ITool, ToolExecutionResult } from '../tools/base.js';
 import { ToolRegistry } from '../tools/registry.js';
 
@@ -616,13 +625,17 @@ describe('Orchestrator.run', () => {
     // Round 2 carries the tools: it may answer (it does here) or ask
     // for another lookup. Withholding them is reserved for the ceiling.
     expect(round2Arg.tools?.map((t) => t.name)).toEqual(['search_medical_kb', 'get_my_profile']);
-    // system + user + assistant(toolCalls) + 2 tool messages. No
-    // final-turn directive: this round can still ask for more, so
-    // telling it there is no next round would be false.
-    expect(round2Arg.messages).toHaveLength(5);
+    // system + user + assistant(toolCalls) + 2 tool messages + the
+    // strict visibility notice, which follows the tool messages it
+    // describes. No final-turn directive: this round can still ask for
+    // more, so telling it there is no next round would be false.
+    expect(round2Arg.messages).toHaveLength(6);
     expect(round2Arg.messages[2].role).toBe('assistant');
     expect(round2Arg.messages[3].role).toBe('tool');
     expect(round2Arg.messages[4].role).toBe('tool');
+    expect(round2Arg.messages[5].role).toBe('system');
+    expect(String(round2Arg.messages[5].content)).toContain('【当前数据可见范围】');
+    expect(String(round2Arg.messages[5].content)).not.toContain(FINAL_TURN_DIRECTIVE);
 
     expect(result.answer).toBe('基于知识库和你的资料的最终回答');
     expect(result.toolCalls.map((c) => c.name)).toEqual(['search_medical_kb', 'get_my_profile']);
@@ -903,7 +916,7 @@ describe('retrieval failure reaches the patient as state and as prose', () => {
       personalDataUnavailable: false,
     });
     expect(result.answer.startsWith('⚠️')).toBe(true);
-    expect(result.answer).toContain('没能查到医学知识库');
+    expect(result.answer).toContain(CORPUS_UNAVAILABLE_NOTICE);
     expect(result.answer).toContain('FSHD 通常由 D4Z4 重复缩短引起。');
   });
 
@@ -1265,5 +1278,545 @@ describe('Orchestrator.run — multi-turn history', () => {
     });
     expect(single.historyMessageCount).toBe(0);
     expect(single.redactedPromptHash).not.toBe(result.redactedPromptHash);
+  });
+});
+
+// ---------------------------------------------------------------------
+// The strict-mode visibility notice.
+//
+// Two defects lived here at once, and both were of the same kind: a
+// sentence in the prompt asserting something about this turn that this
+// turn did not support.
+//
+//   - The notice was concatenated onto the SYSTEM PROMPT before
+//     planning, so round 1 was told 「本轮工具消息里你已经拿到的字段：…」
+//     over a conversation with zero tool messages — and the list was
+//     read off the ALLOWLIST rather than the retrieval, so it stayed
+//     false in round 2 for any patient missing those fields.
+//   - The 「what precise consent adds」 half was a set difference over
+//     KEY NAMES, and `methylation` is on both profile lists, so it never
+//     landed there. The two modes put different things under that name:
+//     strict emits `methylation_withheld` (甲基化数值: value_withheld)
+//     and drops the number; precise emits `methylation: 12%` under
+//     甲基化值. The notice therefore told the model 甲基化值 was already
+//     in hand over a tool message with no such row.
+// ---------------------------------------------------------------------
+
+const PROFILE_WITH_GENETICS = {
+  gender: '女',
+  diagnosisStage: 'confirmed',
+  diagnosisDate: '2019-03-11',
+  diagnosisType: 'FSHD1',
+  diagnosisTypeFromLaboratoryReport: true,
+  d4z4: '6',
+  d4z4FromLaboratoryReport: true,
+  haplotype: '4qA',
+  haplotypeFromLaboratoryReport: true,
+  methylation: '12%',
+  methylationFromLaboratoryReport: true,
+  onsetRegion: '面部',
+};
+
+const gatherThenAnswer = (): LlmChatResponse[] => [
+  {
+    content: null,
+    toolCalls: [{ id: 'p1', name: 'get_my_profile', argumentsJson: '{}' }],
+    finishReason: 'tool_calls',
+  },
+  { content: '最终回答。', toolCalls: [], finishReason: 'stop' },
+];
+
+const profileOrchestrator = (
+  llm: ILLMProvider,
+  fields: Record<string, unknown> | null,
+): Orchestrator =>
+  new Orchestrator(
+    llm,
+    new ToolRegistry().register(
+      mkTool('get_my_profile', stubResult('patient_profile', fields ? 1 : 0, fields ?? undefined)),
+    ),
+    silentLogger as unknown as RetrieveContext['logger'],
+  );
+
+/** Every message the given LLM round received, flattened. */
+const roundText = (llm: { chat: ReturnType<typeof vi.fn> }, index: number): string =>
+  (llm.chat.mock.calls[index][0] as LlmChatRequest).messages
+    .map((m) => `${m.role}:${m.content ?? ''}`)
+    .join('\n');
+
+/** Only the tool messages of the given round — what the model was
+ *  actually handed, as opposed to what it was told it was handed. */
+const roundToolText = (llm: { chat: ReturnType<typeof vi.fn> }, index: number): string =>
+  (llm.chat.mock.calls[index][0] as LlmChatRequest).messages
+    .filter((m) => m.role === 'tool')
+    .map((m) => m.content ?? '')
+    .join('\n');
+
+/** The visibility notice out of one round's messages, or '' when the
+ *  round carries none. */
+const noticeOf = (llm: { chat: ReturnType<typeof vi.fn> }, index: number): string =>
+  ((llm.chat.mock.calls[index][0] as LlmChatRequest).messages.find(
+    (m) => m.role === 'system' && String(m.content).includes('【当前数据可见范围】'),
+  )?.content as string | undefined) ?? '';
+
+describe('Orchestrator.run — strict visibility notice', () => {
+  it('says nothing about what the model "already has" before any tool has run', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的 D4Z4 在不在 FSHD1 范围内？',
+      requestId: 'r-notice-1',
+      consentLevel: 'basic',
+    });
+
+    // Round 1 is the planner. There are no tool messages in it at all,
+    // so nothing may claim there are.
+    const planning = llm.chat.mock.calls[0][0] as LlmChatRequest;
+    expect(planning.messages.some((m) => m.role === 'tool')).toBe(false);
+    expect(roundText(llm, 0)).not.toContain('【当前数据可见范围】');
+    expect(roundText(llm, 0)).not.toContain('本轮工具消息里你已经拿到的字段');
+
+    // Round 2 has the tool message, and the notice arrives with it.
+    expect(noticeOf(llm, 1)).toContain('本轮工具消息里你已经拿到的字段');
+  });
+
+  it('names only fields the tool message actually carries', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的 D4Z4 在不在 FSHD1 范围内？',
+      requestId: 'r-notice-2',
+      consentLevel: 'basic',
+    });
+
+    const notice = noticeOf(llm, 1);
+    const tools = roundToolText(llm, 1);
+
+    // The inventory line, label by label, against the rendered chunk.
+    const inventory = notice
+      .split('本轮工具消息里你已经拿到的字段：\n')[1]
+      .split('\n\n')[0]
+      .split('\n')
+      .flatMap((line) => line.replace(/^- [^：]+：/, '').split('、'));
+    expect(inventory.length).toBeGreaterThan(3);
+    for (const label of inventory) {
+      expect(tools, `notice claims 「${label}」 but no tool message prints it`).toContain(label);
+    }
+
+    // The specific pair the old derivation got backwards: strict prints
+    // 甲基化数值 (value_withheld) and never 甲基化值.
+    expect(tools).toContain('甲基化数值: value_withheld');
+    expect(tools).not.toContain('甲基化值');
+    expect(inventory).toContain('甲基化数值');
+    expect(inventory).not.toContain('甲基化值');
+  });
+
+  it('lists the methylation number as something precise consent would add', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的甲基化是多少？',
+      requestId: 'r-notice-3',
+      consentLevel: 'basic',
+    });
+
+    const preciseOnly = noticeOf(llm, 1)
+      .split('才会多出来的字段，只有这些：\n')[1]
+      .split('\n\n')[0];
+    expect(preciseOnly).toContain('甲基化值');
+    expect(preciseOnly).toContain('D4Z4 重复数');
+    expect(preciseOnly).toContain('单倍型');
+
+    // And precise mode really does print it, so the promise is good.
+    const preciseLlm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(preciseLlm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的甲基化是多少？',
+      requestId: 'r-notice-3p',
+      consentLevel: 'precise',
+    });
+    expect(roundToolText(preciseLlm, 1)).toContain('甲基化值: 12%');
+  });
+
+  it('promises nothing for a cell the patient does not have', async () => {
+    // No d4z4, no haplotype, no methylation. Turning the switch on
+    // would produce none of them, so none of them may be named.
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, {
+      gender: '女',
+      onsetRegion: '面部',
+      familyHistory: '无',
+    }).run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-notice-4',
+      consentLevel: 'basic',
+    });
+
+    const notice = noticeOf(llm, 1);
+    expect(notice).toContain('也不会再多给你任何字段');
+    expect(notice).not.toContain('才会多出来的字段');
+    expect(notice).not.toContain('D4Z4 重复数');
+    expect(notice).not.toContain('单倍型');
+  });
+
+  it('is absent entirely when the projection emitted no patient field', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, null).run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-notice-5',
+      consentLevel: 'basic',
+    });
+    expect(roundText(llm, 0)).not.toContain('【当前数据可见范围】');
+    expect(roundText(llm, 1)).not.toContain('【当前数据可见范围】');
+  });
+
+  it('is absent under precise consent, where nothing is withheld for consent', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, PROFILE_WITH_GENETICS).run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-notice-6',
+      consentLevel: 'precise',
+    });
+    expect(roundText(llm, 1)).not.toContain('【当前数据可见范围】');
+  });
+
+  it('is rebuilt from the fields of the round it is attached to, not accumulated', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'g1', name: 'get_my_records', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '我看到你的记录了，再查一下档案。',
+        toolCalls: [{ id: 'g2', name: 'get_my_profile', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '最终回答。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry()
+        .register(
+          mkTool(
+            'get_my_records',
+            stubResult('patient_followups', 1, {
+              metricKey: 'six_min_walk',
+              metricLabel: '6分钟步行',
+              count: 5,
+              spanDays: 120,
+              changeDirection: 'down',
+              latestBand: '略有下降',
+              unit: '米',
+              latestValue: 320,
+              series: '350米(120天前)、320米(0天前)',
+            }),
+          ),
+        )
+        .register(
+          mkTool('get_my_profile', stubResult('patient_profile', 1, PROFILE_WITH_GENETICS)),
+        ),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    await orch.run({
+      userId: 'u1',
+      question: '我最近怎么样？',
+      requestId: 'r-notice-7',
+      consentLevel: 'basic',
+    });
+
+    // Round 2 saw only the follow-up chunk.
+    const second = noticeOf(llm, 1);
+    expect(second).toContain('患者随访记录');
+    expect(second).not.toContain('患者基础档案');
+    // ...and follow-ups DO have raw values behind the switch.
+    expect(second).toContain('最近数值');
+    // `unit` is deliberately never promised: nothing in the strict
+    // projection says whether the series' points agree on one.
+    expect(second).not.toContain('单位');
+
+    // Round 3 saw both, and carries exactly one notice.
+    const third = llm.chat.mock.calls[2][0] as LlmChatRequest;
+    expect(
+      third.messages.filter(
+        (m) => m.role === 'system' && String(m.content).includes('【当前数据可见范围】'),
+      ),
+    ).toHaveLength(1);
+    expect(noticeOf(llm, 2)).toContain('患者基础档案');
+    expect(noticeOf(llm, 2)).toContain('患者随访记录');
+  });
+
+  it('explains 「本平台判读」 only when such a field is in the emission', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, { gender: '女', onsetRegion: '面部' }).run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-notice-8',
+      consentLevel: 'basic',
+    });
+    const notice = noticeOf(llm, 1);
+    expect(notice).toContain('本轮工具消息里你已经拿到的字段');
+    expect(notice).not.toContain('本平台判读');
+    expect(notice).not.toContain('numericValuesWithheld');
+  });
+});
+
+describe('visibility-notice derivation fences', () => {
+  // `BuiltContext.fieldsUsed` is scope-blind, so the notice recovers a
+  // key's scope from the allowlist. That only works while the three
+  // scopes' key sets are disjoint; the day they overlap, a field
+  // retrieved for one scope would be printed under two headings and one
+  // of the two would be a claim about a field the model never received.
+  it('keeps the three scopes key-disjoint', () => {
+    const scopes = ['profile', 'reports', 'followups'] as const;
+    for (const a of scopes) {
+      for (const b of scopes) {
+        if (a === b) continue;
+        const other = new Set([...PROMPT_ALLOWLIST[b].strict, ...PROMPT_ALLOWLIST[b].precise]);
+        const shared = [...PROMPT_ALLOWLIST[a].strict, ...PROMPT_ALLOWLIST[a].precise].filter((k) =>
+          other.has(k),
+        );
+        expect(shared, `${a} and ${b} share allowlist keys: ${shared.join(', ')}`).toEqual([]);
+      }
+    }
+  });
+
+  // A raw-value key added to a `precise` list with no evidence entry
+  // would silently never be advertised — the patient would be left
+  // unable to learn the switch exists for it.
+  it('gives every precise-only allowlist key an evidence entry', () => {
+    for (const scope of ['profile', 'reports', 'followups'] as const) {
+      const strict = new Set<string>(PROMPT_ALLOWLIST[scope].strict);
+      const preciseOnly = PROMPT_ALLOWLIST[scope].precise.filter((k) => !strict.has(k));
+      const evidence = PRECISE_KEY_EVIDENCE[scope];
+      for (const key of preciseOnly) {
+        expect(Object.keys(evidence), `${scope}.${key} has no evidence entry`).toContain(key);
+      }
+      // ...and nothing in the table is a key the mode cannot carry.
+      for (const key of Object.keys(evidence)) {
+        expect(PROMPT_ALLOWLIST[scope].precise, `${scope}.${key}`).toContain(key);
+      }
+    }
+  });
+});
+
+describe('Orchestrator.run — sentences about the state of this turn', () => {
+  // `failures.personal` is raised by ANY of the three personal
+  // retrievers. 「所以下面的回答没有用到你本人的数据」 is only true when
+  // none of them got through — a patient whose profile read timed out
+  // while their reports came back was shown that banner directly above
+  // an answer quoting their own report.
+  it('does not tell a patient their data was unused when part of it was', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [
+          { id: 'a1', name: 'get_my_profile', argumentsJson: '{}' },
+          { id: 'a2', name: 'get_my_reports', argumentsJson: '{}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      { content: '你的报告显示……', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const throwingProfile: ITool = {
+      name: 'get_my_profile',
+      description: 'p',
+      parametersSchema: { type: 'object' },
+      parseArgs: () => ({}),
+      execute: async () => {
+        throw new Error('pg: connection terminated');
+      },
+    };
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry()
+        .register(throwingProfile)
+        .register(
+          mkTool(
+            'get_my_reports',
+            stubResult('patient_reports', 1, { classifiedType: 'genetic', status: 'parsed' }),
+          ),
+        ),
+      silentLogger as unknown as RetrieveContext['logger'],
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: '我的报告？',
+      requestId: 'r-partial',
+      consentLevel: 'basic',
+    });
+
+    expect(result.usedPersonalData).toBe(true);
+    expect(result.retrievalFailure?.personalDataUnavailable).toBe(true);
+    expect(result.answer).toContain(PERSONAL_DATA_PARTIAL_NOTICE);
+    expect(result.answer).not.toContain(PERSONAL_DATA_UNAVAILABLE_NOTICE);
+  });
+
+  it('still says nothing got through when nothing did', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'b1', name: 'get_my_profile', argumentsJson: '{}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '我这边没读到你的资料。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const throwingProfile: ITool = {
+      name: 'get_my_profile',
+      description: 'p',
+      parametersSchema: { type: 'object' },
+      parseArgs: () => ({}),
+      execute: async () => {
+        throw new Error('pg: connection terminated');
+      },
+    };
+    const result = await new Orchestrator(
+      llm,
+      new ToolRegistry().register(throwingProfile),
+      silentLogger as unknown as RetrieveContext['logger'],
+    ).run({
+      userId: 'u1',
+      question: '我的档案？',
+      requestId: 'r-total',
+      consentLevel: 'basic',
+    });
+
+    expect(result.usedPersonalData).toBe(false);
+    expect(result.answer).toContain(PERSONAL_DATA_UNAVAILABLE_NOTICE);
+    expect(result.answer).not.toContain(PERSONAL_DATA_PARTIAL_NOTICE);
+  });
+
+  // `failures.corpus` is sticky across gather rounds, so a turn whose
+  // first knowledge-base lookup failed and whose second succeeded raises
+  // it with citations in hand — and the banner used to say
+  // 「下面的内容没有资料出处」 directly above an answer ending in [1].
+  it('does not deny sources exist while shipping a source card', async () => {
+    let kbCall = 0;
+    const flakyKb: ITool = {
+      name: 'search_medical_kb',
+      description: 'kb',
+      parametersSchema: { type: 'object' },
+      parseArgs: () => ({}),
+      execute: async () => {
+        kbCall += 1;
+        if (kbCall === 1) {
+          return {
+            retrieval: {
+              retrieverId: 'medical_kb',
+              chunks: [],
+              citations: [],
+              metadata: { reason: 'kb_service_unreachable', detail: 'fetch failed' },
+            },
+            display: 'medical_kb: 0 chunks',
+          };
+        }
+        return { retrieval: stubResult('medical_kb', 1), display: 'medical_kb: 1 chunk' };
+      },
+    };
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'k1', name: 'search_medical_kb', argumentsJson: '{"query":"FSHD1"}' }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '知识库这次没查到，我换个说法再查一次。',
+        toolCalls: [{ id: 'k2', name: 'search_medical_kb', argumentsJson: '{"query":"D4Z4"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: 'FSHD1 由 D4Z4 收缩引起 [1]。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    const result = await new Orchestrator(
+      llm,
+      new ToolRegistry().register(flakyKb),
+      silentLogger as unknown as RetrieveContext['logger'],
+    ).run({
+      userId: 'u1',
+      question: 'FSHD1 是什么？',
+      requestId: 'r-corpus',
+      consentLevel: 'basic',
+    });
+
+    expect(result.retrievalFailure?.corpusUnavailable).toBe(true);
+    expect(result.citations.length).toBeGreaterThan(0);
+    // The banner is present and scoped to the uncited sentences; it must
+    // not assert that the answer has no sources when a card is attached.
+    expect(result.answer).toContain(CORPUS_UNAVAILABLE_NOTICE);
+    expect(result.answer).not.toContain('下面的内容没有资料出处');
+    expect(CORPUS_UNAVAILABLE_NOTICE).toContain('没有标出处编号');
+  });
+
+  // `isPreambleOnly('')` is false, so a round that produced no text at
+  // all also reaches the retry — and it was told 「它只是宣布要再检索
+  // 一次」 about a turn the very next line recorded as `(empty)`.
+  it('does not describe an empty round as an announcement of another search', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'c1', name: 'search_medical_kb', argumentsJson: '{"query":"x"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '', toolCalls: [], finishReason: 'stop' },
+      { content: '这是补上的完整回答。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    await new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    ).run({ userId: 'u1', question: 'q', requestId: 'r-empty', consentLevel: 'basic' });
+
+    const retry = roundText(llm, 2);
+    expect(retry).toContain('上一条回复是空的');
+    expect(retry).not.toContain('它只是宣布要再检索一次');
+  });
+
+  it('keeps the preamble wording when there really was a preamble', async () => {
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [{ id: 'd1', name: 'search_medical_kb', argumentsJson: '{"query":"x"}' }],
+        finishReason: 'tool_calls',
+      },
+      { content: '让我再用其他关键词搜索一下：', toolCalls: [], finishReason: 'stop' },
+      { content: '这是补上的完整回答。', toolCalls: [], finishReason: 'stop' },
+    ]);
+    await new Orchestrator(
+      llm,
+      new ToolRegistry().register(mkTool('search_medical_kb', stubResult('medical_kb', 1))),
+      silentLogger as unknown as RetrieveContext['logger'],
+    ).run({ userId: 'u1', question: 'q', requestId: 'r-preamble', consentLevel: 'basic' });
+
+    expect(roundText(llm, 2)).toContain('它只是宣布要再检索一次');
+  });
+
+  // `finalPrompt.system` is documented as the final round's system
+  // prompt, and it recorded only the FIRST system message — so the
+  // final-turn directive, the visibility notice and the retry's
+  // corrective instruction were all part of what the model was told and
+  // none of them reached the audit row.
+  it('records every system message the final round received', async () => {
+    const llm = mkLlm(gatherThenAnswer());
+    // maxToolRounds: 1, so the answer round is at the ceiling and
+    // carries the final-turn directive as well as the notice.
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry().register(
+        mkTool('get_my_profile', stubResult('patient_profile', 1, PROFILE_WITH_GENETICS)),
+      ),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 1 },
+    );
+    const result = await orch.run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-audit-system',
+      consentLevel: 'basic',
+    });
+    expect(result.finalPrompt.system).toContain(DEFAULT_SYSTEM_PROMPT);
+    expect(result.finalPrompt.system).toContain('【当前数据可见范围】');
+    expect(result.finalPrompt.system).toContain(FINAL_TURN_DIRECTIVE);
   });
 });

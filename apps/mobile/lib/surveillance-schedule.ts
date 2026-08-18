@@ -82,8 +82,44 @@ export type SurveillancePolarity = 'do' | 'do_not';
  *                  patient's own record here.
  *  not_matched   — the record we hold does not show that condition.
  *                  NOT the same as 「you don't need this」.
- *  unknown       — the guideline's condition is about something this
- *                  platform never collects, or collected unreadably.
+ *  unknown       — this platform cannot answer the guideline's
+ *                  condition. The reasons are not one thing, and a row
+ *                  may only claim the one that is true of it. These are
+ *                  the ones this file produces today; the list is open,
+ *                  so a row reaching a state not below is a row to
+ *                  describe here, not a bug:
+ *
+ *                  · the condition is about something never collected
+ *                    here — scoliosis, daytime somnolence. This is the
+ *                    only one 「本平台没有」 is true about.
+ *                  · it was collected and no usable reading came back:
+ *                    an OCR that found no number, or a count cell the
+ *                    server read and refused (「0」,「3kb」), or a
+ *                    WeChat-cached bundle whose API predates the
+ *                    reading. The number is often still ON the page —
+ *                    what is missing is a verdict on it.
+ *                  · it was collected, is perfectly readable, and is
+ *                    not PRECISE enough to decide this particular
+ *                    boundary — `hearing_child` on a patient whose
+ *                    birth YEAR is on file and whose 7 周岁 boundary
+ *                    falls between the two ages that year allows.
+ *                  · it was collected, is readable, IS precise, the
+ *                    boundary IS decided, and the guideline's condition
+ *                    still does not follow — `retinal_screening` on a
+ *                    count inside the 1–4 band read off a report that
+ *                    also states a non-permissive 4qB allele. The
+ *                    number answers; the group the guideline names
+ *                    (large deletion INSIDE FSHD) is not this
+ *                    platform's to put the patient into on a
+ *                    non-permissive result. Note what this is NOT:
+ *                    `not_matched` would read as an exclusion drawn
+ *                    from a haplotype, and `matched` is the disagreement
+ *                    with the clinical passport this arm was added to
+ *                    end.
+ *
+ *                  Everything after the first bullet is why a row
+ *                  reaching `unknown` still has to name what it holds:
+ *                  「本平台没有」 is false about all of them.
  */
 export type SurveillanceApplicability = 'everyone' | 'matched' | 'not_matched' | 'unknown';
 
@@ -687,9 +723,20 @@ const STRENGTH_DRUG_PATTERNS: Array<{ label: string; needles: string[] }> = [
  *
  * This file's header states the rule the old shape broke: `not_matched`
  * never means 你不需要, and every row has to say in its own words that
- * what it holds is a gap in the platform's records. `pain_management`
- * says 本平台没有你的疼痛记录; `hearing_child` says 档案里没有可用的出生
- * 日期. This row alone claimed it had looked.
+ * what it holds is a gap in the platform's records. This row was the
+ * first one found saying it had looked when it had not.
+ *
+ * THE SECOND HALF OF THAT RULE — say it about the RIGHT column — is a
+ * later sweep, and it caught four more rows: `hearing_child` denied a
+ * birth date while `foundation.birthYear` sat on file,
+ * `pain_management` denied a pain record while
+ * `currentChallenges.pain` sat on file, `pulmonary_repeat` denied a
+ * wheelchair while `currentStatus.assistiveDevices` held one, and
+ * `sleep_referral` closed with 「这些只有你自己知道」 to a patient who
+ * had answered `currentStatus.breathingSymptoms`. Each of those four
+ * carries the note at its own site. `medications` has no second column
+ * — nothing else on this platform records a drug — so this function
+ * stays a single read.
  */
 const matchedStrengthDrugs = (profile: PatientProfile | null): string[] | null => {
   const medications = profile?.medications;
@@ -733,6 +780,28 @@ const respiratoryEvidence = (summary: ClinicalPassportSummary): string => {
   return '本平台还没有收到你的肺功能结果。这不代表你没做过 —— 只说明这里没有记录。';
 };
 
+/**
+ * The 辅具 entry naming a wheelchair, as the patient's own record spells
+ * it, or null.
+ *
+ * Matched by substring and NOT with a `\b` boundary: 「轮椅」 is written
+ * without spaces around it, and the list is free text on the wire
+ * (`z.array(z.string())`) even though the questionnaire offers a fixed
+ * set — so 「电动轮椅」 and 「轮椅（户外）」 are shapes that reach here and
+ * that the patient would not accept being told are 「no wheelchair on
+ * file」. The stored string is returned rather than a boolean so the row
+ * can quote what they actually wrote.
+ */
+const baselineWheelchairDevice = (profile: PatientProfile | null): string | null => {
+  const devices = profile?.baseline?.currentStatus?.assistiveDevices;
+  if (!Array.isArray(devices)) return null;
+  return (
+    devices
+      .map((device) => (typeof device === 'string' ? device.trim() : ''))
+      .find((device) => device.includes('轮椅')) ?? null
+  );
+};
+
 const buildRespiratoryRows = (
   summary: ClinicalPassportSummary,
   profile: PatientProfile | null,
@@ -757,6 +826,43 @@ const buildRespiratoryRows = (
   const wheelchair = latestFollowupEvent(profile, 'started_wheelchair');
   // A milestone, not an observation time — see formatMilestoneDate.
   const wheelchairDate = formatMilestoneDate(wheelchair?.occurredAt);
+  const wheelchairDevice = baselineWheelchairDevice(profile);
+  // 「轮椅依赖」 IS THE GUIDELINE'S CONDITION AND NEITHER COLUMN SETTLES
+  // IT — which is exactly why both of them have to reach this row.
+  //
+  // The row used to look only at the `started_wheelchair` follow-up
+  // event and then tell everyone else 「你的记录里也没有轮椅相关的随访
+  // 事件」 under a heading of 判断不了. That sentence is true and the
+  // paragraph around it is not: 「轮椅」 is one of
+  // `ASSISTIVE_DEVICE_OPTIONS` (lib/profile-baseline-options), the
+  // baseline questionnaire stores the patient's pick in
+  // `currentStatus.assistiveDevices`, and this app prints it back to
+  // them on the 疾病背景 card under 「辅具」. A patient who ticked it was
+  // reading, on this page, that the platform holds nothing about a
+  // wheelchair it had just shown them.
+  //
+  // BOTH COLUMNS SCORE THE SAME because they are the same grade of
+  // evidence — a patient-entered statement that they use a wheelchair —
+  // and the caveat the event arm already carries is the honest reading
+  // of either: whether the use amounts to the guideline's 「依赖」 is
+  // the doctor's call, made with the patient in front of them. That
+  // parity is the whole of the reason, and it is worth saying what does
+  // NOT decide it: this used to appeal to 「`unknown` means something
+  // this platform never collects」, which is one of that state's
+  // reasons and not its definition — see the type. A collected,
+  // readable answer can score `unknown` (`hearing_child` on a birth
+  // year, `retinal_screening` on 4qB), so nothing about the tick being
+  // on file rules that state out here. What rules it out is that the
+  // event arm, on evidence of the same grade, already scores `matched`.
+  const wheelchairEvidence = (() => {
+    if (wheelchair) {
+      return `你在随访里记录了「开始使用轮椅」${wheelchairDate ? `（${wheelchairDate}）` : ''}。轮椅依赖是指南列出的复查条件之一 —— 但你的用法是不是指南说的「依赖」，要医生看过才算。`;
+    }
+    if (wheelchairDevice) {
+      return `你在基础档案的「辅具」里填了「${wheelchairDevice}」。轮椅依赖是指南列出的复查条件之一 —— 但填了辅具不等于指南说的「依赖」，那要医生看过才算。`;
+    }
+    return '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的随访事件和基础档案的「辅具」里也都没有轮椅。也就是说，这一栏的「对不上」只代表这里没有数据。';
+  })();
   const repeat: SurveillanceRow = {
     id: 'pulmonary_repeat',
     title: '肺功能要不要定期复查',
@@ -764,10 +870,8 @@ const buildRespiratoryRows = (
     polarity: 'do',
     guideline:
       '指南没有让所有人定期复查肺功能。需要定期复查的是这几种情况：基线结果异常，或者合并明显的近端肌无力、脊柱后凸侧弯、轮椅依赖，以及其他会影响通气的疾病（例如慢阻肺、心脏病）。',
-    applicability: wheelchair ? 'matched' : 'unknown',
-    evidence: wheelchair
-      ? `你在随访里记录了「开始使用轮椅」${wheelchairDate ? `（${wheelchairDate}）` : ''}。轮椅依赖是指南列出的复查条件之一 —— 但你的用法是不是指南说的「依赖」，要医生看过才算。`
-      : '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的记录里也没有轮椅相关的随访事件。也就是说，这一栏的「对不上」只代表这里没有数据。',
+    applicability: wheelchair || wheelchairDevice ? 'matched' : 'unknown',
+    evidence: wheelchairEvidence,
     ask: '可以问：「按我现在的情况，肺功能需要多久查一次？还是查过这一次就够了？」',
     source: SURVEILLANCE_SOURCE,
   };
@@ -824,6 +928,30 @@ const buildRespiratoryRows = (
     return '本平台没有你的 FVC 百分比，所以指南的另一半条件这里判断不了。';
   })();
 
+  /**
+   * THE BASELINE'S OWN ANSWER TO THIS ROW'S QUESTION, AND THE ROW USED
+   * TO END BY TELLING THE PATIENT ONLY THEY COULD KNOW IT.
+   *
+   * `currentStatus.breathingSymptoms` is the baseline questionnaire's
+   * 「有气短或睡眠呼吸问题」 — collected by this platform, stored, and
+   * printed back to the patient as 「呼吸状态」 on the 疾病背景 card
+   * (lib/followup-analytics `buildDiseaseBackgroundFacts`). It is the
+   * same condition this row is about: the row's own `dyspneaIsHigh` arm
+   * already treats 气短 as matching.
+   *
+   * The last arm below read `symptomScores` alone and, finding no sleep
+   * score, closed with 「白天特别困、早上起来头痛、夜里反复醒 —— 这些只
+   * 有你自己知道」 — said to a patient who had answered exactly that
+   * question here and been shown their own answer one screen over.
+   *
+   * A `false` IS NOT READ AS REASSURANCE. Answering 「没有」 once at
+   * registration is not a statement about tonight, and this row's other
+   * arms are all gated on a 180-day window this column has no date to
+   * clear. So `true` is named and scored, `false` is left to the arms
+   * below, and neither is turned into 「你没事」.
+   */
+  const baselineBreathingSymptoms = profile?.baseline?.currentStatus?.breathingSymptoms === true;
+
   const sleepEvidence = (() => {
     if (niv) {
       return `你记录过「开始无创通气」${nivDate ? `（${nivDate}）` : ''}。对你来说这一条已经不是要不要转诊，而是随访：参数合不合适、戴得住戴不住、白天有没有变精神，需要有人定期看。`;
@@ -838,6 +966,14 @@ const buildRespiratoryRows = (
     if (dyspneaIsHigh && dyspnea) {
       parts.push(
         `你最近一次气短评分是 ${dyspnea.score}/${dyspnea.scaleMax}（${dyspneaDate ?? '日期不详'}）。`,
+      );
+    }
+    if (baselineBreathingSymptoms) {
+      // No date on this column, so no 「最近」 and no 半年 window — the
+      // sentence says when it was answered instead of implying it is
+      // current.
+      parts.push(
+        '你在基础档案里填过「有气短或睡眠呼吸问题」，那是建档时的回答，本平台不知道现在还是不是这样。',
       );
     }
     if (parts.length > 0) {
@@ -862,7 +998,10 @@ const buildRespiratoryRows = (
     polarity: 'do',
     guideline:
       '指南建议：如果肺功能明显偏低（例如 FVC 低于 60%），或者出现白天过度嗜睡、睡了也不解乏（夜里频繁醒、早上头痛），应当转呼吸科或睡眠医学科，评估要不要做夜间睡眠监测、要不要用夜间无创通气。指南写明：早期开始无创通气可以改善生存和生活质量。',
-    applicability: niv || (sleepIsPoor && sleepIsRecent) || dyspneaIsHigh ? 'matched' : 'unknown',
+    applicability:
+      niv || (sleepIsPoor && sleepIsRecent) || dyspneaIsHigh || baselineBreathingSymptoms
+        ? 'matched'
+        : 'unknown',
     evidence: sleepEvidence,
     ask: niv
       ? '可以问：「我现在的无创通气参数还合适吗？需要复查睡眠监测吗？」'
@@ -949,6 +1088,103 @@ const buildCardiacRow = (summary: ClinicalPassportSummary): SurveillanceRow => {
     ask: '可以问：「我没有心悸和胸痛，还需要每年查心脏吗？」',
     source: `${SURVEILLANCE_SOURCE}；术前部分见 Mani 等, AANA Journal 2025 年 10 月`,
   };
+};
+
+/**
+ * WHEN THIS PATIENT WAS BORN, AS MUCH OF IT AS THE PLATFORM HOLDS —
+ * and it is very often a year rather than a date.
+ *
+ *  date — `profile.dateOfBirth`, a whole calendar date. One age.
+ *  year — `baseline.foundation.birthYear` and nothing narrower. The age
+ *         is one of TWO whole numbers and this platform cannot say
+ *         which, because it does not know whether the birthday has
+ *         happened yet this year.
+ *  none — neither column holds anything usable.
+ *
+ * WHAT THIS REPLACED. The hearing row read `profile.dateOfBirth` alone
+ * and printed 「档案里没有可用的出生日期，年龄这一条判断不了」 for
+ * everyone without it. `dateOfBirth` is written by the registration
+ * form; `foundation.birthYear` is a separate column that the baseline
+ * questionnaire, the patient's own 档案 edit and an administrator
+ * (p-admin patient-record's 「出生年份」 field) all write on their own,
+ * and it is the one the 档案 page PREFERS — `formatAgeLabel` there
+ * prints 「N 岁左右」 off `birthYear` and only falls back to the date.
+ * So a patient could read their own age on one screen of this app and,
+ * on the next, be told the platform has no birth date to judge by. The
+ * row was not short of a record; it was reading the wrong column.
+ *
+ * THE YEAR IS NOT DOWNGRADED TO 「no answer」 EITHER. Two of the three
+ * questions this row asks are settled by a year alone: a child born in
+ * 2020 is 5 or 6 this year and BOTH are under school age, an adult born
+ * in 1988 is 37 or 38 and both are over it. Only a birth year whose two
+ * candidate ages straddle `SCHOOL_ENTRY_AGE` is genuinely undecidable,
+ * and that is the one arm that still says 判断不了 — naming the year it
+ * has and the day it lacks, rather than denying the record.
+ *
+ * TWO CLOCKS, ON PURPOSE, AND THIS IS THE WHOLE OF THE DIVERGENCE.
+ * The `date` arm goes through `ageInYears` (lib/guardian-consent), the
+ * same tested calculation that governs the PIPL Art. 31 guardian
+ * consent gate at registration, and that function reads `today` with
+ * the LOCAL calendar accessors — so the date arm answers on the
+ * handset's calendar, as it always has, and its behaviour is unchanged
+ * by this function. The `year` arm is new code and has no such
+ * contract, so it takes its year off the PRODUCT calendar via
+ * `formatProductDate`, which is what the rest of this file does with a
+ * date. The two can only disagree during the hours when Asia/Shanghai
+ * and the handset are in different years, and they are never both
+ * consulted for one patient. The lane report carries the date arm's
+ * timezone dependence as a finding against `ageInYears`, which is not
+ * this file's to change.
+ */
+type BirthEvidence =
+  | { kind: 'date'; minAge: number; maxAge: number }
+  | { kind: 'year'; birthYear: number; minAge: number; maxAge: number }
+  | { kind: 'none' };
+
+/**
+ * The year on the product's calendar. `formatProductDate` is this
+ * file's own renderer for 「what day is it there」, so the year comes
+ * off the string it produces rather than off `today.getFullYear()`,
+ * which is the handset's year and is a different number for some hours
+ * every New Year.
+ */
+const productCalendarYear = (today: Date): number | null => {
+  const day = formatProductDate(today.toISOString());
+  if (!day || !DATE_ONLY.test(day)) return null;
+  const year = Number(day.slice(0, 4));
+  return Number.isFinite(year) ? year : null;
+};
+
+/** The same 「usable birth year」 test the 档案 page applies before it
+ *  prints an age (p-archive `formatAgeLabel`), so the two screens
+ *  cannot disagree about whether the platform holds one. A year in the
+ *  future is not a birth year and is refused here as well. */
+const readBirthYear = (value: unknown, thisYear: number | null): number | null => {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 1900) return null;
+  if (thisYear === null || value > thisYear) return null;
+  return value;
+};
+
+const readBirthEvidence = (profile: PatientProfile | null, today: Date): BirthEvidence => {
+  // Taking the leading YYYY-MM-DD covers a server that ever starts
+  // sending a timestamp — today it sends a plain date (profile.service's
+  // toDateString).
+  const rawDob = (profile?.dateOfBirth ?? '').trim();
+  const dobMatch = /^(\d{4}-\d{2}-\d{2})/.exec(rawDob);
+  const age = dobMatch ? ageInYears(dobMatch[1], today) : null;
+  // A negative age is a birth date in the future — not a reading this
+  // row may branch on, so it falls through to the year below.
+  if (age !== null && age >= 0) return { kind: 'date', minAge: age, maxAge: age };
+
+  const thisYear = productCalendarYear(today);
+  const birthYear = readBirthYear(profile?.baseline?.foundation?.birthYear, thisYear);
+  if (birthYear === null || thisYear === null) return { kind: 'none' };
+
+  // Whole years elapsed is `thisYear - birthYear` once the birthday has
+  // passed and one less before it. Clamped at 0 for someone born this
+  // year, where 「one less」 is not an age.
+  const maxAge = thisYear - birthYear;
+  return { kind: 'year', birthYear, minAge: Math.max(0, maxAge - 1), maxAge };
 };
 
 const buildEyeAndEarRows = (
@@ -1056,16 +1292,66 @@ const buildEyeAndEarRows = (
     source: SURVEILLANCE_SOURCE,
   };
 
-  // The date of birth is already on file and already governs the PIPL
-  // Art. 31 guardian-consent gate at registration; `ageInYears` is
-  // that same tested calculation rather than a second one. Taking the
-  // leading YYYY-MM-DD covers a server that ever starts sending a
-  // timestamp — today it sends a plain date (profile.service's
-  // toDateString).
-  const rawDob = (profile?.dateOfBirth ?? '').trim();
-  const dobMatch = /^(\d{4}-\d{2}-\d{2})/.exec(rawDob);
-  const age = dobMatch ? ageInYears(dobMatch[1], today) : null;
-  const isYoungChild = age !== null && age >= 0 && age < SCHOOL_ENTRY_AGE;
+  const birth = readBirthEvidence(profile, today);
+  const hearingApplicability: SurveillanceApplicability =
+    birth.kind === 'none'
+      ? 'unknown'
+      : birth.maxAge < SCHOOL_ENTRY_AGE
+        ? 'matched'
+        : birth.minAge >= SCHOOL_ENTRY_AGE
+          ? 'not_matched'
+          : // Only a birth year, and this year's band straddles the
+            // boundary. Neither answer is available; see below.
+            'unknown';
+
+  /** 「如果家里有确诊 FSHD 的小孩」 — this row stays useful to a reader
+   *  it does not cover, and every arm that does not cover them says so.
+   *  One constant because the arms differ only in what precedes it; it
+   *  used to be two near-identical sentences, one per arm. */
+  const hearingFamilyClause = '如果家里有确诊 FSHD 的学龄前小孩，这一条对他们适用。';
+
+  const hearingEvidence = (() => {
+    if (birth.kind === 'date') {
+      return birth.maxAge < SCHOOL_ENTRY_AGE
+        ? `按档案里的出生日期，患者今年 ${birth.maxAge} 岁，在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`
+        : `按档案里的出生日期，患者今年 ${birth.maxAge} 岁，这一条是给学龄前幼儿的。${hearingFamilyClause}`;
+    }
+    if (birth.kind === 'year') {
+      // 「今年 5 岁或 6 岁」, and 「今年 0 岁」 for a child born this year,
+      // where 「one less」 is not an age and the band is a single number.
+      const ageZh =
+        birth.minAge === birth.maxAge
+          ? `${birth.maxAge} 岁`
+          : `${birth.minAge} 岁或 ${birth.maxAge} 岁`;
+      // This head says what the platform HAS and what it did with it.
+      // It deliberately does not add 「没有具体的出生日期」: this arm is
+      // also where an unusable `dateOfBirth` lands (a date in the
+      // future), and asserting the column is empty would be a second
+      // false statement about the record in the sentence written to
+      // stop the first one.
+      const head = `档案里有你填的出生年份（${birth.birthYear} 年）。按年份算，生日过了没有本平台不知道，所以患者今年 ${ageZh}。`;
+      if (birth.maxAge < SCHOOL_ENTRY_AGE) {
+        return `${head}不管生日过没过，都在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`;
+      }
+      if (birth.minAge >= SCHOOL_ENTRY_AGE) {
+        return `${head}不管生日过没过，都已经过了这一条的年龄段 —— 它是给学龄前幼儿的。${hearingFamilyClause}`;
+      }
+      // THE ONE STATE THAT IS STILL 判断不了, AND IT SAYS WHY.
+      // 「档案里没有可用的出生日期」 was the old sentence here and it was
+      // false about this patient — the year is on file, the 档案 page
+      // prints an age off it. What a year cannot settle is which side of
+      // a birthday today is, and that is exactly what this row's
+      // boundary turns on, so the sentence names the year and the gap
+      // rather than denying the record.
+      return `${head}${SCHOOL_ENTRY_AGE} 周岁的界线正好落在这两个数中间，只有年份分不出来 —— 生日过了没有，你自己知道。${hearingFamilyClause}`;
+    }
+    // 「没有能用来算年龄的」 rather than 「没有」: this arm is also reached
+    // by a `dateOfBirth` or a `birthYear` that is on file and unusable
+    // (a birth date in the future, a year like 1200), and telling that
+    // patient the columns are empty would be the same false negative
+    // one row down from where it was just fixed.
+    return `档案里没有能用来算年龄的出生日期或出生年份，这一条判断不了。${hearingFamilyClause}`;
+  })();
 
   const hearing: SurveillanceRow = {
     id: 'hearing_child',
@@ -1074,17 +1360,38 @@ const buildEyeAndEarRows = (
     polarity: 'do',
     guideline:
       '指南建议：确诊 FSHD 的幼儿，在确诊时以及之后每年做一次听力筛查，直到上学。理由写得很直接 —— 听力损失在确诊时不一定已经出现，而且可能是进行性的；成人和大孩子自己察觉得到，婴幼儿察觉不到，这个年龄漏掉的听力损失会明显影响语言发育。',
-    applicability: isYoungChild ? 'matched' : age !== null ? 'not_matched' : 'unknown',
-    evidence: isYoungChild
-      ? `按档案里的出生日期，患者今年 ${age} 岁，在这一条覆盖的年龄段里。指南的界线是「直到上学」，本平台按 ${SCHOOL_ENTRY_AGE} 周岁估算 —— 已经上学的话，以实际入学时间为准。`
-      : age !== null
-        ? `按档案里的出生日期，患者今年 ${age} 岁，这一条是给学龄前幼儿的。如果家里有确诊 FSHD 的小孩，这一条对他们适用。`
-        : '档案里没有可用的出生日期，年龄这一条判断不了。如果家里有确诊 FSHD 的学龄前孩子，这一条对他们适用。',
+    applicability: hearingApplicability,
+    evidence: hearingEvidence,
     ask: '可以问：「孩子需要每年做听力筛查吗？该去耳鼻喉科还是听力中心？」',
     source: SURVEILLANCE_SOURCE,
   };
 
   return [retina, hearing];
+};
+
+/**
+ * The baseline questionnaire's own pain answer, on the 0–5 scale the
+ * API declares for it (`difficultyScoreSchema`, profile.schema.ts) and
+ * the same one the 疾病背景 card prints it against
+ * (lib/followup-analytics `buildDiseaseBackgroundFacts`, 「疼痛 N/5」).
+ *
+ * SAME SWEEP AS THE MEDICATION AND FVC ROWS ABOVE, third instance:
+ * 「本平台没有你的疼痛记录」 was printed for everyone with no follow-up
+ * `pain` symptom score, including the patients who had answered the
+ * baseline question — a number this app shows them on the 疾病背景 card
+ * and an administrator sees under 「疼痛」 in p-admin. The row was not
+ * short of a record; it was reading one column and speaking for two.
+ *
+ * IT DOES NOT MOVE `applicability`. This value is answered once, at
+ * registration, on a different scale from the follow-up score, and
+ * `matched` on this row means a RECENT notable pain reading — the
+ * 180-day window is the whole point of the branch. A five-year-old
+ * baseline answer is worth naming and is not worth scoring, so it is
+ * displayed with its origin and decides nothing.
+ */
+const baselinePainScore = (profile: PatientProfile | null): number | null => {
+  const value = profile?.baseline?.currentChallenges?.pain;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const buildPainRow = (profile: PatientProfile | null, today: Date): SurveillanceRow => {
@@ -1093,6 +1400,11 @@ const buildPainRow = (profile: PatientProfile | null, today: Date): Surveillance
   const painDate = formatFullDate(pain?.recordedAt);
   const painIsNotable =
     pain !== null && ratio !== null && ratio >= 0.4 && isRecent(pain.recordedAt, today);
+  const baselinePain = baselinePainScore(profile);
+  const noFollowupScoreEvidence =
+    baselinePain === null
+      ? '本平台没有你的疼痛记录。这一条本来就是写给医生的：该主动问的是他们。'
+      : `你在基础档案里把「疼痛」填成了 ${baselinePain}/5，但本平台没有你在随访里打过的疼痛评分 —— 基础档案那一格只填过一次，不代表你现在的情况。这一条本来就是写给医生的：该主动问的是他们。`;
 
   return {
     id: 'pain_management',
@@ -1106,7 +1418,7 @@ const buildPainRow = (profile: PatientProfile | null, today: Date): Surveillance
       ? `你最近一次疼痛评分是 ${pain.score}/${pain.scaleMax}（${painDate ?? '日期不详'}）。把这个数字和「哪个部位、什么动作会疼」一起说，比只说「疼」更容易找到原因。`
       : pain
         ? `你最近一次疼痛评分是 ${pain.score}/${pain.scaleMax}（${painDate ?? '日期不详'}）。`
-        : '本平台没有你的疼痛记录。这一条本来就是写给医生的：该主动问的是他们。',
+        : noFollowupScoreEvidence,
     ask: '可以问：「我这个疼是从哪来的？需要先看康复科吗？」',
     source: SURVEILLANCE_SOURCE,
   };

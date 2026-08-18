@@ -64,8 +64,12 @@ const summary = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as unknown as ClinicalPassportSummary;
 
-// 用本地分量构造，避免「生成日期」在 UTC 之外的时区退一天。
-const TODAY = new Date(2026, 7, 5, 12, 0, 0);
+// 一个固定时刻，不是本地分量。以前这里写成 new Date(2026, 7, 5, ...) 是为了
+// 绕开「生成日期」在 UTC 以西退一天；那个 bug 已经修好（formatDate 走
+// clinical-visuals 的 formatProductDate，按 Asia/Shanghai 结算），本地分量
+// 反而让这个输入本身跟着运行机器的时区跑。跨时区的断言在
+// __tests__/date-only-timezone.test.ts。
+const TODAY = new Date('2026-08-05T04:00:00.000Z');
 const allText = (s: ClinicalPassportSummary) => {
   const card = buildAnesthesiaCard(s, TODAY);
   return [

@@ -58,6 +58,14 @@ const SERVER = {
   最近记录: '2026-03-05', // from 2026-03-04T18:00:00.000Z
   肺功能日期: '2025-02-15',
   timeline: ['2026-03-05', '2025-03-03', '2025-02-15', '2025-02-13', '2024-02-11'],
+  // The four `summaryCards[].meta` sentences, which the API builds whole
+  // and this sheet prints verbatim. Three of them used to be `MM-DD`.
+  meta: [
+    '诊断日期 2019-05-03',
+    '最近记录 2025-03-03',
+    '最近 MRI 2025-02-13',
+    '最近监测 2025-02-15',
+  ],
   // referral-pack.ts `milestoneDateZh` over the same two rows of
   // `patient_followup_events`.
   轮椅: '2019 年',
@@ -75,11 +83,16 @@ const summary = () =>
     metrics: [],
     /**
      * SERVER-AUTHORED SENTENCES, PASTED IN EXACTLY AS THE API BUILT
-     * THEM for this profile — including the three `meta` strings that
-     * still carry a bare `MM-DD`. See the 「服务端拼好的 meta」 test
-     * below: they are here so the sweep is run against what the sheet
-     * really carries rather than against a fixture that quietly left
-     * out the one field this app cannot fix from here.
+     * THEM for this profile.
+     *
+     * The three `meta` strings here used to carry a bare `MM-DD`,
+     * because profile.passport.ts built them with its own
+     * `formatDateLabel` — the screens' chip — while 诊断日期 went
+     * through `formatDate`. This sheet prints them verbatim, so one
+     * printed page read 「诊断日期 2019-05-03」 beside 「最近记录 03-03」.
+     * They are pasted in rather than left out precisely so the sweep
+     * below runs against what the sheet really carries; now that the
+     * API stops slicing them, the sweep covers them too.
      */
     summaryCards: [
       {
@@ -87,28 +100,28 @@ const summary = () =>
         title: '诊断证据',
         ready: false,
         summary: '未经基因确诊 —— 诊断日期（管理员代填）',
-        meta: '诊断日期 2019-05-03',
+        meta: SERVER.meta[0],
       },
       {
         key: 'motor',
         title: '运动功能',
         ready: true,
         summary: '平均 4.0 级',
-        meta: '最近记录 03-03',
+        meta: SERVER.meta[1],
       },
       {
         key: 'imaging',
         title: 'MRI 受累',
         ready: true,
         summary: '双侧大腿受累',
-        meta: '最近 MRI 02-13',
+        meta: SERVER.meta[2],
       },
       {
         key: 'monitoring',
         title: '系统监测',
         ready: true,
         summary: 'FVC 82%',
-        meta: '最近监测 02-15',
+        meta: SERVER.meta[3],
       },
     ],
     diagnosis: {
@@ -265,10 +278,6 @@ const pdfTimelineRows = (html: string) =>
 const bareMonthDay = (html: string) =>
   [...html.matchAll(/(?<![\d-])\d{2}-\d{2}(?![\d-])/g)].map((m) => m[0]);
 
-/** The document with the server-authored `.metric-meta` lines removed —
- *  see the test that pins them. */
-const withoutMetricMeta = (html: string) => html.replace(/<p class="metric-meta">[^<]*<\/p>/g, '');
-
 /**
  * @param deviceZone the zone the jest environment pinned this run to,
  *        for the test names. The assertions are constants: the whole
@@ -319,36 +328,66 @@ export const runPassportDateParitySuite = (deviceZone: string) => {
       ]);
     });
 
-    it('这张纸上由本 App 渲染的日期，没有一个不带年份', () => {
-      expect(bareMonthDay(withoutMetricMeta(buildClinicalPassportPdfHtml(summary())))).toEqual([]);
+    /**
+     * THE WHOLE SHEET, INCLUDING THE PARTS THIS APP DID NOT WRITE.
+     *
+     * This assertion used to run over the document with the
+     * `.metric-meta` lines cut out, because three of the four carried a
+     * server-built `MM-DD` that no change here could reach. The API
+     * stopped slicing them (profile.passport.ts, `summaryCards`), so
+     * the exemption is gone and the sweep is over the bytes a reader
+     * receives — which is what it always claimed to be.
+     */
+    it('这张纸上没有一个日期不带年份 —— 包括服务端拼好的那四句', () => {
+      expect(bareMonthDay(buildClinicalPassportPdfHtml(summary()))).toEqual([]);
     });
 
     /**
-     * THE THREE THAT ARE STILL YEARLESS, AND WHY THIS FILE PINS THEM
-     * INSTEAD OF FIXING THEM.
+     * `summaryCards[].meta` ARRIVES FINISHED AND IS PRINTED VERBATIM.
      *
-     * `summaryCards[].meta` arrives from the wire as a finished
-     * sentence. The API builds it in profile.passport.ts with its OWN
-     * `formatDateLabel` — the `MM-DD` slicer — at 「最近记录 …」,
-     * 「最近 MRI …」 and 「最近监测 …」, and the markdown export never
-     * prints `meta` at all, so there is no server document to disagree
-     * with. The mobile PDF prints the string it is given.
+     * The API builds these four sentences whole in profile.passport.ts
+     * and this file prints the string it is given — pulling a date back
+     * out of a server-authored sentence here to re-render it would be a
+     * second date parser on the far side of a wire, which is the exact
+     * mistake surveillance-schedule.ts's D4Z4 note is a monument to.
+     * The fix for the three yearless ones belonged where the sentence
+     * is built, and that is where it was made; this pins that the
+     * renderer neither repairs nor damages what it receives.
      *
-     * Pulling the date back out of a server-authored sentence here to
-     * re-render it with a year would be a second date parser on the far
-     * side of a wire, which is the exact mistake surveillance-schedule
-     * .ts's D4Z4 note is a monument to. The fix belongs where the
-     * sentence is built.
-     *
-     * So this asserts what the sheet really carries — including the one
-     * card whose meta DOES have a year, because it goes through the
-     * API's `formatDate` instead. When the API stops slicing these
-     * three, this test goes red and the line above it takes over.
+     * The days are the same days the 时间轴 and the info grid below
+     * print for the same records: 2025-03-03 is timeline[1] and
+     * 2025-02-13 is 最近MRI.
      */
-    it('服务端拼好的 meta 原样印出 —— 其中三句仍然只有月日', () => {
+    it('服务端拼好的 meta 原样印出，四句都带年份', () => {
       expect(
         matchAll(buildClinicalPassportPdfHtml(summary()), /class="metric-meta">([^<]*)</g),
-      ).toEqual(['诊断日期 2019-05-03', '最近记录 03-03', '最近 MRI 02-13', '最近监测 02-15']);
+      ).toEqual([...SERVER.meta]);
+    });
+
+    /**
+     * 确诊年份 IS A YEAR, AND THIS SHEET MAY NOT DRESS IT AS A DAY.
+     *
+     * `patient_profiles.diagnosis_date` is a `date` column and
+     * `upsertBaseline` mirrors the questionnaire's four-digit 确诊年份
+     * into it as `${year}-01-01`; profile.passport.ts reduces that pin
+     * back to 「2014 年」 before anything renders it. What this file has
+     * to hold is that the renderer passes the string through — a
+     * document that re-parsed it into a date would put the fabricated
+     * 1 January back on the one page that gets printed.
+     */
+    it('只知道年份的诊断日期，原样印成年份，不补出 1 月 1 日', () => {
+      const yearOnly = {
+        ...summary(),
+        diagnosis: { ...summary().diagnosis, diagnosisDate: '2014 年' },
+        summaryCards: summary().summaryCards.map((card) =>
+          card.key === 'diagnosis' ? { ...card, meta: '诊断日期 2014 年' } : card,
+        ),
+      } as unknown as ClinicalPassportSummary;
+      const html = buildClinicalPassportPdfHtml(yearOnly);
+
+      expect(infoCard(html, '诊断日期')).toBe('2014 年');
+      expect(matchAll(html, /class="metric-meta">([^<]*)</g)[0]).toBe('诊断日期 2014 年');
+      expect(html).not.toContain('2014-01-01');
     });
 
     // 诊断日期 comes off a `date` column the API already sliced, so it

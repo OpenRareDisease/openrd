@@ -578,3 +578,83 @@ describe('两类待办不能混在一个列表里', () => {
     expect(steps.every((s) => s.kind === 'record' || s.kind === 'clinical')).toBe(true);
   });
 });
+
+/**
+ * 待补项 IS A CLINICIAN-FACING DOCUMENT, AND IT USED TO CONTRADICT THE
+ * OTHER TWO BUILT FROM THE SAME DTO IN THE SAME REQUEST.
+ *
+ * The pulmonary step was gated on `!hasMeaningfulValue(respiratorySummary)`
+ * — two states — while `buildMonitoringItem` forty lines above it
+ * derives three. A patient who uploaded a pulmonary function report the
+ * parser read nothing structured out of has `state: 'unreadable'`, an
+ * empty summary, AND a `latestDocumentId`; the old gate saw only the
+ * empty summary and printed 「补充肺功能基线：指南建议所有 FSHD 患者做
+ * 一次肺功能基线」 into the markdown export's 待补项, the share page's
+ * 「按指南，这位患者值得确认的事」 and the mobile PDF's 待补项 — telling
+ * a clinician to order a test whose report is in the patient's bag,
+ * while `buildReferralPack` and `buildAnesthesiaCard`, reading `state`
+ * off the same object, said 「已上传…但未能自动读出数值 —— 请向患者索取
+ * 原件」.
+ *
+ * `absent` and `unreadable` ask different people for different things.
+ * The step must not collapse them again.
+ */
+describe('肺功能待补项：三种状态，不是两种', () => {
+  const pft = (fields: Record<string, string>) => ({
+    id: '88888888-8888-4888-8888-888888888882',
+    documentType: 'pulmonary_function',
+    title: null,
+    fileName: 'pft.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 1,
+    storageUri: 'local://pft',
+    status: 'parsed',
+    uploadedAt: '2026-02-09T00:00:00.000Z',
+    checksum: null,
+    submissionId: null,
+    ocrPayload: { fields: { classifiedType: 'pulmonary_function', ...fields } },
+  });
+
+  const unreadable = () => base({ documents: [pft({ reportTime: '2026-02-09' })] } as never);
+
+  it('没有任何肺功能报告时，仍然索要基线 [AAN Level B]', () => {
+    const item = itemFor(base(), 'respiratory');
+    expect(item?.state).toBe('absent');
+    expect(stepTitles(base())).toContain('补充肺功能基线');
+  });
+
+  it('报告已上传但读不出时，不说「补充基线」—— 那份检查可能已经做过了', () => {
+    expect(itemFor(unreadable(), 'respiratory')?.state).toBe('unreadable');
+    expect(stepTitles(unreadable())).not.toContain('补充肺功能基线');
+  });
+
+  it('读不出时改为索要报告原件，和转诊包、麻醉卡说同一句话', () => {
+    const step = buildClinicalPassportSummary(unreadable()).nextSteps.find((s) =>
+      s.title.includes('肺功能'),
+    );
+    expect(step?.kind).toBe('clinical');
+    expect(step?.description).toContain('未能自动读出');
+    expect(step?.description).toContain('原件');
+    // 「指南建议所有 FSHD 患者做一次肺功能基线（FVC / FEV1）」 as a
+    // standing instruction is what an anesthetist acts on by ordering
+    // the test. The Level B fact may still be named, but not as this
+    // patient's outstanding gap.
+    expect(step?.description).not.toContain('指南建议所有 FSHD 患者做一次肺功能基线');
+  });
+
+  it('读出了数值时，两条都不出现', () => {
+    const readable = base({ documents: [pft({ fvcPredPct: 'FVC 78%' })] } as never);
+    expect(itemFor(readable, 'respiratory')?.state).toBe('present');
+    expect(stepTitles(readable).some((title) => title.includes('肺功能'))).toBe(false);
+  });
+
+  it('这一条出现在导出、分享页和 PDF 共用的 nextSteps 里，不是某一面自己拼的', () => {
+    // The three clinician documents render `nextSteps` verbatim, so the
+    // markdown export is a sufficient witness for all of them.
+    const { markdown } = buildClinicalPassportExport(buildClinicalPassportSummary(unreadable()));
+    const section = markdown.split('## 待补项')[1]?.split('\n## ')[0] ?? '';
+    expect(section).not.toBe('');
+    expect(section).not.toContain('补充肺功能基线');
+    expect(section).toContain('原件');
+  });
+});
