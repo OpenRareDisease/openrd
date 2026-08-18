@@ -43,7 +43,7 @@ import { PatientProfileRetriever } from '../retrievers/patient-profile.js';
 import { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 import type { RedactionMode, RedactionScope } from '../security/allowlist.js';
 import { PROMPT_ALLOWLIST } from '../security/allowlist.js';
-import { redactFields } from '../security/pii-redactor.js';
+import { GENETIC_READING_REFUSALS, redactFields } from '../security/pii-redactor.js';
 import { SCOPE_LABELS } from '../security/render.js';
 
 const snapshotMock = vi.fn();
@@ -136,6 +136,62 @@ const PROFILE_ROW_QUALITATIVE_METHYLATION = {
   },
 };
 
+/**
+ * The profile whose archived genetics cells this platform DID read off
+ * the laboratory's own report — the autofill's ordinary outcome, and
+ * the state in which `d4z4_clinical` and `haplotype_clinical` hold a
+ * reading rather than a refusal.
+ *
+ * Reachability is the claim this file checks, and with the laboratory
+ * gate hardcoded `false` these two keys were reachable holding exactly
+ * one value — `not_read_off_a_laboratory_report` — while their labels
+ * said 临床分级. A row with no evidence document can never demonstrate
+ * the other half.
+ */
+const PROFILE_ROW_FROM_REPORT = {
+  ...PROFILE_ROW,
+  baseline_payload: {
+    ...PROFILE_ROW.baseline_payload,
+    diseaseBackground: {
+      ...PROFILE_ROW.baseline_payload.diseaseBackground,
+      d4z4: '9',
+      haplotype: '4qA',
+    },
+  },
+};
+
+/** The genetics report those two cells were autofilled out of. */
+const GENETIC_DOCUMENT_ROWS = [
+  {
+    id: 'doc-genetics',
+    document_type: 'genetic_report',
+    status: 'parsed',
+    uploaded_at: '2026-01-05T00:00:00Z',
+    ocr_payload: {
+      fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype: '4qA' },
+    },
+  },
+];
+
+/**
+ * A methylation cell holding something that is not a value.
+ *
+ * `formatScalar` would have joined it into 「甲基化值: 35、40」 and
+ * published it as this patient's result; it takes the withheld channel
+ * in both modes instead, which is what makes `methylation_withheld`
+ * reachable under precise consent at all.
+ */
+const PROFILE_ROW_ARRAY_METHYLATION = {
+  ...PROFILE_ROW,
+  baseline_payload: {
+    ...PROFILE_ROW.baseline_payload,
+    diseaseBackground: {
+      ...PROFILE_ROW.baseline_payload.diseaseBackground,
+      methylation: ['35', '40'],
+    },
+  },
+};
+
 /** A report whose OCR payload carries genetics cells, a lab value and a
  *  narrative the findings vocabulary recognises. */
 const REPORT_ROW = {
@@ -158,6 +214,24 @@ const REPORT_ROW = {
   },
 };
 
+/**
+ * The same report with the laboratory's own date on it.
+ *
+ * Two rows for the same reason the profile needs two: 报告年份 and
+ * 上传年份 are different cells and one row can only ever demonstrate
+ * one of them. A row whose OCR carries `reportTime` reaches
+ * `reportDate_year`; the row above, which carries none, reaches
+ * `uploadYear`. Before they were separated, one key held both and the
+ * prompt dated a 2019 report to the year it was uploaded.
+ */
+const REPORT_ROW_WITH_REPORT_DATE = {
+  ...REPORT_ROW,
+  id: 'doc-2',
+  ocr_payload: {
+    fields: { ...REPORT_ROW.ocr_payload.fields, reportTime: '2019-03-14' },
+  },
+};
+
 /** One series with readings, one metric whose only rows are 「做不到」,
  *  and a fall — between them every followup field the retriever can
  *  write. */
@@ -169,6 +243,50 @@ const EVENT_ROWS = [{ event_type: 'fall', severity: 'mild', occurred_at: daysAgo
 const UNABLE_ROWS = [{ metric_key: 'stair_climb', unable_count: 2, most_recent_days: 5 }];
 
 /**
+ * Every chunk this test reasons over: one retriever run per fixture,
+ * with the second query each retriever makes stubbed alongside the
+ * first.
+ *
+ * The profile scope needs four rows because four different cells can
+ * only ever be demonstrated one at a time — a measured methylation
+ * value, the laboratory's own word for one, a genetics cell this
+ * platform DID read off a laboratory report, and a methylation cell
+ * holding something that is not a value at all.
+ */
+const chunksByScope = async (): Promise<Record<RedactionScope, RetrieveResult['chunks']>> => {
+  const profileChunks = async (
+    row: unknown,
+    documents: unknown[],
+  ): Promise<RetrieveResult['chunks']> =>
+    (
+      await new PatientProfileRetriever(poolReturning([row], documents)).search(
+        { question: '' },
+        ctx,
+      )
+    ).chunks;
+  const reportChunks = async (row: unknown): Promise<RetrieveResult['chunks']> =>
+    (await new PatientReportsRetriever(poolReturning([row])).search({ question: '' }, ctx)).chunks;
+
+  return {
+    profile: [
+      ...(await profileChunks(PROFILE_ROW, [])),
+      ...(await profileChunks(PROFILE_ROW_QUALITATIVE_METHYLATION, [])),
+      ...(await profileChunks(PROFILE_ROW_FROM_REPORT, GENETIC_DOCUMENT_ROWS)),
+      ...(await profileChunks(PROFILE_ROW_ARRAY_METHYLATION, [])),
+    ],
+    reports: [
+      ...(await reportChunks(REPORT_ROW)),
+      ...(await reportChunks(REPORT_ROW_WITH_REPORT_DATE)),
+    ],
+    followups: (
+      await new PatientFollowupRetriever(
+        poolReturning(SERIES_ROWS, EVENT_ROWS, UNABLE_ROWS),
+      ).search({ question: '' }, ctx)
+    ).chunks,
+  };
+};
+
+/**
  * Every field key that survives redaction for a maximally populated
  * patient, per scope and mode. Because layer 3 drops anything off the
  * allowlist, this is exactly the intersection of what a retriever can
@@ -178,39 +296,48 @@ const UNABLE_ROWS = [{ metric_key: 'stair_climb', unable_count: 2, most_recent_d
 const reachableFields = async (): Promise<
   Record<RedactionScope, Record<RedactionMode, Set<string>>>
 > => {
-  const chunksByScope: Record<RedactionScope, RetrieveResult['chunks']> = {
-    profile: [
-      ...(
-        await new PatientProfileRetriever(poolReturning([PROFILE_ROW])).search(
-          { question: '' },
-          ctx,
-        )
-      ).chunks,
-      ...(
-        await new PatientProfileRetriever(
-          poolReturning([PROFILE_ROW_QUALITATIVE_METHYLATION]),
-        ).search({ question: '' }, ctx)
-      ).chunks,
-    ],
-    reports: (
-      await new PatientReportsRetriever(poolReturning([REPORT_ROW])).search({ question: '' }, ctx)
-    ).chunks,
-    followups: (
-      await new PatientFollowupRetriever(
-        poolReturning(SERIES_ROWS, EVENT_ROWS, UNABLE_ROWS),
-      ).search({ question: '' }, ctx)
-    ).chunks,
-  };
-
+  const chunks = await chunksByScope();
   const out = {} as Record<RedactionScope, Record<RedactionMode, Set<string>>>;
-  for (const scope of Object.keys(chunksByScope) as RedactionScope[]) {
+  for (const scope of Object.keys(chunks) as RedactionScope[]) {
     out[scope] = { strict: new Set<string>(), precise: new Set<string>() };
-    for (const chunk of chunksByScope[scope]) {
+    for (const chunk of chunks[scope]) {
       const raw = chunk.metadata?.fields;
       if (!raw || typeof raw !== 'object') continue;
       for (const mode of MODES) {
         const { fields } = redactFields(raw as Record<string, unknown>, { scope, mode });
         for (const key of Object.keys(fields)) out[scope][mode].add(key);
+      }
+    }
+  }
+  return out;
+};
+
+/**
+ * Every VALUE each key is reachable holding, across both modes.
+ *
+ * The keys alone answer 「can a result carry this field」. They cannot
+ * answer 「does this field ever hold what its label says it holds」,
+ * which is the question `PROFILE_FIELD_LABELS` got wrong twice:
+ * 甲基化临床分级 was deleted after it turned out to hold a consent
+ * statement, and 「D4Z4 临床分级」 / 「单倍型临床分级」 survived over two
+ * keys that — with the laboratory gate hardcoded false — could hold
+ * nothing but `not_read_off_a_laboratory_report`.
+ */
+const reachableValues = async (): Promise<Record<RedactionScope, Map<string, Set<string>>>> => {
+  const chunks = await chunksByScope();
+  const out = {} as Record<RedactionScope, Map<string, Set<string>>>;
+  for (const scope of Object.keys(chunks) as RedactionScope[]) {
+    out[scope] = new Map<string, Set<string>>();
+    for (const chunk of chunks[scope]) {
+      const raw = chunk.metadata?.fields;
+      if (!raw || typeof raw !== 'object') continue;
+      for (const mode of MODES) {
+        const { fields } = redactFields(raw as Record<string, unknown>, { scope, mode });
+        for (const [key, value] of Object.entries(fields)) {
+          const seen = out[scope].get(key) ?? new Set<string>();
+          seen.add(String(value));
+          out[scope].set(key, seen);
+        }
       }
     }
   }
@@ -280,7 +407,10 @@ const PROMISES: readonly { tool: ITool; scope: RedactionScope; promises: Promise
     promises: [
       { says: 'a classified type', carriedBy: ['classifiedType'] },
       { says: 'document type', carriedBy: ['documentType'] },
-      { says: 'report year', carriedBy: ['reportDate_year'] },
+      {
+        says: 'the report year when the report itself states one — otherwise the year it was uploaded, which is not the same thing',
+        carriedBy: ['reportDate_year', 'uploadYear'],
+      },
       { says: 'structured OCR fields', carriedBy: ['fields', 'fields_clinical'] },
     ],
   },
@@ -313,6 +443,51 @@ describe('tool descriptions name only fields the result can carry', () => {
       }
     }
     expect(dead).toEqual([]);
+  });
+
+  /**
+   * A LABEL THAT CLAIMS A GRADE MUST NAME A KEY THAT CAN HOLD ONE.
+   *
+   * This is the check that stops the next 甲基化临床分级. That label was
+   * deleted after the band behind it was — the key survived holding
+   * `value_withheld` and the laboratory's own qualitative word, both
+   * printed to the model as this platform's grading of the FSHD2
+   * discriminator. The same table then kept 「D4Z4 临床分级」 and
+   * 「单倍型临床分级」 over two keys which, with the laboratory gate
+   * hardcoded false, could only ever hold
+   * `not_read_off_a_laboratory_report`.
+   *
+   * The question is asked of the VALUES, not of the plumbing: a key
+   * whose every reachable value is one of the redactor's own refusals
+   * (`GENETIC_READING_REFUSALS`) grades nothing, whatever its label
+   * says.
+   */
+  it('no label claims a 分级 for a key whose values are all refusals', async () => {
+    const values = await reachableValues();
+    const overclaimed: string[] = [];
+    for (const scope of Object.keys(SCOPE_LABELS) as RedactionScope[]) {
+      for (const [key, label] of Object.entries(SCOPE_LABELS[scope])) {
+        if (!label.includes('分级')) continue;
+        const seen = values[scope].get(key) ?? new Set<string>();
+        const gradesSomething = [...seen].some((value) => !GENETIC_READING_REFUSALS.has(value));
+        if (!gradesSomething) overclaimed.push(`${scope}.${key} 「${label}」`);
+      }
+    }
+    expect(overclaimed).toEqual([]);
+  });
+
+  it('the genetics readings are labelled as readings and not as grades', async () => {
+    // The finding above, pinned from the other side: both keys DO
+    // reach a real reading now (the laboratory gate is asked rather
+    // than hardcoded), and both also reach a refusal — so neither
+    // label may say 分级 over a cell this platform declined to read.
+    const values = await reachableValues();
+    for (const key of ['d4z4_clinical', 'haplotype_clinical']) {
+      const seen = values.profile.get(key) ?? new Set<string>();
+      expect([...seen].some((value) => GENETIC_READING_REFUSALS.has(value))).toBe(true);
+      expect([...seen].some((value) => !GENETIC_READING_REFUSALS.has(value))).toBe(true);
+      expect(SCOPE_LABELS.profile[key]).not.toContain('分级');
+    }
   });
 
   it('every promise in a description is spelled out and reachable', async () => {

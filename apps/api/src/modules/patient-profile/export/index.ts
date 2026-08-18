@@ -12,6 +12,14 @@ export { buildFhirExport } from './fhir-r4.js';
 export { PENDING_VERIFICATION, VERIFIED_CODINGS, verifiedCoding } from './codings.js';
 export { decodeYear, serialiseYear } from './year-value.js';
 export { resolveOccurrenceDate, toPartialFhirDate } from './occurrence-date.js';
+/**
+ * The type travels with the resolver because the referral pack now
+ * carries the resolved object rather than a date string of its own.
+ * One shape, resolved once, so a 协作网 neurologist and a registry
+ * cannot be handed two different answers about when this patient
+ * started using a wheelchair. See referral-pack.ts.
+ */
+export type { OccurrenceDate, OccurrenceDatePrecision } from './occurrence-date.js';
 
 /**
  * The formats `GET /me/data-export?format=…` accepts.

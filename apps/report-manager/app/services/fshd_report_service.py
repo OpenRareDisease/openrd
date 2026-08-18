@@ -274,7 +274,9 @@ MRC_NORMALIZATION = {
 
 STRUCTURED_KEY_ALIASES = {
     "diagnosis_type": "diagnosisType",
-    "genetic_positive": "geneticPositive",
+    # `genetic_positive` / `geneticPositive` are deliberately absent —
+    # every other key here names a cell a laboratory printed. See the
+    # note in `_extract_genetic` where the derivation was deleted.
     "haplotype": "haplotype",
     "ecori_fragment_kb": "ecoriFragmentKb",
     "d4z4_repeat_pathogenic": "d4z4RepeatPathogenic",
@@ -499,6 +501,29 @@ def _build_line_windows(lines: List[str], max_window: int = 2) -> List[str]:
 def _extract_sentences(text: str) -> List[str]:
     chunks = re.split(r"[\n.;。；]+", _normalize_text(text))
     return [chunk.strip() for chunk in chunks if chunk.strip()]
+
+
+def _exact_float(value: Any) -> Optional[float]:
+    """`value` as a number only when the WHOLE cell is one.
+
+    `_safe_float` searches for a number anywhere in the string, which is
+    what a cell like 「6.69 mmol/L」 needs and exactly wrong for a cell
+    that is not a measurement: handed the stated interval 「1-10」 it
+    answers 1.0. That 1 was reaching `observations[].result.value_num`
+    and `latest_summary.by_analyte` — the two channels the interval fix
+    did not cover — and 1 is inside the 1–4 window that gates a
+    recommendation. Used where a value is being TYPED as a number rather
+    than parsed out of a printed cell.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -1391,13 +1416,111 @@ def _detect_genetic_method(body_lines: List[str]) -> Optional[str]:
     return matched[0]
 
 
+#: Words that make the token beside them a statement about what the
+#: laboratory did NOT find.
+#:
+#: A cell under one of these is not a reading, it is a refusal, and
+#: carrying its token forward as though the report had asserted it is
+#: how 「D4Z4 未检出3个重复单元」 became a repeat count of 3, 「未检出 4qA
+#: 等位基因」 became a permissive haplotype, and 「本次检测不支持 FSHD1」
+#: became this patient's diagnosis — each at the same confidence the
+#: extractor gives a cell the laboratory did print, and each carried on
+#: to the passport, the exports and the registry.
+#:
+#: MATCHED AGAINST THE ONE LINE THE TOKEN SITS ON, never the whole
+#: report. Most genetic reports carry a 「未见其他异常」 or a 「阴性对照」
+#: somewhere in them; matching over the whole text would abstain on
+#: every genuine result in the file.
+_ABSENCE_MARKERS = (
+    "未检出",
+    "未见",
+    "未发现",
+    "未检测到",
+    "未提示",
+    "阴性",
+    "不支持",
+    "排除",
+    "not detected",
+    "negative",
+)
+
+#: The report naming a type it is asking someone else to confirm.
+#: Separate from absence because the wording differs, and because only
+#: the graded fields care — a hedged sentence is still DISPLAYED, via
+#: `interpretation_summary`; it just does not become a diagnosis.
+_HEDGE_MARKERS = (
+    "怀疑",
+    "疑似",
+    "待排",
+    "拟诊",
+    "不除外",
+    "可能为",
+    "rule out",
+    "suspected",
+)
+
+#: A number followed by one of these is a length. Anchored with `\b` so
+#: a 「kb」 that opens the next word is not read as this number's unit.
+_LENGTH_UNIT_AFTER = re.compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
+
+
+def _line_around(text: str, index: int) -> str:
+    """The single line `index` falls on, newline excluded."""
+    start = text.rfind("\n", 0, index) + 1
+    end = text.find("\n", index)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def _asserts_absence(text: str, match: "re.Match") -> bool:
+    """Does the line this match sits on say the thing was NOT found?"""
+    line = _line_around(text, match.start()).lower()
+    return any(marker in line for marker in _ABSENCE_MARKERS)
+
+
+def _is_hedged(text: str, match: "re.Match") -> bool:
+    """Does the line this match sits on merely suspect the thing?"""
+    line = _line_around(text, match.start()).lower()
+    return any(marker in line for marker in _HEDGE_MARKERS)
+
+
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     diagnosis_match, _ = _find_regex(text, [r"\b(FSHD1|FSHD2)\b", r"(FSHD\s*[12])"])
-    diagnosis_type = diagnosis_match.group(1).replace(" ", "") if diagnosis_match else None
+    # NAMING A TYPE IS NOT DIAGNOSING IT. 「本次检测不支持 FSHD1」 and
+    # 「临床怀疑 FSHD1，请进一步检查」 both named FSHD1 and both came out
+    # as this patient's diagnosis at 0.98 — the value the passport
+    # prints, the exports carry, and `applyGeneticReportAutofill` writes
+    # into `patient_profiles`. A report that excludes a type, or only
+    # suspects one, has not stated one. The sentence itself survives on
+    # `interpretation_summary`, which is displayed and not graded.
+    diagnosis_type = (
+        diagnosis_match.group(1).replace(" ", "")
+        if diagnosis_match
+        and not _asserts_absence(text, diagnosis_match)
+        and not _is_hedged(text, diagnosis_match)
+        else None
+    )
 
     haplotype_match, _ = _find_regex(text, [r"\b(4qA|4qB)\b"])
-    haplotype = haplotype_match.group(1) if haplotype_match else None
+    # 4qA is the token the whole FSHD1 reading rests on — a contraction
+    # on 4qB is not pathogenic — and 「未检出 4qA 等位基因」 was minting it
+    # out of the sentence saying it was not found.
+    haplotype = (
+        haplotype_match.group(1)
+        if haplotype_match and not _asserts_absence(text, haplotype_match)
+        else None
+    )
+    # 「4qA/4qB」 is a real diploid genotype and 「致病侧为 4qB」 is a real
+    # sentence, so a report naming both alleles is not wrong — but this
+    # pattern takes whichever is PRINTED FIRST, which makes the print
+    # order decide which allele we call this patient's. Not guessed
+    # differently, just dropped below the 0.75 review threshold so a
+    # human answers it.
+    haplotype_ambiguous = bool(
+        haplotype
+        and re.search(r"\b4qA\b", text, re.IGNORECASE)
+        and re.search(r"\b4qB\b", text, re.IGNORECASE)
+    )
 
     ecori_match, _ = _find_regex(
         text,
@@ -1418,6 +1541,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     d4z4_pathogenic = d4z4_pair_match.group(1) if d4z4_pair_match else None
     d4z4_other = d4z4_pair_match.group(2) if d4z4_pair_match else None
     d4z4_source_text = d4z4_pair_match.group(0) if d4z4_pair_match else None
+    # Whichever pattern won, kept so the cell can be judged below —
+    # what is beside the number decides whether it is a count at all.
+    d4z4_match = d4z4_pair_match
     # A range is not a count. `D4Z4[^\d]{0,16}(\d+)` matched the first
     # number of 「D4Z4重复单元数: 1-10」 and reported it as 1 — turning a
     # lab's stated uncertainty into a confident single figure, and one
@@ -1433,16 +1559,61 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         if d4z4_range_match:
             d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group(1))
             d4z4_source_text = d4z4_range_match.group(0)
+            d4z4_match = d4z4_range_match
             d4z4_is_range = True
         else:
             d4z4_single_match, _ = _find_regex(text, [r"D4Z4[^\d]{0,16}(\d+)"])
             if d4z4_single_match:
                 d4z4_pathogenic = d4z4_single_match.group(1)
                 d4z4_source_text = d4z4_single_match.group(0)
+                d4z4_match = d4z4_single_match
+
+    # WHAT IS BESIDE THE NUMBER DECIDES WHETHER IT IS A COUNT.
+    #
+    # The last fallback above is 「any digit within 16 characters of
+    # D4Z4」. It read 38 repeats out of 「D4Z4 EcoRI 片段长度: 38 kb」, 3
+    # repeats out of 「D4Z4 未检出3个重复单元」 — the sentence saying none
+    # were found — and 0 out of a cell no laboratory can mean. Each was
+    # written as `d4z4_repeat_pathogenic` at 0.97, the confidence of a
+    # cell we actually read, and each reached the passport and the
+    # exports.
+    #
+    # A LENGTH AND A NEGATION ARE ABSTENTIONS. The number in them
+    # answers another question, and in the kb case it is already
+    # recorded under its own name as `ecori_fragment_kb` — emitting it
+    # twice under two names is the two-answers-about-one-measurement
+    # problem, not a second reading.
+    #
+    # A 0 IS KEPT. The cell really does print 0, and a reviewer has to
+    # see that it was read and refused rather than find the row missing.
+    # It is never typed as a count, and its confidence puts it in the
+    # review queue.
+    d4z4_refusal: Optional[str] = None
+    if d4z4_match is not None and d4z4_pathogenic and not d4z4_is_range:
+        if _asserts_absence(text, d4z4_match):
+            d4z4_refusal = "negated"
+        elif _LENGTH_UNIT_AFTER.match(text, d4z4_match.end()):
+            d4z4_refusal = "length_in_kb"
+        elif d4z4_pathogenic.isdigit() and int(d4z4_pathogenic) == 0:
+            d4z4_refusal = "zero"
+    if d4z4_refusal in {"negated", "length_in_kb"}:
+        # `d4z4_other` only ever comes off the pair match, which is the
+        # same match just judged, so it goes with it.
+        d4z4_pathogenic = None
+        d4z4_other = None
+        d4z4_source_text = None
 
     methylation_match, _ = _find_regex(text, [r"甲基化[^\d]{0,12}(\d+(?:\.\d+)?)\s*(%?)"])
     methylation_value = methylation_match.group(1) if methylation_match else None
-    methylation_unit = methylation_match.group(2) if methylation_match else "%"
+    # THE UNIT IS WHAT THE REPORT PRINTED, OR NOTHING. It used to fall
+    # back to 「%」, so 「甲基化 0.35」 — a fraction, which is how a
+    # bisulfite ratio is commonly printed — was written out as 0.35 with
+    # unit %, and the bridge rendered it 「0.35%」 on the patient's report
+    # screen. This repo states no methylation boundary anywhere, so
+    # nothing grades the number; stamping on a unit the laboratory did
+    # not print was the one way this field could still say something
+    # false.
+    methylation_unit = (methylation_match.group(2) or None) if methylation_match else None
 
     body = _before_disclaimer_section(lines)
     genetic_method = _detect_genetic_method(body)
@@ -1456,7 +1627,37 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         body,
         ["检测结论", "结论", "结果分析", "解读", "提示", "interpretation", "impression"],
     )
-    genetic_positive = "yes" if diagnosis_type or d4z4_pathogenic else "uncertain"
+    # `genetic_positive` WAS DERIVED HERE AND IS GONE.
+    #
+    # It read `「yes」 if diagnosis_type or d4z4_pathogenic else
+    # 「uncertain」` — a verdict computed from the PRESENCE of a cell, not
+    # from what the cell said, and with no 「no」 in its vocabulary at
+    # all, so it could only ever affirm. Run over the states this
+    # platform refuses to read, every one of them came out 「yes」: a
+    # count cell reading 0, a length the report gave in kb, 「未检出3个
+    # 重复单元」, and a 病历摘要 transcribing what a patient remembered.
+    #
+    # It was not confined to the parser. The bridge in
+    # apps/api/src/services/ocr/embedded-report-ocr.ts copies every
+    # structured field into `ocr_payload.fields` under both spellings,
+    # so `geneticPositive: 「yes」` was persisted on the document row,
+    # shown to the patient in the report screen's raw payload panel,
+    # counted by `fieldCount` — which is what decides whether a parse
+    # was empty enough to offer a re-run — and written into
+    # `observations` and `latest_summary.by_analyte` as though a
+    # laboratory had reported it.
+    #
+    # NOT REPLACED WITH AN HONEST VERSION. A version that could say
+    # 「no」 would have to decide what a contracted array is, and that
+    # boundary already exists — once — in `clinicaliseD4Z4` in
+    # apps/api/src/modules/ai-agents/security/pii-redactor.ts. A second
+    # copy here is the drift this repo keeps paying for. Everything the
+    # verdict was computed FROM is still emitted: `diagnosis_type` is
+    # the report's own word, and the D4Z4 cell travels with its own
+    # reading. Nothing that could be read off the report is lost.
+    #
+    # See also the matching note in the prompt allowlist, which removed
+    # this key from the model's view for the same reason.
 
     _append_field(
         fields,
@@ -1470,16 +1671,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     _append_field(
         fields,
         _build_field(
-            "genetic_positive",
-            genetic_positive,
-            normalized_value=genetic_positive,
-            source_text=interpretation or diagnosis_type,
-            confidence=0.88,
-        ),
-    )
-    _append_field(
-        fields,
-        _build_field("haplotype", haplotype, source_text=haplotype_match.group(0) if haplotype_match else None, confidence=0.95)
+            "haplotype",
+            haplotype,
+            source_text=haplotype_match.group(0) if haplotype_match else None,
+            confidence=0.60 if haplotype_ambiguous else 0.95,
+        )
         if haplotype
         else None,
     )
@@ -1501,11 +1697,15 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         _build_field(
             "d4z4_repeat_pathogenic",
             d4z4_pathogenic,
-            normalized_value=None if d4z4_is_range else int(d4z4_pathogenic),
+            normalized_value=(
+                None if (d4z4_is_range or d4z4_refusal) else int(d4z4_pathogenic)
+            ),
             source_text=d4z4_source_text,
             # A range is a genuine reading, but it is a weaker one than a
             # single number and the review queue should see it that way.
-            confidence=0.80 if d4z4_is_range else 0.97,
+            # A refused cell is not a reading at all: below the 0.75
+            # threshold so it is queued for a human every time.
+            confidence=0.30 if d4z4_refusal else (0.80 if d4z4_is_range else 0.97),
         )
         if d4z4_pathogenic
         else None,
@@ -1542,7 +1742,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             "methylation_value",
             methylation_value,
             normalized_value=_safe_float(methylation_value),
-            unit=methylation_unit or "%",
+            unit=methylation_unit,
             source_text=methylation_match.group(0) if methylation_match else None,
             confidence=0.9,
         )
@@ -1572,15 +1772,17 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
 
     normalized_summary["genetic_summary"] = {
         "diagnosis_type": diagnosis_type,
-        "genetic_positive": genetic_positive,
         "haplotype": haplotype,
         "ecori_fragment_kb": _safe_float(ecori_fragment) if ecori_fragment else None,
         # None for a range: this key is typed as a count and every
         # consumer of it does arithmetic. The interval itself survives on
         # the `d4z4_repeat_pathogenic` structured field, whose
-        # `field_value` is the raw text.
+        # `field_value` is the raw text. Same for a refused cell — a 0
+        # is what the report printed, not a count anything may use.
         "d4z4_repeat_pathogenic": (
-            int(d4z4_pathogenic) if d4z4_pathogenic and not d4z4_is_range else None
+            int(d4z4_pathogenic)
+            if d4z4_pathogenic and not d4z4_is_range and not d4z4_refusal
+            else None
         ),
         "d4z4_repeat_other": int(d4z4_other) if d4z4_other else None,
         "genetic_test_method": genetic_method,
@@ -2739,7 +2941,11 @@ def _build_observations(structured_fields: List[Dict[str, Any]]) -> List[Dict[st
                 "analyte_aliases": [STRUCTURED_KEY_ALIASES.get(field_name, field_name)],
                 "result": {
                     "value_raw": str(field_value) if field_value is not None else None,
-                    "value_num": normalized_value if isinstance(normalized_value, (int, float)) else _safe_float(normalized_value),
+                    # `_exact_float`, not `_safe_float`: an extractor
+                    # that meant a number passed one, and everything
+                    # else arriving here is text. Scraping a digit out
+                    # of that text is how 「1-10」 became 1.0.
+                    "value_num": normalized_value if isinstance(normalized_value, (int, float)) else _exact_float(normalized_value),
                     "value_text": None if isinstance(normalized_value, (int, float)) else str(normalized_value) if normalized_value is not None else str(field_value) if field_value is not None else None,
                     "unit": field.get("unit"),
                 },

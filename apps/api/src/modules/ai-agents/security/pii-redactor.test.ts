@@ -162,10 +162,50 @@ describe('the genetics cells the assistant is handed', () => {
     // 指南 item 三: above 10 the instruction is to go and evaluate FSHD2,
     // which is not FSHD1's contraction.
     expect(d4z4('3')).toBe('within_fshd1_repeat_range');
-    expect(d4z4('10')).toBe('within_fshd1_repeat_range');
-    expect(d4z4('10个重复单元')).toBe('within_fshd1_repeat_range');
+    expect(d4z4('7')).toBe('within_fshd1_repeat_range');
     expect(d4z4('11')).toBe('above_fshd1_repeat_range');
     expect(d4z4('30')).toBe('above_fshd1_repeat_range');
+  });
+
+  it('separates the 8–10 grey zone from the rest of the in-range band', () => {
+    // A count of 9 used to reach the assistant spelled identically to a
+    // count of 5, while the passport, the share page, the referral pack
+    // and the exports were all printing 灰区 for the same cell in the
+    // same run. The assistant is the consumer that generates advice.
+    expect(d4z4('8')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    expect(d4z4('9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    expect(d4z4('10')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    expect(d4z4('10个重复单元')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    // The edges belong to `isD4Z4GreyZone` and are not restated here;
+    // these two are the cells either side of it.
+    expect(d4z4('7')).toBe('within_fshd1_repeat_range');
+    expect(d4z4('11')).toBe('above_fshd1_repeat_range');
+  });
+
+  it('withholds the grey-zone note over a report stating 4qB', () => {
+    // Giardina 2024 states the 1%–2% asymptomatic-carrier figure for
+    // 8–10 U 4qA arrays. Over a 4qB report the note would be a
+    // paragraph about the other allele — the passport gates its own
+    // flag the same way, and on `!== false` so a report naming no
+    // haplotype keeps the note.
+    const withHaplotype = (haplotype: string | undefined, repeats: string): unknown => {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: {
+            classifiedType: 'genetic_report',
+            d4z4Repeats: repeats,
+            ...(haplotype === undefined ? {} : { haplotype }),
+          },
+        },
+        { scope: 'reports', mode: 'strict' },
+      );
+      return (fields.fields_clinical as Record<string, unknown>).d4z4Repeats_clinical;
+    };
+    expect(withHaplotype('4qB', '9')).toBe('within_fshd1_repeat_range');
+    expect(withHaplotype('4qA', '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    expect(withHaplotype('4qA/4qB', '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    expect(withHaplotype(undefined, '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
   });
 
   it('does not read a length in kb as a repeat count', () => {
@@ -233,6 +273,74 @@ describe('the genetics cells the assistant is handed', () => {
     // allele by a bare substring match. Neither states a result.
     expect(haplotype('未检出 4qA 等位基因')).toBe('unspecified_haplotype');
     expect(haplotype('4qA/4qB')).toBe('unspecified_haplotype');
+  });
+
+  /**
+   * A CELL HOLDING AN ARRAY, WHICH IS THE SHAPE THE EXTRACTOR WRITES
+   * WHEN A REPORT LISTS THE LABORATORY'S PROBES.
+   *
+   * `pickReading` refuses an array everywhere else on this platform —
+   * 「there is no sensible coercion, so there is none」 — while every
+   * reader here opened with `String(raw)`, which has an answer for
+   * everything. So a haplotype cell lost its reading entirely (the
+   * function bailed on `typeof raw !== 'string'` and returned null,
+   * and nothing else refused the cell), and a single-element
+   * `d4z4Repeats` array was banded as the count inside it.
+   */
+  it('reads no genetics cell off an array', () => {
+    expect(cellOf('genetic_report', 'haplotype', ['4qA', '4qB'])).toBe('unspecified_haplotype');
+    expect(cellOf('genetic_report', 'haplotype', ['4qA'])).toBe('unspecified_haplotype');
+    // 「3」 as a bare array element is what used to reach the patient as
+    // a repeat count of 3.
+    expect(cellOf('genetic_report', 'd4z4Repeats', ['3'])).toBe('unspecified');
+    expect(cellOf('genetic_report', 'd4z4Repeats', ['3', '22'])).toBe('unspecified');
+    expect(cellOf('genetic_report', 'ecoRIFragment', ['18kb'])).toBe('unspecified');
+    expect(cellOf('genetic_report', 'd4z4RepeatOther', ['22'])).toBe('unspecified');
+    // An object is the same answer, for the same reason.
+    expect(cellOf('genetic_report', 'haplotype', { value: '4qA' })).toBe('unspecified_haplotype');
+  });
+
+  it('never publishes a raw genetics cell without a reading beside it', () => {
+    // The invariant, asserted structurally rather than per branch: it
+    // was a haplotype array that broke it. Precise mode printed
+    // 「单倍型: 4qA、4qB」 — `formatScalar` joining the probe list — with
+    // no `_clinical` sibling anywhere near it, and strict mode dropped
+    // the cell entirely, so the assistant reported a genetics report as
+    // having no haplotype at all.
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: {
+            classifiedType: 'genetic_report',
+            haplotype: ['4qA', '4qB'],
+            d4z4Repeats: ['3'],
+            ecoRIFragment: ['18kb'],
+          },
+        },
+        { scope: 'reports', mode },
+      );
+      const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+      for (const key of ['haplotype', 'd4z4Repeats', 'ecoRIFragment']) {
+        if (projected[key] !== undefined) {
+          expect(projected[`${key}_clinical`]).toBeDefined();
+        }
+      }
+      // And the reading is there whether or not the raw cell is.
+      expect(projected.haplotype_clinical).toBe('unspecified_haplotype');
+    }
+  });
+
+  it('withholds an array-valued methylation cell rather than joining it', () => {
+    // `formatScalar` would have rendered 「甲基化值: 35、40」 and the
+    // model would have read it as this patient's result. There is no
+    // methylation boundary in this repo to grade it against either way.
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields({ methylation: ['35', '40'] }, { scope: 'profile', mode });
+      expect(fields.methylation).toBeUndefined();
+      expect(fields.methylation_clinical).toBeUndefined();
+      expect(fields.methylation_withheld).toBe('value_withheld');
+    }
   });
 
   /**
@@ -375,7 +483,7 @@ describe('the refusal survives the mode that shares more', () => {
 
   it.each([
     ['3', 'within_fshd1_repeat_range'],
-    ['10个重复单元', 'within_fshd1_repeat_range'],
+    ['10个重复单元', 'within_fshd1_repeat_range_grey_zone_8_to_10'],
     ['11', 'above_fshd1_repeat_range'],
     ['3kb', 'length_in_kb_not_a_repeat_count'],
     ['18 kb', 'length_in_kb_not_a_repeat_count'],
@@ -483,12 +591,17 @@ describe('the refusal survives the mode that shares more', () => {
 /**
  * A VERDICT THE PARSER COMPUTED IS NOT A CELL THE LABORATORY PRINTED.
  *
- * `_extract_genetic` derives `genetic_positive` as 「yes if the text
- * named FSHD1/FSHD2 or any digit followed D4Z4, else uncertain」, and
- * every state this platform refuses to read produced 「yes」. The flag
- * carried no digit, so it cleared the qualitative-result gate and
+ * `_extract_genetic` used to derive `genetic_positive` as 「yes if the
+ * text named FSHD1/FSHD2 or any digit followed D4Z4, else uncertain」,
+ * and every state this platform refuses to read produced 「yes」. The
+ * flag carried no digit, so it cleared the qualitative-result gate and
  * reached the model in strict mode too — settled, and standing beside
  * the reading that says the cell cannot be read.
+ *
+ * THE DERIVATION IS GONE FROM THE PARSER NOW, so these cases are the
+ * regression guard rather than the live defence: payloads written
+ * before the deletion still carry the flag and are still on disk, and
+ * deny-by-default has to keep holding for them.
  */
 describe('a verdict the parser computed never reaches the assistant', () => {
   const promptFields = (mode: RedactionMode, cells: Record<string, unknown>) => {

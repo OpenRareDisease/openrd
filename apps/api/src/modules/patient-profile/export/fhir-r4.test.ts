@@ -1180,4 +1180,65 @@ describe('FHIR R4 —— 读不出结果的基因栏位，不发成结果', () =
     expect(observationFor(crowded, '4q 单倍型')).toBeUndefined();
     expect(valueOmission(crowded)).toBeUndefined();
   });
+
+  /**
+   * THE GRAY ZONE REACHED THE PATIENT'S PHONE AND NOT THIS BUNDLE.
+   *
+   * `valueString: 「9」` under a code that says 「D4Z4 重复单元数」 is an
+   * unqualified count once ingested, and the guideline says something
+   * specific about 8–10: those arrays are carried asymptomatically by
+   * 1%–2% of a European control population. The passport DTO, the
+   * markdown export, the share page, the mobile PDF and the referral
+   * pack all carried that sentence off the same summary this bundle is
+   * normalised from; the two documents that reach a registry and a
+   * trial site carried none of it.
+   */
+  const notesOf = (result: ReturnType<typeof build>, labelZh: string): string[] =>
+    ((observationFor(result, labelZh)?.note ?? []) as Array<{ text: string }>).map(
+      (note) => note.text,
+    );
+
+  it('灰区里的重复数，note 里带着指南的限定，OCR 那条照旧', () => {
+    const notes = notesOf(reported({ d4z4Repeats: '9', haplotype: '4qA' }), 'D4Z4 重复单元数');
+    // The OCR provenance note keeps its place at the head — the new
+    // sentence is beside it, not instead of it.
+    expect(notes[0]).toContain('自动识别（OCR）');
+    expect(notes.join('\n')).toContain('grey_zone_8_10');
+    expect(notes.join('\n')).toContain('8–10 单元灰区');
+  });
+
+  /**
+   * `interpretation` IS THE ELEMENT THIS WOULD BE TEMPTING IN, and its
+   * R4 value set has no member meaning 「the classification itself is
+   * uncertain」. Coding it `abnormal` would state a verdict the
+   * guideline explicitly declines to state for 9–10 units.
+   */
+  it('灰区不写成 interpretation，也不新造编码', () => {
+    const result = reported({ d4z4Repeats: '9', haplotype: '4qA' });
+    expect(observationFor(result, 'D4Z4 重复单元数')?.interpretation).toBeUndefined();
+    expect(JSON.stringify(result.document)).not.toContain('ObservationInterpretation');
+  });
+
+  it('4qB 上的 9、区间外的 5 和 12，都不带灰区限定', () => {
+    for (const cells of [
+      { d4z4Repeats: '9', haplotype: '4qB' },
+      { d4z4Repeats: '5', haplotype: '4qA' },
+      { d4z4Repeats: '12', haplotype: '4qA' },
+    ]) {
+      const notes = notesOf(reported(cells), 'D4Z4 重复单元数');
+      expect(notes.join('\n'), JSON.stringify(cells)).not.toContain('grey_zone_8_10');
+    }
+  });
+
+  /**
+   * A QUALIFIER BELONGS TO A RESULT. 「未检出8个重复单元」 carries a
+   * number the size-cell reader refuses, so this Observation publishes
+   * a `dataAbsentReason` rather than a value — and a guideline verdict
+   * printed beside it would be a verdict on a number that is not there.
+   */
+  it('读不出结果的格子上，不挂灰区限定', () => {
+    const result = reported({ d4z4Repeats: '未检出8个重复单元', haplotype: '4qA' });
+    expect(observationFor(result, 'D4Z4 重复单元数')?.valueString).toBeUndefined();
+    expect(notesOf(result, 'D4Z4 重复单元数').join('\n')).not.toContain('grey_zone_8_10');
+  });
 });

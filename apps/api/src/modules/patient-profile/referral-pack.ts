@@ -1,3 +1,4 @@
+import { resolveOccurrenceDate, type OccurrenceDate } from './export/index.js';
 import { TRANSCRIBED_EVIDENCE_LABEL_ZH } from './genetic-evidence.js';
 import {
   buildClinicalPassportSummary,
@@ -243,7 +244,33 @@ export type ReferralAmbulationState = 'independent' | 'assisted' | 'unable';
 export interface ReferralDeviceStartEventDTO {
   eventType: 'started_afo' | 'started_wheelchair' | 'started_niv';
   label: string;
-  occurredAt: string;
+  /**
+   * WHEN, AS PRECISELY AS THIS PLATFORM CAN HONESTLY SAY — the export
+   * lane's `resolveOccurrenceDate` applied to `occurred_at`, carried
+   * whole rather than reduced to a date string here.
+   *
+   * THE DEFECT THIS CLOSES. This used to be `occurredAt: string`, and
+   * the markdown put it through `formatDate` and printed a day. For a
+   * patient whose wheelchair answer was 「2019 年」, `occurred_at` holds
+   * the first instant of 2019 — that is the shape a year-only answer
+   * takes once a TIMESTAMPTZ NOT NULL column has pinned it — so this
+   * pack printed a calendar day (and, formatting the UTC instant in
+   * local time, printed 2018-12-31) and then asserted day precision
+   * underneath it in so many words. The portable exports resolve the
+   * SAME event through the SAME column and hand their receiver
+   * `precision: 'unrecorded'`, `pinnedToYearStart: true` and 「请不要把
+   * 它当作精确到天的观察」; FHIR emits the bare year 「2019」. Two
+   * documents built from one profile in one run told a 协作网
+   * neurologist and a registry different things about when this person
+   * started using a wheelchair, and the pack's answer was the fabricated
+   * one. The fixture states the rule in one line: nothing downstream may
+   * present this as a 1 January observation.
+   *
+   * The resolver's own object and not a local shape, so the two lanes
+   * cannot drift into two vocabularies for one column. `timestamp` on
+   * it is `occurred_at` verbatim — the twin string this field replaced.
+   */
+  occurrence: OccurrenceDate;
   description: string | null;
 }
 
@@ -286,8 +313,18 @@ export interface ReferralMonitoringSlotDTO {
 }
 
 export interface ReferralRespiratoryDTO {
-  /** Date of the 「开始无创通气」 event, if one was ever logged. */
-  nivStartedAt: string | null;
+  /**
+   * The 「开始无创通气」 event, if one was ever logged, resolved on the
+   * same terms as the start events above — `null` when none was.
+   *
+   * It reads off the same `patient_followup_events.occurred_at` column
+   * and it was printed by the same `formatDate`, so it carried the same
+   * fabricated day whenever a patient's answer was a year. Renamed off
+   * 「…At」 because this is no longer an instant: `occurrence.timestamp`
+   * is the instant, and the rest of the object is what may be said
+   * about it.
+   */
+  nivStart: OccurrenceDate | null;
   /** `null` when the baseline section was never filled in. */
   breathingSymptomsRecorded: boolean | null;
   pulmonary: ReferralMonitoringSlotDTO;
@@ -422,6 +459,31 @@ const formatDate = (value?: string | null): string | null => {
   const day = String(date.getDate()).padStart(2, '0');
   return `${date.getFullYear()}-${month}-${day}`;
 };
+
+/**
+ * A follow-up milestone's date, as much of it as this pack may print.
+ *
+ * A YEAR-PINNED INSTANT PRINTS AS A YEAR AND NOTHING ELSE. `formatDate`
+ * above is a good renderer for a real observation time and the wrong
+ * one for this, because it always produces a day: over the first
+ * instant of 2019 it printed a calendar day the patient never gave, and
+ * — reading a UTC instant through local-time accessors — printed a day
+ * in the WRONG YEAR on any host behind Greenwich. 「2019 年」 is the
+ * whole of what the column supports, and it is what the FHIR bundle
+ * emits for the same event (`toPartialFhirDate` → 「2019」).
+ *
+ * NOT PINNED MEANS THE STORED INSTANT IS NOT A YEAR START, which is all
+ * `pinnedToYearStart` claims — it is a fact about the column, never a
+ * guess at what the patient meant. Those keep the calendar date they
+ * have always had; rounding them down would throw away real precision.
+ * What none of them get any more is a sentence asserting the day is
+ * exact: `precision` is 'unrecorded' for every row in this table, so
+ * that sentence was never true of any of them. See occurrence-date.ts.
+ */
+const milestoneDateZh = (occurrence: OccurrenceDate): string =>
+  occurrence.pinnedToYearStart && occurrence.storedYear !== null
+    ? `${occurrence.storedYear} 年`
+    : (formatDate(occurrence.timestamp) ?? occurrence.timestamp);
 
 const hasText = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim() !== '—';
@@ -714,6 +776,44 @@ const formatFunctionTestPoint = (point: ReferralFunctionTestPointDTO): string =>
 /* Devices, ambulation, respiratory support                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * THE TAIL THAT USED TO ASSERT A DAY.
+ *
+ * It read 「起始事件记录的是某一天发生过的转变」 — a flat statement that
+ * somebody observed a day, printed under a list of dates this pack had
+ * just fabricated the day part of. `patient_followup_events` has one
+ * column for time and no column for precision, so 「精度未记录」 is true
+ * of every row in it, including the ones whose stored instant is not a
+ * year start. The replacement keeps the part that was true (a start
+ * event is not a present-tense fact) and drops the part that was not.
+ *
+ * The two clauses are constants because the 呼吸支持 section prints one
+ * event of the same kind out of the same column, and the two sections
+ * saying it differently is how a reader concludes they are two
+ * different kinds of record.
+ */
+const MILESTONE_PRECISION_CLAUSE_ZH = '时间精度本平台没有记录，请不要当作精确到天的观察；';
+
+/**
+ * The inline marker on a row that prints a bare year, and the one
+ * explanation of it.
+ *
+ * SHORT INLINE, EXPLAINED ONCE. The explanation is four lines of prose
+ * and a start-event list can hold three rows; repeating it per row
+ * pushed the patient's own description ( 「外出较远时开始用轮椅」 ) off
+ * the end of a paragraph about database columns. The marker is what a
+ * reader scanning the list needs, and the paragraph is there for the
+ * one who stops on it.
+ *
+ * Only for the rows it is true of — a mid-year instant keeps its
+ * calendar date and gets neither, because 「pinned to the start of the
+ * year」 is a fact about that stored value and false of it.
+ */
+const MILESTONE_YEAR_ONLY_MARK_ZH = '（仅到年份）';
+
+const MILESTONE_YEAR_ONLY_NOTE_ZH =
+  '标注「仅到年份」的那几条，来源字段里存的正好是那一年的第一毫秒 —— 那是「只知道年份」被存进一个必须填完整时间点的字段之后的样子，所以这里只写年份，不写 1 月 1 日。';
+
 const AMBULATION_ASSISTED_CAVEAT =
   '注意：本平台早期版本的问卷只有「可独立行走」和「需要辅助」两个选项，无法行走的患者当时只能选「需要辅助」，历史数据已按原选项迁移。本条无法区分是当时的迁移值还是近期填写，请当面确认。';
 
@@ -726,10 +826,15 @@ const collectStartEvents = (
     .map((event) => ({
       eventType: event.eventType as ReferralDeviceStartEventDTO['eventType'],
       label: START_EVENT_LABELS[event.eventType as ReferralDeviceStartEventDTO['eventType']],
-      occurredAt: event.occurredAt,
+      // The export lane's resolver, not a date string of this file's
+      // own. See ReferralDeviceStartEventDTO.occurrence.
+      occurrence: resolveOccurrenceDate(event.occurredAt),
       description: hasText(event.description) ? event.description : null,
     }))
-    .sort((a, b) => getTimestamp(b.occurredAt) - getTimestamp(a.occurredAt));
+    // Still the stored instant, which is the only totally ordered thing
+    // here — a year-pinned row sorts by its first instant, which is
+    // where the column puts it. Ordering is not a claim about precision.
+    .sort((a, b) => getTimestamp(b.occurrence.timestamp) - getTimestamp(a.occurrence.timestamp));
 
 const buildDevices = (profile: PatientProfileDTO): ReferralDevicesDTO => {
   const baseline = asRecord(profile.baseline);
@@ -811,7 +916,7 @@ const buildRespiratory = (
   monitoring: ReferralMonitoringSlotDTO[],
 ): ReferralRespiratoryDTO => {
   const nivEvents = collectStartEvents(profile.followupEvents ?? [], ['started_niv']);
-  const nivStartedAt = nivEvents[0]?.occurredAt ?? null;
+  const nivStart = nivEvents[0]?.occurrence ?? null;
 
   const baseline = asRecord(profile.baseline);
   const currentStatus = asRecord(baseline?.currentStatus);
@@ -836,15 +941,23 @@ const buildRespiratory = (
       note: null,
     } satisfies ReferralMonitoringSlotDTO);
 
-  const nivDate = formatDate(nivStartedAt);
-  const statement = nivStartedAt
+  const statement = nivStart
     ? // A start date, not a present-tense claim: the app records the
       // transition and never asks again, so「正在使用」would be this
       // file's invention rather than the patient's answer.
-      `患者记录过「开始无创通气」，日期 ${nivDate ?? nivStartedAt}。本平台此后未再确认使用情况，请当面核实目前的通气方式、参数与依从性。`
+      //
+      // AND NOT A DAY-PRECISE ONE. 「日期 2019-01-01」 was two claims,
+      // and the second one — that somebody observed a day — is not
+      // supported by the column. What the sentence may say is what
+      // `milestoneDateZh` prints plus what the precision actually is.
+      `患者记录过「开始无创通气」，时间 ${milestoneDateZh(nivStart)}${
+        nivStart.pinnedToYearStart ? MILESTONE_YEAR_ONLY_MARK_ZH : ''
+      }。${
+        nivStart.pinnedToYearStart ? `${MILESTONE_YEAR_ONLY_NOTE_ZH}` : ''
+      }${MILESTONE_PRECISION_CLAUSE_ZH}本平台此后未再确认使用情况，请当面核实目前的通气方式、参数与依从性。`
     : '本平台没有无创通气的记录 —— 不等于没有使用，请当面询问。';
 
-  return { nivStartedAt, breathingSymptomsRecorded, pulmonary, statement };
+  return { nivStart, breathingSymptomsRecorded, pulmonary, statement };
 };
 
 /* ------------------------------------------------------------------ */
@@ -1202,12 +1315,21 @@ export const buildReferralPack = (
   if (devices.startEvents.length > 0) {
     lines.push('- 患者记录过的起始事件：');
     for (const event of devices.startEvents) {
-      const date = formatDate(event.occurredAt) ?? event.occurredAt;
+      const date = milestoneDateZh(event.occurrence);
       lines.push(
-        `  - ${escapeMarkdown(event.label)}：${date}${event.description ? `（${escapeMarkdown(event.description)}）` : ''}`,
+        `  - ${escapeMarkdown(event.label)}：${date}${event.occurrence.pinnedToYearStart ? MILESTONE_YEAR_ONLY_MARK_ZH : ''}${event.description ? `（${escapeMarkdown(event.description)}）` : ''}`,
       );
     }
-    lines.push('  - 起始事件记录的是某一天发生过的转变，不代表目前的使用情况，请当面确认。');
+    lines.push(
+      `  - 起始事件记录的是一次转变的开始，不代表目前的使用情况，请当面确认。${escapeMarkdown(MILESTONE_PRECISION_CLAUSE_ZH)}按时间推算病程时请留意这一点。`,
+    );
+    // Only when a printed row actually carries the mark. A paragraph
+    // explaining a marker that is nowhere on the page reads as a
+    // caveat about the rows that ARE there, which is the opposite of
+    // what it says.
+    if (devices.startEvents.some((event) => event.occurrence.pinnedToYearStart)) {
+      lines.push(`  - ${escapeMarkdown(MILESTONE_YEAR_ONLY_NOTE_ZH)}`);
+    }
   }
   lines.push('');
 

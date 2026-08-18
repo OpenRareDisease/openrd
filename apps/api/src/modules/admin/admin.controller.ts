@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 
-import { buildFullExportCsv, buildFullExportFileName } from './admin.csv.js';
+import { FULL_EXPORT_COLUMNS, buildFullExportCsv, buildFullExportFileName } from './admin.csv.js';
 import {
   adminUserIdParamsSchema,
   aiUsageQuerySchema,
@@ -107,6 +107,177 @@ const shanghaiDate = (at: Date): string =>
  */
 export const buildFullExportConfirmation = (patientCount: number, at: Date): string =>
   `确认导出全部 ${patientCount} 位患者的完整数据 ${shanghaiDate(at)}`;
+
+/**
+ * WHICH TIER OF THE DISCLOSURE A COLUMN BELONGS TO.
+ *
+ * `identifying` is not 「personal data」 — every column in this file is
+ * that. It is the narrower question the operator is actually deciding:
+ * DOES THIS COLUMN, BY ITSELF, TURN A ROW BACK INTO A PERSON, OR NAME
+ * SOMEBODY WHO IS NOT THE PATIENT. So it holds the direct identifiers
+ * and contact details, the quasi-identifiers that re-identify in
+ * combination (an exact birth date, a sex, a district), the two
+ * free-text boxes — which hold whatever somebody typed, including
+ * names — and the two columns about a THIRD PARTY: the treating
+ * physician, and the patient's account of their relatives.
+ */
+type FullExportColumnTier = 'identifying' | 'clinical';
+
+/**
+ * How each full-export column is named to the operator on the 428
+ * screen, in the words on their own screens rather than as the
+ * snake_case headers the file carries.
+ *
+ * A COLUMN THAT IS NOT IN THIS MAP IS DISCLOSED AS `identifying`,
+ * UNDER ITS RAW HEADER. That fallback is the whole point of the map
+ * existing beside `FULL_EXPORT_COLUMNS` rather than the sentence being
+ * written out by hand: a column added to admin.csv.ts by somebody who
+ * never opens this file cannot land outside the disclosure, and it
+ * fails towards being named rather than towards being hidden. The raw
+ * header is honest where an invented Chinese label would not be —
+ * same reasoning as `baselineFieldLabelZh`.
+ *
+ * WHAT WAS WRONG BEFORE. The note was one hand-written sentence —
+ * 「这份文件包含全部患者的姓名、手机号、所在地区与全部基线临床字段」 —
+ * with no 等 in it, so it read as a LIST and not as examples. The file
+ * it described has 71 columns, and the sentence named none of
+ * `date_of_birth` (the exact day, which the AI pipeline hard-deletes as
+ * identifying), `email`, `contact_email`, `contact_phone`,
+ * `primary_physician` (a person who is not the patient), or the two
+ * free-text columns `baseline_notes` and `profile_notes`. An operator
+ * who confirmed it had been told the file was less identifying than it
+ * is, on the action this file's own header calls THE MOST DANGEROUS
+ * ACTION IN THE PRODUCT.
+ */
+const FULL_EXPORT_COLUMN_DISCLOSURE = new Map<
+  string,
+  { tier: FullExportColumnTier; labelZh: string }
+>([
+  ['user_id', { tier: 'identifying', labelZh: '账号 ID' }],
+  ['profile_id', { tier: 'identifying', labelZh: '档案 ID' }],
+  ['patient_code', { tier: 'identifying', labelZh: '患者编号' }],
+  ['phone_number', { tier: 'identifying', labelZh: '手机号' }],
+  ['email', { tier: 'identifying', labelZh: '注册邮箱' }],
+  ['full_name', { tier: 'identifying', labelZh: '姓名' }],
+  ['preferred_name', { tier: 'identifying', labelZh: '称呼' }],
+  ['date_of_birth', { tier: 'identifying', labelZh: '出生日期（精确到日）' }],
+  ['gender', { tier: 'identifying', labelZh: '性别' }],
+  ['contact_phone', { tier: 'identifying', labelZh: '联系人电话' }],
+  ['contact_email', { tier: 'identifying', labelZh: '联系邮箱' }],
+  ['primary_physician', { tier: 'identifying', labelZh: '主治医生姓名（患者之外的另一个人）' }],
+  ['region_province', { tier: 'identifying', labelZh: '省' }],
+  ['region_city', { tier: 'identifying', labelZh: '市' }],
+  ['region_district', { tier: 'identifying', labelZh: '区县' }],
+  ['baseline_region_label', { tier: 'identifying', labelZh: '基线里填的所在地区' }],
+  ['diagnosis_date', { tier: 'identifying', labelZh: '确诊日期（精确到日）' }],
+  ['baseline_family_history', { tier: 'identifying', labelZh: '家族史（关于亲属的自述）' }],
+  ['baseline_notes', { tier: 'identifying', labelZh: '基线备注（自由文本，里面可能有任何内容）' }],
+  ['profile_notes', { tier: 'identifying', labelZh: '档案备注（自由文本，里面可能有任何内容）' }],
+
+  ['account_role', { tier: 'clinical', labelZh: '账号角色' }],
+  ['account_is_active', { tier: 'clinical', labelZh: '账号是否启用' }],
+  ['account_created_at', { tier: 'clinical', labelZh: '账号注册时间' }],
+  ['height_cm', { tier: 'clinical', labelZh: '身高' }],
+  ['weight_kg', { tier: 'clinical', labelZh: '体重' }],
+  ['blood_type', { tier: 'clinical', labelZh: '血型' }],
+  ['diagnosis_stage', { tier: 'clinical', labelZh: '诊断阶段' }],
+  ['genetic_mutation', { tier: 'clinical', labelZh: '基因突变（档案字段）' }],
+  ['baseline_birth_year', { tier: 'clinical', labelZh: '基线出生年份' }],
+  ['baseline_age_band', { tier: 'clinical', labelZh: '基线年龄段' }],
+  ['baseline_diagnosis_year', { tier: 'clinical', labelZh: '基线确诊年份' }],
+  ['baseline_diagnosis_ladder', { tier: 'clinical', labelZh: '诊断进展' }],
+  ['baseline_diagnosed_fshd', { tier: 'clinical', labelZh: '是否确诊 FSHD' }],
+  ['baseline_diagnosis_type', { tier: 'clinical', labelZh: 'FSHD 分型' }],
+  ['baseline_d4z4', { tier: 'clinical', labelZh: 'D4Z4 重复数' }],
+  ['baseline_haplotype', { tier: 'clinical', labelZh: '单倍型' }],
+  ['baseline_methylation', { tier: 'clinical', labelZh: '甲基化' }],
+  ['baseline_onset_region', { tier: 'clinical', labelZh: '起病部位' }],
+  ['baseline_independently_ambulatory', { tier: 'clinical', labelZh: '独立行走' }],
+  ['baseline_arm_raise_difficulty', { tier: 'clinical', labelZh: '抬臂困难' }],
+  ['baseline_facial_weakness', { tier: 'clinical', labelZh: '面部无力' }],
+  ['baseline_foot_drop', { tier: 'clinical', labelZh: '足下垂' }],
+  ['baseline_breathing_symptoms', { tier: 'clinical', labelZh: '呼吸症状' }],
+  ['baseline_assistive_devices', { tier: 'clinical', labelZh: '辅具' }],
+  ['baseline_challenge_fatigue', { tier: 'clinical', labelZh: '疲劳' }],
+  ['baseline_challenge_pain', { tier: 'clinical', labelZh: '疼痛' }],
+  ['baseline_challenge_stairs', { tier: 'clinical', labelZh: '上楼梯' }],
+  ['baseline_challenge_dressing', { tier: 'clinical', labelZh: '穿衣' }],
+  ['baseline_challenge_reaching_up', { tier: 'clinical', labelZh: '上举' }],
+  ['baseline_challenge_walking_stability', { tier: 'clinical', labelZh: '行走稳定性' }],
+  ['admin_entered_baseline_fields', { tier: 'clinical', labelZh: '管理员代填的字段清单' }],
+  [
+    'unreadable_provenance_baseline_fields',
+    { tier: 'clinical', labelZh: '来源读不出来的字段清单' },
+  ],
+  ['ai_consent_personal', { tier: 'clinical', labelZh: 'AI 个人数据同意' }],
+  ['ai_consent_third_party', { tier: 'clinical', labelZh: 'AI 第三方信息同意' }],
+  ['ai_consent_precise_values', { tier: 'clinical', labelZh: '精确数值同意' }],
+  ['clinical_trial_consent', { tier: 'clinical', labelZh: '临床试验同意' }],
+  ['data_donation_consent', { tier: 'clinical', labelZh: '数据捐献同意' }],
+  ['hospital_sync_consent', { tier: 'clinical', labelZh: '医院同步同意' }],
+  ['community_share_consent', { tier: 'clinical', labelZh: '社区分享同意' }],
+  ['count_measurements', { tier: 'clinical', labelZh: '肌力测量条数' }],
+  ['count_function_tests', { tier: 'clinical', labelZh: '功能测试条数' }],
+  ['count_symptom_scores', { tier: 'clinical', labelZh: '症状评分条数' }],
+  ['count_daily_impacts', { tier: 'clinical', labelZh: '日常影响条数' }],
+  ['count_followup_events', { tier: 'clinical', labelZh: '随访事件条数' }],
+  ['count_activity_logs', { tier: 'clinical', labelZh: '活动记录条数' }],
+  ['count_documents', { tier: 'clinical', labelZh: '报告条数' }],
+  ['count_medications', { tier: 'clinical', labelZh: '用药条数' }],
+  ['count_falls', { tier: 'clinical', labelZh: '跌倒条数' }],
+  ['count_instrument_administrations', { tier: 'clinical', labelZh: '量表施测条数' }],
+  ['profile_created_at', { tier: 'clinical', labelZh: '档案创建时间' }],
+  ['profile_updated_at', { tier: 'clinical', labelZh: '档案更新时间' }],
+]);
+
+/**
+ * WHAT THE FILE CONTAINS, DERIVED FROM THE COLUMNS THAT WILL BE IN IT.
+ *
+ * The 428 screen renders these strings verbatim — `state.notes.map` in
+ * apps/mobile/screens/p-admin/full-export.tsx — so what is written here
+ * is what an operator reads before deciding, and no client is in a
+ * position to correct it.
+ *
+ * EVERY COLUMN IS NAMED. Not summarised, not sampled, and with no 等 on
+ * the end: an enumeration that is short is worse than no enumeration,
+ * because a reader takes it for the whole list. The identifying tier
+ * goes first and alone, because that is the part the decision turns on;
+ * the rest follows so that the two counts add up to the width of the
+ * file, which is what makes it checkable that nothing was left out.
+ *
+ * Takes the columns as an argument, defaulting to the real list, so a
+ * test can hand it a column the map has never seen and read what the
+ * operator would be shown.
+ */
+export const buildFullExportDisclosureNotes = (
+  columns: ReadonlyArray<{ header: string }> = FULL_EXPORT_COLUMNS,
+): string[] => {
+  const identifying: string[] = [];
+  const clinical: string[] = [];
+  for (const { header } of columns) {
+    const disclosure = FULL_EXPORT_COLUMN_DISCLOSURE.get(header);
+    if (!disclosure) {
+      identifying.push(header);
+      continue;
+    }
+    (disclosure.tier === 'identifying' ? identifying : clinical).push(disclosure.labelZh);
+  }
+
+  const notes: string[] = [
+    `这份文件每一行是一位患者，一共 ${columns.length} 列，下面把每一列都列出来。`,
+  ];
+  if (identifying.length > 0) {
+    notes.push(
+      `其中 ${identifying.length} 列能把一行还原成具体的人，或者写着患者之外的另一个人：${identifying.join(
+        '、',
+      )}。`,
+    );
+  }
+  if (clinical.length > 0) {
+    notes.push(`另外 ${clinical.length} 列是临床与账号内容：${clinical.join('、')}。`);
+  }
+  return notes;
+};
 
 export class AdminController {
   constructor(private readonly deps: AdminControllerDeps) {}
@@ -609,7 +780,12 @@ export class AdminController {
         requiredConfirmation,
         patientCount,
         notes: [
-          '这份文件包含全部患者的姓名、手机号、所在地区与全部基线临床字段，请只在需要时导出。',
+          // DERIVED FROM `FULL_EXPORT_COLUMNS`, never written out by
+          // hand. See buildFullExportDisclosureNotes for what the
+          // hand-written sentence used to leave out and why a short
+          // enumeration is worse than none.
+          ...buildFullExportDisclosureNotes(),
+          '请只在确实需要的时候导出。',
           // NOT 「从上传的基因报告自动补全」. `applyGeneticReportAutofill`
           // fills from the one document `pickGeneticEvidenceDocument`
           // picks as a profile's genetic evidence, and that picker takes
@@ -620,7 +796,12 @@ export class AdminController {
           // operator's screen without any client having written it.
           // What the file is missing is the same either way.
           '基线字段是数据库中存储的值，不含「从上传的文件自动补全」的部分——界面上看得到的 D4Z4 结果，这份文件里可能是空的。',
-          '每份记录的明细（每一次肌力测量、每一份报告）不在这份文件里，只有条数。',
+          // Points at the derived list above rather than naming a
+          // second, hand-written set of columns beside it. The claim it
+          // makes is a NEGATIVE one — these records are NOT in the file
+          // — and the columns it is about are the 「……条数」 entries the
+          // operator has just read.
+          '上面那些「……条数」就只是条数：每一次肌力测量、每一份报告本身不在这份文件里。',
           '导出会以你的账号写入审计记录，文件名里也会带上你的账号与时间。',
         ],
       });

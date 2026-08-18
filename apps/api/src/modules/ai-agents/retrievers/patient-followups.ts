@@ -578,7 +578,28 @@ ${FALL_HISTORY_SQL}
       // unit fails the allowlist contributes nothing rather than
       // poisoning the whole series' suffix.
       const unit = rows.map((row) => canonicalUnit(row.unit)).find((u) => u !== null) ?? null;
-      const direction = describeDirection(earliest.value, latest.value);
+      /**
+       * A DIRECTION NEEDS TWO POINTS, AND THIS ONE WAS ASSERTED OFF
+       * ONE.
+       *
+       * `describeDirection(earliest.value, latest.value)` was applied
+       * unconditionally, and on a one-reading series earliest IS
+       * latest: delta 0, 「flat」, and the strict-mode band came out
+       * 「最近变化: 基本持平」. That is a statement about CHANGE made
+       * from a data point that contains none — under a tool whose
+       * description promises 「which direction they moved」 and which
+       * that description tells the model to call for 「我最近是不是变差
+       * 了」. A patient who has recorded once was told their trend is
+       * 基本持平.
+       *
+       * So a one-point series carries `count`, `spanDays` and the
+       * value itself, and no direction of any kind. The absence is the
+       * honest answer and it is legible to the model: the fields are
+       * simply not there, the same way an event-only chunk carries no
+       * series.
+       */
+      const direction =
+        allPoints.length >= 2 ? describeDirection(earliest.value, latest.value) : null;
 
       // The point list is what costs tokens, so that is what gets cut.
       const shownPoints = allPoints.slice(-MAX_POINTS_PER_SERIES);
@@ -625,10 +646,20 @@ ${FALL_HISTORY_SQL}
             // carry no patient data, so it goes in both lists too.
             countAtCap: atRowCap,
             spanDays: earliest.age - latest.age,
-            changeDirection: direction,
-            // strict-mode band: direction without the raw numbers
-            latestBand:
-              direction === 'up' ? '较前升高' : direction === 'down' ? '较前降低' : '基本持平',
+            // Both of these describe a change, so both are absent from
+            // a series that records none. See `direction` above.
+            ...(direction === null
+              ? {}
+              : {
+                  changeDirection: direction,
+                  // strict-mode band: direction without the raw numbers
+                  latestBand:
+                    direction === 'up'
+                      ? '较前升高'
+                      : direction === 'down'
+                        ? '较前降低'
+                        : '基本持平',
+                }),
             // precise-mode raw values
             unit,
             latestValue: latest.value,
@@ -672,7 +703,18 @@ ${FALL_HISTORY_SQL}
             metricLabel: labelForMetric(metricKey),
             count: 0,
             spanDays: 0,
-            changeDirection: 'flat',
+            // NO `changeDirection` HERE EITHER, AND 「flat」 WAS THE
+            // WORST POSSIBLE VALUE FOR IT.
+            //
+            // Every row in this branch is 「做不到」 — a patient who has
+            // LOST the ability to perform the test — and the field said
+            // their measurement is unchanged. There is no measurement.
+            // `latestBand` is the one string that explains the chunk,
+            // and it is on BOTH allowlists now: a statement that there
+            // are no numbers is this platform refusing to read a
+            // series, not a value withheld for consent, so a
+            // precise-consent reader was getting the bare 「flat」 with
+            // the sentence that explains it stripped by layer 3.
             latestBand: '本期均记录为做不到',
             unableSummary:
               `本期共 ${unable.count} 次记录为「做不到」，没有任何可用数值；` +

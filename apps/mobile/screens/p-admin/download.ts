@@ -55,9 +55,17 @@ export const saveBlobInBrowser = (blob: Blob, fileName: string) => {
  * is the ONLY writer that puts `fileName` in an audit payload, and it
  * is called only from `exportAllPatientsCsv`. The single-patient export
  * leaves `requireAdmin`'s row alone, whose payload is fixed at
- * `{adminUserId, targetUserId, path, method}`
- * (apps/api/src/middleware/require-admin.ts:281-286) — no file name in
- * it, and no second row either.
+ * `{adminUserId, targetUserId, path, method}` — the `payload` literal
+ * inside `requireAdmin`, apps/api/src/middleware/require-admin.ts, which
+ * is the whole of what that middleware inserts into `audit_logs`. No
+ * file name in it, and no second row either.
+ *
+ * CITED BY SYMBOL, NOT BY LINE RANGE. This note used to point at
+ * require-admin.ts:281-286. The claim outlived the line numbers: that
+ * literal has moved since, and a range that no longer frames it sends
+ * the next reader into the wrong part of the file to check a sentence
+ * about what a patient's export does and does not leave behind. A symbol
+ * is greppable and travels with the code.
  */
 export type AdminDownloadKind = 'full_export' | 'patient_export';
 

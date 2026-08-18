@@ -307,6 +307,94 @@ describe('applyAdminBaselineWrite', () => {
     });
   });
 
+  /**
+   * A FIELD EMPTIED IS A FIELD CLEARED, whichever of the three ways the
+   * HTTP surface says it.
+   *
+   * `null` is what the shipped back-office screen sends, so every test
+   * above passed while the endpoint accepted an empty string from any
+   * other client and stored it WITH a fresh 管理员代填 marker on it.
+   * That marker then travels: the record endpoint's `fieldOrigins`, the
+   * back-office row, the `admin_entered_baseline_fields` CSV column and
+   * the portable exports' envelope, each telling a reader — a receiving
+   * registry, in the last case — a provenance fact about a value that
+   * is not there. Whitespace is the same case one step earlier:
+   * `nullableText` is `z.string().trim()`, so 「   」 arrives as ''.
+   */
+  describe('clearing a field', () => {
+    const CLEARED = [
+      ['null', null],
+      ['an empty string', ''],
+      ['a string of spaces, which the schema has already trimmed to empty', '   '],
+      ['a whitespace-only string the schema did not trim', '　\t '],
+    ] as const;
+
+    it.each(CLEARED)('adds no marker when the value written is %s', (_label, value) => {
+      const stored = applyAdminBaselineWrite(
+        baseline(),
+        baseline({ foundation: { fullName: '张三', regionLabel: value } }),
+        { adminUserId: ADMIN_ID, at: AT },
+      );
+
+      expect(readBaselineFieldOrigin(stored, 'foundation.regionLabel')).toEqual({
+        state: 'patient',
+      });
+      expect(stored[BASELINE_PROVENANCE_KEY]).toBeUndefined();
+    });
+
+    it.each(CLEARED)('drops an existing marker when the value written is %s', (_label, value) => {
+      const marked = applyAdminBaselineWrite(
+        baseline(),
+        baseline({ foundation: { fullName: '张三', regionLabel: '广东 深圳' } }),
+        { adminUserId: ADMIN_ID, at: AT },
+      );
+      expect(readBaselineFieldOrigin(marked, 'foundation.regionLabel')).toMatchObject({
+        state: 'admin_entered',
+      });
+
+      const cleared = applyAdminBaselineWrite(
+        marked,
+        baseline({ foundation: { fullName: '张三', regionLabel: value } }),
+        { adminUserId: OTHER_ADMIN_ID, at: AT },
+      );
+
+      expect(readBaselineFieldOrigin(cleared, 'foundation.regionLabel')).toEqual({
+        state: 'patient',
+      });
+    });
+
+    /**
+     * THE ERASE IS STILL A CHANGE. `isClearedValue` decides what happens
+     * to the marker and nothing else — emptying a box the allowlist does
+     * not admit has to stay a refusal, or an operator would have found
+     * the way to delete a laboratory result by selecting it and pressing
+     * backspace.
+     */
+    it('is still a write, so clearing a field an admin may not write is refused', () => {
+      for (const value of ['', '   ', null]) {
+        expect(() =>
+          applyAdminBaselineWrite(
+            { diseaseBackground: { d4z4: '7' } },
+            { diseaseBackground: { d4z4: value } },
+            { adminUserId: ADMIN_ID, at: AT },
+          ),
+        ).toThrow(AppError);
+      }
+    });
+
+    it('leaves 0 and false alone, because they are answers', () => {
+      const stored = applyAdminBaselineWrite(
+        { foundation: { fullName: '张三', birthYear: 1990 } },
+        { foundation: { fullName: '张三', birthYear: 0 } },
+        { adminUserId: ADMIN_ID, at: AT },
+      );
+
+      expect(readBaselineFieldOrigin(stored, 'foundation.birthYear')).toMatchObject({
+        state: 'admin_entered',
+      });
+    });
+  });
+
   it('refuses an adminUserId that is not a user id', () => {
     // A marker naming an administrator nobody can resolve looks like an
     // answer and is not one.
@@ -343,6 +431,35 @@ describe('applyPatientBaselineWrite', () => {
     expect(readBaselineFieldOrigin(resaved, 'foundation.regionLabel')).toMatchObject({
       state: 'admin_entered',
     });
+  });
+
+  /**
+   * The two helpers have to agree on what an empty field is, or the
+   * patient's save becomes a way of preserving a marker over nothing.
+   * Only a hand-written UPDATE can put the profile in this state now —
+   * `applyAdminBaselineWrite` no longer creates it — which is exactly
+   * why the drop has to be unconditional here rather than relying on
+   * the other helper having been the last writer.
+   */
+  it('drops a marker standing over a value that is present and empty', () => {
+    const handEdited = {
+      foundation: { fullName: '张三', regionLabel: '' },
+      currentStatus: { footDrop: true, assistiveDevices: ['手杖'] },
+      [BASELINE_PROVENANCE_KEY]: {
+        'foundation.regionLabel': {
+          source: 'admin_entered',
+          adminUserId: ADMIN_ID,
+          at: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    };
+
+    const resaved = applyPatientBaselineWrite(
+      handEdited,
+      baseline({ foundation: { fullName: '张三', regionLabel: '' } }),
+    );
+
+    expect(resaved[BASELINE_PROVENANCE_KEY]).toBeUndefined();
   });
 
   it('gives the field back to the patient when they change it', () => {

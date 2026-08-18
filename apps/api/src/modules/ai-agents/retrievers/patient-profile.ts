@@ -32,6 +32,8 @@ import type {
   RetrievedChunk,
 } from './base.js';
 import { emptyResult } from './base.js';
+import type { GeneticEvidenceDocumentLike } from '../../patient-profile/genetic-evidence.js';
+import { readGeneticEvidence } from '../../patient-profile/genetic-evidence.js';
 import { AMBULATION_STATES } from '../../patient-profile/profile.constants.js';
 import type { AmbulationState } from '../../patient-profile/profile.constants.js';
 
@@ -48,6 +50,17 @@ interface ProfileRow {
   region_district: string | null;
   baseline_payload: Record<string, unknown> | null;
   notes: string | null;
+}
+
+/** The columns `readGeneticEvidence` reads off a document row. Narrow
+ *  on purpose — this retriever needs the provenance answer, not the
+ *  documents. */
+interface DocumentRow {
+  id: string;
+  document_type: string | null;
+  status: string | null;
+  uploaded_at: string | Date | null;
+  ocr_payload: unknown;
 }
 
 const formatDate = (value: string | Date | null | undefined): string | null => {
@@ -76,6 +89,55 @@ const baselineSection = (
 };
 
 /**
+ * WHETHER AN ARCHIVED GENETICS CELL IS A VALUE THIS PLATFORM READ OFF
+ * THE GENETICS LABORATORY'S OWN REPORT.
+ *
+ * The redactor has to decide what the assistant may say about
+ * `diseaseBackground.d4z4` and `.haplotype`, and it had no way to ask:
+ * it passed `fromLaboratoryReport: false` as a constant, so the prompt
+ * asserted `not_read_off_a_laboratory_report` about EVERY archived
+ * genetics cell — including the cells the read-time autofill copied out
+ * of a parsed genetics report. For the same profile in the same run the
+ * passport resolved those cells to `kind: 'report'` / 「报告读取」 and the
+ * TREAT-NMD provenance sentence ended 「所以这个值是基因报告的解析结果」.
+ * A patient whose genetics report this platform DID read could be told
+ * by the assistant the opposite of what their passport, share page,
+ * referral pack, PDF and registry export all say — and the assistant is
+ * the surface that generates advice off the answer.
+ *
+ * THE TEST IS THE ONE `geneticResultValue` ALREADY PERFORMS for the
+ * TREAT-NMD document: the archived string equals the line this
+ * platform reads off the ONE document `pickGeneticEvidenceDocument`
+ * names, AND that document is the laboratory's own report
+ * (`readGeneticEvidence(...).laboratory`). Asked through
+ * `readGeneticEvidence` rather than restated here, so the assistant
+ * cannot answer 「where did this value come from」 differently from the
+ * exports built off the same profile in the same request.
+ *
+ * FALSE IS STILL THE DEFAULT, and it stays the honest one: a value the
+ * patient typed, a value quoted off a 病历摘要, and a value that no
+ * longer matches the report it was autofilled from are all cells this
+ * platform did not read off a laboratory report, and the redactor's
+ * refusal is correct for every one of them.
+ */
+const geneticCellsFromLaboratoryReport = (
+  disease: Record<string, unknown> | null,
+  documents: readonly GeneticEvidenceDocumentLike[],
+): { d4z4: boolean; haplotype: boolean } => {
+  const evidence = readGeneticEvidence(documents);
+  if (!evidence.laboratory) return { d4z4: false, haplotype: false };
+  const matches = (archived: unknown, line: string | null): boolean =>
+    line !== null &&
+    archived !== null &&
+    archived !== undefined &&
+    String(archived).trim() === line;
+  return {
+    d4z4: matches(disease?.d4z4, evidence.d4z4),
+    haplotype: matches(disease?.haplotype, evidence.haplotype),
+  };
+};
+
+/**
  * Project a profile row into the raw structured-field map that the
  * PIIRedactor consumes. The keys here intentionally mirror the
  * allowlist + hard-delete entries in `security/allowlist.ts` so the
@@ -87,7 +149,10 @@ const baselineSection = (
  * The renderer (security/render.ts) is what produces the user-facing
  * text — this function only assembles the input.
  */
-const buildProfileFields = (row: ProfileRow): Record<string, unknown> => {
+const buildProfileFields = (
+  row: ProfileRow,
+  fromLaboratoryReport: { d4z4: boolean; haplotype: boolean },
+): Record<string, unknown> => {
   const fields: Record<string, unknown> = {};
 
   // Hard-delete keys are included so the redactor visibly removes
@@ -120,11 +185,19 @@ const buildProfileFields = (row: ProfileRow): Record<string, unknown> => {
     if (typeof disease.diagnosisType === 'string' && disease.diagnosisType) {
       fields.diagnosisType = disease.diagnosisType;
     }
+    // Each genetics cell travels with the answer to 「did this platform
+    // read this off a laboratory's own report」. Neither flag reaches a
+    // prompt — the redactor consumes both and drops them (see
+    // `clinicalise`) — they exist so the reading beside the cell can be
+    // this platform's real position rather than a hardcoded refusal.
+    // See `geneticCellsFromLaboratoryReport`.
     if (disease.d4z4 !== undefined && disease.d4z4 !== null && disease.d4z4 !== '') {
       fields.d4z4 = disease.d4z4;
+      fields.d4z4FromLaboratoryReport = fromLaboratoryReport.d4z4;
     }
     if (typeof disease.haplotype === 'string' && disease.haplotype) {
       fields.haplotype = disease.haplotype;
+      fields.haplotypeFromLaboratoryReport = fromLaboratoryReport.haplotype;
     }
     if (
       disease.methylation !== undefined &&
@@ -196,7 +269,32 @@ export class PatientProfileRetriever implements IRetriever {
     }
 
     const row = result.rows[0];
-    const fields = buildProfileFields(row);
+
+    // The documents this profile's genetics cells could have been
+    // autofilled out of. Read with the same reader the passport and the
+    // exports use, so all three answer 「where did this value come
+    // from」 the same way for one profile in one request. A read that
+    // returns nothing leaves both flags false, which is the refusal the
+    // redactor already defaults to.
+    const documents = await this.pool.query<DocumentRow>(
+      `SELECT id, document_type, status, uploaded_at, ocr_payload
+       FROM patient_documents
+       WHERE profile_id = $1`,
+      [row.id],
+    );
+    const disease = baselineSection(row.baseline_payload, 'diseaseBackground');
+    const fromLaboratoryReport = geneticCellsFromLaboratoryReport(
+      disease,
+      documents.rows.map((doc) => ({
+        id: doc.id,
+        documentType: doc.document_type,
+        status: doc.status,
+        uploadedAt: formatDate(doc.uploaded_at),
+        ocrPayload: doc.ocr_payload,
+      })),
+    );
+
+    const fields = buildProfileFields(row, fromLaboratoryReport);
     const chunkId = randomUUID();
 
     const chunk: RetrievedChunk = {

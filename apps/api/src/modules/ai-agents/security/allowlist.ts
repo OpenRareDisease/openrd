@@ -68,6 +68,15 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'haplotype', // raw, e.g. "4qA"
       'haplotype_clinical', // same, for the haplotype cell
       'methylation', // raw percentage, e.g. "12%"
+      // ...and the statement that a number is not being shared, which
+      // a precise-consent reader can now reach too: a methylation cell
+      // holding an array is not a number this platform can publish in
+      // any mode (see `methylationCell`), and 「there is a result on
+      // file and no number is reaching you」 is a refusal rather than a
+      // redaction — the same footing every other refusal on this list
+      // sits on. Listed under strict alone, it left the precise reader
+      // with the cell silently gone.
+      'methylation_withheld',
       // There is no `methylation_clinical` in either mode, and it is
       // the only one of the three with no reading at all: this repo
       // states no methylation boundary, so the key held a consent
@@ -106,6 +115,15 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'spanDays',
       'unableSummary', // 「做不到」days, phrased so they read as disjoint from the series
       'changeDirection',
+      // `latestBand` IS ON THIS LIST TOO NOW. It carries two different
+      // things: a direction as a phrase, which a precise reader can
+      // derive from `series` anyway, and 「本期均记录为做不到」, which is
+      // the ONLY string explaining a metric whose every row is a
+      // patient who could not perform the test. That second one is a
+      // refusal to read a series, not a number withheld for consent —
+      // so listing it under strict alone left the precise-consent
+      // reader with nothing but a bare direction to explain the chunk.
+      'latestBand',
       'unit',
       'latestValue', // raw, e.g. 16
       'series', // raw points, e.g. "12sec(14天前)、16sec(0天前)"
@@ -122,10 +140,20 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
     // explicit that precise mode is opt-in for clinical raw values,
     // not for free-form name-bearing text. The classified report
     // type carries enough context for the LLM.
+    // `reportDate_year` AND `uploadYear` ARE TWO CELLS, NOT ONE
+    // SPELLED TWICE. The first is the year the laboratory printed on
+    // the report; the second is the year the file arrived here, and it
+    // is what a row with no report date has instead. They were one key
+    // — `reportDate_year`, derived from `uploaded_at` — so the prompt
+    // said 报告年份: 2026 about a report the citation chip on the same
+    // turn dated 2019-03. See `resolveReportDate` in
+    // patient-reports.ts. Both are years and neither carries a day, so
+    // both are on both lists.
     strict: [
       'classifiedType',
       'documentType',
       'reportDate_year',
+      'uploadYear',
       'status',
       'fields_clinical',
       'findings_summary',
@@ -134,6 +162,7 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'classifiedType',
       'documentType',
       'reportDate_year',
+      'uploadYear',
       'status',
       'fields',
       'findings_summary',
@@ -317,8 +346,8 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // `geneticPositive` / `genetic_positive` ARE DELIBERATELY ABSENT.
   //
   // Every other key on this list is a value a laboratory printed. That
-  // one is a verdict this platform computed: `_extract_genetic` in the
-  // report parser sets it to 「yes」 when the text named FSHD1 or FSHD2
+  // one was a verdict this platform computed: `_extract_genetic` in the
+  // report parser set it to 「yes」 when the text named FSHD1 or FSHD2
   // or when any digit followed D4Z4, and to 「uncertain」 otherwise. So a
   // count cell reading 0, a length the report gave in kb, and 「未检出3个
   // 重复单元」 each came out 「yes」 — read off the same cell this
@@ -333,8 +362,17 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // the verdict was computed FROM is still on this list — `diagnosisType`
   // is the report's own word for the diagnosis, and the D4Z4 cell
   // travels with this platform's reading of it (see `clinicaliseD4Z4`) —
-  // so the model still has everything the laboratory stated. The prompt
-  // was this field's only reader anywhere outside the parser.
+  // so the model still has everything the laboratory stated.
+  //
+  // THE PARSER NO LONGER WRITES IT AT ALL, and this note used to say the
+  // prompt was its only reader outside the parser, which was wrong: the
+  // bridge in services/ocr/embedded-report-ocr.ts copies every
+  // structured field into `ocr_payload.fields` under both spellings, so
+  // the flag was also persisted on the document row, shown to the
+  // patient in the report screen's raw payload panel, and counted by
+  // `fieldCount`. The derivation is deleted at the source — see the note
+  // in `_extract_genetic`. These entries stay absent so a payload
+  // written before that deletion, still on disk, cannot reach a prompt.
   'haplotype',
 
   // Muscle enzymes / biochemistry

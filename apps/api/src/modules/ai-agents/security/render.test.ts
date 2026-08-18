@@ -473,7 +473,10 @@ describe('renderChunkForPrompt — patient followups, strict mode (regression fe
     expect(rendered.content).toContain('【患者随访记录】');
     expect(rendered.content).toContain('16.75');
     expect(rendered.content).toContain('天前');
-    // The coarse band is the strict-mode duplicate and is dropped here.
+    // `latestBand` rides both modes now. On a series it duplicates the
+    // direction, which is harmless; on a metric whose every row is
+    // 「做不到」 it is the only string that explains the chunk, and it
+    // was reaching strict-consent readers only. See the allowlist note.
     expect(rendered.fieldsUsed).toEqual([
       'metricKey',
       'metricLabel',
@@ -481,6 +484,7 @@ describe('renderChunkForPrompt — patient followups, strict mode (regression fe
       'countAtCap',
       'spanDays',
       'changeDirection',
+      'latestBand',
       // Present but null: the allowlist filter keys off the field name,
       // not the value, so a dropped unit still shows up here. What
       // matters is the assertions above — the value is null and the

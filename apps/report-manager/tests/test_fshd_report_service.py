@@ -642,5 +642,169 @@ class GeneticMethodAndRangeTest(unittest.TestCase):
         self.assertEqual(summary["d4z4_repeat_other"], 11)
 
 
+class VerdictsAreNotReadingsTest(unittest.TestCase):
+    """A field may say what the report says, and nothing else.
+
+    Every case here is a cell this platform cannot read, and every one
+    of them used to come out of `_extract_genetic` as a confident
+    positive finding — carried on to the patient's document row, the
+    passport and the registry export under a laboratory's name.
+    """
+
+    @staticmethod
+    def _fields(result):
+        return {f["field_name"]: f for f in result["fshd"]["structured_fields"]}
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body, hint="genetic_report", name="G.pdf"):
+        return analyze_fshd_report("\n".join(("基因检测报告", "检测结果") + body), hint, name)
+
+    # --- the computed verdict, deleted -------------------------------
+
+    def test_no_field_claims_the_result_is_positive(self):
+        """`genetic_positive` could only ever answer 「yes」.
+
+        It was derived from the PRESENCE of a cell, so a count of 0, a
+        length in kb and a sentence saying nothing was found all
+        produced 「yes」. There is no honest version of a flag with no
+        「no」 in it, so the derivation is gone.
+        """
+        for body in (
+            "D4Z4重复单元数: 3",
+            "D4Z4重复单元数: 0",
+            "D4Z4 EcoRI 片段长度: 38 kb",
+            "D4Z4 未检出3个重复单元",
+            "本次未见异常。",
+        ):
+            with self.subTest(body=body):
+                result = self._analyze(body)
+                self.assertNotIn("genetic_positive", self._fields(result))
+                self.assertNotIn("genetic_positive", self._summary(result))
+                names = {o["analyte_name"] for o in result["observations"]}
+                self.assertNotIn("genetic_positive", names)
+                self.assertNotIn("genetic_positive", result["latest_summary"]["by_analyte"])
+
+    # --- a count cell that is not a count ----------------------------
+
+    def test_zero_is_kept_visible_but_never_typed_as_a_count(self):
+        """0 is what the cell prints and is not a reading.
+
+        Kept, so a reviewer sees it was read and refused rather than
+        finding the row missing — but never a number anything can use,
+        and always below the review threshold.
+        """
+        result = self._analyze("D4Z4重复单元数: 0")
+        field = self._fields(result)["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "0")
+        self.assertLess(field["confidence"], 0.75)
+        self.assertIn(
+            "d4z4_repeat_pathogenic",
+            [q["field_name"] for q in result["fshd"]["review_queue"]],
+        )
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertIsNone(result["d4z4_repeats"])
+
+    def test_a_length_in_kb_is_not_a_repeat_count(self):
+        """One number must not be reported under two names.
+
+        「D4Z4 EcoRI 片段长度: 38 kb」 set `d4z4_repeat_pathogenic` to 38
+        — well above the FSHD1 range — while `ecori_fragment_kb`
+        recorded the same 38 correctly. The length keeps its own name.
+        """
+        result = self._analyze("D4Z4 EcoRI 片段长度: 38 kb")
+        self.assertNotIn("d4z4_repeat_pathogenic", self._fields(result))
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+        self.assertEqual(self._summary(result)["ecori_fragment_kb"], 38.0)
+
+    def test_a_negated_cell_reports_nothing(self):
+        """「未检出3个重复单元」 carries a 3 that is not a count."""
+        result = self._analyze("D4Z4 未检出3个重复单元")
+        self.assertNotIn("d4z4_repeat_pathogenic", self._fields(result))
+        self.assertIsNone(self._summary(result)["d4z4_repeat_pathogenic"])
+
+    def test_a_stated_interval_never_becomes_a_number(self):
+        """The interval fix left two channels uncovered.
+
+        `observations[].result.value_num` and `latest_summary` both read
+        「1-10」 as 1.0 — inside the 1–4 window that gates a
+        recommendation.
+        """
+        result = self._analyze("D4Z4重复单元数: 1-10")
+        obs = next(
+            o for o in result["observations"] if o["analyte_name"] == "d4z4_repeat_pathogenic"
+        )
+        self.assertIsNone(obs["result"]["value_num"])
+        self.assertEqual(obs["result"]["value_text"], "1-10")
+        self.assertIsNone(
+            result["latest_summary"]["by_analyte"]["d4z4_repeat_pathogenic"]["value_num"]
+        )
+
+    # --- naming a type is not diagnosing it --------------------------
+
+    def test_an_excluded_or_suspected_type_is_not_a_diagnosis(self):
+        for body in (
+            "本次检测不支持 FSHD1，建议评估 FSHD2。",
+            "本次检测不支持 FSHD1。",
+            "临床怀疑 FSHD1，请进一步检查。",
+        ):
+            with self.subTest(body=body):
+                result = self._analyze(body)
+                self.assertNotIn("diagnosis_type", self._fields(result))
+                self.assertIsNone(self._summary(result)["diagnosis_type"])
+
+    def test_the_excluding_sentence_is_still_displayed(self):
+        """Abstaining from the GRADE does not withhold the words.
+
+        Only the two sentences whose conclusion block survives
+        `_extract_block_after_header` are asserted here — a conclusion
+        containing 「建议」 is truncated away by that helper before this
+        code sees it, which is a separate pre-existing gap.
+        """
+        for body in ("本次检测不支持 FSHD1。", "临床怀疑 FSHD1，请进一步检查。"):
+            with self.subTest(body=body):
+                summary = self._summary(self._analyze(body))
+                self.assertIn("FSHD1", summary["interpretation_summary"])
+
+    def test_a_stated_type_still_lands(self):
+        result = self._analyze("检测结论: 符合 FSHD1。", "D4Z4重复单元数: 3")
+        self.assertEqual(self._summary(result)["diagnosis_type"], "FSHD1")
+
+    # --- the allele the whole reading rests on -----------------------
+
+    def test_a_negated_haplotype_is_not_a_haplotype(self):
+        result = self._analyze("未检出 4qA permissive 等位基因")
+        self.assertNotIn("haplotype", self._fields(result))
+        self.assertIsNone(self._summary(result)["haplotype"])
+
+    def test_both_alleles_named_goes_to_review_not_to_print_order(self):
+        result = self._analyze("4qB/4qA 双等位基因均已分型，致病侧为 4qB")
+        self.assertLess(self._fields(result)["haplotype"]["confidence"], 0.75)
+        self.assertIn("haplotype", [q["field_name"] for q in result["fshd"]["review_queue"]])
+
+    def test_a_single_stated_haplotype_keeps_its_confidence(self):
+        result = self._analyze("单倍型: 4qA", "D4Z4重复单元数: 3")
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+        self.assertGreaterEqual(self._fields(result)["haplotype"]["confidence"], 0.75)
+
+    # --- a unit nobody printed ---------------------------------------
+
+    def test_methylation_carries_only_the_unit_the_report_printed(self):
+        """A bisulfite ratio is commonly printed as a fraction.
+
+        Defaulting the unit to 「%」 turned 甲基化 0.35 into 0.35% on the
+        patient's screen. This repo states no methylation boundary, so
+        the unit was the last way this field could say something false.
+        """
+        self.assertIsNone(
+            self._fields(self._analyze("甲基化 0.35"))["methylation_value"]["unit"]
+        )
+        self.assertEqual(
+            self._fields(self._analyze("甲基化 35%"))["methylation_value"]["unit"], "%"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,8 +46,24 @@ export type AnesthesiaCardModel = {
 const hasValue = (value: string | null | undefined): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim() !== '—';
 
+/**
+ * A calendar date with no time part.
+ *
+ * Every value that reaches this function is a monitoring slot's
+ * `latestDate`, which the API already emitted as a bare 「YYYY-MM-DD」.
+ * Re-parsing a string that is already the answer is where the day was
+ * lost a second time: `new Date('2025-05-09')` is UTC midnight, so
+ * `getDate` in the device's zone printed 2025-05-08 on the card an
+ * anesthetist reads before putting this patient under, for a
+ * pulmonary function report the passport dated 05-09. `today` is a
+ * real instant and still takes the `Date` path below.
+ */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 const formatDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
+  const trimmed = value.trim();
+  if (DATE_ONLY.test(trimmed)) return trimmed;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const month = String(date.getMonth() + 1).padStart(2, '0');

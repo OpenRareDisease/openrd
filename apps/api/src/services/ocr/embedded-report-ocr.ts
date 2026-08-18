@@ -74,6 +74,82 @@ const formatStructuredValue = (field: StructuredField) => {
   return base;
 };
 
+/**
+ * The EcoRI fragment carries its unit, and carries it once.
+ *
+ * `genetic_summary.ecori_fragment_kb` is a bare float — kb is in the
+ * key's name, not in the value — and this bridge is the only place the
+ * unit is ever attached to it. Idempotent because the same value can
+ * arrive already spelled with it: the structured field for the same cell
+ * is rendered by `formatStructuredValue` from the parser's own
+ * `unit: "kb"`, and a payload written by an older shape of this file and
+ * replayed through it must not come out 「18kbkb」.
+ */
+const withKbUnit = (value: string) => (/kb\s*$/i.test(value) ? value : `${value}kb`);
+
+/**
+ * THE OTHER TWO CELLS THIS BRIDGE USED TO MINT TWICE, and the same fix
+ * the EcoRI fragment got below: one cell on the report is one key in
+ * the payload, and the key is the one every reader's alias list is
+ * headed by.
+ *
+ * `canonical` is `GENETIC_FIELD_KEYS.<group>[0]` — checked against both
+ * copies of that table, apps/api/src/modules/patient-profile/
+ * genetic-evidence.ts and apps/mobile/lib/genetic-evidence.ts, and
+ * against `OCR_FIELD_KEYS` in the app's report-detail screen. It is
+ * also the name `EDITABLE_OCR_FIELDS` in profile.schema.ts accepts, so
+ * a patient's hand-correction now lands ON this cell rather than beside
+ * it: `patchDocumentOcrFields` spreads the patch over the stored
+ * `fields`, so a correction to `methylationValue` used to leave the
+ * OCR's `methylation_value` sitting next to it, disagreeing, and both
+ * reached the prompt.
+ *
+ * `aliases` are the structured-field loop's own spellings of that same
+ * cell — the snake name the Python parser gives the field and the
+ * camelCase form `toCamelCase` derives from it. They are DELETED rather
+ * than left beside the canonical key, for the reason the EcoRI note
+ * gives in full: nothing on this platform reads any of them on its own,
+ * every reader goes through an alias list that contains the canonical
+ * name, and a spelling left behind is a row on the prompt.
+ *
+ * The value is preferred off the canonical key when the loop already
+ * wrote one there (methylation: the parser's field IS `methylation_value`,
+ * so `toCamelCase` had already produced `methylationValue` carrying the
+ * unit) and taken off the first alias holding one otherwise (D4Z4: the
+ * parser's field is `d4z4_repeat_pathogenic`, which camelises to
+ * something that is not the canonical name).
+ *
+ * READ OFF `fields` AND NOT OFF `genetic_summary`, which is the whole
+ * point. `genetic_summary.d4z4_repeat_pathogenic` and
+ * `.methylation_value` are typed as numbers and are null in exactly the
+ * states this platform cares most about — a range, and a cell this
+ * repo refuses to read as a count. The structured field is written in
+ * every one of those states, carrying the raw text and the parser's own
+ * unit, so canonicalising off it is what makes the alias set the same
+ * shape whatever the report said.
+ */
+const CANONICAL_GENETIC_CELLS: ReadonlyArray<{
+  canonical: string;
+  aliases: readonly string[];
+}> = [
+  { canonical: 'd4z4Repeats', aliases: ['d4z4RepeatPathogenic', 'd4z4_repeat_pathogenic'] },
+  { canonical: 'methylationValue', aliases: ['methylation_value'] },
+];
+
+const canonicaliseGeneticCells = (fields: Record<string, string>) => {
+  for (const { canonical, aliases } of CANONICAL_GENETIC_CELLS) {
+    const value = fields[canonical] ?? aliases.map((alias) => fields[alias]).find(Boolean);
+    for (const alias of aliases) {
+      delete fields[alias];
+    }
+    if (value) {
+      fields[canonical] = value;
+    } else {
+      delete fields[canonical];
+    }
+  }
+};
+
 const formatAggregateStrength = (items: Array<Record<string, unknown>>) => {
   const left = items.find((item) => item.side === 'left')?.mrc_score;
   const right = items.find((item) => item.side === 'right')?.mrc_score;
@@ -124,7 +200,16 @@ const resolveExtension = (mimeType: string | null, fileName?: string) => {
   }
 };
 
-const buildFields = (
+/**
+ * Exported for `embedded-report-ocr.test.ts`, which is where the
+ * one-cell-one-key invariant is actually checked. The test renders what
+ * this returns through the real `renderChunkForPrompt` and counts the
+ * rows the model receives, because that is the surface the duplicates
+ * were visible on — counting keys here would have passed while the
+ * prompt carried a cell twice. Everything above `parse` is process
+ * plumbing; this is the whole of what the bridge decides.
+ */
+export const buildFields = (
   analysis: Record<string, unknown>,
   documentTypeHint: string,
   extractedText: string,
@@ -212,8 +297,6 @@ const buildFields = (
   if (geneticSummary) {
     const diagnosisType = toStringField(geneticSummary.diagnosis_type);
     const ecoriFragmentKb = toStringField(geneticSummary.ecori_fragment_kb);
-    const pathogenicRepeats = toStringField(geneticSummary.d4z4_repeat_pathogenic);
-    const methylationValue = toStringField(geneticSummary.methylation_value);
     const interpretationSummary = toStringField(geneticSummary.interpretation_summary);
 
     if (diagnosisType) {
@@ -221,20 +304,122 @@ const buildFields = (
       fields.geneticType = diagnosisType;
     }
     if (ecoriFragmentKb) {
-      fields.ecoriFragmentKb = ecoriFragmentKb;
-      fields.ecoRIFragment = `${ecoriFragmentKb}kb`;
+      // ONE MEASUREMENT, ONE CELL.
+      //
+      // This block used to write the fragment twice — `ecoriFragmentKb`
+      // as the bare float off `genetic_summary`, and `ecoRIFragment`
+      // with 「kb」 stapled on — on top of the `ecori_fragment_kb` /
+      // `ecoriFragmentKb` pair the structured-field loop above had
+      // already written from the same cell, with the parser's own unit.
+      // Three keys off one cell, in two different strings.
+      //
+      // Two strings is what made all three reach the prompt.
+      // `projectOcrFields` collapses a snake/camel alias pair only when
+      // the two values AGREE — a silent pick between two different
+      // values would be the redactor editing clinical data — and the
+      // bare float is what made them disagree. Rendered, one 18 kb
+      // fragment on one laboratory report reached the model as
+      // 「ecori_fragment_kb: 18kb」, 「ecoriFragmentKb: 18」 and
+      // 「ecoRIFragment: 18kb」, one under the other. Each carries its own
+      // 「length_in_kb_not_a_repeat_count」 now, so none of them reads as
+      // a repeat count — but three refusals about three cells is still
+      // three measurements where the laboratory printed one, and 「18」
+      // with no unit beside it is the spelling that reads as a count of
+      // 18 to a model asked about D4Z4 重复数.
+      //
+      // So the cell is written once, under the spelling every consumer's
+      // alias list is headed by (`GENETIC_FIELD_KEYS.ecoRIFragment`, in
+      // both the api's and the app's copy), carrying its unit — and the
+      // structured-field spellings of the same cell are removed rather
+      // than left beside it. Nothing reads either of those two on its
+      // own: every reader on this platform goes through an alias list
+      // that contains `ecoRIFragment`.
+      //
+      // PAYLOADS ALREADY STORED KEEP ALL THREE, and every read path
+      // still understands them. The alias lists are unchanged, so the
+      // passport, the app's report detail and the profile controller
+      // still find the cell under its old spellings; the redactor
+      // dispatches on the 「ecori」 substring rather than on a spelling,
+      // so an archived row still gets the refusal on each of them. This
+      // stops the triple being minted; it does not rewrite history.
+      fields.ecoRIFragment = withKbUnit(ecoriFragmentKb);
+      delete fields.ecoriFragmentKb;
+      delete fields.ecori_fragment_kb;
     }
-    if (pathogenicRepeats) {
-      fields.d4z4RepeatPathogenic = pathogenicRepeats;
-      fields.d4z4Repeats = pathogenicRepeats;
-    }
-    if (methylationValue) {
-      fields.methylationValue = methylationValue;
-    }
+    // NO D4Z4 AND NO METHYLATION WRITE HERE. Both used to be copied out
+    // of `genetic_summary` on top of what the structured-field loop had
+    // already written from the same cell, and both are now
+    // canonicalised off that loop's own output by
+    // `canonicaliseGeneticCells` below. What each write did:
+    //
+    // THE METHYLATION CELL REACHED THE PROMPT AS TWO MEASUREMENTS, ONE
+    // OF THEM WITHOUT ITS UNIT. `genetic_summary.methylation_value` is a
+    // bare float; the parser's structured field for the same cell
+    // carries the unit the laboratory printed, so the loop had written
+    // 「35%」 under both `methylation_value` and `methylationValue` — a
+    // pair that AGREES, which is the only case `projectOcrFields`
+    // collapses. Overwriting the camel half with 「35」 is what broke the
+    // agreement and kept both alive. Rendered, one cell on one report
+    // reached the model as 「methylation_value: 35%」 and
+    // 「methylationValue: 35」 one under the other in precise mode, and
+    // in strict mode as `numericValuesWithheld: 2` — two measurements
+    // withheld where the laboratory printed one. And because
+    // `GENETIC_FIELD_KEYS.methylationValue` is headed by
+    // `methylationValue`, the UNITLESS one is what every human-facing
+    // surface picked: the passport, the share page, the referral pack,
+    // the exports and the app's 病程 row. Commit 4a0c535 exists because
+    // this same cell already reached a patient with the wrong unit
+    // once, from the other end of the same pipe.
+    //
+    // ONE D4Z4 COUNT REACHED THE PROMPT AS TWO INDEPENDENTLY GRADED
+    // CELLS. This block wrote `d4z4RepeatPathogenic` AND `d4z4Repeats`
+    // from one number, on top of the `d4z4_repeat_pathogenic` /
+    // `d4z4RepeatPathogenic` pair the loop had already written from the
+    // same cell. The snake/camel pair collapses; `d4z4Repeats` has no
+    // snake twin to collapse against, and `projectOcrFields` dispatches
+    // on the 「d4z4」 substring rather than on a spelling — so each got
+    // its own raw row AND its own `_clinical` row. A report printing
+    // 「D4Z4 重复单元数 3/22」 handed the model
+    // 「d4z4RepeatPathogenic: 3」 / 「d4z4RepeatPathogenic_clinical:
+    // within_fshd1_repeat_range」 / 「d4z4Repeats: 3」 /
+    // 「d4z4Repeats_clinical: within_fshd1_repeat_range」, four rows for
+    // one contracted allele, beside the uncontracted allele's own two.
+    //
+    // AND THE ALIAS SET WAS INCONSISTENT BY STATE, which is the half
+    // that could not be seen from the happy path.
+    // `genetic_summary.d4z4_repeat_pathogenic` is null for a range and
+    // for every cell this repo refuses to read as a count, so a report
+    // whose count cell says 0 — or 1-10 — got `d4z4RepeatPathogenic`
+    // and no `d4z4Repeats` at all, while a report printing 3 got both.
+    // The one key `EDITABLE_OCR_FIELDS` lets a patient correct, and the
+    // one `profile.controller.ts` names first when it writes 「D4Z4
+    // 重复数 …」 into the baseline, was the key that existed only when
+    // the reading was clean.
     if (interpretationSummary) {
       fields.interpretationSummary = interpretationSummary;
     }
   }
+
+  // Outside the `genetic_summary` guard on purpose: the cells it
+  // collapses are the structured-field loop's, and that loop runs for
+  // any document whose parse produced them.
+  //
+  // PAYLOADS ALREADY STORED KEEP EVERY SPELLING, and every read path
+  // still understands them — the same statement the EcoRI note above
+  // makes, checked the same way. The alias lists are untouched, and
+  // both `GENETIC_FIELD_KEYS.d4z4Repeats` and
+  // `GENETIC_FIELD_KEYS.methylationValue` still list the removed
+  // spellings after the canonical one, so the passport, the profile
+  // autofill, the exports, the app's report-detail table and its
+  // correction sheet all still find an archived cell. The redactor
+  // dispatches on the 「d4z4」 and 「methylation」 substrings rather than
+  // on a spelling, so an archived row still gets its reading on each of
+  // them — including the duplicate rows, which is exactly the state
+  // this stops being minted rather than one it rewrites. The one
+  // archived reader that names spellings without the canonical
+  // fallback, `profile.controller.ts`, reads
+  // ['d4z4Repeats', 'd4z4RepeatPathogenic'] and so covers both.
+  canonicaliseGeneticCells(fields);
 
   const muscleStrength = Array.isArray(normalizedSummary?.muscle_strength)
     ? (normalizedSummary?.muscle_strength as Array<Record<string, unknown>>)

@@ -101,8 +101,26 @@ const pickFieldValue = (doc: DocumentLike | undefined, keys: string[]) => {
   return undefined;
 };
 
+/**
+ * A calendar date with no time part. Same guard, same reason, as the
+ * API's `formatDate` in `profile.passport.ts` — this function is its
+ * twin and has to answer identically or the two screens disagree.
+ *
+ * `patient_profiles.diagnosis_date` is a `date` column, so it arrives
+ * as 「YYYY-MM-DD」, and an OCR 报告日期 arrives as whatever the parser
+ * read off the page — which is why this is a test and not an
+ * assumption. `new Date('2025-05-09')` is UTC midnight, and
+ * `getFullYear` / `getMonth` / `getDate` then read it back in the
+ * DEVICE's zone, so every phone west of Greenwich turned a 05-09
+ * report into 2025-05-08 and fed that wrong day on to the anesthesia
+ * card, the surveillance schedule and the printed passport.
+ */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 const formatDate = (value?: string | null) => {
   if (!value) return null;
+  const trimmed = value.trim();
+  if (DATE_ONLY.test(trimmed)) return trimmed;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const year = date.getFullYear();

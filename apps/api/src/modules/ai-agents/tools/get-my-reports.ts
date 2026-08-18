@@ -162,9 +162,18 @@ export class GetMyReportsTool implements ITool {
    * unconditionally and `reportDate_year` is the only form either
    * allowlist carries — so that clause was an instruction to answer
    * 「你这份报告是 X 月 X 日的」 out of a field that had already gone.
+   *
+   * AND 「report year」 WAS THE UPLOAD YEAR. The retriever filed
+   * `uploaded_at` under `reportDate`, so this sentence told the model
+   * it had the report's own year when what it had was the year the
+   * patient uploaded the file — for a genetics report that can be
+   * seven years apart, and the gap decides whether a clinician
+   * re-tests. The two are separate keys now (`reportDate_year` and
+   * `uploadYear`, see `resolveReportDate` in patient-reports.ts), so
+   * the sentence names them separately and says which is which.
    */
   readonly description =
-    'Retrieve the authenticated user\'s recent uploaded medical reports (most recent first). Each report carries a classified type, document type, report year, and structured OCR fields. Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
+    'Retrieve the authenticated user\'s recent uploaded medical reports (most recent first). Each report carries a classified type, document type, the report year when the report itself states one — otherwise the year it was uploaded, which is not the same thing — and structured OCR fields. Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

@@ -227,10 +227,25 @@ const SCHOOL_ENTRY_AGE = 7;
 const hasValue = (value: string | null | undefined): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim() !== '—';
 
+/** A calendar date with no time part.
+ *
+ *  A monitoring slot's `latestDate` arrives from the API already
+ *  formatted as a bare 「YYYY-MM-DD」, and re-parsing a string that is
+ *  already the answer is where the day was lost a second time:
+ *  `new Date('2025-05-09')` is UTC midnight, so `getDate` in the
+ *  device's zone printed 2025-05-08 for a report the passport dated
+ *  05-09, and this schedule then disagreed with the passport it was
+ *  built from. `occurredAt` and `recordedAt` are real instants and
+ *  still take the `Date` path below, where a zone is the right thing
+ *  to apply. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 /** YYYY-MM-DD, or null. Full year on purpose: 「05-14」 on a wheelchair
  *  event tells the patient nothing about whether it was this spring. */
 const formatFullDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
+  const trimmed = value.trim();
+  if (DATE_ONLY.test(trimmed)) return trimmed;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const month = String(date.getMonth() + 1).padStart(2, '0');

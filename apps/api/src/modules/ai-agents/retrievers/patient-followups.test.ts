@@ -333,3 +333,60 @@ describe('PatientFollowupRetriever', () => {
     }
   });
 });
+
+/**
+ * A DIRECTION IS A STATEMENT ABOUT CHANGE, AND TWO SERIES SHAPES CARRY
+ * NONE.
+ *
+ * Both used to assert one anyway, and `get_my_records`'s own
+ * description tells the model to call this tool for 「我最近是不是变差
+ * 了」 and promises it 「which direction they moved」 — so whatever these
+ * fields say is what the patient hears back.
+ */
+describe('no direction without something to compare', () => {
+  const fieldsOf = async (
+    seriesRows: unknown[],
+    unableRows: unknown[] = [],
+  ): Promise<Record<string, unknown>> => {
+    const r = await new PatientFollowupRetriever(poolWith(seriesRows, [], unableRows)).search(
+      { question: '' },
+      ctx(),
+    );
+    return r.chunks[0].metadata.fields as Record<string, unknown>;
+  };
+
+  it('a one-reading series carries no direction and no band', async () => {
+    // earliest === latest, delta 0, 「flat」 — and the strict-mode band
+    // came out 「最近变化: 基本持平」 for a patient who has recorded once.
+    const f = await fieldsOf([
+      { metric_key: 'stair_climb', unit: 'sec', value: '16', recorded_at: daysAgoIso(3) },
+    ]);
+    expect(f.count).toBe(1);
+    expect(f.spanDays).toBe(0);
+    expect(f.latestValue).toBe(16);
+    expect(f.series).toBe('16sec(3天前)');
+    expect(f.changeDirection).toBeUndefined();
+    expect(f.latestBand).toBeUndefined();
+  });
+
+  it('two readings still carry both', async () => {
+    const f = await fieldsOf([
+      { metric_key: 'stair_climb', unit: 'sec', value: '12', recorded_at: daysAgoIso(14) },
+      { metric_key: 'stair_climb', unit: 'sec', value: '16', recorded_at: daysAgoIso(0) },
+    ]);
+    expect(f.changeDirection).toBe('up');
+    expect(f.latestBand).toBe('较前升高');
+  });
+
+  it('a metric whose every row is 做不到 asserts no direction either', async () => {
+    // 「flat」 about a patient who has LOST the ability to perform the
+    // test was the worst available value for this field.
+    const f = await fieldsOf(
+      [],
+      [{ metric_key: 'stair_climb', unable_count: 6, most_recent_days: 2 }],
+    );
+    expect(f.count).toBe(0);
+    expect(f.changeDirection).toBeUndefined();
+    expect(f.latestBand).toBe('本期均记录为做不到');
+  });
+});

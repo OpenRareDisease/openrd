@@ -1115,9 +1115,14 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
   const disease = stored.diseaseBackground as Record<string, unknown>;
 
   /** One laboratory report, with the same cells sitting in the archive
-   *  — which is where `applyGeneticReportAutofill` puts them. */
-  const reported = (cells: { d4z4?: string; haplotype?: string }) =>
-    build({
+   *  — which is where `applyGeneticReportAutofill` puts them.
+   *
+   *  The overrides are handed back rather than built in place so a test
+   *  can put the SAME profile through the clinical passport and this
+   *  document, which is the only way to assert that the two carry one
+   *  sentence rather than two. */
+  const reportedProfile = (cells: { d4z4?: string; haplotype?: string }) =>
+    ({
       baseline: {
         ...stored,
         diseaseBackground: {
@@ -1139,7 +1144,9 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
           },
         },
       ],
-    } as Partial<PatientProfileDTO>);
+    }) as Partial<PatientProfileDTO>;
+
+  const reported = (cells: { d4z4?: string; haplotype?: string }) => build(reportedProfile(cells));
 
   const valueOf = (result: ReturnType<typeof build>, key: string) =>
     itemOf(sectionOf(result, 'diagnosis'), key)?.value;
@@ -1149,6 +1156,10 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
       recordedZh: '4qA/4qB',
       reading: 'no_result',
       readingZh: expect.stringContaining('读不出'),
+      // 单倍型 has no guideline qualifier at all — see
+      // GENETIC_RESULT_ITEMS. `toEqual` and not `toMatchObject` on
+      // purpose: this item's whole shape is the assertion.
+      qualifier: null,
     });
   });
 
@@ -1256,5 +1267,84 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
     } as Partial<PatientProfileDTO>);
 
     expect(valueOf(withMethylation, 'diagnosis.methylation')).toBe('32%');
+  });
+
+  /**
+   * THE 8–10 UNIT GRAY ZONE REACHED EVERY SURFACE EXCEPT THIS ONE.
+   *
+   * The passport DTO, the markdown export, the share page, the mobile
+   * PDF and the referral pack all print it, off the same
+   * `buildClinicalPassportSummary` this document is normalised from —
+   * and this item went out as the bare integer. So the patient's own
+   * phone said 「这一项结果本身带着不确定性」 and the registry ingesting
+   * the same profile in the same run was told 9 and nothing else. The
+   * receiver who can act on the uncertainty was the only one not told.
+   */
+  it('灰区里的重复数，发出去时带着指南的限定', () => {
+    const value = valueOf(reported({ d4z4: '9', haplotype: '4qA' }), 'diagnosis.d4z4');
+    expect(value).toMatchObject({
+      recordedZh: '9',
+      reading: 'result',
+      qualifier: { kind: 'grey_zone_8_10', noteZh: expect.stringContaining('8–10 单元灰区') },
+    });
+    // The same sentence the patient's own passport carries, not a
+    // second one written here.
+    expect((value as { qualifier: { noteZh: string } }).qualifier.noteZh).toBe(
+      buildClinicalPassportSummary({
+        ...EXPORT_FIXTURE_PROFILE,
+        ...reportedProfile({ d4z4: '9', haplotype: '4qA' }),
+      }).diagnosis.geneticEvidence.greyZoneNote,
+    );
+  });
+
+  /**
+   * AND THE ZONE IS NOT RE-DERIVED HERE, so every condition the
+   * passport puts on it holds in this document too. 4qB is the one
+   * that would be easiest to lose: the range is stated for 4qA arrays,
+   * and a qualifier computed from the number alone would tell a trial
+   * site that a non-permissive report is borderline-positive.
+   */
+  it('同样是 9，但报告写的是 4qB —— 不带灰区限定', () => {
+    expect(valueOf(reported({ d4z4: '9', haplotype: '4qB' }), 'diagnosis.d4z4')).toMatchObject({
+      recordedZh: '9',
+      reading: 'result',
+      qualifier: null,
+    });
+  });
+
+  it('区间外的重复数不带限定', () => {
+    for (const d4z4 of ['5', '12']) {
+      expect(valueOf(reported({ d4z4, haplotype: '4qA' }), 'diagnosis.d4z4')).toMatchObject({
+        recordedZh: d4z4,
+        reading: 'result',
+        qualifier: null,
+      });
+    }
+  });
+
+  /**
+   * A QUALIFIER IS A VERDICT ON A RESULT, so there is none where this
+   * document has just said it never read the line. The zone flag is
+   * the passport's reading of the cell on the evidence REPORT; hung
+   * off an archived string that differs from it, it would attribute
+   * the guideline's verdict to the wrong number.
+   */
+  it('档案里的值不是本平台读到的那一行时，不挂灰区限定', () => {
+    const mismatch = build({
+      baseline: { ...stored, diseaseBackground: { ...disease, d4z4: '9 个重复单元' } },
+      documents: [
+        {
+          ...EXPORT_FIXTURE_PROFILE.documents[0],
+          documentType: 'genetic_report',
+          status: 'parsed',
+          ocrPayload: { fields: { d4z4Repeats: '9', haplotype: '4qA' } },
+        },
+      ],
+    } as Partial<PatientProfileDTO>);
+
+    expect(valueOf(mismatch, 'diagnosis.d4z4')).toMatchObject({
+      reading: 'not_read',
+      qualifier: null,
+    });
   });
 });

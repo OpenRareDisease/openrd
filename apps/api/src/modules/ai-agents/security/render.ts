@@ -126,9 +126,27 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   diagnosisYear: '确诊年份',
   diagnosisType: '分型/诊断方式',
   d4z4: 'D4Z4 重复数',
-  d4z4_clinical: 'D4Z4 临床分级',
+  // NOT 「临床分级」, FOR EITHER OF THESE.
+  //
+  // The label was written when the key was expected to hold a severity
+  // ladder, and the ladder is gone: what these keys hold is this
+  // platform's reading of the cell — a band on the one repeat-count
+  // boundary this repo states, the 8–10 grey zone, a permissive or
+  // non-permissive haplotype — or, for most real profiles, a refusal to
+  // read the cell at all (`not_read_off_a_laboratory_report`,
+  // `length_in_kb_not_a_repeat_count`, `unspecified_haplotype`). None of
+  // those is a grade, and 「D4Z4 临床分级: length_in_kb_not_a_repeat_count」
+  // is the same overclaim that got 甲基化临床分级 deleted four lines
+  // below. 本平台判读 is true of every value these keys can hold.
+  //
+  // A band IS reachable here now — before the laboratory gate was
+  // asked rather than hardcoded false, these two keys could only ever
+  // hold the refusal, which made the old label wrong twice over. See
+  // `clinicalise` in pii-redactor.ts, and the 分级 check in
+  // tools/tool-descriptions.test.ts that keeps the next one out.
+  d4z4_clinical: 'D4Z4 本平台判读',
   haplotype: '单倍型',
-  haplotype_clinical: '单倍型临床分级',
+  haplotype_clinical: '单倍型本平台判读',
   methylation: '甲基化值',
   // No 甲基化临床分级. This platform states no methylation boundary, so
   // there is no grade to label — `methylation_withheld` says a number
@@ -152,6 +170,12 @@ const REPORT_FIELD_LABELS: Record<string, string> = {
   // model it would get the full date in precise mode, which is what a
   // label for an unreachable field is worth.
   reportDate_year: '报告年份',
+  // 上传年份 AND NOT 报告年份. This key holds the year the file reached
+  // this platform, which is what a row whose OCR carries no
+  // `reportTime` has instead of a report date — and calling it 报告年份
+  // is what had the assistant dating a 2019 genetics report to 2026
+  // while the citation chip beside it read 2019-03.
+  uploadYear: '上传年份',
   status: '处理状态',
   findings_summary: '影像/报告印象',
 };

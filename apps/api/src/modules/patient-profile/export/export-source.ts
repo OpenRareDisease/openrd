@@ -172,6 +172,20 @@ export interface ReportField {
    */
   readonly readsAsResult: boolean | null;
   /**
+   * WHAT THE GUIDELINE SAYS ABOUT THIS CELL'S RESULT — the same
+   * qualifier `geneticResultValue` hands the TREAT-NMD document, taken
+   * off the same `GENETIC_RESULT_ITEMS` entry so the FHIR Observation
+   * and the TREAT-NMD item cannot describe one number differently in
+   * one run.
+   *
+   * Null for every non-genetic field, for the genetic cells the
+   * guideline says nothing extra about, and for a cell this platform
+   * reads no result off at all — a qualifier on a value the same
+   * resource is publishing a `dataAbsentReason` for would be a verdict
+   * on a number that is not there.
+   */
+  readonly geneticQualifier: SerialisedGeneticQualifier | null;
+  /**
    * The ledger key a coding WOULD be looked up under. Null where no
    * candidate exists at all. Never a code — see codings.ts.
    */
@@ -320,6 +334,24 @@ export interface NormalisedSource {
    * `geneticResultValue`.
    */
   readonly geneticEvidenceRecord: PassportGeneticRecordDTO;
+  /**
+   * THE 8–10 UNIT GRAY-ZONE SENTENCE the passport wrote for this
+   * profile, or null — `diagnosis.geneticEvidence.greyZoneNote`,
+   * carried here for the same reason the record above is carried whole.
+   *
+   * THE FLAG IS ALREADY HERE and it is `geneticEvidenceRecord.greyZone`
+   * — this member is the COPY, which lives one level up on the evidence
+   * DTO rather than on the record and so could not ride along with it.
+   * Both travel because the qualifier needs both: a key a registry can
+   * filter on, and the sentence a human reads. See
+   * `SerialisedGeneticQualifier`.
+   *
+   * NON-NULL ONLY WHERE THE PASSPORT WROTE ONE, which is where a
+   * LABORATORY's report states an 8–10 repeat count and does not state
+   * 4qB. All three conditions are the passport's, asked once, in
+   * profile.passport.ts. Nothing in this lane re-asks them.
+   */
+  readonly geneticGreyZoneNoteZh: string | null;
   readonly familyHistoryStatement: string | null;
   readonly currentStatus: {
     readonly ambulation: string | null;
@@ -970,6 +1002,45 @@ export const geneticValueProvenanceZh = (
  * known. A `reading` invented for it would be this module answering a
  * question nothing else asks.
  */
+/**
+ * WHAT THE GUIDELINE SAYS ABOUT THE NUMBER, once the number is a
+ * result — carried beside `reading` because `reading` answers 「may a
+ * receiver map this as a result」 and this answers 「what does the
+ * result mean」, and only one of those two questions had an answer in
+ * these documents.
+ *
+ * THE DEFECT THIS CLOSES. The 8–10 unit gray zone was computed on the
+ * clinical passport summary the exports are built from, and reached
+ * the passport DTO, the markdown export, the share page, the mobile
+ * PDF and the referral pack — every surface a patient or their own
+ * clinician reads — and reached NEITHER portable export. So the two
+ * artefacts that go to a registry and to a trial site, the two readers
+ * who can actually ACT on 「this result carries its own uncertainty」,
+ * received the bare integer 9 under 「D4Z4 重复单元数」 with nothing
+ * beside it, while the patient's own phone showed the qualifier. One
+ * profile, one run, and the reader best placed to act was the only one
+ * not told.
+ *
+ * `kind` IS THE PART A REGISTRY MAPS. `noteZh` is the patient-facing
+ * sentence and a registry ingesting Chinese prose is a registry that
+ * drops it; a stable key is what lets a trial site filter on the zone
+ * without reading a word of it. The two are emitted together so the
+ * human reading the same document sees why.
+ *
+ * NOT RE-DERIVED HERE. `kind` and `noteZh` are the passport's own
+ * `record.greyZone` and `geneticEvidence.greyZoneNote`, carried the way
+ * `isAResult` carries `isDeterminateRepeatCount`. A second reading of
+ * the same cell written in this module is how a registry comes to
+ * receive a classification the patient's own page does not print — and
+ * the zone in particular is a classification of a 4qA array read off a
+ * LABORATORY's report, three conditions this module has no business
+ * re-checking.
+ */
+export type SerialisedGeneticQualifier = {
+  readonly kind: 'grey_zone_8_10';
+  readonly noteZh: string;
+};
+
 /* A `type` and not an `interface`, so it stays assignable to the
  * TREAT-NMD document's own value union — an interface has no implicit
  * index signature and would have to be listed there by name. */
@@ -979,6 +1050,18 @@ export type SerialisedGeneticResult = {
   readonly reading: 'result' | 'no_result' | 'not_read';
   /** The same answer in the language the rest of this document is in. */
   readonly readingZh: string;
+  /**
+   * What the guideline says about this result, or null when it says
+   * nothing about it. See `SerialisedGeneticQualifier`.
+   *
+   * NULL WHENEVER `reading` IS NOT `result`, and that is not tidiness.
+   * The zone flag is the passport's classification of the cell on the
+   * evidence REPORT; `not_read` means the archived line is a different
+   * string, and hanging a guideline's verdict off a line this document
+   * has just said it never read would attribute the verdict to the
+   * wrong number.
+   */
+  readonly qualifier: SerialisedGeneticQualifier | null;
 };
 
 const GENETIC_RESULT_READING_LABELS_ZH: Record<SerialisedGeneticResult['reading'], string> = {
@@ -1032,15 +1115,42 @@ const GENETIC_RESULT_ITEMS: Record<
   {
     readonly evidenceLineZh: (record: PassportGeneticRecordDTO) => string | null;
     readonly isAResult: (record: PassportGeneticRecordDTO) => boolean;
+    /**
+     * The guideline's own qualifier on this item's result, read off the
+     * passport, on the same terms as `isAResult`.
+     *
+     * TWO CALLERS AND ONE ANSWER, again. `geneticResultValue` asks it
+     * for the TREAT-NMD item; `collectReportFields` asks it for the
+     * FHIR Observation built off the same cell. A qualifier written
+     * twice is two documents from one run disagreeing about whether
+     * this patient's number is borderline.
+     *
+     * 单倍型 HAS NONE, and that is not an oversight: 4qA and 4qB are the
+     * two answers and neither is borderline. The zone is a statement
+     * about a repeat COUNT.
+     */
+    readonly qualifier: (
+      record: PassportGeneticRecordDTO,
+      greyZoneNoteZh: string | null,
+    ) => SerialisedGeneticQualifier | null;
   }
 > = {
   d4z4: {
     evidenceLineZh: (record) => record.d4z4?.raw ?? null,
     isAResult: (record) => isDeterminateRepeatCount(record.d4z4),
+    // Both halves required. The flag is the passport's gate and the
+    // sentence is the passport's copy for it; emitting a `kind` with an
+    // invented sentence, or a sentence with no key to filter on, is
+    // each half of the thing this qualifier exists to carry.
+    qualifier: (record, greyZoneNoteZh) =>
+      record.greyZone && greyZoneNoteZh !== null
+        ? { kind: 'grey_zone_8_10', noteZh: greyZoneNoteZh }
+        : null,
   },
   haplotype: {
     evidenceLineZh: (record) => record.haplotype,
     isAResult: (record) => record.permissiveHaplotype !== null,
+    qualifier: () => null,
   },
 };
 
@@ -1061,7 +1171,12 @@ export const geneticResultValue = (
       : spec.isAResult(record)
         ? 'result'
         : 'no_result';
-  return { recordedZh, reading, readingZh: GENETIC_RESULT_READING_LABELS_ZH[reading] };
+  return {
+    recordedZh,
+    reading,
+    readingZh: GENETIC_RESULT_READING_LABELS_ZH[reading],
+    qualifier: reading === 'result' ? spec.qualifier(record, source.geneticGreyZoneNoteZh) : null,
+  };
 };
 
 /**
@@ -1412,6 +1527,7 @@ const collectReportFields = (
   documents: readonly PatientDocumentDTO[],
   geneticEvidenceReading: NormalisedSource['geneticEvidenceReading'],
   geneticEvidenceRecord: PassportGeneticRecordDTO,
+  geneticGreyZoneNoteZh: string | null,
 ): ReportField[] => {
   const out: ReportField[] = [];
   // Newest first so a consumer taking the head of each key gets the
@@ -1468,6 +1584,18 @@ const collectReportFields = (
           spec.geneticItem === undefined
             ? null
             : GENETIC_RESULT_ITEMS[spec.geneticItem].isAResult(geneticEvidenceRecord),
+        // Gated on the reading above for the reason
+        // `SerialisedGeneticResult.qualifier` is: the guideline's
+        // verdict belongs to a result, and this resource declines to
+        // publish a value at all when there is not one.
+        geneticQualifier:
+          spec.geneticItem === undefined ||
+          !GENETIC_RESULT_ITEMS[spec.geneticItem].isAResult(geneticEvidenceRecord)
+            ? null
+            : GENETIC_RESULT_ITEMS[spec.geneticItem].qualifier(
+                geneticEvidenceRecord,
+                geneticGreyZoneNoteZh,
+              ),
         // The report's own stated time when OCR read one, else the
         // upload time — with the substitution recorded, not silent.
         // Every consumer of `observedAt` has to decide what to do
@@ -1561,6 +1689,7 @@ export const normaliseSource = (
     geneticallyConfirmed: passportDiagnosis.confirmation === 'genetic',
     geneticEvidenceReading,
     geneticEvidenceRecord: passportDiagnosis.geneticEvidence.record,
+    geneticGreyZoneNoteZh: passportDiagnosis.geneticEvidence.greyZoneNote,
     familyHistoryStatement: text(disease?.familyHistory),
     currentStatus: {
       ambulation: text(status?.independentlyAmbulatory),
@@ -1600,6 +1729,7 @@ export const normaliseSource = (
       profile.documents,
       geneticEvidenceReading,
       passportDiagnosis.geneticEvidence.record,
+      passportDiagnosis.geneticEvidence.greyZoneNote,
     ),
   };
 };

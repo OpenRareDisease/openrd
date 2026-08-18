@@ -187,3 +187,76 @@ describe('PatientProfileRetriever', () => {
     expect((result.chunks[0].metadata.fields as Record<string, unknown>) ?? {}).toEqual({});
   });
 });
+
+/**
+ * WHERE AN ARCHIVED GENETICS CELL CAME FROM.
+ *
+ * The redactor decides what the assistant may say about
+ * `diseaseBackground.d4z4` / `.haplotype`, and it had nothing to decide
+ * with: it passed `fromLaboratoryReport: false` as a constant. So the
+ * prompt asserted `not_read_off_a_laboratory_report` about every
+ * archived genetics cell — including the ones the read-time autofill
+ * copied out of a parsed genetics report, whose provenance the passport
+ * resolves to 「报告读取」 and whose TREAT-NMD sentence ends 「所以这个值是
+ * 基因报告的解析结果」 in the same run.
+ */
+describe('the genetics cells carry where they came from', () => {
+  const sequencedPool = (profileRows: unknown[], documentRows: unknown[]) => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: profileRows, rowCount: profileRows.length })
+      .mockResolvedValueOnce({ rows: documentRows, rowCount: documentRows.length });
+    return { query } as unknown as Pool;
+  };
+
+  const geneticsDocument = (fields: Record<string, unknown>, documentType = 'genetic_report') => ({
+    id: 'doc-1',
+    document_type: documentType,
+    status: 'parsed',
+    uploaded_at: '2026-01-05T00:00:00Z',
+    ocr_payload: { fields: { classifiedType: documentType, ...fields } },
+  });
+
+  const flagsFor = async (documentRows: unknown[]) => {
+    const result = await new PatientProfileRetriever(
+      sequencedPool([POPULATED_ROW], documentRows),
+    ).search({ question: '' }, makeCtx());
+    const fields = result.chunks[0].metadata.fields as Record<string, unknown>;
+    return {
+      d4z4: fields.d4z4FromLaboratoryReport,
+      haplotype: fields.haplotypeFromLaboratoryReport,
+    };
+  };
+
+  it('says so when the archived cells match the laboratory report they were read off', async () => {
+    expect(await flagsFor([geneticsDocument({ d4z4Repeats: '3/22', haplotype: '4qA' })])).toEqual({
+      d4z4: true,
+      haplotype: true,
+    });
+  });
+
+  it('refuses per cell when only one of them matches', async () => {
+    // A patient hand-corrected one box, or the report was re-parsed.
+    // The cell that no longer matches is not a value this platform
+    // read off anything.
+    expect(await flagsFor([geneticsDocument({ d4z4Repeats: '5', haplotype: '4qA' })])).toEqual({
+      d4z4: false,
+      haplotype: true,
+    });
+  });
+
+  it('refuses both when the evidence document is a transcription', async () => {
+    // `pickGeneticEvidenceDocument` takes a 病历摘要 quoting a result
+    // when no genetics report read anything out — for display. It is
+    // not a measurement, and nothing may be graded off it.
+    expect(
+      await flagsFor([
+        geneticsDocument({ d4z4Repeats: '3/22', haplotype: '4qA' }, 'medical_summary'),
+      ]),
+    ).toEqual({ d4z4: false, haplotype: false });
+  });
+
+  it('refuses both when there is no document at all', async () => {
+    expect(await flagsFor([])).toEqual({ d4z4: false, haplotype: false });
+  });
+});

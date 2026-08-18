@@ -62,9 +62,14 @@ import {
   PROMPT_ALLOWLIST,
 } from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
-import { isLaboratoryGeneticReport } from '../../patient-profile/genetic-evidence.js';
+import {
+  GENETIC_FIELD_KEYS,
+  isLaboratoryGeneticReport,
+  pickReading,
+} from '../../patient-profile/genetic-evidence.js';
 import {
   FSHD1_MAX_REPEAT_UNITS,
+  isD4Z4GreyZone,
   isDeterminateRepeatCount,
   parsePermissiveHaplotype,
   readSizeCell,
@@ -227,6 +232,43 @@ const NOT_A_LABORATORY_READING = 'not_read_off_a_laboratory_report';
 const LENGTH_IN_KB_NOT_A_REPEAT_COUNT = 'length_in_kb_not_a_repeat_count';
 
 /**
+ * IS THIS CELL A READING AT ALL — the passport's `pickReading` rule,
+ * asked before any reader below is handed the cell.
+ *
+ * Every reader here used to open with `String(raw)`, and `String` has
+ * an answer for everything. A haplotype cell holding
+ * `['4qA', '4qB']` — which is what the extractor writes when the report
+ * lists the laboratory's probes — stringified to 「4qA,4qB」, and a
+ * `d4z4Repeats` cell holding `['3']` stringified to 「3」 and was banded
+ * as a repeat count of 3. `pickReading` refuses both: 「A payload field
+ * holding an array or an object is NOT a reading … There is no sensible
+ * coercion, so there is none.」 This is that refusal, in the shape the
+ * readers below need it.
+ *
+ * `not_a_reading` and `empty` are deliberately different answers.
+ * Nothing is published for an empty cell, because there is nothing on
+ * the report to say anything about. A cell that holds something this
+ * platform cannot read as a value is a cell that EXISTS, and the model
+ * has to be told the platform declined to read it — otherwise strict
+ * mode drops the raw cell, no reading is written, and the assistant
+ * reports a genetics report as having no haplotype at all.
+ */
+type GeneticCellText =
+  | { kind: 'text'; text: string }
+  | { kind: 'empty' }
+  | { kind: 'not_a_reading' };
+
+const readGeneticCell = (raw: unknown): GeneticCellText => {
+  if (raw === null || raw === undefined) return { kind: 'empty' };
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed ? { kind: 'text', text: trimmed } : { kind: 'empty' };
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) return { kind: 'text', text: String(raw) };
+  return { kind: 'not_a_reading' };
+};
+
+/**
  * THE D4Z4 CELL, READ BY THE READER THE REST OF THE PLATFORM READS IT
  * WITH, and banded only when it is a repeat count.
  *
@@ -266,14 +308,51 @@ const LENGTH_IN_KB_NOT_A_REPEAT_COUNT = 'length_in_kb_not_a_repeat_count';
  * the same number with 本人填写 or 转录自非基因报告文件 in its bracket
  * and refusing to grade it. See `NOT_A_LABORATORY_READING`.
  */
-const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
-  const reading = readSizeCell(String(raw));
-  if (reading === null) return null;
+
+/**
+ * THE 8–10 UNIT GREY ZONE, WHICH THE ASSISTANT WAS THE ONE CONSUMER NOT
+ * TOLD ABOUT.
+ *
+ * `within_fshd1_repeat_range` was the whole of the in-range answer, so a
+ * count of 9 reached the model spelled identically to a count of 5 —
+ * while the passport, the share page, the referral pack, the PDF and
+ * the exports were all printing 灰区 for that same cell in the same run,
+ * off `isD4Z4GreyZone`. Of every surface this platform has, the
+ * assistant is the one that generates ADVICE rather than showing a
+ * value to someone who can ask a follow-up question, and it was the one
+ * told the least: Giardina et al. 2024 has an 8 U 4qA array reported as
+ * likely pathogenic rather than pathogenic, because 1%–2% of European
+ * controls carry one with no signs and no family history.
+ *
+ * THE PREDICATE IS IMPORTED, NOT RESTATED. The edges live in
+ * `isD4Z4GreyZone` and its kb gate lives there too; a second copy of
+ * 「8 到 10」 in this file is how the assistant and the passport come to
+ * disagree about one number.
+ *
+ * AND IT IS GATED ON THE HAPLOTYPE THE SAME WAY THE PASSPORT GATES IT
+ * — `permissiveHaplotype !== false`, not `=== true`. The figure is
+ * stated for 4qA arrays, so over a report naming 4qB the note would be
+ * a paragraph about the other allele; a report that named no haplotype
+ * keeps it, which is the direction that only ever adds uncertainty.
+ */
+const WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE = 'within_fshd1_repeat_range_grey_zone_8_to_10';
+const clinicaliseD4Z4 = (
+  raw: unknown,
+  fromLaboratoryReport: boolean,
+  haplotypePermissive: boolean | null,
+): string | null => {
+  const cell = readGeneticCell(raw);
+  if (cell.kind === 'empty') return null;
   if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
+  if (cell.kind === 'not_a_reading') return 'unspecified';
+  const reading = readSizeCell(cell.text);
+  if (reading === null) return null;
   if (isDeterminateRepeatCount(reading)) {
-    return reading.value > FSHD1_MAX_REPEAT_UNITS
-      ? 'above_fshd1_repeat_range'
+    if (reading.value > FSHD1_MAX_REPEAT_UNITS) return 'above_fshd1_repeat_range';
+    // The 8–10 grey zone, on the passport's own predicate and gated the
+    // passport's own way. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+    return haplotypePermissive !== false && isD4Z4GreyZone(reading)
+      ? WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE
       : 'within_fshd1_repeat_range';
   }
   // The kb branch comes first, because a kb cell reading 0 is a length
@@ -318,10 +397,12 @@ const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | 
  * others.
  */
 const clinicaliseEcoRIFragment = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
-  const reading = readSizeCell(String(raw));
-  if (reading === null) return null;
+  const cell = readGeneticCell(raw);
+  if (cell.kind === 'empty') return null;
   if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
+  if (cell.kind === 'not_a_reading') return 'unspecified';
+  const reading = readSizeCell(cell.text);
+  if (reading === null) return null;
   // `readSizeCell` is what withholds the value from a negated cell, so
   //「未检出10kb以下片段」 arrives here with no length to name.
   return reading.value !== null ? LENGTH_IN_KB_NOT_A_REPEAT_COUNT : 'unspecified';
@@ -366,12 +447,14 @@ const clinicaliseEcoRIFragment = (raw: unknown, fromLaboratoryReport: boolean): 
 const OTHER_ALLELE_NOT_THE_CONTRACTED_ONE = 'other_allele_not_the_contracted_one';
 
 const clinicaliseOtherD4Z4Allele = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
-  const reading = readSizeCell(String(raw));
-  if (reading === null) return null;
+  const cell = readGeneticCell(raw);
+  if (cell.kind === 'empty') return null;
   // The laboratory gate first, as everywhere else: what a 病历摘要 quoted
   // is not this platform's reading of anything, this cell included.
   if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
+  if (cell.kind === 'not_a_reading') return 'unspecified';
+  const reading = readSizeCell(cell.text);
+  if (reading === null) return null;
   if (isDeterminateRepeatCount(reading)) return OTHER_ALLELE_NOT_THE_CONTRACTED_ONE;
   if (reading.unit === 'kb' && reading.value !== null) return LENGTH_IN_KB_NOT_A_REPEAT_COUNT;
   if (reading.value === 0) return 'zero_repeat_count_not_a_valid_reading';
@@ -427,9 +510,20 @@ const clinicaliseOtherD4Z4Allele = (raw: unknown, fromLaboratoryReport: boolean)
  * no result: `numericValuesWithheld` on the reports blob, and
  * `methylation_withheld` on the profile, which is the same sentence
  * under a label that states it instead of one that grades it.
+ *
+ * AND A CELL THAT IS NOT A SCALAR IS NEITHER. The two channels above
+ * are 「the laboratory's own word」 and 「a measurement, withheld」, and an
+ * array is not a word — `formatScalar` would have joined
+ * `['35', '40']` into 「甲基化值: 35、40」 and published it as this
+ * patient's methylation result, which is the coercion `pickReading`
+ * refuses everywhere else on this platform. It takes the withheld
+ * channel: there is a methylation cell on file and no number is
+ * reaching the prompt, which is true of it in both modes.
  */
 const methylationCell = (raw: unknown, mode: RedactionMode): 'raw' | 'withheld' | null => {
-  if (raw === null || raw === undefined || raw === '') return null;
+  const cell = readGeneticCell(raw);
+  if (cell.kind === 'empty') return null;
+  if (cell.kind === 'not_a_reading') return 'withheld';
   if (mode === 'precise') return 'raw';
   return isQualitativeResult(raw) ? 'raw' : 'withheld';
 };
@@ -454,11 +548,25 @@ const methylationCell = (raw: unknown, mode: RedactionMode): 'raw' | 'withheld' 
  * else, precisely because a transcription can carry a haplotype as
  * readily as a repeat count. Same gate as the cell above, for the same
  * reason and in the same words.
+ *
+ * A CELL HOLDING AN ARRAY IS `unspecified_haplotype` AND NOT `null`.
+ * It used to bail on `typeof raw !== 'string'` and return null, so no
+ * `_clinical` sibling was written — and nothing else refused the cell:
+ * precise mode published the array, which `formatScalar` joined into
+ * 「单倍型: 4qA、4qB」, the exact line `pickReading` exists to refuse,
+ * asserted as this patient's haplotype with no reading beside it; and
+ * strict mode, which drops the raw cell, published nothing at all, so
+ * the assistant reported a genetics report as having no haplotype. The
+ * cell EXISTS and this platform cannot read it — which is what
+ * `unspecified_haplotype` already says about 「4qA/4qB」 written as a
+ * string, and it is the same fact.
  */
 const clinicaliseHaplotype = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
-  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const cell = readGeneticCell(raw);
+  if (cell.kind === 'empty') return null;
   if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
-  const permissive = parsePermissiveHaplotype(raw);
+  if (cell.kind === 'not_a_reading') return 'unspecified_haplotype';
+  const permissive = parsePermissiveHaplotype(cell.text);
   if (permissive === true) return 'permissive_haplotype';
   if (permissive === false) return 'non_permissive_haplotype';
   return 'unspecified_haplotype';
@@ -476,6 +584,29 @@ const yearFromDate = (raw: unknown): number | null => {
     ? year
     : null;
 };
+
+/**
+ * EVERY VALUE A `_clinical` GENETICS KEY CAN HOLD THAT IS NOT A READING
+ * OF THE CELL — this platform declining to read it, in each of the
+ * wordings the readers above use.
+ *
+ * Exported for `tools/tool-descriptions.test.ts`, which uses it to ask
+ * the question this list exists to keep answerable: does a key whose
+ * label CLAIMS something — a 分级, a grade — ever actually hold one, or
+ * are all of its reachable values refusals? `PROFILE_FIELD_LABELS`
+ * deleted 甲基化临床分级 for exactly that reason and then kept
+ * 「D4Z4 临床分级」 and 「单倍型临床分级」 over two keys that, with the
+ * laboratory gate hardcoded false, could hold nothing but
+ * `not_read_off_a_laboratory_report`.
+ */
+export const GENETIC_READING_REFUSALS: ReadonlySet<string> = new Set([
+  NOT_A_LABORATORY_READING,
+  LENGTH_IN_KB_NOT_A_REPEAT_COUNT,
+  OTHER_ALLELE_NOT_THE_CONTRACTED_ONE,
+  'zero_repeat_count_not_a_valid_reading',
+  'unspecified',
+  'unspecified_haplotype',
+]);
 
 interface ClinicaliseResult {
   added: Record<string, unknown>;
@@ -614,33 +745,61 @@ const projectOcrFields = (
     if (!key.includes('_')) camelKeys.set(key, value);
   }
 
+  // THE HAPLOTYPE THE SAME REPORT STATES, read once for the whole blob,
+  // because the D4Z4 grey-zone note is about a 4qA array and this is
+  // how the passport gates it. `pickReading` over
+  // `GENETIC_FIELD_KEYS.haplotype` rather than a scan of this loop's
+  // keys: that table is every spelling any writer in this pipeline has
+  // ever produced for the cell, and reading it here with the passport's
+  // own reader is what keeps 「is this a 4qA array」 one question with
+  // one answer. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+  const haplotypePermissive = parsePermissiveHaplotype(
+    pickReading(rawFields, GENETIC_FIELD_KEYS.haplotype),
+  );
+
   for (const [key, value] of Object.entries(rawFields)) {
     if (key.includes('_') && camelKeys.has(toCamel(key)) && camelKeys.get(toCamel(key)) === value) {
       continue;
     }
     const lower = key.toLowerCase();
-    /** The cell as the report printed it — precise mode only, and
-     *  written before the reading so the two read in that order. */
-    const emitRawUnderPrecise = () => {
-      if (mode !== 'precise') return;
-      if (value === null || value === undefined || value === '') return;
-      out[key] = value;
+    /**
+     * A GENETICS CELL AND THIS PLATFORM'S READING OF IT, PUBLISHED
+     * TOGETHER OR NOT AT ALL.
+     *
+     * The cell as the report printed it goes first — precise mode only
+     * — so the two read in that order; the reading follows in both
+     * modes.
+     *
+     * THE INVARIANT IS ENFORCED HERE RATHER THAN REMEMBERED PER BRANCH.
+     * Each branch used to call `emitRawUnderPrecise()` and then, quite
+     * separately, write a `_clinical` sibling if one came back — two
+     * statements with nothing tying them together, and one reader
+     * returning `null` was all it took to break the pairing: a
+     * haplotype cell holding an array published 「4qA、4qB」 under
+     * precise consent with no reading of any kind beside it. A raw
+     * genetics cell never reaches a prompt without this platform's
+     * reading of it, and now it structurally cannot.
+     */
+    const publishGeneticCell = (clinical: string | null) => {
+      if (clinical === null) return;
+      if (mode === 'precise' && value !== null && value !== undefined && value !== '') {
+        out[key] = value;
+      }
+      out[`${key}_clinical`] = clinical;
     };
     if (lower.includes('d4z4')) {
-      emitRawUnderPrecise();
       // 「other」 is how every spelling of the uncontracted allele's cell
       // names itself, and it has to be asked before the band. See
       // `clinicaliseOtherD4Z4Allele`.
-      const v = lower.includes('other')
-        ? clinicaliseOtherD4Z4Allele(value, fromLaboratoryReport)
-        : clinicaliseD4Z4(value, fromLaboratoryReport);
-      if (v !== null) out[`${key}_clinical`] = v;
+      publishGeneticCell(
+        lower.includes('other')
+          ? clinicaliseOtherD4Z4Allele(value, fromLaboratoryReport)
+          : clinicaliseD4Z4(value, fromLaboratoryReport, haplotypePermissive),
+      );
     } else if (lower.includes('ecori')) {
       // The other size cell. See `clinicaliseEcoRIFragment` for why it
       // is read by its own reader and not by the one above.
-      emitRawUnderPrecise();
-      const v = clinicaliseEcoRIFragment(value, fromLaboratoryReport);
-      if (v !== null) out[`${key}_clinical`] = v;
+      publishGeneticCell(clinicaliseEcoRIFragment(value, fromLaboratoryReport));
     } else if (lower.includes('methylation')) {
       // No reading, in either mode — see `methylationCell`. The word
       // survives as the cell it is; the measurement is counted with
@@ -649,9 +808,7 @@ const projectOcrFields = (
       if (survives === 'raw') out[key] = value;
       else if (survives === 'withheld') withheldNumeric += 1;
     } else if (lower.includes('haplotype')) {
-      emitRawUnderPrecise();
-      const v = clinicaliseHaplotype(value, fromLaboratoryReport);
-      if (v !== null) out[`${key}_clinical`] = v;
+      publishGeneticCell(clinicaliseHaplotype(value, fromLaboratoryReport));
     } else if (lower.includes('date')) {
       // Both modes: strip to year-only. Even in precise mode we don't
       // want the exact day-of-month leaving the server.
@@ -725,13 +882,48 @@ const clinicalise = (
   const dropRawCell = mode === 'strict';
 
   if (scope === 'profile') {
+    // WHERE THIS SCOPE'S GENETICS CELLS CAME FROM, ASKED RATHER THAN
+    // ASSUMED.
+    //
+    // Both calls below used to pass a hardcoded `false`, on the stated
+    // ground that `baseline.diseaseBackground` is the registration
+    // form's own box. That is where the cell SITS, and it is not where
+    // the value came from: `applyGeneticReportAutofill` copies a parsed
+    // genetics report's values into those same empty boxes at read
+    // time. So the prompt asserted `not_read_off_a_laboratory_report`
+    // about cells whose provenance the passport was resolving to
+    // `kind: 'report'` / 「报告读取」 in the same run, and whose TREAT-NMD
+    // provenance sentence ends 「所以这个值是基因报告的解析结果」 — one
+    // profile, two answers, and the assistant's was the one that
+    // generates advice.
+    //
+    // The answer is now carried on the projection by the retriever,
+    // which asks `readGeneticEvidence` — the passport's and the
+    // exports' own reader. See `geneticCellsFromLaboratoryReport` in
+    // retrievers/patient-profile.ts. A projection that carries no flag
+    // (an older caller, a hand-built fixture) still reads as `false`,
+    // which is the refusal this branch used to hardcode.
+    //
+    // Both flags are dropped unconditionally: they are how this
+    // function was told what to say, never something to say. Dropping
+    // them here rather than letting layer 3 do it keeps them off the
+    // 「dropped fields not in PROMPT_ALLOWLIST」 warning, which is for
+    // fields somebody meant to ship.
+    const fromLaboratory = (key: string): boolean => input[key] === true;
+    drop.add('d4z4FromLaboratoryReport');
+    drop.add('haplotypeFromLaboratoryReport');
+    // The haplotype the same profile records, for the D4Z4 grey-zone
+    // gate — `permissiveHaplotype !== false`, the passport's own gate.
+    // See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+    const haplotypePermissive = parsePermissiveHaplotype(
+      typeof input.haplotype === 'string' ? input.haplotype : null,
+    );
     if ('d4z4' in input) {
-      // NEVER THE LABORATORY'S OWN READING, and not a judgement call:
-      // this scope's `d4z4` and `haplotype` are
-      // `baseline.diseaseBackground`, the boxes on the registration
-      // form. The passport prints those with their own bracket and
-      // refuses to grade them; so does this.
-      const v = clinicaliseD4Z4(input.d4z4, false);
+      const v = clinicaliseD4Z4(
+        input.d4z4,
+        fromLaboratory('d4z4FromLaboratoryReport'),
+        haplotypePermissive,
+      );
       if (v !== null) {
         added.d4z4_clinical = v;
         changed.push('d4z4');
@@ -751,7 +943,10 @@ const clinicalise = (
       }
     }
     if ('haplotype' in input) {
-      const v = clinicaliseHaplotype(input.haplotype, false);
+      const v = clinicaliseHaplotype(
+        input.haplotype,
+        fromLaboratory('haplotypeFromLaboratoryReport'),
+      );
       if (v !== null) {
         added.haplotype_clinical = v;
         changed.push('haplotype');
@@ -786,6 +981,21 @@ const clinicalise = (
         changed.push('reportDate');
       }
       drop.add('reportDate');
+    }
+    // THE UPLOAD YEAR IS A DIFFERENT CELL AND GETS A DIFFERENT KEY.
+    // `reportDate` is now only ever the laboratory's own date (see
+    // `resolveReportDate` in patient-reports.ts); a row that carries
+    // nothing but the moment the file arrived reaches here as
+    // `uploadDate` and leaves as `uploadYear`, so 报告年份 cannot be
+    // printed over an upload timestamp. Both are collapsed to the year
+    // by the same rule, for the same reason.
+    if ('uploadDate' in input) {
+      const year = yearFromDate(input.uploadDate);
+      if (year !== null && !('uploadYear' in input)) {
+        added.uploadYear = year;
+        changed.push('uploadDate');
+      }
+      drop.add('uploadDate');
     }
     // OCR `fields` blob is handled in the top-level redact() flow now
     // (both modes need projection, not just strict). See projectOcrFields.

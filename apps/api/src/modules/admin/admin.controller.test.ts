@@ -13,7 +13,9 @@ vi.mock('../patient-profile/export/index.js', async (importOriginal) => {
   return { ...actual, buildPortableExport: buildPortableExportMock };
 });
 
-const { AdminController, buildFullExportConfirmation } = await import('./admin.controller.js');
+const { AdminController, buildFullExportConfirmation, buildFullExportDisclosureNotes } =
+  await import('./admin.controller.js');
+const { FULL_EXPORT_COLUMNS } = await import('./admin.csv.js');
 const { FULL_EXPORT_MAX_ROWS } = await import('./admin.service.js');
 const { BASELINE_PROVENANCE_KEY } = await import('../patient-profile/baseline-provenance.js');
 
@@ -206,6 +208,55 @@ describe('AdminController.updatePatientBaseline', () => {
     // ABSENCE IS THE PATIENT. A marker here would say an administrator
     // typed a value the patient typed.
     expect(written['foundation.regionLabel']).toBeUndefined();
+  });
+
+  /**
+   * THE ENDPOINT, not the helper: the shipped back-office screen sends
+   * `null` for a box the operator emptied, so the helper's tests all
+   * passed while this HTTP surface accepted an empty string from any
+   * other client and answered 200 with a fresh 管理员代填 on nothing.
+   * Driven here through `baselineProfileSchema`, which is where the
+   * whitespace case turns into the empty-string one.
+   */
+  it.each([
+    ['an empty string', ''],
+    ['whitespace, which the schema trims to empty', '   '],
+    ['null, which is what the shipped screen sends', null],
+  ])('does not stamp a field the administrator emptied with %s', async (_label, value) => {
+    const profiles = profileWriter();
+    const controller = makeController({
+      admin: storedProfile({
+        foundation: { preferredName: '小张' },
+        [BASELINE_PROVENANCE_KEY]: {
+          'foundation.preferredName': {
+            source: 'admin_entered',
+            adminUserId: ADMIN_ID,
+            at: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+      profiles,
+    });
+    const { res, captured } = fakeResponse();
+
+    await controller.updatePatientBaseline(
+      request({
+        params: { userId: PATIENT_ID },
+        body: { foundation: { preferredName: value } },
+        method: 'PUT',
+      }),
+      res,
+    );
+
+    expect(captured.statusCode).toBe(200);
+    // Not「the marker was not refreshed」— there is no marker at all,
+    // and the one that was already there is gone with the value it
+    // described.
+    expect(block(writtenPayload(profiles))['foundation.preferredName']).toBeUndefined();
+    expect(writtenPayload(profiles)[BASELINE_PROVENANCE_KEY]).toBeUndefined();
+    // And what the caller is told matches what was stored, so a
+    // back-office row cannot render a source for a value that is gone.
+    expect((captured.body as { fieldOrigins: unknown[] }).fieldOrigins).toEqual([]);
   });
 
   it('carries an existing marker forward when the write touches a different field', async () => {
@@ -870,6 +921,112 @@ describe('AdminController.exportAllPatientsCsv', () => {
     // operator has not taken anything yet.
     expect(admin.listExportRows).not.toHaveBeenCalled();
     expect(admin.recordFullExportAudit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE 428 IS THE DISCLOSURE, so what it leaves out is what the
+   * operator was not told.
+   *
+   * It used to carry one hand-written sentence — 「这份文件包含全部患者的
+   * 姓名、手机号、所在地区与全部基线临床字段」 — with no 等 on the end, so
+   * it read as the whole list. The file has 71 columns and that sentence
+   * named none of `date_of_birth`, `email`, `contact_email`,
+   * `contact_phone`, `primary_physician` (somebody who is not the
+   * patient), `baseline_notes` or `profile_notes`. These tests are what
+   * stops that sentence being rewritten by hand.
+   */
+  describe('the 428 disclosure', () => {
+    /** The words the operator has to be able to read on that screen,
+     *  written out HERE rather than derived from the controller's map:
+     *  a check that recomputes the thing it is checking passes for a
+     *  map that has quietly lost an entry. Each one is the column named
+     *  in the defect this describe block exists for. */
+    const MUST_BE_NAMED = [
+      '手机号',
+      '注册邮箱',
+      '姓名',
+      '称呼',
+      '出生日期',
+      '性别',
+      '联系人电话',
+      '联系邮箱',
+      '主治医生姓名',
+      '省',
+      '市',
+      '区县',
+      '确诊日期',
+      '家族史',
+      '基线备注',
+      '档案备注',
+      '患者编号',
+    ];
+
+    it('names every identifying column in FULL_EXPORT_COLUMNS', () => {
+      const notes = buildFullExportDisclosureNotes();
+      const identifying = notes.find((note) => note.includes('还原成具体的人'));
+      expect(identifying).toBeDefined();
+      // Split into the individual names rather than searching the
+      // sentence: 「姓名」 is a substring of 「主治医生姓名」, so a
+      // `toContain` over the whole string would pass for a disclosure
+      // that had lost the patient's own name column.
+      const named = identifying!
+        .slice(identifying!.indexOf('：') + 1)
+        .replace(/。$/, '')
+        .split('、');
+      // Matched at the START of a name, so that the parenthetical a
+      // label carries — 「（精确到日）」, 「（自由文本…）」 — can be
+      // reworded without this list becoming a twin of the map.
+      for (const name of MUST_BE_NAMED) {
+        expect(named.filter((entry) => entry.startsWith(name))).not.toEqual([]);
+      }
+      // And the sentence that named four things and stopped is gone.
+      expect(notes.join('\n')).not.toContain('姓名、手机号、所在地区与全部基线临床字段');
+    });
+
+    it('accounts for every column, so nothing can sit outside the disclosure', () => {
+      const notes = buildFullExportDisclosureNotes();
+      // The two counts the operator reads have to add up to the width
+      // of the file. A column classified into neither tier — or into
+      // both — fails here rather than being quietly absent from a
+      // sentence nobody re-counts.
+      const counts = notes
+        .join('\n')
+        .match(/(\d+) 列/g)
+        ?.map((match) => Number.parseInt(match, 10));
+      expect(counts).toBeDefined();
+      const [total, ...tiers] = counts!;
+      expect(total).toBe(FULL_EXPORT_COLUMNS.length);
+      expect(tiers.reduce((sum, count) => sum + count, 0)).toBe(FULL_EXPORT_COLUMNS.length);
+    });
+
+    it('discloses a column it has never seen, under its raw header, as identifying', () => {
+      // The property that makes this derivation worth having: a column
+      // added to admin.csv.ts by somebody who never opens
+      // admin.controller.ts lands INSIDE the disclosure, in the tier
+      // the operator is asked to read, rather than outside it.
+      const notes = buildFullExportDisclosureNotes([
+        ...FULL_EXPORT_COLUMNS,
+        { header: 'national_id_number' },
+      ]);
+      expect(notes.join('\n')).toContain('national_id_number');
+      const identifying = notes.find((note) => note.includes('还原成具体的人'));
+      expect(identifying).toContain('national_id_number');
+      expect(notes[0]).toContain(`${FULL_EXPORT_COLUMNS.length + 1} 列`);
+    });
+
+    it('is what the endpoint actually sends', async () => {
+      const controller = makeController({
+        admin: { countExportableProfiles: vi.fn(async () => 36) },
+      });
+      const { res, captured } = fakeResponse();
+
+      await controller.exportAllPatientsCsv(exportRequest(), res);
+
+      const body = captured.body as { notes: string[] };
+      for (const note of buildFullExportDisclosureNotes()) {
+        expect(body.notes).toContain(note);
+      }
+    });
   });
 
   it('refuses a confirmation built for a different cohort size', async () => {

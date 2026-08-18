@@ -141,8 +141,31 @@ const pushRegion = (
   }
 };
 
+/**
+ * A calendar date with no time part.
+ *
+ * The API hands most of these values over as bare 「YYYY-MM-DD」: the
+ * passport's `latestMriDate`, every monitoring slot's `latestDate` and
+ * the diagnosis date are built by `profile.passport.ts`'s own
+ * `formatDate`, which slices a `date` column rather than stamping an
+ * instant on it. `new Date('2025-05-09')` is UTC midnight, and
+ * `getMonth` / `getDate` then read it back in the DEVICE's zone — so
+ * every phone west of Greenwich printed 05-08 for a report dated
+ * 05-09, on the PDF that gets handed to a clinician, while the share
+ * page and the markdown export of the same passport both said 05-09.
+ * A calendar date has no zone to convert between; the digits are the
+ * answer. Anything carrying an actual time still falls through to the
+ * `Date` path below, where a zone is the right thing to apply.
+ */
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 export const formatDateLabel = (value?: string | null) => {
   if (!value) return '—';
+  const trimmed = value.trim();
+  // Slice the digits rather than re-parsing them: re-parsing is where
+  // the day was lost, and it is lost the same way every time.
+  const parts = DATE_ONLY.exec(trimmed);
+  if (parts) return `${parts[2]}-${parts[3]}`;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const month = String(date.getMonth() + 1).padStart(2, '0');

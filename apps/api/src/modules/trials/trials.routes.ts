@@ -50,9 +50,11 @@ import { asyncHandler } from '../../utils/async-handler.js';
  * NO PAGINATION. The whole table is read and the whole table is
  * returned. That is the shape migration 026 was designed for — it gives
  * `trial_records` no secondary index precisely because the page reads
- * every row — and the size is set by the registry rather than by our
+ * every row — and the size is set by the registries rather than by our
  * users. Measured against the dev database on 2026-08-13, after
- * `npm run trials:refresh` had filled it from ClinicalTrials.gov:
+ * `npm run trials:refresh` had run both sources — ClinicalTrials.gov
+ * filled the table, `chinadrugtrials` came back successful with zero
+ * rows (the census is on `SOURCE_STATUS_SQL` in trials.service.ts):
  *
  *   92 rows, readTrialSnapshot(pool) 27 ms including the pool connect,
  *   JSON.stringify(snapshot) 37,748 bytes
@@ -63,16 +65,42 @@ import { asyncHandler } from '../../utils/async-handler.js';
  * If the registry's answer ever grows by an order of magnitude, this
  * paragraph is where to notice.
  *
- * NO PATIENT-FACING BOILERPLATE. §A5 requires two fixed sentences on
- * the 试验 page — this list is ClinicalTrials.gov only and does not
- * include trials registered solely in China, and talk to your own
- * doctor before joining anything. They are the page's to render and
- * this endpoint does not return them: a string that travels over the
- * wire and is also hardcoded in the client is a string that will
- * eventually exist in two versions, and the API cannot tell which one
- * was on screen. The AI answer carries its own copy of the same two
- * rules for the same reason it carries the dates — see
+ * NO PATIENT-FACING BOILERPLATE. §A5's two refusals are fixed sentences
+ * on the 试验 page — this page does not judge whether you meet the entry
+ * criteria and does not report trial results (`TRIALS_INTRO`), and
+ * whether to join one is a conversation with your own doctor
+ * (`TRIALS_DISCLAIMER`), both in apps/mobile/lib/trials.ts. They are the
+ * page's to render and this endpoint does not return them: a string that
+ * travels over the wire and is also hardcoded in the client is a string
+ * that will eventually exist in two versions, and the API cannot tell
+ * which one was on screen. The AI answer carries its own copy of the
+ * same two rules for the same reason it carries the dates — see
  * ../ai-agents/tools/list-clinical-trials.ts.
+ *
+ * THE SENTENCE THIS HEADER USED TO NAME AS ONE OF THE TWO IS GONE, AND
+ * IT WAS A SCOPE CLAIM ABOUT THIS ENDPOINT. It read 「本页只收录
+ * ClinicalTrials.gov 的记录，不含仅在国内登记的试验」, and it stopped
+ * being true: `chinadrugtrials` is in TRIAL_SOURCES, the cron fetches
+ * chinadrugtrials.org.cn, and the payload below carries that registry's
+ * rows and its run status exactly like the other source's. Printed over
+ * a registry we do fetch, it told every patient the mainland platform
+ * was outside our reach when what had actually happened is that we
+ * looked and found nothing that day. Both surfaces deleted it rather
+ * than qualifying it — `describeChinaCoverage` on the screen, and the
+ * mainland clause in list-clinical-trials.ts, which had the worse copy
+ * because that text is an instruction a model obeys.
+ *
+ * WHAT REPLACED IT IS COMPUTED FROM THIS PAYLOAD RATHER THAN RENDERED
+ * BY IT, which is why the change reaches this file at all. The coverage
+ * line is now per-response — which registry the rows in front of the
+ * reader came from, the day they were scraped, and whether that source's
+ * last run failed — and both the screen and the tool build it out of
+ * `sources` plus each record's own `source`. So this endpoint still owes
+ * that block no prose, and now owes it completeness: `sources` carries
+ * one entry per TRIAL_SOURCES member whether or not that registry
+ * returned any rows (trials.service.ts), and dropping the empty one
+ * would turn 「we looked and found nothing」 back into the scope claim
+ * that was deleted.
  */
 export const createTrialsRouter = (context: RouteContext) => {
   const router = Router();

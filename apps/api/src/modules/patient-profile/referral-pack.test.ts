@@ -4,6 +4,13 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
+// The pack and the FHIR bundle are built from one profile in one run
+// below, because the milestone-date defect was invisible to either
+// side's own suite: each document was self-consistent and they
+// disagreed with each other.
+import { FIXTURE_GENERATED_AT } from './export/__fixtures__/profile.fixture.js';
+import { normaliseSource } from './export/export-source.js';
+import { buildFhirExport } from './export/fhir-r4.js';
 // The pack's own source for the two sentences below: these tests assert
 // the pack carries the passport's wording rather than a copy of it, so
 // a change to either has to move both.
@@ -1172,6 +1179,104 @@ describe('辅具 — three record states, none of them 「无辅具」', () => {
     expect(result.markdown).toContain('不代表目前的使用情况');
   });
 
+  /**
+   * A YEAR-ONLY ANSWER IS NOT A 1 JANUARY OBSERVATION.
+   *
+   * `patient_followup_events.occurred_at` is TIMESTAMPTZ NOT NULL and
+   * has no precision column beside it, so a patient who says they
+   * started using a wheelchair 「2019 年」 produces the first instant of
+   * 2019. This pack used to put that instant through `formatDate` and
+   * print a calendar day — and, formatting a UTC instant through
+   * local-time accessors, print a day in the WRONG YEAR on any host
+   * behind Greenwich — and then assert underneath it that the record is
+   * of 「某一天发生过的转变」. The portable exports resolve the same
+   * column through `resolveOccurrenceDate` and tell their receiver
+   * `pinnedToYearStart: true` and 「请不要把它当作精确到天的观察」; the
+   * FHIR bundle emits the bare year. One profile, one run, and the two
+   * documents disagreed about when this person started using a
+   * wheelchair — in front of the 协作网 neurologist least able to check
+   * which was right.
+   */
+  it('只知道年份的起始事件，只印年份 —— 不印 1 月 1 日，也不说某一天', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({
+            eventType: 'started_wheelchair',
+            occurredAt: '2019-01-01T00:00:00.000Z',
+          }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.devices.startEvents[0]?.occurrence).toMatchObject({
+      timestamp: '2019-01-01T00:00:00.000Z',
+      precision: 'unrecorded',
+      pinnedToYearStart: true,
+      storedYear: 2019,
+    });
+    expect(result.markdown).toContain('开始使用轮椅：2019 年');
+    expect(result.markdown).not.toContain('2019-01-01');
+    expect(result.markdown).not.toContain('2018-12-31');
+    // The tail no longer asserts a precision the column cannot carry.
+    expect(result.markdown).not.toContain('某一天发生过的转变');
+    expect(result.markdown).toContain('请不要当作精确到天的观察');
+    expect(result.markdown).toContain('不写 1 月 1 日');
+  });
+
+  /**
+   * AND A REAL MID-YEAR INSTANT KEEPS ITS DAY. `pinnedToYearStart` is a
+   * fact about the stored value, not a guess at what the patient meant;
+   * rounding an unpinned row down would throw away precision this
+   * platform actually has, and the marker would then be on a row it is
+   * false of.
+   */
+  it('真正落在年中的起始事件，照常印日期，且不标「仅到年份」', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({ eventType: 'started_afo', occurredAt: '2021-06-09T02:00:00.000Z' }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.devices.startEvents[0]?.occurrence.pinnedToYearStart).toBe(false);
+    expect(result.markdown).not.toContain('仅到年份');
+    expect(result.markdown).not.toContain('不写 1 月 1 日');
+    // Still says the precision is unrecorded, because it is: the
+    // column has no precision for ANY row.
+    expect(result.markdown).toContain('请不要当作精确到天的观察');
+  });
+
+  /**
+   * ONE PROFILE, ONE RUN, TWO READERS — the check the per-file suites
+   * on either side could not make. The pack's answer and the FHIR
+   * bundle's answer come off the same `occurred_at`, and the whole
+   * defect was that they were computed by two different renderers.
+   * They share a resolver now, so this asserts the outputs agree rather
+   * than that the call was made.
+   */
+  it('同一份档案同一次运行里，转诊资料和 FHIR 说的是同一个时间', () => {
+    const profile = base({
+      followupEvents: [
+        followupEvent({ eventType: 'started_wheelchair', occurredAt: '2019-01-01T00:00:00.000Z' }),
+      ] as unknown as PatientProfileDTO['followupEvents'],
+    });
+    const result = pack(profile);
+    const wheelchair = buildFhirExport(
+      normaliseSource(profile, { includeLocalOnly: false, generatedAt: FIXTURE_GENERATED_AT }),
+    )
+      .document.entry.map((entry) => entry.resource)
+      .find(
+        (resource) => (resource.code as { text?: string } | undefined)?.text === '开始使用轮椅',
+      );
+
+    // FHIR reduces a year-pinned instant to a bare 「2019」; the pack
+    // prints 「2019 年」. Same year, same claim, neither a day.
+    expect(wheelchair?.effectiveDateTime).toBe('2019');
+    expect(result.markdown).toContain(`开始使用轮椅：${wheelchair?.effectiveDateTime} 年`);
+  });
+
   it('warns that a migrated 「需要辅助」 may mean 「走不了」', () => {
     const assisted = pack(
       base({
@@ -1214,7 +1319,7 @@ describe('呼吸支持', () => {
       }),
     );
 
-    expect(result.respiratory.nivStartedAt).toBe('2025-09-15T12:00:00.000Z');
+    expect(result.respiratory.nivStart?.timestamp).toBe('2025-09-15T12:00:00.000Z');
     expect(result.respiratory.statement).toContain('2025-09-15');
     expect(result.respiratory.statement).toContain('请当面核实');
     // The NIV event is respiratory support, not an assistive device.
@@ -1223,8 +1328,33 @@ describe('呼吸支持', () => {
 
   it('does not read a missing NIV record as「不需要通气」', () => {
     const result = pack(base());
-    expect(result.respiratory.nivStartedAt).toBeNull();
+    expect(result.respiratory.nivStart).toBeNull();
     expect(result.respiratory.statement).toContain('不等于没有使用');
+  });
+
+  /** The NIV start reads off the same column as the device milestones
+   *  and was printed by the same `formatDate`, so it carried the same
+   *  fabricated day. 呼吸支持 and 辅具 must not answer this differently:
+   *  they are one kind of record. */
+  it('只知道年份的无创通气起始时间，也只印年份', () => {
+    const result = pack(
+      base({
+        followupEvents: [
+          followupEvent({ eventType: 'started_niv', occurredAt: '2022-01-01T00:00:00.000Z' }),
+        ] as unknown as PatientProfileDTO['followupEvents'],
+      }),
+    );
+
+    expect(result.respiratory.nivStart).toMatchObject({
+      timestamp: '2022-01-01T00:00:00.000Z',
+      precision: 'unrecorded',
+      pinnedToYearStart: true,
+    });
+    expect(result.respiratory.statement).toContain('时间 2022 年');
+    expect(result.respiratory.statement).not.toContain('2022-01-01');
+    expect(result.respiratory.statement).not.toContain('2021-12-31');
+    expect(result.respiratory.statement).toContain('请不要当作精确到天的观察');
+    expect(result.respiratory.statement).toContain('请当面核实');
   });
 
   it('carries the patient-reported breathing symptom answer as three states', () => {

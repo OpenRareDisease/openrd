@@ -713,6 +713,32 @@ export const buildFhirExport = (
           {
             text: '由上传报告的自动识别（OCR）结构化解析得到，未经人工复核；原始报告见 derivedFrom。',
           },
+          // THE GUIDELINE'S OWN QUALIFIER ON THIS RESULT, beside the
+          // number instead of nowhere. The 8–10 unit gray zone reached
+          // the patient's phone, the share page, the markdown export
+          // and the referral pack, and did not reach this bundle or the
+          // TREAT-NMD document — so a registry ingesting `valueString:
+          // 「9」` under 「D4Z4 重复单元数」 saw an unqualified count,
+          // while the patient holding the same profile was told the
+          // guideline calls that number borderline. The receiver here
+          // is the one who can act on it.
+          //
+          // `note` AND NOT `interpretation`. The R4 interpretation
+          // value set is normal/abnormal/high/low against a reference
+          // range, and a repeat count in the gray zone is none of
+          // those: it is a result whose CLASSIFICATION is uncertain,
+          // which that value set has no member for. Coding it as
+          // `abnormal` would state a verdict the guideline explicitly
+          // declines to state for 9–10 units. `field.geneticQualifier`
+          // carries the machine-readable key for a receiver that wants
+          // one; nothing here invents a code to put it in.
+          ...(field.geneticQualifier
+            ? [
+                {
+                  text: `本条结果带有一条按指南标注的限定，机器可读的键是「${field.geneticQualifier.kind}」。${field.geneticQualifier.noteZh}`,
+                },
+              ]
+            : []),
           ...(field.transcribedGeneticReading
             ? [
                 {

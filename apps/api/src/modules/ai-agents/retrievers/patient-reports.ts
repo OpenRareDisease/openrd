@@ -135,14 +135,32 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
   '重度',
   '弥漫性',
   '局灶性',
-  // Genetics
-  'FSHD1',
-  'FSHD2',
-  '4qA',
-  '4qB',
-  'D4Z4',
-  '重复单元缩短',
-  '甲基化降低',
+  // NO GENETICS VOCABULARY, AND THIS IS THE ONE SUBJECT THIS CHANNEL
+  // HAS NOTHING TO ADD ABOUT.
+  //
+  // 'FSHD1', 'FSHD2', '4qA', '4qB', 'D4Z4', '重复单元缩短' and
+  // '甲基化降低' were here, matched by substring against a sentence,
+  // with no laboratory gate and no haplotype reader — and every
+  // genetics cell on the same report reaches the same prompt block
+  // through `projectOcrFields`, which reads it with the passport's own
+  // readers (`parsePermissiveHaplotype`, `readSizeCell`), applies
+  // `isLaboratoryGeneticReport` and applies the redaction mode. So this
+  // list could only ever restate what those cells already say, and
+  // being a substring match it restated them wrongly:
+  //
+  //   - 「采用4qA/4qB探针进行D4Z4重复单元缩短检测」 — a sentence naming
+  //     the PROBES — emitted 「4qA、4qB、D4Z4、重复单元缩短」 while the
+  //     structured haplotype cell on the same report, read by the
+  //     passport's reader, correctly said `unspecified_haplotype`.
+  //   - On a 病历摘要 the narrative asserted 「FSHD1、4qA、D4Z4、重复单
+  //     元缩短」 while every structured genetics cell in the same block
+  //     was stamped `not_read_off_a_laboratory_report`.
+  //   - Strict mode withheld the raw haplotype cell and then reprinted
+  //     4qA verbatim two lines above it.
+  //
+  // A finding this vocabulary can state about genetics is a finding the
+  // structured channel states better; a finding it cannot is one this
+  // platform has decided not to state at all. Do not add them back.
   // Cardiopulmonary — the other systems this cohort is monitored for
   '限制性通气功能障碍',
   '通气功能障碍',
@@ -175,6 +193,16 @@ const NEGATION_MARKERS = [
   '未发现',
   '未提示',
   '无明显',
+  // BELT AND BRACES, ADDED WITH THE MATCH-SITE TEST BELOW. Each of
+  // these is a form the list missed: 不明显 was here only as 无明显, and
+  // 未受累 / 未累及 / 未及 are the bare 未 prefix, which no entry covered.
+  // They are not what makes the negation correct — the match-site test
+  // is — but a clause carrying one of them asserts nothing, and killing
+  // it whole is cheaper than reading it.
+  '不明显',
+  '未受累',
+  '未累及',
+  '未及',
   '排除',
   '阴性',
   '否认',
@@ -187,12 +215,54 @@ const NEGATION_MARKERS = [
 const CLAUSE_SPLIT = /[，,。.；;、\n]/;
 
 /**
+ * THE NEGATION IS TESTED AT THE MATCH SITE, not at the clause.
+ *
+ * A marker list scanned over a whole clause answers 「does this clause
+ * contain a negating word」, and Chinese negates a term by touching it:
+ * the two commonest forms in these reports are a bare 未 glued to the
+ * front (未受累) and a qualifier glued to the back (脂肪浸润不明显), and
+ * neither contains a listed marker. Both were therefore asserted as
+ * present. Rendered, 「双侧股四头肌未受累，肩胛带肌未见异常」 came out as
+ * 「影像/报告印象: 受累」 and 「大腿后群脂肪浸润不明显」 as
+ * 「影像/报告印象: 脂肪浸润」 — the ruled-OUT finding, reported as the
+ * report's conclusion. The redactor drops the raw impression, so this
+ * summary is the ONLY version of the report the model ever sees, in
+ * both modes; there is nothing downstream to correct it against.
+ *
+ * So the question asked is about the characters either side of THIS
+ * occurrence. A term preceded by 未 / 无 / 非 / 不, or followed
+ * immediately by 不明显 / 未见 / 阴性 / 正常, is ruled out at that
+ * occurrence and the search moves on: a term negated in one place and
+ * asserted in another (「未见脂肪浸润 右侧脂肪浸润明显」inside one
+ * clause) is still asserted.
+ */
+const NEGATION_PREFIX_CHARS: ReadonlySet<string> = new Set(['未', '无', '非', '不']);
+const NEGATION_SUFFIXES: readonly string[] = ['不明显', '未见', '阴性', '正常'];
+
+const clauseAssertsTerm = (clause: string, term: string): boolean => {
+  for (let from = 0; from <= clause.length - term.length; ) {
+    const at = clause.indexOf(term, from);
+    if (at === -1) return false;
+    const before = at > 0 ? clause[at - 1] : '';
+    const after = clause.slice(at + term.length);
+    const negated =
+      NEGATION_PREFIX_CHARS.has(before) ||
+      NEGATION_SUFFIXES.some((suffix) => after.startsWith(suffix));
+    if (!negated) return true;
+    from = at + 1;
+  }
+  return false;
+};
+
+/**
  * Extract the recognised clinical findings a report actually asserts.
  *
  * Deny-by-default twice over: the output is assembled from
  * `CLINICAL_FINDING_TERMS`, never from the text (so no name can pass),
- * and a term is only kept when its own clause is not negated (so no
- * ruled-out finding is reported as present).
+ * and a term is only kept when its own clause is not negated AND the
+ * occurrence itself is not negated (so no ruled-out finding is reported
+ * as present). See `clauseAssertsTerm` for why the clause test alone
+ * was not enough.
  */
 const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null => {
   const raw = IMPRESSION_KEYS.map((key) => ocrFields[key]).find(
@@ -209,7 +279,7 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
 
   const matched: string[] = [];
   for (const term of CLINICAL_FINDING_TERMS) {
-    if (!assertedClauses.some((clause) => clause.includes(term))) continue;
+    if (!assertedClauses.some((clause) => clauseAssertsTerm(clause, term))) continue;
     // Skip a term already covered by a longer match ('肌营养不良' when
     // '肌营养不良改变' is present) so the summary reads cleanly.
     if (matched.some((kept) => kept.includes(term))) continue;
@@ -221,6 +291,31 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
   return summary.length > FINDINGS_SUMMARY_MAX
     ? `${summary.slice(0, FINDINGS_SUMMARY_MAX)}…`
     : summary;
+};
+
+/**
+ * WHEN IS THIS REPORT FROM, in one place.
+ *
+ * The laboratory's own date first — the bridge in
+ * services/ocr/embedded-report-ocr.ts writes it as
+ * `ocr_payload.fields.reportTime`, and the legacy extraction paths as
+ * `report_time` — and the upload timestamp only as a fallback, flagged
+ * as such so the caller can label it honestly rather than passing it
+ * off as the report's date.
+ *
+ * ONE FUNCTION BECAUSE THERE IS ONE QUESTION. The citation chip and the
+ * prompt each used to answer it, differently, in the same turn: the
+ * chip read `reportTime` and the field map read `uploaded_at`. Two
+ * answers about one document is worse than one wrong answer, because
+ * nothing on either side says the other exists.
+ */
+const resolveReportDate = (row: ReportRow): { value: string | null; fromReport: boolean } => {
+  const payload = row.ocr_payload as { fields?: Record<string, unknown> } | null;
+  const reported = payload?.fields?.reportTime ?? payload?.fields?.report_time;
+  if (typeof reported === 'string' && reported.trim()) {
+    return { value: formatTimestamp(reported.trim()), fromReport: true };
+  }
+  return { value: formatTimestamp(row.uploaded_at), fromReport: false };
 };
 
 const buildReportFields = (row: ReportRow): Record<string, unknown> => {
@@ -237,12 +332,31 @@ const buildReportFields = (row: ReportRow): Record<string, unknown> => {
   // did, rather than the retriever silently never offering it.
   if (row.title) fields.title = row.title;
 
-  // `reportDate` is the raw upload timestamp string. Both modes
-  // collapse it to `reportDate_year` — the day never leaves, because
-  // the precise consent is to a clinical value and not to a calendar
-  // date, and the year is the only form either allowlist carries.
-  const uploadedAt = formatTimestamp(row.uploaded_at);
-  if (uploadedAt) fields.reportDate = uploadedAt;
+  // WHEN IS THIS REPORT FROM — asked once, by `resolveReportDate`, and
+  // answered the same way for the prompt and for the citation chip.
+  //
+  // `reportDate` was `row.uploaded_at`, unconditionally, while the
+  // laboratory's own date sat on the same row unused and
+  // `reportDateLabel` was already reading it for the chip. So in ONE
+  // turn the 依据 chip the patient taps said 「基因检测报告 · 2019-03」
+  // and the assistant, reading 「报告年份: 2026」 off this projection,
+  // said the genetics report was from 2026. How old a D4Z4 result is
+  // decides whether a clinician re-tests it and whether a trial
+  // screener will accept it, so the two answers are not
+  // interchangeable and the wrong one was the one the model spoke.
+  //
+  // AND WHEN ONLY THE UPLOAD TIMESTAMP EXISTS, IT IS NOT CALLED THE
+  // REPORT'S YEAR. It reaches the prompt as `uploadYear` / 上传年份 —
+  // the true statement about the row — rather than as 报告年份, which
+  // is a claim about a document this platform has no date for. Both
+  // modes collapse either cell to its year: the day never leaves,
+  // because the precise consent is to a clinical value and not to a
+  // calendar date.
+  const dated = resolveReportDate(row);
+  if (dated.value) {
+    if (dated.fromReport) fields.reportDate = dated.value;
+    else fields.uploadDate = dated.value;
+  }
 
   // The OCR payload itself. `projectOcrFields` runs over it in BOTH
   // modes and is deny-by-default in both: strict emits
@@ -287,10 +401,9 @@ const placeholderContent = (reportType: string | null): string =>
  *  kind apart in a citation chip without turning the chip into a date
  *  field. */
 const reportDateLabel = (row: ReportRow): string => {
-  const raw = row.ocr_payload as { fields?: Record<string, unknown> } | null;
-  const reported = raw?.fields?.reportTime ?? raw?.fields?.report_time;
-  const source = typeof reported === 'string' && reported.trim() ? reported : row.uploaded_at;
-  const date = new Date(source as string | Date);
+  const { value } = resolveReportDate(row);
+  if (!value) return '';
+  const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 };

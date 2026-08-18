@@ -144,6 +144,24 @@
  * for the request. Anything on screen that tells an operator otherwise
  * is wrong; see the note in
  * apps/mobile/screens/p-admin/patient-record.tsx.
+ *
+ * AND A CLEARED FIELD IS WHATEVER THE HTTP SURFACE CAN SAY 「EMPTY」
+ * WITH, not only `null`. `isClearedValue` below is the one definition,
+ * and both write helpers use it. It used to be `undefined || null`
+ * spelled out at the one place that needed it, which was true of the
+ * shipped back-office screen — it sends `null` — and false of the
+ * endpoint, which accepts a whole `baselineProfileSchema` body from any
+ * client. An empty string reached the marker loop as a value, so
+ * clearing 称呼 by emptying the box stored 「」 AND stamped a fresh
+ * 管理员代填 on it. Whitespace was the same case arriving by a second
+ * door: `nullableText` is `z.string().trim()`, so 「   」 is already
+ * 「」 by the time this module sees it. Measured through the real
+ * express route on 2026-08-18 — PUT with `preferredName: ''` returned
+ * 200 with `fieldProvenance['foundation.preferredName']` freshly
+ * stamped at today's date over an empty value, and the same marker then
+ * appeared in the record endpoint's `fieldOrigins`, in the back-office
+ * row, and in the portable exports envelope, telling a receiving
+ * registry a provenance fact about a value that does not exist.
  */
 
 import { AppError } from '../../utils/app-error.js';
@@ -390,6 +408,29 @@ const withBlock = (
   return out;
 };
 
+/**
+ * Whether the value about to be written is a CLEAR — the field being
+ * emptied rather than filled in.
+ *
+ * Three spellings of the same act, because three of them can reach a
+ * write: the key is absent (`undefined`), the client sent `null`, or
+ * the client sent a string with nothing in it. `nullableText` is
+ * `z.string().trim()`, so a box holding only spaces arrives here as
+ * '' — whitespace is not a fourth case, it is the third one after the
+ * schema.
+ *
+ * DELIBERATELY NOT USED BY `changedLeafPaths`. Clearing a field IS a
+ * change, and has to stay one: it is what the allowlist refusal is
+ * checked against (so emptying a genetic box is still refused) and what
+ * makes the erase itself visible. This predicate decides only what
+ * happens to the MARKER afterwards.
+ *
+ * Only strings are trimmed. A number, a boolean or an empty array is a
+ * value somebody chose, and 0 / false are answers.
+ */
+const isClearedValue = (value: unknown): boolean =>
+  value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
 /** The leaf paths whose value differs between the stored payload and
  *  the one about to be written. A path present in one and not the
  *  other counts as changed. */
@@ -409,10 +450,11 @@ const changedLeafPaths = (previous: unknown, next: Record<string, unknown>): Set
  *
  * Every field this write CHANGES gains an `admin_entered` marker;
  * every field it leaves alone keeps whatever marker it had. Fields the
- * write CLEARS (absent, or explicitly null in `next`) get no marker
- * and LOSE any marker they had — there is no value there to attribute,
- * and a marker on an empty field would show up on the passport as a
- * source for nothing. See WHAT CLEARING A FIELD MEANS at the top.
+ * write CLEARS — absent, `null`, or a string with nothing in it, see
+ * `isClearedValue` — get no marker and LOSE any marker they had: there
+ * is no value there to attribute, and a marker on an empty field would
+ * show up on the passport as a source for nothing. See WHAT CLEARING A
+ * FIELD MEANS at the top.
  *
  * REFUSES, with a 400, a write that changes any field outside
  * `ADMIN_WRITABLE_BASELINE_FIELDS` — the patient's answers about their
@@ -471,8 +513,7 @@ export const applyAdminBaselineWrite = (
   }
 
   for (const path of changed) {
-    const written = valueAtPath(next, path);
-    if (written === undefined || written === null) {
+    if (isClearedValue(valueAtPath(next, path))) {
       delete block[path];
       continue;
     }
@@ -497,9 +538,14 @@ export const applyAdminBaselineWrite = (
  * at a value is not the same act as the patient entering it, and only
  * the second one makes the value theirs.
  *
- * Entries for fields that are not in `next` at all are dropped too:
+ * Entries for fields that are NOT FILLED IN in `next` are dropped too:
  * the value they described is gone, so there is nothing left to
- * attribute.
+ * attribute. That is `isClearedValue` and not a bare `=== undefined`,
+ * so that the two helpers agree on what an empty field is. The bare
+ * check was reachable in one direction only — a marker standing over a
+ * value that is present and empty, which `applyAdminBaselineWrite` can
+ * no longer create but a hand-written UPDATE still can — and leaving it
+ * would have kept 「管理员填的」 on the passport beside nothing.
  */
 export const applyPatientBaselineWrite = (
   previous: unknown,
@@ -509,7 +555,7 @@ export const applyPatientBaselineWrite = (
   const changed = changedLeafPaths(previous, next);
 
   for (const path of Object.keys(block)) {
-    if (changed.has(path) || valueAtPath(next, path) === undefined) {
+    if (changed.has(path) || isClearedValue(valueAtPath(next, path))) {
       delete block[path];
     }
   }
