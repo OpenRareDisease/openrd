@@ -4,6 +4,10 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BASELINE_PROVENANCE_KEY, applyAdminBaselineWrite } from './baseline-provenance.js';
+// The pack's own source for the two sentences below: these tests assert
+// the pack carries the passport's wording rather than a copy of it, so
+// a change to either has to move both.
+import { buildClinicalPassportSummary } from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 import {
   REFERRAL_MAX_POINTS_PER_SERIES,
@@ -539,6 +543,91 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(result.diagnosis.confirmation).toBe('genetic');
     expect(result.diagnosis.readingsNotJudged).toBeNull();
     expect(result.markdown).not.toContain('本平台不在 kb 和重复单元数之间做换算');
+  });
+
+  /**
+   * 上面那一行只管本平台什么都没拿来衡量的读数 —— 以 kb 写的长度、读到
+   * 0 的那一格。一个 30 不是这两种：它解析得出来，是实验室自己的数，而且
+   * 本平台确实拿指南写的界限衡量过它，是它没过。于是这张纸印着 「本资料
+   * 里没有从基因报告里读出来的、可作确诊依据的基因结果」，四行之下印着
+   * 「D4Z4 重复数：30（报告读取）」，中间照旧没有一句话。
+   */
+  it.each([
+    ['大于指南所说的 10', { d4z4Repeats: '30', haplotype: '4qA' }, '30'],
+    ['报告没写单倍型', { d4z4Repeats: '6' }, '6'],
+  ])('结论否认的那个重复数，下面就写着它为什么没换来确诊：%s', (_name, fields, cell) => {
+    const profile = base({
+      geneticMutation: 'FSHD1',
+      documents: [geneticReport(fields as Record<string, string>)],
+    } as never);
+    const result = pack(profile);
+    const evidence = buildClinicalPassportSummary(profile).diagnosis.geneticEvidence;
+
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.markdown).toContain(`- D4Z4 重复数：${cell}（报告读取）`);
+    // 护照自己写好的那一句，原样搬过来 —— 不另起一套措辞。
+    expect(result.diagnosis.repeatCountNotConfirming).toBe(evidence.headline);
+    expect(result.markdown).toContain(`- ${result.diagnosis.repeatCountNotConfirming}`);
+    const noteIndex = result.markdown.indexOf(result.diagnosis.repeatCountNotConfirming ?? '');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('一份报告同时欠两句话时，两句都印 —— 它们不是二选一', () => {
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '30', ecoRIFragment: '18kb' })],
+      } as never),
+    );
+    expect(result.diagnosis.repeatCountNotConfirming).toContain('大于指南所说的 10');
+    expect(result.diagnosis.readingsNotJudged).toContain('不在 kb 和重复单元数之间做换算');
+    expect(result.markdown).toContain(`- ${result.diagnosis.repeatCountNotConfirming}`);
+    expect(result.markdown).toContain(`- ${result.diagnosis.readingsNotJudged}`);
+  });
+
+  it.each([
+    ['确诊那一档', { d4z4Repeats: '6', haplotype: '4qA' }],
+    ['单倍型非允许型那一档 —— 结论开头就是这句话', { d4z4Repeats: '6', haplotype: '4qB' }],
+  ])('结论自己已经说清楚的，不再复读一遍：%s', (_name, fields) => {
+    const result = pack(
+      base({ documents: [geneticReport(fields as Record<string, string>)] } as never),
+    );
+    expect(result.diagnosis.repeatCountNotConfirming).toBeNull();
+  });
+
+  /**
+   * 灰区那一段护照屏幕印、待办里印、导出的 markdown 里也印，唯独这张纸
+   * 不印 —— 而这张纸是罕见病诊疗协作网的神经内科医生手里那一份。一份读
+   * 到 D4Z4 9 / 4qA 的报告，患者自己那份护照上带着「这一项结果本身带着
+   * 不确定性」，递到医生手里的这份只有「基因确诊；D4Z4 重复数 9」。
+   */
+  it.each([
+    ['确诊那一档', { d4z4Repeats: '9', haplotype: '4qA' }, 'genetic'],
+    ['报告没写单倍型', { d4z4Repeats: '9' }, 'self_reported'],
+  ])('灰区里的重复数，两份材料说的是同一句话：%s', (_name, fields, confirmation) => {
+    const profile = base({
+      geneticMutation: 'FSHD1',
+      documents: [geneticReport(fields as Record<string, string>)],
+    } as never);
+    const result = pack(profile);
+    const evidence = buildClinicalPassportSummary(profile).diagnosis.geneticEvidence;
+
+    expect(result.diagnosis.confirmation).toBe(confirmation);
+    expect(result.diagnosis.greyZoneNote).toBe(evidence.greyZoneNote);
+    // 导出的 markdown 给这一段的前缀，一模一样地照用。
+    expect(result.markdown).toContain(`- 灰区提示：${evidence.greyZoneNote}`);
+    const noteIndex = result.markdown.indexOf('- 灰区提示：');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('不在灰区就不提灰区', () => {
+    const result = pack(
+      base({ documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA' })] } as never),
+    );
+    expect(result.diagnosis.greyZoneNote).toBeNull();
+    expect(result.markdown).not.toContain('灰区提示');
   });
 
   /**

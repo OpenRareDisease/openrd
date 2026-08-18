@@ -13,28 +13,60 @@ import type { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 
 /** What the patient picks at upload — DOCUMENT_TYPES in
  *  profile.constants.ts. */
-const UPLOAD_DOCUMENT_TYPES = ['mri', 'genetic_report', 'blood_panel', 'other'] as const;
+export const UPLOAD_DOCUMENT_TYPES = ['mri', 'genetic_report', 'blood_panel', 'other'] as const;
 
-/** What the FSHD OCR classifier concludes, written into
- *  `ocr_payload.fields.classifiedType`. The retriever matches a filter
- *  against either column, so both vocabularies are accepted. */
-const CLASSIFIED_REPORT_TYPES = [
+/**
+ * What the FSHD OCR classifier concludes, written into
+ * `ocr_payload.fields.classifiedType`. The retriever matches a filter
+ * against either column, so both vocabularies are accepted.
+ *
+ * THE WRITER OF THESE STRINGS IS `_classify_report` IN
+ * apps/report-manager/app/services/fshd_report_service.py — a Python
+ * table in another workspace, with no import, no generated file and no
+ * type between it and this list. So the two drifted: the classifier
+ * had grown 病历摘要, 肌力/体格检查, 膈肌超声, 心脏超声, 尿常规 and 腹部超声
+ * while this schema had never heard of them, and a filter the model
+ * cannot name is a report the patient cannot ask about. The other
+ * direction is worse in a different way — a type advertised here and
+ * never written there is a filter the model will reach for and get an
+ * empty result from, which reads to the patient as「你没有这份报告」.
+ *
+ * get-my-reports.test.ts reads that Python table and fails when this
+ * list stops matching it, so the next classifier type cannot land
+ * one-sided.
+ */
+export const CLASSIFIED_REPORT_TYPES = [
+  'abdominal_ultrasound',
   'biochemistry',
   'blood_routine',
   'coagulation',
+  'diaphragm_ultrasound',
   'ecg',
+  'echocardiography',
+  'genetic_report',
   'infection_screening',
+  'medical_summary',
   'muscle_enzyme',
   'muscle_mri',
+  'other',
+  'physical_exam',
   'pulmonary_function',
   'stool_test',
   'thyroid_function',
+  'urinalysis',
 ] as const;
 
 const KNOWN_DOCUMENT_TYPES: ReadonlySet<string> = new Set<string>([
   ...UPLOAD_DOCUMENT_TYPES,
   ...CLASSIFIED_REPORT_TYPES,
 ]);
+
+/** The vocabularies overlap — `genetic_report` and `other` are picked
+ *  at upload AND concluded by OCR — and a JSON-Schema enum listing a
+ *  value twice is not a valid enum. */
+export const DOCUMENT_TYPE_ENUM: readonly string[] = [...KNOWN_DOCUMENT_TYPES];
+
+const backticked = (types: readonly string[]) => types.map((type) => '`' + type + '`').join(', ');
 
 interface GetMyReportsArgs {
   documentType?: string;
@@ -47,9 +79,13 @@ const PARAMETERS_SCHEMA = {
   properties: {
     documentType: {
       type: 'string',
-      enum: [...UPLOAD_DOCUMENT_TYPES, ...CLASSIFIED_REPORT_TYPES],
+      enum: DOCUMENT_TYPE_ENUM,
       description:
-        'Optional filter, matched against BOTH the type the patient chose at upload (`mri`, `genetic_report`, `blood_panel`, `other`) and the type OCR concluded (`coagulation`, `blood_routine`, `biochemistry`, `muscle_enzyme`, `muscle_mri`, `pulmonary_function`, `thyroid_function`, `infection_screening`, `stool_test`, `ecg`, `genetic_report`). Prefer omitting it: the default already returns the most recent readable reports, and a filter that matches nothing yields an empty result you cannot recover from in this turn.',
+        'Optional filter, matched against BOTH the type the patient chose at upload (' +
+        backticked(UPLOAD_DOCUMENT_TYPES) +
+        ') and the type OCR concluded (' +
+        backticked(CLASSIFIED_REPORT_TYPES) +
+        '). Prefer omitting it: the default already returns the most recent readable reports, and a filter that matches nothing yields an empty result you cannot recover from in this turn.',
     },
     since: {
       type: 'string',

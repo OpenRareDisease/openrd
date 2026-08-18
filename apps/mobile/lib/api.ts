@@ -691,6 +691,22 @@ export interface PassportGeneticEvidence {
   headline: string;
   reason: string;
   action: string;
+  /**
+   * WHY A READING SHOWN ON THIS PAGE CHANGED NOTHING — a length the
+   * report gave in kb, a count cell reading 0 — or null when the report
+   * states neither.
+   *
+   * FOR THE SURFACE THAT PRINTS THE READING WITHOUT `reason`. The
+   * passport screen renders `reason`, which ends with these same
+   * sentences; the printed passport renders neither, and set 「D4Z4
+   * 重复数 18kb（报告读取）」 under 「本节里没有从基因报告里读出来的、可作
+   * 确诊依据的基因结果」 with nothing between them — a number and a
+   * denial of it, on the one page that leaves the app.
+   *
+   * Mirrors `readingsNotJudged` on the API's
+   * PassportGeneticEvidenceDTO, where the sentence is written.
+   */
+  readingsNotJudged: string | null;
   /** Non-null only when the repeat count is in the 8–10 gray zone. */
   greyZoneNote: string | null;
   /** Null once the report already carries size AND haplotype — at that
@@ -784,6 +800,13 @@ export const readPassportGeneticEvidence = (raw: unknown): PassportGeneticEviden
     headline: record.headline,
     reason: record.reason,
     action: record.action,
+    // Null-tolerant rather than required, like `greyZoneNote` beside
+    // it: the server sends null for a report that states neither
+    // reading, and an API build predating the field sends nothing at
+    // all. Neither is a reason to drop the whole block — the grade,
+    // the headline and the next step are still what they were.
+    readingsNotJudged:
+      typeof record.readingsNotJudged === 'string' ? record.readingsNotJudged : null,
     greyZoneNote: typeof record.greyZoneNote === 'string' ? record.greyZoneNote : null,
     testRequest: asTestRequest(record.testRequest),
     sources: asStringArray(record.sources),

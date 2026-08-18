@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { RedactionMode } from './allowlist.js';
 import { redactFields } from './pii-redactor.js';
 
 const silentLogger = {
@@ -265,6 +266,122 @@ describe('the genetics cells the assistant is handed', () => {
   });
 });
 
+/**
+ * WHAT THIS PLATFORM MAKES OF A GENETICS CELL DOES NOT DEPEND ON WHAT
+ * THE PATIENT AGREED TO SHARE.
+ *
+ * The classifiers above ran in strict mode alone, so under precise the
+ * raw cell was handed to the model with nothing beside it: a length in
+ * kb, a repeat count of 0, a negated haplotype, a cell naming both
+ * probes and a count transcribed into a clinic letter all arrived as
+ * bare values, for exactly the readers whose answers are built from the
+ * most detail. The consent is to「精确数值」— it buys the cell a place
+ * beside this platform's reading of it, not the reading's removal.
+ *
+ * Each case below is one prompt line a patient's answer is built from,
+ * asserted identical in both modes.
+ */
+describe('the refusal survives the mode that shares more', () => {
+  /** One OCR cell, as it reaches the assistant off a named document,
+   *  in both modes: the raw value the prompt carries, and this
+   *  platform's reading of it. */
+  const cell = (
+    mode: RedactionMode,
+    documentType: string,
+    key: string,
+    raw: unknown,
+  ): { raw: unknown; reading: unknown } => {
+    const { fields } = redactFields(
+      { documentType, fields: { classifiedType: documentType, [key]: raw } },
+      { scope: 'reports', mode },
+    );
+    const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+    return { raw: projected[key], reading: projected[`${key}_clinical`] };
+  };
+
+  const bothModes = (documentType: string, key: string, raw: unknown, reading: string) => {
+    expect(cell('strict', documentType, key, raw)).toEqual({ raw: undefined, reading });
+    expect(cell('precise', documentType, key, raw)).toEqual({ raw, reading });
+  };
+
+  it.each([
+    ['3', 'within_fshd1_repeat_range'],
+    ['10个重复单元', 'within_fshd1_repeat_range'],
+    ['11', 'above_fshd1_repeat_range'],
+    ['3kb', 'length_in_kb_not_a_repeat_count'],
+    ['18 kb', 'length_in_kb_not_a_repeat_count'],
+    ['0kb', 'length_in_kb_not_a_repeat_count'],
+    ['0', 'zero_repeat_count_not_a_valid_reading'],
+    ['0个', 'zero_repeat_count_not_a_valid_reading'],
+    ['未检出3个重复单元', 'unspecified'],
+    ['阴性', 'unspecified'],
+    ['1-10', 'unspecified'],
+    ['≤10', 'unspecified'],
+  ])('reads the repeat-count cell「%s」the same way in both modes', (raw, reading) => {
+    bothModes('genetic_report', 'd4z4Repeats', raw, reading);
+  });
+
+  it.each([
+    ['4qA', 'permissive_haplotype'],
+    ['4qB', 'non_permissive_haplotype'],
+    ['未检出 4qA 等位基因', 'unspecified_haplotype'],
+    ['4qA/4qB', 'unspecified_haplotype'],
+  ])('reads the haplotype cell「%s」the same way in both modes', (raw, reading) => {
+    bothModes('genetic_report', 'haplotype', raw, reading);
+  });
+
+  // The laboratory gate is the same refusal one step further out, and
+  // it was lost the same way: a repeat count a clinic letter quoted
+  // reached a precise-consent patient as a number with no origin.
+  it('withholds a grade from a transcription in both modes', () => {
+    bothModes('medical_record', 'd4z4Repeats', '3', 'not_read_off_a_laboratory_report');
+    bothModes('medical_record', 'haplotype', '4qA', 'not_read_off_a_laboratory_report');
+    bothModes('medical_record', 'd4z4Repeats', '18kb', 'not_read_off_a_laboratory_report');
+    bothModes('medical_record', 'd4z4Repeats', '0', 'not_read_off_a_laboratory_report');
+  });
+
+  // Same rule, one step further out again: the registration form.
+  it.each(['3', '18kb', '0'])(
+    'withholds a grade from the registration form cell「%s」in both modes',
+    (raw) => {
+      for (const mode of ['strict', 'precise'] as const) {
+        const { fields } = redactFields({ d4z4: raw }, { scope: 'profile', mode });
+        expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
+        expect(fields.d4z4).toBe(mode === 'precise' ? raw : undefined);
+      }
+    },
+  );
+
+  // The one cell whose sibling is deliberately strict-only.
+  // `value_withheld` is true of a value that was withheld and false
+  // beside one that was shared, and there is no reading to put in its
+  // place — this repo states no methylation boundary.
+  it('says nothing beside a methylation value it is printing', () => {
+    expect(cell('strict', 'genetic_report', 'methylationValue', '0.35')).toEqual({
+      raw: undefined,
+      reading: 'value_withheld',
+    });
+    expect(cell('precise', 'genetic_report', 'methylationValue', '0.35')).toEqual({
+      raw: '0.35',
+      reading: undefined,
+    });
+  });
+
+  // The report's own date, on the same footing as `diagnosisYear`:
+  // `reportDate` is on neither allowlist, so deriving the year in
+  // strict alone left a precise-consent patient with an undated report.
+  it('still derives the report year in both modes', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { documentType: 'genetic_report', reportDate: '2026-04-01' },
+        { scope: 'reports', mode },
+      );
+      expect(fields.reportDate).toBeUndefined();
+      expect(fields.reportDate_year).toBe(2026);
+    }
+  });
+});
+
 describe('HARD_DELETE_KEYS is matched case-insensitively', () => {
   it('removes PatientName / PATIENT_NAME / Date_Of_Birth / EMAIL', () => {
     const input = {
@@ -298,7 +415,49 @@ describe('redactFields (profile, precise mode)', () => {
     expect(fields.d4z4).toBe('3/22');
     expect(fields.methylation).toBe('12%');
     expect(fields.haplotype).toBe('4qA');
-    expect(fields.d4z4_clinical).toBeUndefined();
+  });
+
+  // This scope's two genetics cells are the boxes on the registration
+  // form, so the sentence beside them is the one the passport prints in
+  // their bracket — and it is the patient's own consent to share more
+  // that used to remove it.
+  it('keeps saying the registration form is not a laboratory report', () => {
+    const { fields } = redactFields(profileSample, {
+      scope: 'profile',
+      mode: 'precise',
+    });
+    expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
+    expect(fields.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
+  });
+
+  // `value_withheld` is a statement about what was shared, not a
+  // reading of the cell, so it is the one sibling that must NOT appear
+  // beside a shared value — it would be false there. Nothing replaces
+  // it: this platform has no methylation boundary to state.
+  it('says nothing about the methylation value it is now printing', () => {
+    const { fields } = redactFields(profileSample, {
+      scope: 'profile',
+      mode: 'precise',
+    });
+    expect(fields.methylation).toBe('12%');
+    expect(fields.methylation_clinical).toBeUndefined();
+  });
+
+  // Derived in strict mode alone, and on neither allowlist in its raw
+  // form, so consenting to share more used to erase the date outright:
+  // the day is dropped in both modes and the year was computed in only
+  // one. The retriever writes `diagnosisDate` off the profile column
+  // and `diagnosisYear` off the baseline payload, so a patient can
+  // easily have the first and not the second.
+  it('still derives the diagnosis year from a date the day is stripped from', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { diagnosisDate: '2023-06-01', gender: 'female' },
+        { scope: 'profile', mode },
+      );
+      expect(fields.diagnosisDate).toBeUndefined();
+      expect(fields.diagnosisYear).toBe(2023);
+    }
   });
 
   it('still hard-deletes pure identifiers in precise mode', () => {

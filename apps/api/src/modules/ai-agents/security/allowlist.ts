@@ -13,8 +13,15 @@
  *   D4Z4 repeat count, methylation percentage or precise date never
  *   leave the server.
  * - `precise` mode (consent level precise): user has explicitly
- *   opted in to sharing raw values. The clinicalised duplicates are
- *   removed; the raw originals pass.
+ *   opted in to sharing raw values, so the raw originals pass —
+ *   BESIDE this platform's reading of them, not instead of it. The
+ *   `_clinical` sibling of a genetics cell is on this list too: it
+ *   carries the bands and, more to the point, the refusals — a length
+ *   in kb, a repeat count of 0, a negated haplotype, a value that was
+ *   never read off a laboratory report. Listing it under `strict`
+ *   alone left those unsaid for exactly the patients whose answers are
+ *   built from the most detail. See the layer 2 note in
+ *   `pii-redactor.ts`.
  *
  * Adding a new field:
  *   1. Decide its scope (profile / reports / followups).
@@ -51,8 +58,13 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'diagnosisYear',
       'diagnosisType',
       'd4z4', // raw repeat count, e.g. "3/22"
+      'd4z4_clinical', // what this platform reads that cell as, or refuses to
       'haplotype', // raw, e.g. "4qA"
+      'haplotype_clinical', // same, for the haplotype cell
       'methylation', // raw percentage, e.g. "12%"
+      // `methylation_clinical` is deliberately absent, and it is the
+      // only one of the three that is: it holds no reading to carry
+      // here. See `clinicaliseMethylation`.
       'onsetRegion',
       'familyHistory',
       'independentlyAmbulatory',

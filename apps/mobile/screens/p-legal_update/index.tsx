@@ -5,7 +5,14 @@ import { useRouter } from 'expo-router';
 import Button from '../common/Button';
 import { COLOR } from '../../lib/design';
 import { ApiError, recordLegalAcceptance } from '../../lib/api';
-import { LEGAL_CONTACT_EMAIL, LEGAL_CONTACT_PHONE } from '../../lib/legal-content';
+import {
+  GUARDIAN_CONSENT_TITLE,
+  LEGAL_CONTACT_EMAIL,
+  LEGAL_CONTACT_PHONE,
+  PRIVACY_POLICY_TITLE,
+  SENSITIVE_DATA_CONSENT_TITLE,
+  USER_AGREEMENT_TITLE,
+} from '../../lib/legal-content';
 import { useLegalConsentContext } from '../../contexts/LegalConsentContext';
 import styles from './styles';
 
@@ -197,8 +204,25 @@ const LegalUpdateScreen = () => {
           ) : (
             <View style={styles.emptyBlock}>
               <Text style={styles.emptyTitle}>没有需要重新确认的条款</Text>
+              {/* WHERE EACH DOCUMENT ACTUALLY IS. This screen asks about
+                  every id in ASK_ORDER (lib/legal-updates.ts). 关于我们
+                  opens USER_AGREEMENT_SECTIONS and
+                  PRIVACY_POLICY_SECTIONS — the ones it imports, and no
+                  others. So 「条款全文可以在关于我们里随时翻看」 sent a
+                  patient looking for the Art. 29 单独同意 or the 监护人同意
+                  to a screen that does not carry them. Those have no
+                  standing entry anywhere: SensitiveDataConsentGate shows
+                  them at the first report upload and at 建档, and this
+                  screen shows them under 展开全文 when one of them is the
+                  outstanding ask — which is exactly not this branch.
+                  Saying so is better than pointing somewhere they are
+                  not. */}
               <Text style={styles.emptyText}>
-                你当前同意的就是最新版本。条款全文可以在「我的 → 关于我们」里随时翻看。
+                你当前同意的就是最新版本。《
+                {USER_AGREEMENT_TITLE}》和《{PRIVACY_POLICY_TITLE}
+                》的全文在「我的 → 关于我们」里随时可以翻看；《
+                {SENSITIVE_DATA_CONSENT_TITLE}》和《{GUARDIAN_CONSENT_TITLE}
+                》没有常驻入口，只在向你征求同意时完整展示。
               </Text>
               <Button
                 label="回到首页"

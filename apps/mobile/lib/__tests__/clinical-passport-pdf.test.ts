@@ -473,3 +473,146 @@ describe('逐项来源印在值下面', () => {
     expect(html).toContain('<p class="value-origin">报告读取</p>');
   });
 });
+
+/**
+ * 这张纸印出一个读数，又在几行之上否认它 —— 分享页和转诊资料都已经补上
+ * 了中间那一句，印出来的护照是同一个缺陷的第三张纸。拿着它的人十秒钟之
+ * 内没法跟患者核对任何一行，看到 「D4Z4 重复数 18kb（报告读取）」 压在
+ * 「没有从基因报告里读出来的、可作确诊依据的基因结果」 下面，只会得出
+ * 「这个平台读不了自己的报告」。
+ *
+ * 服务端把这两句都写好了（`readingsNotJudged` 和 `greyZoneNote`），这里
+ * 只验证它们上了纸、在它们要解释的那几张卡片之前，并且服务端没给的时候
+ * 一句都不印。
+ */
+describe('读数和它的说明要在同一张纸上', () => {
+  const KB_NOT_JUDGED =
+    '报告上以 kb 写的长度（18kb）照常展示，但不参与本平台对这份报告的判断：指南给出的界限是按重复单元数写的，本平台不在 kb 和重复单元数之间做换算。';
+  const GREY_ZONE =
+    '你的 D4Z4 重复单元数是 9，落在指南所说的 8–10 单元灰区：这个区间的 4qA 等位基因在欧洲对照人群中约有 1%–2% 的人携带且无症状。';
+
+  const evidence = (over: Record<string, unknown> = {}) => ({
+    grade: 'method_right_incomplete',
+    gradeLabel: '结果不全',
+    headline: '这两项都还没有确定的结果',
+    reason: '依据。',
+    action: '下一步。',
+    readingsNotJudged: null,
+    greyZoneNote: null,
+    testRequest: null,
+    sources: [],
+    ...over,
+  });
+
+  const withEvidence = (
+    diagnosisOver: Record<string, unknown>,
+  ): Parameters<typeof buildClinicalPassportPdfHtml>[0] =>
+    ({
+      generatedAt: '2026-08-05T00:00:00.000Z',
+      passportId: 'FSHD-TEST',
+      patientName: '测试',
+      hasRecordedData: true,
+      latestUpdatedAt: null,
+      completion: { completed: 1, total: 4 },
+      metrics: [],
+      summaryCards: [],
+      diagnosis: {
+        ready: false,
+        confirmation: 'self_reported',
+        latestSourceDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        geneticType: 'FSHD1',
+        d4z4Repeats: '—',
+        methylationValue: '—',
+        diagnosisDate: '—',
+        geneEvidence: '—',
+        ...diagnosisOver,
+      },
+      motor: {
+        ready: false,
+        average: '—',
+        latestMeasurementAt: null,
+        latestActivityAt: null,
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+        activitySummary: '—',
+      },
+      imaging: {
+        ready: false,
+        latestMriDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        summary: '—',
+        highlights: [],
+        bodyRegions: {},
+      },
+      monitoring: { ready: false, items: [] },
+      nextSteps: [],
+      timeline: [],
+    }) as unknown as Parameters<typeof buildClinicalPassportPdfHtml>[0];
+
+  it('以 kb 写的长度，说明排在它要解释的那一格之前', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withEvidence({
+        d4z4Repeats: '18kb',
+        geneticEvidence: evidence({ readingsNotJudged: KB_NOT_JUDGED }),
+      }),
+    );
+    expect(html).toContain('⚠ 未经基因确诊');
+    expect(html).toContain('不在 kb 和重复单元数之间做换算');
+    // 横幅否认的正是下面那一格印出来的数，所以说明要夹在两者中间。
+    const noteIndex = html.indexOf('不在 kb 和重复单元数之间做换算');
+    expect(noteIndex).toBeGreaterThan(html.indexOf('⚠ 未经基因确诊'));
+    // 对着卡片的标签量，不是对着 18kb —— 那句说明自己就带着这个数。
+    expect(noteIndex).toBeLessThan(html.indexOf('D4Z4 重复数'));
+  });
+
+  it('读到 0 的重复数也一样', () => {
+    const zero =
+      '报告读到的 D4Z4 重复单元数是「0」，本平台读不通这个数。0 个重复单元不是 FSHD1 会有的等位基因，所以这一格更可能是没被读对，或者写的根本不是重复单元数。本平台既不拿它当确诊依据，也不拿它当排除依据。';
+    const html = buildClinicalPassportPdfHtml(
+      withEvidence({
+        d4z4Repeats: '0',
+        geneticEvidence: evidence({
+          headline: '报告读到的 D4Z4 重复单元数是「0」，本平台读不通这个数',
+          readingsNotJudged: zero,
+        }),
+      }),
+    );
+    expect(html).toContain('本平台既不拿它当确诊依据，也不拿它当排除依据');
+  });
+
+  it('灰区提示在没有横幅的确诊档案上照印 —— 那一档只有它一句保留意见', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withEvidence({
+        confirmation: 'genetic',
+        d4z4Repeats: '9',
+        geneticEvidence: evidence({
+          grade: 'trial_ready',
+          gradeLabel: '可用于入组',
+          greyZoneNote: GREY_ZONE,
+        }),
+      }),
+    );
+    // 确诊那一档不印横幅，灰区仍然要上纸：护照屏幕、导出的 markdown 和
+    // 转诊资料都印它，唯独这张纸不印，就是三份材料互相矛盾。
+    expect(html).not.toContain('⚠');
+    expect(html).toContain('灰区提示：');
+    expect(html).toContain('8–10 单元灰区');
+  });
+
+  it('服务端没给这一段时一句都不印，也不塌掉', () => {
+    const html = buildClinicalPassportPdfHtml(withEvidence({ d4z4Repeats: '18kb' }));
+    expect(html).toContain('18kb');
+    expect(html).not.toContain('class="unjudged"');
+  });
+
+  it('这两项都是 null 时不留空节点', () => {
+    const html = buildClinicalPassportPdfHtml(
+      withEvidence({ d4z4Repeats: '6', geneticEvidence: evidence() }),
+    );
+    expect(html).not.toContain('class="unjudged"');
+  });
+});

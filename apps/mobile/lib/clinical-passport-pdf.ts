@@ -1,4 +1,5 @@
 import {
+  readPassportGeneticEvidence,
   readPassportValueOrigin,
   readPassportValueOrigins,
   type ClinicalPassportSummary,
@@ -223,6 +224,32 @@ export const buildClinicalPassportPdfHtml = (
           <p class="note-title">逐项来源</p>
           <p class="info-value">服务端这一版没有把本节的逐项来源发全，本节中没有标注来源的值是从报告里读出来的还是谁填进去的，本平台无法说明。</p>
         </div>`;
+
+  /**
+   * 这一节印出来的读数，本平台是怎么看待它的 —— 服务端写好的那两句，原样
+   * 取过来。
+   *
+   * 这张纸此前只印数值和横幅：「D4Z4 重复数 18kb（报告读取）」 的正上方
+   * 是 「本节里没有从基因报告里读出来的、可作确诊依据的基因结果」，中间
+   * 没有一句把两者接起来。分享页和转诊资料都已经改掉了这个缺陷，这是同
+   * 一个缺陷的第三张纸；拿着它的人十秒钟之内没法跟患者核对任何一行。
+   *
+   * 不自己写第二套措辞：这两句都在服务端 `buildGeneticEvidence` 里，护
+   * 照屏幕、导出的 markdown 和分享页印的就是它们。
+   *
+   * 服务端没给这一段时是 null，那就一句都不印 —— 少一句解释，好过印一句
+   * 本平台没说过的话。
+   */
+  const geneticEvidence = readPassportGeneticEvidence(summary.diagnosis.geneticEvidence);
+  const unjudgedLine = (text: string) => `<p class="unjudged">${escapeHtml(text)}</p>`;
+  const readingsNotJudgedLine = geneticEvidence?.readingsNotJudged
+    ? unjudgedLine(geneticEvidence.readingsNotJudged)
+    : '';
+  // 「灰区提示：」 是导出的 markdown 给这段话的前缀，这里照用：这段话以
+  // 「你的」开头，而这张纸是递给医生的，前缀说明了它在讲哪一件事。
+  const greyZoneLine = geneticEvidence?.greyZoneNote
+    ? unjudgedLine(`灰区提示：${geneticEvidence.greyZoneNote}`)
+    : '';
 
   const summaryCards = summary.summaryCards
     .map(
@@ -480,6 +507,17 @@ export const buildClinicalPassportPdfHtml = (
         line-height: 1.5;
         border-radius: 4px;
       }
+      /* Explains a number printed a few lines below it, and must not be
+         read as a second warning: the amber above is the only amber on
+         the page and that is what makes it legible. Plain text at
+         reading size, above the cards it is about — the same place the
+         分享页 and the 转诊资料 set the same sentences. */
+      .unjudged {
+        margin: 6px 0 10px;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: #4c5b68;
+      }
       /* Ordinary card text, which is what these two always were. They
          are not matched by the 「.section-copy, …」 block below, so they
          carry their own size and rhythm rather than inheriting body
@@ -656,6 +694,12 @@ export const buildClinicalPassportPdfHtml = (
                             '⚠ 尚无诊断依据：本节没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果，请勿据此确认诊断。'
                   }</p>`
             }
+            ${
+              /* 紧挨着它们要解释的那几张卡片的上面，而不是排在本节末尾：
+                 上面那条横幅否认的，正是下面那一格印出来的数。 */
+              readingsNotJudgedLine
+            }
+            ${greyZoneLine}
           </div>
           <span class="freshness">${escapeHtml(summary.diagnosis.freshness.label)}</span>
         </div>

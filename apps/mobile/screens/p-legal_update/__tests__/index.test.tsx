@@ -81,7 +81,14 @@ jest.mock('../../../contexts/LegalConsentContext', () => ({
 }));
 
 import { ApiError } from '../../../lib/api';
-import { LEGAL_DOCUMENTS } from '../../../lib/legal-content';
+import {
+  GUARDIAN_CONSENT_TITLE,
+  LEGAL_DOCUMENTS,
+  LEGAL_DOCUMENT_TITLES,
+  PRIVACY_POLICY_TITLE,
+  SENSITIVE_DATA_CONSENT_TITLE,
+  USER_AGREEMENT_TITLE,
+} from '../../../lib/legal-content';
 import { ADMIN_FILLED_BASELINE_FIELDS, buildConsentAsks } from '../../../lib/legal-updates';
 import LegalUpdateScreen from '../index';
 
@@ -389,6 +396,43 @@ describe('直接打开这个地址时不装样子', () => {
     mockAsks = [];
     const screen = textContent((await render()).root);
     expect(screen).toContain('没有需要重新确认的条款');
+  });
+
+  it('sends the reader to 关于我们 only for the documents 关于我们 opens', async () => {
+    // p-about_us imports USER_AGREEMENT_SECTIONS and
+    // PRIVACY_POLICY_SECTIONS and nothing else, so 「条款全文可以在关于
+    // 我们里随时翻看」 was an address for the documents that screen
+    // carries and a wrong address for the rest of what this one asks
+    // about.
+    mockStatus = 'ready';
+    mockAsks = [];
+    const screen = textContent((await render()).root);
+
+    expect(screen).toContain(
+      '你当前同意的就是最新版本。《' +
+        USER_AGREEMENT_TITLE +
+        '》和《' +
+        PRIVACY_POLICY_TITLE +
+        '》的全文在「我的 → 关于我们」里随时可以翻看；《' +
+        SENSITIVE_DATA_CONSENT_TITLE +
+        '》和《' +
+        GUARDIAN_CONSENT_TITLE +
+        '》没有常驻入口，只在向你征求同意时完整展示。',
+    );
+  });
+
+  it('leaves no document this screen can ask about unaddressed', async () => {
+    // ASK_ORDER walks every id in LEGAL_DOCUMENTS, so a document added
+    // to the set and left out of the sentence is a patient told where
+    // 「全文」 lives and not told about one of the documents they were
+    // asked to accept. Rendered rather than read off the source: what
+    // is on the screen is the claim.
+    mockStatus = 'ready';
+    mockAsks = [];
+    const screen = textContent((await render()).root);
+    for (const title of Object.values(LEGAL_DOCUMENT_TITLES)) {
+      expect(screen).toContain('《' + title + '》');
+    }
   });
 
   it('re-reads the ledger on mount instead of trusting the session snapshot', async () => {

@@ -131,6 +131,45 @@ export interface ReferralDiagnosisDTO {
    * PassportGeneticEvidenceDTO.
    */
   readingsNotJudged: string | null;
+  /**
+   * WHY THE 结论 DENIES A CONFIRMATION WHILE A DETERMINATE REPEAT COUNT
+   * IS PRINTED UNDER IT, or null.
+   *
+   * `readingsNotJudged` covers the readings this platform weighs
+   * NOTHING against — a kb length, a count cell reading 0. A count of
+   * 30 is neither: it parses, it is the laboratory's own, and it is
+   * weighed — against the boundary the guideline states, which it fails.
+   * So the pack printed 「本资料里没有从基因报告里读出来的、可作确诊依据
+   * 的基因结果」 above 「D4Z4 重复数：30（报告读取）」 with the earlier
+   * line's explanation absent by construction. Same for a count whose
+   * report never stated a haplotype: the number is on the page and the
+   * conjunction it belongs to is not.
+   *
+   * IT IS THE PASSPORT'S OWN HEADLINE FOR THAT STATE, verbatim. The
+   * screen leads with it and the markdown export prints it; a second
+   * wording of 「这个数为什么没换来确诊」 is one more sentence to keep
+   * true on one more page.
+   *
+   * NOT SET WHERE THE 结论 ALREADY SAYS IT. `genetic_non_permissive`
+   * opens by naming the 4qB reading, and the headline for that grade
+   * says the same thing in the same words — printed under it, it reads
+   * as the page repeating itself rather than as an explanation.
+   */
+  repeatCountNotConfirming: string | null;
+  /**
+   * The passport's 8–10 单元灰区 note, carried verbatim, or null.
+   *
+   * The passport screen, the 待办 list and the markdown export all
+   * carry it; this pack did not, so a report reading D4Z4 9 / 4qA came
+   * out 「基因确诊；D4Z4 重复数 9」 to a 协作网 neurologist with the
+   * uncertainty the patient's own copy of the same passport states
+   * dropped — and the reader who can act on it is the one who was not
+   * told. It qualifies the 结论 rather than denying it, on both grades
+   * it can be set on: `trial_ready`, where it is the only reservation
+   * attached to a confirmation, and 结果不全, where the count is in the
+   * zone and the haplotype was never stated.
+   */
+  greyZoneNote: string | null;
   geneticType: string;
   d4z4Repeats: string;
   methylationValue: string;
@@ -489,6 +528,44 @@ const buildDiagnosisStatement = (
   }
 };
 
+/**
+ * WHICH 结论 LEAVES A PRINTED REPEAT COUNT UNEXPLAINED — see
+ * `repeatCountNotConfirming`.
+ *
+ * A `switch` for the same reason `buildDiagnosisStatement` has one, and
+ * a stronger one: a sixth confirmation state added to the union is a
+ * state whose 结论 nobody has read against the number below it, and the
+ * safe default is not 「print nothing」. It has to fail the build.
+ */
+const repeatCountNotConfirming = (
+  confirmation: PassportDiagnosisConfirmation,
+  repeats: string | null,
+  headline: string,
+): string | null => {
+  // No determinate count on the page: there is no number for the 结论
+  // to be read against. A kb length or a 0 in that cell is the other
+  // field's, and a report that stated neither has nothing to reconcile.
+  if (repeats === null) return null;
+  switch (confirmation) {
+    // Nothing is denied — the 结论 sets this very number after
+    // 「基因确诊；D4Z4 重复数」.
+    case 'genetic':
+      return null;
+    // The 结论 already opens with the reading that cost the
+    // confirmation, in the same words this headline uses.
+    case 'genetic_non_permissive':
+      return null;
+    case 'self_reported':
+    case 'admin_entered':
+    case 'none':
+      return headline;
+    default: {
+      const _never: never = confirmation;
+      return _never;
+    }
+  }
+};
+
 /** A `switch` for the same reason `buildDiagnosisStatement` has one: a
  *  third state added to `PassportFieldOriginDTO` has to fail the build
  *  rather than print 「来源记录读不出来」 about itself. */
@@ -535,6 +612,12 @@ const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisD
     confirmation: diagnosis.confirmation,
     statement,
     readingsNotJudged: diagnosis.geneticEvidence.readingsNotJudged,
+    repeatCountNotConfirming: repeatCountNotConfirming(
+      diagnosis.confirmation,
+      repeats,
+      diagnosis.geneticEvidence.headline,
+    ),
+    greyZoneNote: diagnosis.geneticEvidence.greyZoneNote,
     geneticType: diagnosis.geneticType,
     d4z4Repeats: diagnosis.d4z4Repeats,
     methylationValue: diagnosis.methylationValue,
@@ -1024,11 +1107,25 @@ export const buildReferralPack = (
     '## 一、诊断依据',
     '',
     `- 结论：${escapeMarkdown(diagnosis.statement)}`,
-    // Directly under the 结论 it qualifies and above the rows it is
+    // Directly under the 结论 they qualify and above the rows they are
     // about: the denial and the number are the two things this reader
-    // has to put together, and until this line existed the pack printed
-    // both and reconciled neither. See `readingsNotJudged`.
+    // has to put together, and until these lines existed the pack
+    // printed both and reconciled neither. The three are not
+    // alternatives — a report carrying a count of 30 and an EcoRI
+    // fragment in kb owes this reader both sentences.
+    //
+    // See `repeatCountNotConfirming`, `readingsNotJudged` and
+    // `greyZoneNote`.
+    ...(diagnosis.repeatCountNotConfirming
+      ? [`- ${escapeMarkdown(diagnosis.repeatCountNotConfirming)}`]
+      : []),
     ...(diagnosis.readingsNotJudged ? [`- ${escapeMarkdown(diagnosis.readingsNotJudged)}`] : []),
+    // 「灰区提示：」 is the prefix `buildClinicalPassportExport` gives the
+    // same paragraph, and it is kept here so the two documents a
+    // patient may hand over read alike. The note itself opens 「你的
+    // D4Z4 重复单元数是 …」; the prefix is what says which of the numbers
+    // above it is about.
+    ...(diagnosis.greyZoneNote ? [`- 灰区提示：${escapeMarkdown(diagnosis.greyZoneNote)}`] : []),
     // Per value, because these four do not share one source: 分型 and
     // 诊断日期 each fall back to a profile column the patient may have
     // typed and the OCR autofill may have written, while D4Z4 and 甲基化

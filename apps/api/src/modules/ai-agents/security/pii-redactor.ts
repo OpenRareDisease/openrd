@@ -9,13 +9,37 @@
  *             unconditionally, in both strict and precise mode.
  *             These are pure identifiers with no clinical value.
  *
- *   Layer 2 — clinicalise: only in `strict` mode. Numeric / dated
- *             clinical fields gain a `_clinical` sibling holding a
- *             coarse label (e.g. D4Z4 "3" -> "within_fshd1_repeat
- *             _range"). The raw original is then dropped.
- *             In `precise` mode the user has explicitly opted in to
- *             sharing the raw value, so this layer is a no-op and the
- *             original passes through.
+ *   Layer 2 — clinicalise: THIS PLATFORM'S OWN READING OF A CELL, and
+ *             it runs in BOTH modes. A genetics cell gains a
+ *             `_clinical` sibling holding what this platform makes of
+ *             it — a band on the one repeat-count boundary this repo
+ *             states, or a refusal to read the cell as a result at
+ *             all. A dated field gains its year. Strict mode then
+ *             drops the raw original, because the raw value is the
+ *             thing the patient did not consent to share; precise mode
+ *             keeps it beside the reading.
+ *
+ *             IT USED TO RUN ONLY IN STRICT, and the refusals were
+ *             therefore exactly what the patients who consented to
+ *             share the most never got: a length in kb, a repeat count
+ *             of 0, a negated haplotype, a cell naming both probes and
+ *             a value never read off a laboratory report all reached
+ *             the prompt as bare cells, for the readers whose answers
+ *             are built from the most detail. Consent decides how much
+ *             of a cell reaches the prompt. It does not decide whether
+ *             this platform is willing to interpret it — the refusal
+ *             is not a redaction, it is this platform declining to
+ *             read a cell, and that is true whatever the patient
+ *             shared. The derived years are on the same footing:
+ *             `diagnosisYear` and `reportDate_year` are the only form
+ *             of those cells either allowlist carries, so deriving
+ *             them in strict alone left a precise-consent patient with
+ *             no date at all.
+ *
+ *             `clinicaliseMethylation` is the one that stays strict-
+ *             only, and for the opposite reason: its output is not a
+ *             reading. `value_withheld` is a statement about what was
+ *             shared, and beside a shared value it would be false.
  *
  *             WHAT A LABEL MAY CLAIM. It is answered to a patient by
  *             the assistant, so it may say only what this repo says
@@ -147,6 +171,11 @@ const isQualitativeResult = (value: unknown): boolean => {
  * WHAT THE ASSISTANT MAY SAY ABOUT A GENETICS CELL THIS PLATFORM DID
  * NOT READ OFF THE LABORATORY'S OWN REPORT.
  *
+ * ASKED IN BOTH MODES, like every other reading below it. What the
+ * precise consent buys is the cell itself, printed beside this
+ * sentence; it does not buy the cell a promotion to a reading this
+ * platform never made of it.
+ *
  * The passport's rule, in the one form this file can state it: a value
  * read off a 病历摘要 quoting a result, or typed into the registration
  * form, is DISPLAYED with its origin beside it and earns no grade of
@@ -245,6 +274,14 @@ const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | 
  * survives — the same rule `projectOcrFields` applies to every other
  * qualitative result, for the same reason. What the patient withheld is
  *「精确数值」, and 未检出 is not one.
+ *
+ * THE ONE HELPER HERE THAT IS ASKED IN STRICT MODE ALONE, because
+ * neither branch of it is a reading. `value_withheld` is a statement
+ * about what the patient shared, and printed beside the shared number
+ * it would be false; the laboratory's own word is the cell itself,
+ * which precise mode already prints. This platform has no judgement of
+ * a methylation result to carry into the other mode — that is what the
+ * paragraph above says, and it is why there is nothing here to keep.
  */
 const clinicaliseMethylation = (raw: unknown): string | null => {
   if (raw === null || raw === undefined || raw === '') return null;
@@ -391,6 +428,11 @@ const chunkIsLaboratoryGeneticReport = (chunk: Record<string, unknown>): boolean
  *  safe-key list is shared because a key being safe to name has never
  *  depended on consent — only the number beside it does.
  *
+ *  THE GENETICS CELLS CARRY THEIR READING IN BOTH MODES, for the same
+ *  reason: what this platform makes of a cell does not depend on
+ *  consent either. Precise mode adds the raw cell to the reading
+ *  rather than replacing the reading with it. See `clinicaliseD4Z4`.
+ *
  *  This is the fix for the PR #23 follow-up review: precise mode used
  *  to accept the entire raw `fields` blob via the allowlist, leaking
  *  whatever the OCR pipeline happened to put in there.
@@ -432,27 +474,30 @@ const projectOcrFields = (
       continue;
     }
     const lower = key.toLowerCase();
+    /** The cell as the report printed it — precise mode only, and
+     *  written before the reading so the two read in that order. */
+    const emitRawUnderPrecise = () => {
+      if (mode !== 'precise') return;
+      if (value === null || value === undefined || value === '') return;
+      out[key] = value;
+    };
     if (lower.includes('d4z4')) {
-      if (mode === 'strict') {
-        const v = clinicaliseD4Z4(value, fromLaboratoryReport);
-        if (v !== null) out[`${key}_clinical`] = v;
-      } else {
-        if (value !== null && value !== undefined && value !== '') out[key] = value;
-      }
+      emitRawUnderPrecise();
+      const v = clinicaliseD4Z4(value, fromLaboratoryReport);
+      if (v !== null) out[`${key}_clinical`] = v;
     } else if (lower.includes('methylation')) {
+      // Strict-only, and the reason is in `clinicaliseMethylation`:
+      // neither of its answers is a reading to carry over.
       if (mode === 'strict') {
         const v = clinicaliseMethylation(value);
         if (v !== null) out[`${key}_clinical`] = v;
       } else {
-        if (value !== null && value !== undefined && value !== '') out[key] = value;
+        emitRawUnderPrecise();
       }
     } else if (lower.includes('haplotype')) {
-      if (mode === 'strict') {
-        const v = clinicaliseHaplotype(value, fromLaboratoryReport);
-        if (v !== null) out[`${key}_clinical`] = v;
-      } else {
-        if (value !== null && value !== undefined && value !== '') out[key] = value;
-      }
+      emitRawUnderPrecise();
+      const v = clinicaliseHaplotype(value, fromLaboratoryReport);
+      if (v !== null) out[`${key}_clinical`] = v;
     } else if (lower.includes('date')) {
       // Both modes: strip to year-only. Even in precise mode we don't
       // want the exact day-of-month leaving the server.
@@ -504,15 +549,26 @@ const projectOcrFields = (
 };
 
 /**
- * Strict-mode transform: for each known-sensitive raw key, compute a
- * clinical sibling and mark the original for removal. Unknown keys
- * fall through untouched here (the allowlist layer is the final
- * gate).
+ * For each known-sensitive raw key, compute this platform's reading of
+ * it. Unknown keys fall through untouched here (the allowlist layer is
+ * the final gate).
+ *
+ * WHAT THE MODE DECIDES IS WHETHER THE RAW CELL STAYS, and nothing
+ * else. It used to decide whether this function was called at all,
+ * which made every refusal below a thing only the patients who shared
+ * least were told — see the layer 2 note at the top of this file.
  */
-const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): ClinicaliseResult => {
+const clinicalise = (
+  input: Record<string, unknown>,
+  scope: RedactionScope,
+  mode: RedactionMode,
+): ClinicaliseResult => {
   const added: Record<string, unknown> = {};
   const drop = new Set<string>();
   const changed: string[] = [];
+  /** The precise consent is to 「精确数值」, so it is the raw cell and
+   *  only the raw cell that this keeps. */
+  const dropRawCell = mode === 'strict';
 
   if (scope === 'profile') {
     if ('d4z4' in input) {
@@ -526,9 +582,9 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
         added.d4z4_clinical = v;
         changed.push('d4z4');
       }
-      drop.add('d4z4');
+      if (dropRawCell) drop.add('d4z4');
     }
-    if ('methylation' in input) {
+    if ('methylation' in input && mode === 'strict') {
       const v = clinicaliseMethylation(input.methylation);
       if (v !== null) {
         added.methylation_clinical = v;
@@ -542,11 +598,16 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
         added.haplotype_clinical = v;
         changed.push('haplotype');
       }
-      drop.add('haplotype');
+      if (dropRawCell) drop.add('haplotype');
     }
     // diagnosisDate is identifying down to the day; replace with just
     // the year so the orchestrator can still talk about "diagnosed
-    // a year ago" without leaking the exact date.
+    // a year ago" without leaking the exact date. The day is dropped
+    // in both modes — the precise consent is to a clinical value, not
+    // to a calendar date — and so the year is derived in both, because
+    // `diagnosisYear` is the only form of this cell either allowlist
+    // carries and a precise-consent patient was otherwise left with no
+    // diagnosis date at all.
     if ('diagnosisDate' in input) {
       const year = yearFromDate(input.diagnosisDate);
       if (year !== null && !('diagnosisYear' in input)) {
@@ -558,6 +619,8 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
   }
 
   if (scope === 'reports') {
+    // Same footing as `diagnosisDate`: the day never leaves and
+    // `reportDate_year` is the only form either allowlist carries.
     if ('reportDate' in input) {
       const year = yearFromDate(input.reportDate);
       if (year !== null && !('reportDate_year' in input)) {
@@ -572,6 +635,16 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
 
   // Birthday handling lives outside the scope branch because both
   // profile and reports may carry one.
+  //
+  // NOTHING REACHES IT. `dateOfBirth`, `date_of_birth` and `birthday`
+  // are all on HARD_DELETE_KEYS, so layer 1 removes the cell before
+  // this function is ever handed it, and `ageGroup` is therefore
+  // derived in neither mode — the assistant only ever sees an age band
+  // when a retriever puts one there itself, which none does. Deriving
+  // it would mean reading the birthday off the input before layer 1
+  // runs, and that is a decision about what reaches an LLM rather than
+  // a tidy-up, so it is left as it stands and stated here rather than
+  // implied by the branch below.
   if ('dateOfBirth' in input) {
     const ageGroup = ageGroupFromDate(input.dateOfBirth);
     if (ageGroup !== null && !('ageGroup' in input)) {
@@ -625,24 +698,23 @@ export const redactFields = (
   stats.hardDeleted = layer1.removed;
   let working = layer1.cleaned;
 
-  // Layer 2 — strict-mode-only clinicalisation of profile-level fields
-  // (D4Z4 / methylation / haplotype → _clinical, diagnosisDate → year,
-  // dateOfBirth → ageGroup). Precise mode skips this layer for
-  // top-level keys.
-  if (mode === 'strict') {
-    const layer2 = clinicalise(working, scope);
-    stats.clinicalised = layer2.changed;
-    working = { ...working, ...layer2.added };
-    for (const k of layer2.drop) {
-      delete working[k];
-    }
+  // Layer 2 — this platform's reading of the top-level cells (D4Z4 /
+  // haplotype → _clinical, diagnosisDate → year), in both modes. Which
+  // raw originals survive it is what the mode decides; whether the
+  // reading is stated is not.
+  const layer2 = clinicalise(working, scope, mode);
+  stats.clinicalised = layer2.changed;
+  working = { ...working, ...layer2.added };
+  for (const k of layer2.drop) {
+    delete working[k];
   }
 
   // Layer 2b — OCR `fields` projection. Runs in **both** modes
   // because precise mode otherwise let the raw OCR blob through
   // verbatim (PR #23 follow-up). Strict mode emits `fields_clinical`
   // with clinicalised values; precise mode emits `fields` with raw
-  // values, but only for keys we explicitly trust as structured /
+  // values plus this platform's reading of the genetics cells among
+  // them, and only for keys we explicitly trust as structured /
   // non-PII. Free-form OCR keys are dropped in both modes.
   if (scope === 'reports' && isPlainObject(working.fields)) {
     const projected = projectOcrFields(
