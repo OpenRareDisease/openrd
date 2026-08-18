@@ -159,6 +159,18 @@ export const CHINA_REGISTRY_URL = 'http://www.chinadrugtrials.org.cn/';
 const CHINA_REGISTRY_POINTER = `国内登记的试验请直接查${CHINA_REGISTRY_NAME}（chinadrugtrials.org.cn）。`;
 
 /**
+ * The same instruction for the other half, and it exists for the same
+ * reason: our copy of a registry failing is not that registry having
+ * nothing, and the reader is owed the address either way.
+ *
+ * 「直接到 clinicaltrials.gov 上查询」 is the phrasing `describeEmptyList`
+ * already ends on — one wording for one instruction, so a reader who
+ * meets both cards in one screen is not told two different things.
+ */
+const CTGOV_REGISTRY_POINTER =
+  'ClinicalTrials.gov 上登记的试验请直接到 clinicaltrials.gov 上查询。';
+
+/**
  * Shown when the snapshot says nothing at all about the mainland half:
  * the request is in flight, it failed, or it came back carrying no
  * source block for that registry. Every other state has a fact of its
@@ -561,7 +573,7 @@ export const resolveFetchedOn = (snapshot: TrialsSnapshot): string | null => {
  * IT IS THE FLOOR, NOT THE WHOLE TEST. A sentence about ONE registry's
  * rows needs to know that registry put rows in the list, which this
  * cannot answer — the list is a union and either half can be all of
- * it. `describeCtgovStaleness` asks the stronger question instead, and
+ * it. `describeCtgovCoverage` asks the stronger question instead, and
  * gets this one's answer with it.
  */
 export const shownListFetchedOn = (snapshot: TrialsSnapshot): string | null =>
@@ -636,32 +648,40 @@ const lastSuccessClause = (status: TrialSourceStatus | null): string => {
 
 /**
  * The one clause that describes the list rather than our copy of the
- * mainland half, so it is the one clause gated on `shownListFetchedOn`.
- * True of every state that reaches it: no mainland record is in the
- * snapshot on any of those paths, and the only other source is ctgov.
+ * absent half, so it is the one clause gated on `shownListFetchedOn`.
+ * True of every state that reaches it: no record from the half being
+ * described is in the snapshot on any of those paths, and there are
+ * only the two registries — so whatever list is on screen is the other
+ * one's.
  */
-const CHINA_ABSENT_LIST_SCOPE = '所以下面这份名单目前只有 ClinicalTrials.gov 的记录。';
+const absentListScope = (remaining: string): string =>
+  `所以下面这份名单目前只有 ${remaining} 的记录。`;
 
 /**
- * The three states with no mainland record in hand say the same things
- * in the same order: what became of our copy of that half, what the
- * list on screen therefore holds — ONLY when a list is on screen — and
- * where to go for the rest.
+ * A half that put no record in front of the reader says the same things
+ * in the same order, whichever half it is: what became of our copy of
+ * it, what the list on screen therefore holds — ONLY when a list is on
+ * screen — and where to go for the rest.
  *
  * `fact` and `caveat` end in 「，」 so the pointer closes the sentence
  * whether or not the middle clause is there.
  */
-const chinaAbsenceNotice = (
+const absenceNotice = (
   snapshot: TrialsSnapshot,
+  absent: TrialSourceKey,
   tone: CoverageNotice['tone'],
   fact: string,
   caveat = '',
-): CoverageNotice => ({
-  tone,
-  text:
-    `${fact}${shownListFetchedOn(snapshot) ? CHINA_ABSENT_LIST_SCOPE : ''}` +
-    `${caveat}${CHINA_REGISTRY_POINTER}`,
-});
+): CoverageNotice => {
+  const remaining = absent === 'chinadrugtrials' ? 'ctgov' : 'chinadrugtrials';
+  const pointer = absent === 'chinadrugtrials' ? CHINA_REGISTRY_POINTER : CTGOV_REGISTRY_POINTER;
+  return {
+    tone,
+    text:
+      `${fact}${shownListFetchedOn(snapshot) ? absentListScope(TRIAL_SOURCE_NAMES[remaining]) : ''}` +
+      `${caveat}${pointer}`,
+  };
+};
 
 /**
  * What to say about the mainland half.
@@ -738,7 +758,12 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
     const detail = lastRun.finishedAt
       ? '国内这部分这次没有取到'
       : '国内这部分最近一次抓取还没有返回结果';
-    return chinaAbsenceNotice(snapshot, 'warn', `${detail}（${lastSuccessClause(status)}），`);
+    return absenceNotice(
+      snapshot,
+      'chinadrugtrials',
+      'warn',
+      `${detail}（${lastSuccessClause(status)}），`,
+    );
   }
 
   if (lastRun) {
@@ -757,8 +782,9 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
     // directly under this one saying 「抓取本身报的是成功（上次成功抓
     // 取：…）」 about ctgov, with a different date in it.
     const successDay = lastSuccessDay(status);
-    return chinaAbsenceNotice(
+    return absenceNotice(
       snapshot,
+      'chinadrugtrials',
       'plain',
       `国内这部分最近一次抓取${successDay ? `（${successDay}）` : ''}是成功的，` +
         `但一条记录都没有取回来，`,
@@ -771,7 +797,7 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
   // not looked」 and 「we looked and found nothing」 are different facts
   // about us, and only one of them is worth a reader's patience.
   if (status) {
-    return chinaAbsenceNotice(snapshot, 'plain', '国内这部分还没有抓取过，');
+    return absenceNotice(snapshot, 'chinadrugtrials', 'plain', '国内这部分还没有抓取过，');
   }
 
   // No block for the source at all. The server sends one per registry
@@ -782,15 +808,38 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
 };
 
 /**
- * What to say about the ClinicalTrials.gov half when its own last run
- * did not succeed. Returns null when it did — a page that announced
- * every successful cron run would train the reader to skip the banner
- * that matters.
+ * What to say about the ClinicalTrials.gov half.
  *
- * Note this is about the refresh, not about the rows: the records
- * shown are still real records, they are just older than the date the
- * cron was supposed to make them. So the sentence names their age
- * rather than telling the reader to distrust them.
+ * TWO THINGS CAN GO WRONG WITH A HALF AND THIS HALF ONLY EVER REPORTED
+ * ONE. Its records could be stale, and that was said; its records could
+ * be missing from the list entirely, and that was silent — while the
+ * mainland half's absence has a sentence for every way it happens, down
+ * to which of us it is a fact about. The two halves are not symmetrical
+ * in what they hold, but they are symmetrical in what the reader is
+ * owed: a list with nothing of this registry in it is a list a reader
+ * will read as ClinicalTrials.gov having nothing, exactly as a list
+ * with nothing of the mainland registry in it was read as 「国内没有」.
+ * So the absence branches below mirror `describeChinaCoverage` clause
+ * for clause, and share its builder.
+ *
+ * Returns null when the half is on screen and its last run succeeded —
+ * a page that announced every successful cron run would train the
+ * reader to skip the banner that matters — and when no list is drawn at
+ * all, where `describeEmptyList` speaks for this same source and a
+ * second card would say it twice.
+ *
+ * WHERE THE TWO HALVES GENUINELY DIVERGE IS THE ok-WITH-NO-ROWS STATE.
+ * For the mainland registry that is a real answer calmly reported: the
+ * scraper ran and the site listed nothing. Here it cannot be. ctgov's
+ * fetcher refuses a `totalCount` of 0 outright and the refresh writes
+ * its rows and flips `ok` inside one transaction, so a run of this
+ * source that reached `ok` wrote rows — none of them reaching the
+ * screen is a break on our side, and it warns.
+ *
+ * The staleness branch is about the refresh, not about the rows: the
+ * records shown are still real records, they are just older than the
+ * date the cron was supposed to make them. So the sentence names their
+ * age rather than telling the reader to distrust them.
  *
  * WHICH IS ALSO WHY IT IS WITHHELD UNLESS CLINICALTRIALS.GOV RECORDS
  * ARE ON SCREEN. Every clause left in it has those records for its
@@ -812,10 +861,10 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
  * Naming the half is the other half of the same fix. The list can be a
  * union whose two halves were copied on different days, and 「下面这份
  * 名单是 X 抓到的」 claimed one day for all of it. The noun phrase that
- * narrows it is the one `CHINA_ABSENT_LIST_SCOPE` already uses for
- * exactly these rows, not a second wording for them. The mainland
- * half's own date is stated by `describeChinaCoverage`, in the notice
- * above this one.
+ * narrows it is the one `absentListScope` already uses for exactly
+ * these rows, not a second wording for them. The mainland half's own
+ * date is stated by `describeChinaCoverage`, in the notice above this
+ * one.
  *
  * The two states that already have a voice keep it, and this cannot
  * fire over either: a failed run over an empty list is exactly what
@@ -835,12 +884,61 @@ export const describeChinaCoverage = (snapshot: TrialsSnapshot): CoverageNotice 
  * registry's, and putting that day on a ClinicalTrials.gov sentence is
  * the thing this function stopped doing.
  */
-export const describeCtgovStaleness = (snapshot: TrialsSnapshot): CoverageNotice | null => {
+export const describeCtgovCoverage = (snapshot: TrialsSnapshot): CoverageNotice | null => {
   const status = sourceStatusOf(snapshot, 'ctgov');
   const lastRun = status?.lastRun ?? null;
-  if (!lastRun || lastRun.ok) return null;
   const records = trialsFromSource(snapshot, 'ctgov');
-  if (records.length === 0) return null;
+
+  if (records.length === 0) {
+    // No list on screen: `describeEmptyList` is the one that speaks,
+    // and it reads this same source block.
+    if (!shownListFetchedOn(snapshot)) return null;
+
+    if (lastRun && !lastRun.ok) {
+      const detail = lastRun.finishedAt
+        ? 'ClinicalTrials.gov 这部分这次没有取到'
+        : 'ClinicalTrials.gov 这部分最近一次抓取还没有返回结果';
+      return absenceNotice(
+        snapshot,
+        'ctgov',
+        'warn',
+        `${detail}（${lastSuccessClause(status)}），`,
+      );
+    }
+
+    if (lastRun) {
+      // `ok` with nothing on screen is this source's own contradiction
+      // — see the header. Which of the two it is depends on whether the
+      // server still counts rows we could not read, and that is the
+      // same split `describeEmptyList` makes for the whole list.
+      const successDay = lastSuccessDay(status);
+      const fact =
+        (status?.recordCount ?? 0) > 0
+          ? 'ClinicalTrials.gov 这部分抓到的记录，这一次一条都没能完整读出来 —— 这是本应用这边的问题，'
+          : `ClinicalTrials.gov 这部分最近一次抓取${successDay ? `（${successDay}）` : ''}报的是成功，` +
+            '但这里一条记录都没有 —— 这是平台这边的问题，';
+      // The caveat is the mainland half's, with the other registry
+      // named: 「我们没读到」 is not 「登记库上没有」, whichever half it
+      // is said about, and the two notices can be on screen together.
+      return absenceNotice(snapshot, 'ctgov', 'warn', fact, '这不等于注册库上就没有 FSHD 试验，');
+    }
+
+    if (status) {
+      return absenceNotice(snapshot, 'ctgov', 'plain', 'ClinicalTrials.gov 这部分还没有抓取过，');
+    }
+
+    // No block for the source at all — a payload we cannot read rather
+    // than a state we can name, so nothing is claimed about the fetch.
+    // Same reading as the mainland half's last branch.
+    return absenceNotice(
+      snapshot,
+      'ctgov',
+      'plain',
+      '本页现在没有来自 ClinicalTrials.gov 的记录，',
+    );
+  }
+
+  if (!lastRun || lastRun.ok) return null;
   const fetchedOn = formatInstantAsDay(status?.fetchedAt ?? records[0]?.fetchedAt ?? null);
   if (!fetchedOn) return null;
   const detail = lastRun.finishedAt ? '最近一次更新没有成功' : '最近一次更新还没有返回结果';

@@ -37,6 +37,7 @@ import {
   PROMPT_ALLOWLIST,
 } from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
+import { isLaboratoryGeneticReport } from '../../patient-profile/genetic-evidence.js';
 import {
   FSHD1_MAX_REPEAT_UNITS,
   isDeterminateRepeatCount,
@@ -143,6 +144,26 @@ const isQualitativeResult = (value: unknown): boolean => {
 };
 
 /**
+ * WHAT THE ASSISTANT MAY SAY ABOUT A GENETICS CELL THIS PLATFORM DID
+ * NOT READ OFF THE LABORATORY'S OWN REPORT.
+ *
+ * The passport's rule, in the one form this file can state it: a value
+ * read off a 病历摘要 quoting a result, or typed into the registration
+ * form, is DISPLAYED with its origin beside it and earns no grade of
+ * any kind — see `isLaboratoryGeneticReport`, which is the question,
+ * and `GeneticEvidenceGrade.transcribed_only`, which is what such a
+ * document gets instead of a reading of its content.
+ *
+ * One label for both cells and both origins, because it is one fact.
+ * It says what this platform did rather than where the number came
+ * from: an OCR autofill can copy a report's value into an empty
+ * baseline field and leave no record of having done it, so 「this is not
+ * from a report」 is a claim the passport explicitly refuses to make
+ * about an archived value.
+ */
+const NOT_A_LABORATORY_READING = 'not_read_off_a_laboratory_report';
+
+/**
  * THE D4Z4 CELL, READ BY THE READER THE REST OF THE PLATFORM READS IT
  * WITH, and banded only when it is a repeat count.
  *
@@ -169,11 +190,24 @@ const isQualitativeResult = (value: unknown): boolean => {
  * the platform's own 孕前 page says the count tracks onset and severity
  * 「在群体层面」 and 「不是对某一个孩子的预测」, and this label is read to
  * exactly one patient.
+ *
+ * AND ONLY OFF THE LABORATORY'S OWN REPORT. Every band below is a
+ * reading of a cell in a laboratory's voice, and this function was
+ * applied to two cells that are not one: the profile scope's `d4z4` is
+ * `diseaseBackground.d4z4`, the box on the registration form, and the
+ * reports scope hands over whichever document the retriever pulled,
+ * which is a 病历摘要 as often as a genetics report. So a count a
+ * patient typed and a count a clinic letter quoted were each answered
+ * to that patient as 「within_fshd1_repeat_range」, while the passport,
+ * the share page, the referral pack and the exports were all printing
+ * the same number with 本人填写 or 转录自非基因报告文件 in its bracket
+ * and refusing to grade it. See `NOT_A_LABORATORY_READING`.
  */
-const clinicaliseD4Z4 = (raw: unknown): string | null => {
+const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
   if (raw === null || raw === undefined || raw === '') return null;
   const reading = readSizeCell(String(raw));
   if (reading === null) return null;
+  if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
   if (isDeterminateRepeatCount(reading)) {
     return reading.value > FSHD1_MAX_REPEAT_UNITS
       ? 'above_fshd1_repeat_range'
@@ -232,9 +266,16 @@ const clinicaliseMethylation = (raw: unknown): string | null => {
  * WITHOUT which 「重复单元数本身不足以下结论」, which is the opposite
  * claim. `non_permissive_haplotype` is left as it is: it is the word the
  * passport's own grade uses.
+ *
+ * WHICH IS ALSO WHY IT NEEDS THE LABORATORY. That grade is minted from
+ * a record the passport brands `laboratory_report` and from nothing
+ * else, precisely because a transcription can carry a haplotype as
+ * readily as a repeat count. Same gate as the cell above, for the same
+ * reason and in the same words.
  */
-const clinicaliseHaplotype = (raw: unknown): string | null => {
+const clinicaliseHaplotype = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
+  if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
   const permissive = parsePermissiveHaplotype(raw);
   if (permissive === true) return 'permissive_haplotype';
   if (permissive === false) return 'non_permissive_haplotype';
@@ -310,6 +351,31 @@ const isUntrustworthyValue = (value: unknown): boolean => {
   return ID_PATTERNS.some((pattern) => pattern.test(text));
 };
 
+/**
+ * IS THE DOCUMENT THIS CHUNK PROJECTS THE GENETICS LABORATORY'S OWN
+ * REPORT — the passport's question, asked rather than answered a second
+ * time here. `isLaboratoryGeneticReport` reads a document's own
+ * classification off its OCR payload and falls back to the type its
+ * uploader declared, and both of those are on this projection: the
+ * parser writes `classifiedType` into the blob, and the retriever puts
+ * `documentType` beside it.
+ *
+ * The two members of that shape this projection has no value for are
+ * the row's id and its upload time. Neither is read by the question —
+ * they are `pickGeneticEvidenceDocument`'s ordering keys, and no pick
+ * is being made here: the retriever hands over one document per chunk
+ * and this is that one.
+ */
+const chunkIsLaboratoryGeneticReport = (chunk: Record<string, unknown>): boolean =>
+  isLaboratoryGeneticReport({
+    ocrPayload: { fields: chunk.fields },
+    documentType: typeof chunk.documentType === 'string' ? chunk.documentType : null,
+    status: typeof chunk.status === 'string' ? chunk.status : null,
+    // Required by the shape, read by nothing on this path.
+    id: '',
+    uploadedAt: null,
+  });
+
 /** Project an OCR fields blob through a mode-specific filter.
  *
  *  In **both** modes this is deny-by-default: only keys we know how to
@@ -332,6 +398,7 @@ const isUntrustworthyValue = (value: unknown): boolean => {
 const projectOcrFields = (
   rawFields: Record<string, unknown>,
   mode: RedactionMode,
+  fromLaboratoryReport: boolean,
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   // Counted, not listed. The model needs to know that measurements
@@ -367,7 +434,7 @@ const projectOcrFields = (
     const lower = key.toLowerCase();
     if (lower.includes('d4z4')) {
       if (mode === 'strict') {
-        const v = clinicaliseD4Z4(value);
+        const v = clinicaliseD4Z4(value, fromLaboratoryReport);
         if (v !== null) out[`${key}_clinical`] = v;
       } else {
         if (value !== null && value !== undefined && value !== '') out[key] = value;
@@ -381,7 +448,7 @@ const projectOcrFields = (
       }
     } else if (lower.includes('haplotype')) {
       if (mode === 'strict') {
-        const v = clinicaliseHaplotype(value);
+        const v = clinicaliseHaplotype(value, fromLaboratoryReport);
         if (v !== null) out[`${key}_clinical`] = v;
       } else {
         if (value !== null && value !== undefined && value !== '') out[key] = value;
@@ -449,7 +516,12 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
 
   if (scope === 'profile') {
     if ('d4z4' in input) {
-      const v = clinicaliseD4Z4(input.d4z4);
+      // NEVER THE LABORATORY'S OWN READING, and not a judgement call:
+      // this scope's `d4z4` and `haplotype` are
+      // `baseline.diseaseBackground`, the boxes on the registration
+      // form. The passport prints those with their own bracket and
+      // refuses to grade them; so does this.
+      const v = clinicaliseD4Z4(input.d4z4, false);
       if (v !== null) {
         added.d4z4_clinical = v;
         changed.push('d4z4');
@@ -465,7 +537,7 @@ const clinicalise = (input: Record<string, unknown>, scope: RedactionScope): Cli
       drop.add('methylation');
     }
     if ('haplotype' in input) {
-      const v = clinicaliseHaplotype(input.haplotype);
+      const v = clinicaliseHaplotype(input.haplotype, false);
       if (v !== null) {
         added.haplotype_clinical = v;
         changed.push('haplotype');
@@ -573,7 +645,11 @@ export const redactFields = (
   // values, but only for keys we explicitly trust as structured /
   // non-PII. Free-form OCR keys are dropped in both modes.
   if (scope === 'reports' && isPlainObject(working.fields)) {
-    const projected = projectOcrFields(working.fields, mode);
+    const projected = projectOcrFields(
+      working.fields,
+      mode,
+      chunkIsLaboratoryGeneticReport(working),
+    );
     if (mode === 'strict') {
       working.fields_clinical = projected;
       delete working.fields;

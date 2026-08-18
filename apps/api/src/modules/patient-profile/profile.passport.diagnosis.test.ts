@@ -168,7 +168,7 @@ describe('护照的诊断确认状态', () => {
     // 数还在页面上，只是没有判它 —— 并且说了为什么没判。
     expect(fragmentAndHaplotype.diagnosis.geneEvidence).toContain('18kb');
     expect(fragmentAndHaplotype.diagnosis.geneticEvidence.reason).toContain(
-      '报告上以 kb 写的长度（18kb）照常印在护照上',
+      '报告上以 kb 写的长度（18kb）照常展示',
     );
     expect(fragmentAndHaplotype.diagnosis.geneticEvidence.reason).toContain(
       '本平台不在 kb 和重复单元数之间做换算',

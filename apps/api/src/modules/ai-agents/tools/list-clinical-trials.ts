@@ -320,7 +320,14 @@ const describeRetrieval = (retrieval: RetrieveResult, notes: string[] = []): str
 
   if (meta.returned < meta.matched) {
     lines.push(
-      `注意：命中 ${meta.matched} 条，这里只给出了前 ${meta.returned} 条（按「还在招募的排前面、登记库更新日期新的排前面」排序）。不要说成一共只有 ${meta.returned} 条。`,
+      // The ordering clause names all three rules the retriever applies,
+      // because the model repeats it to the patient. 「登记库更新日期新
+      // 的排前面」 alone was true of one registry: 药物临床试验登记与信息
+      // 公示平台 publishes no last-changed date at all, so that rule
+      // orders rows inside a registry and the two registries take turns
+      // for the places under the limit (retrievers/clinical-trials.ts,
+      // `selectForPrompt`).
+      `注意：命中 ${meta.matched} 条，这里只给出了前 ${meta.returned} 条（按「还在招募的排前面；两个登记库轮流占位；同一个登记库里登记库更新日期新的排前面」排序）。不要说成一共只有 ${meta.returned} 条。`,
     );
   }
 

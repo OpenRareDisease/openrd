@@ -27,13 +27,25 @@
  *     ClinicalTrials.gov writes, so no record from the mainland
  *     registry could earn it — the chip says a study is reachable and
  *     it was dark on exactly the half most likely to be.
+ *  7. Half the list missing with nothing said about it. The mainland
+ *     half's absence has a sentence for every way it can happen; the
+ *     ClinicalTrials.gov half's absence had none, so a list holding
+ *     only mainland records was handed over with no hint that the
+ *     other registry had contributed nothing.
+ *
+ * Where a status word, a country or an id appears below, it is read
+ * out of the two registries' own captured answers — see `ctgovRecords`
+ * and `chinaRecords`.
  */
+
+import fs from 'fs';
+import path from 'path';
 
 import {
   COVERAGE_NOTE_NO_CHINA_RECORDS,
   TRIALS_DISCLAIMER,
   describeChinaCoverage,
-  describeCtgovStaleness,
+  describeCtgovCoverage,
   describeEmptyList,
   formatInstantAsDay,
   groupKeyForTrial,
@@ -83,6 +95,125 @@ const snapshot = (
   sources: TrialSourceStatus[] = [sourceStatus()],
 ): TrialsSnapshot => ({ trials, sources });
 
+/* ------------------------------------------------------------------ */
+/* Real rows, read out of the captures the fetchers' tests run on      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The two registries' own answers, committed under apps/api:
+ * `ctgov.page1.json` is 50 studies from the v2 API, and
+ * `chinadrugtrials.searchlist.rows.html` is a results page from
+ * 药物临床试验登记与信息公示平台. Read here rather than retyped, because
+ * every claim on this page is about what those two registries wrote —
+ * a status word or a country spelling invented in this file would be
+ * the same mistake the page is built to refuse.
+ *
+ * Read as files, not imported: this package's jest cannot resolve the
+ * server's ESM `.js` specifiers (see admin-filled-fields-parity.test.ts,
+ * which reads a server source for the same reason).
+ */
+const FIXTURES = path.resolve(__dirname, '../../../api/src/modules/trials/__fixtures__');
+
+const FETCHED_AT = '2026-08-13T04:00:07.000Z';
+
+interface CtgovStudy {
+  protocolSection: {
+    identificationModule: { nctId: string; briefTitle?: string; officialTitle?: string };
+    statusModule: { overallStatus: string; lastUpdatePostDateStruct?: { date?: string } };
+    sponsorCollaboratorsModule?: { leadSponsor?: { name?: string } };
+    designModule?: { phases?: string[] };
+    contactsLocationsModule?: { locations?: Array<{ country?: string }> };
+  };
+}
+
+const ctgovRecords = (): TrialRecord[] => {
+  const page = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'ctgov.page1.json'), 'utf8')) as {
+    studies: CtgovStudy[];
+  };
+  return page.studies.map((study) => {
+    const section = study.protocolSection;
+    const nctId = section.identificationModule.nctId;
+    return {
+      source: 'ctgov',
+      sourceId: nctId,
+      title:
+        section.identificationModule.briefTitle ?? section.identificationModule.officialTitle ?? '',
+      statusRaw: section.statusModule.overallStatus,
+      // The refresh writes this from the fixed six-word map; every
+      // other word stays NULL, which every surface renders as 「show
+      // status_raw」.
+      statusZh: CTGOV_STATUS_ZH[section.statusModule.overallStatus] ?? null,
+      phase: section.designModule?.phases?.join('/') ?? null,
+      sponsor: section.sponsorCollaboratorsModule?.leadSponsor?.name ?? null,
+      countries: [
+        ...new Set(
+          (section.contactsLocationsModule?.locations ?? [])
+            .map((location) => location.country)
+            .filter((country): country is string => Boolean(country)),
+        ),
+      ],
+      url: `https://clinicaltrials.gov/study/${nctId}`,
+      sourceUpdatedAt: section.statusModule.lastUpdatePostDateStruct?.date ?? null,
+      fetchedAt: FETCHED_AT,
+    };
+  });
+};
+
+/** The six words apps/api's status-map.ts fixes a Chinese rendering
+ *  for. Everything else keeps the registry's own word. */
+const CTGOV_STATUS_ZH: Record<string, string> = {
+  RECRUITING: '招募中',
+  ACTIVE_NOT_RECRUITING: '进行中·不再招募',
+  COMPLETED: '已完成',
+  TERMINATED: '已终止',
+  WITHDRAWN: '已撤回',
+  NOT_YET_RECRUITING: '尚未开始招募',
+};
+
+const textOfCell = (html: string): string =>
+  html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/**
+ * The mainland registry's rows off its own results page: 登记号 in the
+ * second cell, 试验状态 in the third, 试验通俗题目 in the sixth, and the
+ * detail id on the row. 首次公示信息日期 is the only date that page
+ * publishes and it is not a last-changed date, so `sourceUpdatedAt` is
+ * null on every mainland row by construction — apps/api's
+ * chinadrugtrials.fetcher.ts writes NULL there, and 中国 is what its
+ * 国家或地区 column says.
+ */
+const chinaRecords = (): TrialRecord[] => {
+  const html = fs.readFileSync(path.join(FIXTURES, 'chinadrugtrials.searchlist.rows.html'), 'utf8');
+  const marker = html.indexOf('class="searchTable"');
+  const table = html.slice(html.lastIndexOf('<table', marker), html.indexOf('</table>', marker));
+  const records: TrialRecord[] = [];
+  for (const row of table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) =>
+      textOfCell(cell[1]),
+    );
+    if (cells.length !== 6) continue;
+    const detailId = /id="([0-9a-f]{32})"/.exec(row[1])?.[1] ?? '';
+    records.push({
+      source: 'chinadrugtrials',
+      sourceId: cells[1],
+      title: cells[5],
+      statusRaw: cells[2],
+      statusZh: null,
+      phase: null,
+      sponsor: null,
+      countries: ['中国'],
+      url: `https://www.chinadrugtrials.org.cn/clinicaltrials.searchlistdetail.dhtml?id=${detailId}`,
+      sourceUpdatedAt: null,
+      fetchedAt: FETCHED_AT,
+    });
+  }
+  return records;
+};
+
 describe('状态词', () => {
   it('有 status_zh 就用 status_zh', () => {
     expect(trialStatusLabel(trial({ statusRaw: 'RECRUITING', statusZh: '招募中' }))).toBe('招募中');
@@ -103,6 +234,26 @@ describe('状态词', () => {
 });
 
 describe('分组', () => {
+  it('两个注册库的原词都认得 —— 拿它们自己的回答跑一遍', () => {
+    // 上一轮修的就是这件事：国内那半边的 试验状态 是中文，按
+    // ClinicalTrials.gov 的词分组时，一条注册库自己写着 招募中 的试验
+    // 会被归进 其他状态。这里跑的是那两份原始抓取里的每一行。
+    for (const record of chinaRecords()) {
+      expect(groupKeyForTrial(record)).not.toBe('other');
+    }
+    expect(new Set(chinaRecords().map(groupKeyForTrial))).toEqual(
+      new Set(['recruiting', 'not_yet_recruiting', 'closed']),
+    );
+
+    // 反过来不是对称的，而且是故意的：ClinicalTrials.gov 的
+    // UNKNOWN 和 ENROLLING_BY_INVITATION 本来就没有中文译法，其他状态
+    // 就是给它们的，卡片上照原词显示。
+    const ctgovOther = ctgovRecords().filter((record) => groupKeyForTrial(record) === 'other');
+    expect(new Set(ctgovOther.map((record) => record.statusRaw))).toEqual(
+      new Set(['UNKNOWN', 'ENROLLING_BY_INVITATION']),
+    );
+  });
+
   it('按注册库原词分组', () => {
     const byRaw = (statusRaw: string, statusZh: string | null) =>
       groupKeyForTrial(trial({ statusRaw, statusZh }));
@@ -512,7 +663,7 @@ describe('名单到底有没有画出来', () => {
       ),
     ];
     for (const snap of noList) {
-      expect(describeCtgovStaleness(snap)).toBeNull();
+      expect(describeCtgovCoverage(snap)).toBeNull();
     }
   });
 });
@@ -744,7 +895,7 @@ describe('国内那次抓取成功了，却一条都没带回来', () => {
   });
 });
 
-describe('境外那半边过期时', () => {
+describe('境外那半边', () => {
   const failedRun = {
     startedAt: '2026-08-12T02:00:00.000Z',
     finishedAt: '2026-08-12T02:00:30.000Z',
@@ -765,11 +916,11 @@ describe('境外那半边过期时', () => {
     });
 
   it('抓取成功时不出横幅', () => {
-    expect(describeCtgovStaleness(snapshot())).toBeNull();
+    expect(describeCtgovCoverage(snapshot())).toBeNull();
   });
 
   it('抓取失败时说明这半边的记录停在哪一天', () => {
-    const notice = describeCtgovStaleness(
+    const notice = describeCtgovCoverage(
       snapshot(
         [trial({ fetchedAt: '2026-08-01T00:00:00.000Z' })],
         [
@@ -786,14 +937,19 @@ describe('境外那半边过期时', () => {
     expect(notice?.text).toContain(formatInstantAsDay('2026-08-01T00:00:00.000Z') as string);
   });
 
-  it('这半边一条记录都没进名单时，不解释一个什么都没贡献的来源', () => {
+  it('这半边一条记录都没进名单时，说的是这半边没取到，而不是那份名单的新鲜度', () => {
     // 这个注册库第一次抓就失败：refresh 只在翻 ok 的那条路上写行，所
     // 以 trial_records 里没有它的任何一行。国内那半边正常抓回来了，屏
-    // 幕是满的。旧的门问的是「有没有画出名单」，于是横幅解释了一个一
-    // 行都没贡献的来源的新鲜度，还把国内那份名单说成是
-    // ClinicalTrials.gov 抓的 —— 它一次都没抓成过。
+    // 幕是满的。
+    //
+    // 两个错都要挡住。旧的门问的是「有没有画出名单」，于是横幅解释了
+    // 一个一行都没贡献的来源的新鲜度，还把国内那份名单说成是
+    // ClinicalTrials.gov 抓的 —— 它一次都没抓成过。改成整条不出现之
+    // 后，屏幕上是一份全是国内记录的名单，而 ClinicalTrials.gov 这半
+    // 边整个没进来这件事一个字都没有；国内那半边缺席时有一整套话要
+    // 说，这半边缺席时是哑的。
     const snap = snapshot(
-      [cnTrial()],
+      [chinaRecords()[0]],
       [
         sourceStatus({
           recordCount: 0,
@@ -805,7 +961,95 @@ describe('境外那半边过期时', () => {
       ],
     );
     expect(shownListFetchedOn(snap)).not.toBeNull();
-    expect(describeCtgovStaleness(snap)).toBeNull();
+
+    const notice = describeCtgovCoverage(snap);
+    expect(notice?.tone).toBe('warn');
+    expect(notice?.text).toContain('ClinicalTrials.gov 这部分这次没有取到');
+    expect(notice?.text).toContain('到目前为止还没有成功抓取过');
+    // 名单在屏幕上，所以说得出它现在只有哪一边的记录；去哪儿查也说了。
+    expect(notice?.text).toContain(
+      '所以下面这份名单目前只有 药物临床试验登记与信息公示平台 的记录',
+    );
+    expect(notice?.text).toContain('clinicaltrials.gov');
+    // 仍然不许出现的：指着屏幕上 ClinicalTrials.gov 的行说话的那两句。
+    expect(notice?.text).not.toContain('下面这份名单里 ClinicalTrials.gov 的记录是');
+    expect(notice?.text).not.toContain('请点开原始记录核对');
+  });
+
+  it('这半边从来没抓过，和抓失败了，是两句不同的话', () => {
+    const withList = (over: Partial<TrialSourceStatus>) =>
+      describeCtgovCoverage(
+        snapshot(
+          [chinaRecords()[0]],
+          [
+            sourceStatus({ recordCount: 0, fetchedAt: null, ...over }),
+            sourceStatus({ source: 'chinadrugtrials' }),
+          ],
+        ),
+      );
+
+    const neverRan = withList({ lastRun: null, lastSuccessAt: null });
+    // 「还没抓过」不是失败，屏幕上唯一的那个警告三角要留给真的坏了的事。
+    expect(neverRan?.tone).toBe('plain');
+    expect(neverRan?.text).toContain('ClinicalTrials.gov 这部分还没有抓取过');
+
+    const failed = withList({ lastRun: failedRun, lastSuccessAt: null });
+    expect(failed?.tone).toBe('warn');
+    expect(failed?.text).not.toBe(neverRan?.text);
+  });
+
+  it('这半边抓取报成功却一条都没进名单时，认的是自己这边的问题', () => {
+    // ctgov 的 fetcher 直接拒绝 totalCount 为 0 的回答，refresh 又是在
+    // 一个事务里写完行才翻 ok 的，所以这半边「成功且没有行」只能是我们
+    // 这边断了 —— 这一点和国内那半边正相反：那边抓成功却没有记录，是
+    // 那个平台自己的答案，不是故障。
+    const parseFailure = describeCtgovCoverage(
+      snapshot(
+        [chinaRecords()[0]],
+        [
+          sourceStatus({ recordCount: 50, fetchedAt: null }),
+          sourceStatus({ source: 'chinadrugtrials' }),
+        ],
+      ),
+    );
+    expect(parseFailure?.tone).toBe('warn');
+    expect(parseFailure?.text).toContain('这是本应用这边的问题');
+    expect(parseFailure?.text).toContain('这不等于注册库上就没有 FSHD 试验');
+
+    const nothingWritten = describeCtgovCoverage(
+      snapshot(
+        [chinaRecords()[0]],
+        [
+          sourceStatus({ recordCount: 0, fetchedAt: null }),
+          sourceStatus({ source: 'chinadrugtrials' }),
+        ],
+      ),
+    );
+    expect(nothingWritten?.tone).toBe('warn');
+    expect(nothingWritten?.text).toContain('这是平台这边的问题');
+    expect(nothingWritten?.text).toContain('这不等于注册库上就没有 FSHD 试验');
+  });
+
+  it('名单一条都没画出来时不出现 —— 那一格由 describeEmptyList 说', () => {
+    // 缺席的话和空名单那句会一字不差地重复同一件事，读者却要读两遍。
+    const snap = snapshot(
+      [],
+      [
+        sourceStatus({ recordCount: 0, fetchedAt: null, lastRun: failedRun, lastSuccessAt: null }),
+        sourceStatus({ source: 'chinadrugtrials', recordCount: 0, fetchedAt: null }),
+      ],
+    );
+    expect(shownListFetchedOn(snap)).toBeNull();
+    expect(describeCtgovCoverage(snap)).toBeNull();
+  });
+
+  it('两半都在名单里、这半边又没出问题时，整条不出现', () => {
+    // 每次成功的 cron 都发一条横幅，读者就会学会跳过真正要紧的那条。
+    const snap = snapshot(
+      [ctgovRecords()[0], chinaRecords()[0]],
+      [sourceStatus(), sourceStatus({ source: 'chinadrugtrials' })],
+    );
+    expect(describeCtgovCoverage(snap)).toBeNull();
   });
 
   it('名单是两边合起来的时候，说的日期是这半边自己的抓取时间', () => {
@@ -826,7 +1070,7 @@ describe('境外那半边过期时', () => {
         sourceStatus({ source: 'chinadrugtrials' }),
       ],
     );
-    const notice = describeCtgovStaleness(snap);
+    const notice = describeCtgovCoverage(snap);
     expect(notice?.text).toContain(
       `下面这份名单里 ClinicalTrials.gov 的记录是 ${formatInstantAsDay('2026-06-01T00:00:00.000Z')} 抓到的`,
     );
@@ -851,7 +1095,7 @@ describe('境外那半边过期时', () => {
       ],
     );
     expect(shownListFetchedOn(snap)).not.toBeNull();
-    expect(describeCtgovStaleness(snap)).toBeNull();
+    expect(describeCtgovCoverage(snap)).toBeNull();
   });
 });
 

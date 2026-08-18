@@ -2,7 +2,8 @@ import type { Pool } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
-import { PatientFollowupRetriever } from './patient-followups.js';
+import { isKnownMetricKey, PatientFollowupRetriever } from './patient-followups.js';
+import { MUSCLE_GROUPS } from '../../patient-profile/profile.constants.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -297,5 +298,38 @@ describe('PatientFollowupRetriever', () => {
     const r = await new PatientFollowupRetriever(pool).search({ question: '' }, ctx());
     expect(r.chunks).toHaveLength(0);
     expect(r.metadata.reason).toBe('no_followups_found');
+  });
+
+  /**
+   * Run a self-test reading for every muscle group the write path
+   * accepts, and read back what the model would see.
+   *
+   * DRIVEN FROM THE ENUM, NOT FROM THE RETRIEVER'S TABLE, because
+   * reading the table can only confirm what is in it. `face` and
+   * `abdominal` were appended to `MUSCLE_GROUPS` — two of the six
+   * regions the FSHD Clinical Score grades — and the table stopped one
+   * short of each, so `isKnownMetricKey` said no about a curve the
+   * database can hold and `get_my_records` refused the call.
+   */
+  it('labels every muscle group the write path accepts, and accepts its key', async () => {
+    for (const group of MUSCLE_GROUPS) {
+      for (const metricKey of [`muscle_${group}`, `muscle_${group}_left`]) {
+        expect(isKnownMetricKey(metricKey)).toBe(true);
+
+        const pool = poolWith([
+          { metric_key: metricKey, unit: 'MRC', value: '4', recorded_at: daysAgoIso(2) },
+        ]);
+        const r = await new PatientFollowupRetriever(pool).search({ question: '' }, ctx());
+        const fields = r.chunks[0].metadata.fields as Record<string, unknown>;
+        expect(fields.metricKey).toBe(metricKey);
+        // A group with no Chinese name would reach the prompt as the
+        // English key or as 「肌力·undefined」; both are checked because
+        // the two ways to leave one unlabelled produce one each.
+        const label = String(fields.metricLabel);
+        expect(label.startsWith('肌力·')).toBe(true);
+        expect(label).not.toContain(group);
+        expect(label).not.toContain('undefined');
+      }
+    }
   });
 });

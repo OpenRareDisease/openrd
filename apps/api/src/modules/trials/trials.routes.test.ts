@@ -155,17 +155,30 @@ describe('GET /api/trials', () => {
     // one account can hold; without the limiter mounted, a client stuck
     // reloading starves everyone else's login. Its own user id, because
     // the limiter's store is module-global and keyed on the caller.
-    const app = makeApp();
-    const looper = jwt.sign({ sub: 'reload-loop', role: 'patient' }, JWT_SECRET, {
-      expiresIn: '1h',
-    });
-    let last = 0;
-    for (let i = 0; i < 61; i += 1) {
-      last = (await request(app).get('/api/trials').set('Authorization', `Bearer ${looper}`))
-        .status;
+    //
+    // The clock is pinned for the loop. The limiter reads Date.now() and
+    // its window is a minute; sending exactly the ceiling plus one leaves
+    // no margin, so a window that rolled over mid-loop reset the count
+    // and the last request came back 200. Freezing it also keeps the
+    // 60 below exact, which a longer loop would not.
+    const realNow = Date.now;
+    const frozen = realNow();
+    Date.now = () => frozen;
+    try {
+      const app = makeApp();
+      const looper = jwt.sign({ sub: 'reload-loop', role: 'patient' }, JWT_SECRET, {
+        expiresIn: '1h',
+      });
+      let last = 0;
+      for (let i = 0; i < 61; i += 1) {
+        last = (await request(app).get('/api/trials').set('Authorization', `Bearer ${looper}`))
+          .status;
+      }
+      expect(last).toBe(429);
+      expect(snapshotMock).toHaveBeenCalledTimes(60);
+    } finally {
+      Date.now = realNow;
     }
-    expect(last).toBe(429);
-    expect(snapshotMock).toHaveBeenCalledTimes(60);
   });
 
   it('fails loudly when the database cannot answer', async () => {

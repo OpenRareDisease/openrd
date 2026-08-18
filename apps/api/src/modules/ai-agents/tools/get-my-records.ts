@@ -12,6 +12,7 @@
 
 import type { ITool, ToolContext, ToolExecutionResult } from './base.js';
 import { ToolValidationError, isPlainObject, safeParseJson } from './base.js';
+import { MUSCLE_GROUPS } from '../../patient-profile/profile.constants.js';
 import type { ConsentLevel } from '../retrievers/base.js';
 import {
   isKnownMetricKey,
@@ -28,8 +29,11 @@ const PARAMETERS_SCHEMA = {
   properties: {
     metricKey: {
       type: 'string',
-      description:
-        'Optional filter to a single tracked metric. Function tests: `stair_climb`, `ten_meter_walk`, `sit_to_stand`, `six_minute_walk`, `timed_up_and_go`, `custom`. Symptom scores: `fatigue`, `pain`, `dyspnea`, `sleep_quality`, `anxiety_about_progression`. Muscle self-test: `muscle_<group>` optionally suffixed `_left` / `_right` (groups: deltoid, biceps, triceps, tibialis, quadriceps, hamstrings, gluteus). Omit to get every series plus the event tally — that is the right choice for falls and for any "how am I doing overall" question.',
+      // The group list is the enum itself, not a copy of it: a group the
+      // schema does not name is a curve the model cannot ask for, and
+      // `face` and `abdominal` sat in the database unasked-for while
+      // this sentence listed only the groups that predated them.
+      description: `Optional filter to a single tracked metric. Function tests: \`stair_climb\`, \`ten_meter_walk\`, \`sit_to_stand\`, \`six_minute_walk\`, \`timed_up_and_go\`, \`custom\`. Symptom scores: \`fatigue\`, \`pain\`, \`dyspnea\`, \`sleep_quality\`, \`anxiety_about_progression\`. Muscle self-test: \`muscle_<group>\` optionally suffixed \`_left\` / \`_right\` (groups: ${MUSCLE_GROUPS.join(', ')}). Omit to get every series plus the event tally — that is the right choice for falls and for any "how am I doing overall" question.`,
     },
     windowDays: {
       type: 'integer',

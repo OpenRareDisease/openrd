@@ -8,9 +8,13 @@ import {
   TRIAL_STATUS_FILTERS,
 } from './clinical-trials.js';
 import type { TrialsRetrievalMetadata } from './clinical-trials.js';
+import { cdtRowsPage, ctgovPage1 } from '../../trials/__fixtures__/fixtures.js';
+import { _parseSearchList, CDT_DETAIL_URL } from '../../trials/chinadrugtrials.fetcher.js';
+import { _toTrialRecord } from '../../trials/ctgov.fetcher.js';
 import { CTGOV_STATUS_ZH } from '../../trials/status-map.js';
 import { trialFetchState } from '../../trials/trials.service.js';
 import type { TrialRecord, TrialSnapshot } from '../../trials/trials.service.js';
+import type { TrialRecordInput } from '../../trials/trials.types.js';
 
 const snapshotMock = vi.fn();
 
@@ -258,5 +262,170 @@ describe('ClinicalTrialsRetriever', () => {
     expect(snapshotMock).not.toHaveBeenCalled();
     expect(result.chunks).toHaveLength(0);
     expect(result.metadata.reason).toBe('aborted');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Both registries, from the captures the fetchers' own tests run on   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A fetcher's row as `readTrialSnapshot` hands it back: `raw` is never
+ * selected, `countries` has already become an array, and every row
+ * carries its run's instant.
+ */
+const asCachedRecord = (input: TrialRecordInput): TrialRecord => ({
+  source: input.source,
+  sourceId: input.sourceId,
+  title: input.title,
+  statusRaw: input.statusRaw,
+  statusZh: input.statusZh,
+  phase: input.phase,
+  sponsor: input.sponsor,
+  countries: input.countries ?? [],
+  url: input.url,
+  sourceUpdatedAt: input.sourceUpdatedAt,
+  fetchedAt: '2026-08-13T04:00:07Z',
+});
+
+/** Page 1 of the ClinicalTrials.gov capture, through the same
+ *  `_toTrialRecord` the refresh writes the cache with. */
+const ctgovRecords = (): TrialRecord[] =>
+  (JSON.parse(ctgovPage1()) as { studies: unknown[] }).studies.map((study) =>
+    asCachedRecord(_toTrialRecord(study)),
+  );
+
+/**
+ * The mainland registry's own rows, through the same `_parseSearchList`
+ * the scraper runs. 「进行中 招募中」 and 已完成 below are that
+ * registry's words in the spelling its results table writes them, read
+ * off the captured page rather than typed here.
+ *
+ * The two nulls are not stand-ins either: chinadrugtrials.fetcher.ts
+ * writes NULL into both columns for every row it produces, because the
+ * platform publishes no last-changed date and its status word is
+ * already Chinese. They are the reason a mainland row cannot win a
+ * comparison written for the other registry.
+ */
+const chinaRecords = (): TrialRecord[] =>
+  _parseSearchList(cdtRowsPage(), 'search page 1').rows.map((row) =>
+    asCachedRecord({
+      source: 'chinadrugtrials',
+      sourceId: row.ctr,
+      title: row.plainTitle,
+      statusRaw: row.statusRaw,
+      statusZh: null,
+      phase: null,
+      sponsor: null,
+      countries: null,
+      url: `${CDT_DETAIL_URL}?id=${row.detailId}`,
+      sourceUpdatedAt: null,
+      raw: null,
+    }),
+  );
+
+const mixedSnapshot = (): TrialSnapshot => ({
+  trials: [...ctgovRecords(), ...chinaRecords()],
+  sources: [
+    {
+      source: 'ctgov',
+      recordCount: ctgovRecords().length,
+      fetchedAt: '2026-08-13T04:00:07Z',
+      lastRun: { startedAt: '2026-08-13T04:00:00Z', finishedAt: '2026-08-13T04:00:09Z', ok: true },
+      lastSuccessAt: '2026-08-13T04:00:09Z',
+    },
+    {
+      source: 'chinadrugtrials',
+      recordCount: chinaRecords().length,
+      fetchedAt: '2026-08-13T04:10:02Z',
+      lastRun: { startedAt: '2026-08-13T04:09:00Z', finishedAt: '2026-08-13T04:10:04Z', ok: true },
+      lastSuccessAt: '2026-08-13T04:10:04Z',
+    },
+  ],
+});
+
+const sourcesOf = (result: { chunks: Array<{ metadata: Record<string, unknown> }> }) =>
+  result.chunks.map((chunk) => chunk.metadata.source);
+
+const statusesOf = (result: { chunks: Array<{ metadata: Record<string, unknown> }> }) =>
+  result.chunks.map((chunk) => chunk.metadata.statusRaw);
+
+describe('ClinicalTrialsRetriever over both registries', () => {
+  it('reads two vocabularies out of the one status column', () => {
+    // The premise of every assertion below, taken off the captures
+    // rather than asserted about them: one registry writes an English
+    // enum token, the other writes Chinese, and the mainland rows carry
+    // no last-changed date at all.
+    expect(new Set(ctgovRecords().map((t) => t.statusRaw))).toContain('RECRUITING');
+    expect(new Set(chinaRecords().map((t) => t.statusRaw))).toContain('进行中 招募中');
+    expect(chinaRecords().every((t) => t.sourceUpdatedAt === null)).toBe(true);
+  });
+
+  it('renders a mainland record under the default limit', async () => {
+    // The capture has 13 RECRUITING studies on its first page alone,
+    // which is more than the default limit — so a mainland row that
+    // sorts behind them is a row that can never reach the prompt, and
+    // the tool then tells the patient no mainland record came back.
+    snapshotMock.mockResolvedValue(mixedSnapshot());
+    const result = await run({ question: '' });
+
+    expect(sourcesOf(result)).toContain('chinadrugtrials');
+    expect(sourcesOf(result)).toContain('ctgov');
+  });
+
+  it('ranks the mainland words beside the words that mean the same thing', async () => {
+    snapshotMock.mockResolvedValue(mixedSnapshot());
+    const result = await run({ question: '', limit: 40 });
+
+    const chinaStatuses = result.chunks
+      .filter((chunk) => chunk.metadata.source === 'chinadrugtrials')
+      .map((chunk) => chunk.metadata.statusRaw);
+    // 进行中 招募中 before 进行中 尚未招募 before 已完成 — the tiers the
+    // English words are in, in the registry's own spelling. Unplaced,
+    // all nine ranked behind WITHDRAWN and came back in id order with
+    // 已完成 first. The two 主动终止 rows are in the tier after these
+    // and the cap stops inside 已完成, which is the same cut that would
+    // fall on a ClinicalTrials.gov row of that tier.
+    expect(chinaStatuses).toEqual([
+      '进行中 招募中',
+      '进行中 尚未招募',
+      '进行中 尚未招募',
+      '已完成',
+      '已完成',
+      '已完成',
+      '已完成',
+    ]);
+  });
+
+  it('does not let either registry spend the whole limit on one tier', async () => {
+    snapshotMock.mockResolvedValue(mixedSnapshot());
+    const result = await run({ question: '', limit: 2 });
+
+    expect(sourcesOf(result).sort()).toEqual(['chinadrugtrials', 'ctgov']);
+    // Both of them are the tier a patient can still join: neither
+    // registry's turn costs the reader a recruiting study.
+    expect(statusesOf(result).sort()).toEqual(['RECRUITING', '进行中 招募中']);
+  });
+
+  it('filters on the mainland registry own status word', async () => {
+    snapshotMock.mockResolvedValue(mixedSnapshot());
+    const result = await run({ question: '', filter: { status: '进行中 招募中' } });
+
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0].content).toContain('状态（登记库原词）：进行中 招募中');
+    expect(metaOf(result).matched).toBe(1);
+  });
+
+  it('counts the mainland words in the census the tool reads back to the model', async () => {
+    snapshotMock.mockResolvedValue(mixedSnapshot());
+    const counts = metaOf(await run({ question: '' })).statusCounts;
+
+    const chinaCounts = counts.filter((entry) => /[一-鿿]/.test(entry.status));
+    expect(chinaCounts).toEqual([
+      { status: '已完成', count: 4, translated: false },
+      { status: '主动终止', count: 2, translated: false },
+      { status: '进行中 尚未招募', count: 2, translated: false },
+      { status: '进行中 招募中', count: 1, translated: false },
+    ]);
   });
 });

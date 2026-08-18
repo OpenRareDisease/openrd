@@ -59,6 +59,13 @@ const summary = (over: Record<string, unknown> = {}): ClinicalPassportSummaryDTO
       },
       geneEvidence: 'D4Z4 4 拷贝',
       geneEvidenceOrigin: { kind: 'report', labelZh: '报告读取', documentId: 'd1' },
+      // The graded evidence, present for the same reason `valueOrigins`
+      // is: the page reads it. `readingsNotJudged` is the only member
+      // this literal has an opinion about — null is 「this report states
+      // no reading that was shown and not judged」, which is what a
+      // 4-repeat count is. The case where it is non-null is built from
+      // a profile through the real summariser further down.
+      geneticEvidence: { readingsNotJudged: null },
     },
     motor: {
       ready: true,
@@ -520,6 +527,48 @@ describe('诊断这一段：每一行印自己的来源，一行都不靠推断'
     expect(html).not.toContain('未经基因确诊');
     expect(rowOf(html, '基因证据')).toContain('我猜是FSHD1 · 4qA · 4（来源无法确定）');
     expect(html).not.toContain('只有标「报告读取」的来自那份报告');
+  });
+
+  /**
+   * 这一页印着一个读数，往下又说这一项没有确定的结果。
+   *
+   * 把两者接上的那句话写在护照的 `reason` 里，而这一页从来不印
+   * `reason` —— 所以一个 18kb 的重复数和一句「这一项还没有确定的结果」
+   * 隔着几行同屏出现，中间什么都没有。医生据此得出的结论是：这个平台
+   * 读不懂自己的报告。
+   */
+  it('印出来又没被判的那个数，行下面就跟着一句话说明', () => {
+    const html = rendered(
+      profile({ documents: [geneticReport({ d4z4Repeats: '18kb', haplotype: '4qA' })] } as never),
+    );
+
+    expect(rowOf(html, 'D4Z4 重复数')).toContain('18kb（报告读取）');
+    expect(html).toContain('本平台不在 kb 和重复单元数之间做换算');
+    // 在那一行下面、在给医生的那几条建议上面 —— 那几条里就有说这一项
+    // 没有确定结果的那一句。
+    const note = html.indexOf('class="unjudged"');
+    expect(note).toBeGreaterThan(html.indexOf('<dt>D4Z4 重复数</dt>'));
+    expect(note).toBeLessThan(html.indexOf('按指南，这位患者值得确认的事'));
+    // 同一份样式表里真的有一条规则选得中它 —— `dd.reported` 就是这样
+    // 对着一个只出现在 <span> 上的类名发过版。
+    expect(
+      effective(
+        html,
+        [
+          { tag: 'body', classes: [] },
+          { tag: 'div', classes: ['wrap'] },
+          { tag: 'p', classes: ['unjudged'] },
+        ],
+        'color',
+      ),
+    ).toBe('var(--soft)');
+  });
+
+  it('没有这种读数的时候，这一页上没有这一段', () => {
+    const html = rendered(
+      profile({ documents: [geneticReport({ d4z4Repeats: '4', haplotype: '4qA' })] } as never),
+    );
+    expect(html).not.toContain('class="unjudged"');
   });
 
   it('基因证据只剩分型时，跟分型那一行印同一个来源', () => {

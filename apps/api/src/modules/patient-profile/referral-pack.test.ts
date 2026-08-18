@@ -502,6 +502,91 @@ describe('诊断依据 — a claim must never be typeset as evidence', () => {
     expect(hint).toContain('不是允许型 4qA');
     expect(hint).not.toContain('把报告带上或上传，这一行就会改');
   });
+
+  /**
+   * 这张纸印着一个读数，又在两行之上说本资料里没有可作确诊依据的基因
+   * 结果 —— 拿着它的是罕见病诊疗协作网的神经内科医生，十秒钟之内没法
+   * 跟患者核对任何一行。护照那一段已经把这句话写好了，这张纸此前只从
+   * 那一段里取了「来源是哪一类文件」。
+   */
+  it.each([
+    ['以 kb 写的长度', { d4z4Repeats: '18kb' }, '18kb', '本平台不在 kb 和重复单元数之间做换算'],
+    ['读到 0 的重复数', { d4z4Repeats: '0' }, '0', '本平台读不通这个数'],
+  ])('结论下面就写着那个数为什么什么都没换来：%s', (_name, fields, cell, sentence) => {
+    const result = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport(fields as Record<string, string>)],
+      } as never),
+    );
+
+    expect(result.diagnosis.confirmation).not.toBe('genetic');
+    expect(result.markdown).toContain(`- D4Z4 重复数：${cell}（报告读取）`);
+    expect(result.diagnosis.readingsNotJudged).toContain(sentence);
+    expect(result.markdown).toContain(`- ${result.diagnosis.readingsNotJudged}`);
+    // 紧接着它要解释的那一句，而不是排在四行值的后面。
+    const noteIndex = result.markdown.indexOf(result.diagnosis.readingsNotJudged ?? '');
+    expect(noteIndex).toBeGreaterThan(result.markdown.indexOf('- 结论：'));
+    expect(noteIndex).toBeLessThan(result.markdown.indexOf('- 基因类型：'));
+  });
+
+  it('确诊那一档没有这一行 —— 那一档什么都没扣下', () => {
+    const result = pack(
+      base({
+        documents: [geneticReport({ d4z4Repeats: '6', haplotype: '4qA', ecoRIFragment: '18kb' })],
+      } as never),
+    );
+    expect(result.diagnosis.confirmation).toBe('genetic');
+    expect(result.diagnosis.readingsNotJudged).toBeNull();
+    expect(result.markdown).not.toContain('本平台不在 kb 和重复单元数之间做换算');
+  });
+
+  /**
+   * 「做过基因检测的话，把报告带上或上传」对着一个报告已经传上来、也已经
+   * 被读过的人是一句假话 —— 4qB 那一档早就因为这个理由把它去掉了，而
+   * `confirmation` 分不出这两种人：以 kb 写的长度、读到 0 的重复数、缺
+   * 单倍型的重复数，落到的都是 self_reported。
+   */
+  it('报告已经在平台上读过时，不再让人去传一份已经传过的报告', () => {
+    const readAlready = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [geneticReport({ d4z4Repeats: '18kb' })],
+      } as never),
+    );
+    const hint = readAlready.questions.find((q) => q.id === 'confirm-diagnosis')?.hint;
+    expect(readAlready.diagnosis.confirmation).toBe('self_reported');
+    expect(hint).toContain('本资料里没有从基因报告里读出来的、可作确诊依据的基因结果');
+    expect(hint).not.toContain('把报告带上或上传');
+
+    // 转录件和「一份都没有」这两种人照旧要被问一句 —— 对他们这句话是真的。
+    const transcribed = pack(
+      base({
+        geneticMutation: 'FSHD1',
+        documents: [
+          {
+            ...geneticReport({ d4z4Repeats: '6', haplotype: '4qA' }),
+            documentType: 'medical_record',
+            ocrPayload: {
+              fields: {
+                classifiedType: 'medical_record',
+                d4z4Repeats: '6',
+                haplotype: '4qA',
+              },
+            },
+          },
+        ],
+      } as never),
+    );
+    expect(transcribed.questions.find((q) => q.id === 'confirm-diagnosis')?.hint).toContain(
+      '把报告带上或上传',
+    );
+    expect(
+      pack(base({ geneticMutation: 'FSHD1' } as Partial<PatientProfileDTO>)).questions.find(
+        (q) => q.id === 'confirm-diagnosis',
+      )?.hint,
+    ).toContain('把报告带上或上传');
+  });
 });
 
 /**

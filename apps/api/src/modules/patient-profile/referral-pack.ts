@@ -117,6 +117,20 @@ export interface ReferralDiagnosisDTO {
    * three.
    */
   statement: string;
+  /**
+   * WHY A READING PRINTED IN THIS SECTION EARNED NOTHING — a length the
+   * report gave in kb, a count cell reading 0 — carried off the graded
+   * evidence, or null.
+   *
+   * `statement` above denies a confirmation and the rows below print
+   * the number the denial is about; this pack took only the record's
+   * SOURCE off `geneticEvidence`, so a 协作网 neurologist read 「本资料
+   * 里没有从基因报告里读出来的、可作确诊依据的基因结果」 two lines above
+   * 「D4Z4 重复数：18kb（报告读取）」 with nothing reconciling them. The
+   * passport writes that sentence once; see `readingsNotJudged` on
+   * PassportGeneticEvidenceDTO.
+   */
+  readingsNotJudged: string | null;
   geneticType: string;
   d4z4Repeats: string;
   methylationValue: string;
@@ -520,6 +534,7 @@ const buildDiagnosis = (summary: ClinicalPassportSummaryDTO): ReferralDiagnosisD
   return {
     confirmation: diagnosis.confirmation,
     statement,
+    readingsNotJudged: diagnosis.geneticEvidence.readingsNotJudged,
     geneticType: diagnosis.geneticType,
     d4z4Repeats: diagnosis.d4z4Repeats,
     methylationValue: diagnosis.methylationValue,
@@ -835,9 +850,22 @@ export const REFERRAL_QUESTION_PROMPTS: readonly ReferralQuestionPromptDTO[] = [
  * prose the patient reads on paper: it was already telling this reader
  * to go and fetch a 4q 单倍型 their own report states, in the state
  * below where the laboratory determined it and the answer was 4qB.
+ *
+ * AND NO BRANCH ASKS FOR A REPORT THIS PLATFORM IS ALREADY HOLDING.
+ * 「把报告带上或上传，这一行就会改」 was written for the reader with no
+ * genetics report on file, and `confirmation` cannot tell that reader
+ * apart from the one whose report was uploaded, read, and earned no
+ * confirmation — a length in kb, a count cell reading 0, a count
+ * without a haplotype. The 4qB branch below already had to refuse the
+ * promise for exactly that reason; the difference is not which state
+ * of `confirmation` it is, it is whether the laboratory's own report is
+ * the document this pack read. The clause comes off rather than being
+ * softened — what that reader is owed instead is on the same sheet, in
+ * 一、诊断依据's 结论 and the line under it.
  */
 const buildConfirmDiagnosisHint = (
   confirmation: Exclude<PassportDiagnosisConfirmation, 'genetic'>,
+  laboratoryReportRead: boolean,
 ): string => {
   switch (confirmation) {
     // The report was read and it answered. 「把报告带上或上传，这一行就
@@ -848,7 +876,9 @@ const buildConfirmDiagnosisHint = (
     case 'genetic_non_permissive':
       return '你上传的基因报告读到的 4q 单倍型不是允许型 4qA，所以本平台没有把它算作已确认的分子遗传学诊断。这不是说这份报告没有用 —— 它是实验室出的结果，医生需要看到它。把报告原件带去，请医生看一下这一条：报告写的是哪一条等位基因、临床表现是不是仍然指向 FSHD、还需不需要再查别的。这份结果能不能排除 FSHD，本平台不下判断。';
     case 'self_reported':
-      return '本资料里没有从基因报告里读出来的、可作确诊依据的基因结果，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 每一项的来源写在它自己的括号里，自己核对一遍。做过基因检测的话，把报告带上或上传，这一行就会改。';
+      return `本资料里没有从基因报告里读出来的、可作确诊依据的基因结果，所以不能把诊断写成已确诊。第一节里的括号写在哪一项后面，就只说那一项是从哪来的 —— 每一项的来源写在它自己的括号里，自己核对一遍。${
+        laboratoryReportRead ? '' : '做过基因检测的话，把报告带上或上传，这一行就会改。'
+      }`;
     // Telling this reader 「本平台没有任何诊断依据记录」 would hide the
     // very lines the neurologist is reading on the same sheet.
     //
@@ -862,7 +892,9 @@ const buildConfirmDiagnosisHint = (
     // 来源记录读不出来 — a hint promising a name would send the patient
     // looking for one that is not there.
     case 'admin_entered':
-      return '你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有从基因报告里读出来的、可作确诊依据的基因结果。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。做过基因检测的话，把报告带上或上传。';
+      return `你档案里的「确诊年份」不是你自己填的（第一节末尾那份清单里写着本平台对这一项还知道些什么），本资料里也没有从基因报告里读出来的、可作确诊依据的基因结果。你可能没见过那一行，医生却会看到 —— 当面核对一遍，不对的地方现在就说。第一节里的括号写在哪一项后面，就只说那一项的来源。${
+        laboratoryReportRead ? '' : '做过基因检测的话，把报告带上或上传。'
+      }`;
     case 'none':
       return '本资料没有可展示的分型或诊断日期，也没有从基因报告里读出来的、可作确诊依据的基因结果。这一问放在最前面，是因为后面所有问题的答案都取决于它。';
     default: {
@@ -888,7 +920,15 @@ const buildQuestions = (
     questions.push({
       id: 'confirm-diagnosis',
       prompt: '我这个诊断确定吗？要不要做基因检测？在哪做、大概多少钱、能不能报销？',
-      hint: buildConfirmDiagnosisHint(confirmation),
+      // The document this pack's genetic values come off, and whether it
+      // is the laboratory's own report — the question 「should this
+      // sheet ask for an upload」 turns on, and the one thing
+      // `confirmation` cannot answer. A 病历摘要 or no document at all
+      // leaves the ask true and useful.
+      hint: buildConfirmDiagnosisHint(
+        confirmation,
+        diagnosis.latestSourceKind === 'laboratory_report',
+      ),
       source: '本页自拟的提问，不是检测建议',
     });
   }
@@ -984,6 +1024,11 @@ export const buildReferralPack = (
     '## 一、诊断依据',
     '',
     `- 结论：${escapeMarkdown(diagnosis.statement)}`,
+    // Directly under the 结论 it qualifies and above the rows it is
+    // about: the denial and the number are the two things this reader
+    // has to put together, and until this line existed the pack printed
+    // both and reconciled neither. See `readingsNotJudged`.
+    ...(diagnosis.readingsNotJudged ? [`- ${escapeMarkdown(diagnosis.readingsNotJudged)}`] : []),
     // Per value, because these four do not share one source: 分型 and
     // 诊断日期 each fall back to a profile column the patient may have
     // typed and the OCR autofill may have written, while D4Z4 and 甲基化

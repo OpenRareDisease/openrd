@@ -497,7 +497,7 @@ describe('取不到的时候', () => {
  * 三件事各自变化，横幅却是同一批：国内那半边的抓取结果、境外那半边的
  * 抓取结果、名单到底有没有画到屏幕上。
  *
- * 前两件是 `describeChinaCoverage` 和 `describeCtgovStaleness` 一直在
+ * 前两件是 `describeChinaCoverage` 和 `describeCtgovCoverage` 一直在
  * 看的；第三件它们以前没看，而它们停的位置——名单上方——在空名单和
  * 「没有抓取时间」那两张卡片下面照样渲染。于是「下面这份名单目前只有
  * ClinicalTrials.gov 的记录」和「重要的试验请点开原始记录核对」会一起
@@ -707,7 +707,7 @@ describe('组合起来时，屏幕上的每一句话都要成立', () => {
   });
 });
 
-describe('境外那半边过期时', () => {
+describe('境外那半边', () => {
   it('横幅真的渲染出来，说明名单停在哪一天', async () => {
     // The only thing on screen saying the ClinicalTrials.gov half
     // stopped refreshing. Which states earn that sentence is settled in
@@ -732,6 +732,46 @@ describe('境外那半边过期时', () => {
     expect(rendered.indexOf('最近一次更新没有成功')).toBeLessThan(
       rendered.indexOf('A Study of Something in FSHD'),
     );
+  });
+
+  it('这半边整个没进名单时，屏幕上说得出这件事', async () => {
+    // 名单全是国内登记的记录，ClinicalTrials.gov 一行都没有。以前这块
+    // 是哑的：国内那半边缺席时有一整套话，这半边缺席时读者只看到一份
+    // 短名单，读起来就是「国际上就这些」。
+    mockListTrials.mockResolvedValue({
+      trials: [
+        trial({
+          source: 'chinadrugtrials',
+          sourceId: 'CTR20250001',
+          title: 'A MAINLAND STUDY',
+          statusRaw: '进行中 招募中',
+          statusZh: null,
+          countries: ['中国'],
+          sourceUpdatedAt: null,
+        }),
+      ],
+      sources: [
+        sourceStatus({
+          recordCount: 0,
+          fetchedAt: null,
+          lastRun: {
+            startedAt: '2026-08-13T02:00:00.000Z',
+            finishedAt: '2026-08-13T02:00:30.000Z',
+            ok: false,
+          },
+          lastSuccessAt: null,
+        }),
+        sourceStatus({ source: 'chinadrugtrials' }),
+      ],
+    });
+    const rendered = screenText(await render());
+    expect(rendered).toContain('A MAINLAND STUDY');
+    expect(rendered).toContain('ClinicalTrials.gov 这部分这次没有取到');
+    expect(rendered).toContain('所以下面这份名单目前只有 药物临床试验登记与信息公示平台 的记录');
+    expect(rendered).toContain('clinicaltrials.gov');
+    // 指着 ClinicalTrials.gov 的行说话的那两句仍然不许出现 —— 一行都没有。
+    expect(rendered).not.toContain('下面这份名单里 ClinicalTrials.gov 的记录是');
+    expect(rendered).not.toContain('请点开原始记录核对');
   });
 });
 

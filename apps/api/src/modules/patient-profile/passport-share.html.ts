@@ -335,6 +335,10 @@ export const buildPassportSharePage = (
   .meta{margin:5px 0 0;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
   .note{margin:7px 0 0;padding-top:6px;border-top:1px solid var(--line);
     font-size:12px;color:var(--soft)}
+  /* Why a number in 诊断信息 earned nothing. Set directly under that
+     list rather than in the banner: the reader it is for is looking at
+     the row, and the banner is above every row on the page. */
+  .unjudged{margin:9px 0 0;font-size:13px;color:var(--soft)}
   ul.tl{list-style:none;margin:0;padding:0}
   /* 6.6em, not 5.6: an ISO date wrapped to 「2026-07-」/「31」 in the
      narrow column, which is unreadable at a glance and doubles the
@@ -408,6 +412,19 @@ ${rows([
   ['基因证据', diagnosisRow(summary.diagnosis.geneEvidence, summary.diagnosis.geneEvidenceOrigin)],
 ])}
 </dl>
+${
+  // WHY A NUMBER IN THE LIST ABOVE EARNED NOTHING. This page prints
+  // 「D4Z4 重复数 18kb（报告读取）」 and, further down, a step reading
+  // 「「D4Z4 重复单元数」还没有确定的结果」 — the passport's own
+  // reconciling sentence lives in `geneticEvidence.reason`, which this
+  // page has never carried, so the two sat on one screen with nothing
+  // between them and the reader concludes the platform cannot read its
+  // own report. Same string on the referral pack and in the markdown
+  // export's 依据; see `readingsNotJudged`.
+  summary.diagnosis.geneticEvidence.readingsNotJudged
+    ? `<p class="unjudged">${esc(summary.diagnosis.geneticEvidence.readingsNotJudged)}</p>`
+    : ''
+}
 
 <h2 class="sec">运动功能（患者自测）</h2>
 <dl>

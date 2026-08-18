@@ -70,11 +70,13 @@ describe('redactFields (profile, strict mode)', () => {
     expect(fields.d4z4).toBeUndefined();
     expect(fields.methylation).toBeUndefined();
     expect(fields.haplotype).toBeUndefined();
-    // 「3/22」 is two numbers, so it is not a count — see the D4Z4 block
-    // below for the cell that is.
-    expect(fields.d4z4_clinical).toBe('unspecified');
+    // This scope's cells are `baseline.diseaseBackground` — the boxes on
+    // the registration form — so neither of the two genetics cells is
+    // banded at all, whatever it says. The block below drives the
+    // classifier through the document that earns a band.
+    expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
     expect(fields.methylation_clinical).toBe('value_withheld');
-    expect(fields.haplotype_clinical).toBe('permissive_haplotype');
+    expect(fields.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
   });
 
   it('replaces diagnosisDate with diagnosisYear', () => {
@@ -131,8 +133,27 @@ describe('redactFields (profile, strict mode)', () => {
  * case here is a sentence somebody hears.
  */
 describe('the genetics cells the assistant is handed', () => {
-  const d4z4 = (raw: unknown): unknown =>
-    redactFields({ d4z4: raw }, { scope: 'profile', mode: 'strict' }).fields.d4z4_clinical;
+  /**
+   * One cell, as it reaches the assistant off the genetics laboratory's
+   * own report — the only document whose readings this platform grades.
+   *
+   * The chunk is shaped the way the reports retriever builds one: the
+   * parser's classification inside the OCR blob, the uploader's
+   * declared type beside it. Driving these cases through the profile
+   * scope, which is what they used to do, now measures the registration
+   * form instead of a report.
+   */
+  const cellOf = (documentType: string, key: string, raw: unknown): unknown => {
+    const { fields } = redactFields(
+      {
+        documentType,
+        fields: { classifiedType: documentType, [key]: raw },
+      },
+      { scope: 'reports', mode: 'strict' },
+    );
+    return (fields.fields_clinical as Record<string, unknown>)[`${key}_clinical`];
+  };
+  const d4z4 = (raw: unknown): unknown => cellOf('genetic_report', 'd4z4Repeats', raw);
 
   it('bands a repeat count on the one boundary this repo states', () => {
     // 指南 item 三: above 10 the instruction is to go and evaluate FSHD2,
@@ -194,15 +215,46 @@ describe('the genetics cells the assistant is handed', () => {
   });
 
   it('reads the haplotype cell for what it says', () => {
-    const haplotype = (raw: unknown): unknown =>
-      redactFields({ haplotype: raw }, { scope: 'profile', mode: 'strict' }).fields
-        .haplotype_clinical;
+    const haplotype = (raw: unknown): unknown => cellOf('genetic_report', 'haplotype', raw);
     expect(haplotype('4qA')).toBe('permissive_haplotype');
     expect(haplotype('4qB')).toBe('non_permissive_haplotype');
     // A negation and a probe list are both read as the permissive
     // allele by a bare substring match. Neither states a result.
     expect(haplotype('未检出 4qA 等位基因')).toBe('unspecified_haplotype');
     expect(haplotype('4qA/4qB')).toBe('unspecified_haplotype');
+  });
+
+  /**
+   * THE LABORATORY GATE, which the passport applies to the same two
+   * cells and this file did not.
+   *
+   * `pickGeneticEvidenceDocument` takes a 病历摘要 quoting a repeat
+   * count when the genetics report read out nothing — on purpose, for
+   * the patients whose only copy of the number that is — and the
+   * passport grades that document `transcribed_only`: the value is
+   * printed with 转录自非基因报告文件 in its bracket and earns no
+   * grade. The registration form's own boxes are the same rule one step
+   * further out. Before this gate the assistant was the one surface
+   * that read a clinic letter, and a patient's own typing, as a
+   * laboratory's measurement.
+   */
+  it('bands nothing off a document that is not the laboratory report', () => {
+    expect(cellOf('medical_record', 'd4z4Repeats', '3')).toBe('not_read_off_a_laboratory_report');
+    expect(cellOf('medical_record', 'haplotype', '4qA')).toBe('not_read_off_a_laboratory_report');
+    // The kb and zero readings are refusals in a laboratory's voice
+    // too — this platform says them about a report it read, and the
+    // gate is the same one for all of them.
+    expect(cellOf('medical_record', 'd4z4Repeats', '18kb')).toBe(
+      'not_read_off_a_laboratory_report',
+    );
+    expect(cellOf('medical_record', 'd4z4Repeats', '0')).toBe('not_read_off_a_laboratory_report');
+  });
+
+  it('bands nothing off the registration form either', () => {
+    const baseline = (key: string, raw: unknown): unknown =>
+      redactFields({ [key]: raw }, { scope: 'profile', mode: 'strict' }).fields[`${key}_clinical`];
+    expect(baseline('d4z4', '3')).toBe('not_read_off_a_laboratory_report');
+    expect(baseline('haplotype', '4qA')).toBe('not_read_off_a_laboratory_report');
   });
 
   it('says nothing at all about a cell that is not there', () => {

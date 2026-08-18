@@ -155,28 +155,125 @@ export interface TrialsRetrieveFilter {
 const DEFAULT_LIMIT = 12;
 export const TRIALS_MAX_LIMIT = 40;
 
-/** Rendering order: the ones a patient can still join, then the most
- *  recently updated. Presentation only — it changes which trials fit
- *  under `limit`, never what any of them says. */
-const STATUS_ORDER: Record<string, number> = {
-  RECRUITING: 0,
-  NOT_YET_RECRUITING: 1,
-  ACTIVE_NOT_RECRUITING: 2,
-  COMPLETED: 3,
-  TERMINATED: 4,
-  WITHDRAWN: 5,
-};
+/**
+ * Rendering order: the ones a patient can still join, then the most
+ * recently updated. Presentation only — it changes which trials fit
+ * under `limit`, never what any of them says.
+ *
+ * TWO REGISTRIES, TWO VOCABULARIES, ONE COLUMN. `status_raw` holds
+ * ClinicalTrials.gov's `overallStatus` AND 药物临床试验登记与信息公示平台's
+ * 试验状态, which is Chinese. The mainland words below are the ones on
+ * that registry's own 试验状态 filter, and its results table writes the
+ * 进行中 sub-states as the parent and the sub-state together —
+ * 「进行中 招募中」 — while the filter writes the sub-state alone, so
+ * both spellings are listed; they are the registry's words, not ours.
+ * Word for word the same list the 试验 page groups on
+ * (apps/mobile/lib/trials.ts, TRIAL_GROUP_SPECS) — that page shows the
+ * finished ones under one header while the two tiers below order them
+ * apart, and no word is placed against a different one here.
+ *
+ * With only the English words here every mainland row ranked last —
+ * behind WITHDRAWN — so with 92 ClinicalTrials.gov rows in the cache
+ * and a limit of 12, a study the mainland registry itself calls
+ * 招募中 could not be rendered at all, and the tool then told the
+ * patient no mainland record had come back.
+ *
+ * The 暂停 words are deliberately absent, as they are on the page: a
+ * paused study is neither stopped nor recruiting, and an unplaced word
+ * ranks last rather than being filed under a tier that would overstate
+ * what happened. Ranking last is an ordering, never a claim — every
+ * record still carries its own status word verbatim.
+ */
+const STATUS_ORDER = new Map<string, number>(
+  [
+    ['RECRUITING', '招募中', '进行中 招募中'],
+    ['NOT_YET_RECRUITING', '尚未招募', '进行中 尚未招募'],
+    ['ACTIVE_NOT_RECRUITING', '招募完成', '进行中 招募完成'],
+    ['COMPLETED', '已完成'],
+    ['TERMINATED', '主动终止', 'IEC/IRB终止', '责令终止'],
+    ['WITHDRAWN'],
+  ].flatMap((words, tier) => words.map((word) => [normalizeStatus(word), tier] as const)),
+);
 
-const rank = (trial: TrialRecord): number => STATUS_ORDER[normalizeStatus(trial.statusRaw)] ?? 6;
+/** Where a word no tier above names goes: after all of them. */
+const UNPLACED_RANK = 6;
+
+const rank = (trial: TrialRecord): number =>
+  STATUS_ORDER.get(normalizeStatus(trial.statusRaw)) ?? UNPLACED_RANK;
 
 const compareTrials = (a: TrialRecord, b: TrialRecord): number => {
   const byStatus = rank(a) - rank(b);
   if (byStatus !== 0) return byStatus;
   // Missing update dates sort last: an undated row is not a fresh one.
+  // True WITHIN one registry, which is the only place this runs — see
+  // `selectForPrompt`.
   const aDate = a.sourceUpdatedAt ?? '';
   const bDate = b.sourceUpdatedAt ?? '';
   if (aDate !== bDate) return aDate < bDate ? 1 : -1;
   return a.sourceId < b.sourceId ? -1 : 1;
+};
+
+/**
+ * Which trials fit under `limit`, and in what order.
+ *
+ * ONE SORTED LIST WOULD STILL HAVE STARVED THE MAINLAND HALF, with
+ * every status word placed. `sourceUpdatedAt` is 「the registry's own
+ * last-changed date」 and 药物临床试验登记与信息公示平台 publishes none:
+ * it has no last-changed field at all, so ../../trials/
+ * chinadrugtrials.fetcher.ts writes NULL into that column for every row
+ * it produces, by construction and not by accident. Sorting the union
+ * on that one column therefore ends 「undated last」 as 「that registry
+ * last」 — 21 ClinicalTrials.gov studies are RECRUITING in the cache
+ * today, so a mainland 招募中 study would be the 22nd row of a list cut
+ * at 12. The comparison is a fact about a row only where its registry
+ * fills the column; across the two it is a fact about which registry
+ * published the study.
+ *
+ * So the limit is filled one row at a time and the registries take
+ * turns: at each step the queue whose next row is the most joinable
+ * wins, and between queues whose next rows are equally joinable the one
+ * that has contributed fewest so far. Neither registry can spend the
+ * whole budget on rows the other's are ranked equal to, and inside one
+ * registry the order is exactly `compareTrials`. Deterministic: the
+ * queues are built in the order the sources first appear in the sorted
+ * list, and that order breaks the last tie.
+ */
+const selectForPrompt = (matched: readonly TrialRecord[], limit: number): TrialRecord[] => {
+  const queues = new Map<string, TrialRecord[]>();
+  for (const trial of [...matched].sort(compareTrials)) {
+    const queue = queues.get(trial.source);
+    if (queue) queue.push(trial);
+    else queues.set(trial.source, [trial]);
+  }
+
+  const taken = new Map<string, number>();
+  const selected: TrialRecord[] = [];
+  while (selected.length < limit) {
+    let bestSource: string | null = null;
+    let bestHead: TrialRecord | null = null;
+    for (const [source, queue] of queues) {
+      const head = queue[0];
+      if (!head) continue;
+      if (!bestHead || bestSource === null) {
+        bestSource = source;
+        bestHead = head;
+        continue;
+      }
+      const byStatus = rank(head) - rank(bestHead);
+      const fewerTaken = (taken.get(source) ?? 0) < (taken.get(bestSource) ?? 0);
+      if (byStatus < 0 || (byStatus === 0 && fewerTaken)) {
+        bestSource = source;
+        bestHead = head;
+      }
+    }
+    if (bestSource === null) break;
+    const queue = queues.get(bestSource) ?? [];
+    const next = queue.shift();
+    if (!next) break;
+    selected.push(next);
+    taken.set(bestSource, (taken.get(bestSource) ?? 0) + 1);
+  }
+  return selected;
 };
 
 const NOT_PUBLISHED = '登记库未提供';
@@ -217,8 +314,9 @@ export interface TrialStatusCount {
   status: string;
   count: number;
   /** True when §A4 fixes a Chinese rendering for this word. False means
-   *  the card and the prompt both show the registry's English; it does
-   *  NOT mean the rows are unfilterable. */
+   *  the card and the prompt both show the registry's own word — which
+   *  for 药物临床试验登记与信息公示平台 is already Chinese; it does NOT
+   *  mean the rows are unfilterable. */
   translated: boolean;
 }
 
@@ -301,7 +399,7 @@ export class ClinicalTrialsRetriever implements IRetriever {
       ? snapshot.trials.filter((trial) => normalizeStatus(trial.statusRaw) === statusFilter)
       : snapshot.trials;
 
-    const selected = [...matched].sort(compareTrials).slice(0, limit);
+    const selected = selectForPrompt(matched, limit);
 
     const chunks: RetrievedChunk[] = [];
     const citations: Citation[] = [];

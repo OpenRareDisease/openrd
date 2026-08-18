@@ -314,6 +314,27 @@ describe('分级：方法不适用 —— 只在明确匹配上才降级', () =>
     expect(e.grade).not.toBe('method_not_applicable');
   });
 
+  /**
+   * 0 不是「这份报告上有一个长度」。
+   *
+   * 挡下这一句的那个判断问的是「这一格有没有值」，而 0 是有值的 —— 于是
+   * 一份写着短读长测序、D4Z4 那一格读到 0 的报告靠这个 0 免掉了这一档。
+   * 本平台对 0 的判断恰恰相反：0 个重复单元不是 FSHD1 会有的等位基因，
+   * 这一格更可能是没被读对 —— 而那正是短读长测序读这个位点时会出现的
+   * 情形。以 kb 写的长度是另一回事：那是这次检测真的量出来的数，照旧
+   * 挡得住（上面那一条）。
+   */
+  it('0 挡不下这一句 —— 但那个 0 仍然要在同一段里被说到', () => {
+    const e = evidence({
+      documents: [geneticReport({ geneticTestMethod: 'short_read_sequencing', d4z4Repeats: '0' })],
+    } as never);
+    expect(e.grade).toBe('method_not_applicable');
+    // 那个 0 照旧印在页面上，所以这一段必须说到它 —— 否则读者看到的是
+    // 一个数，和一句与它无关的结论。
+    expect(e.reason).toContain('报告读到的 D4Z4 重复单元数是「0」，本平台读不通这个数');
+    expect(e.reason).toContain('既不拿它当确诊依据，也不拿它当排除依据');
+  });
+
   it('方法字段是 ambiguous 时落到未知，绝不降级', () => {
     const e = evidence({ documents: [geneticReport({ geneticTestMethod: 'ambiguous' })] } as never);
     expect(e.grade).toBe('unknown');
@@ -1345,7 +1366,7 @@ describe('长度这一项也要读出来才算读到', () => {
     expect(summary.diagnosis.d4z4Repeats).toBe('1-10');
     expect(summary.diagnosis.geneEvidence).toContain('18kb');
     expect(summary.diagnosis.laboratoryRepeatCount).toBeNull();
-    expect(e.reason).toContain('报告上以 kb 写的长度（18kb）照常印在护照上');
+    expect(e.reason).toContain('报告上以 kb 写的长度（18kb）照常展示');
     // 区间不会被当成读数引用。
     expect(e.headline).not.toContain('1-10');
   });
@@ -1549,6 +1570,95 @@ describe('重复数读到 0', () => {
     expect(summary.diagnosis.geneticEvidence.record.greyZone).toBe(false);
     expect(summary.diagnosis.geneticEvidence.greyZoneNote).toBeNull();
     expect(summary.nextSteps.map((step) => step.title)).not.toContain('问一次眼底检查');
+  });
+
+  /** 4qB 那一档的标题说的是单倍型，可页面上照旧印着那个 0。那一段必须
+   *  自己把这个 0 说掉 —— 它不是围着 0 写的，所以不会顺手说到。 */
+  it('4qB 那一档也把这个 0 说掉', () => {
+    const evidence = summaryFor({ d4z4Repeats: '0', haplotype: '4qB' }).diagnosis.geneticEvidence;
+    expect(evidence.grade).toBe('non_permissive_haplotype');
+    expect(evidence.reason).toContain('报告读到的 D4Z4 重复单元数是「0」，本平台读不通这个数');
+  });
+
+  /** 结果不全那一档的标题和依据本来就是围着这个 0 写的，所以同一段里
+   *  不会再说第二遍。 */
+  it('围着 0 写的那一档不说第二遍', () => {
+    const evidence = summaryFor({ d4z4Repeats: '0', haplotype: '4qA' }).diagnosis.geneticEvidence;
+    expect(evidence.reason.split('0 个重复单元不是 FSHD1 会有的等位基因')).toHaveLength(2);
+  });
+});
+
+/**
+ * 印出来的那个数，和它为什么什么都没换来 —— 在只印数、不印这一档文案的
+ * 那几张纸上。
+ *
+ * 护照屏和 markdown 导出带着 `reason`，那一段末尾就是这两句话。分享页
+ * 印的是横幅加一行「D4Z4 重复数」，转诊资料印的是结论加同一行 —— 两张
+ * 纸上都出现过「D4Z4 重复数 18kb（报告读取）」，和一句说这一项没有确定
+ * 结果的话，中间什么都没有。读者据此得出的结论是：这个平台读不懂自己
+ * 的报告。
+ */
+describe('印出来但没被判的读数，在每一张印着它的纸上都有一句话', () => {
+  const rendered = (fields: Record<string, string>) => {
+    const profile = base({ geneticMutation: 'FSHD1', documents: [geneticReport(fields)] } as never);
+    const summary = buildClinicalPassportSummary(profile);
+    return {
+      summary,
+      note: summary.diagnosis.geneticEvidence.readingsNotJudged,
+      share: buildPassportSharePage(summary, { expiresAt: '2026-09-01T00:00:00.000Z' }),
+      markdown: buildClinicalPassportExport(summary).markdown,
+    };
+  };
+
+  it.each([
+    ['以 kb 写的长度', { d4z4Repeats: '18kb', haplotype: '4qA' }, '18kb'],
+    ['读到 0 的重复数', { d4z4Repeats: '0', haplotype: '4qA' }, '0'],
+  ])('%s：分享页上那一行下面就写着它为什么什么都没换来', (_name, fields, cell) => {
+    const { note, share, summary } = rendered(fields as Record<string, string>);
+    // 数照印，括号照写。
+    expect(summary.diagnosis.d4z4Repeats).toBe(cell);
+    expect(summary.diagnosis.valueOrigins.d4z4Repeats.labelZh).toBe('报告读取');
+    expect(note).not.toBeNull();
+    expect(share).toContain(`<p class="unjudged">${note}</p>`);
+    // 在那一行的下面，不在页尾。
+    expect(share.indexOf('class="unjudged"')).toBeGreaterThan(
+      share.indexOf('<dt>D4Z4 重复数</dt>'),
+    );
+    expect(share.indexOf('class="unjudged"')).toBeLessThan(share.indexOf('最近记录'));
+  });
+
+  it('EcoRI 片段那一格也算 —— 它不在诊断信息的行里，在基因证据那一行里', () => {
+    const { note, share, summary } = rendered({ ecoRIFragment: '18kb', haplotype: '4qA' });
+    expect(summary.diagnosis.geneEvidence).toContain('18kb');
+    expect(note).toContain('18kb');
+    expect(share).toContain('class="unjudged"');
+  });
+
+  it('确诊那一档没有这句话 —— 那一档什么都没扣下', () => {
+    const { note, share } = rendered({ d4z4Repeats: '6', haplotype: '4qA', ecoRIFragment: '18kb' });
+    expect(note).toBeNull();
+    expect(share).not.toContain('class="unjudged"');
+  });
+
+  it('报告什么都没写的时候，也没有这句话可说', () => {
+    const { note, share } = rendered({ haplotype: '4qA' });
+    expect(note).toBeNull();
+    expect(share).not.toContain('class="unjudged"');
+  });
+
+  /** 一份护照上可以同时有这两种读数，两句话都要在。 */
+  it('两种读数都在的时候，两句话都印', () => {
+    const { note } = rendered({ d4z4Repeats: '0', ecoRIFragment: '18kb' });
+    expect(note).toContain('本平台读不通这个数');
+    expect(note).toContain('本平台不在 kb 和重复单元数之间做换算');
+  });
+
+  /** markdown 导出带的是 `reason`，两者说的是同一件事，所以那一段末尾
+   *  也一样有 —— 没有哪张纸同时印这两个串。 */
+  it('markdown 导出的依据里也有这句话', () => {
+    const { markdown } = rendered({ d4z4Repeats: '18kb', haplotype: '4qA' });
+    expect(markdown).toContain('本平台不在 kb 和重复单元数之间做换算');
+    expect(markdown).not.toContain('class="unjudged"');
   });
 });
 

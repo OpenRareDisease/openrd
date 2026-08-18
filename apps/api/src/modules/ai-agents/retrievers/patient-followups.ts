@@ -88,6 +88,7 @@ import type {
   RetrievedChunk,
 } from './base.js';
 import { emptyResult } from './base.js';
+import { labelFor, MUSCLE_GROUP_LABELS } from '../../patient-profile/export/labels.js';
 import {
   FALL_HISTORY_COLUMNS,
   FALL_HISTORY_SQL,
@@ -98,19 +99,31 @@ import {
   composeFallClausesZh,
   fallDayAge,
 } from '../../patient-profile/falls/falls.summary.js';
+import { MUSCLE_GROUPS } from '../../patient-profile/profile.constants.js';
 
 /**
  * Metric keys the record can actually contain, mapped to the label
  * used in the prompt.
  *
- * Derived from `FUNCTION_TEST_TYPES` and `SYMPTOM_KEYS` — the same
- * enums the write path validates against (`profile.schema.ts` z.enum
- * + DB CHECK). An earlier version of this table invented
- * `grip_strength` / `arm_raise` / `walk_6min`, none of which can exist
- * in the database, while omitting the ones that can: a patient asking
- * 「我抬臂是不是变弱了」was answered「你还没有记录过这项」because the
- * tool advertised a key the retriever could never match, and the real
- * self-test data lives under `muscle_deltoid`.
+ * Derived from `FUNCTION_TEST_TYPES`, `SYMPTOM_KEYS` and
+ * `MUSCLE_GROUPS` — the same enums the write path validates against
+ * (`profile.schema.ts` z.enum + DB CHECK). An earlier version of this
+ * table invented `grip_strength` / `arm_raise` / `walk_6min`, none of
+ * which can exist in the database, while omitting the ones that can: a
+ * patient asking 「我抬臂是不是变弱了」was answered「你还没有记录过这项」
+ * because the tool advertised a key the retriever could never match,
+ * and the real self-test data lives under `muscle_deltoid`.
+ *
+ * THE MUSCLE HALF IS BUILT FROM THE ENUM RATHER THAN COPIED FROM IT.
+ * Copied, it went stale the way that comment predicts: `face` and
+ * `abdominal` were appended to `MUSCLE_GROUPS` — regions the FSHD
+ * Clinical Score grades, one of them the region the disease is named
+ * after — and this table stopped short of both. Everything built
+ * on it stopped there too, so `get_my_records` REJECTED
+ * `muscle_face`, and a patient who had recorded facial weakness could
+ * be told the tool call failed. Appending a group now extends this map
+ * on its own; the labels are the ones the export writes for the same
+ * enum, so a group has one Chinese name across the product.
  *
  * A key absent from here still surfaces under its raw name rather than
  * being dropped.
@@ -130,13 +143,12 @@ const METRIC_LABELS: Record<string, string> = {
   sleep_quality: '睡眠质量',
   anxiety_about_progression: '对进展的担忧',
   // patient_measurements — muscle self-test, MUSCLE_GROUPS, scored 0-5
-  muscle_deltoid: '肌力·三角肌',
-  muscle_biceps: '肌力·肱二头肌',
-  muscle_triceps: '肌力·肱三头肌',
-  muscle_tibialis: '肌力·胫前肌',
-  muscle_quadriceps: '肌力·股四头肌',
-  muscle_hamstrings: '肌力·腘绳肌',
-  muscle_gluteus: '肌力·臀肌',
+  ...Object.fromEntries(
+    MUSCLE_GROUPS.map((group) => [
+      `muscle_${group}`,
+      `肌力·${labelFor(MUSCLE_GROUP_LABELS, group)}`,
+    ]),
+  ),
 };
 
 /**

@@ -104,6 +104,11 @@ const summary = {
       diagnosisDate: { kind: 'patient', labelZh: '本人填写' },
     },
     geneEvidence: null,
+    // Read by the renderer, so it is here for the same reason
+    // `valueOrigins` is. Null is 「this profile states no reading that
+    // was shown and not judged」; what the page does with the other
+    // state is pinned in passport-share.html.test.ts.
+    geneticEvidence: { readingsNotJudged: null },
   },
   motor: { summary: '上肢抬举受限', latestMeasurementAt: null, highlights: [] },
   imaging: { summary: null, latestMriDate: null },

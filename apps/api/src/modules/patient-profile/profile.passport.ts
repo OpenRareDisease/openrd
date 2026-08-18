@@ -1889,6 +1889,26 @@ export interface PassportGeneticEvidenceDTO {
   reason: string;
   action: string;
   record: PassportGeneticRecordDTO;
+  /**
+   * THE READINGS ON THIS REPORT THAT ARE SHOWN AND JUDGED BY NOTHING,
+   * and why nothing came of them — a length the report gave in kb, a
+   * count cell reading 0. Null when the report states neither, and on
+   * `trial_ready`, where nothing was withheld.
+   *
+   * FOR THE SURFACES THAT PRINT THE READING WITHOUT THIS GRADE'S COPY.
+   * `reason` ends with these same sentences and the passport screen and
+   * the markdown export carry it; the share page prints a banner and a
+   * 「D4Z4 重复数」 row, the referral pack prints a 结论 and the same row,
+   * and both set a kb length directly above a sentence saying that item
+   * has no determinate result with nothing between them. A reader shown
+   * a number and a denial and no third sentence concludes that the
+   * platform cannot read its own report.
+   *
+   * It overlaps `reason` and no surface prints both: one fact, written
+   * once for a reader who has this grade's copy in front of them and
+   * once for a reader who does not.
+   */
+  readingsNotJudged: string | null;
   /** Non-null only when the repeat count is in the 8–10 unit gray zone. */
   greyZoneNote: string | null;
   /** Null once the report already carries size AND haplotype — at that
@@ -2152,11 +2172,23 @@ const determinateRepeatCount = (record: LaboratoryGeneticRecord): string | null 
  * anything, and 「no safe kb boundary can be derived」 is about deriving,
  * which nothing here does. A kb number that stops this platform from
  * making a costly claim has not been judged.
+ *
+ * A 0 IS NOT A LENGTH THIS REPORT STATED, and the two cells are asked
+ * the same question so that neither can drift. This tested the parsed
+ * cell for PRESENCE — `value !== null` — and 0 is non-null, so a count
+ * cell reading 0 said 「the report states a length」 and withheld
+ * 方法不适用 through it. What this platform already believes about a 0
+ * is the opposite (`zeroRepeatCount`: the cell was misread, or it is
+ * about something else), and the report it withheld the sentence from
+ * is the one whose method field says short reads — where a cell that
+ * cannot be a repeat count is exactly what the guideline predicts. A kb
+ * reading is the other case and still withholds: 18kb is a measurement
+ * this assay made, whatever the method string says.
  */
 const reportStatesALength = (record: LaboratoryGeneticRecord): boolean => {
-  if (record.d4z4 && record.d4z4.value !== null) return true;
-  const fragment = readSizeCell(record.ecoRIFragment);
-  return fragment !== null && fragment.value !== null;
+  const statesOne = (reading: D4Z4Reading | null) =>
+    reading !== null && reading.value !== null && reading.value !== 0;
+  return statesOne(record.d4z4) || statesOne(readSizeCell(record.ecoRIFragment));
 };
 
 /**
@@ -2202,9 +2234,34 @@ const kbLengthsNotJudged = (record: LaboratoryGeneticRecord): string[] => {
  * grade that does not account for it. Without this sentence the honest
  * answer — this platform has no kb boundary to compare it against —
  * looks like an omission.
+ *
+ * IT NAMES NO ARTEFACT AND NO PARAGRAPH. It was written for the
+ * passport, said 「照常印在护照上」 and ended 「不参与上面这段判断」; the
+ * same sentence is now set on the share page and in the referral pack,
+ * where the artefact is not the passport and nothing precedes it. What
+ * is true wherever the number appears is that the number is shown and
+ * that this platform did not judge it, so the two claims that were
+ * about where it was printed come off.
  */
 const KB_LENGTH_NOT_JUDGED_ZH = (lengths: readonly string[]) =>
-  `报告上以 kb 写的长度（${lengths.join('、')}）照常印在护照上，但它不参与上面这段判断：指南给出的界限是按重复单元数写的，本平台不在 kb 和重复单元数之间做换算。`;
+  `报告上以 kb 写的长度（${lengths.join('、')}）照常展示，但不参与本平台对这份报告的判断：指南给出的界限是按重复单元数写的，本平台不在 kb 和重复单元数之间做换算。`;
+
+/**
+ * WHY A 0 IN THE COUNT CELL CHANGED NOTHING — in two pieces, because
+ * the surfaces need them in different arrangements.
+ *
+ * 结果不全 is the one grade with a branch written around this reading:
+ * the number is its headline and the clause is its 依据. The other two
+ * grades a 0 can reach — 方法不适用 and 单倍型非允许型 — head their copy
+ * with something else, and the share page and the referral pack print
+ * the cell in a row with none of that copy anywhere on the page. All of
+ * them set the same two strings; a second wording of 「0 说不通」 per
+ * surface is four sentences to keep true. See `zeroRepeatCount`.
+ */
+const ZERO_REPEAT_COUNT_HEADLINE_ZH = (raw: string) =>
+  `报告读到的 D4Z4 重复单元数是「${raw}」，本平台读不通这个数`;
+const ZERO_REPEAT_COUNT_NOT_JUDGED_ZH =
+  '0 个重复单元不是 FSHD1 会有的等位基因，所以这一格更可能是没被读对，或者写的根本不是重复单元数。本平台既不拿它当确诊依据，也不拿它当排除依据。';
 
 /** The repeat count this platform's own statement of the report
  *  requirements stops describing FSHD1 above. `WHAT_THE_REPORT_MUST_SAY`
@@ -2654,6 +2711,16 @@ const buildGeneticEvidence = (
   /** The lengths on this report that are printed and judged by nothing.
    *  See `determinateRepeatCount`. */
   const kbLengths = laboratory ? kbLengthsNotJudged(laboratory) : [];
+  /** The count cell reads 0 — the other reading that is printed and
+   *  judged by nothing. Read here rather than inside the branch written
+   *  around it, because two further grades are reached with the same 0
+   *  in the same cell and the tail of this function is where they
+   *  account for it. See `zeroRepeatCount`. */
+  const zeroCount = laboratory ? zeroRepeatCount(laboratory) : null;
+  /** Set by the one branch whose headline and 依据 are written around
+   *  the 0, so the tail does not append the same two sentences to a
+   *  paragraph that already carries them. */
+  let zeroAccountedFor = false;
   /** The report named a method that can size the array. The only thing
    *  that entitles this page to say 方法是对的 — there is no
    *  text-scanning fallback for `method` on purpose, so 未知 is an
@@ -2727,13 +2794,6 @@ const buildGeneticEvidence = (
       if (size) presentParts.push(`D4Z4 长度（${sizeText}）`);
       if (haplotype) presentParts.push(`单倍型（${haplotypeText}）`);
 
-      /** The cell reads 0. Not a confirmation and not an exclusion —
-       *  see `zeroRepeatCount`. Ahead of everything else in this
-       *  branch, because a reader looking at a 0 on the page is owed a
-       *  sentence about the 0 before one about what the report is
-       *  missing. */
-      const zeroText = laboratory ? zeroRepeatCount(laboratory) : null;
-
       // THE REPORT STATED A COUNT AND THE COUNT IS NOT A CONTRACTION.
       // `sizeText` is the count cell in this state and never the EcoRI
       // fragment: `countAboveFshd1Range` and `determinateRepeatCount`
@@ -2743,14 +2803,19 @@ const buildGeneticEvidence = (
       // Nothing is missing from the two items, so the branches below
       // would have printed 「只差「」」. What this reader is owed is the
       // guideline's own instruction for the count they are holding.
-      if (zeroText !== null) {
+      // The cell reads 0. Not a confirmation and not an exclusion — see
+      // `zeroRepeatCount`. Ahead of everything else in this branch,
+      // because a reader looking at a 0 on the page is owed a sentence
+      // about the 0 before one about what the report is missing.
+      if (zeroCount !== null) {
         // The count cell is what this sentence is about, so the clause
         // that lists what is still undetermined names the OTHER item
         // only — 「D4Z4 重复单元数这一项还没有确定的结果」 after two
         // sentences about the number in that cell reads as a
         // contradiction rather than as the same fact twice.
-        headline = `报告读到的 D4Z4 重复单元数是「${zeroText}」，本平台读不通这个数`;
-        reason = `${GUIDELINE_TWO_ITEMS_ZH}。0 个重复单元不是 FSHD1 会有的等位基因，所以这一格更可能是没被读对，或者写的根本不是重复单元数。本平台既不拿它当确诊依据，也不拿它当排除依据。${
+        zeroAccountedFor = true;
+        headline = ZERO_REPEAT_COUNT_HEADLINE_ZH(zeroCount);
+        reason = `${GUIDELINE_TWO_ITEMS_ZH}。${ZERO_REPEAT_COUNT_NOT_JUDGED_ZH}${
           haplotype ? '' : `${HAPLOTYPE_ITEM_ZH}这一项报告上也还没有确定的结果。`
         }`;
         action =
@@ -2857,13 +2922,24 @@ const buildGeneticEvidence = (
 
   // WHY A NUMBER ON THE PAGE CHANGED NOTHING, said once, wherever it
   // applies. Every grade but `trial_ready` withholds something from a
-  // report, and a reader whose report states a kb length is entitled to
-  // know that this particular number was never weighed — see
-  // `determinateRepeatCount`. On `trial_ready` nothing was withheld, so
-  // there is nothing to explain.
-  if (grade !== 'trial_ready' && kbLengths.length > 0) {
-    reason = `${reason}${KB_LENGTH_NOT_JUDGED_ZH(kbLengths)}`;
-  }
+  // report, and a reader whose report states a kb length or a 0 is
+  // entitled to know that this particular number was never weighed —
+  // see `determinateRepeatCount` and `zeroRepeatCount`. On
+  // `trial_ready` nothing was withheld, so there is nothing to explain,
+  // and a 0 cannot be on that grade at all — `isDeterminateRepeatCount`
+  // refuses it — so the one guard covers both readings.
+  const withheldSomething = grade !== 'trial_ready';
+  const zeroNotJudged =
+    withheldSomething && zeroCount !== null
+      ? `${ZERO_REPEAT_COUNT_HEADLINE_ZH(zeroCount)}。${ZERO_REPEAT_COUNT_NOT_JUDGED_ZH}`
+      : '';
+  const kbNotJudged =
+    withheldSomething && kbLengths.length > 0 ? KB_LENGTH_NOT_JUDGED_ZH(kbLengths) : '';
+  // The 依据 takes the same sentences, minus the ones its own branch is
+  // written around: 结果不全 reaches a 0 through a headline naming it
+  // and a 依据 explaining it, and appending them there would state one
+  // fact twice in one paragraph.
+  reason = `${reason}${zeroAccountedFor ? '' : zeroNotJudged}${kbNotJudged}`;
 
   return {
     grade,
@@ -2878,6 +2954,7 @@ const buildGeneticEvidence = (
     reason,
     action,
     record,
+    readingsNotJudged: `${zeroNotJudged}${kbNotJudged}` || null,
     // The 1%–2% carrier figure is stated for the whole 8–10 range, but
     // the 「likely pathogenic」 reporting category is stated by Giardina
     // 2024 for 8 U only — and there as an ethnicity-dependent example.

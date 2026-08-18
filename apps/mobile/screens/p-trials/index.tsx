@@ -16,7 +16,7 @@ import {
   TRIALS_INTRO,
   TRIAL_SOURCE_NAMES,
   describeChinaCoverage,
-  describeCtgovStaleness,
+  describeCtgovCoverage,
   describeEmptyList,
   groupTrials,
   hasChinaSite,
@@ -228,7 +228,13 @@ const TrialsScreen = () => {
         : { tone: 'plain', text: COVERAGE_NOTE_NO_CHINA_RECORDS },
     [snapshot],
   );
-  const staleness = useMemo(() => (snapshot ? describeCtgovStaleness(snapshot) : null), [snapshot]);
+  /** The other half's notice: null whenever that half has nothing to
+   *  report, which is why this one is conditional and `coverage` is
+   *  not. lib/trials.ts owns which states those are. */
+  const ctgovNotice = useMemo(
+    () => (snapshot ? describeCtgovCoverage(snapshot) : null),
+    [snapshot],
+  );
 
   /**
    * Three mutually exclusive outcomes of a successful request, in the
@@ -290,7 +296,7 @@ const TrialsScreen = () => {
             </View>
           ) : null}
 
-          {staleness ? <Notice notice={staleness} /> : null}
+          {ctgovNotice ? <Notice notice={ctgovNotice} /> : null}
 
           <Text style={styles.intro}>{TRIALS_INTRO}</Text>
 
