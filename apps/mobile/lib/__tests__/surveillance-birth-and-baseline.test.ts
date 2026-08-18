@@ -241,3 +241,73 @@ describe('夜间通气这一行读得到基础档案里的呼吸回答', () => {
     expect(referral.evidence).not.toContain('没有呼吸问题');
   });
 });
+
+/**
+ * 同一个形状的第五处：肺功能复查这一行判断不了的时候，最后一句是
+ * 「也就是说，这一栏的「对不上」只代表这里没有数据」—— 说给一个上传过
+ * 肺功能报告、而且在这一页往上数两条就看得到自己 FVC 的患者听。
+ *
+ * 「基线结果异常」是这条指南列出的第一个条件，这个平台手上正好有那份
+ * 结果；它判断不了的是那个数够不够指南说的那条线，那是医生读报告的事，
+ * 不是「这里没有数据」。
+ */
+describe('肺功能复查这一行不否认档案里的肺功能结果', () => {
+  const withRespiratory = (state: 'present' | 'absent') =>
+    ({
+      patientName: '张三',
+      diagnosis: {
+        confirmation: 'genetic',
+        d4z4Repeats: '7',
+        laboratoryRepeatCount: '7',
+        valueOrigins: {},
+      },
+      monitoring: {
+        items: [
+          state === 'present'
+            ? {
+                key: 'respiratory',
+                available: true,
+                state: 'present',
+                summary: 'FVC 58%',
+                latestDate: '2026-03-02',
+              }
+            : {
+                key: 'respiratory',
+                available: false,
+                state: 'absent',
+                summary: '—',
+                latestDate: null,
+              },
+          { key: 'cardiac', available: false, state: 'absent', summary: '—', latestDate: null },
+        ],
+      },
+    }) as unknown as ClinicalPassportSummary;
+
+  const repeatRow = (state: 'present' | 'absent') => {
+    const found = buildSurveillanceSchedule(withRespiratory(state), profile({}), TODAY)
+      .groups.flatMap((group) => group.rows)
+      .find((entry) => entry.id === 'pulmonary_repeat');
+    if (!found) throw new Error('no pulmonary_repeat row');
+    return found;
+  };
+
+  it('有可读的肺功能结果时不说「只代表这里没有数据」', () => {
+    const repeat = repeatRow('present');
+
+    expect(repeat.applicability).toBe('unknown');
+    expect(repeat.evidence).not.toContain('只代表这里没有数据');
+    expect(repeat.evidence).toContain('肺功能结果本平台是有的');
+    // 判不判得上那条线仍然是医生的事，这一页不替他读那个数。
+    expect(repeat.evidence).toContain('报告原件');
+  });
+
+  it('真的没有肺功能结果时那句话还在，两个轮椅栏位也照样点名', () => {
+    const repeat = repeatRow('absent');
+
+    expect(repeat.applicability).toBe('unknown');
+    expect(repeat.evidence).toContain('只代表这里没有数据');
+    expect(repeat.evidence).toContain('随访事件');
+    expect(repeat.evidence).toContain('辅具');
+    expect(repeat.evidence).toContain('脊柱侧弯');
+  });
+});

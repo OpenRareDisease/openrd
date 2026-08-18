@@ -609,3 +609,450 @@ describe('units belong to the series identity', () => {
     expect(f.series).toBe('3(30天前)、7(0天前)');
   });
 });
+
+/**
+ * A `test_type` is not a test.
+ *
+ * The mobile 上楼计时 card refuses exactly these merges and prints the
+ * refusal on screen; these cases are the API half saying the same
+ * thing. The expected strings below were read off `renderChunkForPrompt`
+ * in both modes, not off the field object.
+ */
+describe('a curve is (test_type, protocol, grade, side)', () => {
+  const TT = (id: string, grade: string, label: string) => `tt1|${id}|${grade}|${label}`;
+  const DAILY_STAIR = '连续上 10 级台阶';
+
+  const seriesOf = async (
+    seriesRows: unknown[],
+    unableRows: unknown[] = [],
+    filter?: Record<string, unknown>,
+  ) => {
+    const r = await new PatientFollowupRetriever(poolWith(seriesRows, [], unableRows)).search(
+      { question: '', ...(filter ? { filter } : {}) },
+      ctx(),
+    );
+    return r.chunks.map((c) => ({
+      sourceFile: c.sourceFile,
+      f: c.metadata.fields as Record<string, unknown>,
+    }));
+  };
+
+  /** The four rows the mobile card was driven over: two daily
+   *  ten-step records, one per-protocol four-step run, one 自由记录
+   *  four-step run. All `stair_climb`, all `sec`, so the unit guard
+   *  cannot see any of it. */
+  const MIXED_STAIR_ROWS = [
+    {
+      metric_key: 'stair_climb',
+      unit: 'sec',
+      value: '12',
+      recorded_at: daysAgoIso(30),
+      protocol: DAILY_STAIR,
+      side: null,
+    },
+    {
+      metric_key: 'stair_climb',
+      unit: 'sec',
+      value: '13',
+      recorded_at: daysAgoIso(20),
+      protocol: DAILY_STAIR,
+      side: null,
+    },
+    {
+      metric_key: 'stair_climb',
+      unit: 'sec',
+      value: '8.2',
+      recorded_at: daysAgoIso(10),
+      protocol: TT('stair_four_step', 'per_protocol', '四级台阶上下·按方案完成'),
+      side: null,
+    },
+    {
+      metric_key: 'stair_climb',
+      unit: 'sec',
+      value: '25',
+      recorded_at: daysAgoIso(2),
+      protocol: TT('stair_four_step', 'free', '四级台阶上下·自由记录'),
+      side: null,
+    },
+  ];
+
+  it('does not merge 连续上 10 级台阶 with 四级台阶上下', async () => {
+    // Merged, these four rendered as one curve: 「历次记录: 12sec(30天
+    // 前)、13sec(20天前)、8.2sec(10天前)、25sec(2天前)」 with 「变化方向:
+    // up」 and 「最近数值: 25」 — the 25 being a 自由记录 four-step
+    // attempt offered as the patient's latest stair time. The card
+    // built from the same rows says 「最近一次连续上 10 级台阶用时 13.0
+    // 秒」 and prints 「你记录的「四级台阶上下」是另一项测试，秒数不能和这
+    // 条线放在一起比」.
+    const chunks = await seriesOf(MIXED_STAIR_ROWS);
+    expect(chunks).toHaveLength(3);
+
+    const daily = chunks.find((c) => c.f.metricLabel === '上楼计时·连续上 10 级台阶')!;
+    expect(daily.f.count).toBe(2);
+    expect(daily.f.series).toBe('12sec(30天前)、13sec(20天前)');
+    // 13, the newest reading OF THIS MEASUREMENT — the same number the
+    // card puts in `latestDisplay`. Never 25.
+    expect(daily.f.latestValue).toBe(13);
+
+    const timed = chunks.find((c) => c.f.metricLabel === '上楼计时·四级台阶上下')!;
+    expect(timed.f.series).toBe('8.2sec(10天前)');
+
+    // No chunk anywhere may put a ten-step reading and a four-step
+    // reading in one list. (The 自由记录 curve does carry its own 25sec
+    // — 「会存下来，也会显示」 — it just carries nothing else.)
+    for (const c of chunks) {
+      const rendered = String(c.f.series ?? '');
+      const tenStep = /12sec|13sec/.test(rendered);
+      const fourStep = /8\.2sec|25sec/.test(rendered);
+      expect(tenStep && fourStep).toBe(false);
+    }
+  });
+
+  it('keeps a non-trend-eligible grade out of every direction', async () => {
+    const chunks = await seriesOf(MIXED_STAIR_ROWS);
+    const free = chunks.find((c) => c.f.metricLabel === '上楼计时·四级台阶上下（自由记录）')!;
+    // 会存下来，也会显示 — the points are still there, under a label
+    // that names the grade.
+    expect(free.f.series).toBe('25sec(2天前)');
+    // ...但不会和别的次数放在一条趋势线上比.
+    expect(free.f.changeDirection).toBeUndefined();
+    // Nor offered as a current level: the 时间轴 lists such a record,
+    // it never renders it as 最近数值.
+    expect(free.f.latestValue).toBeUndefined();
+    expect(String(free.f.latestBand)).toContain('自由记录');
+    expect(String(free.f.latestBand)).toContain('不给出变化方向');
+  });
+
+  it('refuses a direction across two 自由记录 readings of one test', async () => {
+    // The grade means the conditions differed, so two of them are not
+    // comparable with each other either — which is what the picker
+    // says: 「不会和别的次数放在一条趋势线上比」, not 「只和同评级比」.
+    const chunks = await seriesOf([
+      {
+        metric_key: 'ten_meter_walk',
+        unit: 'sec',
+        value: '10',
+        recorded_at: daysAgoIso(30),
+        protocol: TT('ten_meter_walk', 'free', '10 米步行·自由记录'),
+        side: null,
+      },
+      {
+        metric_key: 'ten_meter_walk',
+        unit: 'sec',
+        value: '18',
+        recorded_at: daysAgoIso(0),
+        protocol: TT('ten_meter_walk', 'free', '10 米步行·自由记录'),
+        side: null,
+      },
+    ]);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].f.changeDirection).toBeUndefined();
+    expect(chunks[0].f.series).toBe('10sec(30天前)、18sec(0天前)');
+  });
+
+  it('splits 条件不完整 from 按方案完成 rather than averaging them in', async () => {
+    const chunks = await seriesOf([
+      {
+        metric_key: 'timed_up_and_go',
+        unit: 'sec',
+        value: '11',
+        recorded_at: daysAgoIso(30),
+        protocol: TT('timed_up_and_go', 'per_protocol', 'x'),
+        side: null,
+      },
+      {
+        metric_key: 'timed_up_and_go',
+        unit: 'sec',
+        value: '12',
+        recorded_at: daysAgoIso(15),
+        protocol: TT('timed_up_and_go', 'per_protocol', 'x'),
+        side: null,
+      },
+      {
+        metric_key: 'timed_up_and_go',
+        unit: 'sec',
+        value: '30',
+        recorded_at: daysAgoIso(0),
+        protocol: TT('timed_up_and_go', 'partial', 'x'),
+        side: null,
+      },
+    ]);
+    const perProtocol = chunks.find(
+      (c) => c.f.metricLabel === '起立行走计时·起立行走计时（TUG，3 米）',
+    )!;
+    expect(perProtocol.f.count).toBe(2);
+    expect(perProtocol.f.changeDirection).toBe('flat');
+    const partial = chunks.find((c) => String(c.f.metricLabel).includes('条件不完整'))!;
+    expect(partial.f.changeDirection).toBeUndefined();
+    expect(String(partial.f.latestBand)).toContain('条件不完整');
+  });
+
+  it('keeps left and right grip apart, the way the muscle branch keeps sides apart', async () => {
+    // 28kg → 20kg → 27kg came out 「基本持平」 over a left hand, a right
+    // hand and a left hand. FSHD is defined by asymmetric involvement.
+    const grip = TT('grip_strength', 'per_protocol', '握力（选做）·按方案完成');
+    const chunks = await seriesOf([
+      {
+        metric_key: 'custom',
+        unit: 'kg',
+        value: '28',
+        recorded_at: daysAgoIso(40),
+        protocol: grip,
+        side: 'left',
+      },
+      {
+        metric_key: 'custom',
+        unit: 'kg',
+        value: '20',
+        recorded_at: daysAgoIso(20),
+        protocol: grip,
+        side: 'right',
+      },
+      {
+        metric_key: 'custom',
+        unit: 'kg',
+        value: '27',
+        recorded_at: daysAgoIso(5),
+        protocol: grip,
+        side: 'left',
+      },
+    ]);
+    expect(chunks).toHaveLength(2);
+    const left = chunks.find((c) => String(c.f.metricLabel).includes('（左）'))!;
+    expect(left.f.series).toBe('28kg(40天前)、27kg(5天前)');
+    const right = chunks.find((c) => String(c.f.metricLabel).includes('（右）'))!;
+    expect(right.f.series).toBe('20kg(20天前)');
+  });
+
+  it('asserts no direction over 四项抗重力, whose items it cannot tell apart', async () => {
+    // Four movements share one testType, one protocol string and one
+    // unit; the discriminator is a line in `notes`, which this file
+    // never reads. 2 then 0 is as likely to be two different movements
+    // as one that got worse — and 「变化方向: down」 says a patient has
+    // lost something.
+    const antiGravity = TT('anti_gravity_four', 'per_protocol', '四项抗重力·按方案完成');
+    const chunks = await seriesOf([
+      {
+        metric_key: 'custom',
+        unit: 'score',
+        value: '2',
+        recorded_at: daysAgoIso(30),
+        protocol: antiGravity,
+        side: null,
+      },
+      {
+        metric_key: 'custom',
+        unit: 'score',
+        value: '0',
+        recorded_at: daysAgoIso(3),
+        protocol: antiGravity,
+        side: null,
+      },
+    ]);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].f.changeDirection).toBeUndefined();
+    expect(chunks[0].f.latestValue).toBeUndefined();
+    expect(String(chunks[0].f.latestBand)).toContain('多个动作项');
+  });
+
+  it('never forwards the protocol string, in any field or citation', async () => {
+    const typed = '我家走廊只有 8 米，凑合走的';
+    const r = await new PatientFollowupRetriever(
+      poolWith(
+        [
+          {
+            metric_key: 'ten_meter_walk',
+            unit: 'sec',
+            value: '10',
+            recorded_at: daysAgoIso(30),
+            protocol: typed,
+            side: null,
+          },
+          {
+            metric_key: 'ten_meter_walk',
+            unit: 'sec',
+            value: '11',
+            recorded_at: daysAgoIso(2),
+            protocol: null,
+            side: null,
+          },
+        ],
+        [],
+        [],
+      ),
+    ).search({ question: '' }, ctx());
+
+    // Two curves: a row carrying an unrecognised protocol is not the
+    // same measurement as a row carrying none.
+    expect(r.chunks).toHaveLength(2);
+    // `sourceFile` rides the citation channel, which bypasses the
+    // redactor entirely — so it gets an ordinal, never the string.
+    expect(JSON.stringify(r.chunks)).not.toContain(typed);
+    expect(JSON.stringify(r.citations)).not.toContain(typed);
+    const unnamed = r.chunks.find((c) => (c.sourceFile ?? '').includes('@other'))!;
+    expect((unnamed.metadata.fields as Record<string, unknown>).changeDirection).toBeUndefined();
+  });
+
+  it('hangs each 做不到 tally on the curve it came from, once', async () => {
+    // Grouped on `test_type` alone, one tally of six was stamped onto
+    // every stair curve: 「另有 6 次记录为「做不到」」 twice, in two
+    // chunks, in one prompt, off six rows.
+    const chunks = await seriesOf(
+      [
+        {
+          metric_key: 'stair_climb',
+          unit: 'sec',
+          value: '12',
+          recorded_at: daysAgoIso(30),
+          protocol: DAILY_STAIR,
+          side: null,
+        },
+        {
+          metric_key: 'stair_climb',
+          unit: 'sec',
+          value: '18',
+          recorded_at: daysAgoIso(2),
+          protocol: DAILY_STAIR,
+          side: null,
+        },
+        {
+          metric_key: 'stair_climb',
+          unit: 'sec',
+          value: '9',
+          recorded_at: daysAgoIso(20),
+          protocol: TT('stair_four_step', 'per_protocol', 'x'),
+          side: null,
+        },
+      ],
+      [
+        {
+          metric_key: 'stair_climb',
+          protocol: DAILY_STAIR,
+          side: null,
+          unable_count: 6,
+          most_recent_days: 2,
+        },
+      ],
+    );
+    expect(chunks).toHaveLength(2);
+    const withUnable = chunks.filter((c) => c.f.unableSummary !== undefined);
+    expect(withUnable).toHaveLength(1);
+    expect(withUnable[0].f.metricLabel).toBe('上楼计时·连续上 10 级台阶');
+    expect(String(withUnable[0].f.unableSummary)).toContain('6 次');
+  });
+
+  it('gives a 做不到-only curve its own chunk under its own name', async () => {
+    const chunks = await seriesOf(
+      [
+        {
+          metric_key: 'stair_climb',
+          unit: 'sec',
+          value: '12',
+          recorded_at: daysAgoIso(30),
+          protocol: DAILY_STAIR,
+          side: null,
+        },
+        {
+          metric_key: 'stair_climb',
+          unit: 'sec',
+          value: '13',
+          recorded_at: daysAgoIso(2),
+          protocol: DAILY_STAIR,
+          side: null,
+        },
+      ],
+      [
+        {
+          metric_key: 'stair_climb',
+          protocol: TT('stair_four_step', 'per_protocol', 'x'),
+          side: null,
+          unable_count: 3,
+          most_recent_days: 4,
+        },
+      ],
+    );
+    // A patient who still manages the ten steps but has stopped being
+    // able to do the four-step test gets both facts, not one of them
+    // deciding for the other.
+    expect(chunks).toHaveLength(2);
+    const unableOnly = chunks.find((c) => c.f.count === 0)!;
+    expect(unableOnly.f.metricLabel).toBe('上楼计时·四级台阶上下');
+    expect(unableOnly.f.latestBand).toBe('本期均记录为做不到');
+    const measured = chunks.find((c) => c.f.count === 2)!;
+    expect(measured.f.unableSummary).toBeUndefined();
+  });
+
+  it('keeps `metricKey` as the filter surface the tool documents', async () => {
+    // The ask-context drawer sends `metricKey: "stair_climb"` when the
+    // patient taps the 上楼计时 card. Splitting the key would have made
+    // that filter return nothing; splitting the LABEL is what tells the
+    // curves apart.
+    const chunks = await seriesOf(MIXED_STAIR_ROWS, [], { metricKey: 'stair_climb' });
+    expect(chunks).toHaveLength(3);
+    for (const c of chunks) expect(c.f.metricKey).toBe('stair_climb');
+    expect(new Set(chunks.map((c) => c.f.metricLabel)).size).toBe(3);
+    // Distinct citations, so two curves cannot collapse into one source.
+    expect(new Set(chunks.map((c) => c.sourceFile)).size).toBe(3);
+  });
+
+  it('caps rows per curve, not per test_type', async () => {
+    const pool = poolWith([]);
+    await new PatientFollowupRetriever(pool).search({ question: '' }, ctx());
+    const [seriesSql, , unableSql] = (pool.query as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    // Otherwise 200 daily stair records starve the four-step curve of
+    // every row it has.
+    expect(seriesSql).toContain(
+      "PARTITION BY metric_key, COALESCE(protocol, ''), COALESCE(side, '')",
+    );
+    expect(unableSql).toContain('GROUP BY ft.test_type, ft.protocol, ft.side');
+  });
+
+  it('leaves symptom scores and muscle measurements exactly as they were', async () => {
+    // They carry no protocol, and the muscle branch already folds side
+    // into `metric_key` — so nothing here may append a second（左）.
+    const chunks = await seriesOf([
+      {
+        metric_key: 'muscle_deltoid_left',
+        unit: 'MRC',
+        value: 4,
+        recorded_at: daysAgoIso(30),
+        protocol: null,
+        side: null,
+      },
+      {
+        metric_key: 'muscle_deltoid_left',
+        unit: 'MRC',
+        value: 3,
+        recorded_at: daysAgoIso(0),
+        protocol: null,
+        side: null,
+      },
+      {
+        metric_key: 'fatigue',
+        unit: null,
+        value: 3,
+        recorded_at: daysAgoIso(30),
+        protocol: null,
+        side: null,
+      },
+      {
+        metric_key: 'fatigue',
+        unit: null,
+        value: 7,
+        recorded_at: daysAgoIso(0),
+        protocol: null,
+        side: null,
+      },
+    ]);
+    const muscle = chunks.find((c) => c.f.metricKey === 'muscle_deltoid_left')!;
+    expect(muscle.f.metricLabel).toBe('肌力·三角肌（左）');
+    expect(muscle.sourceFile).toBe('patient_followups/muscle_deltoid_left');
+    expect(muscle.f.changeDirection).toBe('down');
+    const fatigue = chunks.find((c) => c.f.metricKey === 'fatigue')!;
+    expect(fatigue.f.metricLabel).toBe('疲劳');
+    expect(fatigue.sourceFile).toBe('patient_followups/fatigue');
+    expect(fatigue.f.changeDirection).toBe('up');
+  });
+});

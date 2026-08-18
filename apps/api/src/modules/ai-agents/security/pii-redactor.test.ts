@@ -152,7 +152,7 @@ describe('the genetics cells the assistant is handed', () => {
     const { fields } = redactFields(
       {
         documentType,
-        fields: { classifiedType: documentType, [key]: raw },
+        fields: { classifiedType: documentType, documentType, [key]: raw },
       },
       { scope: 'reports', mode: 'strict' },
     );
@@ -210,6 +210,7 @@ describe('the genetics cells the assistant is handed', () => {
           documentType: 'genetic_report',
           fields: {
             classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
             d4z4Repeats: repeats,
             ...(haplotype === undefined ? {} : { haplotype }),
           },
@@ -271,7 +272,12 @@ describe('the genetics cells the assistant is handed', () => {
       const { fields } = redactFields(
         {
           documentType: 'genetic_report',
-          fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype },
+          fields: {
+            classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
+            d4z4Repeats: '9',
+            haplotype,
+          },
         },
         { scope: 'reports', mode: 'precise' },
       );
@@ -303,7 +309,12 @@ describe('the genetics cells the assistant is handed', () => {
       const { fields } = redactFields(
         {
           documentType: 'genetic_report',
-          fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype },
+          fields: {
+            classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
+            d4z4Repeats: '9',
+            haplotype,
+          },
         },
         { scope: 'reports', mode: 'strict' },
       );
@@ -313,6 +324,89 @@ describe('the genetics cells the assistant is handed', () => {
       'repeat_count_not_read_against_fshd1_range_non_permissive_haplotype',
     );
     expect(gatedBy('4qA')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+  });
+
+  it('gates the repeat count on the same haplotype cells it publishes readings for', () => {
+    // THE GATE AND THE LOOP HAVE TO WALK ONE SET OF KEYS.
+    //
+    // The dispatch in `projectOcrFields` mints a haplotype reading for
+    // EVERY key containing 「haplotype」 — that substring is the class,
+    // which is what `clinicaliseEcoRIFragment` records about naming a
+    // subset of the spellings. The gate beside it looked the cell up in
+    // `GENETIC_FIELD_KEYS.haplotype`, three spellings, so any other one
+    // got a reading and no vote: executed on `haplotypeAllele: '4qB'`,
+    // one projection carried `haplotypeAllele_clinical:
+    // non_permissive_haplotype` and `d4z4Repeats_clinical:
+    // within_fshd1_repeat_range_grey_zone_8_to_10` together, in both
+    // modes — the 8–10 note, whose own docstring calls it 「a paragraph
+    // about the other allele」 over a report naming 4qB, printed under
+    // this platform's own statement that the report names 4qB. That is
+    // the reassurance commit ca4a261 took off the mobile card, restored
+    // on the surface that generates advice.
+    const project = (
+      fields: Record<string, unknown>,
+      mode: 'precise' | 'strict',
+    ): Record<string, unknown> => {
+      const out = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: {
+            classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
+            geneticTestMethod: 'Southern blot',
+            d4z4Repeats: '9',
+            ...fields,
+          },
+        },
+        { scope: 'reports', mode },
+      );
+      return (out.fields.fields ?? out.fields.fields_clinical) as Record<string, unknown>;
+    };
+    const REFUSED = 'repeat_count_not_read_against_fshd1_range_non_permissive_haplotype';
+    const GREY = 'within_fshd1_repeat_range_grey_zone_8_to_10';
+
+    for (const mode of ['precise', 'strict'] as const) {
+      // A spelling outside the three-key table now votes, because it is
+      // a cell this same pass reads and publishes.
+      const offTable = project({ haplotypeAllele: '4qB' }, mode);
+      expect(offTable.haplotypeAllele_clinical).toBe('non_permissive_haplotype');
+      expect(offTable.d4z4Repeats_clinical).toBe(REFUSED);
+
+      // Two cells naming one allele each is `parsePermissiveHaplotype`'s
+      // 「both probes」 case spread over two keys, and it gets the same
+      // answer: unknown, which keeps the grey-zone note.
+      const disagreeing = project({ haplotype: '4qA', haplotypeAllele: '4qB' }, mode);
+      expect(disagreeing.haplotype_clinical).toBe('permissive_haplotype');
+      expect(disagreeing.haplotypeAllele_clinical).toBe('non_permissive_haplotype');
+      expect(disagreeing.d4z4Repeats_clinical).toBe(GREY);
+
+      // A cell stating no allele has not disagreed with one that does.
+      // `['4qA', '4qB']` is published as `unspecified_haplotype`, and
+      // the readable sibling is what the count is gated on.
+      const container = project({ haplotype: ['4qA', '4qB'], haplotypeAllele: '4qB' }, mode);
+      expect(container.haplotype_clinical).toBe('unspecified_haplotype');
+      expect(container.d4z4Repeats_clinical).toBe(REFUSED);
+
+      // The refused half of the same rule, one key along: the cell the
+      // pass will not publish does not vote, and the cell it does
+      // publish decides. `fieldsDroppedAsUnsafe` counts the first.
+      const refusedPlusReadable = project(
+        { haplotype: '住院号:R000000', haplotype4q: '4qA' },
+        mode,
+      );
+      expect(refusedPlusReadable).not.toHaveProperty('haplotype_clinical');
+      expect(refusedPlusReadable.fieldsDroppedAsUnsafe).toBe(1);
+      expect(refusedPlusReadable.haplotype4q_clinical).toBe('permissive_haplotype');
+      expect(refusedPlusReadable.d4z4Repeats_clinical).toBe(GREY);
+
+      // A NAME THE PRINTER CHOSE MAY NOT BUY A CLINICAL BAND AND MAY NOT
+      // BUY A VOTE ON ONE. `table_*` is slugged from a printed analyte
+      // name — see `isGenericTableKey` — so it reaches neither the
+      // dispatch nor the gate.
+      const printerMinted = project({ table_haplotype_4q: '4qB' }, mode);
+      expect(printerMinted).not.toHaveProperty('table_haplotype_4q_clinical');
+      expect(printerMinted.d4z4Repeats_clinical).toBe(GREY);
+    }
   });
 
   it('does not read a length in kb as a repeat count', () => {
@@ -420,6 +514,7 @@ describe('the genetics cells the assistant is handed', () => {
           documentType: 'genetic_report',
           fields: {
             classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
             haplotype: ['4qA', '4qB'],
             d4z4Repeats: ['3'],
             ecoRIFragment: ['18kb'],
@@ -576,7 +671,7 @@ describe('the refusal survives the mode that shares more', () => {
     raw: unknown,
   ): { raw: unknown; reading: unknown } => {
     const { fields } = redactFields(
-      { documentType, fields: { classifiedType: documentType, [key]: raw } },
+      { documentType, fields: { classifiedType: documentType, documentType, [key]: raw } },
       { scope: 'reports', mode },
     );
     const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
@@ -698,7 +793,10 @@ describe('the refusal survives the mode that shares more', () => {
    */
   const origin = (mode: RedactionMode, documentType: string, raw: unknown): unknown => {
     const { fields } = redactFields(
-      { documentType, fields: { classifiedType: documentType, methylationValue: raw } },
+      {
+        documentType,
+        fields: { classifiedType: documentType, documentType, methylationValue: raw },
+      },
       { scope: 'reports', mode },
     );
     const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
@@ -777,7 +875,7 @@ describe('a verdict the parser computed never reaches the assistant', () => {
     const { fields } = redactFields(
       {
         documentType: 'genetic_report',
-        fields: { classifiedType: 'genetic_report', ...cells },
+        fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...cells },
       },
       { scope: 'reports', mode },
     );
@@ -915,6 +1013,7 @@ describe('redactFields (reports)', () => {
     status: 'processed',
     fields: {
       classifiedType: 'genetic_report',
+      documentType: 'genetic_report',
       diagnosisType: 'FSHD1',
       // A cell the report states as one number, so the OCR path has a
       // determinate count to band — which is what these tests are
@@ -957,7 +1056,9 @@ describe('redactFields (reports)', () => {
   describe('a classification cell whose name ends in 「type」', () => {
     const blob = (key: string, raw: unknown, mode: RedactionMode = 'strict') => {
       const { fields } = redactFields(
-        { fields: { classifiedType: 'genetic_report', [key]: raw } },
+        {
+          fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', [key]: raw },
+        },
         { scope: 'reports', mode },
       );
       return (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
@@ -1005,6 +1106,7 @@ describe('redactFields (reports)', () => {
           patientName: '张三',
           freeFormFindings: '患者张三主诉下肢无力，姓名身份证已记录',
           classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
         },
       },
       { scope: 'reports', mode: 'strict' },
@@ -1105,7 +1207,11 @@ describe('redactFields (reports)', () => {
       const { fields } = redactFields(
         {
           documentType: 'genetic_report',
-          fields: { classifiedType: 'genetic_report', [key]: IDENTIFIED_DUMP },
+          fields: {
+            classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
+            [key]: IDENTIFIED_DUMP,
+          },
         },
         { scope: 'reports', mode: 'precise' },
       );
@@ -1153,7 +1259,11 @@ describe('redactFields (reports)', () => {
       const { fields } = redactFields(
         {
           documentType: 'genetic_report',
-          fields: { classifiedType: 'genetic_report', d4z4Repeats: raw },
+          fields: {
+            classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
+            d4z4Repeats: raw,
+          },
         },
         { scope: 'reports', mode },
       );
@@ -1326,7 +1436,7 @@ describe('the diagnosis cell carries the origin its siblings carry', () => {
     cells: Record<string, unknown>,
   ): Record<string, unknown> => {
     const { fields } = redactFields(
-      { documentType, fields: { classifiedType: documentType, ...cells } },
+      { documentType, fields: { classifiedType: documentType, documentType, ...cells } },
       { scope: 'reports', mode },
     );
     return (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
@@ -1522,7 +1632,12 @@ describe('the laboratory gate reads the page the chunk now carries', () => {
         // — the exact state the gate could not see through.
         documentType: 'genetic_report',
         ...extra,
-        fields: { classifiedType: 'genetic_report', d4z4Repeats: '3', haplotype: '4qA' },
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          d4z4Repeats: '3',
+          haplotype: '4qA',
+        },
       },
       { scope: 'reports', mode },
     );
@@ -1567,7 +1682,11 @@ describe('the laboratory gate reads the page the chunk now carries', () => {
       {
         documentType: 'genetic_report',
         extractedText: DISCHARGE_PAGE,
-        fields: { classifiedType: 'genetic_report', extracted_text: DISCHARGE_PAGE },
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          extracted_text: DISCHARGE_PAGE,
+        },
       },
       { scope: 'reports', mode: 'precise' },
     );
@@ -1623,6 +1742,7 @@ describe('a container cell reaches no prompt unexamined', () => {
         documentType: 'genetic_report',
         fields: {
           classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
           d4z4Repeats: [{ patientName: NAME, idCard: ID_CARD }, '3'],
         },
       },
@@ -1634,6 +1754,7 @@ describe('a container cell reaches no prompt unexamined', () => {
         documentType: 'genetic_report',
         fields: {
           classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
           haplotype: { probes: [{ patientName: NAME, idCard: ID_CARD }] },
         },
       },
@@ -1645,6 +1766,7 @@ describe('a container cell reaches no prompt unexamined', () => {
         documentType: 'genetic_report',
         fields: {
           classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
           ecgSummary: [NAME, `住院号:${ID_CARD}`],
         },
       },
@@ -1684,6 +1806,7 @@ describe('a container cell reaches no prompt unexamined', () => {
         documentType: 'genetic_report',
         fields: {
           classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
           ecgSummary: [{ patientName: NAME }, '窦性心律'],
         },
       },
@@ -1709,6 +1832,7 @@ describe('a container cell reaches no prompt unexamined', () => {
           documentType: 'genetic_report',
           fields: {
             classifiedType: 'genetic_report',
+            documentType: 'genetic_report',
             haplotype: ['4qA', '4qB'],
             d4z4Repeats: ['3'],
             diagnosisType: ['FSHD1'],
@@ -1774,7 +1898,11 @@ describe('a container cell reaches no prompt unexamined', () => {
     const cycled = redactFields(
       {
         documentType: 'genetic_report',
-        fields: { classifiedType: 'genetic_report', d4z4Repeats: cyclic },
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          d4z4Repeats: cyclic,
+        },
       },
       { scope: 'reports', mode: 'precise' },
     );
@@ -1785,7 +1913,11 @@ describe('a container cell reaches no prompt unexamined', () => {
     const nested = redactFields(
       {
         documentType: 'genetic_report',
-        fields: { classifiedType: 'genetic_report', d4z4Repeats: deep },
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          d4z4Repeats: deep,
+        },
       },
       { scope: 'reports', mode: 'precise' },
     );

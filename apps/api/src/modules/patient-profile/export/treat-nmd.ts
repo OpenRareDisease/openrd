@@ -7,11 +7,13 @@ import {
   geneticEvidenceDocumentZh,
   geneticResultValue,
   geneticValueProvenanceZh,
+  heldDatePrecision,
   instrumentOmission,
   withOriginNote,
   ECORI_FRAGMENT_NOT_JUDGED_ZH,
   METHYLATION_NOT_JUDGED_ZH,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
+  type HeldDatePrecision,
   type MilestoneEvent,
   type NormalisedSource,
 } from './export-source.js';
@@ -132,6 +134,47 @@ export interface TreatNmdDocument {
 const ECORI_FRAGMENT_LOCATION_ZH =
   '这一项不在本平台的档案里：患者的表单不为它提供输入框，本平台读取档案时的自动补填也没有可写的栏位，所以它没有档案值可比对。这个值直接读自本平台读作这份档案基因证据的那一份文件，与患者护照、分享页和转诊资料上印的是同一次读取。';
 
+/**
+ * 出生时间, as this ARCHIVE holds it — not as the platform's schema
+ * could hold it.
+ *
+ * 「出生年份（本平台按年份存，并区分「记不清了」与「未采集」）」 was one
+ * string for every profile and it is false for any archive whose
+ * `patient_profiles.date_of_birth` column is filled: that column is a
+ * DATE, and the FHIR bundle built from the same `NormalisedSource` in
+ * the same request prints the full date on `Patient.birthDate`. A
+ * registry told this platform keeps only a year stops asking for a
+ * date the platform has.
+ *
+ * 出生年份 stays in every arm's wording on purpose — it is the field
+ * name a receiver (and omissions-coverage.test.ts) looks this entry up
+ * by, and the year slot exists on the archive whatever it holds.
+ */
+const BIRTH_FIELD_ZH: Record<HeldDatePrecision, string> = {
+  day: '出生年份与出生日期（这份档案上记录到日；本平台的出生年份栏位另外区分「记不清了」与「未采集」）',
+  year: '出生年份（这份档案上有年份，本平台这一栏区分「记不清了」与「未采集」）',
+  not_remembered:
+    '出生年份（这份档案上没有出生日期，出生年份记的是「记不清了」——问过，患者记不清）',
+  not_collected: '出生年份（这份档案上没有出生日期，出生年份是「未采集」——本平台没有问到过）',
+};
+
+/**
+ * What `Patient.birthDate` in the FHIR export ACTUALLY shows for this
+ * archive, verified by building both documents from one source:
+ * 1988-04-02 for `day`, 1988 for `year`, and no element at all for the
+ * two no-value arms. The old sentence sent every receiver to that
+ * field with 「支持只写年份」 attached, including the receivers whose
+ * bundle has no such element.
+ */
+const BIRTH_IN_FHIR_ZH: Record<HeldDatePrecision, string> = {
+  day: '这份档案上的出生时间精确到日，那份导出的 Patient.birthDate 上写的就是完整日期；',
+  year: '这份档案上只有出生年份，那份导出的 Patient.birthDate 上写的就是这个年份；',
+  not_remembered:
+    '这份档案上没有可写的出生时间，那份导出的 Patient.birthDate 也因此不出现——不要把它的缺席读成本平台没有问过；',
+  not_collected:
+    '这份档案上没有可写的出生时间，那份导出的 Patient.birthDate 也因此不出现——不要把它的缺席读成问过而患者答不上来；',
+};
+
 const NOT_COLLECTED_SECTION = (key: string, titleZh: string, noteZh: string): TreatNmdSection => ({
   key,
   titleZh,
@@ -167,7 +210,13 @@ const milestoneItem = (milestone: MilestoneEvent): TreatNmdItem => ({
   key: `milestone.${milestone.kind}`,
   labelZh: milestone.labelZh,
   value: milestone.occurrence,
-  provenanceZh: '患者在随访时间线上记录的事件；日期精度见 occurrence.precision',
+  // `value` IS the occurrence object for a milestone — there is no
+  // `occurrence` key to descend into, unlike a followupEvents item
+  // whose value carries eventType and severity beside it. The path in
+  // this sentence used to be `occurrence.precision`, which resolves
+  // against nothing on this item, and an unlocatable precision caveat
+  // is a stored instant read as a day.
+  provenanceZh: '患者在随访时间线上记录的事件；日期精度见本条目值里的 precision 与 noteZh',
 });
 
 export const buildTreatNmdExport = (
@@ -760,9 +809,18 @@ export const buildTreatNmdExport = (
   // the identifiers, and went silent on a medication list, a diary and
   // a whole demographic block. An omissions list that declares four
   // gaps and not the other six reads as the complete set.
+  // 「本平台按年份存」 WAS NOT TRUE OF EVERY ARCHIVE, and this document
+  // is where a registry reads it. `patient_profiles.date_of_birth` is a
+  // DATE column filled to the day on ordinary profiles, and the FHIR
+  // bundle built from this same `NormalisedSource` in this same request
+  // prints that full date on `Patient.birthDate` — so a receiver told
+  // the platform keeps only a year stops asking for a date the platform
+  // has. The parenthesis therefore states THIS archive's precision, and
+  // the FHIR pointer beside it says what that export will actually show.
+  const birthPrecision = heldDatePrecision(profile.dateOfBirth, source.birthYear);
   omissions.push({
     field: 'subject（出生年份、性别、常住地区、体格测量与联系方式）',
-    reasonZh: `本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：出生年份（本平台按年份存，并区分「记不清了」与「未采集」）、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。其中出生年份与性别在 FHIR 导出里有对应字段（Patient.birthDate 支持只写年份，Patient.gender），本文件没有；联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。`,
+    reasonZh: `本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：${BIRTH_FIELD_ZH[birthPrecision]}、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。出生时间与性别在 FHIR 导出里各有对应字段（Patient.birthDate 与 Patient.gender），本文件两个都没有；${BIRTH_IN_FHIR_ZH[birthPrecision]}联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。`,
   });
   omissions.push({
     field: 'sections（用药记录、日常记录与档案备注）',
@@ -798,8 +856,18 @@ export const buildTreatNmdExport = (
     notes: {
       年份字段:
         '所有年份字段都有三种答案：已知 / 记不清了 / 未采集。「记不清了」是一个真实答案，表示问过而患者记不清，不要与「未采集」合并处理。',
+      // THE PATH IN THIS NOTE IS THE ONE THE ITEMS ACTUALLY HAVE.
+      // It read 「每条事件的 occurrence.noteZh」, and the milestone items
+      // this sentence is ABOUT do not have an `occurrence` key at all:
+      // `milestone.wheelchair`, `milestone.niv` and `milestone.afo`
+      // serialise the occurrence object AS the item value, so the note
+      // sits at `value.noteZh`. Only the followupEvents items nest it,
+      // because their value carries eventType and severity beside it.
+      // A receiver following the old path on a milestone found nothing
+      // and had no reason to look further — a date-precision caveat
+      // that cannot be located is a date read as a day.
       日期精度:
-        '里程碑事件的日期来自一个只能存完整时间点的字段。请阅读每条事件的 occurrence.noteZh，不要把它当作精确到天的观察。',
+        '里程碑事件与随访事件的日期都来自一个只能存完整时间点的字段。每一条都带着自己的 noteZh：里程碑条目（不论它出现在哪一节）直接写在 value.noteZh 上，随访事件条目写在 value.occurrence.noteZh 上。请读它，不要把这些时间当作精确到天的观察。',
       // The 来源 half of this line is the shared sentence, not a wording
       // of its own: this format, the FHIR bundle and the Phenopacket
       // describe the same empty `fieldOrigins`, and a receiver holding

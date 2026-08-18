@@ -1091,10 +1091,16 @@ describe('儿童听力筛查按出生日期分支', () => {
     expect(row('hearing_child', undefined, noDob).applicability).toBe('unknown');
   });
 
-  it('7 岁生日当天就离开这一条', () => {
-    const justSeven = profile({ dateOfBirth: '2019-08-05' });
+  it('7 岁生日当天就离开这一条 —— 生日按产品日历，不按手机的', () => {
+    // TODAY is local noon on 2026-08-05, and this suite runs pinned to
+    // America/Los_Angeles, so the product calendar (Asia/Shanghai) is
+    // already 2026-08-06. The boundary is the patient's birthday in the
+    // clinic's calendar, not in whichever zone the handset is holding —
+    // which is the whole point of reading the age off it. Written with
+    // the handset's day these two cases were off by one.
+    const justSeven = profile({ dateOfBirth: '2019-08-06' });
     expect(row('hearing_child', undefined, justSeven).applicability).toBe('not_matched');
-    const dayBefore = profile({ dateOfBirth: '2019-08-06' });
+    const dayBefore = profile({ dateOfBirth: '2019-08-07' });
     expect(row('hearing_child', undefined, dayBefore).applicability).toBe('matched');
   });
 });

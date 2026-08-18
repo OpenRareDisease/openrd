@@ -12,7 +12,9 @@ import {
   geneticEvidenceDocumentZh,
   instrumentOmission,
   resourceUuid,
+  heldDatePrecision,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
+  type HeldDatePrecision,
   type NormalisedSource,
 } from './export-source.js';
 
@@ -110,6 +112,51 @@ export const toPhenopacketSex = (gender: string | null): PhenopacketSex => {
     default:
       return 'UNKNOWN_SEX';
   }
+};
+
+/**
+ * WHY EVERY ARM STILL OMITS, including `day`.
+ *
+ * `Individual.dateOfBirth` is a protobuf Timestamp — an INSTANT. A
+ * full 1988-04-02 does not become writable by being complete: a
+ * Timestamp still needs a time of day, and the product calendar is
+ * Asia/Shanghai, so 「midnight」 is both an invented instant and a
+ * choice of offset that can move the printed day. There is no
+ * precision at which this element can be filled from what this
+ * platform holds, so the value is never emitted and only the REASON
+ * derives. `Patient.birthDate` in the FHIR bundle is a `date`, not an
+ * instant, which is why that one may carry it and this one may not.
+ *
+ * The FHIR pointers below are stated per-arm because they resolve
+ * per-arm — verified by building both documents from one
+ * `NormalisedSource`: `Patient.birthDate` is 1988-04-02 for `day`,
+ * 1988 for `year`, and ABSENT for both no-value arms.
+ */
+const BIRTH_DATE_REASON_ZH: Record<HeldDatePrecision, string> = {
+  day: '本档案上不只有出生年份，还有精确到日的出生日期（这里不复述它的值：本文件本就不写出生日期，在说明里印出来等于绕开这一条）。即便如此本文件也不写，因为 Individual.dateOfBirth 是一个精确到时刻的时间戳，写成当天零点仍要补出一个没人记录过的时刻。完整的出生日期在 FHIR 导出的 Patient.birthDate 上，该字段按档案的实际精度写出（档案只有年份时写年份，有完整日期时写完整日期）；TREAT-NMD 对齐导出不承载它。',
+  year: '本档案上只有出生年份，没有精确到日的出生日期，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。这个年份写在 FHIR 导出的 Patient.birthDate 上（该字段按档案的实际精度写出，这份档案上写出来的就是年份）；TREAT-NMD 对齐导出不承载它。',
+  not_remembered:
+    '本档案上没有出生日期，也没有出生年份：这一项问过，患者记不清。所以这一条不是「有值而不写」——本平台此刻没有可写的出生时间，FHIR 导出的 Patient.birthDate 因此也是空的（那份文件里根本没有这个字段），TREAT-NMD 对齐导出本就不承载它。日后即使补上，Individual.dateOfBirth 仍是一个精确到时刻的时间戳，本文件不会为它补出一个没人记录过的时刻。',
+  not_collected:
+    '本档案上没有出生日期，也没有出生年份，本平台没有采集到——这不等于问过而患者答不上来。所以这一条不是「有值而不写」：本平台此刻没有可写的出生时间，FHIR 导出的 Patient.birthDate 因此也是空的（那份文件里根本没有这个字段），TREAT-NMD 对齐导出本就不承载它。日后即使补上，Individual.dateOfBirth 仍是一个精确到时刻的时间戳，本文件不会为它补出一个没人记录过的时刻。',
+};
+
+/**
+ * The same four arms for 确诊时间, and the pointers differ in the same
+ * way — verified by building all three documents from one source:
+ * TREAT-NMD's `diagnosis.year` serialises 已知 / 记不清了 / 未采集 by
+ * name in every arm, while FHIR's `Condition.recordedDate` is spread
+ * ONLY on 已知 and is absent from the resource otherwise. Sending a
+ * receiver to `recordedDate` for a 记不清了 archive is sending them to
+ * an element that is not there.
+ */
+const DIAGNOSIS_DATE_REASON_ZH: Record<HeldDatePrecision, string> = {
+  day: '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上——但这两处都只写到年。本档案上的确诊日期是精确到日的，临床护照、Markdown 导出、分享页与转诊资料都按日打印；确诊日期的月和日三份可携带导出都不承载，需要请直接向患者索取。',
+  year: '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上，两处都只写到年——本档案上本来也只有年份，没有精确到日的确诊日期。',
+  not_remembered:
+    '本档案上没有确诊日期，也没有确诊年份：这一项问过，患者记不清。TREAT-NMD 对齐导出的 diagnosis.year 会把这个答案原样写成「记不清了」，FHIR 导出的 Condition.recordedDate 则整个不出现——两处都不要读成本平台没有问过。',
+  not_collected:
+    '本档案上没有确诊日期，也没有确诊年份，本平台没有采集到。TREAT-NMD 对齐导出的 diagnosis.year 写成「未采集」，FHIR 导出的 Condition.recordedDate 整个不出现——两处都不要读成问过而患者答不上来。',
 };
 
 export interface PhenopacketEnvelopeExtras {
@@ -269,7 +316,7 @@ export const buildPhenopacketExport = (
   // itself an answer a receiver can act on.
   omissions.push({
     field: 'phenotypicFeatures',
-    reasonZh: `PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此本文件不写 phenotypicFeatures，症状改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本平台在这一类下持有的内容是：${profile.symptomScores.length} 条症状自评、${source.challenges.length} 项基线困难程度自评、${profile.dailyImpacts.length} 条日常活动困难程度记录，以及基线问卷记录的抬臂困难、面部肌无力、足下垂、呼吸相关症状与起病部位。其中基线问卷的困难程度自评、那几项身体状况与起病部位只在 TREAT-NMD 对齐导出里有对应条目（患者答了的才会出现）。请不要把它们在本文件里的缺席读成患者没有这些表现。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。`,
+    reasonZh: `PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此本文件不写 phenotypicFeatures，症状改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本平台在这一类下的栏位是这些，本次导出实际持有的条数写在各自前面：${profile.symptomScores.length} 条症状自评、${source.challenges.length} 项基线困难程度自评、${profile.dailyImpacts.length} 条日常活动困难程度记录，另有基线问卷的抬臂困难、面部肌无力、足下垂、呼吸相关症状与起病部位几项（患者答了才有值，这份档案上有没有值本文件不说）。其中基线问卷的困难程度自评、那几项身体状况与起病部位只在 TREAT-NMD 对齐导出里有对应条目（患者答了的才会出现）。请不要把它们在本文件里的缺席读成患者没有这些表现。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。`,
   });
   omissions.push(
     instrumentOmission(
@@ -283,7 +330,7 @@ export const buildPhenopacketExport = (
   omissions.push({
     field: 'interpretations',
     reasonZh:
-      'FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。基因报告上的各项读数按其本来面目呈现在另外两份导出里，见下一条。',
+      'FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。基因报告上凡是本平台读到过的读数，都按其本来面目呈现在另外两份导出里，见下一条。',
   });
   // NAMES THE CELLS, AND NAMES ALL OF THEM.
   //
@@ -313,7 +360,7 @@ export const buildPhenopacketExport = (
   omissions.push({
     field: 'diseases / measurements（基因报告上的读数）',
     reasonZh:
-      '本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项连同各自的来源说明，完整出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里——其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。',
+      '本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项里，凡是本平台从这份档案上读到过或档案里记着的，都连同各自的来源说明出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里；这份档案上没有的那几项，那两份导出里同样没有条目，不要把它们的缺席读成本文件把它们藏起来了。其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。',
   });
   // The judgement half of the same sweep. This packet's only clinical
   // assertion is `Disease.term`, so everything the passport's 诊断 block
@@ -351,8 +398,11 @@ export const buildPhenopacketExport = (
       // platform holds is one Chinese sentence, so filling that message
       // would mean inventing a relative-by-relative pedigree out of
       // 「父亲和姑姑都有类似的抬手困难」, which is the same fabrication
-      // this file refuses for ontology ids.
-      'Phenopacket 消息本身没有家族史字段：v2 里承载它的是另一个顶层消息 Family 及其 Pedigree，需要逐个亲属的结构化谱系（亲缘关系、是否患病），而本平台持有的是一段中文自述，把它拆成谱系条目等于替患者的亲属编造结构化病史。',
+      // this file refuses for ontology ids. The clause naming what this
+      // platform holds is NOT written here — it derives, in the helper,
+      // because it is false for an archive with an empty 家族史 box.
+      'Phenopacket 消息本身没有家族史字段：v2 里承载它的是另一个顶层消息 Family 及其 Pedigree，需要逐个亲属的结构化谱系（亲缘关系、是否患病），',
+      source.familyHistoryStatement,
     ),
   );
   // TWO DATES, AND NEITHER HAS A TRUTHFUL SLOT HERE.
@@ -395,19 +445,32 @@ export const buildPhenopacketExport = (
   // entry declares it for the one document it belongs to; the pointer
   // it hands a receiver (「去 Condition.recordedDate 取确诊年份」) is
   // this file's sentence to keep honest.
-  const holdsFullBirthDate = profile.dateOfBirth !== null;
-  const holdsFullDiagnosisDate = profile.diagnosisDate !== null;
+  //
+  // FOUR STATES PER DATE, NOT TWO, and the two the earlier branch did
+  // not have are the ones where the archive holds NOTHING. Rendered
+  // over a profile with no baseline and no date column, the 「只有年份」
+  // arm told a registry 本档案上记录的是出生年份与确诊年份 and then sent
+  // it to `Patient.birthDate` and `Condition.recordedDate` for the
+  // values — and this same request's FHIR bundle emits NEITHER element
+  // for that profile (fhir-r4.ts: `birthDate` falls through to
+  // undefined, `recordedDate` is only spread when
+  // `diagnosisYear.kind === 'year'`). A pointer to an element that is
+  // not in the document is the same defect as the false holding claim
+  // it was written to fix, one surface further out.
+  //
+  // 记不清了 AND 未采集 STAY APART here for the reason year-value.ts
+  // states: one says the question was put to the patient and they do
+  // not know, the other says it was never put. Collapsed into 「没有」,
+  // a registry reads a gap where there is an answer.
+  const birthPrecision = heldDatePrecision(profile.dateOfBirth, source.birthYear);
+  const diagnosisPrecision = heldDatePrecision(profile.diagnosisDate, source.diagnosisYear);
   omissions.push({
     field: 'subject.dateOfBirth / diseases[].onset（出生年份与确诊年份）',
     reasonZh: [
       '本文件不写出生日期，也不写发病时间。',
-      holdsFullBirthDate
-        ? '本档案上不只有出生年份，还有精确到日的出生日期（这里不复述它的值：本文件本就不写出生日期，在说明里印出来等于绕开这一条）。即便如此本文件也不写，因为 Individual.dateOfBirth 是一个精确到时刻的时间戳，写成当天零点仍要补出一个没人记录过的时刻。完整的出生日期在 FHIR 导出的 Patient.birthDate 上，该字段按档案的实际精度写出（档案只有年份时写年份，有完整日期时写完整日期）；TREAT-NMD 对齐导出不承载它。'
-        : '本档案上记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它。',
+      BIRTH_DATE_REASON_ZH[birthPrecision],
       '确诊时间同样没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。',
-      holdsFullDiagnosisDate
-        ? '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上——但这两处都只写到年。本档案上的确诊日期是精确到日的，临床护照、Markdown 导出、分享页与转诊资料都按日打印；确诊日期的月和日三份可携带导出都不承载，需要请直接向患者索取。'
-        : '确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上，两处都只写到年。',
+      DIAGNOSIS_DATE_REASON_ZH[diagnosisPrecision],
     ].join(''),
   });
   // MedicalAction is the v2 slot for all three of these, and all three
@@ -442,7 +505,7 @@ export const buildPhenopacketExport = (
   // declaration a receiver can act on.
   omissions.push({
     field: 'subject / measurements（身份信息、体格测量、地区与日常记录）',
-    reasonZh: `本文件只写 id、subject、diseases、files 与 metaData。本平台还持有下列内容，本次导出都不承载：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（第三人的姓名）、联系电话与邮箱、常住地区、本平台内部的患者编号、身高、体重、血型（Measurement 同样要求本体项，本导出没有可核对的映射）、档案备注，以及 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）。其中姓名、称呼与确诊医生姓名只出现在明确请求本地留存版本的 TREAT-NMD 对齐导出的 localOnly 节；联系方式、常住地区、患者编号、身高、体重、血型与日常记录三份可携带导出都不写，需要请直接向患者索取。subject.id 是本平台内部的标识，不是患者编号，也不含姓名。`,
+    reasonZh: `本文件只写 id、subject、diseases、files 与 metaData。本平台为下列内容各留了栏位，这份档案上填没填是另一回事，本次导出一概不承载：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（第三人的姓名）、联系电话与邮箱、常住地区、本平台内部的患者编号、身高、体重、血型（Measurement 同样要求本体项，本导出没有可核对的映射）、档案备注，以及 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）。其中姓名、称呼与确诊医生姓名只出现在明确请求本地留存版本的 TREAT-NMD 对齐导出的 localOnly 节；联系方式、常住地区、患者编号、身高、体重、血型与日常记录三份可携带导出都不写，需要请直接向患者索取。subject.id 是本平台内部的标识，不是患者编号，也不含姓名。`,
   });
 
   const emittedCodingKeys = diseaseEntry && diseaseKey ? [diseaseKey] : [];

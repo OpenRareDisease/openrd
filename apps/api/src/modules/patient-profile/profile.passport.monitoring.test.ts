@@ -84,7 +84,23 @@ const geneticReport = (
   uploadedAt: at.uploadedAt ?? '2026-02-01T00:00:00.000Z',
   checksum: null,
   submissionId: null,
-  ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+  // BOTH LABELS, BECAUSE THE PIPELINE STORES BOTH. `classifiedType` is
+  // the parser's; `documentType` inside `fields` is the uploader's own
+  // declaration, stamped there by every OCR provider before any
+  // classification exists and overwritten by nothing — unlike the
+  // column above, which `updateDocumentOcrResult` replaces with the
+  // classification. `isLaboratoryGeneticReport` reads the cell as the
+  // declaration, and it is what separates this fixture from an archived
+  // 门诊病历摘要 the old keyword classifier scored `genetic_report`:
+  // that row carries `documentType: other` in the same blob.
+  //
+  // This briefly carried `geneticTestMethod: southern_blot` for the
+  // same job. That was the wrong witness: a stated 检测方法 is graded,
+  // so it changes the clinical state the fixture describes, and a real
+  // laboratory report very often has none read off it.
+  ocrPayload: {
+    fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+  },
 });
 
 const stepTitles = (profile: PatientProfileDTO) =>
@@ -656,5 +672,98 @@ describe('肺功能待补项：三种状态，不是两种', () => {
     expect(section).not.toBe('');
     expect(section).not.toContain('补充肺功能基线');
     expect(section).toContain('原件');
+  });
+});
+
+/**
+ * THE 系统监测 CARD SAYS WHAT THE SLOTS SAY.
+ *
+ * The card is the first line of the panel on screen, and it is one row
+ * of the markdown export's 核心摘要 table — the table a clinician reads
+ * before anything else on the sheet. Its not-ready copy asserted 「还没
+ * 有上传过肺功能、心脏或血检报告」 off `available`, which is a question
+ * about a VALUE, while `buildMonitoringItem` had already answered the
+ * question about a REPORT three states deep.
+ *
+ * Rendered for a patient whose pulmonary function report is on file but
+ * did not parse, one export said all three of these at once:
+ *
+ *   核心摘要 :「还没有上传过肺功能、心脏或血检报告」
+ *   card meta:「最近监测 2026-02-09」
+ *   待补项  :「你上传过肺功能报告，但本平台未能自动读出其中的数值」
+ *
+ * Same defect as 补充肺功能基线, same slot, same fix: read `state`.
+ */
+describe('系统监测卡片：读 state，不读摘要字符串', () => {
+  const unparsed = (documentType: string) => ({
+    id: `card-${documentType}`,
+    documentType,
+    title: null,
+    fileName: 'scan.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 1,
+    storageUri: 'local://scan',
+    status: 'parsed',
+    uploadedAt: '2026-02-09T00:00:00.000Z',
+    checksum: null,
+    submissionId: null,
+    ocrPayload: { extractedText: '××市第一人民医院 检验科 报告单' },
+  });
+
+  const cardFor = (profile: PatientProfileDTO) =>
+    buildClinicalPassportSummary(profile).summaryCards.find((c) => c.key === 'monitoring');
+
+  it('一份读不出的报告在册时，不说「还没有上传过」', () => {
+    const profile = base({ documents: [unparsed('pulmonary_function')] } as never);
+    expect(
+      buildClinicalPassportSummary(profile).monitoring.items.find((i) => i.key === 'respiratory')
+        ?.state,
+    ).toBe('unreadable');
+    expect(cardFor(profile)?.summary).not.toContain('还没有上传过');
+    expect(cardFor(profile)?.summary).toContain('肺功能');
+    expect(cardFor(profile)?.summary).toContain('未能自动读出');
+  });
+
+  it('卡片不再和自己的 meta 打架 —— meta 印着日期就不能说没上传过', () => {
+    const card = cardFor(base({ documents: [unparsed('pulmonary_function')] } as never));
+    expect(card?.meta).toContain('2026-02-09');
+    expect(card?.summary).not.toContain('还没有上传过');
+  });
+
+  it('读不出的槽位逐个点名，没上传的不点名', () => {
+    const profile = base({
+      documents: [unparsed('pulmonary_function'), unparsed('ecg')],
+    } as never);
+    const summary = cardFor(profile)?.summary ?? '';
+    expect(summary).toContain('肺功能');
+    expect(summary).toContain('心脏检查');
+    expect(summary).not.toContain('血检指标');
+  });
+
+  it('真的什么都没上传过时，原话不变', () => {
+    // The sentence is correct for exactly this profile, and 空面板的措辞
+    // above pins the rest of it.
+    expect(cardFor(base())?.summary).toBe('还没有上传过肺功能、心脏或血检报告');
+  });
+
+  it('这一行同时是 markdown 导出核心摘要表的一格', () => {
+    const { markdown } = buildClinicalPassportExport(
+      buildClinicalPassportSummary(base({ documents: [unparsed('pulmonary_function')] } as never)),
+    );
+    const table = markdown.split('## 核心摘要')[1]?.split('\n## ')[0] ?? '';
+    expect(table).not.toBe('');
+    expect(table).not.toContain('还没有上传过');
+    expect(table).toContain('未能自动读出');
+  });
+
+  it('读出了数值时，卡片列已就绪的槽位', () => {
+    const parsed = {
+      ...unparsed('pulmonary_function'),
+      ocrPayload: { fields: { classifiedType: 'pulmonary_function', fvcPredPct: 'FVC 78%' } },
+    };
+    const card = cardFor(base({ documents: [parsed] } as never));
+    expect(card?.ready).toBe(true);
+    expect(card?.summary).toContain('肺功能');
+    expect(card?.summary).not.toContain('未能自动读出');
   });
 });

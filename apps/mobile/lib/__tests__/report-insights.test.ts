@@ -196,6 +196,9 @@ describe('诊断与分型 面板不把档案里的分型说成报告读出来的
       [
         geneticReport({
           classifiedType: 'genetic_report',
+          // The uploader's declaration the OCR provider stamps beside the
+          // classification, which is what the laboratory gate reads last.
+          documentType: 'genetic_report',
           diagnosisType: 'FSHD1',
           d4z4Repeats: '3',
         }),

@@ -116,6 +116,21 @@ export type SurveillancePolarity = 'do' | 'do_not';
  *                    from a haplotype, and `matched` is the disagreement
  *                    with the clinical passport this arm was added to
  *                    end.
+ *                  · it was collected, is readable, IS precise, and the
+ *                    guideline's condition DOES follow from it — and the
+ *                    reading is too OLD to be a statement about the
+ *                    patient now. `sleep_referral` on a 「较差」 sleep
+ *                    score older than `RECENT_WINDOW_DAYS`: 3/10 is
+ *                    squarely inside the band this row scores on, and
+ *                    the row still declines, because every other arm it
+ *                    has is gated on the same 180-day window and a
+ *                    two-year-old bad week is a different person's. The
+ *                    four above are 「we cannot read it」; this one is
+ *                    「we read it, and it is not about today」. It is not
+ *                    `matched` (that would date a referral question to a
+ *                    week the patient has left behind) and it is not
+ *                    `not_matched` (nothing here says the patient sleeps
+ *                    well now).
  *
  *                  Everything after the first bullet is why a row
  *                  reaching `unknown` still has to name what it holds:
@@ -861,7 +876,20 @@ const buildRespiratoryRows = (
     if (wheelchairDevice) {
       return `你在基础档案的「辅具」里填了「${wheelchairDevice}」。轮椅依赖是指南列出的复查条件之一 —— 但填了辅具不等于指南说的「依赖」，那要医生看过才算。`;
     }
-    return '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的随访事件和基础档案的「辅具」里也都没有轮椅。也就是说，这一栏的「对不上」只代表这里没有数据。';
+    // THE LAST CLAUSE USED TO BE 「也就是说，这一栏的「对不上」只代表这里
+    // 没有数据」 FOR EVERYONE, AND IT IS A 「本平台没有」 — the one
+    // sentence the type above forbids an `unknown` row to say about
+    // something it holds. 「基线结果异常」 is the FIRST condition this
+    // guideline row lists, and a patient whose pulmonary function report
+    // parsed has that result on file: the 做一次肺功能基线 row two lines
+    // up on this same page prints it back to them. Same sweep, same
+    // shape as the medication, FVC, pain and 辅具 findings above — a row
+    // reading one column and speaking for the record as a whole.
+    const head =
+      '这一条本平台判断不了：基线是否异常由医生读片子和数值，脊柱侧弯、慢阻肺这些本平台从来没有采集过，你的随访事件和基础档案的「辅具」里也都没有轮椅。';
+    return hasReadableRespiratory
+      ? `${head}肺功能结果本平台是有的（上面「做一次肺功能基线」那一条写着是什么），只是够不够指南说的「基线异常」，要医生看着报告原件说。`
+      : `${head}也就是说，这一栏判断不了只代表这里没有数据。`;
   })();
   const repeat: SurveillanceRow = {
     id: 'pulmonary_repeat',
@@ -1121,20 +1149,34 @@ const buildCardiacRow = (summary: ClinicalPassportSummary): SurveillanceRow => {
  * and that is the one arm that still says 判断不了 — naming the year it
  * has and the day it lacks, rather than denying the record.
  *
- * TWO CLOCKS, ON PURPOSE, AND THIS IS THE WHOLE OF THE DIVERGENCE.
- * The `date` arm goes through `ageInYears` (lib/guardian-consent), the
- * same tested calculation that governs the PIPL Art. 31 guardian
- * consent gate at registration, and that function reads `today` with
- * the LOCAL calendar accessors — so the date arm answers on the
- * handset's calendar, as it always has, and its behaviour is unchanged
- * by this function. The `year` arm is new code and has no such
- * contract, so it takes its year off the PRODUCT calendar via
- * `formatProductDate`, which is what the rest of this file does with a
- * date. The two can only disagree during the hours when Asia/Shanghai
- * and the handset are in different years, and they are never both
- * consulted for one patient. The lane report carries the date arm's
- * timezone dependence as a finding against `ageInYears`, which is not
- * this file's to change.
+ * ONE CLOCK, AND IT IS THE PRODUCT'S. BOTH ARMS. This used to run two,
+ * and defended it: the `year` arm took its year off `formatProductDate`
+ * while the `date` arm passed `today` straight into `ageInYears`
+ * (lib/guardian-consent), which reads it with the LOCAL calendar
+ * accessors — so that arm answered on the handset's calendar. The note
+ * that stood here called the divergence harmless because 「the two can
+ * only disagree during the hours when Asia/Shanghai and the handset are
+ * in different years」.
+ *
+ * THAT WAS FALSE, AND RENDERING IT SAYS SO IN AUGUST. `ageInYears` does
+ * not compare years, it asks whether the birthday has happened yet —
+ * `now.getMonth()` and `now.getDate()` — so the two calendars disagree
+ * on the DAY, every day, for the eight hours Asia/Shanghai is already
+ * into tomorrow. One passport, one instant (2026-08-05T04:00:00Z), one
+ * patient born 2019-08-05, built twice: on a handset in Shanghai the
+ * hearing row scores `not_matched` and reads 「患者今年 7 岁，这一条是给
+ * 学龄前幼儿的」, and on a handset in Los Angeles the same row scores
+ * `matched` and reads 「患者今年 6 岁，在这一条覆盖的年龄段里」. The
+ * schedule's own `matchedCount` moved with it, 4 to 5. A yearly hearing
+ * screen for a preschooler is the row where a missed year costs speech
+ * development, and which answer the family got depended on where the
+ * phone thought it was.
+ *
+ * So `ageInYears` is now handed a clock whose LOCAL fields are the
+ * product's calendar day (`productCalendarClock`) instead of the raw
+ * instant. Nothing in lib/guardian-consent changes — the PIPL Art. 31
+ * consent gate at registration still calls it with its own clock, and
+ * that gate is not this file's to move.
  */
 type BirthEvidence =
   | { kind: 'date'; minAge: number; maxAge: number }
@@ -1142,17 +1184,53 @@ type BirthEvidence =
   | { kind: 'none' };
 
 /**
- * The year on the product's calendar. `formatProductDate` is this
- * file's own renderer for 「what day is it there」, so the year comes
- * off the string it produces rather than off `today.getFullYear()`,
- * which is the handset's year and is a different number for some hours
- * every New Year.
+ * 「What day is it」, answered once, on the product's calendar.
+ *
+ * `formatProductDate` is this file's own renderer for that question, so
+ * everything below takes its answer off the string that function
+ * produces rather than off `today.getFullYear()` / `getMonth()` /
+ * `getDate()`, which are the handset's and are a different day for the
+ * eight hours Asia/Shanghai is already into tomorrow.
  */
-const productCalendarYear = (today: Date): number | null => {
+const productCalendarDay = (today: Date): string | null => {
   const day = formatProductDate(today.toISOString());
-  if (!day || !DATE_ONLY.test(day)) return null;
+  return day && DATE_ONLY.test(day) ? day : null;
+};
+
+const productCalendarYear = (today: Date): number | null => {
+  const day = productCalendarDay(today);
+  if (!day) return null;
   const year = Number(day.slice(0, 4));
   return Number.isFinite(year) ? year : null;
+};
+
+/**
+ * THE PRODUCT'S CALENDAR DAY, SHAPED FOR A READER THAT USES THE LOCAL
+ * ACCESSORS.
+ *
+ * `ageInYears` (lib/guardian-consent) decides whether the birthday has
+ * happened by reading `now.getFullYear()` / `getMonth()` / `getDate()`,
+ * and it has to keep doing that: the PIPL Art. 31 guardian-consent gate
+ * at registration is the same function and is separately tested. What
+ * this file controls is which instant it hands over, so it hands over
+ * one whose LOCAL fields already ARE the product's calendar day. The
+ * answer is then the same on every handset without a line of
+ * guardian-consent.ts moving.
+ *
+ * MIDDAY, NOT MIDNIGHT. `new Date(y, m, d)` asks for local 00:00, and a
+ * few zones do not have one on their DST changeover day — the clock
+ * jumps 23:59 to 01:00 — where the constructor silently lands on the
+ * previous day and would put back the off-by-one this exists to remove.
+ * Only the calendar fields are ever read back off it.
+ */
+const productCalendarClock = (today: Date): Date | null => {
+  const day = productCalendarDay(today);
+  if (!day) return null;
+  const year = Number(day.slice(0, 4));
+  const month = Number(day.slice(5, 7));
+  const date = Number(day.slice(8, 10));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(date)) return null;
+  return new Date(year, month - 1, date, 12, 0, 0, 0);
 };
 
 /** The same 「usable birth year」 test the 档案 page applies before it
@@ -1171,7 +1249,9 @@ const readBirthEvidence = (profile: PatientProfile | null, today: Date): BirthEv
   // toDateString).
   const rawDob = (profile?.dateOfBirth ?? '').trim();
   const dobMatch = /^(\d{4}-\d{2}-\d{2})/.exec(rawDob);
-  const age = dobMatch ? ageInYears(dobMatch[1], today) : null;
+  // The product's calendar, not the handset's — see productCalendarClock.
+  const clock = productCalendarClock(today);
+  const age = dobMatch && clock ? ageInYears(dobMatch[1], clock) : null;
   // A negative age is a birth date in the future — not a reading this
   // row may branch on, so it falls through to the year below.
   if (age !== null && age >= 0) return { kind: 'date', minAge: age, maxAge: age };

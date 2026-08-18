@@ -341,8 +341,7 @@ const scopeOfNoticeField = (key: string): RedactionScope | null =>
 /** Group emitted field names by scope, in allowlist order rather than
  *  retrieval order, so the same projection always renders the same
  *  bytes and the prompt digest stays stable across runs. */
-const groupNoticeFields = (fieldsUsed: readonly string[]): Map<RedactionScope, string[]> => {
-  const emitted = new Set(fieldsUsed);
+const groupNoticeFields = (emitted: ReadonlySet<string>): Map<RedactionScope, string[]> => {
   const byScope = new Map<RedactionScope, string[]>();
   for (const scope of NOTICE_SCOPES) {
     const ordered = [
@@ -362,6 +361,104 @@ const noticeInventory = (byScope: Map<RedactionScope, readonly string[]>): strin
     .join('\n');
 
 /**
+ * A KEY IN `fieldsUsed` IS NOT A ROW THE MODEL RECEIVED.
+ *
+ * `renderChunkForPrompt` reports `Object.keys(redacted)`, and
+ * `renderFieldsByScope` then declines to print several of those keys:
+ * a `null` / `undefined` / `''` value is skipped, an OCR blob that
+ * projected to `{}` is skipped, and a value that formats to nothing
+ * (an empty array) prints a bare label with no content after it. Every
+ * one of those reached the notice as a field the model 「已经拿到」.
+ * Executed on one real shape — a report row whose `status` is null and
+ * whose OCR blob holds only a patient name — the tool message printed
+ *「报告类型: genetic」 and nothing else, while the notice listed
+ *「报告类型、上传年份、处理状态、OCR 字段（临床化）」 and then offered
+ * precise consent for OCR cells that do not exist.
+ *
+ * So the notice is derived from the rows the tool messages actually
+ * carry. The two parsers below are the renderer's own output shapes:
+ * a top-level 「标签: 值」 line, and the 「  - 键: 值」 lines inside an
+ * OCR block. Nothing here can invent a row — a format change in
+ * `renderFieldsByScope` can only make this see FEWER rows, which
+ * under-names rather than over-promises, and `run.test.ts` drives the
+ * real renderer so the drift is loud rather than silent.
+ */
+const OCR_BLOCK_HEADINGS: Record<string, string> = {
+  fields_clinical: 'OCR 字段（临床化）:',
+  fields: 'OCR 字段:',
+};
+
+/** What this turn's tool messages printed, as opposed to what the
+ *  projection put a key in the map for. */
+interface Emission {
+  /** Allowlist keys that printed a row with something after the label.
+   *  For the two OCR blob keys this means the block printed at least
+   *  one row of its own. */
+  fields: ReadonlySet<string>;
+  /** The inner keys of the OCR block, which are rows in the prompt but
+   *  never keys in `fieldsUsed` — the evidence for what precise
+   *  consent does to a report lives among them. */
+  ocrKeys: ReadonlySet<string>;
+}
+
+const readEmission = (
+  fieldsUsed: readonly string[],
+  toolMessages: readonly { content: string }[],
+): Emission => {
+  const printedLabels = new Set<string>();
+  const ocrKeys = new Set<string>();
+  /** Which blob key the 「  - 」 rows currently being read belong to. */
+  let block: string | null = null;
+  const blockRowCount = new Map<string, number>();
+
+  for (const message of toolMessages) {
+    for (const line of message.content.split('\n')) {
+      if (line.startsWith('  - ')) {
+        const cut = line.indexOf(': ', 4);
+        if (block !== null && cut > 4 && line.length > cut + 2) {
+          ocrKeys.add(line.slice(4, cut));
+          blockRowCount.set(block, (blockRowCount.get(block) ?? 0) + 1);
+        }
+        continue;
+      }
+      block =
+        Object.entries(OCR_BLOCK_HEADINGS).find(([, heading]) => line === heading)?.[0] ?? null;
+      if (block !== null) continue;
+      const cut = line.indexOf(': ');
+      if (cut > 0 && line.length > cut + 2) printedLabels.add(line.slice(0, cut));
+    }
+    block = null;
+  }
+
+  const fields = new Set(
+    fieldsUsed.filter((key) => {
+      if (key in OCR_BLOCK_HEADINGS) return (blockRowCount.get(key) ?? 0) > 0;
+      const scope = scopeOfNoticeField(key);
+      return scope !== null && printedLabels.has(noticeFieldLabel(scope, key));
+    }),
+  );
+  return { fields, ocrKeys };
+};
+
+/** Evidence tokens that are read off the OCR block's inner rows rather
+ *  than off `fieldsUsed`. See PRECISE_KEY_EVIDENCE. */
+const OCR_EVIDENCE = {
+  /** Strict swept at least one measurement out of the blob into the
+   *  count. Emitted only when that count is above zero. */
+  numericWithheld: 'ocr:numericValuesWithheld',
+  /** This platform's reading of a genetics cell in the blob, which is
+   *  written only for a cell precise mode then publishes raw. */
+  geneticReading: 'ocr:_clinical',
+} as const;
+
+const hasEvidence = (emission: Emission, token: string): boolean => {
+  if (token === OCR_EVIDENCE.numericWithheld) return emission.ocrKeys.has('numericValuesWithheld');
+  if (token === OCR_EVIDENCE.geneticReading)
+    return [...emission.ocrKeys].some((key) => key.endsWith('_clinical'));
+  return emission.fields.has(token);
+};
+
+/**
  * WHAT THE EMISSION HAS TO CONTAIN BEFORE 「turn the switch on」 IS A
  * TRUE THING TO SAY ABOUT A FIELD.
  *
@@ -372,24 +469,69 @@ const noticeInventory = (byScope: Map<RedactionScope, readonly string[]>): strin
  * 才会多出来：D4Z4 重复数、单倍型」 — a switch that would produce
  * nothing, because there is no D4Z4 cell on that profile to unlock.
  *
- * So each key is paired with the sibling the projection emits WHEN THE
- * CELL EXISTS, and is named only when one of those siblings is in this
- * turn's emission:
+ * A KEY THAT EXISTS IS NOT A VALUE THAT EXISTS, which is the same
+ * mistake one level further down and is what the `fields` entry used to
+ * make. `redactFields` sets `working.fields_clinical` whenever the raw
+ * row carries a `fields` object AT ALL — an OCR blob that projects to
+ * `{}` still puts the key in `fieldsUsed`, while `renderFieldsByScope`
+ * prints nothing for it. Run over a report row whose blob holds only a
+ * patient name, the emission carried `fields_clinical` and the tool
+ * message carried no OCR row at all, and the notice offered precise
+ * consent for report cells that do not exist.
+ *
+ * So each key is paired with the ROW the projection prints WHEN THE
+ * CELL EXISTS, and is named only when one of those rows is in this
+ * turn's emission (see `readEmission`):
  *   - `d4z4` / `haplotype`: their `_clinical` sibling, which
  *     `clinicaliseD4Z4` / `clinicaliseHaplotype` return `null` for — and
- *     so the redactor does not publish — only on an empty cell.
- *   - `methylation`: `methylation_withheld` (a number on file, withheld)
- *     or `methylation_origin`. This is the entry a difference over key
- *     names cannot produce: `methylation` is on BOTH profile lists, so
- *     it never looked consent-gated, while strict in fact emits
- *     `methylation_withheld` under 甲基化数值 and drops the number that
- *     precise prints under 甲基化值. A qualitative cell (未检出) is
- *     published under `methylation` itself in both modes and is excluded
- *     before this table is consulted, by already being in the emission.
- *   - `fields`: the clinicalised blob `fields_clinical`.
- *   - `latestValue` / `series`: `count`, which the follow-up retriever
- *     emits only for a metric that survived `allPoints.length === 0`,
- *     i.e. one with at least one real number behind it.
+ *     so the redactor does not publish — only on an empty cell. Executed
+ *     over a cell precise mode refuses (a hand-correction paste), the
+ *     redactor publishes neither the reading nor the raw value, so the
+ *     pairing holds in that direction too.
+ *   - `methylation`: `methylation_withheld` — a number on file, withheld.
+ *     This is the entry a difference over key names cannot produce:
+ *     `methylation` is on BOTH profile lists, so it never looked
+ *     consent-gated, while strict in fact emits `methylation_withheld`
+ *     under 甲基化数值 and drops the number that precise prints under
+ *     甲基化值. A qualitative cell (未检出) is published under
+ *     `methylation` itself in both modes and is excluded before this
+ *     table is consulted, by already being in the emission.
+ *     NOT `methylation_origin`, which this table used to accept as the
+ *     alternative: `publishMethylationCell` writes the origin only when
+ *     the prompt already carries the value or the withheld statement, so
+ *     it can never be the row that decides this — it was a second name
+ *     for a case the first name already covers.
+ *   - `fields`: NOT the blob key. The blob is a whole projection rather
+ *     than a cell, and it can be present, non-empty, and still identical
+ *     in both modes: run over a blob whose only surviving cell is
+ *     qualitative (trustAb: 阴性(-)), strict and precise print the same
+ *     OCR rows byte for byte, and 「开启授权后才会多出来 OCR 字段（原始
+ *     值）」 promised a switch that changes nothing. What precise
+ *     actually adds to a blob is exactly two things, and both announce
+ *     themselves in the strict block: a `numericValuesWithheld` count
+ *     (written only when it is above zero) and this platform's reading
+ *     of a genetics cell (written only for a cell precise then publishes
+ *     raw). Both are INNER rows of the block rather than keys in
+ *     `fieldsUsed`, which is why the evidence tokens are read off the
+ *     printed rows. Verified by rendering nine blob shapes in both
+ *     modes — empty, qualitative-only, measurements, genetics on and off
+ *     a laboratory report, methylation raw and qualitative, an
+ *     untrustworthy paste, and a date-only blob — and comparing the two
+ *     OCR blocks: this rule matches 「precise adds a row」 on all nine.
+ *   - `latestValue` / `series`: `spanDays`, and NOT `count`. `count` is
+ *     emitted by the unable-only branch of the follow-up retriever as
+ *     well — a metric whose every record is 「做不到」 ships `count: 0`
+ *     with no series behind it, and the notice told those patients that
+ *     precise consent would produce 最近数值 / 历次记录 for a metric with
+ *     no numbers at all. `spanDays` is written only by the branch that
+ *     read a real series, and that branch is the only one that can
+ *     produce the two raw fields. THE ONE CASE THIS STILL OVER-NAMES is
+ *     a mixed-unit series: the retriever refuses to publish `unit`,
+ *     `latestValue` and `series` in BOTH modes and says so in
+ *     `latestBand`, and no strict-mode KEY distinguishes it — see the
+ *     note on `unit` below, which is the same gap. Closing it needs a
+ *     strict-visible marker from patient-followups.ts, which this file
+ *     cannot mint.
  *   - `unit`: NOTHING, deliberately. It is published only when every
  *     point in the series carries the same recognised unit (see UNIT IS
  *     PART OF WHICH CURVE in patient-followups.ts), and no strict-mode
@@ -411,15 +553,15 @@ export const PRECISE_KEY_EVIDENCE: Record<
   profile: {
     d4z4: ['d4z4_clinical'],
     haplotype: ['haplotype_clinical'],
-    methylation: ['methylation_withheld', 'methylation_origin'],
+    methylation: ['methylation_withheld'],
   },
   reports: {
-    fields: ['fields_clinical'],
+    fields: [OCR_EVIDENCE.numericWithheld, OCR_EVIDENCE.geneticReading],
   },
   followups: {
     unit: [],
-    latestValue: ['count'],
-    series: ['count'],
+    latestValue: ['spanDays'],
+    series: ['spanDays'],
   },
 };
 
@@ -437,11 +579,16 @@ export const PRECISE_KEY_EVIDENCE: Record<
  * the strict inventory listed 甲基化值 as already in hand, over a tool
  * message with no 甲基化值 row in it. Verified by running the redactor
  * over one profile in both modes.
+ *
+ * AND NOT FROM THE KEY LIST EITHER: `emission` is the rows the tool
+ * messages printed, so a key the projection published and the renderer
+ * then dropped cannot buy a promise. See `readEmission`.
  */
-const preciseOnlyFields = (scope: RedactionScope, emitted: ReadonlySet<string>): string[] =>
+const preciseOnlyFields = (scope: RedactionScope, emission: Emission): string[] =>
   Object.entries(PRECISE_KEY_EVIDENCE[scope])
     .filter(
-      ([key, evidence]) => !emitted.has(key) && evidence.some((sibling) => emitted.has(sibling)),
+      ([key, evidence]) =>
+        !emission.fields.has(key) && evidence.some((token) => hasEvidence(emission, token)),
     )
     .map(([key]) => key);
 
@@ -451,12 +598,23 @@ const preciseOnlyFields = (scope: RedactionScope, emitted: ReadonlySet<string>):
  *  own set; sorted only so the prompt digest is stable. */
 const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
 
-/** Keys that carry this platform's reading of a cell, or its refusal to
- *  read one — `fields_clinical` included, by its suffix. Only when one
- *  of these is actually in the emission does the notice explain what
- *  such a value means. */
-const isPlatformReadingField = (key: string): boolean =>
-  key.endsWith('_clinical') || key.endsWith('_origin');
+/**
+ * Rows that carry this platform's reading of a cell, or its refusal to
+ * read one. Only when one of these is actually printed does the notice
+ * explain what such a value means.
+ *
+ * `fields_clinical` is NOT one of them despite the suffix, and used to
+ * be counted as one by its key name alone. It is a container, not a
+ * cell: its rows are as often a `numericValuesWithheld` count, a
+ * `fieldsDroppedAsUnsafe` count, or a laboratory's own 阴性(-) — none of
+ * which is a 判读 — and on an OCR blob that projected to nothing it is a
+ * key with no rows at all. The readings inside it are its inner rows,
+ * which `readEmission` collects, so a blob that really does carry one
+ * still triggers the paragraph and a blob that carries only a withheld
+ * count no longer does.
+ */
+const isPlatformReadingRow = (key: string): boolean =>
+  key !== 'fields_clinical' && (key.endsWith('_clinical') || key.endsWith('_origin'));
 
 /**
  * Tell the model what strict mode is withholding — AFTER the tools have
@@ -494,25 +652,32 @@ const isPlatformReadingField = (key: string): boolean =>
  * one thing this product exists not to do.
  *
  * So it is built from `BuiltContext.fieldsUsed` — the keys the redactor
- * actually published this turn — and injected into the answer round,
- * after the tool messages it describes. When the projection emitted no
- * patient field at all it returns '', because there is then nothing
- * strict is withholding and a notice about strict would invite the model
- * to blame consent for an empty profile: the inverse of the error it was
- * written to prevent.
+ * actually published this turn — INTERSECTED WITH THE ROWS THE TOOL
+ * MESSAGES PRINT, and injected into the answer round after the tool
+ * messages it describes. The intersection is the same lesson one level
+ * down: `fieldsUsed` is a key list, and the renderer declines to print
+ * several kinds of key (a null or empty value, an OCR blob that
+ * projected to nothing), so every claim here — the inventory, the
+ * 判读 paragraph, the consent offer, the numericValuesWithheld note —
+ * is asked of `readEmission` rather than of the key list. When nothing
+ * patient-specific was printed it returns '', because there is then
+ * nothing strict is withholding and a notice about strict would invite
+ * the model to blame consent for an empty profile: the inverse of the
+ * error it was written to prevent.
  */
 export const buildVisibilityNotice = (
   mode: 'strict' | 'precise',
   fieldsUsed: readonly string[],
+  toolMessages: readonly { content: string }[],
 ): string => {
   if (mode === 'precise') return '';
-  const byScope = groupNoticeFields(fieldsUsed);
+  const emission = readEmission(fieldsUsed, toolMessages);
+  const byScope = groupNoticeFields(emission.fields);
   if (byScope.size === 0) return '';
 
-  const emitted = new Set(fieldsUsed);
   const preciseOnly = new Map<RedactionScope, string[]>();
   for (const scope of byScope.keys()) {
-    const keys = preciseOnlyFields(scope, emitted);
+    const keys = preciseOnlyFields(scope, emission);
     if (keys.length > 0) preciseOnly.set(scope, keys);
   }
 
@@ -524,7 +689,7 @@ export const buildVisibilityNotice = (
     noticeInventory(byScope),
   ];
 
-  if ([...emitted].some(isPlatformReadingField)) {
+  if ([...emission.fields, ...emission.ocrKeys].some(isPlatformReadingRow)) {
     lines.push(
       '',
       // 凡是, not 其中…有: which KINDS of reading field are above varies
@@ -555,7 +720,13 @@ export const buildVisibilityNotice = (
     );
   }
 
-  if (emitted.has('fields_clinical')) {
+  // Asked of the printed row, not of the blob key. `fields_clinical`
+  // is in `fieldsUsed` for any report row carrying an OCR object at
+  // all, and the counter itself is written only when it is above zero —
+  // so this sentence used to explain a row that was not in the prompt,
+  // on reports with no measurements and on reports whose blob projected
+  // to nothing.
+  if (emission.ocrKeys.has('numericValuesWithheld')) {
     lines.push('', 'numericValuesWithheld 是被扣下的测量值个数，不是解析失败。');
   }
   lines.push('', '任何情况下都不要凭空推测数值，也不要把 strict 说成是报告本身的问题。');
@@ -797,7 +968,11 @@ export class Orchestrator {
       // and a round that retrieved nothing gets no notice at all.
       // Discarded and recomputed if the model asks for another lookup,
       // so a stale inventory can never survive into a later round.
-      const visibility = buildVisibilityNotice(redactionMode, context.fieldsUsed);
+      const visibility = buildVisibilityNotice(
+        redactionMode,
+        context.fieldsUsed,
+        context.toolMessages,
+      );
       round2Messages = [
         ...messages,
         ...(visibility ? [{ role: 'system' as const, content: visibility }] : []),

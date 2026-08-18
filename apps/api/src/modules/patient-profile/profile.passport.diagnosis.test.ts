@@ -69,7 +69,42 @@ const geneticReport = (fields: Record<string, string>) => ({
   uploadedAt: '2026-02-01T00:00:00.000Z',
   checksum: null,
   submissionId: null,
-  ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+  // BOTH LABELS, BECAUSE THE PIPELINE STORES BOTH. `classifiedType` is
+  // the parser's; `documentType` inside `fields` is the uploader's own
+  // declaration, stamped there by every OCR provider before any
+  // classification exists and overwritten by nothing — unlike the
+  // column above, which `updateDocumentOcrResult` replaces with the
+  // classification. `isLaboratoryGeneticReport` reads the cell as the
+  // declaration, and it is what separates this fixture from an archived
+  // 门诊病历摘要 the old keyword classifier scored `genetic_report`:
+  // that row carries `documentType: other` in the same blob.
+  //
+  // This briefly carried `geneticTestMethod: southern_blot` for the
+  // same job. That was the wrong witness: a stated 检测方法 is graded —
+  // it moves 结果不全 to 方法对，但结果不全 — so it changes the clinical
+  // state the fixture describes, and a real laboratory report very
+  // often has none read off it.
+  ocrPayload: {
+    fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+  },
+});
+
+/**
+ * THE ARCHIVED 门诊病历摘要 THE OLD KEYWORD CLASSIFIER SCORED
+ * `genetic_report` — the row the gate exists to refuse.
+ *
+ * Same classification, same readings, same absent page; what it does
+ * not carry is the uploader's declaration, because this patient picked
+ * 其他 and the parse then wrote the classifier's label over the column.
+ * `isLaboratoryGeneticReport` refuses it, so a profile holding only
+ * this still has no genetic result. Used where the subject is a patient
+ * the passport is still asking for a report from.
+ */
+const unwitnessedReport = (fields: Record<string, string>) => ({
+  ...geneticReport(fields),
+  ocrPayload: {
+    fields: { classifiedType: 'genetic_report', documentType: 'other', ...fields },
+  },
 });
 
 /**
@@ -410,7 +445,10 @@ describe('the fourth source — a value our own back office typed (§B3)', () =>
   it('promises the value will change, not that it will be credited to the patient', () => {
     const withReportedDate = (over: Record<string, unknown>) =>
       base({
-        documents: [geneticReport({ diagnosisDate: '2021-06-01' })],
+        // Unwitnessed on purpose: this test reads the 补充基因检测报告
+        // step, which is asked exactly of a profile with no genetic
+        // result on file. The document is here to carry a report date.
+        documents: [unwitnessedReport({ diagnosisDate: '2021-06-01' })],
         ...over,
       } as never);
 

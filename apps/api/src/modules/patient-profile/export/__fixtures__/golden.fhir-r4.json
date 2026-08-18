@@ -757,7 +757,7 @@
     },
     {
       "field": "FamilyMemberHistory（家族史）",
-      "reasonZh": "本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，而本平台持有的是一段中文自述，硬拆成资源等于替患者的亲属编造结构化病史。"
+      "reasonZh": "本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，而本平台持有的是一段中文自述，把它拆成结构化条目等于替患者的亲属编造结构化病史。"
     },
     {
       "field": "MedicationStatement / MedicationRequest（用药记录）",

@@ -2124,19 +2124,83 @@ export const instrumentOmission = (field: string, ambulationNoteZh: string): Exp
  * in both redaction modes — and each format states its own slot
  * situation.
  *
- * @param slotNoteZh What THIS format has to put it in, and why that
- *   slot is not filled, in that format's own vocabulary (envelope.ts:24).
- *   Required rather than optional, for the reason `instrumentOmission`'s
- *   argument is: a fourth serialiser must not inherit another format's
- *   answer by leaving it out.
+ * WHY THE OPENING DERIVES. 「本平台持有患者对自身家族史的一段自述」 was
+ * one hardcoded string for every profile, and it is FALSE for every
+ * archive whose 家族史 box is empty — rendered over a profile with no
+ * baseline, both this sentence and the tail claiming 本平台持有的是一段
+ * 中文自述 shipped to a registry that holds nothing of the sort. The
+ * declaration itself stays UNCONDITIONAL (an empty box is still worth
+ * declaring: it tells a receiver the format has no slot AND that this
+ * archive has no answer, which are two different reasons to ask the
+ * patient) — it is only the holding claim that has to move with what
+ * is on the row.
+ *
+ * @param slotNoteZh What THIS format has to put it in, in that
+ *   format's own vocabulary (envelope.ts:24). Required rather than
+ *   optional, for the reason `instrumentOmission`'s argument is: a
+ *   fourth serialiser must not inherit another format's answer by
+ *   leaving it out. It states the SLOT only; the sentence about what
+ *   this platform has to fill it with is appended here, because it is
+ *   the same claim in both formats and it derives.
+ * @param statementZh `NormalisedSource.familyHistoryStatement`.
  */
-export const FAMILY_HISTORY_OMISSION_REASON_ZH =
-  '本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。';
+const FAMILY_HISTORY_RULE_ZH =
+  '家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。';
 
-export const familyHistoryOmission = (field: string, slotNoteZh: string): ExportOmission => ({
+export const familyHistoryOmission = (
+  field: string,
+  slotNoteZh: string,
+  statementZh: string | null,
+): ExportOmission => ({
   field,
-  reasonZh: `${FAMILY_HISTORY_OMISSION_REASON_ZH}${slotNoteZh}`,
+  reasonZh:
+    statementZh === null
+      ? `本平台此刻没有患者对自身家族史的任何陈述——这一栏是空的，本次导出因此没有可发送的内容。即便有，本导出也不会发送它：${FAMILY_HISTORY_RULE_ZH}${slotNoteZh}而本平台在这一栏上什么都没有，连一段中文自述都没有。`
+      : `本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：${FAMILY_HISTORY_RULE_ZH}${slotNoteZh}而本平台持有的是一段中文自述，把它拆成结构化条目等于替患者的亲属编造结构化病史。`,
 });
+
+/**
+ * HOW PRECISELY THIS ARCHIVE HOLDS ONE OF ITS DATES — the answer every
+ * envelope sentence about 出生年份 / 确诊年份 has to derive from.
+ *
+ * Two stores answer for each of these dates and they answer at
+ * different precisions: a `patient_profiles` DATE column
+ * (`date_of_birth`, `diagnosis_date`), filled to the day on ordinary
+ * archives, and the baseline questionnaire's year slot, which
+ * `year-value.ts` decodes into 已知 / 记不清了 / 未采集.
+ * `decodeFirstYearFrom` already walks them in that order for the YEAR;
+ * this is the one fact the walk drops, and it is the one an omission
+ * reason needs.
+ *
+ * IT LIVES HERE RATHER THAN IN ONE SERIALISER because two of them
+ * write this sentence and both were wrong in the same way. The
+ * Phenopacket told a registry 本平台记录的是出生年份与确诊年份 and the
+ * TREAT-NMD document told it 出生年份（本平台按年份存）, while the FHIR
+ * bundle built from this same source in the same request printed
+ * 1988-04-02 on `Patient.birthDate`. Two copies of one claim are two
+ * chances for one of them to be the false one.
+ *
+ * PRECISION, NEVER THE VALUE. These sentences ride in documents that
+ * deliberately withhold the date, so quoting it to explain withholding
+ * it hands the receiver the exact thing the field refuses.
+ *
+ * 记不清了 AND 未采集 STAY APART for the reason year-value.ts states:
+ * one says the question was put to the patient and they do not know,
+ * the other says it was never put.
+ */
+export type HeldDatePrecision = 'day' | 'year' | 'not_remembered' | 'not_collected';
+
+export const heldDatePrecision = (fullDate: string | null, year: YearAnswer): HeldDatePrecision => {
+  if (fullDate !== null) return 'day';
+  switch (year.kind) {
+    case 'year':
+      return 'year';
+    case 'unknown':
+      return 'not_remembered';
+    case 'not_asked':
+      return 'not_collected';
+  }
+};
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

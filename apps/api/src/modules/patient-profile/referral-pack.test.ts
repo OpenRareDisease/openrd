@@ -162,7 +162,24 @@ const geneticReport = (fields: Record<string, string>) =>
     uploadedAt: '2026-02-01T12:00:00.000Z',
     checksum: null,
     submissionId: null,
-    ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+    // BOTH LABELS, BECAUSE THE PIPELINE STORES BOTH. `classifiedType`
+    // is the parser's; `documentType` inside `fields` is the uploader's
+    // own declaration, stamped there by every OCR provider before any
+    // classification exists and overwritten by nothing — unlike the
+    // column above, which `updateDocumentOcrResult` replaces with the
+    // classification. `isLaboratoryGeneticReport` reads the cell as the
+    // declaration, and it is what separates this fixture from an
+    // archived 门诊病历摘要 the old keyword classifier scored
+    // `genetic_report`: that row carries `documentType: other` in the
+    // same blob.
+    //
+    // This briefly carried `geneticTestMethod: southern_blot` for the
+    // same job. That was the wrong witness: a stated 检测方法 is graded,
+    // so it changes the clinical state the fixture describes, and a
+    // real laboratory report very often has none read off it.
+    ocrPayload: {
+      fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+    },
   }) as unknown as PatientProfileDTO['documents'][number];
 
 /** A report of a class the passport recognises, with nothing readable

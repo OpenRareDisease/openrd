@@ -5,8 +5,10 @@ import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js
 import { normaliseSource } from './export-source.js';
 import { BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
 import { applyGeneticReportAutofill } from '../profile.autofill.js';
+import { buildFhirExport } from './fhir-r4.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
+import { buildTreatNmdExport } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
 
 const build = (overrides: Partial<PatientProfileDTO> = {}, includeLocalOnly = false) =>
@@ -507,5 +509,168 @@ describe('Phenopacket v2 —— Disease.term 跟着报告，不跟着旧问卷�
       expect(reason, cell).toContain(cell);
     }
     expect(reason).toContain('不要因为本文件里没有这些数据就认为患者没有做过这些检测');
+  });
+});
+
+/**
+ * 出生年份 / 确诊年份 — the entry has to describe THIS archive, and the
+ * elements it sends the receiver to have to be in the document it
+ * names.
+ *
+ * FOUR STATES PER DATE, because two stores answer at two precisions
+ * and the year slot has three answers of its own. The wording was
+ * hardcoded twice and was false both times: 「本平台记录的是出生年份与确
+ * 诊年份」 for the archive whose `date_of_birth` column is filled to the
+ * day, and — after that was branched — the same sentence for the
+ * archive that records NEITHER, which then also sent the receiver to a
+ * `Patient.birthDate` and a `Condition.recordedDate` that the sibling
+ * documents do not emit for it.
+ *
+ * So the assertion is not on wording. It builds all three documents
+ * from ONE `NormalisedSource`, the way one request does, and checks
+ * that every element the sentence points at exists in the document it
+ * points at — and that the pointer is dropped when it does not.
+ */
+describe('出生时间与确诊时间：说明必须跟着这份档案实际持有的精度走', () => {
+  const foundationWith = (birthYear: unknown, diagnosisYear: unknown) => ({
+    ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+    foundation: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).foundation as Record<
+        string,
+        unknown
+      >),
+      birthYear,
+      diagnosisYear,
+    },
+  });
+
+  const dateEntryOf = (profile: Partial<PatientProfileDTO>) =>
+    build(profile).omissions.find((entry) => entry.field.startsWith('subject.dateOfBirth'))
+      ?.reasonZh ?? '';
+
+  const STATES = [
+    {
+      nameZh: '记录到日',
+      overrides: { dateOfBirth: '1988-04-02', diagnosisDate: '2014-06-01' },
+      says: ['还有精确到日的出生日期', '本档案上的确诊日期是精确到日的'],
+      // Never the value: this packet withholds the birth date on
+      // purpose and the reason rides in the same JSON, so printing it
+      // to explain withholding it hands over the thing the field
+      // refuses.
+      neverSays: ['1988-04-02', '2014-06-01'],
+      pointsAtBirthDate: true,
+      pointsAtRecordedDate: true,
+    },
+    {
+      nameZh: '只有年份',
+      overrides: { dateOfBirth: null, diagnosisDate: null },
+      says: ['本档案上只有出生年份', '两处都只写到年'],
+      neverSays: ['1988-04-02', '2014-06-01'],
+      pointsAtBirthDate: true,
+      pointsAtRecordedDate: true,
+    },
+    {
+      nameZh: '记不清了',
+      overrides: {
+        dateOfBirth: null,
+        diagnosisDate: null,
+        baseline: foundationWith('记不清了', '记不清了'),
+      },
+      says: ['问过，患者记不清', '写成「记不清了」'],
+      neverSays: ['未采集'],
+      pointsAtBirthDate: false,
+      pointsAtRecordedDate: false,
+    },
+    {
+      nameZh: '未采集',
+      overrides: {
+        dateOfBirth: null,
+        diagnosisDate: null,
+        baseline: foundationWith(null, null),
+      },
+      says: ['本平台没有采集到', '写成「未采集」'],
+      neverSays: ['患者记不清'],
+      pointsAtBirthDate: false,
+      pointsAtRecordedDate: false,
+    },
+  ] as const;
+
+  STATES.forEach((state) => {
+    it(`${state.nameZh}：说明与同一次请求里另外两份文件对得上`, () => {
+      const reason = dateEntryOf(state.overrides);
+      state.says.forEach((phrase) => expect(reason, phrase).toContain(phrase));
+      state.neverSays.forEach((phrase) => expect(reason, phrase).not.toContain(phrase));
+
+      // The two sentences that are true of the FORMAT in every state,
+      // and are the reason this entry omits rather than emits: a
+      // protobuf Timestamp needs an instant, and `Disease.onset` means
+      // 发病 rather than 确诊.
+      expect(reason).toContain('本文件不写出生日期，也不写发病时间。');
+      expect(reason).toContain('Disease.onset 说的是「发病」，不是「确诊」');
+
+      // THE POINTERS, resolved against the documents they name. Built
+      // from the same profile, which is what one request does.
+      const profile = { ...EXPORT_FIXTURE_PROFILE, ...state.overrides };
+      const options = { includeLocalOnly: false, generatedAt: FIXTURE_GENERATED_AT };
+      const fhir = buildFhirExport(normaliseSource(profile, options));
+      const patient = fhir.document.entry
+        .map((entry) => entry.resource)
+        .find((resource) => resource.resourceType === 'Patient');
+      const condition = fhir.document.entry
+        .map((entry) => entry.resource)
+        .find((resource) => resource.resourceType === 'Condition');
+
+      const namesBirthDate = reason.includes('Patient.birthDate 上');
+      expect(namesBirthDate, 'Patient.birthDate').toBe(state.pointsAtBirthDate);
+      expect(
+        (patient as { birthDate?: string } | undefined)?.birthDate !== undefined,
+        'Patient.birthDate 实际是否写出',
+      ).toBe(state.pointsAtBirthDate);
+
+      const namesRecordedDate = reason.includes('Condition.recordedDate 上');
+      expect(namesRecordedDate, 'Condition.recordedDate').toBe(state.pointsAtRecordedDate);
+      expect(
+        (condition as { recordedDate?: string } | undefined)?.recordedDate !== undefined,
+        'Condition.recordedDate 实际是否写出',
+      ).toBe(state.pointsAtRecordedDate);
+
+      // TREAT-NMD's 确诊年份 is the one pointer that resolves in every
+      // state, because `serialiseYear` names 已知 / 记不清了 / 未采集
+      // rather than dropping the item.
+      const treatNmd = buildTreatNmdExport(normaliseSource(profile, options));
+      const diagnosisYear = treatNmd.document.sections
+        .find((section) => section.key === 'diagnosis')
+        ?.items.find((entry) => entry.key === 'diagnosis.year');
+      expect(reason).toContain('diagnosis.year');
+      expect(diagnosisYear, 'diagnosis.year').toBeDefined();
+    });
+  });
+});
+
+/**
+ * 家族史 — 「本平台持有患者对自身家族史的一段自述」 was one hardcoded
+ * string for every profile, including the ones whose 家族史 box is
+ * empty. The declaration itself stays unconditional (an empty box is
+ * worth declaring); the holding claim moves with the row.
+ */
+describe('家族史：声明照发，但「本平台持有」这句要跟着档案走', () => {
+  const familyReasonOf = (overrides: Partial<PatientProfileDTO>) =>
+    build(overrides).omissions.find((entry) => entry.field.includes('家族史'))?.reasonZh ?? '';
+
+  it('档案上有那段自述时，说的是「持有但不发送」', () => {
+    const reason = familyReasonOf({});
+    expect(reason).toContain('本平台持有患者对自身家族史的一段自述');
+    expect(reason).toContain('本平台持有的是一段中文自述');
+    expect(reason).toContain('不表示患者没有家族史');
+  });
+
+  it('档案上那一栏空着时，不说本平台持有它', () => {
+    const reason = familyReasonOf({ baseline: null });
+    expect(reason).not.toContain('本平台持有患者对自身家族史的一段自述');
+    expect(reason).not.toContain('本平台持有的是一段中文自述');
+    expect(reason).toContain('本平台此刻没有患者对自身家族史的任何陈述');
+    // Still declared, and still carrying the sentence that stops a
+    // receiver reading the absence as 「asked, and negative」.
+    expect(reason).toContain('不表示患者没有家族史');
   });
 });

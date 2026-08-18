@@ -8,6 +8,11 @@ import {
   isPortableExportFormat,
   PORTABLE_EXPORT_FORMATS,
 } from './export/index.js';
+import {
+  readUploaderDeclaredType,
+  uploaderDeclaredTypeFromUploadForm,
+  type UploaderDeclaredDocumentType,
+} from './genetic-evidence.js';
 import { DOCUMENT_TYPES, type DocumentType } from './profile.constants.js';
 import {
   activityLogSchema,
@@ -951,7 +956,9 @@ export class PatientProfileController {
       documentId: result.id,
       buffer: file.buffer,
       mimeType: file.mimetype ?? null,
-      documentType: payload.documentType,
+      // Straight off the upload form, before any parse exists — the one
+      // instant at which a plain string IS the declaration.
+      documentType: uploaderDeclaredTypeFromUploadForm(payload.documentType),
       fileName: file.originalname ?? undefined,
       reportName: payload.title ?? file.originalname ?? undefined,
     });
@@ -983,7 +990,30 @@ export class PatientProfileController {
     documentId: string;
     buffer: Buffer;
     mimeType: string | null;
-    documentType: string;
+    /**
+     * THE TYPE THE UPLOADER DECLARED, AND THE PARSE STAMPS IT INTO THE
+     * PAYLOAD IT WRITES.
+     *
+     * Every provider copies this argument into
+     * `ocr_payload.fields.documentType` — `buildFields` in
+     * embedded-report-ocr.ts, and the same line in mock-ocr.ts and
+     * baidu-ocr.ts — and that cell is the ONLY surviving record of what
+     * the patient picked, because `updateDocumentOcrResult` below
+     * overwrites `patient_documents.document_type` with the
+     * classification. `isLaboratoryGeneticReport` reads it as the
+     * declaration and grades a genetics report on it.
+     *
+     * So it is branded. `reparseDocument` used to pass
+     * `document.document_type` here, which on a row a previous parse
+     * had classified is the classifier's own label — the second parse
+     * would have laundered it into the declaration's cell and the
+     * gate's fourth question would be its first question again, one
+     * round later. `readUploaderDeclaredType` and
+     * `uploaderDeclaredTypeFromUploadForm` are the only two ways to
+     * obtain this type, so that substitution is now a compile error
+     * rather than a comment nobody reads.
+     */
+    documentType: UploaderDeclaredDocumentType;
     fileName?: string;
     reportName?: string;
   }) {
@@ -1069,6 +1099,39 @@ export class PatientProfileController {
     // materialise is the thing the queue cap is protecting.
     this.assertOcrQueueHasRoom(res);
 
+    // READ THE DECLARATION BEFORE THE PAYLOAD IS NULLED, because the
+    // payload is where it lives. `updateDocumentOcrResult` on the next
+    // line clears `ocr_payload`, and with it the stamped
+    // `fields.documentType`; the new parse then stamps whatever this
+    // hands it. Passing `document.document_type` — which is what stood
+    // here — puts the classifier's label into the declaration's cell on
+    // any row a previous parse classified, so the gate's fourth
+    // question would start corroborating its first one. The column is
+    // still the fallback, and on the four statuses reparse admits
+    // (`parse_failed`, legacy `uploaded`, a dead `processing`, and a
+    // `parsed` row that extracted nothing) it is nearly always the
+    // declaration untouched — a parse that landed no fields classified
+    // nothing worth preferring either.
+    //
+    // AND WHERE NEITHER SURVIVES, `other` — not the column. This is
+    // reachable only by a payload some path outside this pipeline's
+    // three providers wrote, carrying a classifier label and no stamp,
+    // and it is a fabrication either way: the honest answer is 「this
+    // row cannot say」 and the field has no spelling for it. `other`
+    // spends the cheap mistake. The value keeps printing with
+    // 转录自非基因报告文件 beside it and loses only its grade, where the
+    // column would spend the expensive one — a laboratory's sentence
+    // with no laboratory behind it. The patient can restore the true
+    // answer by re-uploading; nothing can restore it the other way.
+    const declaredDocumentType =
+      readUploaderDeclaredType({
+        id: document.id,
+        documentType: document.document_type,
+        status: document.status,
+        uploadedAt: null,
+        ocrPayload: document.ocr_payload,
+      }) ?? uploaderDeclaredTypeFromUploadForm('other');
+
     const loaded = await this.storage.load(document.storage_uri);
     const chunks: Buffer[] = [];
     for await (const chunk of loaded.stream) {
@@ -1086,7 +1149,7 @@ export class PatientProfileController {
       documentId,
       buffer,
       mimeType: document.mime_type,
-      documentType: document.document_type,
+      documentType: declaredDocumentType,
       fileName: document.file_name ?? undefined,
       reportName: document.title ?? document.file_name ?? undefined,
     });
@@ -1534,14 +1597,22 @@ export class PatientProfileController {
     // the SAME ROW answered `within_fshd1_repeat_range` /
     // `permissive_haplotype`. One document, two answers, one product.
     //
-    // `documentType` here is the type the UPLOADER declared
-    // (`document.document_type`) and deliberately NOT the resolved
-    // `documentType` computed above: that one prefers the parser's
-    // `classifiedType`, which the gate has already checked as its first
-    // question. Feeding it back in as the fourth would make a classifier
-    // label agree with itself and re-open the bug the gate exists to
-    // close — a 病历摘要 the old keyword classifier scored as
-    // `genetic_report` would grade its transcribed count.
+    // `documentType` here is `document.document_type` AND THAT IS NOT
+    // THE UPLOADER'S DECLARATION — this comment claimed it was, for two
+    // rounds, and the value has been the classifier's label on every
+    // parsed row the whole time, because `updateDocumentOcrResult`
+    // writes `resolveDocumentTypeFromPayload`'s answer back into the
+    // column. It is passed for what it actually is: the row's stored
+    // type, which is what the gate's FIRST question falls through to on
+    // a row no parse ever labelled.
+    //
+    // The gate's fourth question does not read it. It reads
+    // `fields.documentType`, which every provider stamps with the
+    // upload form's own value and no classifier touches, and `fields`
+    // is on this projection already — see `readUploaderDeclaredType`.
+    // That is what stops a classifier label agreeing with itself here:
+    // a 病历摘要 the old keyword classifier scored `genetic_report`
+    // carries `documentType: other` in the same blob and is refused.
     //
     // `extractedText` is on HARD_DELETE_KEYS, so layer 1 deletes it in
     // both modes at any depth. The redactor asks the gate of its INPUT,

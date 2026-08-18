@@ -30,6 +30,25 @@
  */
 export interface GeneticEvidenceDocumentLike {
   readonly id: string;
+  /**
+   * The row's stored `patient_documents.document_type`, WHICH IS NOT
+   * RELIABLY THE TYPE ITS UPLOADER DECLARED.
+   *
+   * The upload INSERT writes the dropdown value here, and then the
+   * parse overwrites it: `startOcrJob` in profile.controller.ts calls
+   * `resolveDocumentTypeFromPayload(declared, payload)`, which prefers
+   * `ocrPayload.fields.classifiedType`, and
+   * `updateDocumentOcrResult` in profile.service.ts UPDATEs the column
+   * with the answer. So for every row the current pipeline has parsed,
+   * this holds the classifier's label canonicalised onto the four-value
+   * enum, and the declaration it replaced is not stored anywhere.
+   *
+   * That is why nothing in this module may read this field as 「what the
+   * uploader said」. `readUploaderDeclaredType` is the only reader
+   * permitted to, and it reads the declaration off the payload cell the
+   * parse stamps it into, falling back to this column only on rows the
+   * parse never labelled.
+   */
   readonly documentType: string | null;
   /** The row's parse state: `parsed`, `needs_review`, `processing`,
    *  `parse_failed`, or the legacy `uploaded`. */
@@ -126,6 +145,36 @@ const GENETIC_DOCUMENT_VALUE_KEY_GROUPS: readonly (readonly string[])[] = [
 
 const CLASSIFIED_TYPE_KEYS = ['classifiedType', 'classified_type', 'reportType', 'report_type'];
 
+/**
+ * THE `fields` CELL THE UPLOADER'S OWN DECLARATION IS STAMPED INTO, AND
+ * THE ONE COPY OF IT THE CLASSIFIER DOES NOT OVERWRITE.
+ *
+ * Every OCR provider in this pipeline writes it, first thing, out of
+ * the `documentType` it was CALLED with — `buildFields` in
+ * apps/api/src/services/ocr/embedded-report-ocr.ts, and the same line
+ * in mock-ocr.ts and baidu-ocr.ts — and that argument is the value the
+ * upload form put in `patient_documents.document_type` before any
+ * parse ran. The classification lands in a different cell
+ * (`classifiedType`, see above) and the column UPDATE reads that one,
+ * so the two never touch: one blob carries what the patient said AND
+ * what the parser decided, side by side, and they can disagree.
+ *
+ * Deliberately NOT on `CLASSIFIED_TYPE_KEYS`, and the separation is the
+ * whole mechanism — if a classifier label could be read here the fourth
+ * question would be the first question again. `resolveDocumentTypeFromPayload`
+ * in profile.controller.ts does consider this key, but LAST, behind
+ * every classifier spelling, which is the same statement: it is the
+ * fallback, i.e. the declaration.
+ *
+ * NOTHING ELSE WRITES IT. It is absent from `EDITABLE_OCR_FIELDS` in
+ * profile.schema.ts, so `patchDocumentOcrFields` refuses a patch naming
+ * it; the Python parser mints `fields` entries from `structured_fields`
+ * and emits no field called `document_type`; and `startOcrJob` now
+ * takes an `UploaderDeclaredDocumentType`, so no caller can hand the
+ * parse a resolved label to stamp here.
+ */
+const UPLOADER_DECLARED_TYPE_KEYS = ['documentType', 'document_type'];
+
 /** Statuses in which the extraction job has come back. Everything else
  *  — `processing`, `parse_failed`, the legacy `uploaded` — is a row
  *  whose file this platform has not read. The same pair
@@ -172,6 +221,94 @@ const payloadFields = (document: GeneticEvidenceDocumentLike): Record<string, un
  */
 export const documentClassifiedType = (document: GeneticEvidenceDocumentLike): string =>
   pickReading(payloadFields(document), CLASSIFIED_TYPE_KEYS) ?? document.documentType ?? '';
+
+declare const uploaderDeclaredBrand: unique symbol;
+
+/**
+ * A DOCUMENT TYPE THAT IS THE UPLOADER'S OWN DECLARATION AND CANNOT BE
+ * ANYTHING ELSE.
+ *
+ * Nominal on purpose. The brand symbol is module-private and no value
+ * carries it at runtime, so the only way to obtain one of these is
+ * `readUploaderDeclaredType` below — a plain `string`, and in
+ * particular `document.documentType` or any resolved/classified label,
+ * is not assignable to it and the compiler says so at the call site.
+ *
+ * This exists because two rounds of comments did not hold. The rule
+ * 「the fourth question reads the uploader's declaration and never the
+ * resolved type」 was written in this module and restated verbatim at
+ * the caller in profile.controller.ts, and both were false anyway —
+ * see the note on `GeneticEvidenceDocumentLike.documentType`. A
+ * sentence asking callers to be careful cannot enforce a provenance
+ * rule; a type they cannot satisfy by accident can.
+ */
+export type UploaderDeclaredDocumentType = string & {
+  readonly [uploaderDeclaredBrand]: true;
+};
+
+/**
+ * THE TYPE THE UPLOADER PICKED FROM THE DROPDOWN, or `null` when this
+ * row cannot say.
+ *
+ * Read off `ocr_payload.fields.documentType` — see
+ * `UPLOADER_DECLARED_TYPE_KEYS`, which is why that cell is the answer —
+ * and NOT off `patient_documents.document_type`, which the parse
+ * overwrites with the classification.
+ *
+ * THE COLUMN IS STILL THE ANSWER ON A ROW THE PARSE NEVER LABELLED, and
+ * that fallback is not a guess: `resolveDocumentTypeFromPayload`
+ * replaces the column exactly when the payload carries a usable label
+ * under one of `CLASSIFIED_TYPE_KEYS`, so a payload carrying none of
+ * them is a column that has only ever held the declaration. Where the
+ * payload carries one AND has no stamped declaration — a blob written
+ * by some path that is not one of this pipeline's three providers —
+ * there is nothing left to read and this returns `null`.
+ *
+ * `null` rather than a guess. A gate that cannot find out what the
+ * patient declared must refuse, not assume: being wrong toward the
+ * narrative costs a DISPLAY with its origin attached, being wrong the
+ * other way costs a laboratory's sentence with no laboratory behind it.
+ *
+ * Exported because the OCR pipeline has to write back what it reads:
+ * `reparseDocument` re-runs a parse and the value it passes is stamped
+ * into the new payload, so it has to pass THIS and not the row's
+ * column — otherwise the second parse launders the classifier's label
+ * into the declaration's cell and the fourth question is the first one
+ * again, one round later. The branded return type is what makes that a
+ * compile error rather than a comment.
+ */
+export const readUploaderDeclaredType = (
+  document: GeneticEvidenceDocumentLike,
+): UploaderDeclaredDocumentType | null => {
+  const fields = payloadFields(document);
+  const stamped = pickReading(fields, UPLOADER_DECLARED_TYPE_KEYS);
+  if (stamped) return stamped as UploaderDeclaredDocumentType;
+  if (pickReading(fields, CLASSIFIED_TYPE_KEYS)) return null;
+  const declared = document.documentType?.trim();
+  return declared ? (declared as UploaderDeclaredDocumentType) : null;
+};
+
+/**
+ * THE DECLARATION AS THE UPLOAD FORM ITSELF STATED IT.
+ *
+ * The only other way to obtain an `UploaderDeclaredDocumentType`, and
+ * deliberately awkward to reach for: it names its one legitimate caller
+ * in its own name. `documentUploadSchema` validates the dropdown value
+ * a patient submitted, and at that instant — before any parse — the
+ * value IS the declaration. Every later reader has to go through
+ * `readUploaderDeclaredType`, because by then the column may not be.
+ */
+export const uploaderDeclaredTypeFromUploadForm = (
+  declaredOnTheUploadForm: string,
+): UploaderDeclaredDocumentType => declaredOnTheUploadForm as UploaderDeclaredDocumentType;
+
+/** Did the patient themselves pick 基因检测报告 from the upload menu.
+ *  The only comparison made against an `UploaderDeclaredDocumentType`,
+ *  kept here so the branded value never has to be widened back to
+ *  `string` at a call site where a resolved label could take its
+ *  place. */
+const uploaderDeclaredGeneticReport = (document: GeneticEvidenceDocumentLike): boolean =>
+  (readUploaderDeclaredType(document) as string | null) === 'genetic_report';
 
 /** Both spellings the parser has emitted for the page it read. The
  *  profile projection in profile.service.ts already collapses them to
@@ -404,7 +541,62 @@ const showsLaboratoryReportStructure = (document: GeneticEvidenceDocumentLike): 
  *      检测方法 off it. That is the agreeing witness, and it is the
  *      document itself rather than any label put on it.
  *   4. Only where the page shows NEITHER does the uploader's declared
- *      type decide.
+ *      type decide. `readUploaderDeclaredType` is what answers it, and
+ *      it reads the declaration off the CELL the parse stamps it into
+ *      rather than off the column the parse overwrites. See below.
+ *
+ * (4) WAS THE DEFECT AND THIS IS THE THIRD ATTEMPT AT IT. The step read
+ * `document.documentType`, and both this block and the call site in
+ * profile.controller.ts stated in as many words that the value there is
+ * the uploader's own declaration and 「deliberately NOT the resolved
+ * documentType … feeding it back in as the fourth would make a
+ * classifier corroborate itself」. Executed, it was the resolved type on
+ * every parsed path: the parse UPDATEs `patient_documents.document_type`
+ * with `resolveDocumentTypeFromPayload`'s answer, which prefers
+ * `fields.classifiedType`, so a parsed row's column IS the
+ * classification (1) has already read. Driven through: a 门诊病历摘要
+ * the old keyword classifier scored `genetic_report`, uploaded under
+ * 其他, with no page on the archived payload — (2) found no narrative,
+ * (3) found no laboratory, and (4) read `genetic_report` off the column
+ * and graded the transcribed count on the FSHD1 boundary, on the
+ * profile, on the report-detail summary, in the assistant chunk and in
+ * the mobile bundle. (1) and (4) were the same expression, which made
+ * (3) — the agreeing witness this gate is built on — dead on every
+ * parsed row.
+ *
+ * THE SECOND ATTEMPT REFUSED (4) OUTRIGHT on any row whose payload
+ * carries a classifier label, on the reasoning that the declaration is
+ * not stored anywhere. That reasoning was wrong about this pipeline and
+ * it cost real patients their diagnosis. It is stored: every OCR
+ * provider stamps the type it was CALLED with into
+ * `ocr_payload.fields.documentType`, and the type it was called with is
+ * the upload form's dropdown value. Refusing (4) made it unanswerable
+ * on every parsed row instead of on the classifier-labelled ones, so a
+ * GENUINE laboratory report whose page was not stored and whose 检测方法
+ * the parser could not read — an ordinary, expected state, which is
+ * exactly why the passport separates 方法对但结果不全 from 结果不全 —
+ * became indistinguishable from a transcription and graded as one.
+ * Executed over the matrix, that patient dropped from 基因确诊 to 自述,
+ * from 可用于入组 to 仅有转录结果, the citation chip under their own
+ * Southern blot's repeat count changed from 报告读取 to 转录自非基因报告
+ * 文件, and both redaction modes started answering
+ * `not_read_off_a_laboratory_report` about a laboratory's reading.
+ *
+ * SO THE DECLARATION IS READ WHERE THE PARSE PRESERVES IT, not where
+ * the parse overwrites it. That is one witness, on the archived rows
+ * too, and it needs no new column and no backfill — the alternative
+ * considered was `patient_documents.declared_document_type` written at
+ * upload time, which would be NULL on precisely the archived rows that
+ * lose their grade without it, and whose only honest backfill source is
+ * the cell being read here. A second stored copy of one fact is the
+ * failure this module exists to prevent.
+ *
+ * Both halves are held by the brand rather than by this paragraph:
+ * `readUploaderDeclaredType` is the only reader that mints an
+ * `UploaderDeclaredDocumentType`, and `startOcrJob` is the only writer
+ * that consumes one — so neither a resolved label nor a classifier's
+ * output can be substituted at either end without the compiler saying
+ * so. A comment was tried twice and did not hold.
  *
  * Being wrong toward the narrative costs a DISPLAY with its origin
  * attached; being wrong the other way costs a laboratory's sentence
@@ -421,19 +613,44 @@ const showsLaboratoryReportStructure = (document: GeneticEvidenceDocumentLike): 
  * whether a laboratory result counts would be a worse bug than the one
  * it replaced.
  *
- * WHERE THIS STILL YIELDS: an archived 病历摘要 whose uploader ALSO
- * picked 基因检测报告 from the menu, seen on the assistant path. There
- * the projection a chunk carries is the `fields` blob, the page is not
- * on it, and neither structure is visible — so (3) is reached and the
- * declaration is believed. Every other path has the page and refuses.
- * The gap closes the moment the retriever's projection carries the OCR
- * text; nothing here has to change for that.
+ * WHAT (4) NOW COSTS: a row the parser classified as a genetics report,
+ * whose payload shows neither structure — no page kept, no 检测方法 read
+ * — and which was uploaded under any label BUT 基因检测报告 is refused.
+ * That is the misclassified 病历摘要, and it is also the genuine report
+ * of a patient who left the dropdown on 其他, who keeps the value on
+ * the page with 转录自非基因报告文件 beside it and loses only the grade.
+ * The cost of the two mistakes is not symmetric and this is the cheap
+ * one; a page kept or a 检测方法 read carries that report through (3)
+ * without ever reaching here, which is why (3) is asked first.
+ *
+ * AND WHAT IT STILL BELIEVES, STATED PLAINLY: a 病历摘要 the old
+ * classifier scored `genetic_report`, whose page was not kept, whose
+ * 检测方法 was not read, AND whose uploader also picked 基因检测报告 —
+ * because that is where their genetic result is written down — is
+ * graded. It is not distinguishable: it is byte-for-byte the genuine
+ * report of a patient who declared it correctly and whose page was not
+ * stored, and every witness this platform has is exhausted. Both
+ * labels on the row say 基因报告 and there is no third thing to ask.
+ * Refusing it means refusing that patient too, and this gate has
+ * already been through that trade once. Where the page IS kept the
+ * question never gets here — (2) reads 主诉 / 现病史 / 查体 off it and
+ * refuses whatever either label says, which is the case that actually
+ * occurs, because the profile projection carries the page on every row
+ * the current pipeline wrote.
+ *
+ * WHAT (4) STILL REACHES WITHOUT THE STAMP: a row the parser classified
+ * as NOTHING — `fields` with no `classifiedType`, which is every
+ * pre-classifier archived row and every parse that failed to label.
+ * There the column has never been overwritten, `documentClassifiedType`
+ * falls through to it as well, and both (1) and (4) are reading the
+ * patient's own answer — which is the arrangement this step was always
+ * documented as.
  */
 export const isLaboratoryGeneticReport = (document: GeneticEvidenceDocumentLike): boolean => {
   if (documentClassifiedType(document) !== 'genetic_report') return false;
   if (showsClinicalNarrative(document)) return false;
   if (showsLaboratoryReportStructure(document)) return true;
-  return document.documentType === 'genetic_report';
+  return uploaderDeclaredGeneticReport(document);
 };
 
 /**

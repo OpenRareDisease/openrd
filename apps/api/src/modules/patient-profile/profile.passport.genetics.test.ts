@@ -73,7 +73,33 @@ const geneticReport = (fields: Record<string, string>) => ({
   uploadedAt: '2026-02-01T00:00:00.000Z',
   checksum: null,
   submissionId: null,
-  ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+  // A ROW AS THE PIPELINE LEAVES IT, WHICH MEANS BOTH LABELS.
+  //
+  // `classifiedType` is what the parser decided. `documentType` inside
+  // `fields` is what the UPLOADER declared: every OCR provider stamps
+  // the argument it was called with into that cell before any
+  // classification exists (`buildFields` in
+  // apps/api/src/services/ocr/embedded-report-ocr.ts, and the same line
+  // in mock-ocr.ts and baidu-ocr.ts), and nothing overwrites it — where
+  // the column above IS overwritten, with the classification, by
+  // `updateDocumentOcrResult`. So the two labels sit side by side and
+  // can disagree, and `isLaboratoryGeneticReport` reads the second one
+  // as the declaration.
+  //
+  // It is what separates this fixture from an archived 门诊病历摘要 the
+  // old keyword classifier scored `genetic_report`: that row carries
+  // `documentType: other` in the same blob, and is refused. Without the
+  // cell the two shapes are byte-identical and a genuine report whose
+  // page was not stored and whose 检测方法 the parser could not read —
+  // which is most of them; see 「没读出检测方法时」 below, where 「未知」
+  // is called the common case rather than an edge — grades as a
+  // transcription. `geneticTestMethod` would ALSO separate them, and is
+  // deliberately not used for it here: this file has tests whose whole
+  // subject is a report with no method read, and stamping one on every
+  // fixture would delete them.
+  ocrPayload: {
+    fields: { classifiedType: 'genetic_report', documentType: 'genetic_report', ...fields },
+  },
 });
 
 const withLadder = (ladder: string) => ({ diseaseBackground: { diagnosisLadder: ladder } });

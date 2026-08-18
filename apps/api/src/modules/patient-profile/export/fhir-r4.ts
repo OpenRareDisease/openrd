@@ -1026,7 +1026,11 @@ export const buildFhirExport = (
       // resource exists reads its absence as 「asked, and there is no
       // family history」. That is the opposite of what this platform
       // holds for a patient whose statement names an affected father.
-      'FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，而本平台持有的是一段中文自述，硬拆成资源等于替患者的亲属编造结构化病史。',
+      // The clause naming what this platform holds is NOT written here
+      // — it derives, in the helper, because it is false for an archive
+      // with an empty 家族史 box.
+      'FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，',
+      source.familyHistoryStatement,
     ),
   );
   // MedicationStatement is the R4 resource for 「patient reports taking

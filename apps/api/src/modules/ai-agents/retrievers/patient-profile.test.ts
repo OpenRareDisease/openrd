@@ -214,7 +214,10 @@ describe('the genetics cells carry where they came from', () => {
     document_type: documentType,
     status: 'parsed',
     uploaded_at: '2026-01-05T00:00:00Z',
-    ocr_payload: { fields: { classifiedType: documentType, ...fields } },
+    // The uploader's declaration stamped into the blob beside the
+    // parser's classification, which is what every OCR provider writes
+    // and what `isLaboratoryGeneticReport` reads for its last question.
+    ocr_payload: { fields: { classifiedType: documentType, documentType, ...fields } },
   });
 
   const flagsFor = async (documentRows: unknown[]) => {

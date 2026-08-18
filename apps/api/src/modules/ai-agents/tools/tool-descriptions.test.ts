@@ -168,7 +168,12 @@ const GENETIC_DOCUMENT_ROWS = [
     status: 'parsed',
     uploaded_at: '2026-01-05T00:00:00Z',
     ocr_payload: {
-      fields: { classifiedType: 'genetic_report', d4z4Repeats: '9', haplotype: '4qA' },
+      fields: {
+        classifiedType: 'genetic_report',
+        documentType: 'genetic_report',
+        d4z4Repeats: '9',
+        haplotype: '4qA',
+      },
     },
   },
 ];
@@ -204,6 +209,7 @@ const REPORT_ROW = {
   ocr_payload: {
     fields: {
       classifiedType: 'genetic_report',
+      documentType: 'genetic_report',
       d4z4Repeats: '3/22',
       haplotype: '4qA',
       methylationValue: '12%',

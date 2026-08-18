@@ -1061,12 +1061,47 @@ const latestDocWithFields = (documents: PatientDocumentDTO[], keys: string[]) =>
     return Boolean(pickField(payload?.fields, keys));
   });
 
+/**
+ * A RANGE IN AN MMT CELL, told apart from the MRC ± modifier by whether
+ * a number follows the sign.
+ *
+ * 「4-」 is grade 4 minus. 「4-5级」 is an examiner who wrote down an
+ * interval. The same hyphen, and the difference is the digit after it.
+ */
+const STRENGTH_RANGE_CELL = /\d\s*(?:[-–—−~～﹣－]|至|到)\s*\d/;
+
+/** The ± of an MRC grade in both widths — a Chinese physical-exam sheet
+ *  is typed in a full-width IME, so 「4＋」 has to mean what 「4+」 means. */
+const STRENGTH_PLUS = /[+＋﹢]/;
+
+/**
+ * The MRC grade an examination cell states, or null when it states no
+ * single grade.
+ *
+ * A BOUND IS NOT A COUNT, HERE TOO. This read the first number in the
+ * cell and took any following 「+」/「-」 as the MRC modifier, so 「三角肌
+ * 4-5级」 — an examiner declining to choose between 4 and 5 — averaged as
+ * 3.7, and 「3-4级」 as 2.7: a number BELOW both bounds of the interval it
+ * was read off, printed as 平均肌力 on the passport, in the markdown
+ * export and in the referral pack's motor row. Nobody measured it.
+ * `parseD4Z4Reading` asks this question of the genetics cell; this is
+ * the same question asked of the examination cell, and the answer for a
+ * range is the same: no number.
+ *
+ * The cell is still DISPLAYED verbatim by `buildStrengthSummary` — what
+ * a range loses is its vote in the average, not its place on the page.
+ *
+ * 「4/5」 is NOT a range: it is grade 4 out of 5, the commonest way an
+ * MMT sheet writes a single grade, so the separator and not the count of
+ * digits is what decides.
+ */
 const parseScore = (value: string) => {
-  const match = value.match(/(\d+(?:\.\d+)?)(\+|-)?/);
+  if (STRENGTH_RANGE_CELL.test(value)) return null;
+  const match = value.match(/(\d+(?:\.\d+)?)\s*([-+＋﹢−﹣－])?/);
   if (!match) return null;
   const base = Number(match[1]);
   if (Number.isNaN(base)) return null;
-  const modifier = match[2] === '+' ? 0.3 : match[2] === '-' ? -0.3 : 0;
+  const modifier = match[2] ? (STRENGTH_PLUS.test(match[2]) ? 0.3 : -0.3) : 0;
   return clamp(base + modifier, 0, 5);
 };
 
@@ -1955,7 +1990,7 @@ export type D4Z4Unit = 'repeats' | 'kb';
  *
  * `value` is non-null only for a single unambiguous number. Everything
  * else a real report prints —「1-10」,「≤10」,「＜10」,「大于10」,「10 以上」,
- *「4~7」,「1 至 10」,「未检出」— lands as `value: null`, with the bound
+ *「10 以内」,「4~7」,「1 至 10」,「未检出」— lands as `value: null`, with the bound
  * spellings counted in both widths because a Chinese laboratory types
  * the full-width one. `isRange` records *why* so a caller can
  * tell「the lab gave an interval」apart from「there was nothing to read」.
@@ -2000,13 +2035,21 @@ export const parseD4Z4Reading = (raw: string | null | undefined): D4Z4Reading =>
   // the 8–10 灰区 note attached, and 「＜4」 earned the AAN dilated-fundus
   // recommendation off a bound nobody measured.
   //
+  // THE WHOLE 以/之 FAMILY, NOT THE TWO MEMBERS OF IT SOMEBODY THOUGHT
+  // OF. 以上 and 以下 were here and 以内 was not, so 「10 以内」 — one cell
+  // whose entire content is a bound — came out the determinate count 10,
+  // in the grey zone, 可用于入组. The two spellings are the same word with
+  // a different suffix; listing one and not the other is how this class
+  // fails on the report it was widened for.
+  //
   // WHAT THIS DOES NOT CATCH, said out loud so the next reader does not
-  // trust it further than it goes: an approximation（「约10」）and a
-  // trailing-plus（「10+」）still parse as the count 10. Neither is a
-  // spelling of a bound this repo has seen on a report, and both would
-  // need their own decision about what 「approximately」 may earn.
+  // trust it further than it goes: an approximation（「约10」,「大约10」,
+  //「近10」）and a trailing-plus（「10+」）still parse as the count 10.
+  // Neither is a spelling of a bound this repo has seen on a report, and
+  // both would need their own decision about what 「approximately」 may
+  // earn.
   const bounded =
-    /[<>≤≥~＜＞≦≧⩽⩾﹤﹥～〜]|--|–|—|[大小高低多少]于|[大小高低多少]於|超过|超過|不足|以上|以下|至少|最多|至|到/.test(
+    /[<>≤≥~＜＞≦≧⩽⩾﹤﹥～〜]|--|–|—|[大小高低多少]于|[大小高低多少]於|超过|超過|不足|以上|以下|以内|以內|之上|之下|之内|之內|至少|最多|至|到/.test(
       text,
     );
   const numbers = text.match(/\d+(?:\.\d+)?/g);
@@ -2511,11 +2554,35 @@ const laboratoryD4Z4 = (record: PassportGeneticRecordDTO): ReportReadD4Z4 | null
  * Observation's `valueString`, where a length in kb ingested under
  * 「D4Z4 重复单元数」 is indistinguishable from a count. The block below
  * is why neither is one.
+ *
+ * A COUNT IS A WHOLE NUMBER, and this is the third predicate in this
+ * repository to say so rather than the first: `isLargeD4Z4Deletion`
+ * here and its hand-kept twin in the mobile bundle both require
+ * `Number.isInteger`, and so does `isD4Z4GreyZone`. This one did not,
+ * and it is the one the 基因确诊 conjunction runs through — so a cell
+ * reading 「3.3」 earned 基因确诊 / 可用于入组 under 「D4Z4 长度 3.3，单
+ * 倍型 4qA」, went into the registry item as this patient's genotype,
+ * and reached the assistant as `within_fshd1_repeat_range`, while the
+ * two predicates that DO hold the rule silently declined it — 「8.5」
+ * lost the 8–10 grey-zone note its integer neighbour gets, and 「3.3」
+ * lost the ophthalmology row. 3.3 is not a hypothetical: it is the
+ * kb-per-unit figure this product prints on its own 检查申请说明 page,
+ * `EDITABLE_OCR_FIELDS` lets a patient type it into this cell by hand,
+ * and `ocrFieldsPatchSchema` validates it as a string.
+ *
+ * A fraction is refused rather than rounded, for the reason a range is:
+ * this platform does not know which number the laboratory meant, and
+ * every branch downstream of this predicate is one that withholds a
+ * claim when it does not know.
  */
 export const isDeterminateRepeatCount = (
   reading: D4Z4Reading | null | undefined,
 ): reading is D4Z4Reading & { value: number } =>
-  reading != null && reading.value !== null && reading.unit !== 'kb' && reading.value !== 0;
+  reading != null &&
+  reading.value !== null &&
+  reading.unit !== 'kb' &&
+  Number.isInteger(reading.value) &&
+  reading.value !== 0;
 
 /**
  * THE D4Z4 REPEAT COUNT THE LABORATORY'S REPORT STATES, as the report
@@ -4193,6 +4260,12 @@ export const buildClinicalPassportSummary = (
     }),
   ];
   const monitoringReady = monitoringItems.some((item) => item.available);
+  /** The slots holding a report this platform could not read a value
+   *  out of — `state`, not the empty summary string. See the 系统监测
+   *  card below, which said the opposite of this off `available` alone. */
+  const monitoringUnreadableTitles = monitoringItems
+    .filter((item) => item.state === 'unreadable')
+    .map((item) => item.title);
   const completionCount = [diagnosisReady, motorReady, imagingReady, monitoringReady].filter(
     Boolean,
   ).length;
@@ -4749,9 +4822,23 @@ export const buildClinicalPassportSummary = (
         : // Not「仍缺核心监测」. Of the three slots below, only the
           // pulmonary baseline is recommended for every FSHD patient;
           // cardiac testing is explicitly not, and no guideline in the
-          // corpus asks for serial CK. An empty panel here means nothing
-          // has been uploaded yet — it does not mean tests are overdue.
-          '还没有上传过肺功能、心脏或血检报告',
+          // corpus asks for serial CK. An empty panel here does not mean
+          // tests are overdue.
+          //
+          // AND IT DOES NOT MEAN NOTHING WAS UPLOADED. That was the
+          // sentence, and `buildMonitoringItem` computes the three states
+          // that make it false: a patient whose pulmonary function report
+          // is on file but did not parse has an empty panel too, and this
+          // card read 「还没有上传过肺功能、心脏或血检报告」 with its own
+          // meta printing 最近监测 2026-06-01 beside it, in a markdown
+          // export whose 系统监测 section two headings down prints the
+          // report's date and whose 待补项 says 「你上传过肺功能报告，但
+          // 本平台未能自动读出其中的数值」. One card, one export, three
+          // statements, and the one a reader sees first was the wrong one.
+          // Same slot, same `state`, same reason as 补充肺功能基线 below.
+          monitoringUnreadableTitles.length > 0
+          ? `${monitoringUnreadableTitles.join('、')}：已上传报告，但本平台未能自动读出其中的数值 —— 请以报告原件为准`
+          : '还没有上传过肺功能、心脏或血检报告',
       meta: `最近监测 ${
         formatDate(
           [

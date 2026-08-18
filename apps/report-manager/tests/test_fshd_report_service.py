@@ -2120,5 +2120,424 @@ class ADecimalSurvivesTheNarrativePathTest(unittest.TestCase):
         self.assertEqual(len(timeline), 1)
 
 
+class NoLineCanClaimTwoLabelsTest(unittest.TestCase):
+    """THE INVARIANT THE ROW-LABELLING PASS KEPT BREAKING.
+
+    Every list `_row_label` consults overlaps some other list — 检测项目
+    is a column heading AND a method-ish name, 送检项目 is a section
+    header AND a metadata label, 附注 is a section header AND a footnote
+    prefix. That is a property of the strings a Chinese laboratory
+    prints, not a mistake in the lists, and it is not going to stop
+    happening as strings are added.
+
+    What broke three times is leaving the overlap for STATEMENT ORDER to
+    settle: whichever `if` was written first won, two functions
+    disagreed about the order, and the symptom was a whole report going
+    unread with an empty `review_queue` reporting nothing amiss. So the
+    overlaps are enumerated here. A new string that lands in two lists
+    fails this test until somebody decides, in `_row_label`, which of
+    the two it is.
+    """
+
+    #: Every overlap that exists, with the label `_row_label` decides
+    #: for it. Adding a string to two lists without adding it here is
+    #: what this test is for.
+    DECIDED = {
+        # Column heading AND the name of a method-ish thing. Decided as
+        # the ordered item it names; its one value cell goes with it.
+        "检测项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检验项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        # Column heading AND a method section header. Decided as the
+        # heading, which closes the run rather than opening one.
+        "参考区间": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        "参考值": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        "参考范围": (fshd_report_service._KIND_PLAIN, fshd_report_service._SCOPE_SELF),
+        # Method section header AND an exam-metadata label. Decided as
+        # the label: it names what was ordered and reaches its value.
+        "送检项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        # Note section header AND a footnote prefix. Both say NOTE, but
+        # the scopes differ, so it is decided too.
+        "附注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
+        "备注": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
+        "注释": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
+        "说明": (fshd_report_service._KIND_NOTE, fshd_report_service._SCOPE_RUN),
+        # A HEADER STANDING AT THE TOP OF THE PAGE, which every one of
+        # these can be. `_is_title_row` grew a first-line branch — the
+        # document's name is the first thing printed on it — and every
+        # header carrying 检测 / 检验 / 检查 / 报告 satisfies it there.
+        # The title branch is deliberately the WEAKEST claim in
+        # `_row_label`: a page that opens on 检测结果 opens a section, it
+        # does not name itself. Decided as the header in every case.
+        "检测结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "检验结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "报告结果": (fshd_report_service._KIND_RESULT, fshd_report_service._SCOPE_RUN),
+        "检测结论": (fshd_report_service._KIND_CONCLUSION, fshd_report_service._SCOPE_RUN),
+        "检验结论": (fshd_report_service._KIND_CONCLUSION, fshd_report_service._SCOPE_RUN),
+        "检测方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_RUN),
+        "检验方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_RUN),
+        "检查项目": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查方法": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查部位": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查设备": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检查途径": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+        "检验目的": (fshd_report_service._KIND_METHOD, fshd_report_service._SCOPE_NEXT),
+    }
+
+    def _claimants(self, value):
+        """Which label lists claim `value`."""
+        claims = []
+        if value in fshd_report_service._TABLE_HEADER_CELLS:
+            claims.append("table_header_cell")
+        if value in fshd_report_service._ORDERED_ITEM_LABELS:
+            claims.append("ordered_item_label")
+        if any(value.startswith(p) for p in fshd_report_service._EXAM_METADATA_PREFIXES):
+            claims.append("exam_metadata_prefix")
+        if value in fshd_report_service._RESULT_SECTION_HEADERS:
+            claims.append("result_section_header")
+        if value in fshd_report_service._CONCLUSION_SECTION_HEADERS:
+            claims.append("conclusion_section_header")
+        if value in fshd_report_service._METHOD_SECTION_HEADERS:
+            claims.append("method_section_header")
+        if value in fshd_report_service._NOTE_SECTION_HEADERS:
+            claims.append("note_section_header")
+        if any(value.startswith(p) for p in fshd_report_service._NOTE_ROW_PREFIXES):
+            claims.append("note_row_prefix")
+        if fshd_report_service._is_title_row(value, first_content_line=True):
+            claims.append("title")
+        return claims
+
+    def _every_label_string(self):
+        for group in (
+            fshd_report_service._TABLE_HEADER_CELLS,
+            fshd_report_service._ORDERED_ITEM_LABELS,
+            fshd_report_service._EXAM_METADATA_PREFIXES,
+            fshd_report_service._RESULT_SECTION_HEADERS,
+            fshd_report_service._CONCLUSION_SECTION_HEADERS,
+            fshd_report_service._METHOD_SECTION_HEADERS,
+            fshd_report_service._NOTE_SECTION_HEADERS,
+            fshd_report_service._NOTE_ROW_PREFIXES,
+        ):
+            for value in group:
+                yield value
+
+    def test_every_ambiguous_string_has_a_decision_written_down(self):
+        undecided = sorted(
+            value
+            for value in set(self._every_label_string())
+            if len(self._claimants(value)) > 1 and value not in self.DECIDED
+        )
+        self.assertEqual(
+            undecided,
+            [],
+            "these strings are claimed by two label lists and nothing decides "
+            "between them; add the decision to _row_label and to DECIDED",
+        )
+
+    def test_each_decided_string_gets_the_label_that_was_decided(self):
+        for value, expected in self.DECIDED.items():
+            self.assertEqual(
+                fshd_report_service._row_label(value, first_content_line=True),
+                expected,
+                f"{value} is not labelled the way DECIDED says it is",
+            )
+
+    def test_a_decision_is_only_recorded_for_a_string_that_needs_one(self):
+        # Keeps DECIDED from silently outliving the ambiguity it
+        # documents: a string listed here that is no longer claimed
+        # twice is a note about a problem that no longer exists.
+        stale = sorted(
+            value for value in self.DECIDED if len(self._claimants(value)) < 2
+        )
+        self.assertEqual(stale, [])
+
+    def test_no_section_header_is_also_a_document_title(self):
+        # `_is_title_row` grew a first-line branch, and a page whose
+        # first line is a bare section header must still open the
+        # section rather than be eaten as the document's name.
+        for header in (
+            fshd_report_service._RESULT_SECTION_HEADERS
+            + fshd_report_service._CONCLUSION_SECTION_HEADERS
+            + fshd_report_service._METHOD_SECTION_HEADERS
+        ):
+            kind, _ = fshd_report_service._row_label(header, first_content_line=True)
+            self.assertNotEqual(kind, fshd_report_service._KIND_TITLE, header)
+
+
+class ACountIsNotTheDigitOfATypeTokenTest(unittest.TestCase):
+    """「符合FSHD1」 IS A DIAGNOSIS, NOT A REPEAT COUNT OF ONE.
+
+    The last-resort repeat pattern is 「any digit within 16 characters of
+    D4Z4」 and the ordinary Chinese positive conclusion puts the 1 of
+    FSHD1 exactly 14 characters away. A report printing no count at all
+    published `d4z4_repeat_pathogenic: 1` at 0.97 — the confidence of a
+    cell actually read, and the most severe contraction there is.
+    """
+
+    POSITIVE_NO_COUNT = """面肩肱型肌营养不良基因检测报告单
+检测方法:Southern blot(p13E-11探针,EcoRI/BlnI双酶切)
+检测结论:
+受检者4q35区D4Z4重复序列缩短,符合FSHD1分子诊断标准.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.POSITIVE_NO_COUNT, "other", "G.pdf")
+
+    def test_no_count_is_invented_from_the_type_token(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_the_count_reaches_no_channel_a_model_reads_numbers_off(self):
+        result = self._payload()
+        names = {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        self.assertNotIn("d4z4_repeat_pathogenic", names)
+        self.assertNotIn("d4z4_repeat_pathogenic", result["latest_summary"]["by_analyte"])
+
+    def test_the_diagnosis_the_report_states_still_survives(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+        self.assertIn("符合FSHD1", summary["interpretation_summary"])
+
+    def test_a_count_after_a_chinese_character_is_still_read(self):
+        text = """FSHD基因检测报告单
+检测结果:D4Z4重复单元数为3个
+"""
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class TheRebuiltTableRowOutranksTheConclusionSentenceTest(unittest.TestCase):
+    """A TIE WAS BEING SETTLED BY APPEND ORDER.
+
+    On the cell-per-line layout the conclusion prose sits on its own line
+    under a bare 检测结论 header, so it was promoted to the same rank as
+    the rebuilt table rows — which `_page_rows` appends LAST, and
+    `_read_cell` keeps a candidate only when the rank is strictly
+    better. The report's own printed 5 lost to the threshold quoted in
+    its conclusion, and 10 is the boundary that sends a reader off to
+    evaluate FSHD2.
+    """
+
+    BODY = """面肩肱型肌营养不良基因检测报告单
+检测结果
+项目
+结果
+参考区间
+单位
+D4Z4重复单元数
+5
+>10
+个
+检测结论
+D4Z4重复单元数低于10个即为缩短,本例符合FSHD1.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.BODY, "other", "G.pdf")
+
+    def test_the_report_own_printed_count_wins(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 5)
+
+    def test_the_threshold_quoted_in_the_conclusion_is_not_published(self):
+        result = self._payload()
+        cell = result["latest_summary"]["by_analyte"]["d4z4_repeat_pathogenic"]
+        self.assertEqual(cell["value_num"], 5)
+
+    def test_a_conclusion_sentence_is_not_promoted_to_the_data_rank(self):
+        rows = fshd_report_service._page_rows(self.BODY.strip().split("\n"))
+        kinds = {row.text: row.kind for row in rows}
+        self.assertEqual(
+            kinds["D4Z4重复单元数低于10个即为缩短,本例符合FSHD1."],
+            fshd_report_service._KIND_CONCLUSION,
+        )
+
+
+class TheConclusionUnderABareHeaderIsStillTheConclusionTest(unittest.TestCase):
+    """THE PATIENT LOSES THE REPORT'S OWN WORDS.
+
+    On the cell-per-line layout 「检测结论」 is its own line and the
+    sentence is the next one, carrying none of the keywords. Matching
+    the bare header also ENDED the search, because it cleans to nothing.
+    `interpretation_summary` came out None, `findings` came out empty,
+    and the sentence appeared nowhere in the payload — not under
+    报告详情 → 来源追溯, and not in what the assistant is handed.
+    """
+
+    BODY = """面肩肱型肌营养不良基因检测报告单
+检测结果
+项目
+结果
+参考区间
+单位
+D4Z4重复单元数
+5
+>10
+个
+检测结论
+D4Z4重复单元数低于10个即为缩短,本例符合FSHD1.
+"""
+
+    def _payload(self):
+        return analyze_fshd_report(self.BODY, "other", "G.pdf")
+
+    def test_the_sentence_reaches_the_genetic_summary(self):
+        summary = self._payload()["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIn("符合FSHD1", summary["interpretation_summary"])
+
+    def test_the_sentence_reaches_the_structured_field(self):
+        fields = {
+            item["field_name"]: item["field_value"]
+            for item in self._payload()["fshd"]["structured_fields"]
+        }
+        self.assertIn("符合FSHD1", fields["interpretation_summary"])
+
+    def test_the_sentence_reaches_findings(self):
+        findings = self._payload()["findings"]
+        self.assertTrue(findings)
+        self.assertIn("符合FSHD1", findings[0]["finding_text"])
+
+    def test_a_header_with_nothing_under_it_does_not_reach_down_the_page(self):
+        value = fshd_report_service._extract_summary_line(
+            ["检测结论", "医师签名: 王某"], ["检测结论", "结论"]
+        )
+        self.assertIsNone(value)
+
+
+class ATitleTheSuffixListDoesNotRecogniseIsStillATitleTest(unittest.TestCase):
+    """A REPORT IS NAMED AFTER THE TYPE IT WAS ORDERED TO LOOK FOR.
+
+    Two entirely ordinary Chinese titles failed `_is_title_row`: one is
+    32 characters against a cap of 30, the other does not end in 报告.
+    Both fell through to PLAIN, and on the ordinary negative wording
+    that names no type the title's FSHD1 was the only candidate left —
+    published as this patient's 分型 at 0.98, onto the passport, the
+    exports and `patient_profiles`.
+    """
+
+    NEGATIVE = "检测结果:未见4q35D4Z4阵列缩短,结果在正常范围."
+
+    def _diagnosis(self, title):
+        text = f"{title}\n{self.NEGATIVE}\n"
+        return analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]["diagnosis_type"]
+
+    def test_a_thirty_two_character_title_is_a_title(self):
+        title = "面肩肱型肌营养不良1型(FSHD1)D4Z4重复单元数检测报告单"
+        self.assertGreater(len(title), 30)
+        self.assertIsNone(self._diagnosis(title))
+
+    def test_a_title_that_does_not_end_in_the_word_report_is_a_title(self):
+        self.assertIsNone(self._diagnosis("FSHD1基因检测"))
+
+    def test_a_first_data_row_is_not_eaten_as_a_title(self):
+        # A page whose heading the OCR dropped must still be read.
+        text = """D4Z4重复单元数
+3
+个
+"""
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+
+
+class TheStatedLengthIsRecordedWhereTheRefusalSaysItIsTest(unittest.TestCase):
+    """THE REFUSAL AND THE RECORDING MUST COVER THE SAME SPELLINGS.
+
+    `d4z4_refusal == "length_in_kb"` fires on ANY 「D4Z4 … N kb」 while
+    the length patterns each required their own literal label, so for
+    the spellings the refusal covered and the patterns did not, the
+    measurement was refused as a count and recorded NOWHERE — under a
+    comment saying it was already recorded under its own name.
+    """
+
+    def _summary(self, body):
+        return analyze_fshd_report(body, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+
+    def test_a_length_with_no_recognised_label_is_still_recorded(self):
+        summary = self._summary(
+            "面肩肱型肌营养不良基因检测报告单\n检测结果:D4Z4阵列38kb\n"
+        )
+        self.assertEqual(summary["ecori_fragment_kb"], 38.0)
+
+    def test_the_length_is_never_typed_as_a_count(self):
+        summary = self._summary(
+            "面肩肱型肌营养不良基因检测报告单\n检测结果:D4Z4阵列38kb\n"
+        )
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_a_labelled_length_still_reports_through_its_own_label(self):
+        result = analyze_fshd_report(
+            "FSHD基因检测报告单\n检测结果:EcoRI片段长度38kb,D4Z4重复单元数11\n",
+            "other",
+            "G.pdf",
+        )
+        summary = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertEqual(summary["ecori_fragment_kb"], 38.0)
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 11)
+
+    def test_every_kb_spelling_the_refusal_covers_lands_in_the_length_cell(self):
+        for spelling in ("D4Z4阵列38kb", "D4Z4片段38kb", "D4Z4长度38kb", "D4Z438kb"):
+            summary = self._summary(
+                f"FSHD基因检测报告单\n检测结果:{spelling}\n"
+            )
+            self.assertEqual(summary["ecori_fragment_kb"], 38.0, spelling)
+            self.assertIsNone(summary["d4z4_repeat_pathogenic"], spelling)
+
+
+class AnOrderedItemLabelDoesNotRefuseThePageBelowItTest(unittest.TestCase):
+    """ONE OCR LINE ERASED A CONFIRMED GENETIC FINDING.
+
+    送检项目 is a `_METHOD_SECTION_HEADERS` entry, so a bare one opened a
+    METHOD run that never closed; `_KIND_METHOD` is refused, so every
+    reader skipped the rest of the page. And giving it self-scope alone
+    would trade that for the opposite error, because the cell BELOW it
+    is the name of the test that was ORDERED.
+    """
+
+    CONFIRMED = """面肩肱型肌营养不良基因检测报告单
+送检项目
+FSHD1基因检测(Southern blot法)
+D4Z4重复单元数:3个
+单倍型:4qA
+结论:符合FSHD1分子诊断标准.
+"""
+
+    def test_the_finding_below_the_label_is_still_read(self):
+        summary = analyze_fshd_report(self.CONFIRMED, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 3)
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_the_ordered_test_name_is_not_a_diagnosis(self):
+        for label in ("送检项目", "检查项目", "检测项目", "检验项目", "标本类型"):
+            text = f"{label}\nFSHD1基因检测\n检测结论:未见4q35D4Z4阵列缩短,结果在正常范围.\n"
+            summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+                "normalized_summary"
+            ]["genetic_summary"]
+            self.assertIsNone(summary["diagnosis_type"], label)
+
+    def test_an_ordered_item_label_carrying_its_value_inline_is_refused_too(self):
+        text = "送检项目:FSHD1基因检测\n检测结论:未见4q35D4Z4阵列缩短,结果在正常范围.\n"
+        summary = analyze_fshd_report(text, "other", "G.pdf")["fshd"][
+            "normalized_summary"
+        ]["genetic_summary"]
+        self.assertIsNone(summary["diagnosis_type"])
+
+    def test_the_label_reaches_exactly_one_row(self):
+        text = "送检项目\nFSHD1基因检测\nD4Z4重复单元数:3个\n"
+        rows = fshd_report_service._page_rows(text.strip().split("\n"))
+        kinds = {row.text: row.kind for row in rows if row.kind != "table"}
+        self.assertEqual(kinds["FSHD1基因检测"], fshd_report_service._KIND_METHOD)
+        self.assertEqual(kinds["D4Z4重复单元数:3个"], fshd_report_service._KIND_PLAIN)
+
+
 if __name__ == "__main__":
     unittest.main()

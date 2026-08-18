@@ -5,7 +5,8 @@ import { formatProductDate } from './clinical-visuals';
  * The content of the anesthesia card, as data.
  *
  * Kept separate from the drawing code so the clinical text can be
- * tested without a canvas. Everything below traces to one of:
+ * tested without a canvas. Every CLINICAL SENTENCE below traces to one
+ * of:
  *
  *  [AANA] Mani A, Jha S, Kumar V, Kumar S. Balancing Risks in
  *         Obstetrics: Anesthesia Management in Facioscapulohumeral
@@ -13,8 +14,26 @@ import { formatProductDate } from './clinical-visuals';
  *  [AAN]  Tawil R, Kissel JT, Heatwole C, Pandya S, Gronseth G,
  *         Benatar M. Neurology. 2015;85(4):357-364.
  *
- * Both are in the corpus. Two things that are NOT sources, and were
- * the obvious places to reach for:
+ * Both are in the corpus.
+ *
+ * THE ENUMERATION USED TO SAY 「EVERYTHING BELOW」 AND THE CARD PRINTS A
+ * THIRD CITATION. `sources` ends with 「神经肌肉病麻醉的完整共识见 ENMC,
+ * Eur J Neurol. 2022;29:3479-3753」, which is neither of the two above.
+ * Nothing in this repo backs it: none of the 235 files under
+ * `content/medical-kb` is an ENMC or a Eur J Neurol document. And
+ * 3479-3753 is 275 pages — an issue's span, not an article's.
+ *
+ * It is a POINTER printed on the card rather than the basis of any
+ * sentence above it, which is why the two-source claim was true of the
+ * clinical text and false of the file. Both halves are recorded here
+ * instead of the line being deleted: an anesthetist may already have
+ * followed it, and whether it names a real consensus is a question for
+ * someone with the journal in front of them, not a rendering question.
+ * Either the corpus gains the document and this header gains a third
+ * entry, or the line comes off the card.
+ *
+ * Two things that are NOT sources, and were the obvious places to reach
+ * for:
  *
  *  - The FSHD Society's 「手术麻醉」 page in the corpus is a webinar
  *    landing page. The saved file is 4.7 MB of WordPress and one

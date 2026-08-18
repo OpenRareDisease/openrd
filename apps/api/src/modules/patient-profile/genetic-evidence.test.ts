@@ -27,6 +27,22 @@ const doc = (over: Partial<GeneticEvidenceDocumentLike> = {}): GeneticEvidenceDo
   ...over,
 });
 
+/**
+ * A GENETICS LABORATORY'S OWN REPORT, WITH THE PAGE IT WAS READ OFF.
+ *
+ * `extractedText` is on the fixture and not optional, because it is on
+ * the real row: PROFILE_OCR_PAYLOAD_PROJECTION in profile.service.ts
+ * puts it on every document the profile query returns, and
+ * `buildReportFields` puts it on every assistant chunk. It used to be
+ * absent here, and the fixture passed anyway — off `documentType`,
+ * which the parse had already overwritten with the classifier's own
+ * label. That is the defect these files now pin, so the fixture has to
+ * be a document rather than a pair of labels agreeing with each other.
+ */
+const REPORT_PAGE_ZH =
+  '示例医学检验实验室　基因检测报告\n送检单位：神经内科\n检测项目：D4Z4 重复序列检测\n' +
+  '检测方法：Southern blot\n检测结论：符合 FSHD1\n报告医师：王××';
+
 const geneticReport = (
   id: string,
   fields: Record<string, unknown>,
@@ -34,7 +50,10 @@ const geneticReport = (
 ) =>
   doc({
     id,
-    ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields } },
+    ocrPayload: {
+      fields: { classifiedType: 'genetic_report', ...fields },
+      extractedText: REPORT_PAGE_ZH,
+    },
     ...over,
   });
 
@@ -90,7 +109,172 @@ describe('是不是实验室自己出的那份报告 —— 排序用它，排�
   });
 
   it('什么都没读出来的基因报告仍然是 —— 它是谁写的与读没读出来无关', () => {
+    // No cell extracted, and still the laboratory's: what answers is
+    // the page, which says 检测方法 / 检测结论 / 报告医师 whether or not
+    // the extractor got a number out of it.
     expect(isLaboratoryGeneticReport(geneticReport('empty', {}))).toBe(true);
+  });
+
+  /**
+   * THE FOURTH QUESTION MAY NOT BE ANSWERED BY THE FIRST ONE'S ANSWER.
+   *
+   * The step reads the type the UPLOADER declared, and this module and
+   * profile.controller.ts both said so in as many words — 「feeding the
+   * resolved documentType back in as the fourth would make a classifier
+   * corroborate itself」. Executed, it WAS the resolved type on every
+   * path: `startOcrJob` UPDATEs `patient_documents.document_type` with
+   * `resolveDocumentTypeFromPayload`'s answer, which prefers
+   * `fields.classifiedType`, and the declaration it replaced is stored
+   * nowhere. So (1) and (4) were one expression and (3) — the agreeing
+   * witness — was dead on every parsed row.
+   *
+   * The row below is what the pipeline leaves on disk for a 门诊病历摘要
+   * the old keyword classifier scored `genetic_report` (18 against
+   * medical_summary 16) and uploaded under 其他: the column says
+   * `genetic_report` because the CLASSIFIER said so, not the patient.
+   * Driven through every caller it graded `confirmation: genetic`,
+   * `grade: trial_ready`, 「基因报告」 on the citation chip, and
+   * `within_fshd1_repeat_range` + `permissive_haplotype` in BOTH
+   * redaction modes.
+   */
+  it('分类器改写过的 document_type 不能再当作「上传者声明的类型」用', () => {
+    const asStoredAfterParse: GeneticEvidenceDocumentLike = {
+      id: 'archived-summary',
+      // What the UPDATE wrote, derived from `classifiedType` below.
+      // The patient picked 其他; that answer no longer exists on the row.
+      documentType: 'genetic_report',
+      status: 'parsed',
+      uploadedAt: '2020-06-01T00:00:00.000Z',
+      ocrPayload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          diagnosisType: 'FSHD1',
+          d4z4Repeats: '4',
+          haplotype: '4qA',
+        },
+      },
+    };
+    expect(isLaboratoryGeneticReport(asStoredAfterParse)).toBe(false);
+    // And the same row with the laboratory's own witness on it is still
+    // accepted — what (4) lost is the power to stand in for (3).
+    expect(
+      isLaboratoryGeneticReport({
+        ...asStoredAfterParse,
+        ocrPayload: {
+          fields: {
+            ...(asStoredAfterParse.ocrPayload as { fields: Record<string, unknown> }).fields,
+            geneticTestMethod: 'Southern blot',
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  /**
+   * THE DECLARATION IS NOT LOST, AND REFUSING TO LOOK FOR IT COST REAL
+   * PATIENTS THEIR DIAGNOSIS.
+   *
+   * The row above is what the pipeline leaves for a payload written by
+   * no provider of this pipeline. What it leaves for every row the
+   * current bridge parsed carries one cell more: `fields.documentType`,
+   * stamped by `buildFields` out of the `documentType` `startOcrJob`
+   * was CALLED with, which is the upload form's dropdown value. The
+   * classification lands in `classifiedType` and the column UPDATE
+   * reads that one, so the blob holds both answers and they disagree
+   * exactly where it matters.
+   *
+   * Refusing the fourth question on every classifier-labelled row —
+   * which is what the previous attempt did — made a GENUINE laboratory
+   * report byte-identical to a transcription whenever its page was not
+   * stored and its 检测方法 was not read. That is not an edge: the
+   * passport separates 方法对但结果不全 from 结果不全 precisely because
+   * a laboratory report with no readable method is ordinary. Executed
+   * over that shape, the patient dropped from 基因确诊 to 自述, from
+   * 可用于入组 to 仅有转录结果, the citation chip under their own
+   * Southern blot's repeat count turned from 报告读取 into
+   * 转录自非基因报告文件, and both redaction modes began answering
+   * `not_read_off_a_laboratory_report` about a laboratory's reading.
+   *
+   * The two rows below differ in ONE cell and in nothing else. That
+   * cell is the whole of what the gate has to go on, and it is the
+   * right one: it is what the patient said, and no classifier writes
+   * it.
+   */
+  describe('上传时声明的类型存在 payload 里，解析不会覆盖它', () => {
+    const archivedRow = (declaredOnUpload: string | null): GeneticEvidenceDocumentLike => ({
+      id: 'archived',
+      // The column, overwritten by the parse with the classification —
+      // identical on both rows, which is why it decides nothing.
+      documentType: 'genetic_report',
+      status: 'parsed',
+      uploadedAt: '2020-06-01T00:00:00.000Z',
+      ocrPayload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          ...(declaredOnUpload ? { documentType: declaredOnUpload } : {}),
+          diagnosisType: 'FSHD1',
+          d4z4Repeats: '4',
+          haplotype: '4qA',
+        },
+      },
+    });
+
+    it('真基因报告：没存下页面、也没读出检测方法，仍然按报告评级', () => {
+      expect(isLaboratoryGeneticReport(archivedRow('genetic_report'))).toBe(true);
+      expect(readGeneticEvidence([archivedRow('genetic_report')]).laboratory).toBe(true);
+    });
+
+    it('同一形状的门诊病历摘要：上传时选的是「其他」，照样拦住', () => {
+      expect(isLaboratoryGeneticReport(archivedRow('other'))).toBe(false);
+      expect(readGeneticEvidence([archivedRow('other')]).laboratory).toBe(false);
+      // And the value is still carried, because refusing to GRADE it is
+      // not refusing to show it.
+      expect(readGeneticEvidence([archivedRow('other')]).d4z4).toBe('4');
+    });
+
+    it('声明没存下来时不猜 —— 拒绝是往叙述那边错，代价是可逆的', () => {
+      expect(isLaboratoryGeneticReport(archivedRow(null))).toBe(false);
+    });
+
+    it('snake_case 的那一份拼写读的是同一格', () => {
+      const row = archivedRow(null);
+      const fields = (row.ocrPayload as { fields: Record<string, unknown> }).fields;
+      expect(
+        isLaboratoryGeneticReport({
+          ...row,
+          ocrPayload: { fields: { ...fields, document_type: 'genetic_report' } },
+        }),
+      ).toBe(true);
+    });
+
+    it('声明这一格不是分类标签的第二个出口', () => {
+      // The separation is the whole mechanism: `documentType` is read as
+      // the declaration and `classifiedType` as the classification, and
+      // neither list may reach the other's cell. A 病历摘要 the parser
+      // labelled correctly is refused at the first question however its
+      // uploader declared it.
+      const row = archivedRow('genetic_report');
+      const fields = (row.ocrPayload as { fields: Record<string, unknown> }).fields;
+      expect(
+        isLaboratoryGeneticReport({
+          ...row,
+          ocrPayload: { fields: { ...fields, classifiedType: 'medical_summary' } },
+        }),
+      ).toBe(false);
+    });
+
+    it('页面上写着病历摘要时，声明救不回来 —— (2) 排在 (4) 前面', () => {
+      const row = archivedRow('genetic_report');
+      expect(
+        isLaboratoryGeneticReport({
+          ...row,
+          ocrPayload: {
+            ...(row.ocrPayload as object),
+            extractedText: '门诊病历摘要\n主诉：双上肢无力5年\n查体：翼状肩胛',
+          },
+        }),
+      ).toBe(false);
+    });
   });
 
   it('解析器改判的类型算数，跟排序用的是同一个答案', () => {

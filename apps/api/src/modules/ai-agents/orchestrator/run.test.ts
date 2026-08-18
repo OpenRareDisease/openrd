@@ -1359,6 +1359,50 @@ const noticeOf = (llm: { chat: ReturnType<typeof vi.fn> }, index: number): strin
     (m) => m.role === 'system' && String(m.content).includes('【当前数据可见范围】'),
   )?.content as string | undefined) ?? '';
 
+/** The field labels of one of the notice's per-scope inventory blocks,
+ *  flattened across scopes. */
+const labelsAfter = (notice: string, heading: string): string[] =>
+  (notice.split(`${heading}\n`)[1] ?? '')
+    .split('\n\n')[0]
+    .split('\n')
+    .filter((line) => line.startsWith('- '))
+    .flatMap((line) => line.replace(/^- [^：]+：/, '').split('、'));
+
+/** The field labels the notice claims the model already has. */
+const inventoryOf = (notice: string): string[] =>
+  labelsAfter(notice, '本轮工具消息里你已经拿到的字段：');
+
+/** The field labels the notice says 「精确数值」 consent would add. */
+const preciseOnlyOf = (notice: string): string[] =>
+  labelsAfter(notice, '本轮开启「精确数值」授权后才会多出来的字段，只有这些：');
+
+const gatherThenAnswerWith = (toolName: string): LlmChatResponse[] => [
+  {
+    content: null,
+    toolCalls: [{ id: 'g1', name: toolName, argumentsJson: '{}' }],
+    finishReason: 'tool_calls',
+  },
+  { content: '最终回答。', toolCalls: [], finishReason: 'stop' },
+];
+
+const oneRetrieverOrchestrator = (
+  llm: ILLMProvider,
+  toolName: string,
+  retrieverId: string,
+  fields: Record<string, unknown>,
+): Orchestrator =>
+  new Orchestrator(
+    llm,
+    new ToolRegistry().register(mkTool(toolName, stubResult(retrieverId, 1, fields))),
+    silentLogger as unknown as RetrieveContext['logger'],
+  );
+
+const reportsOrchestrator = (llm: ILLMProvider, fields: Record<string, unknown>): Orchestrator =>
+  oneRetrieverOrchestrator(llm, 'get_my_reports', 'patient_reports', fields);
+
+const followupsOrchestrator = (llm: ILLMProvider, fields: Record<string, unknown>): Orchestrator =>
+  oneRetrieverOrchestrator(llm, 'get_my_records', 'patient_followups', fields);
+
 describe('Orchestrator.run — strict visibility notice', () => {
   it('says nothing about what the model "already has" before any tool has run', async () => {
     const llm = mkLlm(gatherThenAnswer());
@@ -1562,6 +1606,106 @@ describe('Orchestrator.run — strict visibility notice', () => {
     expect(notice).not.toContain('本平台判读');
     expect(notice).not.toContain('numericValuesWithheld');
   });
+
+  // ------------------------------------------------------------------
+  // A KEY THAT EXISTS IS NOT A VALUE THAT EXISTS.
+  //
+  // `redactFields` writes `fields_clinical` for any report row carrying
+  // an OCR object at all — an empty projection included — and
+  // `renderFieldsByScope` then prints nothing for it. The notice read
+  // the key and offered precise consent for report cells that are not
+  // there. The same shape reached three other claims: the inventory
+  // named `处理状态` / `上传年份` for null columns, the
+  // numericValuesWithheld sentence explained a row that was written
+  // only when the counter is above zero, and the 判读 paragraph fired on
+  // the container rather than on a reading.
+  // ------------------------------------------------------------------
+
+  it('offers no consent switch for a report whose OCR projection came out empty', async () => {
+    const row = {
+      classifiedType: 'genetic',
+      status: null,
+      uploadYear: null,
+      // Everything in here is dropped by `projectOcrFields`, so the
+      // blob projects to {} while the key still reaches `fieldsUsed`.
+      fields: { patientName: '张三', 送检医院: '某某医院' },
+    };
+    const llm = mkLlm(gatherThenAnswerWith('get_my_reports'));
+    await reportsOrchestrator(llm, row).run({
+      userId: 'u1',
+      question: '我的报告说了什么？',
+      requestId: 'r-notice-empty-ocr',
+      consentLevel: 'basic',
+    });
+
+    const tools = roundToolText(llm, 1);
+    const notice = noticeOf(llm, 1);
+
+    // The tool message carries no OCR row of any kind...
+    expect(tools).not.toContain('OCR 字段');
+    // ...so nothing may claim one is there, or that consent unlocks it.
+    expect(notice).not.toContain('OCR 字段');
+    expect(notice).not.toContain('才会多出来的字段');
+    expect(notice).toContain('也不会再多给你任何字段');
+    expect(notice).not.toContain('numericValuesWithheld');
+    // The null columns are the same defect one row up.
+    expect(inventoryOf(notice)).toEqual(['报告类型']);
+
+    // And the switch really would produce nothing, so the promise
+    // withheld above is the true one.
+    const precise = mkLlm(gatherThenAnswerWith('get_my_reports'));
+    await reportsOrchestrator(precise, row).run({
+      userId: 'u1',
+      question: '我的报告说了什么？',
+      requestId: 'r-notice-empty-ocr-p',
+      consentLevel: 'precise',
+    });
+    expect(roundToolText(precise, 1)).not.toContain('  - ');
+  });
+
+  it('offers no consent switch for a metric whose every record is 「做不到」', async () => {
+    // The unable-only branch of the follow-up retriever ships
+    // `count: 0` and no series at all, and `count` was this table's
+    // evidence for 最近数值 / 历次记录 — so a patient who had recorded
+    // nothing but 做不到 was told the switch would produce numbers.
+    const llm = mkLlm(gatherThenAnswerWith('get_my_records'));
+    await followupsOrchestrator(llm, {
+      metricKey: 'grip',
+      metricLabel: '握力',
+      count: 0,
+      unableSummary: '本期共 6 次记录为「做不到」（这些次没有数值），最近一次 2 天前',
+    }).run({
+      userId: 'u1',
+      question: '我的握力怎么样？',
+      requestId: 'r-notice-unable-only',
+      consentLevel: 'basic',
+    });
+
+    const notice = noticeOf(llm, 1);
+    expect(notice).toContain('记录次数');
+    expect(notice).not.toContain('才会多出来的字段');
+    expect(notice).not.toContain('最近数值');
+    expect(notice).not.toContain('历次记录');
+  });
+
+  it('names no field the tool message did not print a row for', async () => {
+    // null, '' and an empty array all survive the redactor into
+    // `fieldsUsed` and are all skipped — or printed as a bare label —
+    // by the renderer.
+    const llm = mkLlm(gatherThenAnswer());
+    await profileOrchestrator(llm, {
+      gender: '女',
+      onsetRegion: null,
+      familyHistory: '',
+      assistiveDevices: [],
+    }).run({
+      userId: 'u1',
+      question: '我的情况？',
+      requestId: 'r-notice-empty-cells',
+      consentLevel: 'basic',
+    });
+    expect(inventoryOf(noticeOf(llm, 1))).toEqual(['性别']);
+  });
 });
 
 describe('visibility-notice derivation fences', () => {
@@ -1601,6 +1745,167 @@ describe('visibility-notice derivation fences', () => {
       }
     }
   });
+
+  // THE FENCE THAT IS NOT A CLAIM ABOUT KEY NAMES.
+  //
+  // Every row below is run through the real retriever→redactor→renderer
+  // path TWICE, once under each consent level, and the question asked is
+  // the patient's own: does flipping the switch change the bytes the
+  // model receives? The notice may promise exactly when it does. Two
+  // rows here promise nothing while carrying a full 「fields」 key —
+  // the empty projection and the qualitative-only blob, whose strict and
+  // precise OCR blocks are byte-identical.
+  //
+  // It doubles as the drift fence on `renderFieldsByScope`: the notice
+  // reads the rendered rows by their printed shape, so a format change
+  // in render.ts surfaces here rather than quietly emptying the notice.
+  const shapes: Array<{
+    name: string;
+    tool: string;
+    retriever: string;
+    fields: Record<string, unknown>;
+  }> = [
+    {
+      name: 'report, OCR blob projects to nothing',
+      tool: 'get_my_reports',
+      retriever: 'patient_reports',
+      fields: { classifiedType: 'genetic', status: null, fields: { patientName: '张三' } },
+    },
+    {
+      name: 'report, qualitative results only',
+      tool: 'get_my_reports',
+      retriever: 'patient_reports',
+      fields: { classifiedType: 'lab', status: 'completed', fields: { trustAb: '阴性(-)' } },
+    },
+    {
+      name: 'report, measurements withheld',
+      tool: 'get_my_reports',
+      retriever: 'patient_reports',
+      fields: {
+        classifiedType: 'lab',
+        status: 'completed',
+        fields: { alt: '35 U/L', ck: '1200 U/L' },
+      },
+    },
+    {
+      name: 'report, genetics cells',
+      tool: 'get_my_reports',
+      retriever: 'patient_reports',
+      fields: {
+        classifiedType: 'genetic',
+        documentType: '基因检测报告',
+        status: 'completed',
+        fields: { d4z4Repeats: '7', haplotype: '4qA', methylation: '35%' },
+      },
+    },
+    {
+      name: 'report, genetics cell this platform refuses to read',
+      tool: 'get_my_reports',
+      retriever: 'patient_reports',
+      fields: {
+        classifiedType: 'genetic',
+        status: 'completed',
+        fields: { d4z4Repeats: '姓名:张三 住院号:R000000 D4Z4:7' },
+      },
+    },
+    {
+      name: 'follow-ups, every record 做不到',
+      tool: 'get_my_records',
+      retriever: 'patient_followups',
+      fields: {
+        metricKey: 'grip',
+        metricLabel: '握力',
+        count: 0,
+        unableSummary: '本期共 6 次记录为「做不到」，最近一次 2 天前',
+      },
+    },
+    {
+      name: 'follow-ups, a real series',
+      tool: 'get_my_records',
+      retriever: 'patient_followups',
+      fields: {
+        metricKey: 'grip',
+        metricLabel: '握力',
+        count: 3,
+        countAtCap: false,
+        spanDays: 40,
+        changeDirection: 'down',
+        latestBand: '较前降低',
+        unit: 'kg',
+        latestValue: 18,
+        series: '22kg(40天前)、18kg(0天前)',
+      },
+    },
+    {
+      name: 'follow-ups, events only',
+      tool: 'get_my_records',
+      retriever: 'patient_followups',
+      fields: { eventSummary: '跌倒（轻）×2，最近 3 天前', eventCount: 2 },
+    },
+    {
+      name: 'profile, no genetics cell at all',
+      tool: 'get_my_profile',
+      retriever: 'patient_profile',
+      fields: { gender: '女', onsetRegion: '面部', familyHistory: '无' },
+    },
+    {
+      name: 'profile, genetics cells on file',
+      tool: 'get_my_profile',
+      retriever: 'patient_profile',
+      fields: { gender: '女', d4z4: '6', haplotype: '4qA', methylation: '12%' },
+    },
+    {
+      name: 'profile, genetics cell this platform refuses to read',
+      tool: 'get_my_profile',
+      retriever: 'patient_profile',
+      fields: { gender: '女', d4z4: '4q单倍型:4qB 姓名:张三 住院号:R000000' },
+    },
+  ];
+
+  it.each(shapes)(
+    'promises the consent switch exactly when it changes the prompt — $name',
+    async ({ tool, retriever, fields }) => {
+      const run = async (consentLevel: 'basic' | 'precise') => {
+        const llm = mkLlm(gatherThenAnswerWith(tool));
+        await oneRetrieverOrchestrator(llm, tool, retriever, fields).run({
+          userId: 'u1',
+          question: '我的情况？',
+          requestId: `r-switch-${retriever}-${consentLevel}`,
+          consentLevel,
+        });
+        return { notice: noticeOf(llm, 1), tools: roundToolText(llm, 1) };
+      };
+
+      const strict = await run('basic');
+      const precise = await run('precise');
+
+      const strictLines = strict.tools.split('\n');
+      const added = precise.tools
+        .split('\n')
+        // The two modes head the OCR block with different words —
+        // 「OCR 字段（临床化）:」 vs 「OCR 字段:」 — so the heading line
+        // always differs even when every row under it is identical.
+        // It is a name for the block, not a cell the switch unlocks.
+        // (render.ts prints the precise heading even for a blob that
+        // projected to nothing, which is why it can be the ONLY
+        // difference.)
+        .filter((line) => !strictLines.includes(line) && !/^OCR 字段(（临床化）)?:$/.test(line));
+      const promised = strict.notice.includes('才会多出来的字段');
+
+      expect(promised, `precise adds ${JSON.stringify(added)}`).toBe(added.length > 0);
+
+      // ...and every field it names by label is one of the added rows,
+      // so the promise is not merely non-empty but true field by field.
+      if (!promised) return;
+      for (const label of preciseOnlyOf(strict.notice)) {
+        const row = label === 'OCR 字段（原始值）' ? '  - ' : `${label}: `;
+        expect(
+          added.some((line) => line.startsWith(row)),
+          `notice promises 「${label}」 but precise adds no such row`,
+        ).toBe(true);
+      }
+    },
+  );
 });
 
 describe('Orchestrator.run — sentences about the state of this turn', () => {

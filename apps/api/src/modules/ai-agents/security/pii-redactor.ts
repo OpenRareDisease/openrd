@@ -98,7 +98,6 @@ import type { AppLogger } from '../../../config/logger.js';
 import {
   GENETIC_FIELD_KEYS,
   isLaboratoryGeneticReport,
-  pickReading,
 } from '../../patient-profile/genetic-evidence.js';
 import {
   FSHD1_MAX_REPEAT_UNITS,
@@ -1019,8 +1018,11 @@ const isUntrustworthyText = (text: string): boolean => {
  * `publishGeneticCell`, `publishMethylationCell` and
  * `publishDiagnosisTypeCell` — the whole of the shared publish path, so
  * both scopes and every genetics cell — plus the
- * `OCR_FIELDS_SAFE_KEYS_PRECISE` branch of `projectOcrFields`, and the
- * profile scope's haplotype gate in `clinicalise`.
+ * `OCR_FIELDS_SAFE_KEYS_PRECISE` branch of `projectOcrFields`, and BOTH
+ * scopes' haplotype gates: the profile scope's in `clinicalise` and the
+ * reports scope's in `projectOcrFields`. A gate is a cell being read in
+ * order to answer about another cell, so it clears the bar a cell being
+ * published clears.
  *
  * AND WHERE IT IS NOT, because the sentence above would otherwise
  * overclaim. The profile scope's non-genetics cells — `familyHistory`,
@@ -1136,6 +1138,46 @@ const isScalarCell = (value: unknown): boolean =>
  * dispatch. `toSnake` maps both spellings onto the parser's own prefix.
  */
 const isGenericTableKey = (key: string): boolean => toSnake(key).startsWith('table_');
+
+/**
+ * WHICH GENETICS READER A KEY IS DISPATCHED TO — asked in one place,
+ * because two places asking it is how the gate below came apart from
+ * the loop it gates.
+ *
+ * The order is load-bearing and is the loop's own: a row printed
+ * 「D4Z4 甲基化 %」 is a d4z4 key before it is a methylation one, which
+ * is the precedence `isGenericTableKey` was written about. A generic
+ * table key answers `null` here for that function's stated reason — a
+ * name the printer chose may not buy a clinical band, and it may not
+ * buy a vote on one either.
+ *
+ * THE HAPLOTYPE GATE WALKS THIS, NOT A KEY TABLE. `projectOcrFields`
+ * used to find the gating cell with `pickReading` over
+ * `GENETIC_FIELD_KEYS.haplotype` — three spellings — while the loop
+ * beside it minted a haplotype reading for EVERY key containing
+ * 「haplotype」. Executed on a blob whose cell was spelled
+ * `haplotypeAllele: '4qB'`, one projection carried
+ * `haplotypeAllele_clinical: non_permissive_haplotype` and
+ * `d4z4Repeats_clinical: within_fshd1_repeat_range_grey_zone_8_to_10`
+ * together, in both modes — the 8–10 note whose own docstring says it
+ * is 「a paragraph about the other allele」 over a report naming 4qB,
+ * printed directly beneath this platform's own statement that the
+ * report names 4qB. `clinicaliseEcoRIFragment` already records what
+ * that costs: naming a subset of the spellings 「is how this cell came
+ * to be handled under some of its names and none of the others」. The
+ * substring is the class, so the gate reads the class.
+ */
+type GeneticCellBranch = 'd4z4' | 'ecori' | 'methylation' | 'haplotype';
+
+const geneticBranchFor = (key: string): GeneticCellBranch | null => {
+  if (isGenericTableKey(key)) return null;
+  const lower = key.toLowerCase();
+  if (lower.includes('d4z4')) return 'd4z4';
+  if (lower.includes('ecori')) return 'ecori';
+  if (lower.includes('methylation')) return 'methylation';
+  if (lower.includes('haplotype')) return 'haplotype';
+  return null;
+};
 
 // ------------------------------------------------- the shared publish path
 
@@ -1483,24 +1525,41 @@ const projectOcrFields = (
     if (!key.includes('_')) camelKeys.set(key, value);
   }
 
+  /** Snake_case yields to camelCase when both are present and agree —
+   *  as a predicate rather than a condition written out twice, because
+   *  the gate below and the loop below it have to skip the same cells
+   *  for the gate to be a reading of what the loop publishes. */
+  const collapsesToCamelAlias = (key: string, value: unknown): boolean =>
+    key.includes('_') && camelKeys.has(toCamel(key)) && camelKeys.get(toCamel(key)) === value;
+
   // THE HAPLOTYPE THE SAME REPORT STATES, read once for the whole blob,
   // because the D4Z4 grey-zone note is about a 4qA array and this is
-  // how the passport gates it. `pickReading` over
-  // `GENETIC_FIELD_KEYS.haplotype` rather than a scan of this loop's
-  // keys: that table is every spelling any writer in this pipeline has
-  // ever produced for the cell, and reading it here with the passport's
-  // own reader is what keeps 「is this a 4qA array」 one question with
-  // one answer. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+  // how the passport gates it. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+  //
+  // READ OFF THE CELLS THIS LOOP ITSELF CALLS HAPLOTYPE CELLS, on the
+  // same dispatch (`geneticBranchFor`) and behind the same two guards
+  // `publishGeneticCell` puts in front of every reader, in the same
+  // order. It used to be `pickReading` over a three-spelling key table
+  // while the loop matched the substring, and the two disagreeing is
+  // measured in `geneticBranchFor`'s note: one projection asserting
+  // 4qB and applying the 4qA grey-zone note to the count in the same
+  // breath.
+  //
+  // UNANIMITY OR NOTHING, which is `parsePermissiveHaplotype`'s own
+  // rule one cell wider: that function answers `null` for a single
+  // cell naming both alleles, and two cells naming one allele each are
+  // the same fact spread over two keys. A cell that states no allele
+  // does not vote — it has not disagreed with anything.
   //
   // AND A CELL THIS PLATFORM WOULD NOT SHOW CANNOT GATE ANYTHING — the
   // same rule, and the same `isUntrustworthyValue`, that the profile
   // scope's copy of this gate states in `clinicalise` and that
-  // `publishGeneticCell` enforces before any reader runs. The sentence
-  // above was untrue without it. Executed on one blob whose 单倍型 cell
-  // held a hand-correction paste — 「4q单倍型:4qB 姓名:张三 科别:神经内
-  // 科 住院号:R000000」, the live case `publishMethylationCell` already
-  // names — the loop below REFUSED that cell (no `haplotype`, no
-  // `haplotype_clinical`, `fieldsDroppedAsUnsafe: 1`) while this line
+  // `publishGeneticCell` enforces before any reader runs. Executed on
+  // one blob whose 单倍型 cell held a hand-correction paste — 「4q单倍
+  // 型:4qB 姓名:张三 科别:神经内科 住院号:R000000」, the live case
+  // `publishMethylationCell` already names — the loop below REFUSED
+  // that cell (no `haplotype`, no `haplotype_clinical`,
+  // `fieldsDroppedAsUnsafe: 1`) while this gate, before it asked,
   // read 4qB off the very same string and banded a count of 9 as
   // `repeat_count_not_read_against_fshd1_range_non_permissive_haplotype`
   // — a refusal whose documented content is 「the report this count came
@@ -1510,23 +1569,47 @@ const projectOcrFields = (
   // identical cell in the identical run, said
   // `within_fshd1_repeat_range_grey_zone_8_to_10`.
   //
-  // IT WAS NOT ONLY INCONSISTENT, IT WAS WRONG. `parsePermissiveHaplotype`
-  // matches 4qA / 4qB as bare substrings, so a paste that never states
-  // THIS patient's allele decides it anyway: a 检测方法/说明 block pasted
-  // into the 单倍型 box, whose only 4qB is the boilerplate 「4qB 型等位基
-  // 因不具有致病性」, read `false` and told a grey-zone FSHD1 candidate
-  // that their count is not read against the FSHD1 range. That is the
-  // same defect `publishGeneticCell` records for the size cells — an
-  // inpatient record number's DIGITS becoming a repeat count — one cell
-  // further along.
+  // WHAT THESE GUARDS DO NOT CURE, stated here so the paragraph above
+  // is not read as covering it: `parsePermissiveHaplotype` matches
+  // 4qA / 4qB as bare substrings, so a 检测方法/说明 block pasted into
+  // the 单倍型 box whose only 4qB is the boilerplate 「4qB 型等位基因不具
+  // 有致病性」 still reads `false` — it is short, it carries no
+  // identifier, and nothing here has grounds to refuse it. Executed, it
+  // bands a count of 9 as
+  // `repeat_count_not_read_against_fshd1_range_non_permissive_haplotype`.
+  // That is the passport reader's reading of a cell and it is the same
+  // reading `clinicaliseHaplotype` publishes beside it, so this
+  // projection is at least saying one thing; making it the RIGHT thing
+  // is a change to `parsePermissiveHaplotype` in
+  // patient-profile/profile.passport.ts, not to this gate.
   //
   // `null`, not `false`, for a refused cell: 「unknown」 is what this
   // platform has, and `!== false` keeps the grey-zone note, the only
   // direction that adds uncertainty rather than removing it.
-  const haplotypeCell = pickReading(rawFields, GENETIC_FIELD_KEYS.haplotype);
-  const haplotypePermissive = isUntrustworthyValue(haplotypeCell)
-    ? null
-    : parsePermissiveHaplotype(haplotypeCell);
+  let haplotypePermissive: boolean | null = null;
+  let haplotypeCellsDisagree = false;
+  for (const [key, value] of Object.entries(rawFields)) {
+    if (collapsesToCamelAlias(key, value)) continue;
+    if (geneticBranchFor(key) !== 'haplotype') continue;
+    // THE GUARD IS ASKED FIRST, AND A REFUSED CELL IS NOT READ — the
+    // sentence `publishGeneticCell` is written under, applied here
+    // because deciding another cell's reading IS reading this one. The
+    // live case is the hand-correction paste 「4q单倍型:4qB 姓名:张三 科
+    // 别:神经内科 住院号:R000000」, which the loop below refuses to
+    // publish, refuses to read, and counts into `fieldsDroppedAsUnsafe`.
+    if (isUntrustworthyValue(value)) continue;
+    // ...AND A CONTAINER IS NOT A READING, which is `readGeneticCell`'s
+    // question and the reason `['4qA', '4qB']` gets
+    // `unspecified_haplotype` rather than a joined string. A cell this
+    // platform prints no allele for states no allele to gate on.
+    const cell = readGeneticCell(value);
+    if (cell.kind !== 'text') continue;
+    const stated = parsePermissiveHaplotype(cell.text);
+    if (stated === null) continue;
+    if (haplotypePermissive === null) haplotypePermissive = stated;
+    else if (haplotypePermissive !== stated) haplotypeCellsDisagree = true;
+  }
+  if (haplotypeCellsDisagree) haplotypePermissive = null;
 
   /**
    * This scope's half of the shared publish path. The blob is built from
@@ -1549,16 +1632,19 @@ const projectOcrFields = (
   };
 
   for (const [key, value] of Object.entries(rawFields)) {
-    if (key.includes('_') && camelKeys.has(toCamel(key)) && camelKeys.get(toCamel(key)) === value) {
-      continue;
-    }
+    if (collapsesToCamelAlias(key, value)) continue;
     // A name the printer chose is not a reviewed key, so it may not buy
     // a clinical band by containing a substring. Deny-by-default, which
     // is what the parser's own docstring promises about it. See
-    // `isGenericTableKey`.
+    // `isGenericTableKey`. Asked here as well as inside
+    // `geneticBranchFor` because it also has to keep such a key out of
+    // the safe-key branch at the bottom.
     if (isGenericTableKey(key)) continue;
     const lower = key.toLowerCase();
-    if (lower.includes('d4z4')) {
+    // The one dispatch, shared with the haplotype gate above so that a
+    // cell gating a reading and a cell getting one are the same set.
+    const branch = geneticBranchFor(key);
+    if (branch === 'd4z4') {
       // 「other」 is how every spelling of the uncontracted allele's cell
       // names itself, and it has to be asked before the band. See
       // `clinicaliseOtherD4Z4Allele`.
@@ -1567,13 +1653,13 @@ const projectOcrFields = (
           ? clinicaliseOtherD4Z4Allele(value, fromLaboratoryReport)
           : clinicaliseD4Z4(value, fromLaboratoryReport, haplotypePermissive),
       );
-    } else if (lower.includes('ecori')) {
+    } else if (branch === 'ecori') {
       // The other size cell. See `clinicaliseEcoRIFragment` for why it
       // is read by its own reader and not by the one above.
       publishGeneticCell(sink, key, value, mode, () =>
         clinicaliseEcoRIFragment(value, fromLaboratoryReport),
       );
-    } else if (lower.includes('methylation')) {
+    } else if (branch === 'methylation') {
       // No reading, in either mode — see `methylationCell`. The word
       // survives as the cell it is; the measurement is counted with
       // every other withheld measurement rather than relabelled. What it
@@ -1583,7 +1669,7 @@ const projectOcrFields = (
       // The guard order and the origin rule are the shared path's — see
       // `publishMethylationCell`.
       publishMethylationCell(sink, key, value, mode, fromLaboratoryReport);
-    } else if (lower.includes('haplotype')) {
+    } else if (branch === 'haplotype') {
       publishGeneticCell(sink, key, value, mode, () =>
         clinicaliseHaplotype(value, fromLaboratoryReport),
       );

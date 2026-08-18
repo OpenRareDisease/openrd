@@ -847,10 +847,37 @@ _METHOD_VALUE_LABELS: Tuple[str, ...] = (
 #: 单元数低于 10 个即为缩短」 published 10. A dedicated analyte row
 #: outranks a sentence that merely mentions the analyte, which is what
 #: the words 「the report's own result row」 were always supposed to mean.
-_DEDICATED_ROW = 0
-_RESULT_ROW = 1
-_UNLABELLED_ROW = 2
-_REFUSED_ROW = 3
+#:
+#: `_TABLE_ROW` IS SEPARATE FROM `_DEDICATED_ROW` BECAUSE A TIE WAS
+#: BEING SETTLED BY APPEND ORDER. The fix above promoted an unlabelled
+#: row inside a 检测结果/检测结论 section to `_DEDICATED_ROW` — and on
+#: the cell-per-line layout the conclusion PROSE SENTENCE also sits on
+#: its own line under a bare header, so it was promoted to exactly the
+#: rank of the rebuilt table rows. `_page_rows` appends the rebuilt rows
+#: LAST and `_read_cell` keeps a candidate only when the rank is
+#: STRICTLY better, so on that tie the earlier prose row won and the
+#: report's own printed count lost. Measured on the same document the
+#: note above was written for: own row 5, conclusion 「D4Z4 重复单元数低
+#: 于 10 个即为缩短」, published 10 again — the grey-zone boundary, at
+#: 0.97, on a patient the report puts squarely inside the FSHD1 range.
+#:
+#: A row rebuilt by `_table_row_lines` is an analyte cell paired with
+#: ITS OWN value cell; nothing else on the page is that. It therefore
+#: gets a rank of its own above every inherited one, and the tie is
+#: decided by what the rows ARE rather than by the order they were
+#: appended in. See also `_KIND_CONCLUSION`, which stops a conclusion
+#: sentence from being promoted to the data rank in the first place.
+_TABLE_ROW = 0
+_DEDICATED_ROW = 1
+_RESULT_ROW = 2
+_UNLABELLED_ROW = 3
+_REFUSED_ROW = 4
+
+#: The best rank there is. `_read_cell` stops early only on this one:
+#: stopping on `_DEDICATED_ROW` would return before the rebuilt table
+#: rows — which are appended last — were ever examined, which is the
+#: same defect from the other side.
+_BEST_ROW = _TABLE_ROW
 
 
 def _line_span(text: str, index: int) -> Tuple[str, int]:
@@ -905,6 +932,28 @@ _TITLE_ROW_SUFFIXES: Tuple[str, ...] = (
     "报告", "报告单", "报告书", "检验单", "检查单", "申请单", "记录单",
 )
 
+#: A title is short. THIRTY CHARACTERS WAS NOT SHORT ENOUGH TO BE A
+#: LIMIT AND NOT LONG ENOUGH TO BE ONE. 「面肩肱型肌营养不良1型(FSHD1)
+#: D4Z4重复单元数检测报告单」 — a title a Chinese genetics laboratory
+#: prints as a matter of course, disease name and gene target and
+#: document type all spelled out — is 32 characters, so it fell through
+#: to PLAIN and its FSHD1 was read as this patient's stated 分型 on the
+#: ordinary negative wording that names no type of its own.
+_TITLE_ROW_MAX = 40
+
+#: What a document can be NAMED without ending in the word 报告.
+#: 「FSHD1基因检测」 is a whole title as printed, and it satisfies none of
+#: `_TITLE_ROW_SUFFIXES`; so is 「FSHD1基因检测申请」. A line carrying one
+#: of these AND standing at the top of the page is the document's name,
+#: because the name is the first thing printed on it — position is the
+#: honest discriminator here, and it is the one a suffix list was
+#: standing in for.
+#:
+#: Required IN ADDITION to first-position so that a cell-per-line report
+#: whose heading row was dropped by the OCR does not have its first DATA
+#: cell refused as a title: 「D4Z4重复单元数 3」 names no document.
+_TITLE_NAME_WORDS: Tuple[str, ...] = ("报告", "检测", "检验", "检查", "筛查")
+
 #: Section headers that open a run of rows. Matched only against a line
 #: that is NOTHING BUT the header, so 「检测方法: …」 with its own content
 #: keeps being ranked by its in-line label and does not open a section.
@@ -915,11 +964,21 @@ _TITLE_ROW_SUFFIXES: Tuple[str, ...] = (
 #: that rule and never could be: 检测项目 / 检验项目 / 参考区间 / 参考值
 #: are column headings AND the names of method-ish things, so they
 #: legitimately belong in `_METHOD_SECTION_HEADERS` while a lone one of
-#: them on a line is a table heading. `_section_kind` refuses them there,
+#: them on a line is a table heading. `_row_label` refuses them there,
 #: for every string in both tuples at once, rather than leaving a list to
-#: stay in sync by hand.
+#: stay in sync by hand. `test_no_line_can_claim_two_labels` fails if any
+#: overlap between these lists is left for statement order to settle.
+#:
+#: 检测结果 AND 检测结论 ARE NOT THE SAME SECTION and used to share this
+#: tuple. A 检测结果 header heads DATA ROWS; a 检测结论 header heads a
+#: PROSE SENTENCE. Promoting an unlabelled row under either of them to
+#: the dedicated data rank put a sentence quoting a threshold level with
+#: the report's own printed cell — see `_TABLE_ROW`.
 _RESULT_SECTION_HEADERS: Tuple[str, ...] = (
-    "检测结果", "检测结论", "检验结果", "报告结果", "结果分析",
+    "检测结果", "检验结果", "报告结果",
+)
+_CONCLUSION_SECTION_HEADERS: Tuple[str, ...] = (
+    "检测结论", "检验结论", "结果分析",
 )
 _METHOD_SECTION_HEADERS: Tuple[str, ...] = (
     "检测方法", "检验方法", "检测项目", "检验项目", "送检项目",
@@ -930,12 +989,48 @@ _NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明"
 #: A footnote that carries its own content — 「附注: 4qA 为允许型单倍型」.
 _NOTE_ROW_PREFIXES: Tuple[str, ...] = ("附注", "备注", "注释", "说明", "注:")
 
+#: Labels that name WHAT WAS ORDERED. What a test was ordered to look
+#: for says nothing about what was found — the same thing a TITLE says
+#: nothing about — so the label and the one cell holding its value are
+#: both refused. `_EXAM_METADATA_PREFIXES` carries the rest of this
+#: family (送检项目, 检查项目, 标本类型, 检验目的 …); these two are
+#: listed separately only because they are ALSO column headings, which
+#: is the ambiguity `_row_label` decides.
+_ORDERED_ITEM_LABELS: Tuple[str, ...] = ("检测项目", "检验项目")
+
 _KIND_TITLE = "title"
 _KIND_METHOD = "method"
 _KIND_NOTE = "note"
 _KIND_RESULT = "result"
+_KIND_CONCLUSION = "conclusion"
 _KIND_TABLE = "table"
 _KIND_PLAIN = "plain"
+
+#: How far a label reaches.
+#:
+#: THE THIRD ONE IS WHAT `_page_rows` HAD NO WAY TO SAY, and its absence
+#: is why 送检项目 had to be either harmless or catastrophic with nothing
+#: in between. A bare 送检项目 line is a metadata LABEL whose value is
+#: the NEXT CELL — that is what the cell-per-line layout does with every
+#: header-block field — and it was being treated as a header that opens a
+#: RUN. Measured on a genetically confirmed report laid out that way:
+#: 送检项目 opened a METHOD section that never closed, `_KIND_METHOD` is
+#: in `_REFUSED_ROW_KINDS`, and `diagnosis_type`, `haplotype` and
+#: `d4z4_repeat_pathogenic` all came back None with an EMPTY
+#: `review_queue` reporting nothing amiss — the whole genetic finding
+#: erased by one OCR line.
+#:
+#: Giving it `_SCOPE_SELF` instead would have traded that for the
+#: opposite error: the cell BELOW the label is the name of the test that
+#: was ORDERED, and on 「送检项目 / FSHD1基因检测 / 检测结论: 未见…缩短」
+#: a plain next cell publishes `diagnosis_type: FSHD1` on a report that
+#: excludes it. Measured too, on 检查项目, 检测项目 and 标本类型, which
+#: reach this page today with no section to open at all. The label and
+#: its one value cell are both the ordered test's name, and neither is a
+#: reading of this patient.
+_SCOPE_SELF = "self"
+_SCOPE_RUN = "run"
+_SCOPE_NEXT = "next"
 
 #: Kinds that ASSERT nothing about this patient, whatever they contain.
 #: A reading is never taken off one. A REFUSAL still is — the absence
@@ -953,58 +1048,165 @@ class _Row(NamedTuple):
     kind: str
 
 
-def _is_title_row(line: str) -> bool:
+def _is_title_row(line: str, *, first_content_line: bool = False) -> bool:
     """Is this line the document's NAME rather than one of its rows?
 
-    A title is short, carries no value separator — 「报告日期: …」 is
-    metadata, not the title — and ends in the word for a report. That
-    last test is what keeps 「FSHD1 基因检测报告」 out of every reader
-    while leaving 「结论: … 符合 FSHD1」 alone.
+    A title is short and carries no value separator — 「报告日期: …」 is
+    metadata, not the title. Beyond that it is recognised two ways, and
+    ONE OF THEM USED TO BE THE ONLY ONE:
+
+      - it ends in the word for a report, or
+      - it stands at the TOP OF THE PAGE and names a document.
+
+    Ending in 报告 was doing all the work, and two entirely ordinary
+    Chinese titles do not:
+
+        面肩肱型肌营养不良1型(FSHD1)D4Z4重复单元数检测报告单
+        FSHD1基因检测
+
+    The first ends in 报告单 and was refused for LENGTH — 32 characters
+    against a cap of 30. The second is a title in full and ends in 检测.
+    Both fell through to PLAIN, and on the ordinary negative conclusion
+    that names no type — 「未见 4q35 D4Z4 阵列缩短, 结果在正常范围」 —
+    the title's FSHD1 was then the only candidate left and was published
+    as this patient's 分型 at 0.98, onto the passport, the exports and
+    `patient_profiles` via `applyGeneticReportAutofill`.
+
+    `first_content_line` is the caller's knowledge of WHERE the line
+    sits, which is the property a suffix list was standing in for: a
+    document's name is the first thing printed on it. It is required in
+    addition to `_TITLE_NAME_WORDS` rather than instead of it, so that a
+    page whose heading was lost by the OCR does not have its first DATA
+    row refused as a title.
     """
     stripped = line.strip()
-    if not stripped or len(stripped) > 30 or ":" in stripped:
+    if not stripped or len(stripped) > _TITLE_ROW_MAX or ":" in stripped:
         return False
-    return stripped.endswith(_TITLE_ROW_SUFFIXES)
+    if stripped.endswith(_TITLE_ROW_SUFFIXES):
+        return True
+    return first_content_line and any(word in stripped for word in _TITLE_NAME_WORDS)
 
 
-def _section_kind(line: str) -> Optional[str]:
-    """The section a header-only line opens, if it opens one.
+def _is_bare_header(line: str) -> Optional[str]:
+    """The header a line spells when it spells NOTHING BUT a header.
 
-    A COLUMN HEADING IS NOT A SECTION, whatever else the string also
-    spells. Four members of `_METHOD_SECTION_HEADERS` are also members of
-    `_TABLE_HEADER_CELLS` — 检测项目, 检验项目, 参考区间, 参考值 — and
-    PaddleOCR emits a table heading as a line of its own, which is the
-    only shape this function ever sees. Asked section-first, a lone
-    「检测项目」 cell opened a METHOD run that then propagated down the
-    rest of the page: `_KIND_METHOD` is in `_REFUSED_ROW_KINDS`, so
-    `_read_cell`, `_read_diagnosis_type` and `_read_haplotype` skipped
-    every row under it, and a genetically confirmed report came back with
-    `d4z4_repeat_pathogenic`, `haplotype` and `diagnosis_type` all None
-    — the whole genetic finding erased by ONE extra OCR line, with an
-    empty `review_queue` reporting nothing amiss. The three-column
-    orders 项目 / 结果 / 参考区间 and 项目 / 结果 / 单位 / 参考值 are
-    ordinary on Chinese laboratory reports and put one of these four
-    LAST in the heading run, so the closing cell that should have ended
-    the header opened a refusal over the data instead.
+    Returns the header text with its trailing colon removed, or None if
+    the line carries content of its own — 「检测方法: PCR」 is a labelled
+    row and is ranked by `_inline_row_rank`, not a section opener.
 
-    So `_TABLE_HEADER_CELLS` wins here — which is what the note above
-    `_RESULT_SECTION_HEADERS` and `_page_rows`'s own docstring have
-    always claimed happens. This costs those four strings nothing they
-    were doing: a method label WITH content after it never reaches this
-    function at all, it is ranked by `_inline_row_rank`, and
-    `_METHOD_VALUE_LABELS` carries all four.
+    CONTENT AFTER THE COLON IS WHAT MAKES A LINE NOT BARE, and stripping
+    the colon off the END was not the same test. 「标本类型:外周血」 is
+    eight characters with no digit in it, so it survived a
+    `rstrip(":")` unchanged and was handed on as though it were a bare
+    header — which under `_SCOPE_NEXT` would have labelled the NEXT row
+    with a label belonging to this one's value.
     """
-    stripped = line.strip().rstrip(":").strip()
+    stripped = line.strip()
+    head, separator, tail = stripped.partition(":")
+    if separator and tail.strip():
+        return None
+    stripped = head.strip()
     if not stripped or len(stripped) > 10 or re.search(r"\d", stripped):
         return None
-    if stripped in _TABLE_HEADER_CELLS:
-        return None
-    if stripped in _RESULT_SECTION_HEADERS:
-        return _KIND_RESULT
-    if stripped in _METHOD_SECTION_HEADERS:
-        return _KIND_METHOD
-    if stripped in _NOTE_SECTION_HEADERS:
-        return _KIND_NOTE
+    return stripped
+
+
+def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple[str, str]]:
+    """The kind this line is, and HOW FAR that label reaches.
+
+    THE ONE PLACE A LINE'S LABEL IS DECIDED. Every list this consults
+    overlaps some other list — that is a property of the strings a
+    Chinese laboratory prints, not a mistake in the lists — and the
+    overlaps used to be settled by which `if` happened to be written
+    first, and the previous round fixed ONE overlap in place rather than
+    fixing the way overlaps are settled — so the same defect came back
+    on the next string:
+
+      - 检测项目 / 检验项目 / 参考区间 / 参考值 / 参考范围 are in
+        `_METHOD_SECTION_HEADERS` AND in `_TABLE_HEADER_CELLS`. A bare
+        one of them opened a METHOD run that propagated down the rest of
+        the page and refused every row under it — `_KIND_METHOD` is in
+        `_REFUSED_ROW_KINDS`, so `_read_cell`, `_read_diagnosis_type`
+        and `_read_haplotype` skip it. That is the overlap the previous
+        round guarded, by name, inside the section test, and the guard
+        holds: measured on this page today, a bare 检测项目 opens
+        nothing.
+      - 送检项目 is in `_METHOD_SECTION_HEADERS` AND is an
+        `_EXAM_METADATA_PREFIXES` label, and the guard above cannot
+        reach it because 送检项目 is not a column heading. Measured on a
+        genetically confirmed cell-per-line report: the same runaway
+        METHOD run, `d4z4_repeat_pathogenic`, `haplotype` and
+        `diagnosis_type` all None, with an empty `review_queue`
+        reporting nothing amiss. A guard written against one LIST was
+        never what made the rule true.
+      - AND A GUARD THAT STOPS AT THE HEADING COVERS HALF THE LINE THAT
+        MATTERS. The cell under a bare 检测项目 / 检查项目 / 标本类型 /
+        检验目的 is the name of the test that was ORDERED, and left
+        plain it publishes `diagnosis_type: FSHD1` off 「FSHD1基因检测」
+        on a report whose own conclusion excludes it. Measured on all
+        four.
+      - 附注 / 备注 / 注释 / 说明 are in `_NOTE_SECTION_HEADERS` AND in
+        `_NOTE_ROW_PREFIXES`. Harmless — both say NOTE — but harmless
+        by coincidence rather than by decision.
+
+    So the precedence is written down ONCE, here, and
+    `test_no_line_can_claim_two_labels` fails if any pair of these lists
+    overlaps on a string whose two labels disagree and is not listed in
+    this function. A column heading is not a section; a metadata label
+    is not a section either, and reaches exactly its own value cell; a
+    section header is a section; a document name is a title.
+    """
+    header = _is_bare_header(line)
+    if header is not None:
+        # 1. A LABEL NAMING WHAT WAS ORDERED reaches its own value cell
+        #    and no further. See `_SCOPE_NEXT`.
+        #
+        #    检测项目 / 检验项目 are here as well as in
+        #    `_TABLE_HEADER_CELLS`, and that is the ambiguity resolved
+        #    rather than dodged: a lone one of them is either the heading
+        #    of the ANALYTE-NAME column or the label of the ordered
+        #    test's name, and the cell below it is a test's name under
+        #    BOTH readings. 「检测项目 / FSHD1基因检测 / 检测结论: 未见
+        #    …缩短」 published `diagnosis_type: FSHD1` on a report that
+        #    excludes it, because the previous round's column-heading
+        #    guard stops at the heading and says nothing about the cell
+        #    under it. Nothing is lost on the table reading: a count in
+        #    a cell-per-line table is read off the row `_table_row_lines`
+        #    rebuilds, not off the analyte cell.
+        if header in _ORDERED_ITEM_LABELS or any(
+            header.startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES
+        ):
+            return _KIND_METHOD, _SCOPE_NEXT
+        # 2. A COLUMN HEADING IS NOT A SECTION, whatever else the string
+        #    also spells. It closes the open run, the way the next
+        #    heading cell of the same row would.
+        if header in _TABLE_HEADER_CELLS:
+            return _KIND_PLAIN, _SCOPE_SELF
+        # 3. A section header opens its section.
+        if header in _RESULT_SECTION_HEADERS:
+            return _KIND_RESULT, _SCOPE_RUN
+        if header in _CONCLUSION_SECTION_HEADERS:
+            return _KIND_CONCLUSION, _SCOPE_RUN
+        if header in _METHOD_SECTION_HEADERS:
+            return _KIND_METHOD, _SCOPE_RUN
+        if header in _NOTE_SECTION_HEADERS:
+            return _KIND_NOTE, _SCOPE_RUN
+    # 4. A metadata label CARRYING its value — 「送检项目: FSHD1基因检测」
+    #    — is the same statement on one line, and is refused the same
+    #    way. It never reached `_is_bare_header`, and as a PLAIN row its
+    #    FSHD1 was read as this patient's stated type.
+    if any(line.strip().startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES):
+        return _KIND_METHOD, _SCOPE_SELF
+    # 5. A footnote carrying its own content.
+    if any(line.strip().startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
+        return _KIND_NOTE, _SCOPE_SELF
+    # 6. The document's name.
+    if _is_title_row(line, first_content_line=first_content_line):
+        return _KIND_TITLE, _SCOPE_SELF
+    # 7. Any other header-shaped line closes the run without opening one.
+    stripped = line.strip()
+    if stripped in _TABLE_HEADER_CELLS or _is_header_row(stripped) or _is_header_only(stripped):
+        return _KIND_PLAIN, _SCOPE_SELF
     return None
 
 
@@ -1016,50 +1218,45 @@ def _page_rows(lines: List[str]) -> List[_Row]:
     which is exactly the layout on which the old rank put the patient's
     real count below a conclusion sentence.
 
-    A `_TABLE_HEADER_CELLS` line CLOSES the open section rather than
-    opening one, so a column heading between the section header and the
-    data does not turn the data into part of the heading. That is decided
-    inside `_section_kind`, not by the ordering here, because four of
-    those cells are ALSO in `_METHOD_SECTION_HEADERS` and this loop asks
-    for the section first.
-
-    A header-only line that is not a section header closes the section
-    too. ONE THAT IS A SECTION HEADER STILL OPENS ITS SECTION — 送检项目
-    satisfies `_is_header_only` and opens a METHOD run all the same, and
-    a bare 送检项目 above the result rows therefore refuses the whole page
-    beneath it. That is the design for 检测方法, whose bare line really
-    does head a method block; whether it is the design for 送检项目 is not
-    something this function decides, and nothing here should be read as
-    promising that every header-shaped line is harmless.
+    WHICH LABEL A LINE GETS IS NOT DECIDED HERE. `_row_label` decides
+    it, in one place, with the overlaps between the lists resolved
+    explicitly — a column heading is not a section, a metadata label is
+    not a section, and a metadata label reaches exactly its own value
+    cell. This loop only applies the SCOPE that comes back with the
+    label: `_SCOPE_RUN` opens a section, `_SCOPE_SELF` closes the open
+    one, and `_SCOPE_NEXT` labels the following row and nothing further.
 
     The rows rebuilt by `_table_row_lines` are appended last and carry
     `_KIND_TABLE`: they are, by construction, an analyte cell paired with
     its own value cell, which is the most dedicated result row a report
-    has.
+    has — and being appended last is why `_TABLE_ROW` is a rank of its
+    own rather than a tie with `_DEDICATED_ROW`.
     """
     rows: List[_Row] = []
     section: Optional[str] = None
+    pending: Optional[str] = None
+    seen_content = False
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        opened = _section_kind(stripped)
-        if opened is not None:
-            section = opened
-            rows.append(_Row(stripped, opened))
+        label = _row_label(stripped, first_content_line=not seen_content)
+        seen_content = True
+        if label is None:
+            rows.append(_Row(stripped, pending or section or _KIND_PLAIN))
+            pending = None
             continue
-        if _is_title_row(stripped):
+        kind, scope = label
+        if scope == _SCOPE_RUN:
+            section = kind
+            pending = None
+        elif scope == _SCOPE_NEXT:
             section = None
-            rows.append(_Row(stripped, _KIND_TITLE))
-            continue
-        if any(stripped.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
-            rows.append(_Row(stripped, _KIND_NOTE))
-            continue
-        if stripped in _TABLE_HEADER_CELLS or _is_header_row(stripped) or _is_header_only(stripped):
+            pending = kind
+        else:
             section = None
-            rows.append(_Row(stripped, _KIND_PLAIN))
-            continue
-        rows.append(_Row(stripped, section or _KIND_PLAIN))
+            pending = None
+        rows.append(_Row(stripped, kind))
     rows.extend(_Row(text, _KIND_TABLE) for text in _table_row_lines(lines))
     return rows
 
@@ -1104,21 +1301,33 @@ def _row_rank(row: _Row, value_start: int) -> int:
     THE KIND DECIDES FIRST. A title, a method row and a footnote are
     refused whatever they contain — that is the whole point of labelling
     the rows — and a table row is the dedicated result row it was
-    rebuilt from.
+    rebuilt from, ranked above every inherited label because it is the
+    only row on the page that pairs an analyte cell with its own value
+    cell.
 
-    Inside a 检测结果 section the row's own in-line label still governs
-    when it HAS one, so a 结论 sentence printed under the results heading
-    is read as the sentence it is; it is only a row with no label of its
-    own that inherits the section's, and that is the promotion from
-    unlabelled to dedicated the old rank could not express.
+    Inside a section the row's own in-line label still governs when it
+    HAS one, so a 结论 sentence printed under the results heading is read
+    as the sentence it is; it is only a row with no label of its own that
+    inherits the section's.
+
+    AND A 检测结论 SECTION IS NOT A 检测结果 SECTION. Both used to live in
+    `_RESULT_SECTION_HEADERS` and both promoted an unlabelled row to
+    `_DEDICATED_ROW` — but a 检测结论 header heads a PROSE SENTENCE, not
+    a data row, and promoting that sentence to the data rank is what put
+    「D4Z4 重复单元数低于 10 个即为缩短」 level with the report's own
+    printed 5. A sentence under a conclusion heading ranks as the
+    conclusion it is.
     """
     if row.kind in _REFUSED_ROW_KINDS:
         return _REFUSED_ROW
     if row.kind == _KIND_TABLE:
-        return _DEDICATED_ROW
+        return _TABLE_ROW
     rank = _inline_row_rank(row.text, value_start)
-    if row.kind == _KIND_RESULT and rank == _UNLABELLED_ROW:
-        return _DEDICATED_ROW
+    if rank == _UNLABELLED_ROW:
+        if row.kind == _KIND_RESULT:
+            return _DEDICATED_ROW
+        if row.kind == _KIND_CONCLUSION:
+            return _RESULT_ROW
     return rank
 
 
@@ -1179,12 +1388,19 @@ def _read_cell(
 
     AND THE FIRST ACCEPTED MATCH DOES NOT DECIDE. A number on a title, a
     method row, a detection-limit row, a reference row or a footnote is
-    not read at all; a number on the report's own dedicated result row
-    outranks one in a conclusion sentence, which outranks one on an
-    unlabelled line, however far down the page each sits — see
-    `_row_rank`. Within one rank the earliest match still wins, and
-    pattern order still outranks everything, because both encode a
-    preference a caller wrote down deliberately.
+    not read at all; a number on a REBUILT TABLE ROW outranks one on the
+    report's own dedicated result row, which outranks one in a conclusion
+    sentence, which outranks one on an unlabelled line, however far down
+    the page each sits — see `_row_rank`. Within one rank the earliest
+    match still wins, and pattern order still outranks everything,
+    because both encode a preference a caller wrote down deliberately.
+
+    THE EARLY EXIT IS `_BEST_ROW`, NOT `_DEDICATED_ROW`. The rebuilt
+    table rows are appended LAST by `_page_rows`, so stopping at the
+    first dedicated row returned before they were examined at all — and
+    since the ties this scan has to break are precisely between an
+    inherited label and a rebuilt row, that exit decided them by append
+    order. It now stops only on the rank nothing can beat.
     """
     for pattern in patterns:
         compiled = re.compile(_cjk_safe(pattern), flags)
@@ -1206,9 +1422,9 @@ def _read_cell(
                     continue
                 if rank < best_rank:
                     best, best_row, best_rank = match, row.text, rank
-                    if best_rank == _DEDICATED_ROW:
+                    if best_rank == _BEST_ROW:
                         break
-            if best_rank == _DEDICATED_ROW:
+            if best_rank == _BEST_ROW:
                 break
         if best is not None:
             return best, best_row
@@ -2097,10 +2313,27 @@ def _extract_summary_line(
     it is the wrong line however well its keywords match. Without it,
     「增厚率」matched the *conclusion* sentence and the 膈肌增厚 card
     showed the same text as 膈肌运动.
+
+    A KEYWORD LINE THAT IS NOTHING BUT THE KEYWORD IS THE HEADER OF THE
+    SENTENCE BELOW IT. On the cell-per-line OCR layout this module
+    documents as the norm, 「检测结论」 is its own line and the
+    conclusion is the NEXT one — and that sentence carries none of the
+    keywords, so it was never a candidate. Worse, matching the bare
+    header ENDED the search: `_clean_free_text` reduces 「检测结论」 to
+    nothing, and that nothing was returned. Measured on a cell-per-line
+    genetics report: `interpretation_summary` came out None, `findings`
+    came out empty, and the report's own 检测结论 sentence appeared
+    NOWHERE in the payload — not in the genetic summary, not in the
+    structured field, not under 报告详情 → 来源追溯, and not in what the
+    assistant is handed as the report's own words.
+
+    So a header that cleans to nothing hands off to the first line under
+    it that says something, and a header with no sentence under it does
+    not stop the scan.
     """
     lowered_keywords = [keyword.lower() for keyword in keywords]
-    for line in lines:
-        stripped = line.strip()
+    stripped_lines = [line.strip() for line in lines]
+    for index, stripped in enumerate(stripped_lines):
         if not stripped or _is_header_only(stripped):
             continue
         if require_digit and not re.search(r"\d", stripped):
@@ -2108,8 +2341,39 @@ def _extract_summary_line(
         if _is_disclaimer(stripped):
             continue
         lowered = stripped.lower()
-        if any(keyword in lowered for keyword in lowered_keywords):
-            return _clean_free_text(stripped)
+        if not any(keyword in lowered for keyword in lowered_keywords):
+            continue
+        value = _clean_free_text(stripped)
+        if value:
+            return value
+        value = _summary_line_under_header(stripped_lines, index, require_digit=require_digit)
+        if value:
+            return value
+    return None
+
+
+def _summary_line_under_header(
+    stripped_lines: List[str],
+    header_index: int,
+    *,
+    require_digit: bool = False,
+) -> Optional[str]:
+    """The first line under a bare header that states something.
+
+    Stops at the next header, at a disclaimer and at a signature, so a
+    header with nothing under it answers None rather than reaching down
+    the page for someone else's sentence.
+    """
+    for stripped in stripped_lines[header_index + 1:]:
+        if not stripped:
+            continue
+        if _is_header_only(stripped) or _is_header_row(stripped):
+            return None
+        if _is_disclaimer(stripped) or _looks_like_signature(stripped):
+            return None
+        if require_digit and not re.search(r"\d", stripped):
+            return None
+        return _clean_free_text(stripped)
     return None
 
 
@@ -2351,6 +2615,32 @@ def _is_hedged(text: str, match: "re.Match") -> bool:
 
 #: The FSHD type token, on its own and not inside a longer one.
 _DIAGNOSIS_TYPE_TOKEN = _cjk_safe_compile(r"\bFSHD\s*([12])\b", re.IGNORECASE)
+
+#: A COUNT IS NEVER THE DIGIT OF A LATIN TOKEN — and the token this
+#: exists for is FSHD1.
+#:
+#: The last-resort repeat-count pattern is 「any digit within 16
+#: characters of D4Z4」, and on the ordinary Chinese positive conclusion
+#:
+#:     …D4Z4重复序列缩短,符合FSHD1分子诊断标准.
+#:
+#: the gap from D4Z4 to that digit is exactly 14 characters, so the value
+#: captured was the 「1」 of FSHD1. A report printing NO repeat count
+#: anywhere — which is most positive Southern blot reports, they state
+#: the conclusion and leave the array size to the fragment row —
+#: published `d4z4_repeat_pathogenic: 1` at 0.97, the confidence of a
+#: cell actually read, with `latest_summary.by_analyte…value_num: 1.0`
+#: and nothing in the review queue. One repeat is the most severe
+#: contraction there is; the patient it was invented for had no count on
+#: their report at all.
+#:
+#: A lookbehind for a Latin letter rather than for the four letters of
+#: FSHD, because the shape is what is wrong: a digit welded to the end
+#: of a Latin word is part of that word's NAME. 4qA, D4Z4 and every
+#: gene symbol a genetics report prints have the same property, and a
+#: laboratory writes a count after a Chinese character, a separator or a
+#: space — never after a letter.
+_NOT_INSIDE_A_LATIN_TOKEN = r"(?<![A-Za-z])"
 
 
 def _read_diagnosis_type(rows: List[_Row]) -> Tuple[Optional[str], Optional[re.Match]]:
@@ -2653,6 +2943,17 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             r"片段长度(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
             r"大小(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
             r"\bsize(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            # LAST, AND IT IS WHAT MAKES THE REFUSAL BELOW HONEST. The
+            # `length_in_kb` refusal fires on ANY 「D4Z4 … N kb」 spelling
+            # while the four patterns above each require their own
+            # literal label, so on 「检测结果: D4Z4阵列38kb」 — no EcoRI,
+            # no 片段长度, no 大小 — the measurement was refused as a
+            # count and recorded NOWHERE, under a comment saying it was
+            # 「already recorded under its own name as
+            # ecori_fragment_kb」. The refusal and the recording now
+            # cover the same spellings. Tried last so a row that DOES
+            # carry its own label still reports through it.
+            r"D4Z4(?P<gap>[^\d\n(]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
         ],
         analyte="fragment_length",
     )
@@ -2661,8 +2962,8 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     d4z4_pair_match, d4z4_row = _read_cell(
         rows,
         [
-            r"D4Z4(?P<gap>[^\d\n(]{0,24})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
-            r"重复数(?P<gap>[^\d\n(]{0,20})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
+            r"D4Z4(?P<gap>[^\d\n(]{0,24})" + _NOT_INSIDE_A_LATIN_TOKEN + r"(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
+            r"重复数(?P<gap>[^\d\n(]{0,20})" + _NOT_INSIDE_A_LATIN_TOKEN + r"(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
         ],
         analyte="repeat_count",
     )
@@ -2704,7 +3005,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     if not d4z4_pathogenic:
         d4z4_single_match, d4z4_single_row = _read_cell(
             rows,
-            [r"D4Z4(?P<gap>[^\d\n(]{0,16})(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"],
+            [
+                r"D4Z4(?P<gap>[^\d\n(]{0,16})"
+                + _NOT_INSIDE_A_LATIN_TOKEN
+                + r"(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"
+            ],
             analyte="repeat_count",
         )
         if d4z4_single_match:
@@ -2715,7 +3020,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         else:
             d4z4_range_match, d4z4_range_row = _read_cell(
                 rows,
-                [r"D4Z4(?P<gap>[^\d\n(]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
+                [
+                    r"D4Z4(?P<gap>[^\d\n(]{0,16})"
+                    + _NOT_INSIDE_A_LATIN_TOKEN
+                    + r"(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"
+                ],
                 analyte="repeat_count",
             )
             if d4z4_range_match:
@@ -2740,6 +3049,21 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # recorded under its own name as `ecori_fragment_kb` — emitting it
     # twice under two names is the two-answers-about-one-measurement
     # problem, not a second reading.
+    #
+    # THAT SENTENCE IS TRUE OF EVERY kb SPELLING AND OF NO OTHER UNIT.
+    # It used to be true of neither: the refusal fires on any 「D4Z4 … N
+    # kb」 while the length patterns each required a literal label, so
+    # 「D4Z4阵列38kb」 was refused as a count and recorded nowhere. The
+    # length patterns now end with a D4Z4-anchored kb fallback, which
+    # covers exactly what the refusal covers in kb.
+    #
+    # `_LENGTH_UNIT_AFTER` ALSO REFUSES bp AND mb, AND THOSE ARE NOT
+    # RECORDED. This platform has one length cell, it is named and typed
+    # in kilobases, and converting a laboratory's printed unit to fill it
+    # would be this module restating a measurement it was not given. A
+    # 「D4Z4 … N bp」 report therefore carries no length — which is the
+    # honest outcome, not an oversight, and is the sentence to change if
+    # a second length cell is ever added.
     #
     # A 0 IS KEPT. The cell really does print 0, and a reviewer has to
     # see that it was read and refused rather than find the row missing.
@@ -4116,7 +4440,7 @@ def _extract_lab_value(
 #:
 #: 参考范围 IS HERE BECAUSE ITS TWO SYNONYMS ALREADY WERE. This tuple is
 #: now what stops a bare column heading from opening a method section in
-#: `_section_kind`, so a heading missing from it is not merely unread as
+#: `_row_label`, so a heading missing from it is not merely unread as
 #: a heading — it refuses every data row printed below it. 参考区间 and
 #: 参考值 were listed and 参考范围, the third spelling of the same column,
 #: was not, which made the fix depend on which synonym a laboratory
