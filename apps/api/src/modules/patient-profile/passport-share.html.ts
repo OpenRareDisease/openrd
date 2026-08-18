@@ -1,5 +1,6 @@
 import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
 import {
+  NO_STRENGTH_REPORT_SUMMARY_ZH,
   formatProductDate,
   type ClinicalPassportSummaryDTO,
   type PassportValueOriginDTO,
@@ -260,13 +261,33 @@ export const buildPassportSharePage = (
     )
     .join('');
 
+  /**
+   * The three monitoring slots, each with the freshness verdict beside
+   * its date.
+   *
+   * The date alone was the whole 最近日期 line, and this page is opened
+   * by a clinician on a phone from a link: 「最近日期：2025-05-09」 asks
+   * them to work out how old that is against today, which is exactly
+   * the arithmetic `getFreshness` already did on this generation's
+   * clock. The markdown export and the mobile PDF, built from the same
+   * summary object, have always printed the verdict; this page dropped
+   * it, so the same profile read 过期 on one document and undated-but-
+   * fine on another.
+   *
+   * Only where there IS a date. The 缺失 label on a slot with no report
+   * would sit under a value that already says 暂无可自动读取的…结果, and
+   * repeating it there turns a statement about this platform's records
+   * into what looks like a verdict on the patient.
+   */
   const monitoring = summary.monitoring.items
     .map(
       (item) => `
       <section class="slot">
         <h3>${esc(item.title)}</h3>
         <p class="val">${dash(item.summary)}</p>
-        <p class="meta">最近日期：${day(item.latestDate)}</p>
+        <p class="meta">最近日期：${day(item.latestDate)}${
+          item.latestDate ? ` · ${esc(item.freshness.label)}` : ''
+        }</p>
         ${item.note ? `<p class="note">${esc(item.note)}</p>` : ''}
       </section>`,
     )
@@ -441,7 +462,33 @@ ${
 <h2 class="sec">运动功能（患者自测）</h2>
 <dl>
 ${rows([
-  ['概况', `<span class="reported">${dash(summary.motor.summary)}</span>`],
+  // 平均肌力 FIRST, off `motor.average`, which is the mean of the
+  // patient's own in-app MMT measurements whenever there are any.
+  //
+  // This block used to lead with `motor.summary` under a 概况 label and
+  // never print the average at all. `motor.summary` is built ONLY from
+  // an uploaded 肌力评估 report's OCR fields, so for the ordinary
+  // patient — measurements recorded in the app, no such report ever
+  // uploaded — it is the fallback string, and this page opened from the
+  // share link told the clinician 「暂无可用的肌力评估摘要」 while the
+  // markdown export built from THE SAME summary object printed
+  // 平均 3.5 级, and the 受累部位 row immediately below listed the
+  // regions derived from those very measurements. (The mobile PDF reads
+  // neither field — of this whole block it takes only the dates and
+  // `activitySummary` — so this page and the export are the only two
+  // documents that can disagree about it, and they did.)
+  //
+  // Wrapped in `.reported` like every other row in this section: it is
+  // the patient's own MMT, not an examination finding, and this page
+  // has no inline marker saying so — the typographic register is the
+  // only signal that separates it from the MRI summary two sections
+  // below.
+  [
+    '平均肌力',
+    summary.motor.average === '—'
+      ? '—'
+      : `<span class="reported">${esc(summary.motor.average)} 级</span>`,
+  ],
   ['最近测量', day(summary.motor.latestMeasurementAt)],
   [
     '受累部位',
@@ -449,6 +496,14 @@ ${rows([
       ? `<span class="reported">${esc(summary.motor.highlights.join('、'))}</span>`
       : '—',
   ],
+  // The report summary keeps its row, and only when a report supplied
+  // one. Rendered unconditionally it is the sentence above: an absence
+  // of one KIND of source printed as an absence of strength data.
+  ...(summary.motor.summary === NO_STRENGTH_REPORT_SUMMARY_ZH
+    ? []
+    : ([['肌力报告摘要', `<span class="reported">${dash(summary.motor.summary)}</span>`]] as Array<
+        [string, string]
+      >)),
 ])}
 </dl>
 
@@ -456,7 +511,31 @@ ${rows([
 <dl>
 ${rows([
   ['MRI 摘要', dash(summary.imaging.summary)],
-  ['最近 MRI', day(summary.imaging.latestMriDate)],
+  // Same bracket the monitoring slots get, and for the same reader: a
+  // clinician on a phone should not have to date-subtract to find out
+  // whether 「最近 MRI 2019-03-04」 is a current picture of this patient.
+  // `imaging.freshness` was computed on this generation's clock and then
+  // consumed by NOTHING — not this page, not the markdown export, not
+  // the mobile PDF. Printed here it is a fact the reader needs; left
+  // unprinted it was a dead field.
+  [
+    '最近 MRI',
+    `${day(summary.imaging.latestMriDate)}${
+      summary.imaging.latestMriDate ? ` · ${esc(summary.imaging.freshness.label)}` : ''
+    }`,
+  ],
+  // 重点区域, which the markdown export and the mobile PDF both print off
+  // this same array and this page silently dropped. It is the only place
+  // the inferred DISTRIBUTION reaches this reader — the 摘要 row above is
+  // the report's own prose, and a distribution is the thing that makes
+  // an MRI say FSHD rather than something else.
+  //
+  // Not marked `.reported`: unlike 运动功能, these come off an uploaded
+  // radiology report rather than from the patient.
+  [
+    'MRI 重点区域',
+    summary.imaging.highlights.length ? esc(summary.imaging.highlights.join('、')) : '—',
+  ],
 ])}
 </dl>
 

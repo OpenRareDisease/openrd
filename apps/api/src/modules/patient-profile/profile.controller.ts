@@ -1519,20 +1519,73 @@ export class PatientProfileController {
     // and projects clinical fields into a per-mode allowlist. Anything
     // off the allowlist is dropped — this is the only sanctioned path
     // for OCR fields to reach an LLM in this codebase.
-    const redacted = redactFields({ fields }, { scope: 'reports', mode: redactionMode });
-    // The `extractedText` / `rawFreeText` / `fullText` family is in
-    // HARD_DELETE_KEYS — we deliberately do NOT send the OCR full-text
-    // dump. It always carries the patient's name and the issuing
-    // physician's name; the structured fields the redactor passes
-    // through carry enough for the model to summarise. The legacy
-    // 2000-char slice was not a fix; it was a half-measure.
+    //
+    // THE SAME EVIDENCE THE ASSISTANT PATH PASSES, because the redactor
+    // asks a question of this projection that only the projection can
+    // answer. `chunkIsLaboratoryGeneticReport` decides whether a repeat
+    // count off this document may be read against the FSHD1 range, and
+    // it reads the document's own page, the parser's classification and
+    // the type the uploader declared. This call passed the `fields` blob
+    // alone: no page, no declared type, no status — so the laboratory
+    // gate had nothing to satisfy itself with and the uploader fallback
+    // read `null`. Every genetics cell on a GENUINE Southern-blot report
+    // came back `not_read_off_a_laboratory_report` in the summary the
+    // patient reads on the report-detail screen, while /api/ai/ask over
+    // the SAME ROW answered `within_fshd1_repeat_range` /
+    // `permissive_haplotype`. One document, two answers, one product.
+    //
+    // `documentType` here is the type the UPLOADER declared
+    // (`document.document_type`) and deliberately NOT the resolved
+    // `documentType` computed above: that one prefers the parser's
+    // `classifiedType`, which the gate has already checked as its first
+    // question. Feeding it back in as the fourth would make a classifier
+    // label agree with itself and re-open the bug the gate exists to
+    // close — a 病历摘要 the old keyword classifier scored as
+    // `genetic_report` would grade its transcribed count.
+    //
+    // `extractedText` is on HARD_DELETE_KEYS, so layer 1 deletes it in
+    // both modes at any depth. The redactor asks the gate of its INPUT,
+    // ahead of layer 1, precisely so the page can be read and then
+    // removed — see the note on `chunkIsLaboratoryGeneticReport`. No
+    // prompt below ever contains it: it is the OCR full-text dump and
+    // carries the patient's name, the issuing physician's name and every
+    // identifier the page printed. Its absence is asserted by the
+    // fixture run in the summary tests, not just intended here.
+    const page = payloadObj.extractedText ?? payloadObj.extracted_text;
+    const redacted = redactFields(
+      {
+        fields,
+        documentType: document.document_type,
+        status: document.status,
+        ...(typeof page === 'string' && page.trim() ? { extractedText: page } : {}),
+      },
+      { scope: 'reports', mode: redactionMode },
+    );
+    // ONE NAME, ONE VALUE. `documentType` used to sit here as well,
+    // holding `resolveDocumentTypeFromPayload`'s answer — the parser's
+    // label canonicalised onto the four-value enum. Now that the
+    // uploader's declared type is on the projection, the redactor emits
+    // its own `documentType` inside `report`, and the two disagree
+    // whenever the patient picked the wrong entry from the dropdown: a
+    // genetics report uploaded as 「MRI」 would have printed
+    //「documentType: genetic_report」 above 「documentType: mri」 with
+    // nothing to say which was which. So the derived one is gone from
+    // the prompt and the two labels the assistant path already prints
+    // side by side are what is left: `documentType` (what the uploader
+    // declared) and, inside the OCR blob, `classifiedType` (what the
+    // parser read, ungrouped and more specific than the enum). The
+    // resolved value is still computed — `buildFallbackDocumentSummary`
+    // below needs it when the LLM call fails.
     const promptPayload = {
       documentId,
-      documentType,
-      // Keep reportName + reportTime only if they survived redaction
-      // (they should — neither is in HARD_DELETE_KEYS). Pull from the
-      // redacted shape so unknown future keys can't sneak back in via
-      // a typo here.
+      // Whatever survived the allowlist, verbatim. Pulled from the
+      // redacted shape rather than re-picked by name so no key can be
+      // reintroduced here that the redactor did not pass — and so this
+      // block states no expectation about WHICH keys those are. It used
+      // to promise `reportName` + `reportTime` 「if they survived」; both
+      // are unreachable (`reportName` is named as denied on the reports
+      // allowlist, `reportTime` appears on it nowhere), so the promise
+      // named two fields no summary has ever contained.
       report: redacted.fields,
     };
 

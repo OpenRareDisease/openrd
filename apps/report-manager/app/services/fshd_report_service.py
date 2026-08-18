@@ -724,6 +724,83 @@ def _gap_names_another_analyte(gap: str, analyte: Optional[str]) -> bool:
     )
 
 
+#: Labels under which a number is THIS PATIENT'S READING.
+#:
+#: 检出 / 检测到 are here because a laboratory writes its result as a
+#: sentence as often as it does a row — 「本项目…检出 D4Z4 重复单元数为 3」 —
+#: and the clause opener is the only label that sentence has.
+_RESULT_VALUE_LABELS: Tuple[str, ...] = (
+    "检测结果", "检测结论", "结果", "结论", "检出", "检测到", "报告结果",
+    "result",
+)
+
+#: Labels under which a number is NOT this patient's reading: it belongs
+#: to the assay, to the assay's limits, or to a population.
+#:
+#: 检测下限 IS THE ONE THIS TABLE EXISTS FOR. `_gap_names_a_method`
+#: refuses only a gap that is NOTHING BUT method words and
+#: `_gap_names_another_analyte` refuses only a gap naming a DIFFERENT
+#: analyte, so the 检测方法 line 「D4Z4 重复单元数, 检测下限 1 个重复单
+#: 元」 passed both — it names the method AND the right analyte — and
+#: `re.finditer` returning the first accepted match meant the report's
+#: own result row was never reached. Measured on a report that EXCLUDES
+#: FSHD1 (count 18, 结论 未见缩短): published as a confirmed 1-repeat
+#: contraction, `d4z4Repeats_clinical: within_fshd1_repeat_range` in
+#: both prompt modes, and an AAN Level B ophthalmology recommendation on
+#: the passport.
+_METHOD_VALUE_LABELS: Tuple[str, ...] = (
+    "检测方法", "方法", "检测项目", "项目", "检测下限", "检出下限",
+    "检测范围", "灵敏度", "分辨率", "参考区间", "参考值", "参考范围",
+    "参考", "正常人群", "正常范围", "正常值", "试剂", "仪器", "平台",
+    "探针", "probe", "引物", "primer", "method", "reference",
+)
+
+#: Ranking of a numeric match by the label that governs it. Lower wins;
+#: `_REFUSED_ROW` never wins at all.
+_RESULT_ROW = 0
+_UNLABELLED_ROW = 1
+_REFUSED_ROW = 2
+
+
+def _line_span(text: str, index: int) -> Tuple[str, int]:
+    """The single line `index` falls on, and the offset it starts at."""
+    start = text.rfind("\n", 0, index) + 1
+    end = text.find("\n", index)
+    return (text[start:] if end == -1 else text[start:end]), start
+
+
+def _governing_row_rank(line: str, value_start: int) -> int:
+    """Rank a number by the LABEL NEAREST TO ITS LEFT on its own line.
+
+    The same rule `_haplotype_tokens_on` applies to the allele tokens: a
+    label introduces what FOLLOWS it, so the label governing a number is
+    the last one to open before it. 「检测方法: D4Z4 重复单元数, 检测下限
+    1」 — the label before the 1 is 检测下限, and a detection limit is a
+    property of the assay, not a reading of this patient. 「检测项目:
+    D4Z4 重复单元数 检测结果: 3」 is the same line shape with the two
+    labels the other way round, and there the 3 really is the result.
+
+    Nearest-label rather than whole-line, because a line carrying both
+    families is ordinary in an OCR that flattened a table row, and a
+    line-contains test has to guess which one it belongs to.
+
+    `value_start` is an offset into `line`.
+    """
+    lowered = line.lower()
+    best_rank = _UNLABELLED_ROW
+    best_at = -1
+    for labels, rank in (
+        (_RESULT_VALUE_LABELS, _RESULT_ROW),
+        (_METHOD_VALUE_LABELS, _REFUSED_ROW),
+    ):
+        for label in labels:
+            at = lowered.rfind(label, 0, value_start)
+            if at > best_at:
+                best_at = at
+                best_rank = rank
+    return best_rank
+
+
 def _find_adjacent_regex(
     text: str,
     patterns: Iterable[str],
@@ -760,17 +837,38 @@ def _find_adjacent_regex(
 
     `analyte` names what the patterns read, as a key of
     `_ANALYTE_GAP_WORDS`. Left unset the third test does not run, which
-    is right for the callers outside `_extract_genetic` whose labels
-    prefix nothing.
+    is right for a caller whose label prefixes no other cell's name;
+    every caller today is in `_extract_genetic` and every one of them
+    sets it.
+
+    AND THE FIRST ACCEPTED MATCH NO LONGER DECIDES. A number on a
+    method, detection-limit or reference row is not read at all, and a
+    number on the report's own result row outranks one on an unlabelled
+    line however far down the page it sits — see `_governing_row_rank`.
+    Within one rank the earliest match still wins, and pattern order
+    still outranks everything, because both encode a preference a caller
+    wrote down deliberately.
     """
     for pattern in patterns:
+        best: Optional[re.Match] = None
+        best_rank = _REFUSED_ROW
         for match in re.finditer(pattern, text, flags):
             gap = match.groupdict().get("gap") or ""
             if _gap_names_a_method(gap):
                 continue
             if _gap_names_another_analyte(gap, analyte):
                 continue
-            return match, pattern
+            line, line_start = _line_span(text, match.start())
+            value_at = match.start("value") if "value" in match.groupdict() else match.start()
+            rank = _governing_row_rank(line, value_at - line_start)
+            if rank >= _REFUSED_ROW:
+                continue
+            if rank < best_rank:
+                best, best_rank = match, rank
+                if best_rank == _RESULT_ROW:
+                    break
+        if best is not None:
+            return best, pattern
     return None, None
 
 
@@ -974,6 +1072,21 @@ def _extract_text_panel(
         )
 
 
+#: Passed as `normalized_value` to say 「THIS CELL HAS NO TYPED VALUE」.
+#:
+#: `None` cannot say it. `None` is the ordinary 「nothing to normalise,
+#: so fall back to the printed text」 that every qualitative cell in this
+#: file relies on — `_safe_float("阴性(-)")` is None and the field must
+#: still ship 阴性(-). So a caller that has REFUSED to type a cell had no
+#: way to say so, and `_build_field` filled the gap with the printed text
+#: anyway: the refused repeat count of 0 passed `normalized_value=None`
+#: and shipped `normalized_value: 「0」`, which `_build_observations` then
+#: read with `_exact_float` into `result.value_num: 0.0` and
+#: `latest_summary.by_analyte`. Two comments asserted the cell was 「never
+#: typed as a count」 while it was being typed as one.
+NO_NORMALIZED_VALUE = object()
+
+
 def _build_field(
     field_name: str,
     field_value: Any,
@@ -988,10 +1101,16 @@ def _build_field(
     abnormal_flag: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if normalized_value is NO_NORMALIZED_VALUE:
+        normalized: Any = None
+    elif normalized_value is not None:
+        normalized = normalized_value
+    else:
+        normalized = field_value
     payload: Dict[str, Any] = {
         "field_name": field_name,
         "field_value": field_value,
-        "normalized_value": normalized_value if normalized_value is not None else field_value,
+        "normalized_value": normalized,
         "unit": unit,
         "side": side,
         "body_region": body_region,
@@ -1369,14 +1488,64 @@ _DISCLAIMER_SECTION_HEADERS: Tuple[str, ...] = (
 )
 
 
+#: How short a line has to be to be a section HEADING rather than a
+#: sentence that happens to use the word.
+_DISCLAIMER_HEADER_MAX = 16
+
+#: The end of a clause. `_normalize_text` has already folded 「。」 to
+#: 「.」 and 「，」 to 「,」 by the time these lines exist, but both
+#: spellings are listed because `_before_disclaimer_section` is also
+#: reachable with text that has not been through it.
+_CLAUSE_TERMINATORS = "。.;；,，、"
+
+
 def _before_disclaimer_section(lines: List[str]) -> List[str]:
-    """Drop the boilerplate tail so a conclusion search cannot reach it."""
+    """Drop the boilerplate tail so a conclusion search cannot reach it.
+
+    THE TAIL IS NOT ALWAYS ITS OWN HEADING. This only ever cut when the
+    marker word sat on a line of at most `_DISCLAIMER_HEADER_MAX`
+    characters, so a limitations paragraph written INLINE — 「本次检测存
+    在局限性: 本方法无法检测 D4Z4 重复序列长度, 该区域需通过 Southern
+    blot 或分子梳检测。」 — was not cut at all. That paragraph is on
+    every whole-exome report, and it names the two methods the exome did
+    NOT use: `_detect_genetic_method` then saw short_read_sequencing AND
+    southern_blot AND molecular_combing, returned 「ambiguous」, and the
+    passport fell to unknown. Its own docstring names this scenario and
+    calls the body cut 「the whole trick」 that handles it, so the cut is
+    what had to change.
+
+    So a marker inside a longer line cuts THAT LINE at the marker and
+    everything after it, keeping whatever the line said first — a
+    conclusion sentence followed by a caveat in the same paragraph keeps
+    its conclusion.
+
+    WHAT IS KEPT HAS TO BE A FINISHED CLAUSE. 「本次检测存在局限性:」
+    opens with the caveat's own subject, so cutting at 局限性 leaves
+    「本次检测存在」 — and that fragment came out as this report's
+    `interpretation_summary`, which is the sentence the patient reads
+    under 报告详情 → 来源追溯. So the head is trimmed back to its last
+    clause terminator, which drops the caveat's own opening words and
+    keeps whatever finished before them. A head with no terminator in it
+    at all is nothing but that opening, and goes.
+    """
     for index, line in enumerate(lines):
         stripped = line.strip()
-        # A header is short. The same words inside a sentence are not a
-        # section break.
-        if len(stripped) <= 16 and any(h in stripped for h in _DISCLAIMER_SECTION_HEADERS):
-            return lines[:index]
+        if len(stripped) <= _DISCLAIMER_HEADER_MAX:
+            # A heading. The whole line goes.
+            if any(h in stripped for h in _DISCLAIMER_SECTION_HEADERS):
+                return lines[:index]
+            continue
+        at = min(
+            (stripped.find(h) for h in _DISCLAIMER_SECTION_HEADERS if h in stripped),
+            default=-1,
+        )
+        if at < 0:
+            continue
+        head = stripped[:at]
+        ends = [head.rfind(mark) for mark in _CLAUSE_TERMINATORS]
+        last = max(ends)
+        kept = head[: last + 1].strip() if last >= 0 else ""
+        return lines[:index] + ([kept] if kept else [])
     return lines
 
 
@@ -1590,6 +1759,23 @@ _FINDING_MARKERS: Tuple[str, ...] = (
 )
 
 
+#: A SENTENCE END, AND NEVER A DECIMAL POINT.
+#:
+#: `_normalize_text` folds 「。」 to 「.」 before any of this runs, so the
+#: full stop and the decimal point are the same character by the time a
+#: block gets here — and splitting on a bare 「.」 cut the report's own
+#: conclusion mid-number. Measured on the sentence a patient reads
+#: verbatim under 报告详情 → 来源追溯: an EcoRI fragment of 18.5 kb came
+#: out as 「5 kb」 (roughly one repeat unit — a severely contracted
+#: array — where 18.5 kb is not), and a methylation level of 0.35 came
+#: out as 「0」.
+#:
+#: A dot is a decimal point only with a digit on BOTH sides. Requiring a
+#: non-digit before it is not enough on its own: a clause ending in a
+#: number — 「重复数为 3.单倍型: 4qA」 — would then never split.
+_SENTENCE_BREAK = re.compile(r"[。;；\n]|(?<!\d)\.|\.(?!\d)")
+
+
 def _pick_finding_sentence(block: Optional[str]) -> Optional[str]:
     """Reduce a results section to the sentence that states the result.
 
@@ -1598,10 +1784,13 @@ def _pick_finding_sentence(block: Optional[str]) -> Optional[str]:
     found. Truncated to fit, that paragraph is all a patient sees, and
     it tells them nothing about themselves. Prefer the sentence naming
     the finding; fall back to the whole block when none stands out.
+
+    The sentences are cut on `_SENTENCE_BREAK`, which is where the
+    numbers a genetics laboratory prints survive the cut.
     """
     if not block:
         return None
-    sentences = [part.strip() for part in re.split(r"[。.;；\n]", block) if part.strip()]
+    sentences = [part.strip() for part in _SENTENCE_BREAK.split(block) if part.strip()]
     hits = [s for s in sentences if any(m in s for m in _FINDING_MARKERS)]
     if not hits:
         return block
@@ -1673,6 +1862,11 @@ def _detect_genetic_method(body_lines: List[str]) -> Optional[str]:
     entire page labels both of them wrong in the direction that costs a
     patient a second self-funded test.
 
+    The cut covers a limitations paragraph written inline as well as one
+    under its own heading — it did not, and that gap is what this
+    docstring used to describe as handled. See
+    `_before_disclaimer_section`.
+
     Returns the family name when exactly one matched, "ambiguous" when
     more than one did, and None when nothing did. The caller treats the
     last two the same way — as「we do not know」— but they are kept
@@ -1742,9 +1936,7 @@ _LENGTH_UNIT_AFTER = re.compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
 
 def _line_around(text: str, index: int) -> str:
     """The single line `index` falls on, newline excluded."""
-    start = text.rfind("\n", 0, index) + 1
-    end = text.find("\n", index)
-    return text[start:] if end == -1 else text[start:end]
+    return _line_span(text, index)[0]
 
 
 def _asserts_absence(text: str, match: "re.Match") -> bool:
@@ -1759,16 +1951,75 @@ def _is_hedged(text: str, match: "re.Match") -> bool:
     return any(marker in line for marker in _HEDGE_MARKERS)
 
 
+#: The FSHD type token, on its own and not inside a longer one.
+_DIAGNOSIS_TYPE_TOKEN = re.compile(r"\bFSHD\s*([12])\b", re.IGNORECASE)
+
+
+def _read_diagnosis_type(text: str) -> Tuple[Optional[str], Optional[re.Match]]:
+    """THE TYPE THE REPORT STATES, WHICH IS NOT THE TYPE IT IS NAMED FOR.
+
+    This was `re.search` for the first FSHD1/FSHD2 token anywhere on the
+    page, with the absence and hedge tests asked only of the line that
+    token happened to sit on — and the first occurrence on a real report
+    is its TITLE or its 检测项目 line. Measured on a report that excludes
+    the type in its own words:
+
+        FSHD1 基因检测报告
+        检测结果: D4Z4 重复单元数 18
+        结论: 本次检测不支持 FSHD1, 建议评估 FSHD2。
+
+    came out `diagnosis_type: FSHD1` at 0.98 — the value the passport
+    prints under 分型, the exports carry and `applyGeneticReportAutofill`
+    writes into `patient_profiles`. Every FSHD report is titled after the
+    type it was ordered to look for, so this fired on the negative ones
+    as a class, not on an edge case. The comment above the old call
+    already said 「A report that excludes a type, or only suspects one,
+    has not stated one」; it was the code that did not.
+
+    So: A TYPE NAMED IN A NEGATING OR HEDGING CLAUSE ANYWHERE IS NOT
+    STATED, however many other times the page prints it. Kept per token,
+    so 「符合 FSHD1，不支持 FSHD2」 still reports FSHD1 — the two are
+    different claims and refusing both would lose a real diagnosis.
+    Among what is left, a token on the report's own result row outranks
+    one on an unlabelled line, and one governed by a method or 检测项目
+    label is not read at all — see `_governing_row_rank`.
+    """
+    refused: set = set()
+    candidates: List[Tuple[int, int, str, re.Match]] = []
+    for match in _DIAGNOSIS_TYPE_TOKEN.finditer(text):
+        token = f"FSHD{match.group(1)}"
+        if _asserts_absence(text, match) or _is_hedged(text, match):
+            refused.add(token)
+            continue
+        line, line_start = _line_span(text, match.start())
+        rank = _governing_row_rank(line, match.start() - line_start)
+        if rank >= _REFUSED_ROW:
+            continue
+        candidates.append((rank, match.start(), token, match))
+    for _, _, token, match in sorted(candidates, key=lambda item: (item[0], item[1])):
+        if token not in refused:
+            return token, match
+    return None, None
+
+
 #: The 4q35 allele token, matched on its own and not inside a word.
 _HAPLOTYPE_TOKEN = re.compile(r"\b(4qA|4qB)\b", re.IGNORECASE)
 
-#: Labels under which a line is STATING THIS PATIENT'S ALLELE.
-_HAPLOTYPE_RESULT_LABELS = (
+#: Labels of a row WHOSE SUBJECT IS THE HAPLOTYPE — a dedicated result
+#: row, where the token that follows is the answer and the only answer.
+_HAPLOTYPE_DEDICATED_LABELS = (
     "单倍型",
     "haplotype",
+    "分型",
+)
+
+#: Labels under which a line is stating a result of SOME kind, the
+#: allele among possibly several things. A 结论 sentence is the ordinary
+#: example and it is why this tier is separate from the one above — see
+#: `_read_haplotype`.
+_HAPLOTYPE_RESULT_LABELS = (
     "等位基因",
     "allele",
-    "分型",
     "结果",
     "结论",
 )
@@ -1793,9 +2044,9 @@ _HAPLOTYPE_METHOD_LABELS = (
 )
 
 
-def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str]]:
-    """The 4qA / 4qB tokens a line states, split by whether a result
-    label introduces them: `(labelled, unlabelled)`.
+def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str], List[str]]:
+    """The 4qA / 4qB tokens a line states, split by the label that
+    introduces each: `(dedicated, result, unlabelled)`.
 
     A LABEL INTRODUCES THE TOKEN THAT FOLLOWS IT, not the one that
     precedes it. 「附注: 4qA 为允许型单倍型」 is a footnote defining the
@@ -1806,28 +2057,38 @@ def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str]]:
     4qA」 — which is the same 「the value belongs to the label next to
     it」 rule `_find_adjacent_regex` applies to the numeric cells.
 
-    Method and probe lines state nothing in either bucket, and neither
-    does a line asserting the allele was NOT found.
+    WHICH label is the tier: the NEAREST one to the token's left, so a
+    line carrying both — 「结论: … 单倍型为 4qA」 — is read as the
+    dedicated row it is rather than as a sentence that merely mentions
+    an allele.
+
+    Method and probe lines state nothing in any bucket, and neither does
+    a line asserting the allele was NOT found.
     """
     lowered = line.lower()
     if any(label in lowered for label in _HAPLOTYPE_METHOD_LABELS):
-        return [], []
+        return [], [], []
     if any(marker in lowered for marker in _ABSENCE_MARKERS):
-        return [], []
-    label_positions = [
-        lowered.find(label) for label in _HAPLOTYPE_RESULT_LABELS if label in lowered
-    ]
-    first_label = min(label_positions) if label_positions else None
-    labelled: List[str] = []
+        return [], [], []
+    dedicated: List[str] = []
+    result: List[str] = []
     unlabelled: List[str] = []
     for match in _HAPLOTYPE_TOKEN.finditer(line):
         token = match.group(1)[:2].lower() + match.group(1)[2].upper()
-        bucket = (
-            labelled if first_label is not None and match.start() > first_label else unlabelled
-        )
+        bucket = unlabelled
+        nearest = -1
+        for labels, candidate in (
+            (_HAPLOTYPE_DEDICATED_LABELS, dedicated),
+            (_HAPLOTYPE_RESULT_LABELS, result),
+        ):
+            for label in labels:
+                at = lowered.rfind(label, 0, match.start())
+                if at > nearest:
+                    nearest = at
+                    bucket = candidate
         if token not in bucket:
             bucket.append(token)
-    return labelled, unlabelled
+    return dedicated, result, unlabelled
 
 
 def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -1853,45 +2114,67 @@ def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
     survives on `interpretation_summary`, which is displayed and never
     graded.
 
-    Two tiers, in this order:
+    Three tiers, in this order:
 
-      1. lines that LABEL a result — 单倍型 / 检测结果 / 等位基因. If any
-         of them state a token, they decide, and they decide alone.
-      2. otherwise any remaining line, because an OCR that recovered the
+      1. a DEDICATED haplotype row — 单倍型 / haplotype / 分型. The row's
+         whole subject is the allele, so what it states is the answer.
+      2. otherwise a line labelled as a result of some other kind —
+         结果 / 结论 / 等位基因.
+      3. otherwise any remaining line, because an OCR that recovered the
          result lines and lost their headings is common and dropping the
          allele there loses a real reading.
 
-    A method or probe line is excluded from both tiers, and either tier
-    answers only when what it saw is UNANIMOUS. Both tokens stated, or
-    nothing stated outside the method line, returns no haplotype rather
-    than whichever came first.
+    TIER 1 EXISTS BECAUSE A ROW OUTRANKS A SENTENCE. This routine used
+    to union the labelled tokens across ALL lines and then require
+    unanimity of the union, and 结果 and 结论 were both on that one list
+    — so the routine bi-allelic Southern blot conclusion, which names
+    the contracted 4qA allele and the normal 4qB one in ONE SENTENCE,
+    put both tokens in the labelled bucket and wiped out the haplotype
+    the same report states on its own 单倍型 row directly above it. That
+    is not an edge case: naming both alleles is how a bi-allelic
+    Southern blot conclusion is written, so the report that states the
+    allele most plainly was the one this platform refused to read, and
+    the passport fell to `unspecified_haplotype` on it.
+
+    A method or probe line is excluded from every tier, and each tier
+    answers only when what IT saw is UNANIMOUS — a tier that names both
+    alleles stops the search rather than deferring to the next one,
+    because a contradiction inside one tier is exactly the case the
+    withholding is for. Both tokens stated, or nothing stated outside
+    the method line, returns no haplotype rather than whichever came
+    first.
     """
-    labelled: List[str] = []
-    labelled_source: Optional[str] = None
-    unlabelled: List[str] = []
-    unlabelled_source: Optional[str] = None
+    tiers: Tuple[List[str], List[str], List[str]] = ([], [], [])
+    sources: List[Optional[str]] = [None, None, None]
     for line in lines:
-        on_line_labelled, on_line_unlabelled = _haplotype_tokens_on(line)
-        for token in on_line_labelled:
-            if token not in labelled:
-                labelled.append(token)
-        for token in on_line_unlabelled:
-            if token not in unlabelled:
-                unlabelled.append(token)
-        if on_line_labelled and labelled_source is None:
-            labelled_source = line.strip()
-        if on_line_unlabelled and unlabelled_source is None:
-            unlabelled_source = line.strip()
-    if labelled:
-        return (labelled[0], labelled_source) if len(labelled) == 1 else (None, None)
-    if len(unlabelled) == 1:
-        return unlabelled[0], unlabelled_source
+        for index, tokens in enumerate(_haplotype_tokens_on(line)):
+            for token in tokens:
+                if token not in tiers[index]:
+                    tiers[index].append(token)
+            if tokens and sources[index] is None:
+                sources[index] = line.strip()
+    for index, tokens in enumerate(tiers):
+        if not tokens:
+            continue
+        return (tokens[0], sources[index]) if len(tokens) == 1 else (None, None)
     return None, None
 
 
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
-    text = "\n".join(lines)
-    diagnosis_match, _ = _find_regex(text, [r"\b(FSHD1|FSHD2)\b", r"(FSHD\s*[12])"])
+    # THE CELL-PER-LINE TABLE IS REBUILT BEFORE ANY PATTERN RUNS.
+    #
+    # Every gap in this extractor is `[^\d\n]{0,N}` — deliberately, so a
+    # label on one line cannot reach a number on the next — and the OCR
+    # layout this module documents as the norm emits ONE TEXT BOX PER
+    # TABLE CELL. So on a genetics report whose repeat count sits in a
+    # table, the label and its number are on separate lines and not one
+    # pattern here can see them: the count was read only by
+    # `_append_generic_table_fields`, which slugged 「D4Z4甲基化水平」 and
+    # 「D4Z4重复单元数」 onto the SAME key and dropped the second.
+    # `_table_row_lines` puts the row back together as one line so the
+    # canonical readers — the gap tests, the absence test, the kb test,
+    # the zero refusal — get the cell they were written for.
+    text = "\n".join(lines + _table_row_lines(lines))
     # NAMING A TYPE IS NOT DIAGNOSING IT. 「本次检测不支持 FSHD1」 and
     # 「临床怀疑 FSHD1，请进一步检查」 both named FSHD1 and both came out
     # as this patient's diagnosis at 0.98 — the value the passport
@@ -1899,13 +2182,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # into `patient_profiles`. A report that excludes a type, or only
     # suspects one, has not stated one. The sentence itself survives on
     # `interpretation_summary`, which is displayed and not graded.
-    diagnosis_type = (
-        diagnosis_match.group(1).replace(" ", "")
-        if diagnosis_match
-        and not _asserts_absence(text, diagnosis_match)
-        and not _is_hedged(text, diagnosis_match)
-        else None
-    )
+    #
+    # AND NEITHER IS BEING TITLED AFTER IT — see `_read_diagnosis_type`,
+    # which is where the tests above are asked of every occurrence of the
+    # token rather than of the first one on the page.
+    diagnosis_type, diagnosis_match = _read_diagnosis_type(text)
 
     # 4qA is the token the whole FSHD1 reading rests on — FSHD1 cannot be
     # the mechanism on a 4qB allele — so it is read off the RESULT, never
@@ -1918,11 +2199,27 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # is fixed for all of them at once. Each pattern names its gap so
     # that helper can judge it; each names its value so the group
     # numbers stay readable now that the gap is a group too.
+    # 大小 / size READ THE SAME CELL AS 片段长度, and until they were
+    # here 「D4Z4 大小: 20 kb」 produced NOTHING AT ALL: the fragment
+    # patterns required the literal labels EcoRI or 片段长度, and the
+    # repeat count's own last-resort pattern refuses that number
+    # correctly, because 大小 is a `fragment_length` word in
+    # `_ANALYTE_GAP_WORDS`. So a stated array size fell between the two
+    # and the report read as though it carried no size at all.
+    #
+    # Every one of these requires the printed kb unit, which is what
+    # keeps 大小 — a word with other uses — from reading a number that
+    # is not a length. The key it lands on names EcoRI because this
+    # platform has one length cell and that is its name; what any reader
+    # does with it is 「a length in kb, not a repeat count」, which is
+    # true whichever enzyme cut it.
     ecori_match, _ = _find_adjacent_regex(
         text,
         [
             r"EcoRI(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
             r"片段长度(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"大小(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
+            r"\bsize(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
         ],
         analyte="fragment_length",
     )
@@ -1949,28 +2246,49 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # recommendation. Capture the interval instead and leave
     # `normalized_value` empty, so every reader downstream can see that
     # a test was done and that it did not pin the number down.
+    #
+    # A DETERMINATE COUNT IS TRIED FIRST, AND THE INTERVAL TEST IS PART
+    # OF THE PATTERN RATHER THAN OF THE ORDERING.
+    #
+    # The range branch used to be searched over the WHOLE document
+    # before the single-count branch was tried at all, so any interval
+    # printed anywhere near the token D4Z4 outranked the determinate
+    # count on the result row: a population reference interval, or — the
+    # measured case — the grey zone quoted back in the conclusion,
+    # 「结论: D4Z4 重复单元数 1-10 为缩短范围」 on a report whose own row
+    # reads 5. The interval replaced the 5, `normalized_value` went
+    # empty, and the passport reported the item as having no determinate
+    # result on a report that states one plainly.
+    #
+    # Ordering alone cannot fix it — trying the single pattern first
+    # over 「1-10」 reports 1, which is the bug the range branch was
+    # written for. So the single pattern now REFUSES a number that is
+    # the left edge of a printed interval, and the range branch reads
+    # only what is left: on 「1-10」 the single pattern matches nothing
+    # (the gap cannot cross a digit, so there is no other number at that
+    # anchor to fall back to) and the range still answers.
     d4z4_is_range = False
     if not d4z4_pathogenic:
-        d4z4_range_match, _ = _find_adjacent_regex(
+        d4z4_single_match, _ = _find_adjacent_regex(
             text,
-            [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
+            [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"],
             analyte="repeat_count",
         )
-        if d4z4_range_match:
-            d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group("value"))
-            d4z4_source_text = d4z4_range_match.group(0)
-            d4z4_match = d4z4_range_match
-            d4z4_is_range = True
+        if d4z4_single_match:
+            d4z4_pathogenic = d4z4_single_match.group("value")
+            d4z4_source_text = d4z4_single_match.group(0)
+            d4z4_match = d4z4_single_match
         else:
-            d4z4_single_match, _ = _find_adjacent_regex(
+            d4z4_range_match, _ = _find_adjacent_regex(
                 text,
-                [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+)"],
+                [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
                 analyte="repeat_count",
             )
-            if d4z4_single_match:
-                d4z4_pathogenic = d4z4_single_match.group("value")
-                d4z4_source_text = d4z4_single_match.group(0)
-                d4z4_match = d4z4_single_match
+            if d4z4_range_match:
+                d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group("value"))
+                d4z4_source_text = d4z4_range_match.group(0)
+                d4z4_match = d4z4_range_match
+                d4z4_is_range = True
 
     # WHAT IS BESIDE THE NUMBER DECIDES WHETHER IT IS A COUNT.
     #
@@ -1992,6 +2310,17 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # see that it was read and refused rather than find the row missing.
     # It is never typed as a count, and its confidence puts it in the
     # review queue.
+    #
+    # 「Never typed as a count」 IS ENFORCED BY `NO_NORMALIZED_VALUE`, and
+    # it used to be asserted by this comment and by the one on
+    # `normalized_summary` while being false in both: passing
+    # `normalized_value=None` is how a qualitative cell asks
+    # `_build_field` to fall back to the printed text, so the refused
+    # cell shipped `normalized_value: 「0」`, `_build_observations` read
+    # it with `_exact_float` into `result.value_num: 0.0`, and
+    # `latest_summary.by_analyte.d4z4_repeat_pathogenic.value_num` was
+    # 0.0 — a laboratory count of zero, on the two channels a model and
+    # the passport read numbers off.
     d4z4_refusal: Optional[str] = None
     if d4z4_match is not None and d4z4_pathogenic and not d4z4_is_range:
         if _asserts_absence(text, d4z4_match):
@@ -2125,7 +2454,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             "d4z4_repeat_pathogenic",
             d4z4_pathogenic,
             normalized_value=(
-                None if (d4z4_is_range or d4z4_refusal) else int(d4z4_pathogenic)
+                NO_NORMALIZED_VALUE
+                if (d4z4_is_range or d4z4_refusal)
+                else int(d4z4_pathogenic)
             ),
             source_text=d4z4_source_text,
             # A range is a genuine reading, but it is a weaker one than a
@@ -2205,7 +2536,10 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         # consumer of it does arithmetic. The interval itself survives on
         # the `d4z4_repeat_pathogenic` structured field, whose
         # `field_value` is the raw text. Same for a refused cell — a 0
-        # is what the report printed, not a count anything may use.
+        # is what the report printed, not a count anything may use, and
+        # the structured field beside this one now says the same thing
+        # rather than falling back to the printed digit. See
+        # `NO_NORMALIZED_VALUE`.
         "d4z4_repeat_pathogenic": (
             int(d4z4_pathogenic)
             if d4z4_pathogenic and not d4z4_is_range and not d4z4_refusal
@@ -3162,11 +3496,30 @@ _METHOD_WORDS: Tuple[str, ...] = (
 _ROW_NUMBER_PREFIX = re.compile(r"^[*#\s]*\d{1,3}\s*")
 
 
+def _is_header_row(cell: str) -> bool:
+    """A HEADER ROW PRINTED ON ONE LINE IS STILL A HEADER ROW.
+
+    `_TABLE_HEADER_CELLS` is matched cell by cell, so 「No 项目 结果
+    参考区间 单位 方法」 — how the OCR renders the header when it
+    recovers the row rather than its cells — passed every test in
+    `_looks_like_analyte` and was published as an analyte whose result
+    was the first data row's INDEX: `table_no: 1` on the patient's own
+    report screen.
+
+    It is not only refused as a name. It still ENDS a row, the way the
+    next analyte does, because it is the boundary between the heading
+    and the data — without that the title line above it would reach past
+    it and claim the same index as its value.
+    """
+    tokens = cell.split()
+    return len(tokens) > 1 and all(token in _TABLE_HEADER_CELLS for token in tokens)
+
+
 def _looks_like_analyte(cell: str) -> bool:
     """A cell naming a test: has letters or CJK, is not a header, is short."""
     if not cell or len(cell) > 28:
         return False
-    if cell in _TABLE_HEADER_CELLS or _is_header_only(cell):
+    if cell in _TABLE_HEADER_CELLS or _is_header_only(cell) or _is_header_row(cell):
         return False
     if _VALUE_CELL.match(cell) or _RANGE_CELL.match(cell):
         return False
@@ -3216,7 +3569,7 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
             # found a value. Scanning past it skipped every other row:
             # the cursor landed beyond the next name, so a table read as
             # rows 1, 3, 5.
-            if _looks_like_analyte(cell):
+            if _looks_like_analyte(cell) or _is_header_row(cell):
                 break
             if value is None and _VALUE_CELL.match(cell):
                 value = cell
@@ -3240,6 +3593,32 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
         index = max(cursor, index + 1)
 
     return rows
+
+
+def _table_row_lines(lines: List[str]) -> List[str]:
+    """Every table row rebuilt as a single 「name value unit」 line.
+
+    The rebuilt lines carry no row label of their own, so
+    `_governing_row_rank` reads them as unlabelled — below the report's
+    own result row and above nothing, which is what a cell recovered
+    from table geometry is worth. `extract_lab_table_rows` has already
+    dropped the boilerplate tail, the header cells, the method column
+    and the reference intervals, so what comes back is analyte and
+    reading.
+
+    Only the cell-per-line layout produces anything here: a row printed
+    on one line has its value on the same line as its name, which
+    `_looks_like_analyte` never accepts as a name cell. So this adds
+    text to the document exactly where a pattern could not otherwise
+    reach, and duplicates nothing.
+    """
+    rebuilt: List[str] = []
+    for row in extract_lab_table_rows(lines):
+        parts = [row["name"], row["value"]]
+        if row["unit"]:
+            parts.append(row["unit"])
+        rebuilt.append(" ".join(parts))
+    return rebuilt
 
 
 def _extract_labs(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -3317,23 +3696,70 @@ def _dedupe_preserve_order(values: Iterable[Any]) -> List[Any]:
     return items
 
 
+#: Substrings the API's redactor dispatches its genetics readers on, in
+#: apps/api/src/modules/ai-agents/security/pii-redactor.ts. A key
+#: carrying one is read as the cell it names — and graded — wherever it
+#: came from. See `_append_generic_table_fields`.
+_GENETICS_DISPATCH_SUBSTRINGS: Tuple[str, ...] = (
+    "d4z4",
+    "ecori",
+    "methylation",
+    "haplotype",
+)
+
+
 def _append_generic_table_fields(lines: List[str], fields: List[Dict[str, Any]]) -> None:
     """Add table rows the type-specific extractors did not already cover.
 
     Keys are prefixed `table_` and slugged from the printed analyte
-    name. They are deliberately NOT canonical keys: the API's prompt
-    allowlist is deny-by-default, so these reach the patient's own
-    report screen but not a model prompt until someone reviews the name.
-    That is the right default for a value read off an arbitrary table.
+    name. They are NOT canonical keys, and the `table_` prefix is what
+    says so: the API's OCR projection excludes a key carrying it from
+    every genetics reader and from the safe-key list, so these reach the
+    patient's own report screen and not a model prompt until someone
+    reviews the name.
+
+    WHAT THIS DOCSTRING USED TO CLAIM WAS NOT TRUE, and both halves of
+    why have been fixed — the API's half there, this one here.
+
+    It said the prompt allowlist was 「deny-by-default, so these reach
+    the patient's own report screen but not a model prompt」. The
+    allowlist admits the OCR blob as one key, `fields`; inside it the
+    projection dispatched its genetics readers on the SUBSTRINGS
+    `d4z4` / `ecori` / `methylation`, and a slug is arbitrary printed
+    text. So a `table_*` key containing one reached the assistant prompt
+    in BOTH modes carrying this platform's grade — measured:
+    `tableD4z4_clinical: above_fshd1_repeat_range`, the label whose
+    documented meaning is 「go and evaluate FSHD2」, minted off a
+    METHYLATION percentage, because the d4z4 branch is tested before the
+    methylation one.
+
+    THIS HALF IS THE NAME. A slug is not allowed to collide with a
+    canonical genetics cell, and it used to do it two ways at once:
+
+      - the slug regex deleted EVERY CJK CHARACTER, so every Chinese
+        genetics analyte whose only Latin content is D4Z4 collapsed onto
+        the single key `table_d4z4` and the `existing_names` guard
+        silently dropped all but the first. On the cell-per-line OCR
+        layout that meant a methylation row printed above the count row
+        took the key and THE PATIENT'S REPEAT COUNT WAS DISCARDED.
+        The slug keeps CJK now, so two analytes are two keys.
+      - a name carrying one of `_GENETICS_DISPATCH_SUBSTRINGS` is not
+        minted here at all. Those cells belong to `_extract_genetic`,
+        which reads them under canonical keys with the refusals attached
+        — and reads them off the cell-per-line layout too, since
+        `_table_row_lines`. Nothing is lost by declining to publish them
+        a second time under a name the printer chose.
     """
     existing = {str(f.get("source_text") or "") for f in fields}
     existing_names = {str(f.get("field_name") or "").lower() for f in fields}
 
     for row in extract_lab_table_rows(lines):
-        slug = re.sub(r"[^a-z0-9]+", "_", row["name"].lower()).strip("_")
+        slug = re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "_", row["name"].lower()).strip("_")
         if not slug:
             slug = re.sub(r"\s+", "_", row["name"])[:24]
         key = f"table_{slug}"[:48]
+        if any(token in key.lower() for token in _GENETICS_DISPATCH_SUBSTRINGS):
+            continue
         if key.lower() in existing_names or row["value"] in existing:
             continue
         existing_names.add(key.lower())

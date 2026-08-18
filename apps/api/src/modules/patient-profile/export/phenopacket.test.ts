@@ -196,6 +196,63 @@ describe('Phenopacket v2 — FSHD1 is not a sequence variant', () => {
     expect(serialised).not.toContain('geneContext');
     expect(serialised).not.toContain('gene-studied');
   });
+
+  /**
+   * 「见下一条」 HAS TO BE THE NEXT ONE.
+   *
+   * The `interpretations` reason ends by telling the reader the report's
+   * readings are shown as themselves in the other two exports, 「见下一
+   * 条」. For one round the entry pushed next was the platform's
+   * JUDGEMENT of the report — the evidence grade, the assay method, the
+   * 诊断进度 — which says nothing about where the readings are; the entry
+   * it meant was two later, and the comment block describing the
+   * readings entry was sitting above the judgement push, which is how
+   * they came to be swapped. A receiver following that pointer landed on
+   * a paragraph about something else and had no reason to keep reading.
+   *
+   * Asserted by INDEX rather than by 「both entries exist」: existence was
+   * always true and is what let the order rot.
+   */
+  it('「见下一条」 指向的就是紧接着的那一条', () => {
+    [build(), build(withDiagnosisType(null)), build({ documents: [] })].forEach((result) => {
+      const fields = result.omissions.map((entry) => entry.field);
+      const at = fields.indexOf('interpretations');
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(result.omissions[at].reasonZh).toContain('见下一条');
+      expect(fields[at + 1]).toBe('diseases / measurements（基因报告上的读数）');
+    });
+  });
+
+  /**
+   * And the neighbouring entry must not point at one that is not there.
+   *
+   * The 临床护照 entry ended 「是否基因确诊这一判定见上面 diseases[].term
+   * （诊断依据）那一条」 unconditionally, while that entry is pushed only
+   * inside the branch that writes a `Disease`. For every profile with no
+   * classifiable 分型 — a real and common state, which this file's own
+   * `diseases` omission exists for — the pointer named an entry absent
+   * from the list it sits in.
+   */
+  it('没有可写的 Disease 时，不把读者指向一条不存在的 omission', () => {
+    const result = build(withDiagnosisType(null));
+    const fields = result.omissions.map((entry) => entry.field);
+    expect(fields).not.toContain('diseases[].term（诊断依据）');
+    const judgement = result.omissions.find((entry) =>
+      entry.field.startsWith('diseases（临床护照'),
+    );
+    expect(judgement?.reasonZh).not.toContain('见上面 diseases[].term（诊断依据）那一条');
+    expect(judgement?.reasonZh).toContain('是否基因确诊这一判定在本文件里没有承载位置');
+
+    // And every pointer the whole list makes at one of its own entries
+    // resolves. 「上一条」/「下一条」 are positional and checked above; this
+    // catches a reason that names a sibling by its `field` string.
+    result.omissions.forEach((entry) => {
+      const named = [...entry.reasonZh.matchAll(/diseases\[\]\.term（[^）]+）/g)].map(
+        (match) => match[0],
+      );
+      named.forEach((target) => expect(fields, `${entry.field} -> ${target}`).toContain(target));
+    });
+  });
 });
 
 describe('Phenopacket v2 — subject', () => {
@@ -311,6 +368,16 @@ describe('Phenopacket v2 — held-but-unemitted instruments are declared', () =>
       '这是导出管线的缺口，不表示患者没有做过分级——在本记录的全部内容里，这两项通常是唯一可跨患者比较的运动功能测量，需要时请直接向患者索取',
       '本文件不含任何行走能力或运动功能数据：即使患者在填写 Vignos 时选择了同步到基线，基线里的行走状态也不会出现在本文件的任何位置',
       '需要行走状态请向患者索取，或改用 TREAT-NMD 对齐导出',
+      // The fifth is approved rather than filtered, per the note above.
+      // It comes from the `medicalActions` omission and enters the class
+      // on 轮椅 alone. It claims nothing about a walking state: it names
+      // the three transition events this platform records so that a
+      // receiver knows which of them exist to ask for, and the entry it
+      // sits in says in the same breath that none of them is written
+      // here. It is deliberately kept free of the row counts in the
+      // neighbouring sentence, so this exact string does not move with
+      // the profile.
+      '里程碑事件指本平台记录的三类转折点：开始使用轮椅、开始无创通气、开始使用踝足矫形器',
     ]);
     // And no locator may point into a document that has no sections.
     expect(locatorsIn(reason)).toEqual([]);

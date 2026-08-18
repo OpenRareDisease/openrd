@@ -55,7 +55,11 @@ import { hashPrompt } from '../audit/hash.js';
 import { scrubErrorDetail } from '../audit/scrub.js';
 import type { ILLMProvider, LlmFinishReason, LlmMessage, LlmUsage } from '../llm/base.js';
 import { retrievalFailureReason } from '../retrievers/base.js';
+import type { RedactionScope } from '../security/allowlist.js';
+import { PROMPT_ALLOWLIST } from '../security/allowlist.js';
 import { redactionModeForConsent } from '../security/consent.js';
+import { GENETIC_READING_REFUSALS } from '../security/pii-redactor.js';
+import { SCOPE_LABELS } from '../security/render.js';
 import type { ITool, ToolContext } from '../tools/base.js';
 import type { ToolRegistry } from '../tools/registry.js';
 
@@ -248,24 +252,125 @@ export interface OrchestratorOptions {
 export type OrchestratorEventHandler = (event: OrchestratorEvent) => void;
 
 /**
- * Tell the model what redaction mode it is working under.
+ * The scope headers `renderFieldsByScope` prints, as prose rather than
+ * as its 【】 block markers. `Record<RedactionScope, string>` on
+ * purpose: a fourth scope added to `PROMPT_ALLOWLIST` fails to compile
+ * here rather than going unmentioned in the notice.
+ */
+const NOTICE_SCOPE_TITLES: Record<RedactionScope, string> = {
+  profile: '患者基础档案',
+  reports: '患者报告',
+  followups: '患者随访记录',
+};
+
+/**
+ * The two allowlist keys `renderFieldsByScope` prints as a section of
+ * their own instead of as a labelled row, which is why `SCOPE_LABELS`
+ * carries no entry for them — see the `RENDERED_AS_THEIR_OWN_BLOCK`
+ * exemption in tools/tool-descriptions.test.ts, which also fences the
+ * converse: EVERY other allowlisted key that a retriever can reach is
+ * required to have a `SCOPE_LABELS` entry. So this map plus that table
+ * covers the allowlist, and the `?? key` fallback below is the
+ * renderer's own behaviour rather than a case this file expects to hit.
+ */
+const NOTICE_BLOCK_FIELD_LABELS: Record<string, string> = {
+  fields_clinical: 'OCR 字段（临床化）',
+  fields: 'OCR 字段（原始值）',
+};
+
+const noticeFieldLabel = (scope: RedactionScope, key: string): string =>
+  SCOPE_LABELS[scope][key] ?? NOTICE_BLOCK_FIELD_LABELS[key] ?? key;
+
+const NOTICE_SCOPES = Object.keys(NOTICE_SCOPE_TITLES) as RedactionScope[];
+
+const noticeInventory = (pick: (scope: RedactionScope) => readonly string[]): string =>
+  NOTICE_SCOPES.map((scope) => {
+    const keys = pick(scope);
+    if (keys.length === 0) return null;
+    const labels = keys.map((key) => noticeFieldLabel(scope, key)).join('、');
+    return `- ${NOTICE_SCOPE_TITLES[scope]}：${labels}`;
+  })
+    .filter((line): line is string => line !== null)
+    .join('\n');
+
+/** What strict mode already hands the model, read off the allowlist it
+ *  is projected through. */
+const STRICT_FIELDS_ZH = noticeInventory((scope) => PROMPT_ALLOWLIST[scope].strict);
+
+/** What 「精确数值」 consent actually ADDS — the set DIFFERENCE, not the
+ *  precise list, so a key carried in both modes can never be advertised
+ *  as something the patient has to go and switch on. Reading the precise
+ *  list directly would name `methylation`, `methylation_origin`,
+ *  `methylation_withheld`, `d4z4_clinical`, `haplotype_clinical` and
+ *  every report field — all of them already in the strict projection. */
+const PRECISE_ONLY_FIELDS_ZH = noticeInventory((scope) => {
+  const strict = new Set<string>(PROMPT_ALLOWLIST[scope].strict);
+  return PROMPT_ALLOWLIST[scope].precise.filter((key) => !strict.has(key));
+});
+
+/** The exact tokens a `_clinical` genetics key holds when this platform
+ *  declines to read the cell, named so the model recognises them as
+ *  answers rather than as gaps to apologise for. Read off the redactor's
+ *  own set; sorted only so the prompt digest is stable. */
+const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
+
+/**
+ * Tell the model what redaction mode it is working under, and — for
+ * strict — what that mode actually carries.
  *
- * Under `strict` (consent below `precise`) the redactor strips every
- * raw value from a report — the model receives the type and status and
- * nothing else. It has no way to distinguish that from a document that
- * genuinely failed to parse, and it reasonably reports the latter:
- * observed verbatim,「系统显示这些报告的解析状态是"失败"，具体内容
- * 暂时还读取不出来」on an account whose genetic report had parsed
- * perfectly. The patient is then sent to fix an OCR problem that does
+ * WHY THE NOTICE EXISTS. Under `strict` the redactor withholds raw
+ * MEASUREMENTS. The model has no way to distinguish a withheld number
+ * from a document that failed to parse, and it reasonably reported the
+ * latter: observed verbatim,「系统显示这些报告的解析状态是"失败"，具体
+ * 内容暂时还读取不出来」on an account whose genetic report had parsed
+ * perfectly. The patient was then sent to fix an OCR problem that did
  * not exist, when the actual fix is one switch in 隐私设置.
  *
- * So the mode is stated rather than left to be inferred, along with
- * what to say about it.
+ * WHY IT IS DERIVED AND NOT WRITTEN. The first version of it said the
+ * model receives 「只有类型和处理状态，没有具体数值」 and told it to send
+ * the patient to 隐私设置 for anything more. That was true when layer 2
+ * ran in precise mode only. It stopped being true the moment the
+ * redactor started clinicalising in BOTH modes: the same turn's tool
+ * message now carries this platform's reading of every genetics cell
+ * and every qualitative laboratory result verbatim. A notice is an
+ * INSTRUCTION a model obeys, so a strict-consent patient asking whether
+ * their D4Z4 count sits in the FSHD1 range was told to go turn on a
+ * consent switch for an answer already in the prompt — and the readings
+ * it was told it did not get are exactly the refusals
+ * (`length_in_kb_not_a_repeat_count`, the 4qB refusal, the 8–10 grey
+ * zone) that this pipeline exists to deliver.
+ *
+ * So the inventory is computed from `PROMPT_ALLOWLIST` and labelled
+ * from `SCOPE_LABELS` — the same two tables the redactor and the
+ * renderer read — and the second list is the set DIFFERENCE rather than
+ * the precise list, so no field carried in both modes can be advertised
+ * as locked. Adding or removing an allowlist key rewrites this notice;
+ * it cannot drift away from the projection again.
  */
 const redactionNotice = (mode: 'strict' | 'precise'): string =>
   mode === 'precise'
     ? ''
-    : `\n\n【当前数据可见范围】用户尚未开启「精确数值」授权，所以你收到的报告只有类型和处理状态，没有具体数值——这不代表报告识别失败。如果用户问的内容需要具体数值，直接说明：这些数值需要在「我的 › 隐私设置」里开启精确数值授权后才能读取，不要说成是报告本身的问题，也不要凭空推测数值。`;
+    : [
+        '',
+        '',
+        '【当前数据可见范围】用户尚未开启「精确数值」授权，本轮所有工具结果按 strict 允许清单投影。' +
+          'strict 扣下的只是原始测量数值本身，不是报告内容，更不是解析失败。',
+        '',
+        '本轮工具消息里你已经拿到的字段：',
+        STRICT_FIELDS_ZH,
+        '',
+        '其中「本平台判读」「来源」这类字段和 OCR 字段（临床化），装的是本平台对该项的判读结论，' +
+          `或本平台拒绝判读的结论（${GENETIC_REFUSAL_TOKENS_ZH}）；报告里的定性结果（如 阴性(-)、阳性）按原文给你。` +
+          '凡是这些字段能回答的问题——包括「我的 D4Z4 重复数在不在 FSHD1 范围内」「我的单倍型是不是允许型」' +
+          '——直接照工具消息里的判读回答，不要让用户去开授权。',
+        '',
+        '开启「精确数值」授权后才会新增的字段，只有这些：',
+        PRECISE_ONLY_FIELDS_ZH,
+        '',
+        '只有当用户要的确实是上面这几项原始数值本身时，才说明需要在「我的 › 隐私设置」里开启精确数值授权。' +
+          'numericValuesWithheld 是被扣下的测量值个数，不是解析失败；任何情况下都不要凭空推测数值，' +
+          '也不要把 strict 说成是报告本身的问题。',
+      ].join('\n');
 
 const buildUserPrompt = (input: OrchestratorRunInput): string => {
   if (!input.userContextHint?.trim()) return input.question;

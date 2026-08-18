@@ -54,6 +54,7 @@
  */
 
 import { buildAnesthesiaCard } from './anesthesia-card';
+import { formatProductDate } from './clinical-visuals';
 import { ageInYears } from './guardian-consent';
 import { bucketForScore } from '../screens/p-data_entry/sleep-score';
 import {
@@ -235,29 +236,37 @@ const hasValue = (value: string | null | undefined): value is string =>
  *  `new Date('2025-05-09')` is UTC midnight, so `getDate` in the
  *  device's zone printed 2025-05-08 for a report the passport dated
  *  05-09, and this schedule then disagreed with the passport it was
- *  built from. `occurredAt` and `recordedAt` are real instants and
- *  still take the `Date` path below, where a zone is the right thing
- *  to apply. */
+ *  built from. `formatProductDate` short-circuits exactly this shape;
+ *  the regex is still here to check what came back out of it. */
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** YYYY-MM-DD, or null. Full year on purpose: 「05-14」 on a dated
- *  result tells the patient nothing about whether it was this spring.
+/** YYYY-MM-DD on the product's calendar, or null. Full year on purpose:
+ *  「05-14」 on a dated result tells the patient nothing about whether
+ *  it was this spring.
  *
  *  THIS IS THE RENDERER FOR A VALUE THAT REALLY IS A DAY — a monitoring
  *  slot's `latestDate`, a symptom score's `recordedAt`, both of which
  *  are written the moment the observation is made. It is the wrong
  *  renderer for a follow-up milestone, because it always produces a
  *  day: see `formatMilestoneDate` below, which is what the wheelchair
- *  and the non-invasive-ventilation rows go through now. */
+ *  and the non-invasive-ventilation rows go through now.
+ *
+ *  THE ZONE IS THE PRODUCT'S, NOT THE HANDSET'S. `recordedAt` is a real
+ *  instant, and this used to read it back through `getFullYear` /
+ *  `getMonth` / `getDate` — so a sleep score filed at 16:00 UTC or
+ *  later printed one day here and the next day in every server-rendered
+ *  document off the same row. `formatProductDate` is the same
+ *  arithmetic apps/api's `formatProductDate` does; this is
+ *  referral-pack.ts's `formatDate` wrapper around it, null-ing anything
+ *  that did not come back as a calendar day.
+ *
+ *  A whitespace-only or 「—」 value is refused by `hasValue` before it
+ *  gets here, so the null this returns still means 「nothing to
+ *  print」 and never 「the empty string」. */
 const formatFullDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
-  const trimmed = value.trim();
-  if (DATE_ONLY.test(trimmed)) return trimmed;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  const formatted = formatProductDate(value);
+  return formatted && DATE_ONLY.test(formatted) ? formatted : null;
 };
 
 /**
@@ -274,8 +283,9 @@ const formatFullDate = (value: string | null | undefined): string | null => {
  * instant: 「你在随访里记录了「开始使用轮椅」（2019-01-01）」 — the
  * fabricated 1 January that the referral pack, the FHIR bundle and the
  * TREAT-NMD document all decline to print for the same event, off the
- * same column, in the same run. And because `formatFullDate` reads a
- * UTC instant back through `getFullYear`/`getMonth`/`getDate`, every
+ * same column, in the same run. And because `formatFullDate` then read
+ * a UTC instant back through `getFullYear`/`getMonth`/`getDate` — it
+ * goes through the product's calendar now, see its own note — every
  * device west of Greenwich printed （2018-12-31）: the wrong YEAR on the
  * milestone a neurologist reads as the start of wheelchair use. China
  * is UTC+8, so the product's own timezone can never show that half.
@@ -297,21 +307,33 @@ const formatFullDate = (value: string | null | undefined): string | null => {
  * year was also two documents built from one profile disagreeing about
  * when one person started using a wheelchair.
  *
- * AND THE WHOLE DATE IS READ IN UTC, not only the test for the pin.
- * `formatFullDate` states the rule it is built on — that `occurredAt`
- * is a real instant, so applying the device's zone to it is right — and
- * for a milestone that premise does not hold. The event form posts a
- * bare 「YYYY-MM-DD」 the patient typed; the API parses it (UTC
- * midnight), stores it in TIMESTAMPTZ and hands it back through
- * `toISOString`, so what arrives here is a calendar day wearing an
- * instant's clothes. Read through `getDate`, a wheelchair start of
- * 2019-06-14 printed 2019-06-13 on any handset west of Greenwich —
- * one stored row answering differently on two phones, which is the same
- * complaint occurrence-date.ts makes when it insists its own pin test
- * be done against a fixed zone. Should a path ever start writing a real
- * time of day into this column, this reads it a day early in Shanghai;
- * no path writes one today, and a handset-dependent answer is the worse
- * of the two.
+ * THE TEST FOR THE PIN IS IN UTC AND THE DAY IS ON THE PRODUCT'S
+ * CALENDAR, and those are two different questions with two different
+ * right answers.
+ *
+ * `pinnedToYearStart` is a statement about the SHAPE OF THE STORED
+ * VALUE — 「the column holds exactly the first millisecond of a year」 —
+ * and occurrence-date.ts makes it in UTC so that one row cannot answer
+ * it differently on two hosts. This does the same, with the same UTC
+ * accessors, so a milestone the referral pack prints as 「2019 年」 is
+ * printed as 「2019 年」 here.
+ *
+ * The day is a question about the CALENDAR THE DOCUMENT IS READ ON, and
+ * that is `PRODUCT_TIME_ZONE`. This used to answer it in UTC too, and
+ * defended that with 「no path writes a real time of day into this
+ * column」. That premise was false: `followupEventSchema.occurredAt` is
+ * `isoDateString`, which is `z.string().trim().refine(Date.parse)` —
+ * it accepts a full timestamp, and the API stores whatever it accepted.
+ * Rendered against a real 2025-11-20T16:30:00.000Z, this page printed
+ * 2025-11-20 while the referral pack built from the same row printed
+ * 2025-11-21, which is the two-documents-disagreeing failure the pin
+ * itself exists to prevent, in the other half of the same function.
+ *
+ * Reading it on the product's calendar is also right for the majority
+ * shape — the bare 「YYYY-MM-DD」 the event form posts, which the API
+ * parses at UTC midnight and hands back through `toISOString`. Beijing
+ * is ahead of UTC, so a midnight instant keeps its day: 2019-06-14
+ * still prints 2019-06-14, here and in the pack.
  */
 const formatMilestoneDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
@@ -324,9 +346,7 @@ const formatMilestoneDate = (value: string | null | undefined): string | null =>
     date.getUTCSeconds() === 0 &&
     date.getUTCMilliseconds() === 0;
   if (atMonthStart && date.getUTCMonth() === 0) return `${date.getUTCFullYear()} 年`;
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `${date.getUTCFullYear()}-${month}-${day}`;
+  return formatFullDate(value);
 };
 
 const daysBetween = (from: string, today: Date): number | null => {

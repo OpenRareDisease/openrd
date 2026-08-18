@@ -284,13 +284,20 @@ describe('确诊状态必须在数值之前出现', () => {
     expect(clean).not.toContain('一节逐条列出的字段');
   });
 
-  it('运动功能那两行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
-    // 概况 and 受累部位 are patient self-measurement wrapped in the same
-    // class with no inline text marker, so if the rule does not bite,
-    // they read with the typographic authority of the MRI summary two
-    // sections below.
+  it('运动功能那几行也一样 —— 它们连「（本人填写）」都没有，CSS 是唯一的信号', () => {
+    // 平均肌力, 受累部位 and 肌力报告摘要 are patient self-measurement
+    // wrapped in the same class with no inline text marker, so if the
+    // rule does not bite, they read with the typographic authority of
+    // the MRI summary two sections below.
+    //
+    // 平均肌力 is the row that most needs it: it is a NUMBER, and a
+    // number set in the same register as a lab value is the one thing
+    // on this page a hurried reader will copy into a note as if it had
+    // been measured by somebody with a dynamometer.
     const html = page();
-    expect(effective(html, valueChain(html, '概况'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, '平均肌力'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, '受累部位'), 'color')).toBe('var(--soft)');
+    expect(effective(html, valueChain(html, '肌力报告摘要'), 'color')).toBe('var(--soft)');
     expect(effective(html, valueChain(html, 'MRI 摘要'), 'color')).toBe('var(--ink)');
   });
 
@@ -755,6 +762,207 @@ describe('运动功能不能读起来像查体', () => {
 
   it('页脚再说一次，因为打印出来的第二页可能没有标题', () => {
     expect(page()).toContain('运动功能一栏为患者自测，不是查体所得');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 运动功能：本页说的话，必须和同一份 summary 生成的其他文档一致
+ *
+ * 每一条都从真实 profile 走真实 summariser —— 这一组缺陷的成因就是
+ * 「summary 上有一个字段，渲染器读了另一个」，字面量 fixture 表达不出
+ * 这件事。
+ * ------------------------------------------------------------------ */
+
+/** MMT measurements recorded in the app: the ordinary patient. */
+const mmt = (over: Record<string, unknown> = {}) => ({
+  id: 'm1',
+  muscleGroup: 'deltoid',
+  metricKey: null,
+  bodyRegion: 'shoulder_girdle',
+  side: 'left',
+  strengthScore: 3,
+  method: 'MMT',
+  entryMode: 'self_report',
+  deviceUsed: null,
+  notes: null,
+  recordedAt: '2026-06-01T02:00:00.000Z',
+  createdAt: '2026-06-01T02:05:00.000Z',
+  submissionId: null,
+  ...over,
+});
+
+describe('运动功能：本页和 markdown 导出、PDF 说同一句话', () => {
+  it('没有上传肌力报告时，本页印的是实测平均值，不是「暂无可用的肌力评估摘要」', () => {
+    // The defect: 概况 printed `motor.summary`, which is built ONLY from
+    // an uploaded 肌力评估 report's OCR fields. A patient whose strength
+    // data is in-app MMT has no such report, so the page a clinician
+    // opens from the share link asserted there was no strength
+    // assessment — directly above a 受累部位 row derived from those very
+    // measurements, and while the markdown export and the mobile PDF
+    // built from the same summary object both printed 平均 3.5 级.
+    const p = profile({
+      measurements: [
+        mmt({ id: 'm1', muscleGroup: 'deltoid', side: 'left', strengthScore: 3 }),
+        mmt({ id: 'm2', muscleGroup: 'tibialis', side: 'bilateral', strengthScore: 4 }),
+      ],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.average).toBe('3.5');
+    expect(built.motor.summary).toBe('暂无可用的肌力评估摘要');
+
+    const html = rendered(p);
+    expect(rowOf(html, '平均肌力')).toContain('3.5 级');
+    // The fallback string is a statement about one KIND of source. It
+    // must not appear on a page that is simultaneously listing the
+    // regions those measurements identified.
+    expect(html).not.toContain('暂无可用的肌力评估摘要');
+    expect(html).not.toContain('肌力报告摘要');
+  });
+
+  it('一条也没测时，平均肌力印「—」，不印一个假的 0', () => {
+    const html = rendered(profile());
+    expect(rowOf(html, '平均肌力')).toContain('—');
+    expect(rowOf(html, '平均肌力')).not.toContain('级');
+  });
+});
+
+describe('受累部位：左就是左', () => {
+  it('只测了左三角肌，本页不能把两侧肩带都说成受累', () => {
+    // FSHD is characteristically asymmetric. The same profile's FHIR
+    // export emits 三角肌肌力（左侧）; this page used to say both
+    // shoulders, so two of this app's documents about one patient
+    // disagreed about which arm is weak.
+    const p = profile({
+      measurements: [mmt({ side: 'left', strengthScore: 3 })],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.bodyRegions).toEqual({
+      leftShoulder: { intensity: 2, label: '肩带（左）' },
+    });
+
+    const row = rowOf(rendered(p), '受累部位');
+    expect(row).toContain('肩带（左）');
+    expect(row).not.toContain('（右）');
+  });
+
+  it('双侧记录印不带方位的名字，不伪造成两条', () => {
+    const p = profile({
+      measurements: [mmt({ muscleGroup: 'tibialis', side: 'bilateral', strengthScore: 2 })],
+    } as never);
+    // Both regions are painted — the measurement says both — but the
+    // highlight list names the finding ONCE. Undeduplicated it read
+    // 「小腿前群、小腿前群」, which a reader parses as emphasis or as two
+    // separate findings, and which ate the whole four-item limit on one
+    // muscle group.
+    const built = buildClinicalPassportSummary(p);
+    expect(Object.keys(built.motor.bodyRegions).sort()).toEqual(['leftShin', 'rightShin']);
+    expect(built.motor.highlights).toEqual(['小腿前群']);
+    expect(rowOf(rendered(p), '受累部位')).toContain('小腿前群');
+  });
+
+  it('左右都测了，弱的那一侧不会被强的那一侧覆盖掉', () => {
+    // Keyed by muscle group alone, the later-recorded row won outright:
+    // a left deltoid of 2 beside a right of 5 came out 「平均 5.0 级」
+    // with an EMPTY body map — the reading a clinician would most want,
+    // deleted by the collection meant to summarise it.
+    const p = profile({
+      measurements: [
+        mmt({ id: 'm1', side: 'left', strengthScore: 2, recordedAt: '2026-06-01T02:00:00.000Z' }),
+        mmt({ id: 'm2', side: 'right', strengthScore: 5, recordedAt: '2026-06-02T02:00:00.000Z' }),
+      ],
+    } as never);
+    const built = buildClinicalPassportSummary(p);
+    expect(built.motor.average).toBe('3.5');
+    expect(built.motor.highlights).toEqual(['肩带（左）']);
+
+    const row = rowOf(rendered(p), '受累部位');
+    expect(row).toContain('肩带（左）');
+    expect(row).not.toContain('肩带（右）');
+  });
+});
+
+describe('影像：本页不能比 markdown 导出少说一句', () => {
+  it('印出 MRI 重点区域 —— 导出和 PDF 都从同一个数组里印它', () => {
+    const html = page({
+      imaging: {
+        ready: true,
+        latestMriDate: '2025-10-30',
+        latestDocumentId: 'mri-1',
+        freshness: { label: '最新', tone: 'success', date: '2025-10-30', daysSince: 77 },
+        summary: '双侧前锯肌萎缩',
+        highlights: ['小腿前群', '肩带'],
+        bodyRegions: {},
+      },
+    });
+    // The distribution is what makes an MRI say FSHD rather than
+    // something else, and this row was the only place it could have
+    // reached this reader.
+    expect(rowOf(html, 'MRI 重点区域')).toContain('小腿前群、肩带');
+    expect(rowOf(html, '最近 MRI')).toContain('2025-10-30 · 最新');
+  });
+
+  it('没有 MRI 时既不印新鲜度也不假装有分布', () => {
+    const html = page({
+      imaging: {
+        ready: false,
+        latestMriDate: null,
+        latestDocumentId: null,
+        freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+        summary: '暂无 MRI 分析数据',
+        highlights: [],
+        bodyRegions: {},
+      },
+    });
+    expect(rowOf(html, '最近 MRI')).not.toContain('缺失');
+    expect(rowOf(html, 'MRI 重点区域')).toContain('—');
+  });
+});
+
+describe('检查结果：日期旁边写清楚它有多旧', () => {
+  it('有日期的那几格印新鲜度，和 markdown 导出用同样的四个词', () => {
+    // The export markdown and the mobile PDF have always printed it.
+    // This page printed the bare date and left a clinician on a phone
+    // to do the arithmetic against today.
+    const html = page({
+      monitoring: {
+        ready: true,
+        items: [
+          {
+            key: 'blood',
+            title: '血检指标',
+            state: 'present',
+            summary: 'CK 1245 U/L',
+            latestDate: '2025-05-09',
+            latestDocumentId: 'd9',
+            freshness: { label: '过期', tone: 'danger', date: '2025-05-09', daysSince: 251 },
+            note: null,
+          },
+        ],
+      },
+    });
+    expect(html).toContain('最近日期：2025-05-09 · 过期');
+  });
+
+  it('没有日期的那一格不印「缺失」—— 那读起来像在评价患者', () => {
+    const html = page({
+      monitoring: {
+        ready: true,
+        items: [
+          {
+            key: 'cardiac',
+            title: '心脏检查',
+            state: 'absent',
+            summary: '暂无可自动读取的心脏检查结果',
+            latestDate: null,
+            latestDocumentId: null,
+            freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+            note: null,
+          },
+        ],
+      },
+    });
+    expect(html).toContain('最近日期：—');
+    expect(html).not.toContain('— · 缺失');
   });
 });
 

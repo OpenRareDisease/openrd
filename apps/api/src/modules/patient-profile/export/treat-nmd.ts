@@ -17,9 +17,12 @@ import {
 } from './export-source.js';
 import {
   AMBULATION_LABELS,
+  DAILY_IMPACT_LABELS,
   FOLLOWUP_EVENT_LABELS,
   FOLLOWUP_EVENT_SEVERITY_LABELS,
   FUNCTION_TEST_LABELS,
+  MUSCLE_GROUP_LABELS,
+  SIDE_LABELS,
   SYMPTOM_LABELS,
   labelFor,
 } from './labels.js';
@@ -333,6 +336,29 @@ export const buildTreatNmdExport = (
         source.geneticEvidenceRecord.ecoRIFragment,
         `${ECORI_FRAGMENT_LOCATION_ZH}${geneticEvidenceDocumentZh(source)}${ECORI_FRAGMENT_NOT_JUDGED_ZH}`,
       ),
+      // 起病部位, which no portable export carried and none declared.
+      // `normaliseSource` is the only thing the three serialisers read,
+      // and it did not lift this field at all — so it was unreachable
+      // rather than declined. It belongs beside the diagnosis rather
+      // than among the symptom self-ratings: it is a one-off answer
+      // about how the illness began, not something re-recorded at each
+      // follow-up, and in FSHD the region of onset is part of what the
+      // diagnosis is built on.
+      //
+      // NOT CLASSIFIED. The baseline stores whatever the patient typed
+      // and this document reproduces it; a mapping onto 面部 / 肩胛带 /
+      // 下肢 would be this export deciding what 「胳膊抬不起来」 means.
+      item(
+        'diagnosis.onsetRegion',
+        '起病部位（患者自述）',
+        source.onsetRegion,
+        withOriginNote(
+          source,
+          'diseaseBackground.onsetRegion',
+          '患者在基线问卷上自述的起病部位，原文照录，本平台不作归类',
+          '基线问卷上记录的起病部位，原文照录，本平台不作归类',
+        ),
+      ),
     ]),
     noteZh: null,
   };
@@ -421,10 +447,33 @@ export const buildTreatNmdExport = (
     }
   });
 
+  // THE ADL RATINGS BELONG HERE, AND WERE IN NO PORTABLE EXPORT BUT ONE.
+  //
+  // `dailyImpacts` is the 日常活动困难程度 series — 洗头, 穿衣, 上下楼梯 —
+  // and it reached the FHIR bundle as Observations and reached this
+  // document nowhere. Not declared either: this file's omissions list
+  // named the pregnancy section, the instruments and the family history
+  // and said nothing about a whole series of self-ratings, which is the
+  // reading a receiver cannot recover from. It sits in 症状 beside
+  // `challenge.*` because it is the same kind of answer from the same
+  // person on the same scale idea — the difference is that a challenge
+  // is filled once at registration and this is recorded again at each
+  // follow-up, which is what the two provenance sentences say.
+  const latestDailyImpactByKey = new Map<string, (typeof profile.dailyImpacts)[number]>();
+  profile.dailyImpacts.forEach((impact) => {
+    const previous = latestDailyImpactByKey.get(impact.adlKey);
+    if (!previous || Date.parse(impact.recordedAt) > Date.parse(previous.recordedAt)) {
+      latestDailyImpactByKey.set(impact.adlKey, impact);
+    }
+  });
+
   const symptoms: TreatNmdSection = {
     key: 'symptoms',
     titleZh: '症状',
-    collected: latestSymptomByKey.size > 0 || source.challenges.length > 0,
+    collected:
+      latestSymptomByKey.size > 0 ||
+      source.challenges.length > 0 ||
+      latestDailyImpactByKey.size > 0,
     items: [
       ...[...latestSymptomByKey.values()].map((score) => ({
         key: `symptom.${score.symptomKey}`,
@@ -441,11 +490,27 @@ export const buildTreatNmdExport = (
         key: `challenge.${challenge.key}`,
         labelZh: challenge.labelZh,
         value: challenge.score,
-        provenanceZh: '基线问卷的困难程度自评',
+        provenanceZh: '基线问卷的困难程度自评，建档时填写一次',
+      })),
+      ...[...latestDailyImpactByKey.values()].map((impact) => ({
+        key: `dailyImpact.${impact.adlKey}`,
+        labelZh: `${labelFor(DAILY_IMPACT_LABELS, impact.adlKey)}困难程度`,
+        value: {
+          difficultyLevel: impact.difficultyLevel,
+          needsAssistance: impact.needsAssistance,
+          recordedAt: impact.recordedAt,
+        },
+        // `needsAssistance` is nullable in the column and the null is
+        // not a 「no」: it is the answer not given on that occasion. Said
+        // here because this item has no other slot to say it in, and a
+        // registry that reads null as false records a patient as
+        // independent at an activity they were never asked about.
+        provenanceZh:
+          '患者在随访中自评的日常活动困难程度；needsAssistance 为 null 表示这一次没有回答是否需要他人协助，不表示不需要',
       })),
     ],
     noteZh:
-      '每个症状只取该症状最近一次记录；完整时间序列在 PIPL 数据导出的 submissions 中，本格式不重复承载。',
+      '每个症状与每项日常活动只取最近一次记录；完整时间序列在 PIPL 数据导出的 submissions 中，本格式不重复承载。challenge.* 是建档时的一次性自评，dailyImpact.* 是随访中反复记录的，两者不要合并统计。',
   };
 
   // ----------------------------------------------------- 运动功能
@@ -502,6 +567,36 @@ export const buildTreatNmdExport = (
             value: latestFunctionTests(profile.functionTests),
             provenanceZh:
               '患者自行完成并记录，非临床环境下的标准化测试；notApplicable 表示「尝试后当天做不了」，与「未测」不同',
+          },
+      // MRC STRENGTH, WHICH THIS SECTION COUNTED AND DID NOT CARRY.
+      //
+      // `collected` above has always included `profile.measurements`,
+      // so this section reported itself collected on the strength of a
+      // series it emitted no item for — and the omissions list said
+      // nothing about it either. The other two exports both carry these
+      // (FHIR as `exam` Observations, and the Phenopacket declares
+      // them by count), so this document, the one whose 运动功能 area a
+      // registry actually maps, was the only one where a set of muscle
+      // grades vanished without trace.
+      //
+      // Latest per muscle group AND side, not per group: a left
+      // deltoid and a right deltoid are two different measurements in
+      // this disease, which is asymmetric far more often than not, and
+      // collapsing them would publish one side's grade for both.
+      //
+      // `entryMode` rides each row rather than being summarised in the
+      // sentence, because the rows differ: one clinician-entered grade
+      // among self-tests is exactly the row a registry weights
+      // differently, and one provenance sentence for the item cannot
+      // say which.
+      profile.measurements.length === 0
+        ? null
+        : {
+            key: 'motor.muscleStrength',
+            labelZh: '徒手肌力（每个肌群 / 每侧最近一次）',
+            value: latestMeasurements(profile.measurements),
+            provenanceZh:
+              'MRC 分级 0–5，5 为正常；每一条的 entryMode 说明这一条是谁做的：clinician_entered 为临床人员录入，其余为患者自评或在应用引导下自测，不是临床环境下的标准化徒手肌力测试',
           },
     ]),
     // 运动功能 is one of the six mandatory areas, and it is the section
@@ -655,6 +750,25 @@ export const buildTreatNmdExport = (
     });
   }
 
+  // --------------------------------- the rest of what the档案 holds
+  //
+  // Two entries for everything this document holds back that is not
+  // covered above. They are unconditional and they name each field,
+  // because the point of them is that a receiver reading this list can
+  // tell 「not sent」 from 「not held」 — and until now the list accounted
+  // for the pregnancy section, the instruments, the family history and
+  // the identifiers, and went silent on a medication list, a diary and
+  // a whole demographic block. An omissions list that declares four
+  // gaps and not the other six reads as the complete set.
+  omissions.push({
+    field: 'subject（出生年份、性别、常住地区、体格测量与联系方式）',
+    reasonZh: `本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：出生年份（本平台按年份存，并区分「记不清了」与「未采集」）、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。其中出生年份与性别在 FHIR 导出里有对应字段（Patient.birthDate 支持只写年份，Patient.gender），本文件没有；联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。`,
+  });
+  omissions.push({
+    field: 'sections（用药记录、日常记录与档案备注）',
+    reasonZh: `本文件不承载三类内容：${profile.medications.length} 条用药记录（药名、剂量、频次、给药途径、起止日期与状态）、${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分），以及档案备注。该核心数据集列出的强制性领域里没有这三类，本导出也没有为它们建立对齐位置；自由文本尤其不适合塞进带 provenanceZh 的条目里当作一次记录来读。三份可携带导出都不承载它们——本文件里没有用药记录，不表示患者没有在用药。完整内容请改用不带 format 参数的数据导出。`,
+  });
+
   return {
     format: 'TREAT-NMD FSHD core dataset',
     conformanceZh:
@@ -697,6 +811,35 @@ export const buildTreatNmdExport = (
           : `本导出中的绝大多数内容为患者自述或自评，不是临床测量。每个条目的 provenanceZh 写明了来源。注意：本次导出中有 ${source.fieldOrigins.length} 个基线字段不是患者本人填写的（由本平台管理员代为录入，或来源记录读不出来），逐条列在信封的 fieldOrigins 中，相关条目的 provenanceZh 也各自标注了。不要把这些值当作患者自述来统计。`,
     },
   };
+};
+
+/**
+ * Latest MRC grade per muscle group AND side.
+ *
+ * Keyed on both, for the reason stated at the call site: FSHD is
+ * asymmetric, and a map keyed on the group alone publishes whichever
+ * side happened to be measured last as the grade for the muscle.
+ * `side` is nullable in the column, so the key falls back to a literal
+ * that cannot collide with a side value.
+ */
+const latestMeasurements = (measurements: NormalisedSource['profile']['measurements']) => {
+  const latest = new Map<string, (typeof measurements)[number]>();
+  measurements.forEach((measurement) => {
+    const key = `${measurement.muscleGroup}::${measurement.side ?? 'unspecified'}`;
+    const previous = latest.get(key);
+    if (!previous || Date.parse(measurement.recordedAt) > Date.parse(previous.recordedAt)) {
+      latest.set(key, measurement);
+    }
+  });
+  return [...latest.values()].map((measurement) => ({
+    muscleGroup: measurement.muscleGroup,
+    muscleGroupLabelZh: labelFor(MUSCLE_GROUP_LABELS, measurement.muscleGroup),
+    side: measurement.side,
+    sideLabelZh: measurement.side === null ? null : labelFor(SIDE_LABELS, measurement.side),
+    strengthScore: measurement.strengthScore,
+    entryMode: measurement.entryMode,
+    recordedAt: measurement.recordedAt,
+  }));
 };
 
 const latestFunctionTests = (tests: NormalisedSource['profile']['functionTests']) => {

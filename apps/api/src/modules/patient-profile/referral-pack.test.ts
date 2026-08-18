@@ -1435,6 +1435,65 @@ describe('系统监测三项 — present / unreadable / absent survive to the pa
     expect(cardiac?.note).toBeTruthy();
     expect(result.markdown).toContain(cardiac?.note ?? '');
   });
+
+  it('prints how old the result is, not just when it was taken', () => {
+    // The freshness verdict was carried on every slot of this DTO and
+    // printed nowhere: 过期 occurred ZERO times in a pack whose newest
+    // result was 251 days old, while the passport markdown and the
+    // mobile PDF built from the same summary object both said so. This
+    // is the one document in the product that is physically handed to
+    // the neurologist deciding whether the workup is current.
+    const result = pack(base({ documents: [unreadablePulmonaryReport()] } as never));
+    const respiratory = result.monitoring.find((slot) => slot.key === 'respiratory');
+    expect(respiratory?.freshnessLabel).toBe('待更新');
+    // Inside the date bracket, in the shape and with the words
+    // `buildClinicalPassportExport` uses — one claim, not two wordings.
+    expect(respiratory?.statement).toContain('（2026-02-10，待更新）');
+    expect(result.markdown).toContain('（2026-02-10，待更新）');
+    // 呼吸支持 reads the same slot object, so 最近肺功能 carries it too.
+    expect(result.respiratory.pulmonary.statement).toContain('待更新');
+  });
+
+  it('没有日期的那一格不写「缺失」—— 那读起来像在评价患者，不是在说本平台', () => {
+    const result = pack(base());
+    const cardiac = result.monitoring.find((slot) => slot.key === 'cardiac');
+    expect(cardiac?.freshnessLabel).toBe('缺失');
+    // The sentence already says 本平台没有该类报告的记录 —— 不等于没有做
+    // 过. Appending 缺失 to that adds nothing and turns a statement about
+    // this platform's records into what reads as a verdict.
+    expect(cardiac?.statement).not.toContain('缺失');
+  });
+});
+
+describe('新鲜度算在调用方的时钟上，不是墙上时钟', () => {
+  it('11 天前的报告不会被这份资料说成「过期」', () => {
+    // `buildReferralPack` stamped 生成时间 from the clock it was handed
+    // and then called `buildClinicalPassportSummary` with NONE, so every
+    // freshness label, every 最新/过期 judgement and the age gate on the
+    // guideline steps inside the pack were computed against the wall
+    // clock instead. The system time below is years away from the
+    // caller's clock; if the clock stops being threaded through, this
+    // pack calls an eleven-day-old lung-function report 过期.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2031-01-01T00:00:00.000Z'));
+      const caller = new Date('2026-02-21T00:00:00.000Z');
+      const result = buildReferralPack(
+        base({ documents: [unreadablePulmonaryReport()] } as never),
+        caller,
+      );
+      const respiratory = result.monitoring.find((slot) => slot.key === 'respiratory');
+      expect(respiratory?.latestDate).toBe('2026-02-10');
+      expect(respiratory?.freshnessLabel).toBe('最新');
+      expect(result.markdown).toContain('（2026-02-10，最新）');
+      // And 生成时间 is the same clock it judged against — the whole
+      // reason the parameter exists.
+      expect(result.generatedAt).toBe(caller.toISOString());
+      expect(result.markdown).toContain('- 生成时间：2026-02-21');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('我想问的问题', () => {

@@ -158,6 +158,121 @@ describe('TREAT-NMD alignment — local-only identifiers', () => {
   });
 });
 
+/**
+ * 运动功能 counted the muscle grades and emitted none of them.
+ *
+ * `collected` on that section has always included
+ * `profile.measurements.length > 0`, so the section reported itself
+ * collected on the strength of a series it had no item for — and no
+ * omission mentioned it either. The FHIR bundle carries every grade as
+ * an `exam` Observation and the Phenopacket declares them by count, so
+ * this document, the one whose 运动功能 area a registry actually maps,
+ * was the only place a set of muscle grades vanished without trace.
+ */
+describe('TREAT-NMD alignment — 运动功能 carries the muscle grades it counts', () => {
+  const twoSides: PatientProfileDTO['measurements'] = [
+    // Same muscle, both sides, and the LEFT one older. Keyed on the
+    // group alone, the newer right grade would be published as this
+    // patient's deltoid — and FSHD is asymmetric far more often than
+    // not, so that is a wrong number rather than a rounding.
+    {
+      ...EXPORT_FIXTURE_PROFILE.measurements[0],
+      id: '33333333-3333-4333-8333-33333333333a',
+      muscleGroup: 'deltoid',
+      side: 'left',
+      strengthScore: 2,
+      recordedAt: '2025-01-01T00:00:00.000Z',
+    },
+    {
+      ...EXPORT_FIXTURE_PROFILE.measurements[0],
+      id: '33333333-3333-4333-8333-33333333333b',
+      muscleGroup: 'deltoid',
+      side: 'right',
+      strengthScore: 5,
+      recordedAt: '2025-06-01T00:00:00.000Z',
+    },
+  ];
+
+  it('emits one row per muscle group AND side, latest first per pair', () => {
+    const item = itemOf(
+      sectionOf(build({ measurements: twoSides }), 'motorFunction'),
+      'motor.muscleStrength',
+    );
+    expect(item?.value).toEqual([
+      expect.objectContaining({ muscleGroup: 'deltoid', side: 'left', strengthScore: 2 }),
+      expect.objectContaining({ muscleGroup: 'deltoid', side: 'right', strengthScore: 5 }),
+    ]);
+  });
+
+  it('carries entryMode per row, because the rows do not share an author', () => {
+    // One clinician-entered grade among self-tests is exactly the row a
+    // registry weights differently, and one provenance sentence for the
+    // whole item cannot say which one it is.
+    const item = itemOf(sectionOf(build(), 'motorFunction'), 'motor.muscleStrength');
+    expect(item?.value).toEqual([
+      expect.objectContaining({ entryMode: 'self_report' }),
+      expect.objectContaining({ entryMode: 'clinician_entered' }),
+    ]);
+    expect(item?.provenanceZh).toContain('entryMode');
+    expect(item?.provenanceZh).toContain('clinician_entered');
+  });
+
+  it('drops the item rather than emitting an empty one when nothing was measured', () => {
+    // An item present with an empty list would say 「we asked and there
+    // are no grades」; an absent item says nothing was recorded.
+    const section = sectionOf(build({ measurements: [] }), 'motorFunction');
+    expect(itemOf(section, 'motor.muscleStrength')).toBeUndefined();
+  });
+});
+
+describe('TREAT-NMD alignment — the ADL ratings reach a document at all', () => {
+  it('emits the latest rating per activity, and keeps the null assistance answer a null', () => {
+    const section = sectionOf(
+      build({
+        dailyImpacts: [
+          {
+            ...EXPORT_FIXTURE_PROFILE.dailyImpacts[0],
+            id: '66666666-6666-4666-8666-66666666666a',
+            adlKey: 'dressing',
+            difficultyLevel: 1,
+            needsAssistance: null,
+            recordedAt: '2025-06-05T00:00:00.000Z',
+          },
+          {
+            ...EXPORT_FIXTURE_PROFILE.dailyImpacts[0],
+            id: '66666666-6666-4666-8666-66666666666b',
+            adlKey: 'dressing',
+            difficultyLevel: 4,
+            needsAssistance: true,
+            recordedAt: '2024-06-05T00:00:00.000Z',
+          },
+        ],
+      }),
+      'symptoms',
+    );
+    const item = itemOf(section, 'dailyImpact.dressing');
+    expect(item?.labelZh).toBe('穿衣困难程度');
+    expect(item?.value).toMatchObject({ difficultyLevel: 1, needsAssistance: null });
+    // 「not asked」 must not be readable as 「does not need help」.
+    expect(item?.provenanceZh).toContain('不表示不需要');
+  });
+
+  it('keeps the建档-time self-rating and the follow-up rating distinguishable', () => {
+    const section = sectionOf(build(), 'symptoms');
+    expect(itemOf(section, 'challenge.stairs')?.provenanceZh).toContain('建档时填写一次');
+    expect(section.noteZh).toContain('两者不要合并统计');
+  });
+});
+
+describe('TREAT-NMD alignment — 起病部位 reaches an export', () => {
+  it('is carried verbatim and not classified', () => {
+    const item = itemOf(sectionOf(build(), 'diagnosis'), 'diagnosis.onsetRegion');
+    expect(item?.value).toBe('肩带');
+    expect(item?.provenanceZh).toContain('原文照录');
+    expect(item?.provenanceZh).toContain('不作归类');
+  });
+});
+
 describe('TREAT-NMD alignment — absent is not negative', () => {
   it('marks pregnancy history as never collected and lists it as an omission', () => {
     const result = build();

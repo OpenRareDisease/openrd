@@ -399,7 +399,7 @@ describe('findings_summary', () => {
 
     it('asserts the second half of the string the old comment named', async () => {
       // 「未见脂肪浸润 右侧脂肪浸润明显」 was documented above
-      // `assertedOccurrence` as surviving 「inside one clause」, and
+      // `occurrenceIsAsserted` as surviving 「inside one clause」, and
       // executing it produced nothing: a LISTED marker discards its
       // clause whole, before any occurrence test runs. It survives now
       // because the space makes it two clauses — which is what the
@@ -491,6 +491,102 @@ describe('findings_summary', () => {
       expect(suspected.findings_summary).toBe('炎性改变（可疑）');
       const notExcluded = await fieldsFor({ reportImpression: '不除外肌营养不良改变' });
       expect(notExcluded.findings_summary).toBe('肌营养不良改变（不除外）');
+    });
+
+    /**
+     * A NEGATED HEDGE IS A RULE-OUT, NOT A HEDGE.
+     *
+     * HEDGE_MARKERS carries the bare 考虑 and 可能, and they were matched
+     * anywhere in the clause without reading the characters around them.
+     * 不考虑 / 暂不考虑 / 可能性不大 are the standard Chinese rule-outs and
+     * are built out of exactly those words: no listed negation marker,
+     * and the 不 is not adjacent to the finding, so neither the clause
+     * filter nor the match-site test caught them. Each came out asserted
+     * with a qualifier saying the opposite of the report, and the
+     * redactor drops the raw impression, so that line was the only
+     * version of the report the model ever saw.
+     */
+    it('does not read 不考虑 as the hedge 考虑', async () => {
+      // Was: 「影像/报告印象: 肌营养不良（考虑）」 for a report ruling it out.
+      expect(
+        await impressionLine({ reportImpression: '双侧大腿肌群改变不考虑肌营养不良' }),
+      ).toBeUndefined();
+      expect(await impressionLine({ reportImpression: '暂不考虑炎性改变' })).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '未考虑肌营养不良改变' })).findings_summary,
+      ).toBeUndefined();
+    });
+
+    it('does not read 可能性不大 as the hedge 可能', async () => {
+      // Was: 「影像/报告印象: 脂肪浸润（可能）」.
+      expect(await impressionLine({ reportImpression: '脂肪浸润可能性不大' })).toBeUndefined();
+      for (const impression of [
+        '肌营养不良可能性小',
+        '炎性改变可能性较小',
+        '水肿可能性不高',
+        '脂肪浸润可能性低',
+      ]) {
+        expect(
+          (await fieldsFor({ reportImpression: impression })).findings_summary,
+        ).toBeUndefined();
+      }
+    });
+
+    it('covers the negated 倾向 and 可能 as well', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '不倾向于炎性改变' })).findings_summary,
+      ).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '不可能为肌营养不良改变' })).findings_summary,
+      ).toBeUndefined();
+    });
+
+    it('leaves the hedges that are not negations alone', async () => {
+      // 不除外 / 未除外 are built on 除外, which is not one of the negated
+      // words, and they are hedges in their own right.
+      expect((await fieldsFor({ reportImpression: '考虑肌营养不良改变' })).findings_summary).toBe(
+        '肌营养不良改变（考虑）',
+      );
+      expect((await fieldsFor({ reportImpression: '未除外水肿' })).findings_summary).toBe(
+        '水肿（未除外）',
+      );
+      expect((await fieldsFor({ reportImpression: '倾向于脂肪浸润' })).findings_summary).toBe(
+        '脂肪浸润（倾向于）',
+      );
+    });
+
+    /**
+     * A HEDGE HAS A DIRECTION.
+     *
+     * It was resolved ONCE PER CLAUSE and glued onto every term in that
+     * clause, so a definite finding sharing a clause with a hedged one
+     * was downgraded to equivocal — the mirror of the flattening
+     * HEDGE_MARKERS was added to end, and certainty is what a clinician
+     * acts on.
+     */
+    it('does not spread one hedge over the definite findings beside it', async () => {
+      // Was: 「影像/报告印象: 脂肪浸润（可疑）、炎性改变（可疑）」 — the
+      // definite 脂肪浸润明显 downgraded by the 可疑 on its neighbour.
+      expect(await impressionLine({ reportImpression: '双侧大腿脂肪浸润明显伴可疑炎性改变' })).toBe(
+        '影像/报告印象: 脂肪浸润、炎性改变（可疑）',
+      );
+    });
+
+    it('still hedges every finding a front hedge is written in front of', async () => {
+      // A hedge governs what FOLLOWS it, so a region name between the
+      // hedge and its finding does not strand it.
+      expect(
+        (await fieldsFor({ reportImpression: '考虑双侧大腿肌营养不良改变' })).findings_summary,
+      ).toBe('肌营养不良改变（考虑）');
+      expect((await fieldsFor({ reportImpression: '可疑重度脂肪浸润' })).findings_summary).toBe(
+        '重度脂肪浸润（可疑）',
+      );
+    });
+
+    it('reads a hedge written directly behind its finding', async () => {
+      expect((await fieldsFor({ reportImpression: '脂肪浸润明显待排' })).findings_summary).toBe(
+        '脂肪浸润（待排）',
+      );
     });
   });
 
@@ -769,6 +865,106 @@ describe('findings_summary', () => {
     it('leaves the bare 萎缩 reachable where no compound covers it', async () => {
       const f = await fieldsFor({ reportImpression: '肩胛带肌重度萎缩，余大致正常。' });
       expect(f.findings_summary).toBe('重度萎缩');
+    });
+
+    /**
+     * BOTH SEVERITIES SURVIVE INSIDE ONE CLAUSE TOO.
+     *
+     * The scan answered each vocabulary term ONCE per clause — the first
+     * asserted occurrence and no further — so a clause carrying the same
+     * finding twice at two different severities emitted only the first.
+     * Two comments claimed both were kept and that 「the span test above
+     * has already settled it」; the span test never ran on the second
+     * occurrence because the search never reached it.
+     */
+    it('keeps both severities when one clause carries the finding twice', async () => {
+      // Was: 「影像/报告印象: 轻度脂肪浸润」 — the MILD reading kept and
+      // the SEVERE one gone, on the only version of the report the model
+      // ever sees.
+      expect(await impressionLine({ reportImpression: '右侧轻度脂肪浸润伴左侧重度脂肪浸润' })).toBe(
+        '影像/报告印象: 轻度脂肪浸润、重度脂肪浸润',
+      );
+      expect(
+        (await fieldsFor({ reportImpression: '肩胛带肌重度萎缩伴大腿轻度萎缩' })).findings_summary,
+      ).toBe('重度萎缩、轻度萎缩');
+    });
+
+    it('still collapses the same finding repeated at the same severity', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '右侧重度脂肪浸润伴左侧重度脂肪浸润' }))
+          .findings_summary,
+      ).toBe('重度脂肪浸润');
+    });
+  });
+
+  /**
+   * ONE FINDING, THE LONGEST READING OF IT, IN EITHER ORDER.
+   *
+   * The cross-clause dedupe asked only whether an ALREADY-KEPT term
+   * contained the new one, so it was order-dependent: a bare term in an
+   * earlier clause did not stop the compound in a later clause and one
+   * finding was printed twice. The comment stated the rule
+   * unconditionally and said nothing about the reverse order, which is
+   * the half that leaked. A duplicate also costs a slot against
+   * FINDINGS_SUMMARY_MAX, so it can push a real finding into
+   * 「另 N 项未列出」.
+   */
+  describe('cross-clause dedupe is symmetric', () => {
+    it('does not print one finding twice when the bare term comes first', async () => {
+      // Was: 「影像/报告印象: 肌营养不良、肌营养不良改变」.
+      expect(
+        await impressionLine({ reportImpression: '肌营养不良；双侧大腿肌营养不良改变。' }),
+      ).toBe('影像/报告印象: 肌营养不良改变');
+      expect(
+        (await fieldsFor({ reportImpression: '肩胛带萎缩；大腿肌肉萎缩。' })).findings_summary,
+      ).toBe('肌肉萎缩');
+    });
+
+    it('gives the same answer in the other order', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿肌营养不良改变；肌营养不良。' }))
+          .findings_summary,
+      ).toBe('肌营养不良改变');
+    });
+
+    it('keeps the position the report first gave the finding', async () => {
+      // The compound REPLACES the substring in place rather than being
+      // appended, so upgrading the reading does not reorder the summary.
+      expect(
+        (await fieldsFor({ reportImpression: '肌营养不良；重度水肿；肌营养不良改变。' }))
+          .findings_summary,
+      ).toBe('肌营养不良改变、重度水肿');
+    });
+
+    it('does not collapse across a severity or a hedge', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '肌营养不良；重度肌营养不良改变。' }))
+          .findings_summary,
+      ).toBe('肌营养不良、重度肌营养不良改变');
+      expect(
+        (await fieldsFor({ reportImpression: '肌营养不良；可疑肌营养不良改变。' }))
+          .findings_summary,
+      ).toBe('肌营养不良、肌营养不良改变（可疑）');
+    });
+  });
+
+  /**
+   * READING ORDER, WHICH THE COMMENT HAS CLAIMED SINCE THE SEVERITY
+   * BINDER LANDED.
+   *
+   * The scan looped over CLINICAL_FINDING_TERMS, so within a clause the
+   * output came out in VOCABULARY order and the two findings were
+   * swapped against the sentence they were read from.
+   */
+  describe('reading order', () => {
+    it('emits findings in the order the clause writes them', async () => {
+      // Was: 「影像/报告印象: 脂肪浸润、水肿」.
+      expect(await impressionLine({ reportImpression: '双侧大腿水肿伴脂肪浸润' })).toBe(
+        '影像/报告印象: 水肿、脂肪浸润',
+      );
+      expect(
+        (await fieldsFor({ reportImpression: '肩胛带肌重度萎缩伴轻度脂肪浸润' })).findings_summary,
+      ).toBe('重度萎缩、轻度脂肪浸润');
     });
   });
 

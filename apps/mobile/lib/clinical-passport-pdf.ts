@@ -5,7 +5,7 @@ import {
   type ClinicalPassportSummary,
   type PassportValueOrigin,
 } from './api';
-import { formatDateLabel } from './clinical-visuals';
+import { formatProductDate } from './clinical-visuals';
 import { parseAnswer, type TextSpan } from '../screens/common/answer-format';
 
 const escapeHtml = (value: string) =>
@@ -21,8 +21,29 @@ const safeText = (value: string | null | undefined, fallback = '—') => {
   return escapeHtml(text && text.length > 0 ? text : fallback);
 };
 
+/**
+ * EVERY DATE ON THIS SHEET, WITH ITS YEAR.
+ *
+ * This used to be `formatDateLabel`, which is the `MM-DD` chip the
+ * screens print, and it stripped the year off the 生成时间 and 最近更新
+ * of the document, off every monitoring slot's 最近日期 and off every
+ * row of the 时间轴. This is the one artefact in the product that gets
+ * PRINTED AND HANDED OVER, and it is read beside the server's markdown
+ * export and share page of the same passport, both of which print
+ * `YYYY-MM-DD`.
+ *
+ * The 时间轴 is where the loss actually costs something: a genetic
+ * report from 2024, a blood report from 2025 and a strength entry from
+ * 2025 came out as three yearless rows in one list, so a clinician
+ * could not see that the genetics is two years older than everything
+ * under it. A dated document with no year on it does not survive a
+ * referral folder.
+ *
+ * `formatProductDate` also fixes the calendar for the same reason it
+ * fixes the year — see PRODUCT_TIME_ZONE in clinical-visuals.ts.
+ */
 const safeDate = (value: string | null | undefined, fallback = '—') =>
-  escapeHtml(value ? formatDateLabel(value) : fallback);
+  escapeHtml(formatProductDate(value) ?? fallback);
 
 const renderList = (items: string[], emptyLabel: string) => {
   if (items.length === 0) {

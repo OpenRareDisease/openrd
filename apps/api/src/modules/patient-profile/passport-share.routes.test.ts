@@ -110,8 +110,26 @@ const summary = {
     // state is pinned in passport-share.html.test.ts.
     geneticEvidence: { readingsNotJudged: null },
   },
-  motor: { summary: '上肢抬举受限', latestMeasurementAt: null, highlights: [] },
-  imaging: { summary: null, latestMriDate: null },
+  // `average` and the imaging trio are read by the renderer, so they are
+  // here for the same reason `valueOrigins` is. This literal is not
+  // type-checked against the DTO — it reaches the page through a mocked
+  // service — so a field the page reads and this stub omits surfaces as
+  // a 500 from a ROUTING test, which says nothing about routing. What
+  // the page does with each value is pinned in
+  // passport-share.html.test.ts, from profiles rather than from a
+  // literal.
+  motor: {
+    summary: '上肢抬举受限',
+    average: '3.2',
+    latestMeasurementAt: null,
+    highlights: [],
+  },
+  imaging: {
+    summary: null,
+    latestMriDate: null,
+    highlights: [],
+    freshness: { label: '缺失', tone: 'neutral', date: null, daysSince: null },
+  },
   monitoring: { items: [] },
   timeline: [],
   nextSteps: [],

@@ -48,7 +48,18 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'gender',
       'diagnosisStage',
       'diagnosisYear',
-      'diagnosisType', // category label like "FSHD1" is non-PII
+      // A CATEGORY LABEL LIKE 「FSHD1」 IS NON-PII, AND THE VALUE IS
+      // TESTED FOR BEING ONE. This entry used to carry that sentence as
+      // its whole justification, and nothing on this scope asked it of
+      // the value: `applyGeneticReportAutofill` copies the picked
+      // report's subtype verbatim into `diseaseBackground.diagnosisType`,
+      // so 「FSHD1(D4Z4 3拷贝)」 — a subtype with a repeat count stapled
+      // to it — landed here and strict mode printed it, out of the same
+      // report whose OCR blob the reports scope withheld it from three
+      // sections below. `isCategoryLabel` exists for exactly that value
+      // and was consulted on one scope. It is asked on both now; see
+      // `publishDiagnosisTypeCell` in pii-redactor.ts.
+      'diagnosisType',
       'd4z4_clinical',
       'haplotype_clinical',
       'methylation', // the laboratory's own word, when the cell is one

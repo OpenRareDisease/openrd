@@ -410,7 +410,31 @@ export interface NormalisedSource {
    * profile.passport.ts. Nothing in this lane re-asks them.
    */
   readonly geneticGreyZoneNoteZh: string | null;
+  /**
+   * The patient's own statement about their relatives.
+   *
+   * READ BY ONE SERIALISER AND DECLARED BY ALL THREE. treat-nmd.ts
+   * emits it in the local-retention variant only; the other two never
+   * carry it and say so through `familyHistoryOmission` below, which is
+   * where the reasoning lives. For one round they did neither, which is
+   * what that helper's header is about.
+   */
   readonly familyHistoryStatement: string | null;
+  /**
+   * 起病部位 — where the patient says the weakness started.
+   *
+   * Read here because it was on the DTO, held, and reachable by no
+   * serialiser: `normaliseSource` is the only thing the three of them
+   * read, so a baseline field this file does not lift is a field that
+   * cannot be emitted OR described, and it was neither. In this disease
+   * that is not a minor field — the 面部 → 肩胛带 → 上臂 progression is
+   * what the name says, and 起病部位 is the patient's own answer about
+   * the first half of it.
+   *
+   * Free text, and carried as free text: the questionnaire does not
+   * constrain it to an enum, so nothing here classifies it.
+   */
+  readonly onsetRegion: string | null;
   readonly currentStatus: {
     readonly ambulation: string | null;
     readonly armRaiseDifficulty: boolean | null;
@@ -1959,6 +1983,7 @@ export const normaliseSource = (
     geneticEvidenceRecord: passportDiagnosis.geneticEvidence.record,
     geneticGreyZoneNoteZh: passportDiagnosis.geneticEvidence.greyZoneNote,
     familyHistoryStatement: text(disease?.familyHistory),
+    onsetRegion: text(disease?.onsetRegion),
     currentStatus: {
       ambulation: text(status?.independentlyAmbulatory),
       armRaiseDifficulty: bool(status?.armRaiseDifficulty),
@@ -2046,6 +2071,50 @@ export const INSTRUMENT_OMISSION_REASON_ZH =
 export const instrumentOmission = (field: string, ambulationNoteZh: string): ExportOmission => ({
   field,
   reasonZh: `${INSTRUMENT_OMISSION_REASON_ZH}${ambulationNoteZh}`,
+});
+
+/**
+ * The family-history statement is held, and two of the three portable
+ * exports do not send it.
+ *
+ * WHAT WAS WRONG. `normaliseSource` computes `familyHistoryStatement`
+ * and only treat-nmd.ts read it. The FHIR bundle and the Phenopacket
+ * dropped it AND declared nothing — 家族史 / familyHistory /
+ * FamilyMemberHistory appeared nowhere in either builder and nowhere in
+ * either rendered envelope. Family history is a first-line question in
+ * an FSHD workup: a neurologist reading a bundle with no
+ * FamilyMemberHistory in it and no omission naming one reads 「asked and
+ * negative」, which is the opposite of 「we hold a statement and did not
+ * send it」 for the patients whose statement says 父亲和姑姑都有类似的
+ * 抬手困难.
+ *
+ * WHY DECLARED RATHER THAN CARRIED, in both. The value is a statement
+ * about the patient's RELATIVES — a second data subject who consented
+ * to nothing here — so TREAT-NMD emits it only in the local-retention
+ * variant and declares the omission otherwise (ExportOptions.includeLocalOnly).
+ * Neither of the other two formats has a local-retention variant at
+ * all: the FHIR bundle refuses to branch on that flag anywhere, on the
+ * stated ground that a resource which can never hold a direct
+ * identifier cannot leak one when a caller passes the flag wrong, and
+ * the Phenopacket says the same in `notes.本地留存`. Adding the first
+ * flag-dependent branch to either of them, for a paragraph naming the
+ * patient's father and aunt, would be the leak that reasoning exists to
+ * prevent. So the declaration is UNCONDITIONAL in both — the same entry
+ * in both redaction modes — and each format states its own slot
+ * situation.
+ *
+ * @param slotNoteZh What THIS format has to put it in, and why that
+ *   slot is not filled, in that format's own vocabulary (envelope.ts:24).
+ *   Required rather than optional, for the reason `instrumentOmission`'s
+ *   argument is: a fourth serialiser must not inherit another format's
+ *   answer by leaving it out.
+ */
+export const FAMILY_HISTORY_OMISSION_REASON_ZH =
+  '本平台持有患者对自身家族史的一段自述，本次导出不发送它。原因不是没有采集：家族史是关于患者亲属的陈述，亲属是第二数据主体，没有就此导出作出同意，因此它只在明确请求本地留存版本的 TREAT-NMD 对齐导出里出现（sections.familyHistory），本文件无论调用方是否请求本地留存版本都不承载它。本文件里没有家族史，不表示患者没有家族史，也不表示本平台问过而患者回答了「没有」——需要它请直接向患者索取。';
+
+export const familyHistoryOmission = (field: string, slotNoteZh: string): ExportOmission => ({
+  field,
+  reasonZh: `${FAMILY_HISTORY_OMISSION_REASON_ZH}${slotNoteZh}`,
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -122,7 +122,7 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
   // RADIOLOGIST WRITES IT. 「肩胛带肌重度萎缩」 names the muscle and then
   // the change, so neither 肌肉萎缩 nor 肌萎缩 appears as a substring and
   // the finding was lost entirely — for the one region FSHD is named
-  // after. `assertedOccurrence` still rules out 未萎缩 / 萎缩不明显, and
+  // after. `occurrenceIsAsserted` still rules out 未萎缩 / 萎缩不明显, and
   // the longer compounds still win the dedupe below, so this only adds
   // the occurrences the compounds could not reach.
   //
@@ -258,6 +258,41 @@ const NEGATION_MARKERS = [
 ];
 
 /**
+ * A NEGATED HEDGE IS A RULE-OUT, AND IT IS THE STANDARD ONE.
+ *
+ * 不考虑 / 暂不考虑 / 可能性不大 are how a Chinese report says it is
+ * RULING A FINDING OUT, and they are built out of the same words
+ * HEDGE_MARKERS carries — 考虑, 可能 — so every one of them read as a
+ * hedge and the finding came out asserted with a qualifier that says
+ * the opposite of the report. None contains a listed negation marker,
+ * and the 不 is not adjacent to the term, so neither the clause filter
+ * nor the match-site test caught them either. Executed:
+ *
+ *   - 「双侧大腿肌群改变不考虑肌营养不良」 → 「影像/报告印象:
+ *     肌营养不良（考虑）」
+ *   - 「暂不考虑炎性改变」 → 「影像/报告印象: 炎性改变（考虑）」
+ *   - 「脂肪浸润可能性不大」 → 「影像/报告印象: 脂肪浸润（可能）」
+ *
+ * The redactor drops the raw impression, so in all three the only
+ * version of the report the model ever saw asserted the finding the
+ * report had just excluded.
+ *
+ * These are patterns rather than list entries because the negation is
+ * a CHARACTER against the hedge word, on either side of it: 不/未/无/非
+ * in front (不考虑, 未考虑, 不倾向于, 不可能), or 性不大 / 性小 / 性低
+ * behind (可能性不大, 可能性较小). 不除外 / 未除外 are NOT matched —
+ * they are hedges in their own right and 除外 is not one of the words
+ * below.
+ *
+ * A matching clause is killed whole, like every other negation here: a
+ * clause that rules a finding out asserts nothing this channel wants.
+ */
+const NEGATION_PATTERNS: readonly RegExp[] = [
+  /[不未无非](?:考虑|倾向|可能)/,
+  /可能性(?:不大|不高|较小|较低|小|低)/,
+];
+
+/**
  * A finding the report attributes to SOMEONE ELSE is not this patient's
  * imaging impression.
  *
@@ -367,10 +402,12 @@ const CLAUSE_KILL_MARKERS: readonly string[] = [
   ...METHYLATION_MARKERS,
 ];
 
+const CLAUSE_KILL_PATTERNS: readonly RegExp[] = [...NEGATION_PATTERNS, ...HISTORY_PATTERNS];
+
 const clauseIsDisqualified = (clause: string): boolean => {
   const lowered = clause.toLowerCase();
   if (CLAUSE_KILL_MARKERS.some((marker) => lowered.includes(marker))) return true;
-  return HISTORY_PATTERNS.some((pattern) => pattern.test(lowered));
+  return CLAUSE_KILL_PATTERNS.some((pattern) => pattern.test(lowered));
 };
 
 /**
@@ -389,6 +426,19 @@ const clauseIsDisqualified = (clause: string): boolean => {
  * model nothing happened. The hedge word is emitted from THIS list, not
  * copied out of the text, so the deny-by-default property is unchanged
  * — a name still cannot ride out on it.
+ *
+ * 考虑 AND 可能 ARE BARE WORDS AND THEY NEGATE. Both are half of the
+ * standard Chinese rule-out (不考虑 / 可能性不大), which is why
+ * NEGATION_PATTERNS is tested against the clause BEFORE any of this
+ * runs. Adding a marker to this list means checking whether the same
+ * characters also spell a rule-out.
+ *
+ * THE HEDGE IS RESOLVED AT THE OCCURRENCE, NOT OVER THE CLAUSE — see
+ * `resolveHedge`. Resolved once per clause and glued onto every term in
+ * it, a hedge on one finding downgraded its definite neighbours:
+ * 「双侧大腿脂肪浸润明显伴可疑炎性改变」 rendered
+ * 「影像/报告印象: 脂肪浸润（可疑）、炎性改变（可疑）」, and certainty is
+ * what a clinician acts on.
  */
 const HEDGE_MARKERS: readonly string[] = [
   '待排',
@@ -638,23 +688,133 @@ const readMeasurementDirection = (after: string): string | null => {
   return MEASUREMENT_DIRECTIONS.find((direction) => rest.startsWith(direction)) ?? null;
 };
 
-/** Index of the first occurrence of `term` in `clause` that the clause
- *  actually asserts, or -1. Returns the index rather than a boolean so
- *  the caller can read the severity qualifier sitting against THAT
- *  occurrence instead of guessing which finding it belonged to. */
-const assertedOccurrence = (clause: string, term: string): number => {
-  for (let from = 0; from <= clause.length - term.length; ) {
-    const at = clause.indexOf(term, from);
-    if (at === -1) return -1;
-    const before = at > 0 ? clause[at - 1] : '';
-    const after = clause.slice(at + term.length);
-    const negated =
-      NEGATION_PREFIX_CHARS.has(before) ||
-      OCCURRENCE_KILL_SUFFIXES.some((suffix) => stripLeadingAdverbs(after).startsWith(suffix));
-    if (!negated) return at;
-    from = at + 1;
+/**
+ * ONE OCCURRENCE IS THE UNIT OF READING.
+ *
+ * This function used to be `assertedOccurrence(clause, term)`, which
+ * returned the FIRST asserted occurrence of a term and stopped. One
+ * term, one answer per clause — so a clause carrying the same finding
+ * twice at two different severities emitted only the first of them:
+ * 「右侧轻度脂肪浸润伴左侧重度脂肪浸润」 rendered
+ * 「影像/报告印象: 轻度脂肪浸润」, the MILD reading kept and the SEVERE
+ * one gone, with the raw impression dropped by the redactor so nothing
+ * downstream disagrees. Two comments asserted that both were kept and
+ * that 「the span test above has already settled it」; the span test
+ * never ran on the second occurrence because the search never reached
+ * it.
+ *
+ * So the clause is enumerated instead: every occurrence of every
+ * vocabulary term, and negation, hedge, severity and direction are each
+ * read off the characters around THAT occurrence. The context tests
+ * below take a span rather than a term for the same reason.
+ */
+interface TermOccurrence {
+  term: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Every vocabulary occurrence in the clause, in READING ORDER, longest
+ * first where two start together.
+ *
+ * Reading order is the order the report itself puts them in, and it is
+ * the order the qualifiers are bound in. `buildFindingsSummary` has
+ * claimed to emit reading order since the severity binder landed and
+ * did not: it looped over `CLINICAL_FINDING_TERMS`, so within a clause
+ * the output came out in VOCABULARY order — 「双侧大腿水肿伴脂肪浸润」
+ * rendered 「影像/报告印象: 脂肪浸润、水肿」, the two findings swapped
+ * against the sentence they were read from. It is reading order now.
+ */
+const termOccurrences = (clause: string): TermOccurrence[] => {
+  const found: TermOccurrence[] = [];
+  for (const term of CLINICAL_FINDING_TERMS) {
+    for (let from = 0; from <= clause.length - term.length; ) {
+      const at = clause.indexOf(term, from);
+      if (at === -1) break;
+      found.push({ term, start: at, end: at + term.length });
+      from = at + 1;
+    }
   }
-  return -1;
+  return found.sort((a, b) => a.start - b.start || b.end - a.end);
+};
+
+/**
+ * Whether the clause asserts the finding AT THIS OCCURRENCE — a term
+ * preceded by 未 / 无 / 非 / 不, or followed by 不明显 / 未见 / 阴性 /
+ * 正常 / a resolution verb, is ruled out where it stands even though
+ * its clause survived the marker filter. See NEGATION_PREFIX_CHARS for
+ * what this test does and does not buy on top of that filter.
+ */
+const occurrenceIsAsserted = (clause: string, at: TermOccurrence): boolean => {
+  const before = at.start > 0 ? clause[at.start - 1] : '';
+  if (NEGATION_PREFIX_CHARS.has(before)) return false;
+  const after = stripLeadingAdverbs(clause.slice(at.end));
+  return !OCCURRENCE_KILL_SUFFIXES.some((suffix) => after.startsWith(suffix));
+};
+
+/** Every hedge occurrence in the clause, with its position, so
+ *  `resolveHedge` can ask which findings a given hedge is in front of
+ *  rather than only whether the clause contains one. */
+const hedgeOccurrences = (clause: string): TermOccurrence[] => {
+  const found: TermOccurrence[] = [];
+  for (const marker of HEDGE_MARKERS) {
+    for (let from = 0; from <= clause.length - marker.length; ) {
+      const at = clause.indexOf(marker, from);
+      if (at === -1) break;
+      found.push({ term: marker, start: at, end: at + marker.length });
+      from = at + 1;
+    }
+  }
+  return found;
+};
+
+/** Steps over the adverbs and the severity qualifier that can sit
+ *  between a finding and the hedge written behind it
+ *  (「脂肪浸润明显待排」). */
+const stripLeadingHedgeLead = (text: string): string => {
+  let rest = text;
+  for (;;) {
+    let next = stripLeadingAdverbs(rest);
+    const severity = SEVERITY_QUALIFIERS.find((q) => next.startsWith(q));
+    if (severity) next = next.slice(severity.length);
+    if (next === rest) return rest;
+    rest = next;
+  }
+};
+
+/**
+ * The hedge governing THIS occurrence, or ''.
+ *
+ * A HEDGE HAS A DIRECTION, which is the whole of the fix. Chinese
+ * writes it either in front of the finding it qualifies (可疑炎性改变,
+ * 考虑肌营养不良改变, 不除外水肿) or immediately behind it
+ * (脂肪浸润待排). So a hedge governs what FOLLOWS it in its clause, plus
+ * the finding it is written directly against; a finding that precedes
+ * it is not in its scope. That is what stops
+ * 「双侧大腿脂肪浸润明显伴可疑炎性改变」 from downgrading the definite
+ * 脂肪浸润 to 脂肪浸润（可疑）.
+ *
+ * WHAT THIS DOES NOT SETTLE, stated rather than implied: a hedge
+ * written behind finding A is also in front of a finding B later in the
+ * SAME clause, and B is hedged too. Chinese normally closes the clause
+ * after 待排 and starts the next finding past the punctuation, so this
+ * costs an over-cautious reading of an uncommon construction — the
+ * direction this file is wrong in on purpose.
+ */
+const resolveHedge = (
+  clause: string,
+  hedges: readonly TermOccurrence[],
+  at: TermOccurrence,
+): string => {
+  const behind = stripLeadingHedgeLead(clause.slice(at.end));
+  const trailing = HEDGE_MARKERS.find((marker) => behind.startsWith(marker));
+  if (trailing) return trailing;
+  let nearest: TermOccurrence | null = null;
+  for (const hedge of hedges) {
+    if (hedge.end <= at.start && (nearest === null || hedge.end > nearest.end)) nearest = hedge;
+  }
+  return nearest ? nearest.term : '';
 };
 
 /**
@@ -699,12 +859,26 @@ const capFindings = (phrases: readonly string[]): string => {
  * clause naming a negation, a third party, a past study or methylation
  * is discarded before any term is matched; and a term inside a
  * surviving clause is kept only where the occurrence itself is not
- * ruled out or resolved. See `assertedOccurrence` for what the
+ * ruled out or resolved. See `occurrenceIsAsserted` for what the
  * occurrence test does and does not buy on top of the clause test.
  *
- * Findings come out in READING ORDER, clause by clause, rather than in
- * vocabulary order — the order the qualifiers are bound in, and the
- * order the report itself puts them in.
+ * THE UNIT OF READING IS THE OCCURRENCE, NOT THE TERM AND NOT THE
+ * CLAUSE. This loop used to walk `CLINICAL_FINDING_TERMS` and ask each
+ * one for its first asserted position in the clause, resolving the
+ * hedge once for the whole clause. Four rounds of fixes hung
+ * clause-level and term-level exceptions off that shape and they kept
+ * interacting: only the first of two severities of one finding survived
+ * (the term was answered once), a hedge on one finding was glued to its
+ * definite neighbours (the hedge was answered once per clause), and the
+ * output came out in vocabulary order while the comment said reading
+ * order. Enumerating the occurrences and resolving negation, hedge,
+ * severity and direction from the characters around EACH one removes
+ * the shape those three came out of rather than patching them
+ * individually.
+ *
+ * Findings come out in READING ORDER, clause by clause and within each
+ * clause — the order the qualifiers are bound in, and the order the
+ * report itself puts them in.
  */
 const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null => {
   const raw = IMPRESSION_KEYS.map((key) => ocrFields[key]).find(
@@ -725,28 +899,25 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
   const kept: { term: string; qualifier: string; hedge: string; phrase: string }[] = [];
 
   for (const clause of assertedClauses) {
-    // A hedge scopes to its clause: 「可疑炎性改变」 hedges 炎性改变, and
-    // 「双侧大腿脂肪浸润明显」 hedges nothing.
-    const hedge = HEDGE_MARKERS.find((marker) => clause.includes(marker)) ?? '';
+    const hedges = hedgeOccurrences(clause);
 
-    // Where in THIS clause a term has already matched. A shorter term
-    // whose occurrence falls inside one of these spans is not a second
+    // Where in THIS clause an occurrence has already been read. A
+    // shorter term overlapping one of these spans is not a second
     // finding, it is the same characters read again — see below.
     const claimed: { start: number; end: number }[] = [];
 
-    for (const term of CLINICAL_FINDING_TERMS) {
-      const at = assertedOccurrence(clause, term);
-      if (at === -1) continue;
-      const end = at + term.length;
+    for (const at of termOccurrences(clause)) {
+      if (!occurrenceIsAsserted(clause, at)) continue;
 
       // ONE PHRASE IS ONE FINDING, AND THE TEST FOR THAT IS THE SPAN,
       // NOT THE QUALIFIER.
       //
-      // The dedupe below asks whether a longer entry already covers this
-      // term AT THE SAME SEVERITY, and a nested term starts at a
-      // different index, so its slices are different text and its
-      // qualifier comes out different — usually empty. Both directions
-      // of that leaked, and both emitted one phrase as two findings:
+      // The cross-clause dedupe below asks whether a longer entry
+      // already covers this term AT THE SAME SEVERITY, and a nested term
+      // starts at a different index, so its slices are different text
+      // and its qualifier comes out different — usually empty. Both
+      // directions of that leaked, and both emitted one phrase as two
+      // findings:
       //
       //   - 「肩胛带重度肌肉萎缩」 — the ordinary Chinese word order —
       //     gave 肌肉萎缩 the qualifier 重度 off its before-slice, while
@@ -759,49 +930,76 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
       //   - 「重度限制性通气功能障碍」 did the same thing to the
       //     nested 通气功能障碍.
       //
-      // So the question asked is whether this occurrence lies INSIDE a
-      // span a longer term already matched in this clause. If it does it
-      // is the same phrase, whatever the two qualifier reads say. The
-      // span is recorded even when the cross-clause dedupe below then
-      // skips the longer term, or a second mention of one compound would
-      // un-cover its own nested term.
-      if (claimed.some((span) => at >= span.start && end <= span.end)) continue;
-      claimed.push({ start: at, end });
+      // So the question asked is whether this occurrence shares
+      // characters with a span already read in this clause. If it does
+      // it is the same phrase, whatever the two qualifier reads say.
+      // `termOccurrences` orders longest-first at a shared start, so the
+      // compound always claims the span before its nested term is
+      // offered. The span is recorded even when the cross-clause dedupe
+      // below then drops this occurrence, or a second mention of one
+      // compound would un-cover its own nested term.
+      if (claimed.some((span) => at.start < span.end && at.end > span.start)) continue;
+      claimed.push({ start: at.start, end: at.end });
 
       // The severity glued to THIS occurrence, on either side of it.
-      const before = clause.slice(0, at);
-      const after = clause.slice(end);
+      const before = clause.slice(0, at.start);
+      const after = clause.slice(at.end);
       const qualifier =
         SEVERITY_QUALIFIERS.find((q) => before.endsWith(q)) ??
         SEVERITY_QUALIFIERS.find((q) => after.startsWith(q)) ??
         '';
 
+      // The hedge governing THIS occurrence — in front of it, or written
+      // directly against its back. See `resolveHedge`: resolved once per
+      // clause instead, a hedge on one finding downgraded every definite
+      // finding beside it.
+      const hedge = resolveHedge(clause, hedges, at);
+
       // A measurement noun says nothing without its direction word, and
       // the qualifier belongs to the direction rather than to the noun.
-      let body = `${qualifier}${term}`;
-      if (MEASUREMENT_NOUNS.has(term)) {
+      let body = `${qualifier}${at.term}`;
+      if (MEASUREMENT_NOUNS.has(at.term)) {
         const direction = readMeasurementDirection(after);
         if (!direction) continue;
-        body = `${term}${qualifier}${direction}`;
+        body = `${at.term}${qualifier}${direction}`;
       }
 
-      // Skip a term a longer entry in an EARLIER clause already covers
-      // at the same severity and the same hedge ('肌营养不良' when
-      // '肌营养不良改变' is present). Different severities are different
-      // findings and both are kept — collapsing them is how 轻度 and
-      // 重度 got swapped in the first place. Within one clause the span
-      // test above has already settled it.
-      if (
-        kept.some(
-          (entry) =>
-            entry.qualifier === qualifier && entry.hedge === hedge && entry.term.includes(term),
-        )
-      ) {
-        continue;
-      }
-
+      // ONE FINDING, THE LONGEST READING OF IT, WHICHEVER CLAUSE SAID IT
+      // FIRST.
+      //
+      // This asked only whether an ALREADY-KEPT term contained the new
+      // one, which made it order-dependent, and the comment stated the
+      // rule unconditionally while saying nothing about the reverse
+      // order — the half that leaked. A bare term in an earlier clause
+      // did not stop the compound in a later one:
+      // 「肌营养不良；双侧大腿肌营养不良改变」 rendered
+      // 「影像/报告印象: 肌营养不良、肌营养不良改变」, one finding printed
+      // twice, and the duplicate also costs a slot against
+      // FINDINGS_SUMMARY_MAX so it can push a real finding into
+      // 「另 N 项未列出」.
+      //
+      // Containment is symmetric now, and the longer reading is the one
+      // that survives — the compound carries what the substring carries
+      // and more. It REPLACES the shorter entry in place rather than
+      // being appended, so the finding keeps the position the report
+      // first gave it.
+      //
+      // Different severities and different hedges are different findings
+      // and all of them are kept: collapsing severities is how 轻度 and
+      // 重度 got swapped in the first place, and collapsing hedges is how
+      // a definite finding and an equivocal one became one line.
+      const sameFinding = kept.findIndex(
+        (entry) =>
+          entry.qualifier === qualifier &&
+          entry.hedge === hedge &&
+          (entry.term.includes(at.term) || at.term.includes(entry.term)),
+      );
       const phrase = hedge ? `${body}（${hedge}）` : body;
-      kept.push({ term, qualifier, hedge, phrase });
+      if (sameFinding === -1) {
+        kept.push({ term: at.term, qualifier, hedge, phrase });
+      } else if (at.term.length > kept[sameFinding].term.length) {
+        kept[sameFinding] = { term: at.term, qualifier, hedge, phrase };
+      }
     }
   }
   if (kept.length === 0) return null;

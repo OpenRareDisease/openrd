@@ -55,6 +55,12 @@
               "qualifier": null
             },
             "provenanceZh": "本平台档案中记录的值。患者的表单不为这一项提供输入框，本平台后台也不允许代填（服务端拒绝写入并点名字段），所以它不是患者填写的问卷答案。本平台只从该患者上传的文件中被认定为这份档案基因证据的那一份读取这几项基因结果，其余上传件不参与；那一份的这一项与档案里这个值完全相同，而读取档案时那一份的解析结果会补上档案里空着的这一项，不留记录。所以这个值是基因报告的解析结果 —— 只是没有记录能指出是哪一次读取写进去的。"
+          },
+          {
+            "key": "diagnosis.onsetRegion",
+            "labelZh": "起病部位（患者自述）",
+            "value": "肩带",
+            "provenanceZh": "患者在基线问卷上自述的起病部位，原文照录，本平台不作归类"
           }
         ],
         "noteZh": null
@@ -93,28 +99,38 @@
             "key": "challenge.fatigue",
             "labelZh": "疲劳",
             "value": 3,
-            "provenanceZh": "基线问卷的困难程度自评"
+            "provenanceZh": "基线问卷的困难程度自评，建档时填写一次"
           },
           {
             "key": "challenge.pain",
             "labelZh": "疼痛",
             "value": 2,
-            "provenanceZh": "基线问卷的困难程度自评"
+            "provenanceZh": "基线问卷的困难程度自评，建档时填写一次"
           },
           {
             "key": "challenge.stairs",
             "labelZh": "上下楼梯",
             "value": 4,
-            "provenanceZh": "基线问卷的困难程度自评"
+            "provenanceZh": "基线问卷的困难程度自评，建档时填写一次"
           },
           {
             "key": "challenge.reachingUp",
             "labelZh": "上举手臂",
             "value": 4,
-            "provenanceZh": "基线问卷的困难程度自评"
+            "provenanceZh": "基线问卷的困难程度自评，建档时填写一次"
+          },
+          {
+            "key": "dailyImpact.hair_washing",
+            "labelZh": "洗头困难程度",
+            "value": {
+              "difficultyLevel": 3,
+              "needsAssistance": true,
+              "recordedAt": "2025-06-02T01:10:00.000Z"
+            },
+            "provenanceZh": "患者在随访中自评的日常活动困难程度；needsAssistance 为 null 表示这一次没有回答是否需要他人协助，不表示不需要"
           }
         ],
-        "noteZh": "每个症状只取该症状最近一次记录；完整时间序列在 PIPL 数据导出的 submissions 中，本格式不重复承载。"
+        "noteZh": "每个症状与每项日常活动只取最近一次记录；完整时间序列在 PIPL 数据导出的 submissions 中，本格式不重复承载。challenge.* 是建档时的一次性自评，dailyImpact.* 是随访中反复记录的，两者不要合并统计。"
       },
       {
         "key": "motorFunction",
@@ -178,6 +194,31 @@
               }
             ],
             "provenanceZh": "患者自行完成并记录，非临床环境下的标准化测试；notApplicable 表示「尝试后当天做不了」，与「未测」不同"
+          },
+          {
+            "key": "motor.muscleStrength",
+            "labelZh": "徒手肌力（每个肌群 / 每侧最近一次）",
+            "value": [
+              {
+                "muscleGroup": "deltoid",
+                "muscleGroupLabelZh": "三角肌",
+                "side": "left",
+                "sideLabelZh": "左侧",
+                "strengthScore": 3,
+                "entryMode": "self_report",
+                "recordedAt": "2025-06-01T02:00:00.000Z"
+              },
+              {
+                "muscleGroup": "tibialis",
+                "muscleGroupLabelZh": "胫骨前肌",
+                "side": "bilateral",
+                "sideLabelZh": "双侧",
+                "strengthScore": 4,
+                "entryMode": "clinician_entered",
+                "recordedAt": "2025-05-02T02:00:00.000Z"
+              }
+            ],
+            "provenanceZh": "MRC 分级 0–5，5 为正常；每一条的 entryMode 说明这一条是谁做的：clinician_entered 为临床人员录入，其余为患者自评或在应用引导下自测，不是临床环境下的标准化徒手肌力测试"
           }
         ],
         "noteZh": "本节不含 Brooke 上肢分级与 Vignos 下肢分级——本平台采集这两项，但它们尚未接入本导出。详见 omissions 中的 sections.motorFunction.instruments。"
@@ -351,6 +392,14 @@
     {
       "field": "sections.pregnancyHistory",
       "reasonZh": "该核心数据集的强制性内容之一，但本平台目前没有采集妊娠史的表单。"
+    },
+    {
+      "field": "subject（出生年份、性别、常住地区、体格测量与联系方式）",
+      "reasonZh": "本文件按该核心数据集的六个强制性内容领域加一个可选的民族项组织，下列内容不在这些领域里，本导出因此不承载：出生年份（本平台按年份存，并区分「记不清了」与「未采集」）、性别、常住地区、身高、体重、血型、联系电话与邮箱，以及本平台内部的患者编号。其中出生年份与性别在 FHIR 导出里有对应字段（Patient.birthDate 支持只写年份，Patient.gender），本文件没有；联系方式、常住地区与患者编号属于直接身份信息或近似标识，三份可携带导出都不写；身高、体重与血型三份都不写，需要请改用不带 format 参数的数据导出，或直接向患者索取。subjectRef 是本平台内部的档案标识，不是患者编号。"
+    },
+    {
+      "field": "sections（用药记录、日常记录与档案备注）",
+      "reasonZh": "本文件不承载三类内容：0 条用药记录（药名、剂量、频次、给药途径、起止日期与状态）、0 条患者自己写的日常记录（含心情评分），以及档案备注。该核心数据集列出的强制性领域里没有这三类，本导出也没有为它们建立对齐位置；自由文本尤其不适合塞进带 provenanceZh 的条目里当作一次记录来读。三份可携带导出都不承载它们——本文件里没有用药记录，不表示患者没有在用药。完整内容请改用不带 format 参数的数据导出。"
     }
   ],
   "fieldOrigins": [],

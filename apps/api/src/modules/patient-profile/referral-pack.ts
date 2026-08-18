@@ -305,9 +305,35 @@ export interface ReferralMonitoringSlotDTO {
   key: 'blood' | 'respiratory' | 'cardiac';
   title: string;
   state: 'present' | 'unreadable' | 'absent';
-  /** The rendered sentence, one per state. Never a bare 「暂无数据」. */
+  /**
+   * The rendered sentence, one per state. Never a bare 「暂无数据」.
+   *
+   * WHERE THERE IS A DATE it carries the freshness qualifier inside the
+   * date bracket (「78%（2025-05-09，过期）」), in the same shape and with
+   * the same vocabulary `buildClinicalPassportExport` uses, so a
+   * clinician holding the pack and the passport reads one claim rather
+   * than two wordings of it. Where there is none the sentence says what
+   * this platform has on file and stops; see `freshnessLabel`.
+   */
   statement: string;
   latestDate: string | null;
+  /**
+   * How old `latestDate` is — one of the labels `getFreshness` produces
+   * (最新 / 待更新 / 过期, plus 缺失 for no date and 未知 for one that
+   * would not parse) — decided by the passport against the clock
+   * `buildReferralPack` was handed. 未知 also appears on the fallback
+   * slot below, which is reached when the passport emits no respiratory
+   * item at all.
+   *
+   * Printed — inside `statement` above. It was carried on this DTO and
+   * printed nowhere for long enough that 过期 occurred zero times in a
+   * pack whose blood panel was 251 days old, while the passport
+   * markdown and the mobile PDF built from the same summary both said
+   * so. Kept as its own field as well as in the sentence because an API
+   * client that lays the slot out itself needs the label separately
+   * from the prose; if the sentence ever stops carrying it, this field
+   * is a dead one again and should go with it.
+   */
   freshnessLabel: string;
   /** Whether the test is indicated at all — carried from the passport. */
   note: string | null;
@@ -893,21 +919,40 @@ const buildDevices = (profile: PatientProfileDTO): ReferralDevicesDTO => {
   };
 };
 
+/**
+ * One monitoring slot for the pack.
+ *
+ * THE DATE BRACKET CARRIES THE FRESHNESS QUALIFIER, which is the
+ * difference between 「肺功能 78%（2025-05-09）」 and 「肺功能
+ * 78%（2025-05-09，过期）」 on the one page in this product that is
+ * physically handed to a neurologist. That reader is deciding whether
+ * the workup is current; the passport markdown and the mobile PDF, both
+ * built from the same summary, have always said 过期, and the pack —
+ * the document whose whole purpose is that decision — printed the date
+ * bare and left them to do the arithmetic. The bracket is only appended
+ * where there IS a date: on an absent slot the sentence already says
+ * 本平台没有该类报告的记录, and 「，缺失」 after it adds nothing while
+ * reading as a verdict on the patient rather than on this platform's
+ * records.
+ */
 const buildMonitoringSlot = (
   item: ClinicalPassportSummaryDTO['monitoring']['items'][number],
 ): ReferralMonitoringSlotDTO => {
   const date = formatDate(item.latestDate);
+  // 「日期，新鲜度」 — the same bracket, in the same order, carrying the
+  // label `buildClinicalPassportExport` prints in its own.
+  const dated = date ? `${date}，${item.freshness.label}` : null;
   const statement =
     item.state === 'present'
-      ? date
-        ? `${item.summary}（${date}）`
+      ? dated
+        ? `${item.summary}（${dated}）`
         : item.summary
       : item.state === 'unreadable'
         ? // The distinction the anesthesia card exists to protect,
           // restated for a reader who can do something about it: the
           // original report is in the patient's hands or their phone.
-          date
-          ? `已上传该类报告（${date}），但本平台未能自动读出数值 —— 请向患者索取原件`
+          dated
+          ? `已上传该类报告（${dated}），但本平台未能自动读出数值 —— 请向患者索取原件`
           : '已上传该类报告，但本平台未能自动读出数值 —— 请向患者索取原件'
         : '本平台没有该类报告的记录 —— 不等于没有做过，请当面询问';
 
@@ -1207,7 +1252,17 @@ export const buildReferralPack = (
   profile: PatientProfileDTO,
   now: Date = new Date(),
 ): ReferralPackDTO => {
-  const summary = buildClinicalPassportSummary(profile);
+  // `now` THROUGH, not just onto 生成时间. Every freshness label, every
+  // 最新/待更新/过期 judgement and the age gate on the guideline steps
+  // are computed inside the summary against the clock it is handed, and
+  // this call used to hand it none — so a pack stamped 生成时间 by the
+  // caller's clock reported recency against the wall clock instead.
+  // `buildClinicalPassportSummary` says why it takes one at all: two
+  // documents built from one profile in one request must agree, and
+  // across a midnight boundary two clock reads are a different DAY.
+  // Rendered on 2025-05-20 for a lung-function report dated 2025-05-09,
+  // the pack called an eleven-day-old result 过期.
+  const summary = buildClinicalPassportSummary(profile, now);
   const diagnosis = buildDiagnosis(summary);
   const functionTests = buildFunctionTestSeries(profile);
   const devices = buildDevices(profile);

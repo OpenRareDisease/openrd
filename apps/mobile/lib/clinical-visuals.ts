@@ -181,27 +181,82 @@ const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
  * depend on, and the server has to compute the identical answer.
  * China has run a single UTC+8 zone with no daylight saving since
  * 1991, and everything older than that arrives here as bare
- * 「YYYY-MM-DD」 and is sliced above without any arithmetic at all.
+ * 「YYYY-MM-DD」, which `formatProductDate` returns untouched without
+ * any arithmetic at all.
  */
 export const PRODUCT_TIME_ZONE = 'Asia/Shanghai';
 const PRODUCT_UTC_OFFSET_MINUTES = 8 * 60;
 
-export const formatDateLabel = (value?: string | null) => {
-  if (!value) return '—';
-  const trimmed = value.trim();
-  // Slice the digits rather than re-parsing them: re-parsing is where
-  // the day was lost, and it is lost the same way every time.
-  const parts = DATE_ONLY.exec(trimmed);
-  if (parts) return `${parts[2]}-${parts[3]}`;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  // Shift the instant onto the product calendar, then read it back
-  // with the UTC accessors — the only ones on `Date` that do not
-  // consult whatever zone this handset is set to.
+/**
+ * The `YYYY-MM-DD` an instant falls on in `PRODUCT_TIME_ZONE`.
+ *
+ * Shift the instant by the offset, then read it back with the UTC
+ * accessors: those are the only accessors on `Date` that do not consult
+ * the ambient zone, so the answer is the same on every handset. The
+ * same arithmetic as `productCalendarParts` / `toProductCalendarDay` in
+ * apps/api's profile.passport.ts, because the two sides have to produce
+ * the same digits for the same instant.
+ */
+const toProductCalendarDay = (date: Date) => {
   const shifted = new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000);
   const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
   const day = String(shifted.getUTCDate()).padStart(2, '0');
-  return `${month}-${day}`;
+  return `${shifted.getUTCFullYear()}-${month}-${day}`;
+};
+
+/**
+ * THE WHOLE DATE, ON THE PRODUCT'S CALENDAR — the renderer for anything
+ * this app prints onto a DOCUMENT rather than into a chip.
+ *
+ * Named after apps/api's `formatProductDate` and answering identically,
+ * because the mobile clinical-passport PDF is handed to the SAME
+ * clinician who is reading the server's markdown export and share page
+ * of the same passport, and those two print `YYYY-MM-DD`.
+ *
+ * WHY THE YEAR IS NOT OPTIONAL HERE. `formatDateLabel` below drops it,
+ * and that is right for a card chip on a screen the patient is
+ * scrolling — the surrounding UI says which record it belongs to and
+ * the cell is narrow. It is wrong for a sheet that goes into a referral
+ * folder: the passport PDF's own 时间轴 lists a genetic report, a
+ * pulmonary function report and a strength entry in one column, and
+ * with the years stripped a reader cannot see that the genetics is two
+ * years older than the rest. The 生成时间 of a printed document with no
+ * year on it is worse still.
+ *
+ * Returns null for an empty value so the caller decides the fallback
+ * («—», 「未记录时间」), and returns an unparseable string unchanged
+ * rather than hiding it behind a dash.
+ */
+export const formatProductDate = (value?: string | null): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  // Slice the digits rather than re-parsing them: re-parsing is where
+  // the day was lost, and it is lost the same way every time.
+  if (DATE_ONLY.test(trimmed)) return trimmed;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return trimmed || null;
+  return toProductCalendarDay(date);
+};
+
+/**
+ * The compact `MM-DD` chip, for the screens — 最近一次, a timeline row's
+ * time cell, a chart's x-axis label.
+ *
+ * Built by slicing the string `formatProductDate` just produced rather
+ * than re-parsing it: re-parsing is where the day was lost the first
+ * time, and doing it a second way here is how the chip and the printed
+ * document would come to disagree about one record.
+ *
+ * NOT THE RENDERER FOR THE PASSPORT PDF ANY MORE — that document prints
+ * whole dates through `formatProductDate`. Same split, and for the same
+ * reason, as apps/api's `formatProductDate` / `formatDateLabel` pair.
+ */
+export const formatDateLabel = (value?: string | null) => {
+  const formatted = formatProductDate(value);
+  if (!formatted) return '—';
+  const parts = DATE_ONLY.exec(formatted);
+  if (!parts) return formatted;
+  return `${parts[2]}-${parts[3]}`;
 };
 
 /**

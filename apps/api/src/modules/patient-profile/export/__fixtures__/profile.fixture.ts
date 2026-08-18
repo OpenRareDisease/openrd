@@ -265,3 +265,126 @@ export const EXPORT_FIXTURE_PROFILE: PatientProfileDTO = {
 
 /** Frozen clock, so goldens do not drift. */
 export const FIXTURE_GENERATED_AT = '2026-01-15T08:00:00.000Z';
+
+/**
+ * The same patient with every field on `PatientProfileDTO` filled.
+ *
+ * It exists for one test — omissions-coverage.test.ts — and the reason
+ * it has to exist is that `EXPORT_FIXTURE_PROFILE` leaves several
+ * clinical facts empty (no medications, no activity log, no methylation
+ * reading, no EcoRI fragment, no height or blood type), and a fact that
+ * is empty in the fixture is a fact whose disappearance from an export
+ * no golden file can show. Two consecutive review rounds found a held
+ * value that reached no portable export and was declared in none;
+ * both times the value was one the shared fixture does not carry.
+ *
+ * NOT used by the goldens. They pin a realistic profile, and a profile
+ * with every column populated is not one.
+ */
+export const EXPORT_FIXTURE_PROFILE_MAXIMAL: PatientProfileDTO = {
+  ...EXPORT_FIXTURE_PROFILE,
+  dateOfBirth: '1988-04-02',
+  diagnosisDate: '2014-06-01',
+  regionDistrict: '武侯区',
+  contactEmail: 'zhang@example.invalid',
+  notes: '档案备注：最近爬楼比去年更吃力。',
+  baseline: {
+    ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+    diseaseBackground: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).diseaseBackground as Record<
+        string,
+        unknown
+      >),
+      methylation: '甲基化水平 32%',
+    },
+    currentStatus: {
+      ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>).currentStatus as Record<
+        string,
+        unknown
+      >),
+      breathingSymptoms: true,
+    },
+  },
+  activityLogs: [
+    {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+      logDate: '2025-06-03',
+      source: 'self',
+      content: '今天下午很累，晚饭后就躺下了。',
+      moodScore: 3,
+      createdAt: '2025-06-03T12:00:00.000Z',
+      submissionId: null,
+    },
+  ],
+  medications: [
+    {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+      medicationName: '维生素 D',
+      dosage: '800 IU',
+      frequency: '每日一次',
+      route: 'oral',
+      startDate: '2024-01-01',
+      endDate: null,
+      notes: '骨密度偏低',
+      status: 'active',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      submissionId: null,
+    },
+  ],
+  documents: [
+    {
+      ...EXPORT_FIXTURE_PROFILE.documents[0],
+      ocrPayload: {
+        fields: {
+          reportTime: '2024-01-28',
+          diagnosisType: 'FSHD1',
+          d4z4Repeats: '5',
+          haplotype: '4qA',
+          ecoRIFragment: '21 kb',
+          methylationValue: '32%',
+          geneticTestMethod: 'Southern blot',
+        },
+      },
+    },
+    ...EXPORT_FIXTURE_PROFILE.documents.slice(1),
+  ],
+};
+
+/**
+ * A profile with nothing on it but its own row.
+ *
+ * The other half of the same test: an omission that is only pushed when
+ * a value happens to be present declares nothing for the patient who
+ * has none, and 「this export does not carry X」 is exactly the sentence
+ * an empty profile's receiver needs.
+ */
+export const EXPORT_FIXTURE_PROFILE_SPARSE: PatientProfileDTO = {
+  ...EXPORT_FIXTURE_PROFILE,
+  fullName: null,
+  preferredName: null,
+  dateOfBirth: null,
+  gender: null,
+  patientCode: null,
+  diagnosisStage: null,
+  diagnosisDate: null,
+  geneticMutation: null,
+  heightCm: null,
+  weightKg: null,
+  bloodType: null,
+  contactPhone: null,
+  contactEmail: null,
+  primaryPhysician: null,
+  regionProvince: null,
+  regionCity: null,
+  regionDistrict: null,
+  baseline: null,
+  notes: null,
+  measurements: [],
+  functionTests: [],
+  symptomScores: [],
+  dailyImpacts: [],
+  followupEvents: [],
+  activityLogs: [],
+  documents: [],
+  medications: [],
+};

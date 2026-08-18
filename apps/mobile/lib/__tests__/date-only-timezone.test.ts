@@ -170,18 +170,32 @@ describe('只有年月日的日期，设备时区不能改掉它', () => {
     // three.
     const html = buildClinicalPassportPdfHtml(summary);
 
-    expect(matchAll(html, /生成时间：([^<\n]+)/g)).toEqual(['08-05']);
+    expect(matchAll(html, /生成时间：([^<\n]+)/g)).toEqual(['2026-08-05']);
     expect(html).not.toContain('08-04');
   });
 
-  it('导出的护照 PDF 印出的是报告上的那一天', () => {
+  // WITH THE YEAR, because this is the one document that gets printed
+  // and handed over. `formatDateLabel` — the `MM-DD` chip the screens
+  // use — was rendering every date on it, so the 生成时间 of a sheet
+  // going into a referral folder, and every row of its 时间轴, arrived
+  // yearless. The server's markdown export of the SAME summary prints
+  // `YYYY-MM-DD`, and the clinician holding this is reading that too.
+  // Whole-document parity lives in passport-date-parity.test.ts.
+  it('导出的护照 PDF 印出的是报告上的那一天，带年份', () => {
     const html = buildClinicalPassportPdfHtml(summary);
 
-    expect(matchAll(html, /最近日期：([^<\n]+)/g)).toEqual(['05-09', '05-09']);
-    expect(matchAll(html, /class="timeline-date">([^<\n]+)/g)).toEqual(['05-09']);
-    expect(matchAll(html, /最近更新：([^<\n]+)/g)).toEqual(['05-09']);
-    // 最近 MRI and 最近记录, the two dated cells of the info grid.
-    expect(matchAll(html, /class="info-value">(\d\d-\d\d)/g)).toEqual(['05-09', '05-09']);
+    expect(matchAll(html, /最近日期：([^<\n]+)/g)).toEqual(['2025-05-09', '2025-05-09']);
+    expect(matchAll(html, /class="timeline-date">([^<\n]+)/g)).toEqual(['2025-05-09']);
+    expect(matchAll(html, /最近更新：([^<\n]+)/g)).toEqual(['2025-05-09']);
+    // 诊断日期, 最近记录 and 最近 MRI — the three dated info cells, in
+    // page order. 诊断日期 joins the list now that the cells carry
+    // years: it is a `date` column the API already sliced, and the
+    // rule for it is that nothing here converts it.
+    expect(matchAll(html, /class="info-value">(\d{4}-\d\d-\d\d)/g)).toEqual([
+      '2025-05-09',
+      '2025-05-09',
+      '2025-05-09',
+    ]);
     expect(html).not.toContain('05-08');
   });
 

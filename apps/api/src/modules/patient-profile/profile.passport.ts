@@ -421,11 +421,50 @@ export interface PassportDiagnosisDTO {
 
 export interface PassportMotorDTO {
   ready: boolean;
+  /**
+   * The mean of the newest reading of each measured (muscle group,
+   * side), to one decimal, or 「—」 when nothing has been measured and no
+   * uploaded strength report supplied one.
+   *
+   * THIS, not `summary`, is what a renderer wants when it means 「how
+   * strong is this patient」. Averaged per group AND side, so both
+   * deltoids of one patient count once each rather than the later of
+   * them deleting the earlier.
+   */
   average: string;
   latestMeasurementAt: string | null;
   latestActivityAt: string | null;
+  /**
+   * The summary sentence off an uploaded 肌力评估 REPORT, or
+   * `NO_STRENGTH_REPORT_SUMMARY_ZH` when no such report is on file.
+   *
+   * A STATEMENT ABOUT ONE KIND OF SOURCE, never about this patient. It
+   * is built by `buildStrengthSummary` from a report's OCR fields and
+   * from nothing else, so the ordinary profile — in-app MMT
+   * measurements, no report ever uploaded — carries the fallback string
+   * here while `average`, `highlights` and `bodyRegions` beside it are
+   * fully populated from those measurements. A renderer that prints
+   * this as its headline tells the reader there is no strength
+   * assessment while the next row lists the regions one identified.
+   */
   summary: string;
+  /**
+   * The worst-affected region NAMES, most affected first, deduplicated.
+   *
+   * Lateralised where the measurement recorded a side — 肩带（左） — and
+   * unqualified where it was bilateral or unsided. FSHD is
+   * characteristically asymmetric, so a name with no side on it must
+   * never be read as 「both」.
+   */
   highlights: string[];
+  /**
+   * The body map, painted only on the sides that were measured.
+   *
+   * A `left`/`right` measurement occupies ONE region. `bilateral`, and a
+   * measurement with no side recorded, occupy both — the latter because
+   * there is no unsided bucket and dropping the reading would lose it,
+   * which is why its label carries no side.
+   */
   bodyRegions: PassportBodyRegionMap;
   activitySummary: string;
 }
@@ -434,8 +473,22 @@ export interface PassportImagingDTO {
   ready: boolean;
   latestMriDate: string | null;
   latestDocumentId: string | null;
+  /** How old `latestMriDate` is, on the summary's clock. Printed beside
+   *  the date on the share page. It was carried and read by no renderer
+   *  at all for long enough to be worth saying: a judgement computed and
+   *  never shown is one nobody can check. */
   freshness: PassportFreshnessDTO;
   summary: string;
+  /**
+   * The regions the MRI report's own prose named, most affected first,
+   * deduplicated.
+   *
+   * Unlike `motor.highlights` these carry no side. `inferMriBodyMap`
+   * reads free text and hedges an unnamed side by painting both regions
+   * at different intensities, so a name here is a claim about the muscle
+   * group and not about an arm — and the deduplication is what stopped
+   * one hedged group from printing twice and eating the whole list.
+   */
   highlights: string[];
   bodyRegions: PassportBodyRegionMap;
 }
@@ -801,6 +854,27 @@ const hasMeaningfulValue = (value?: string | null) => {
   if (text.startsWith('暂无')) return false;
   return true;
 };
+
+/**
+ * What `motor.summary` holds when NO UPLOADED STRENGTH REPORT supplied
+ * one.
+ *
+ * It is not「this patient has no strength assessment」and a renderer
+ * must never print it as if it were. `buildStrengthSummary` reads OCR
+ * fields off an uploaded 肌力评估 report and nothing else, so a patient
+ * whose strength data is entirely in-app MMT — the common case, since
+ * the app records measurements itself and most patients never upload
+ * such a report — lands here with a full set of measurements,
+ * `motor.average` computed off them and `motor.highlights` derived from
+ * them, sitting on the same object.
+ *
+ * Exported because the share page has to be able to tell this state
+ * from a real report summary, and comparing against a copy of the
+ * literal is how the two drift apart. `hasMeaningfulValue` above
+ * happens to reject it too (it opens 暂无), but that is a heuristic
+ * over any string; this is the identity of one.
+ */
+export const NO_STRENGTH_REPORT_SUMMARY_ZH = '暂无可用的肌力评估摘要';
 
 const toPayload = (value: unknown): OcrPayloadLike => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1297,7 +1371,7 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     latestCardiacDocumentId: cardiacDoc?.id ?? null,
     cardiacSummary,
     strengthAverage: strengthSummary.average !== null ? strengthSummary.average.toFixed(1) : '—',
-    strengthSummary: strengthSummary.summary ?? '暂无可用的肌力评估摘要',
+    strengthSummary: strengthSummary.summary ?? NO_STRENGTH_REPORT_SUMMARY_ZH,
   };
 };
 
@@ -1327,64 +1401,108 @@ const pushRegion = (
   }
 };
 
+/**
+ * The two body regions a measured muscle group lands on, and the name
+ * this app calls that group when it is talking about one side of it.
+ *
+ * The base label carries no side, and `applyStrengthGroup` adds one
+ * when — and only when — the measurement recorded one. `face` and
+ * `abdominal` are absent on purpose: they are recordable muscle groups
+ * with no paired region to paint, and inventing a mapping for them
+ * here would put marks on a body map that no measurement supports.
+ */
+const STRENGTH_GROUP_REGIONS: Record<
+  string,
+  { left: BodyRegionId; right: BodyRegionId; label: string }
+> = {
+  deltoid: { left: 'leftShoulder', right: 'rightShoulder', label: '肩带' },
+  biceps: { left: 'leftUpperArmFront', right: 'rightUpperArmFront', label: '上臂前群' },
+  triceps: { left: 'leftUpperArmBack', right: 'rightUpperArmBack', label: '上臂后群' },
+  quadriceps: { left: 'leftThighFront', right: 'rightThighFront', label: '大腿前群' },
+  hamstrings: { left: 'leftThighBack', right: 'rightThighBack', label: '大腿后群' },
+  gluteus: { left: 'leftGlute', right: 'rightGlute', label: '臀肌' },
+  tibialis: { left: 'leftShin', right: 'rightShin', label: '小腿前群' },
+};
+
+/**
+ * One measured muscle group onto the body map, ON THE SIDE IT WAS
+ * MEASURED ON.
+ *
+ * FSHD IS CHARACTERISTICALLY ASYMMETRIC — that is a named feature of
+ * the disease, not an incidental one — and this function used to push
+ * every intensity onto both the left and the right region regardless of
+ * `measurement.side`. A profile holding ONE deltoid measurement, side
+ * left, painted both shoulders, so the share page's 受累部位 and the
+ * markdown export's 重点区域 — the two documents that read this map —
+ * both told a clinician the weakness was bilateral. The FHIR export of
+ * the same profile, reading the same rows straight out of
+ * `patient_measurements`, emitted 三角肌肌力（左侧）: two of this app's
+ * documents about one patient disagreeing about which arm is weak, and
+ * the one that was right was the one that never came through here.
+ *
+ * `bilateral` paints both, which is what it means. `none` (「不分左右」)
+ * and a missing side also paint both, because the alternative is to
+ * drop a recorded weakness off the map entirely — but they get the
+ * UNSIDED label, so nothing downstream reads them as a claim about a
+ * particular arm. Only `left` and `right` earn 「（左）」/「（右）」, and
+ * they earn it because a reader who sees 肩带 with no qualifier beside a
+ * 肩带（左） has to be able to tell which of the two this is.
+ */
 const applyStrengthGroup = (
   regions: PassportBodyRegionMap,
   muscleGroup: string,
   intensity: number,
+  side: string | null,
 ) => {
   if (intensity <= 0) return;
-  switch (muscleGroup) {
-    case 'deltoid':
-      pushRegion(regions, 'leftShoulder', intensity, '肩带');
-      pushRegion(regions, 'rightShoulder', intensity, '肩带');
-      break;
-    case 'biceps':
-      pushRegion(regions, 'leftUpperArmFront', intensity, '上臂前群');
-      pushRegion(regions, 'rightUpperArmFront', intensity, '上臂前群');
-      break;
-    case 'triceps':
-      pushRegion(regions, 'leftUpperArmBack', intensity, '上臂后群');
-      pushRegion(regions, 'rightUpperArmBack', intensity, '上臂后群');
-      break;
-    case 'quadriceps':
-      pushRegion(regions, 'leftThighFront', intensity, '大腿前群');
-      pushRegion(regions, 'rightThighFront', intensity, '大腿前群');
-      break;
-    case 'hamstrings':
-      pushRegion(regions, 'leftThighBack', intensity, '大腿后群');
-      pushRegion(regions, 'rightThighBack', intensity, '大腿后群');
-      break;
-    case 'gluteus':
-      pushRegion(regions, 'leftGlute', intensity, '臀肌');
-      pushRegion(regions, 'rightGlute', intensity, '臀肌');
-      break;
-    case 'tibialis':
-      pushRegion(regions, 'leftShin', intensity, '小腿前群');
-      pushRegion(regions, 'rightShin', intensity, '小腿前群');
-      break;
-    default:
-      break;
+  const mapping = STRENGTH_GROUP_REGIONS[muscleGroup];
+  if (!mapping) return;
+
+  if (side === 'left') {
+    pushRegion(regions, mapping.left, intensity, `${mapping.label}（左）`);
+    return;
   }
+  if (side === 'right') {
+    pushRegion(regions, mapping.right, intensity, `${mapping.label}（右）`);
+    return;
+  }
+  pushRegion(regions, mapping.left, intensity, mapping.label);
+  pushRegion(regions, mapping.right, intensity, mapping.label);
 };
 
-const pickLatestMeasurementsByGroup = (measurements: PatientProfileDTO['measurements']) => {
+/**
+ * The newest measurement for each muscle group AND SIDE.
+ *
+ * Keyed on the pair, not on the group alone. Keyed on the group alone,
+ * a patient who measures both deltoids kept whichever row was recorded
+ * later and threw the other away — so a left deltoid of 2 and a right
+ * of 5 came out as 「平均 5.0 级」 with an EMPTY body map, the strong arm
+ * having silently deleted the weak one from every document this file
+ * feeds. That is the reading a clinician would most want, erased by the
+ * collection that was supposed to summarise it.
+ *
+ * `side` is nullable in the DTO, so the null key is its own bucket
+ * rather than being folded into any recorded side.
+ */
+const pickLatestMeasurementsByGroupSide = (measurements: PatientProfileDTO['measurements']) => {
   const latest: Record<string, PatientProfileDTO['measurements'][number]> = {};
   measurements.forEach((measurement) => {
-    const previous = latest[measurement.muscleGroup];
+    const key = `${measurement.muscleGroup} ${measurement.side ?? ''}`;
+    const previous = latest[key];
     if (!previous || getTimestamp(measurement.recordedAt) >= getTimestamp(previous.recordedAt)) {
-      latest[measurement.muscleGroup] = measurement;
+      latest[key] = measurement;
     }
   });
   return latest;
 };
 
 const buildBodyMapFromMeasurements = (measurements: PatientProfileDTO['measurements']) => {
-  const latest = pickLatestMeasurementsByGroup(measurements);
+  const latest = pickLatestMeasurementsByGroupSide(measurements);
   const regions: PassportBodyRegionMap = {};
 
-  Object.entries(latest).forEach(([group, item]) => {
+  Object.values(latest).forEach((item) => {
     const score = parseScore(String(item.strengthScore));
-    applyStrengthGroup(regions, group, scoreToWeaknessIntensity(score));
+    applyStrengthGroup(regions, item.muscleGroup, scoreToWeaknessIntensity(score), item.side);
   });
 
   return regions;
@@ -1517,11 +1635,34 @@ const buildAggregateMriBodyMap = (documents: PatientDocumentDTO[]) => {
   };
 };
 
-const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) =>
-  Object.values(regions)
-    .sort((a, b) => b.intensity - a.intensity)
-    .slice(0, limit)
-    .map((item) => item.label ?? '受累区域');
+/**
+ * The worst-affected regions as a list of NAMES, most affected first.
+ *
+ * Deduplicated by label, and that is not cosmetic. The map is keyed by
+ * region and a paired group occupies two of them under one name, so an
+ * undeduplicated read of a bilateral finding produced
+ * 「肩带、肩带、小腿前群、小腿前群」 — a repetition a reader parses as
+ * emphasis or as two separate findings, and which ate the whole
+ * `limit` on two groups. The limit counts DISTINCT names now, so a
+ * profile with four affected groups lists four of them.
+ *
+ * Labels are already lateralised where the source knew the side
+ * (`applyStrengthGroup`), so 肩带（左） and 肩带（右） survive as the two
+ * separate facts they are; it is only the one fact printed twice that
+ * collapses.
+ */
+const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) => {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const item of Object.values(regions).sort((a, b) => b.intensity - a.intensity)) {
+    const label = item.label ?? '受累区域';
+    if (seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+    if (labels.length >= limit) break;
+  }
+  return labels;
+};
 
 /**
  * 最新 / 待更新 / 过期 for one date, on the summary's clock.
@@ -1598,7 +1739,7 @@ const buildMonitoringItem = (input: {
 
 const buildTimeline = (
   profile: PatientProfileDTO,
-  latestMeasurementsByGroup: Record<string, PatientProfileDTO['measurements'][number]>,
+  latestMeasurementsByGroupSide: Record<string, PatientProfileDTO['measurements'][number]>,
   strengthAverage: string,
 ) => {
   const items: Array<{ sortKey: number; value: PassportTimelineItemDTO }> = [];
@@ -1626,7 +1767,7 @@ const buildTimeline = (
     });
   });
 
-  const latestMeasurementAt = Object.values(latestMeasurementsByGroup).reduce(
+  const latestMeasurementAt = Object.values(latestMeasurementsByGroupSide).reduce(
     (max, item) => Math.max(max, getTimestamp(item.recordedAt)),
     0,
   );
@@ -1636,7 +1777,12 @@ const buildTimeline = (
       value: {
         id: 'measurement-latest',
         title: '肌力更新',
-        description: `共 ${Object.keys(latestMeasurementsByGroup).length} 组，平均 ${strengthAverage} 级`,
+        // 项, not 组. The buckets are (muscle group, side) pairs since
+        // both deltoids stopped overwriting each other, so a patient
+        // who measured one group on both sides has two of them —
+        // 「共 2 组」 would name a count of muscle groups this number is
+        // no longer counting.
+        description: `共 ${Object.keys(latestMeasurementsByGroupSide).length} 项，平均 ${strengthAverage} 级`,
         timestamp: new Date(latestMeasurementAt).toISOString(),
         tag: '肌力',
       },
@@ -3506,6 +3652,19 @@ const ageInYears = (dateOfBirth: string | null, now: Date): number | null => {
  * Optional with the wall clock as the default, so no call site has to
  * care; the callers that build more than one document from one profile
  * pass their own clock through.
+ *
+ * AND 生成时间 IS THE SMALLEST THING IT DECIDES. `now` also fixes every
+ * freshness label on this object, the 最新/待更新/过期 verdict on the
+ * genetics and MRI dates and on all three monitoring slots, and the age
+ * gate that decides whether the hearing-screening step appears at all.
+ * A caller that stamps its own document from one clock and then leaves
+ * this argument off has not made two documents disagree about a
+ * timestamp — it has made one document date itself by the caller and
+ * judge itself by the wall clock. `buildReferralPack` did exactly that,
+ * and reported an eleven-day-old lung-function report as 过期 to the
+ * neurologist deciding whether the workup was current. THE DEFAULT IS
+ * FOR CALLERS WITH NO CLOCK OF THEIR OWN; a caller that has one owes it
+ * to this call.
  */
 export const buildClinicalPassportSummary = (
   profile: PatientProfileDTO,
@@ -3513,8 +3672,12 @@ export const buildClinicalPassportSummary = (
 ): ClinicalPassportSummaryDTO => {
   const reportInsights = buildReportInsights(profile);
   const mriDocuments = collectMriDocuments(profile.documents);
-  const latestMeasurementsByGroup = pickLatestMeasurementsByGroup(profile.measurements);
-  const measurementScores = Object.values(latestMeasurementsByGroup)
+  const latestMeasurementsByGroupSide = pickLatestMeasurementsByGroupSide(profile.measurements);
+  // The average is over the latest reading of each measured (group,
+  // side), so a left deltoid of 2 and a right of 5 average to 3.5 and
+  // neither disappears. It used to be over the latest per group, where
+  // the later-recorded side simply replaced the other one.
+  const measurementScores = Object.values(latestMeasurementsByGroupSide)
     .map((item) => parseScore(String(item.strengthScore)))
     .filter((value): value is number => value !== null);
   const strengthAverage =
@@ -3526,7 +3689,7 @@ export const buildClinicalPassportSummary = (
   const strengthBodyRegions = buildBodyMapFromMeasurements(profile.measurements);
   const mriBodyMap = buildAggregateMriBodyMap(mriDocuments);
 
-  const latestMeasurementAt = Object.values(latestMeasurementsByGroup).reduce<string | null>(
+  const latestMeasurementAt = Object.values(latestMeasurementsByGroupSide).reduce<string | null>(
     (latest, item) =>
       getTimestamp(item.recordedAt) > getTimestamp(latest) ? item.recordedAt : latest,
     null,
@@ -4395,8 +4558,13 @@ export const buildClinicalPassportSummary = (
         hint: profile.documents.length > 0 ? '已纳入护照' : '尚无报告来源',
       },
       {
-        label: '肌力组数',
-        value: String(Object.keys(latestMeasurementsByGroup).length),
+        // 肌力项数 rather than 组数: the count is of measured (muscle
+        // group, side) pairs, and both deltoids of one patient are two
+        // of them. 组数 named a count of muscle groups, which this
+        // number stopped being when the two sides stopped overwriting
+        // each other.
+        label: '肌力项数',
+        value: String(Object.keys(latestMeasurementsByGroupSide).length),
         hint: measurementScores.length > 0 ? `平均 ${strengthAverage} 级` : '尚无结构化肌力',
       },
       {
@@ -4450,7 +4618,7 @@ export const buildClinicalPassportSummary = (
       items: monitoringItems,
     },
     nextSteps,
-    timeline: buildTimeline(profile, latestMeasurementsByGroup, strengthAverage),
+    timeline: buildTimeline(profile, latestMeasurementsByGroupSide, strengthAverage),
   };
 };
 

@@ -7,6 +7,7 @@ import {
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   diagnosisTypeSourceZh,
+  familyHistoryOmission,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
   instrumentOmission,
@@ -226,19 +227,50 @@ export const buildPhenopacketExport = (
   // earlier wording — 「本仓库内没有可核对的 LOINC/HPO 来源」 — is a
   // claim a single promotion in codings.ts falsifies, in a document
   // this file would not be re-read while making.
-  if (profile.measurements.length > 0 || profile.functionTests.length > 0) {
-    omissions.push({
-      field: 'measurements',
-      reasonZh: `本次导出持有 ${profile.measurements.length} 条肌力记录与 ${profile.functionTests.length} 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式完整保留。`,
-    });
-  }
-  if (source.challenges.length > 0 || profile.symptomScores.length > 0) {
-    omissions.push({
-      field: 'phenotypicFeatures',
-      reasonZh:
-        'PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此症状不以本体项形式写入，改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。',
-    });
-  }
+  // UNCONDITIONAL, for the reason `phenotypicFeatures` below is. Gated
+  // on the two counts, a packet built for a patient with no strength
+  // readings said nothing at all about `measurements` — so a receiver
+  // could not tell 「this format never carries them」 from 「this patient
+  // has none」, and those are different instructions about whether to go
+  // back to the patient. `Measurement` is a slot this format HAS, which
+  // is the second half of what envelope.ts says an entry may be about.
+  omissions.push({
+    field: 'measurements',
+    // 「完整保留」 CAME OFF THE LAST SENTENCE. The FHIR bundle caps its
+    // Observations and declares the cut in its own omissions list, so
+    // for a profile past that cap this packet was promising a
+    // completeness the other document says it does not have — and a
+    // receiver told 「it is all over there」 does not go looking for the
+    // omission that says otherwise.
+    reasonZh: `本次导出持有 ${profile.measurements.length} 条肌力记录与 ${profile.functionTests.length} 条功能测试记录。Phenopacket 的 Measurement.assay 必须是本体项（通常是 LOINC），而本导出没有为这两类记录建立任何经核对的本体映射，因此没有可写的 assay，整块不写入。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。这些数据在 FHIR 导出中以带显示名的形式给出，但那份导出对条目数有上限、超出时会截断并在它自己的 omissions 里说明；不受截断影响的完整时间序列在不带 format 参数的数据导出里。`,
+  });
+  // EVERY FINDING THAT WOULD NEED AN HPO TERM, NOT THE TWO THIS GATE
+  // STARTED WITH.
+  //
+  // The gate asked `challenges` and `symptomScores` only, and the
+  // sentence named 「症状」. Three other blocks of findings are in the
+  // same position and were in neither: the ADL difficulty ratings
+  // (`dailyImpacts`, which the FHIR bundle emits as Observations), the
+  // baseline questionnaire's own body-state answers (抬臂困难 / 面部肌无力
+  // / 足下垂 / 呼吸相关症状), and 起病部位. A profile whose only findings
+  // are ADL ratings produced NO entry here at all, so the packet went
+  // out with an omissions list that declared nothing about them — and
+  // 面部肌无力 is a defining feature of this disease, so a receiver
+  // reading a packet with no phenotypicFeatures and no omission naming
+  // one reads 「no facial weakness」.
+  //
+  // AND IT IS UNCONDITIONAL NOW, because the sentence is about what this
+  // format can express rather than about how many rows a particular
+  // profile happens to have. Gated on the two counts, a profile whose
+  // only findings are baseline answers produced no entry at all, and
+  // 面部肌无力 is a defining feature of this disease: a receiver reading a
+  // packet with no `phenotypicFeatures` and no omission naming one reads
+  // 「no facial weakness」. The counts stay in the sentence, where 0 is
+  // itself an answer a receiver can act on.
+  omissions.push({
+    field: 'phenotypicFeatures',
+    reasonZh: `PhenotypicFeature.type 必须是 HPO 本体项，而本导出没有为症状项建立任何经核对的 HPO 映射，因此本文件不写 phenotypicFeatures，症状改由 TREAT-NMD 对齐导出与 FHIR 导出承载。本平台在这一类下持有的内容是：${profile.symptomScores.length} 条症状自评、${source.challenges.length} 项基线困难程度自评、${profile.dailyImpacts.length} 条日常活动困难程度记录，以及基线问卷记录的抬臂困难、面部肌无力、足下垂、呼吸相关症状与起病部位。其中基线问卷的困难程度自评、那几项身体状况与起病部位只在 TREAT-NMD 对齐导出里有对应条目（患者答了的才会出现）。请不要把它们在本文件里的缺席读成患者没有这些表现。本导出用了哪些编码、哪些因缺少可核对来源而留空，见 codingProvenance。`,
+  });
   omissions.push(
     instrumentOmission(
       'measurements（Brooke 上肢分级 / Vignos 下肢分级）',
@@ -269,19 +301,113 @@ export const buildPhenopacketExport = (
   // packet holds none of them: it is id / subject / diseases / files /
   // metaData, and there is no message on it a repeat count could go in
   // without a `VariationDescriptor` this file refuses to fabricate.
-  // The judgement half of the same sweep. This packet's only clinical
-  // assertion is `Disease.term`, so everything the passport's 诊断 block
-  // holds beyond that term is out of it — and the omissions list is
-  // this format's only place to say so.
-  omissions.push({
-    field: 'diseases（临床护照的基因证据分级、检测方法与诊断进度）',
-    reasonZh:
-      '本文件在诊断这件事上只写了一个本体项。临床护照上围绕它的其余内容都不在这里：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法，以及患者在基线问卷上自己勾选的「诊断进度」。是否基因确诊这一判定见上面 diseases[].term（诊断依据）那一条，它与 FHIR 导出的 Condition.verificationStatus.text 和 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh 是同一句话。',
-  });
+  //
+  // IT IS PUSHED HERE, IMMEDIATELY AFTER `interpretations`, AND THAT IS
+  // THE WHOLE POINT OF THE POSITION. That entry ends 「…见下一条」 and for
+  // one round the entry pushed next was the platform's JUDGEMENT of the
+  // report, which says nothing about where the readings are; the entry
+  // it means was two later. This comment block already sat above the
+  // wrong push, which is how the two got swapped in the first place —
+  // so the block and the push it describes now travel together, and
+  // 「下一条」 resolves to the entry that answers it.
   omissions.push({
     field: 'diseases / measurements（基因报告上的读数）',
     reasonZh:
       '本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项连同各自的来源说明，完整出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里——其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。',
+  });
+  // The judgement half of the same sweep. This packet's only clinical
+  // assertion is `Disease.term`, so everything the passport's 诊断 block
+  // holds beyond that term is out of it — and the omissions list is
+  // this format's only place to say so.
+  //
+  // WHERE IT SENDS THE READER FOR 是否基因确诊 DEPENDS ON WHETHER THERE
+  // IS A TERM. The 诊断依据 entry is pushed only inside the `diseaseEntry`
+  // branch, and this sentence pointed at it unconditionally — so for
+  // every profile with no classifiable 分型 the pointer named an entry
+  // that is not in this list, which is the false-sentence-in-an-
+  // omissions-list failure this file's own note is about. With no term
+  // there is no 「本文件断言的诊断」 to qualify either, so the sentence
+  // says where the answer lives instead of pointing inside.
+  omissions.push({
+    field: 'diseases（临床护照的基因证据分级、检测方法与诊断进度）',
+    reasonZh: `本文件在诊断这件事上${diseaseEntry ? '只写了一个本体项' : '什么都没有写'}。临床护照上围绕它的其余内容都不在这里：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法，以及患者在基线问卷上自己勾选的「诊断进度」。是否基因确诊这一判定${diseaseEntry ? '见上面 diseases[].term（诊断依据）那一条，它' : '在本文件里没有承载位置，它'}与 FHIR 导出的 Condition.verificationStatus.text 和 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh 是同一句话。`,
+  });
+
+  // ------------------------------------- the rest of what is held
+  //
+  // Everything below is a clinical fact `normaliseSource` or the DTO
+  // holds that this packet does not carry. None of them used to be
+  // declared, and an omissions list that declares the genetic cells and
+  // the instruments and then goes silent on the family history and the
+  // medication list reads as a complete one — which is the specific
+  // failure envelope.ts says this field exists to prevent.
+  omissions.push(
+    familyHistoryOmission(
+      'Family.pedigree（家族史）',
+      // v2 has no family-history field anywhere on the `Phenopacket`
+      // message. Its answer is a DIFFERENT top-level message — `Family`,
+      // carrying a `Pedigree` of structured `Person` entries with
+      // relationship and affected status per relative. What this
+      // platform holds is one Chinese sentence, so filling that message
+      // would mean inventing a relative-by-relative pedigree out of
+      // 「父亲和姑姑都有类似的抬手困难」, which is the same fabrication
+      // this file refuses for ontology ids.
+      'Phenopacket 消息本身没有家族史字段：v2 里承载它的是另一个顶层消息 Family 及其 Pedigree，需要逐个亲属的结构化谱系（亲缘关系、是否患病），而本平台持有的是一段中文自述，把它拆成谱系条目等于替患者的亲属编造结构化病史。',
+    ),
+  );
+  // TWO YEARS, AND NEITHER HAS A TRUTHFUL SLOT HERE.
+  //
+  // `Individual.dateOfBirth` is a protobuf Timestamp — an instant. This
+  // platform holds a birth YEAR (`year-value.ts` keeps 已知 / 记不清了 /
+  // 未采集 apart on purpose), and writing 1988-01-01T00:00:00Z would
+  // manufacture a day and a month nobody stated. The FHIR bundle has
+  // somewhere to put a year-only answer and uses it; this format does
+  // not, which is a fact worth telling a receiver rather than hiding.
+  //
+  // `Disease.onset` is the trap on the other side: it is the slot a
+  // reader reaches for when they see 确诊年份 missing, and it means
+  // 发病 — when the disease STARTED. 确诊年份 is when a clinician named
+  // it, routinely a decade later in this disease. Writing one into the
+  // other would not be a rounding error; it would move this patient's
+  // onset by ten years in every cohort built off the packet.
+  omissions.push({
+    field: 'subject.dateOfBirth / diseases[].onset（出生年份与确诊年份）',
+    reasonZh:
+      '本文件不写出生日期，也不写发病时间。本平台记录的是出生年份与确诊年份，而 Individual.dateOfBirth 是一个精确到时刻的时间戳——只知道年份却写成 1 月 1 日零点，等于凭空给出一个月份和一天。确诊年份也没有可写的位置：Disease.onset 说的是「发病」，不是「确诊」，FSHD 患者从起病到确诊常隔很多年，把确诊年份填进 onset 会让下游把这个人的发病时间整体挪早。出生年份只在 FHIR 导出里（Patient.birthDate 支持只写年份），TREAT-NMD 对齐导出也不承载它；确诊年份在 TREAT-NMD 对齐导出的 diagnosis.year（区分「记不清了」与「未采集」）与 FHIR 导出的 Condition.recordedDate 上。',
+  });
+  // MedicalAction is the v2 slot for all three of these, and all three
+  // would need an ontology-coded agent or procedure to fill it — the
+  // same wall `phenotypicFeatures` and `measurements` hit. Named
+  // individually rather than as 「treatment data」: a receiver deciding
+  // whether to ask the patient needs to know WHICH of these exists.
+  omissions.push({
+    field: 'medicalActions（用药、辅助器具与里程碑事件）',
+    // The three milestone kinds are named in a sentence of their own,
+    // and deliberately not folded into the counted one. One of them is
+    // 开始使用轮椅, so the sentence naming them enters the claim class
+    // reason-claims.ts defines and has to be approved by exact string
+    // in phenopacket.test.ts — which only works if the string does not
+    // move with the profile's row counts.
+    reasonZh: `本文件不写 medicalActions。本次导出持有 ${profile.medications.length} 条用药记录、${source.currentStatus.assistiveDevices.length} 件基线问卷记录的正在使用的辅助器具，以及 ${source.milestones.length} 条里程碑事件。里程碑事件指本平台记录的三类转折点：开始使用轮椅、开始无创通气、开始使用踝足矫形器。MedicalAction 要求把治疗写成本体项（药物、操作或治疗方案），本导出没有为其中任何一类建立经核对的本体映射，因此整块不写入，也不用自由文本硬凑。辅助器具与里程碑事件在 TREAT-NMD 对齐导出里有，里程碑事件在 FHIR 导出里也有对应的 Observation；用药记录三份可携带导出都不承载，需要请直接向患者索取。`,
+  });
+  // The follow-up events that are NOT milestones: a fall, a first foot
+  // drop, a first breathing discomfort. The FHIR bundle carries every
+  // one of them as an Observation and the TREAT-NMD document as its own
+  // section, so this packet is the only one of the three that drops
+  // them — and dropping them silently makes the exported course of the
+  // disease look like a straight line.
+  omissions.push({
+    field: 'phenotypicFeatures / medicalActions（随访事件）',
+    reasonZh: `本文件不承载随访事件。本次导出持有 ${source.followupEvents.length} 条非里程碑的随访事件（跌倒、新出现的足下垂、新出现的抬臂困难、新出现的呼吸不适等，各自带患者自评的严重程度）。它们要写进本格式，同样需要 HPO 本体项或本体化的 MedicalAction，本导出两者都没有。完整内容见 TREAT-NMD 对齐导出的 followupEvents 与 FHIR 导出的 Observation。本文件里没有这些事件，不表示这些事件没有发生过。`,
+  });
+  // The remainder, in one entry because they share one reason: this
+  // packet is deliberately id / subject / diseases / files / metaData,
+  // and none of these has a slot on any of those five messages. Listed
+  // by name anyway — 「we also hold some other things」 is not a
+  // declaration a receiver can act on.
+  omissions.push({
+    field: 'subject / measurements（身份信息、体格测量、地区与日常记录）',
+    reasonZh: `本文件只写 id、subject、diseases、files 与 metaData。本平台还持有下列内容，本次导出都不承载：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（第三人的姓名）、联系电话与邮箱、常住地区、本平台内部的患者编号、身高、体重、血型（Measurement 同样要求本体项，本导出没有可核对的映射）、档案备注，以及 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）。其中姓名、称呼与确诊医生姓名只出现在明确请求本地留存版本的 TREAT-NMD 对齐导出的 localOnly 节；联系方式、常住地区、患者编号、身高、体重、血型与日常记录三份可携带导出都不写，需要请直接向患者索取。subject.id 是本平台内部的标识，不是患者编号，也不含姓名。`,
   });
 
   const emittedCodingKeys = diseaseEntry && diseaseKey ? [diseaseKey] : [];

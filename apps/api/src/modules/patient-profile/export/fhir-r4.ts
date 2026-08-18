@@ -5,6 +5,7 @@ import {
   diagnosisTypeMarkerPath,
   diagnosisTypeSourceZh,
   diagnosisYearMarkerPath,
+  familyHistoryOmission,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
   instrumentOmission,
@@ -290,10 +291,18 @@ export const buildFhirExport = (
     // never contain a direct identifier cannot leak one because a
     // flag was wrong somewhere upstream.
   });
+  // NAMES ALL FOUR IDENTIFIERS, NOT THREE. `Patient.identifier` was
+  // missing from this list while the profile carries a platform patient
+  // code (`patientCode`), and `Condition.asserter` was missing while it
+  // carries the diagnosing physician's name — a third person. Both are
+  // withheld on the same reasoning as the other three, and a list that
+  // names three of five reads as the complete set of identifiers this
+  // bundle holds back.
   omissions.push({
-    field: 'Patient.name / Patient.telecom / Patient.address',
+    field:
+      'Patient.name / Patient.telecom / Patient.address / Patient.identifier / Condition.asserter',
     reasonZh:
-      '直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。姓名等只出现在 TREAT-NMD 对齐导出的 localOnly 节。',
+      '直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。这里说的是：患者姓名与希望被称呼的名字、确诊医生 / 主诊医生的姓名（那是第三人的姓名，本 Bundle 不写 Condition.asserter，也不建 Practitioner 资源）、联系电话与邮箱、常住地区，以及本平台内部的患者编号。前三项只出现在 TREAT-NMD 对齐导出的 localOnly 节，且只在明确请求本地留存版本时出现；联系方式、常住地区与患者编号三份可携带导出都不承载，需要请直接向患者索取。',
   });
 
   // ---------------------------------------------------------- Condition
@@ -990,6 +999,58 @@ export const buildFhirExport = (
     field: 'Condition（临床护照的基因证据分级、检测方法与诊断进度）',
     reasonZh:
       '本 Bundle 承载报告上的读数与「是否基因确诊」这一判定，不承载临床护照上围绕它的其余内容：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法（FHIR 的 Observation.method 是它的位置，本导出尚未填写），以及患者在基线问卷上自己勾选的「诊断进度」。判定本身在 Condition.verificationStatus 上，它的 text 与 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh、Phenopacket 导出中对应的 omission 是同一句话。verificationStatus 只有 confirmed / unconfirmed 两个取值，「实验室读到的单倍型不是允许型」与「什么都没读到」都落在 unconfirmed 上——这两种情况的区别写在同一元素的 text 里，请读它，不要只读编码。',
+  });
+
+  // ------------------------------- the rest of what this bundle holds
+  //
+  // Everything below is a clinical fact `normaliseSource` or the DTO
+  // holds, that R4 HAS a resource for, and that this bundle does not
+  // emit. None of them used to be declared. An omissions list that
+  // accounts for the LOINC codes, the observation cap and the walking
+  // state and then says nothing about the family history or the
+  // medication list is read as the complete account of what was left
+  // out — envelope.ts on why that is the one thing this field may not
+  // do.
+  omissions.push(
+    familyHistoryOmission(
+      'FamilyMemberHistory（家族史）',
+      // R4 DOES have the slot, which is exactly why the silence was
+      // worse here than in the Phenopacket: a receiver that knows the
+      // resource exists reads its absence as 「asked, and there is no
+      // family history」. That is the opposite of what this platform
+      // holds for a patient whose statement names an affected father.
+      'FHIR R4 有 FamilyMemberHistory 这个资源，本 Bundle 仍然不写它，所以这里要说清楚不写的原因不是格式装不下。另外，FamilyMemberHistory 要求逐个亲属给出 relationship 编码与 status，而本平台持有的是一段中文自述，硬拆成资源等于替患者的亲属编造结构化病史。',
+    ),
+  );
+  // MedicationStatement is the R4 resource for 「patient reports taking
+  // this」, and it is unfilled. Declared unconditionally rather than
+  // gated on the row count, because the sentence is about this
+  // exporter's mapping; the count is inside it, where 0 is itself an
+  // answer.
+  omissions.push({
+    field: 'MedicationStatement / MedicationRequest（用药记录）',
+    reasonZh: `本 Bundle 不承载用药记录。本次导出持有 ${profile.medications.length} 条用药记录（药名、剂量、频次、给药途径、起止日期、状态与备注），R4 的 MedicationStatement 是它的位置，本导出尚未接入。这些记录三份可携带导出都不承载，需要请直接向患者索取，或改用不带 format 参数的数据导出。本 Bundle 里没有用药记录，不表示患者没有在用药。`,
+  });
+  // The baseline questionnaire's own findings. The bundle carries the
+  // longitudinal self-ratings (symptomScores, dailyImpacts) and none of
+  // these — a different block, entered once at registration, and the
+  // one a clinician skims first. 面部肌无力 in particular: absent with
+  // nothing said, a receiver reads 「no facial weakness」 for the
+  // disease whose name starts with the face.
+  //
+  // 起病部位 is named here and nowhere else in these three documents,
+  // which is stated rather than left for the reader to discover.
+  omissions.push({
+    field: 'Observation / DeviceUseStatement（基线问卷记录的身体状况与困难程度自评）',
+    reasonZh: `本 Bundle 不承载基线问卷里的这几项：抬臂困难、面部肌无力、足下垂、呼吸相关症状（都是是 / 否），正在使用的辅助器具（R4 的 DeviceUseStatement 是它的位置，本导出尚未接入），起病部位，以及基线问卷的困难程度自评（本次导出持有 ${source.challenges.length} 项，与本 Bundle 里那些带日期的自评 Observation 不是同一批数据——那些是随访中反复记录的，这一批是建档时一次性填的）。以上各项在 TREAT-NMD 对齐导出里都有对应条目（患者答了的才会出现，没答的那一项就不出现）。它们在本 Bundle 里没有对应资源，不表示患者没有这些表现。`,
+  });
+  // The last of it: things with a perfectly good R4 home that this
+  // exporter has never read. Grouped because they share one reason and
+  // one instruction to the receiver, listed by name because 「some other
+  // things」 is not a declaration anybody can act on.
+  omissions.push({
+    field: 'Observation（身高 / 体重 / 血型）/ Composition.section（日常记录与档案备注）',
+    reasonZh: `本 Bundle 不承载身高、体重与血型：R4 有这三项的写法（体格测量为 Observation，血型为一条实验室 Observation），本导出尚未接入，也不会拿它们去算 BMI 之类的派生值。同样不承载的还有 ${profile.activityLogs.length} 条患者自己写的日常记录（含心情评分）与档案备注：那是自由文本，没有可核对的编码，把它塞进 Observation 的 valueString 会让接收系统把一段随笔当成一次测量的结果。这些内容三份可携带导出都不承载，需要请改用不带 format 参数的数据导出，或直接向患者索取。`,
   });
 
   // The three statements this bundle makes about external terminology
