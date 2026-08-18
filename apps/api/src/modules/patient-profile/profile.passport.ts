@@ -692,7 +692,78 @@ const getTimestamp = (value?: string | null) => {
  */
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-const formatDate = (value?: string | null) => {
+/**
+ * THE ONE CALENDAR THIS PRODUCT PRINTS DATES IN.
+ *
+ * A date on any of these documents means a Chinese clinic day: the day
+ * the patient walked into the hospital, the day the laboratory signed
+ * the report, the day this passport was generated for the appointment
+ * it is being carried to. That is a fact about the patient, so it may
+ * not be a fact about the machine that happened to render it.
+ *
+ * It used to be exactly that. `formatDate` resolved every instant with
+ * `getFullYear` / `getMonth` / `getDate` — the SERVER's zone — for the
+ * share page, the markdown export and the referral pack, while the
+ * mobile PDF handed to the SAME CLINICIAN resolved the same instants
+ * with the DEVICE's zone. apps/api/Dockerfile sets no TZ and
+ * node:20-bookworm-slim is UTC; the patients this ships to are UTC+8.
+ * So in production the server said 2026-03-06 and the handset said
+ * 03-07 for one report, and the four documents a clinician reads side
+ * by side disagreed by a day for anything uploaded between 16:00 and
+ * 24:00 UTC — measured, not reasoned: see the four-document comparison
+ * in profile.passport.dates.test.ts.
+ *
+ * WHY NOT JUST SET TZ IN THE DOCKERFILE. That makes the current
+ * deployment agree by accident. The next one — a second region, a
+ * maintainer's laptop, a CI box, a patient's handset set to another
+ * zone while travelling — disagrees again, and nothing in the code
+ * would say why. The Dockerfile does set TZ as belt and braces; every
+ * line below has to be correct without it.
+ *
+ * WHY A FIXED OFFSET AND NOT `Intl.DateTimeFormat({ timeZone })`.
+ * apps/mobile/lib/clinical-visuals.ts has to answer this question
+ * IDENTICALLY, and it runs on Hermes, where a full ICU tz database is
+ * not something to depend on. A fixed offset is the same arithmetic on
+ * both sides with no data behind it. It is also exact: China has run a
+ * single UTC+8 zone with no daylight saving since 1991, and every value
+ * that reaches the `Date` path below is an instant this platform
+ * stamped itself (`uploaded_at`, `created_at`, `recorded_at`, the
+ * generation clock). Anything older — a birth date, a diagnosis date —
+ * arrives as bare `YYYY-MM-DD` and never reaches the arithmetic.
+ */
+export const PRODUCT_TIME_ZONE = 'Asia/Shanghai';
+const PRODUCT_UTC_OFFSET_MINUTES = 8 * 60;
+
+/**
+ * The `YYYY-MM-DD` an instant falls on in `PRODUCT_TIME_ZONE`.
+ *
+ * Shift the instant by the offset, then read it back with the UTC
+ * accessors: those are the only accessors on `Date` that do not consult
+ * the ambient zone, so the answer is the same on every host.
+ */
+const productCalendarParts = (date: Date) => {
+  const shifted = new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+};
+
+export const toProductCalendarDay = (date: Date) => {
+  const { year, month, day } = productCalendarParts(date);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+/**
+ * Exported because the other two SERVER documents render dates of their
+ * own and must not answer this question a second, different way.
+ * referral-pack.ts said so in as many words while it still had a
+ * private copy: 「Fixing it properly means giving the whole module one
+ * timezone (the patient's, or an explicitly configured one) in a single
+ * place. That is a change to profile.passport.ts」. This is that place.
+ */
+export const formatProductDate = (value?: string | null) => {
   if (!value) return null;
   const trimmed = value.trim();
   if (DATE_ONLY.test(trimmed)) return trimmed;
@@ -700,11 +771,12 @@ const formatDate = (value?: string | null) => {
   if (Number.isNaN(date.getTime())) {
     return trimmed || null;
   }
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toProductCalendarDay(date);
 };
+
+/** Local shorthand for the exported formatter above — this file prints
+ *  dates in twenty-odd places and none of them is a different rule. */
+const formatDate = formatProductDate;
 
 const formatDateLabel = (value?: string | null) => {
   const formatted = formatDate(value);
@@ -1460,12 +1532,15 @@ const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) =>
  * the label of one generation. Five separate `Date.now()` reads inside
  * one summary was five clocks for one document.
  *
- * `date` is the string `formatDate` produced, so a caller that already
- * has a calendar date gets it back unchanged. The DAY COUNT below is
- * deliberately computed off that string's UTC midnight and an absolute
- * instant, both of which are timezone-free — so the bucket a report
- * falls in does not depend on where the process runs, even though the
- * date printed beside it does.
+ * `date` is the string `formatDate` produced — a day on
+ * `PRODUCT_TIME_ZONE`'s calendar — so a caller that already has a
+ * calendar date gets it back unchanged. The DAY COUNT below is computed
+ * off that string's UTC midnight and an absolute instant, both of which
+ * are timezone-free, so the bucket a report falls in does not depend on
+ * where the process runs. Neither does the date printed beside it any
+ * more: that used to be the ambient-zone reading of the instant, which
+ * made THIS COUNT ambient too, one zone-dependent number feeding a
+ * label a clinician reads as 最新 or 过期.
  */
 const getFreshness = (value: string | null | undefined, now: Date): PassportFreshnessDTO => {
   const date = formatDate(value);
@@ -3397,14 +3472,24 @@ const readDiagnosisLadder = (profile: PatientProfileDTO): DiagnosisLadderState |
  * profile across the patient's seventh birthday would otherwise have
  * disagreed about whether the step is on the list at all, which is a
  * louder disagreement than a date being off by a day.
+ *
+ * Both sides of the comparison are read on the PRODUCT calendar. They
+ * were read in UTC, which was already zone-independent and is the
+ * property that matters here — but a birthday is the same kind of fact
+ * as every date this file prints, and on a UTC reading it turned over
+ * at 08:00 Beijing rather than at midnight. `dateOfBirth` is a `date`
+ * column, so shifting its UTC midnight into the product zone lands on
+ * the digits it was stored with.
  */
 const ageInYears = (dateOfBirth: string | null, now: Date): number | null => {
   if (!dateOfBirth) return null;
   const born = new Date(dateOfBirth);
   if (Number.isNaN(born.getTime())) return null;
-  let age = now.getUTCFullYear() - born.getUTCFullYear();
-  const monthDelta = now.getUTCMonth() - born.getUTCMonth();
-  if (monthDelta < 0 || (monthDelta === 0 && now.getUTCDate() < born.getUTCDate())) age -= 1;
+  const today = productCalendarParts(now);
+  const birthday = productCalendarParts(born);
+  let age = today.year - birthday.year;
+  const monthDelta = today.month - birthday.month;
+  if (monthDelta < 0 || (monthDelta === 0 && today.day < birthday.day)) age -= 1;
   return age >= 0 && age < 130 ? age : null;
 };
 

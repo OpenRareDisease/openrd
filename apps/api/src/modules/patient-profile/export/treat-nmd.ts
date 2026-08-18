@@ -1,6 +1,7 @@
 import { buildCodingProvenance, type CodingProvenance } from './codings.js';
 import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
+  diagnosisTypeSourceZh,
   diagnosisYearProvenanceZh,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
@@ -8,6 +9,8 @@ import {
   geneticValueProvenanceZh,
   instrumentOmission,
   withOriginNote,
+  ECORI_FRAGMENT_NOT_JUDGED_ZH,
+  METHYLATION_NOT_JUDGED_ZH,
   NO_ADMIN_FIELD_ORIGIN_NOTE_ZH,
   type MilestoneEvent,
   type NormalisedSource,
@@ -112,6 +115,20 @@ export interface TreatNmdDocument {
   readonly codingProvenance: CodingProvenance;
 }
 
+/**
+ * WHERE THE EcoRI FRAGMENT SITS, which is: nowhere in the archive.
+ *
+ * Every other sentence in the 诊断 section opens by naming the store the
+ * value came out of and goes on to say whether this platform's reading
+ * of the evidence document agrees with it. That whole shape is wrong
+ * for this item — there is no baseline slot for it, no box on any
+ * patient form, and nothing for the read-time autofill to write — so it
+ * says so first, before a reader carries the assumption over from the
+ * four items above it.
+ */
+const ECORI_FRAGMENT_LOCATION_ZH =
+  '这一项不在本平台的档案里：患者的表单不为它提供输入框，本平台读取档案时的自动补填也没有可写的栏位，所以它没有档案值可比对。这个值直接读自本平台读作这份档案基因证据的那一份文件，与患者护照、分享页和转诊资料上印的是同一次读取。';
+
 const NOT_COLLECTED_SECTION = (key: string, titleZh: string, noteZh: string): TreatNmdSection => ({
   key,
   titleZh,
@@ -182,6 +199,35 @@ export const buildTreatNmdExport = (
               )
             : geneticValueProvenanceZh(source, 'diagnosisType'),
       },
+      // THE KEY IS WHAT A RECEIVER MAPS ON, so a subtype the evidence
+      // document states needs a key of its own.
+      //
+      // `diagnosis.type` above is the ARCHIVE's, and its provenance
+      // sentence does say when the evidence document reads otherwise —
+      // in prose, which a registry ingesting `diagnosis.type` never
+      // parses. Over a profile whose questionnaire says FSHD1 and whose
+      // genetics report reads FSHD2 (ordinary: the read-time autofill
+      // only fills an EMPTY slot, so an answer given before the report
+      // was uploaded stays forever), a registry indexing this document
+      // filed FSHD1 while the patient's own passport, share page,
+      // referral pack and anaesthesia card said FSHD2 — and so did the
+      // FHIR `Condition` and the Phenopacket `Disease.term`, which now
+      // follow the report. This item is where this document says the
+      // same thing in a field rather than in a paragraph.
+      //
+      // EMITTED ONLY WHEN THE DOCUMENT STATES ONE. `item` drops a null,
+      // and a null here would say 「we asked the report and it answered
+      // nothing」 — which is exactly right and exactly what the absence
+      // means, with `diagnosis.type`'s own provenance sentence saying
+      // so in words.
+      item(
+        'diagnosis.typeFromGeneticEvidence',
+        'FSHD 分型（读自基因证据文件）',
+        source.geneticEvidenceReading.values.diagnosisType === null
+          ? null
+          : source.passportDiagnosisType,
+        `${diagnosisTypeSourceZh(source)}${geneticEvidenceDocumentZh(source)}`,
+      ),
       {
         key: 'diagnosis.year',
         labelZh: '确诊年份',
@@ -240,15 +286,91 @@ export const buildTreatNmdExport = (
         geneticResultValue(source, 'haplotype'),
         geneticValueProvenanceZh(source, 'haplotype'),
       ),
+      // 甲基化 IS NOT A BARE STRING ANY MORE EITHER, and for the reason
+      // the two above are not: this is the FSHD2 discriminator, and a
+      // registry ingesting `diagnosis.methylation` files what it finds
+      // there as a graded result. It has no `SerialisedGeneticResult`
+      // because it has no READING — nothing here refuses it and nothing
+      // here reads it, which is exactly what `GENETIC_RESULT_ITEMS`
+      // records by having no entry for it — so what it gains is the
+      // refusal itself, in the provenance sentence, which is the slot
+      // this item has. Same sentence the FHIR Observation's `note`
+      // carries, so the two documents cannot describe one number
+      // differently in one run.
       item(
         'diagnosis.methylation',
         '甲基化',
         source.geneticEvidence.methylation,
-        geneticValueProvenanceZh(source, 'methylation'),
+        `${geneticValueProvenanceZh(source, 'methylation')}${METHYLATION_NOT_JUDGED_ZH}`,
+      ),
+      // THE ONE GENETIC READING WITH NO ARCHIVE LINE.
+      //
+      // 分型, D4Z4 重复数, 单倍型 and 甲基化 all have a baseline slot the
+      // read-time autofill tops up, so all four reach this section by
+      // way of the archive. The EcoRI fragment has none — no form on
+      // this platform draws a box for it and the autofill has no field
+      // to write — so it could not reach this section at all, and it
+      // was in neither of the other two portable exports either. For a
+      // report that states its length in kb and gives no repeat count,
+      // that fragment is the ONLY size measurement the laboratory made:
+      // it appears on the passport, the markdown export, the share page
+      // and the referral pack, each with a sentence saying it is
+      // displayed and not judged, and a registry receiving this
+      // document saw a 4qA haplotype with no D4Z4 size measurement of
+      // any kind.
+      //
+      // SO IT IS READ OFF THE EVIDENCE DOCUMENT AND SAID TO BE. The
+      // reading is `geneticEvidenceRecord.ecoRIFragment`, which is the
+      // passport's own record of the one document
+      // `pickGeneticEvidenceDocument` named — not a second parse — and
+      // its provenance sentence opens by saying the value is not in the
+      // archive at all, because every other sentence in this section
+      // describes an archived string and a reader would otherwise
+      // assume this one does too.
+      item(
+        'diagnosis.ecoRIFragment',
+        'EcoRI 片段',
+        source.geneticEvidenceRecord.ecoRIFragment,
+        `${ECORI_FRAGMENT_LOCATION_ZH}${geneticEvidenceDocumentZh(source)}${ECORI_FRAGMENT_NOT_JUDGED_ZH}`,
       ),
     ]),
     noteZh: null,
   };
+
+  /**
+   * WHAT THE PASSPORT'S 诊断 BLOCK HOLDS AND THIS SECTION DOES NOT.
+   *
+   * The four readings above are now the whole of what the evidence
+   * document STATES about this patient — that was the gap 甲基化 and the
+   * EcoRI fragment fell through. What is still on the passport and not
+   * here is of a different kind: this platform's own JUDGEMENT of that
+   * document, the patient's own answer about their diagnostic journey,
+   * and two values derived from things this section already carries.
+   * None of them is dropped silently any more, because an omissions
+   * list that declares some gaps and not others reads as a complete
+   * one.
+   *
+   * WHY THE GRADE IS DECLARED RATHER THAN CARRIED. 未检测 / 方法不适用 /
+   * 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组 is a verdict this
+   * platform reaches from one photographed report, written for a patient
+   * and their own clinician to act on with the original in front of
+   * them. `diagnosis.geneticallyConfirmed` and its provenance sentence
+   * are the part of it a registry may map — a boolean plus the reason,
+   * shared verbatim with the other two exports — and the rest is copy,
+   * not data. Emitting a six-state enum a receiver would filter cohorts
+   * on would be this document handing over a judgement it makes for a
+   * different reader.
+   */
+  omissions.push({
+    field: 'sections.diagnosis（临床护照的诊断判定与检查申请说明）',
+    reasonZh:
+      '本节承载的是这份档案上的基因读数本身，不承载本平台对它们的判定。临床护照另有一组内容不随本导出发送：一是基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）及其面向患者的说明文字；二是随分级生成的《检查申请说明》与它引用的指南出处；三是报告上写的检测方法。判定的可映射部分已经在 diagnosis.geneticallyConfirmed 上，连同它的 provenanceZh —— 那句话与 FHIR 导出的 Condition.verificationStatus.text 和 Phenopacket 导出的对应 omission 是同一句。此外，患者在基线问卷上自己勾选的「诊断进度」（临床诊断 / 已做基因检测等）也不在本导出中：它与 diagnosis.geneticallyConfirmed 回答的不是同一个问题（「你告诉我们什么」与「证据显示什么」），本平台在护照上两者并列不作调和，而本导出没有能同时承载两者又不被误读为一个的位置。',
+  });
+  omissions.push({
+    field: 'diagnosis（基因证据来自哪一份文件、有多旧）',
+    reasonZh:
+      '本导出不含上传文件清单，因此本节的基因读数没有可指向的文件条目：本节各项的 provenanceZh 说明了它们读自本平台认定为这份档案基因证据的那一份文件，但没有给出那份文件的标识或日期，本导出也不给出临床护照上按该日期算出的「新鲜度」。需要知道这些读数出自哪一份、什么时候上传的，请改用 FHIR 导出（DocumentReference.date 与 Observation.derivedFrom）或 Phenopacket 导出（files[].fileAttributes.uploadedAt）。另外，临床护照上的「证据摘要」是把分型、单倍型、EcoRI 片段与 D4Z4 重复数拼成的一行展示文本，本导出不拼它——各项分别在上面，拼接会把来源不同的几项塞进一个无法归因的字符串。',
+  });
 
   // ------------------------------------------------------- 家族史
   //

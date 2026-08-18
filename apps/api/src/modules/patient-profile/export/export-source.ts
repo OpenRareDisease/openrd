@@ -12,6 +12,7 @@ import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js
 import {
   buildClinicalPassportSummary,
   isDeterminateRepeatCount,
+  readSizeCell,
   type PassportDiagnosisConfirmation,
   type PassportGeneticRecordDTO,
 } from '../profile.passport.js';
@@ -168,9 +169,25 @@ export interface ReportField {
    * nothing on this platform refuses a CK string, so there is no
    * reading to report and inventing one here would be this module
    * answering a question nothing else asks — the reason 甲基化 has none
-   * either.
+   * either, although 甲基化 now travels.
    */
   readonly readsAsResult: boolean | null;
+  /**
+   * WHY THIS NUMBER CHANGED NOTHING — the sentence that must ride
+   * beside a cell this platform DISPLAYS AND DOES NOT JUDGE, or null
+   * for a cell it does judge.
+   *
+   * Two cells have one: the EcoRI fragment, which is a length in kb and
+   * which no boundary in this repository is written against, and 甲基化,
+   * which no gate here reads and no parser here refuses. Both of them
+   * used to reach a registry through no export at all — see
+   * `REPORT_FIELD_SPECS` — and the fix that carries the number without
+   * this sentence is worse than the omission it replaces: an
+   * unqualified 18 kb under 「EcoRI 片段」 is a size measurement a
+   * receiver will compare against a threshold this platform refused to
+   * derive.
+   */
+  readonly notJudgedZh: string | null;
   /**
    * WHAT THE GUIDELINE SAYS ABOUT THIS CELL'S RESULT — the same
    * qualifier `geneticResultValue` hands the TREAT-NMD document, taken
@@ -195,8 +212,49 @@ export interface ReportField {
 export interface NormalisedSource {
   readonly profile: PatientProfileDTO;
   readonly options: ExportOptions;
+  /**
+   * THE ARCHIVE'S 分型, CLASSIFIED — `diseaseBackground.diagnosisType`,
+   * else `patient_profiles.genetic_mutation`.
+   *
+   * This is the value the TREAT-NMD item `diagnosis.type` is about: its
+   * provenance sentence names the store the string sits in and states
+   * whether this platform's reading of the evidence document agrees
+   * with it. IT IS NOT THE SUBTYPE THIS PATIENT'S CLINICAL SURFACES
+   * PRINT — see `passportDiagnosisType`, and see
+   * `diagnosisTypeSourceZh` for what happens when the two differ.
+   */
   readonly diagnosisType: FshdDiagnosisType;
   readonly diagnosisTypeRawZh: string | null;
+  /**
+   * THE 分型 EVERY PATIENT- AND CLINICIAN-FACING SURFACE PRINTS,
+   * CLASSIFIED: the evidence document's own 分型 cell when it states
+   * one, and the archived string otherwise.
+   *
+   * NOT A SECOND PRECEDENCE RULE. `buildClinicalPassportSummary`
+   * resolves 分型 as 「the document `pickGeneticEvidenceDocument` named,
+   * then the baseline slot, then `patient_profiles.genetic_mutation`」
+   * and prints the answer on the passport, the markdown export, the
+   * share page, the referral pack and the anaesthesia card. The cell
+   * read here is `geneticEvidenceRecord.geneticType`, which is that
+   * same build's record — so the head of the chain cannot come apart
+   * from the passport's, and the tail is `diagnosisTypeRawZh`, which is
+   * the rest of it.
+   *
+   * THE DEFECT THIS CLOSES. `applyGeneticReportAutofill` fills an EMPTY
+   * archive slot and never corrects a full one, so a patient who
+   * answered the questionnaire before uploading the corrected report
+   * keeps their old answer forever — an ordinary state, not an edge
+   * case. Over exactly that profile (问卷 FSHD1, 基因报告 FSHD2) the five
+   * surfaces above all printed FSHD2 while the FHIR `Condition.code`
+   * and the Phenopacket `Disease.term` asserted FSHD1, each with a
+   * verified OMIM number beside it and neither document saying the
+   * report read otherwise. FSHD1 is a contracted D4Z4 array on a
+   * permissive 4qA allele and FSHD2 is a different mechanism entirely;
+   * the ontology term is the field a registry indexes on, so that was
+   * the one copy of the answer that could not be checked downstream.
+   */
+  readonly passportDiagnosisType: FshdDiagnosisType;
+  readonly passportDiagnosisTypeRawZh: string | null;
   /**
    * WHICH STORE THE PRINTED 分型 CAME OUT OF.
    *
@@ -850,6 +908,46 @@ export const geneticConfirmationReasonZh = (source: NormalisedSource): string =>
  * read at all is not the same as read off a transcription, and neither
  * is the same as read off the laboratory's own report.
  */
+/**
+ * WHERE THE 分型 ON THIS DOCUMENT CAME FROM, and — when the archive
+ * holds a different one — that it does.
+ *
+ * The two formats that assert a subtype as an ONTOLOGY TERM have to say
+ * this, and they have to say it in one wording: a receiver holding the
+ * FHIR bundle beside the Phenopacket reads one account of which string
+ * this platform classified, not two. FHIR sets it on `Condition.note`,
+ * which is the one conformant slot on that resource for a sentence a
+ * human has to read; Phenopacket has no note slot on `Disease` at all
+ * and carries it in the omission that already stands in for one.
+ *
+ * IT NAMES THE DISAGREEMENT RATHER THAN RESOLVING IT SILENTLY. The
+ * ontology term now follows the report, because that is what every
+ * clinical surface prints and what the laboratory actually measured —
+ * but the archived string is still the value the TREAT-NMD item
+ * carries, and a registry that ingests both is entitled to know it is
+ * looking at two answers and why the older one is still there.
+ *
+ * SAYS 那一份 AND NOT 报告, for the same reason every read-scope clause
+ * in this file does: `pickGeneticEvidenceDocument` takes a 病历摘要
+ * quoting the results when that is the only copy, and a sentence
+ * calling it a report puts a laboratory behind a transcription.
+ * `geneticEvidenceDocumentZh` is where which-kind-of-document is
+ * stated, and both callers already print it beside this one.
+ */
+export const diagnosisTypeSourceZh = (source: NormalisedSource): string => {
+  const reading = source.geneticEvidenceReading.values.diagnosisType;
+  const archived = source.diagnosisTypeRawZh;
+  if (reading === null) {
+    return archived === null
+      ? '本文件没有写入 FSHD 分型：档案里没有记录，本平台读作这份档案基因证据的那一份上也没有这一项。'
+      : `本文件的 FSHD 分型由档案里记录的「${archived}」归一而来；本平台读作这份档案基因证据的那一份上没有这一项。`;
+  }
+  const head = `本文件的 FSHD 分型由本平台读作这份档案基因证据的那一份上写着的「${reading}」归一而来 —— 患者护照、markdown 导出、分享页、转诊资料与麻醉提示卡印的都是这一项，本文件与它们取自同一处。`;
+  if (archived === null) return `${head}档案里没有另外记录的分型。`;
+  if (archived === reading) return `${head}档案里记录的分型与它逐字相同。`;
+  return `${head}档案里另外记录着「${archived}」，与那一份上写的不一致。本平台在读取档案时只会用那一份的解析结果补上档案里空着的栏位，不会改写已经填着的栏位，所以一份先填问卷、后上传报告的档案会一直留着旧答案 —— 这不是错误状态，本文件也不据此判断哪一个对。档案里那个值原样出现在 TREAT-NMD 对齐导出的 diagnosis.type 上，连同它自己的来源说明。`;
+};
+
 export const geneticEvidenceDocumentZh = (source: NormalisedSource): string => {
   const { documentId, laboratory } = source.geneticEvidenceReading;
   if (documentId === null) {
@@ -1154,6 +1252,46 @@ const GENETIC_RESULT_ITEMS: Record<
   },
 };
 
+/**
+ * EVERYTHING THIS PLATFORM HAS TO SAY ABOUT ONE GENETIC CELL ON THE
+ * EVIDENCE DOCUMENT, for the reader that is building a resource out of
+ * it rather than an item out of the archive.
+ *
+ * `GENETIC_RESULT_ITEMS` above is keyed by the two items that have an
+ * ARCHIVE line to compare a reading against. This is keyed by the CELL,
+ * and there are four of them: the two above plus the EcoRI fragment and
+ * 甲基化, neither of which has a baseline slot the autofill could ever
+ * fill — the questionnaire draws no box for either, so neither can
+ * reach the archive at all, so neither can reach the TREAT-NMD item
+ * table that reads the archive. That is why they were missing
+ * everywhere and not only from one document.
+ */
+interface GeneticCellSpec {
+  /** The passport's own answer to 「may a receiver map this cell as this
+   *  item's result」, or null where nothing here reads the cell at all.
+   *  See `ReportField.readsAsResult`. */
+  readonly readsAsResult: (record: PassportGeneticRecordDTO) => boolean | null;
+  readonly qualifier: (
+    record: PassportGeneticRecordDTO,
+    greyZoneNoteZh: string | null,
+  ) => SerialisedGeneticQualifier | null;
+  /** See `ReportField.notJudgedZh`. Null for a cell this platform does
+   *  judge — both of the `GENETIC_RESULT_ITEMS` cells are judged, and a
+   *  refusal printed beside a graded number would be false. */
+  readonly notJudgedZh: string | null;
+}
+
+/** The cell spec for an item `GENETIC_RESULT_ITEMS` answers for.
+ *  Delegates rather than restating, so `ReportField.readsAsResult` and
+ *  the TREAT-NMD item's `reading` stay one answer — see the note on
+ *  `isAResult` about its two callers. */
+const geneticResultCell = (item: 'd4z4' | 'haplotype'): GeneticCellSpec => ({
+  readsAsResult: (record) => GENETIC_RESULT_ITEMS[item].isAResult(record),
+  qualifier: (record, greyZoneNoteZh) =>
+    GENETIC_RESULT_ITEMS[item].qualifier(record, greyZoneNoteZh),
+  notJudgedZh: null,
+});
+
 /** The value for one such item, or null when the archive holds nothing
  *  — which is the drop, not a `reading` of its own: there is no line to
  *  report a reading of. */
@@ -1178,6 +1316,55 @@ export const geneticResultValue = (
     qualifier: reading === 'result' ? spec.qualifier(record, source.geneticGreyZoneNoteZh) : null,
   };
 };
+
+/**
+ * WHY A LENGTH IN kb ON THIS DOCUMENT CHANGED NOTHING.
+ *
+ * The passport writes this refusal for the reader of a page (see
+ * `KB_LENGTH_NOT_JUDGED_ZH` in profile.passport.ts, whose sentence
+ * names the lengths and reaches the four human-facing surfaces through
+ * `geneticEvidence.readingsNotJudged`). This is the same refusal in the
+ * export register, and it is written here rather than taken off that
+ * DTO field for a reason that is checkable by running the builder: the
+ * passport composes that sentence only when the grade WITHHELD
+ * something, so a report that earns 可用于入组 while also stating an
+ * EcoRI fragment prints the kb number on every surface with
+ * `readingsNotJudged` null. An Observation is not a paragraph on a
+ * graded page — it carries one cell and travels alone — so the cell's
+ * caveat has to be as unconditional as the cell.
+ *
+ * IT STATES NO BOUNDARY, and states that there is none. The two kb
+ * statements this repository carries — 「单个 D4Z4 单元长 3.3 kb」 and the
+ * guideline's 「10–20 kb or 1–4 repeats」 — do not agree as a conversion,
+ * so there is no kb threshold to derive and none is derived here. It
+ * also says what the number is NOT, because the failure mode is a
+ * receiver filing a fragment size under a repeat count: the two are
+ * different measurements and only one of them has a guideline written
+ * against it.
+ */
+export const ECORI_FRAGMENT_NOT_JUDGED_ZH =
+  '这是报告上以 kb 写的片段长度，本文件照原样给出，但本平台没有对它作任何判断：指南给出的界限是按 D4Z4 重复单元数写的，本仓库内没有可核对的 kb 界限，本平台也不在 kb 和重复单元数之间做换算。它不参与本平台对这份报告的任何判定，接收方也不要把它当作 D4Z4 重复单元数导入 —— 那是另一项测量。';
+
+/**
+ * …and the same refusal for 甲基化, which is refused for a different
+ * reason and therefore gets its own sentence rather than a shared one.
+ *
+ * THE ECORI CELL HAS NO BOUNDARY THIS PLATFORM COULD DERIVE. 甲基化 HAS
+ * NO READING AT ALL: no gate on this platform consumes it, no parser
+ * here refuses it, and `GENETIC_RESULT_ITEMS` deliberately has no entry
+ * for it — so 「本平台读不出结果」 would be false and 「结果正常/异常」
+ * would be this document grading a value nothing else here grades. What
+ * is true is that the archived string is the whole of what is known.
+ *
+ * THE GUIDELINE CLAUSE IS QUOTED AND NOT APPLIED. It is the reason this
+ * reading is worth carrying at all — it is the FSHD2 discriminator, and
+ * the profile where it matters most is a repeat count above 10, which
+ * is the profile whose own passport tells the patient to go and have
+ * this analysis done. Quoting the instruction is not grading the value,
+ * and the sentence says who does.
+ */
+export const METHYLATION_NOT_JUDGED_ZH =
+  '这是报告上的 D4Z4 甲基化读数，本文件照原样给出。本平台对甲基化没有任何判读界限：没有门槛读它，也没有解析器判断它是不是一项结果，所以本平台既不说它正常也不说它异常，它不参与这份档案的任何判定。指南写明：重复单元数大于 10 而临床仍高度怀疑时，需加做 D4Z4 甲基化分析与 SMCHD1 测序以评估 FSHD2 —— 这一条要由医生看着报告原件说，本平台只负责把这个数字原样带到这里。';
 
 /**
  * 确诊年份, WHICH IS THE SAME QUESTION IN A DIFFERENT SHAPE.
@@ -1378,12 +1565,37 @@ const CHALLENGE_LABELS: Record<string, string> = {
  * the anesthesia card and the registry export disagree about the same
  * report. Every alias below is copied, and nothing has been invented.
  *
- * `geneticItem` marks the entries that may be read ONLY off the
- * document `pickGeneticEvidenceDocument` names, and names which item
- * of `GENETIC_RESULT_ITEMS` answers for that cell. ONE member and not
- * two: the document rule and the reading are about the same cell, and
- * two flags that have to move together are two flags that can stop
- * moving together. See `collectReportFields`.
+ * `geneticCell` marks the entries that may be read ONLY off the
+ * document `pickGeneticEvidenceDocument` names, and carries everything
+ * this platform has to say about that cell. ONE member and not four:
+ * the document rule, the reading, the guideline's qualifier and the
+ * refusal to judge are all about the same cell, and flags that have to
+ * move together are flags that can stop moving together. See
+ * `collectReportFields`.
+ *
+ * WHAT WAS MISSING FROM THIS TABLE, AND WHAT IT COST. It had entries
+ * for CK, myoglobin, LDH, CK-MB, FVC, TLC, DLCO, LVEF, QTc, the
+ * serratus fat grade, D4Z4 重复数 and 单倍型 — and no entry for 甲基化 or
+ * for the EcoRI fragment. Both readings are available, both are printed
+ * on every human-facing surface, and the FHIR bundle builds its
+ * Observations from this table, so both were dropped from it silently:
+ * its omissions list declares other pipeline gaps and said nothing
+ * about either.
+ *
+ *   甲基化 is the FSHD2 discriminator. The profile where it matters most
+ *     is the one where it was dropped — a repeat count above 10, whose
+ *     own passport grade tells the patient to go and add D4Z4 甲基化分析
+ *     and SMCHD1 测序. TREAT-NMD emits the reading; the bundle did not.
+ *   EcoRI 片段 is, for a report that states its length in kb and gives no
+ *     repeat count, the ONLY size measurement the laboratory made. A
+ *     registry receiving that bundle saw a patient with a 4qA haplotype
+ *     and no D4Z4 size measurement of any kind — a different patient
+ *     from the one the passport describes.
+ *
+ * NEITHER TRAVELS BARE. `notJudgedZh` is why: an export that emits a kb
+ * length or a 甲基化 percentage with no caveat is worse than one that
+ * omits it, because the number then looks like a result something here
+ * weighed.
  */
 const REPORT_FIELD_SPECS: ReadonlyArray<{
   keys: readonly string[];
@@ -1391,7 +1603,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
   labelZh: string;
   category: ReportField['category'];
   codingKey: string | null;
-  geneticItem?: 'd4z4' | 'haplotype';
+  geneticCell?: GeneticCellSpec;
 }> = [
   {
     key: 'creatineKinase',
@@ -1469,7 +1681,7 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     labelZh: 'D4Z4 重复单元数',
     category: 'laboratory',
     codingKey: null,
-    geneticItem: 'd4z4',
+    geneticCell: geneticResultCell('d4z4'),
   },
   {
     key: 'haplotype',
@@ -1477,7 +1689,55 @@ const REPORT_FIELD_SPECS: ReadonlyArray<{
     labelZh: '4q 单倍型',
     category: 'laboratory',
     codingKey: null,
-    geneticItem: 'haplotype',
+    geneticCell: geneticResultCell('haplotype'),
+  },
+  {
+    key: 'ecoRIFragment',
+    keys: GENETIC_FIELD_KEYS.ecoRIFragment,
+    labelZh: 'EcoRI 片段',
+    category: 'laboratory',
+    codingKey: null,
+    geneticCell: {
+      // `readSizeCell` and not a presence test, and not a regular
+      // expression of this module's own. The passport exports it for
+      // exactly this caller — one holding a size cell as text — because
+      // a negation carries a number: 「未检出10kb以下片段」 has a 10 in it,
+      // and a bare 「the cell is non-empty」 would publish that string as
+      // this patient's fragment size under a key a registry maps as one.
+      // The value is withheld and the raw string still travels, in
+      // `dataAbsentReason.text`, which is the same arrangement the two
+      // items above already use.
+      //
+      // AND 「states a length」 IS THE WHOLE OF WHAT THIS ANSWERS. It does
+      // not say the length means anything — see `notJudgedZh`, which
+      // rides the same cell and says it does not.
+      readsAsResult: (record) => readSizeCell(record.ecoRIFragment)?.value != null,
+      // The 8–10 zone is a classification of a repeat COUNT on a 4qA
+      // array. There is no guideline qualifier written against a kb
+      // fragment in this repository, and this is not the place to
+      // invent one.
+      qualifier: () => null,
+      notJudgedZh: ECORI_FRAGMENT_NOT_JUDGED_ZH,
+    },
+  },
+  {
+    key: 'methylation',
+    keys: GENETIC_FIELD_KEYS.methylationValue,
+    labelZh: '甲基化',
+    category: 'laboratory',
+    codingKey: null,
+    geneticCell: {
+      // NULL, WHICH IS 「NOTHING HERE READS THIS CELL」 AND NOT 「NOT YET
+      // DECIDED」. `GENETIC_RESULT_ITEMS` deliberately has no 甲基化
+      // entry: no gate on this platform consumes the value and no
+      // parser here refuses it, so `false` would assert a refusal that
+      // never happened and `true` would assert a reading. The value
+      // still travels — `readsAsResult === false` is the only state
+      // that withholds it — and `notJudgedZh` says what it is.
+      readsAsResult: () => null,
+      qualifier: () => null,
+      notJudgedZh: METHYLATION_NOT_JUDGED_ZH,
+    },
   },
 ];
 
@@ -1556,7 +1816,8 @@ const collectReportFields = (
     if (!fields) return;
     const reportTime = pickReading(fields, ['reportTime', 'report_time']);
     REPORT_FIELD_SPECS.forEach((spec) => {
-      if (spec.geneticItem !== undefined && document.id !== geneticEvidenceReading.documentId) {
+      const cell = spec.geneticCell;
+      if (cell !== undefined && document.id !== geneticEvidenceReading.documentId) {
         return;
       }
       const value = pickReading(fields, spec.keys);
@@ -1572,30 +1833,26 @@ const collectReportFields = (
         // Only a genetic reading can be a transcription in this sense:
         // the other specs are measurements the document's own
         // laboratory made. See ReportField.transcribedGeneticReading.
-        transcribedGeneticReading:
-          spec.geneticItem !== undefined && !geneticEvidenceReading.laboratory,
+        transcribedGeneticReading: cell !== undefined && !geneticEvidenceReading.laboratory,
         // Asked of the record the passport itself printed and graded,
         // and asked of the same cell: this field was read off the
         // document `pickGeneticEvidenceDocument` named, with the same
         // key list and the same reader that built the record. A second
         // parse here is how the bundle would come to publish a result
         // the passport does not.
-        readsAsResult:
-          spec.geneticItem === undefined
-            ? null
-            : GENETIC_RESULT_ITEMS[spec.geneticItem].isAResult(geneticEvidenceRecord),
+        readsAsResult: cell?.readsAsResult(geneticEvidenceRecord) ?? null,
         // Gated on the reading above for the reason
         // `SerialisedGeneticResult.qualifier` is: the guideline's
         // verdict belongs to a result, and this resource declines to
         // publish a value at all when there is not one.
         geneticQualifier:
-          spec.geneticItem === undefined ||
-          !GENETIC_RESULT_ITEMS[spec.geneticItem].isAResult(geneticEvidenceRecord)
-            ? null
-            : GENETIC_RESULT_ITEMS[spec.geneticItem].qualifier(
-                geneticEvidenceRecord,
-                geneticGreyZoneNoteZh,
-              ),
+          cell?.readsAsResult(geneticEvidenceRecord) === true
+            ? cell.qualifier(geneticEvidenceRecord, geneticGreyZoneNoteZh)
+            : null,
+        // Rides the cell rather than being decided per serialiser: the
+        // three documents must not disagree about whether this number
+        // was weighed, and two of them have no other place to say so.
+        notJudgedZh: cell?.notJudgedZh ?? null,
         // The report's own stated time when OCR read one, else the
         // upload time — with the substitution recorded, not silent.
         // Every consumer of `observedAt` has to decide what to do
@@ -1668,6 +1925,17 @@ export const normaliseSource = (
     options,
     diagnosisType: classifyDiagnosisType(diagnosisTypeRaw),
     diagnosisTypeRawZh: diagnosisTypeRaw,
+    // THE PASSPORT'S CHAIN, NOT A SECOND ONE. `buildReportInsights`
+    // resolves 分型 as `geneticRecord.geneticType || 基线 || 主记录列`,
+    // and the tail of that chain is `diagnosisTypeRaw` two lines up.
+    // The head is read off the record this same build produced, so the
+    // ontology terms the two machine-readable exports assert and the
+    // string the five clinical surfaces print cannot come apart.
+    passportDiagnosisType: classifyDiagnosisType(
+      passportDiagnosis.geneticEvidence.record.geneticType ?? diagnosisTypeRaw,
+    ),
+    passportDiagnosisTypeRawZh:
+      passportDiagnosis.geneticEvidence.record.geneticType ?? diagnosisTypeRaw,
     diagnosisTypeStore: diagnosisTypeFromBaseline
       ? 'baseline'
       : diagnosisTypeFromColumn

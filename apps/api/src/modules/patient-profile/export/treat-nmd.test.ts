@@ -4,6 +4,7 @@ import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/pro
 import { locatorsIn } from './__fixtures__/reason-claims.js';
 import { classifyDiagnosisType, normaliseSource } from './export-source.js';
 import { applyAdminBaselineWrite, BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
+import { applyGeneticReportAutofill } from '../profile.autofill.js';
 import { buildClinicalPassportSummary } from '../profile.passport.js';
 import { buildTreatNmdExport, type TreatNmdSection } from './treat-nmd.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -1358,5 +1359,155 @@ describe('基因结果项：把读数和「本平台读不读得出结果」一�
       reading: 'not_read',
       qualifier: null,
     });
+  });
+});
+
+/**
+ * THE READINGS THIS SECTION USED TO HAVE NO ITEM FOR.
+ *
+ * 分型, D4Z4 重复数, 单倍型 and 甲基化 all reach this section by way of
+ * the archive, because each has a baseline slot the read-time autofill
+ * tops up. The EcoRI fragment has none — no form on this platform draws
+ * a box for it and the autofill has no field to write — so it could not
+ * reach this section at all, and it was in neither of the other two
+ * portable exports either. For a report that states its length in kb
+ * and gives no repeat count that fragment is the ONLY size measurement
+ * the laboratory made, and it appears on the passport, the markdown
+ * export, the share page and the referral pack, each with a sentence
+ * saying it is displayed and not judged.
+ *
+ * 甲基化 DID travel here, as a bare string — the FSHD2 discriminator,
+ * filed under a key a registry maps as a graded result, with nothing
+ * beside it saying that nothing on this platform grades it.
+ */
+describe('TREAT-NMD —— EcoRI 片段进来了，甲基化带上了「没有判读界限」', () => {
+  const geneticReport = (cells: Record<string, string>) => ({
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', ...cells } },
+  });
+
+  /* The archive's genetic slots start EMPTY and the read-time autofill
+   * fills them off the report, which is what `getProfileByUserId` does
+   * before any exporter sees the profile. Without that the shared
+   * fixture's own hand-typed 「5 个重复单元」 would answer instead of the
+   * cells under test, and this section reads the archive. */
+  const reported = (cells: Record<string, string>) => {
+    const base: PatientProfileDTO = {
+      ...EXPORT_FIXTURE_PROFILE,
+      baseline: {
+        ...(EXPORT_FIXTURE_PROFILE.baseline as Record<string, unknown>),
+        diseaseBackground: {
+          ...((EXPORT_FIXTURE_PROFILE.baseline as Record<string, Record<string, unknown>>)
+            .diseaseBackground ?? {}),
+          diagnosisType: null,
+          d4z4: null,
+          haplotype: null,
+          methylation: null,
+        },
+      },
+      geneticMutation: null,
+      documents: [geneticReport(cells), ...EXPORT_FIXTURE_PROFILE.documents.slice(1)],
+    };
+    const filled = { ...base, ...applyGeneticReportAutofill(base, base.documents) };
+    return sectionOf(build(filled as PatientProfileDTO), 'diagnosis');
+  };
+
+  it('只有 kb 长度的报告，本节仍然带着实验室做过的那一次测量', () => {
+    const diagnosis = reported({ ecoRIFragment: '18 kb', haplotype: '4qA' });
+    expect(itemOf(diagnosis, 'diagnosis.ecoRIFragment')?.value).toBe('18 kb');
+    expect(itemOf(diagnosis, 'diagnosis.d4z4')).toBeUndefined();
+  });
+
+  /* Every other sentence in this section describes an archived string,
+   * so this one opens by saying there is no archived string to compare
+   * against — otherwise a reader carries the assumption over. */
+  it('说清楚这一项不在档案里，也说清楚本平台没有判断过它', () => {
+    const provenance =
+      itemOf(reported({ ecoRIFragment: '18 kb', haplotype: '4qA' }), 'diagnosis.ecoRIFragment')
+        ?.provenanceZh ?? '';
+    expect(provenance).toContain('这一项不在本平台的档案里');
+    expect(provenance).toContain('不在 kb 和重复单元数之间做换算');
+  });
+
+  it('报告没有片段那一格时，不发这个 item', () => {
+    expect(
+      itemOf(reported({ d4z4Repeats: '5', haplotype: '4qA' }), 'diagnosis.ecoRIFragment'),
+    ).toBeUndefined();
+  });
+
+  it('甲基化的来源说明里带着「本平台没有判读界限」，指南那一条交给医生', () => {
+    const provenance =
+      itemOf(
+        reported({ d4z4Repeats: '30', haplotype: '4qA', methylationValue: '32%' }),
+        'diagnosis.methylation',
+      )?.provenanceZh ?? '';
+    expect(provenance).toContain('没有任何判读界限');
+    expect(provenance).toContain('SMCHD1');
+    expect(provenance).toContain('由医生看着报告原件说');
+  });
+});
+
+/**
+ * `diagnosis.type` IS THE ARCHIVE'S, AND THE KEY IS WHAT A RECEIVER
+ * MAPS ON.
+ *
+ * Its provenance sentence has always said when the evidence document
+ * reads otherwise — in prose, which a registry ingesting the key never
+ * parses. So over a profile whose questionnaire says FSHD1 and whose
+ * genetics report reads FSHD2 (ordinary: the read-time autofill only
+ * fills an EMPTY slot) this document filed FSHD1 while the patient's
+ * passport, share page, referral pack and anaesthesia card said FSHD2,
+ * and so did the FHIR `Condition` and the Phenopacket `Disease.term`.
+ */
+describe('TREAT-NMD —— 报告上的分型有自己的 key', () => {
+  const reportSaysFshd2 = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', diagnosisType: 'FSHD2' } },
+  };
+
+  const mismatched = () => {
+    const base: PatientProfileDTO = {
+      ...EXPORT_FIXTURE_PROFILE,
+      documents: [reportSaysFshd2, ...EXPORT_FIXTURE_PROFILE.documents.slice(1)],
+    };
+    return { ...base, ...applyGeneticReportAutofill(base, base.documents) } as PatientProfileDTO;
+  };
+
+  it('档案值和报告值各自有 key，两个都在', () => {
+    const diagnosis = sectionOf(build(mismatched()), 'diagnosis');
+    expect(itemOf(diagnosis, 'diagnosis.type')?.value).toBe('FSHD1');
+    expect(itemOf(diagnosis, 'diagnosis.typeFromGeneticEvidence')?.value).toBe('FSHD2');
+  });
+
+  /** An absent item says the report was asked and answered nothing —
+   *  which is what `diagnosis.type`'s own provenance sentence already
+   *  says in words. A null value would say something else. */
+  it('报告上没有分型那一项时，这个 item 不出现', () => {
+    const diagnosis = sectionOf(build(), 'diagnosis');
+    expect(itemOf(diagnosis, 'diagnosis.typeFromGeneticEvidence')).toBeUndefined();
+  });
+});
+
+/**
+ * The sweep's other half: what the clinical passport's 诊断 block holds
+ * that this section does not carry is DECLARED rather than dropped. An
+ * omissions list that declares some gaps and not others reads as a
+ * complete one.
+ */
+describe('TREAT-NMD —— 护照上有、本导出没有的，写进 omissions', () => {
+  it('分级、检查申请说明、检测方法与诊断进度，都在 omissions 里点名', () => {
+    const reason =
+      build().omissions.find((entry) => entry.field.includes('sections.diagnosis'))?.reasonZh ?? '';
+    expect(reason).toContain('分级');
+    expect(reason).toContain('检查申请说明');
+    expect(reason).toContain('检测方法');
+    expect(reason).toContain('诊断进度');
+  });
+
+  it('本导出不含文件清单，所以说明基因读数出自哪一份、有多旧要去别处看', () => {
+    const reason =
+      build().omissions.find((entry) => entry.field.includes('有多旧'))?.reasonZh ?? '';
+    expect(reason).toContain('DocumentReference.date');
+    expect(reason).toContain('files[].fileAttributes.uploadedAt');
   });
 });

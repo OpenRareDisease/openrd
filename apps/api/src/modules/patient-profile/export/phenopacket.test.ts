@@ -4,6 +4,7 @@ import { EXPORT_FIXTURE_PROFILE, FIXTURE_GENERATED_AT } from './__fixtures__/pro
 import { ambulationSentences, locatorsIn } from './__fixtures__/reason-claims.js';
 import { normaliseSource } from './export-source.js';
 import { BASELINE_PROVENANCE_KEY } from '../baseline-provenance.js';
+import { applyGeneticReportAutofill } from '../profile.autofill.js';
 import { AMBULATION_LABELS } from './labels.js';
 import { buildPhenopacketExport, toPhenopacketSex } from './phenopacket.js';
 import type { PatientProfileDTO } from '../profile.service.js';
@@ -93,9 +94,16 @@ describe('Phenopacket v2 — 一个 Disease.term 不表示基因确诊', () => {
     },
   };
 
+  /* The exact field, not a `startsWith('diseases[]')` prefix. A second
+   * omission on the same prefix — `diseases[].term（分型取自何处）`, which
+   * says which string this packet's ontology term was classified from —
+   * now sits ahead of this one, and a prefix match silently retargeted
+   * every assertion below onto it. */
+  const DIAGNOSIS_BASIS_OMISSION_FIELD = 'diseases[].term（诊断依据）';
+
   const basisOf = (overrides: Partial<PatientProfileDTO> = {}) =>
-    build(overrides).omissions.find((entry) => entry.field.startsWith('diseases[]'))?.reasonZh ??
-    '';
+    build(overrides).omissions.find((entry) => entry.field === DIAGNOSIS_BASIS_OMISSION_FIELD)
+      ?.reasonZh ?? '';
 
   it('每次写出 Disease 都同时声明这个字段说不了诊断依据', () => {
     const result = build();
@@ -356,5 +364,81 @@ describe('Phenopacket — §B3：管理员代填的值要跟着导出走', () =>
   it('没有标记时说的是「没有代填」，不是沉默', () => {
     expect(build().fieldOrigins).toEqual([]);
     expect(build().notes.字段来源).toContain('没有本平台工作人员代填');
+  });
+});
+
+/**
+ * `Disease.term` IS THE ONLY MACHINE-USABLE CLINICAL ASSERTION THIS
+ * PACKET MAKES, and it used to be classified out of the ARCHIVE while
+ * every patient- and clinician-facing surface resolved the evidence
+ * document's own 分型 cell first. The two disagree over an ordinary
+ * profile — `applyGeneticReportAutofill` fills an EMPTY archive slot
+ * and never corrects a full one, so a questionnaire answered before the
+ * corrected report was uploaded keeps its answer forever — and this
+ * packet then filed the patient under OMIM:158900 while their passport,
+ * share page, referral pack and anaesthesia card all said FSHD2. FSHD1
+ * is a contracted D4Z4 array on a permissive 4qA allele; FSHD2 is a
+ * different mechanism, and a cohort assembled on this term inherits the
+ * error with nothing in the file to catch it.
+ */
+describe('Phenopacket v2 —— Disease.term 跟着报告，不跟着旧问卷答案', () => {
+  const reportSaysFshd2 = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', diagnosisType: 'FSHD2' } },
+  };
+
+  const mismatched = () => {
+    const base: PatientProfileDTO = {
+      ...EXPORT_FIXTURE_PROFILE,
+      documents: [reportSaysFshd2, ...EXPORT_FIXTURE_PROFILE.documents.slice(1)],
+    };
+    return { ...base, ...applyGeneticReportAutofill(base, base.documents) } as PatientProfileDTO;
+  };
+
+  const sourceOmissionOf = (result: ReturnType<typeof build>) =>
+    result.omissions.find((entry) => entry.field.includes('分型取自何处'))?.reasonZh ?? '';
+
+  it('报告写 FSHD2、问卷写 FSHD1 时，写出的本体项是 FSHD2', () => {
+    expect(build(mismatched()).document.diseases).toEqual([
+      {
+        term: { id: 'OMIM:158901', label: 'Facioscapulohumeral muscular dystrophy 2 (FSHD2)' },
+      },
+    ]);
+  });
+
+  /* `Disease` has no note slot anywhere in the v2 schema, so the
+   * omissions list is where this format says it — the same sentence the
+   * FHIR bundle sets on `Condition.note`, so a receiver holding both
+   * reads one account and not two wordings of one. */
+  it('档案里那个不一样的值也写出来，并且指明它在哪一份导出里', () => {
+    const reason = sourceOmissionOf(build(mismatched()));
+    expect(reason).toContain('FSHD2');
+    expect(reason).toContain('FSHD1');
+    expect(reason).toContain('不一致');
+    expect(reason).toContain('diagnosis.type');
+  });
+
+  it('报告没有分型那一项时，说清楚本体项是从档案值归一来的', () => {
+    const reason = sourceOmissionOf(build());
+    expect(reason).toContain('档案里记录的「FSHD1」');
+    expect(reason).toContain('那一份上没有这一项');
+  });
+
+  /**
+   * The `interpretations` omission used to end 「D4Z4 重复数与单倍型在
+   * TREAT-NMD 对齐导出中按其本来面目呈现」 — a two-item list of a
+   * four-member set. 甲基化 travelled to TREAT-NMD unnamed here, and the
+   * EcoRI fragment travelled to no portable export at all and was named
+   * nowhere. A receiver reading that sentence and finding a 4qA
+   * haplotype with no size measurement could not tell 「this patient has
+   * none」 from 「this document does not carry it」.
+   */
+  it('不承载读数这件事说全了四项，不只说两项', () => {
+    const reason =
+      build().omissions.find((entry) => entry.field.includes('基因报告上的读数'))?.reasonZh ?? '';
+    for (const cell of ['D4Z4 重复单元数', '4q 单倍型', 'EcoRI 片段', '甲基化']) {
+      expect(reason, cell).toContain(cell);
+    }
+    expect(reason).toContain('不要因为本文件里没有这些数据就认为患者没有做过这些检测');
   });
 });

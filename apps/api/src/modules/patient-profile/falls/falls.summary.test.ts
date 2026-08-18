@@ -198,6 +198,42 @@ describe('buildFallsSummary — quarters', () => {
     expect(composeFallQuarterClauseZh(buildFallsSummary(rows, { atCap: true }))).toBeNull();
   });
 
+  it('...and says so, instead of just going quiet about it', () => {
+    // Deleting the comparison is the whole of refusal (3) as it was
+    // written, and it leaves a reader with `total`, a set of
+    // denominators and no reason to doubt any of them. The one clause
+    // that might have hinted the list was cut is the clause `atCap`
+    // removes, so a capped answer read MORE confident than an
+    // uncapped one.
+    const rows = [
+      fall({ fall_day_age: 5, fall_injured: true }),
+      fall({ fall_day_age: 200, fall_injured: false }),
+    ];
+    const clauses = composeFallClausesZh(buildFallsSummary(rows, { atCap: true }));
+    // First, because it is the caveat on everything after it.
+    expect(clauses[0]).toContain('跌倒记录未读全');
+    expect(clauses[0]).toContain('只读取到最近 2 次跌倒');
+    expect(clauses[0]).toContain('分母不是全部跌倒');
+    expect(clauses.join('；')).toContain('已记录是否受伤的 2 次中，1 次受伤');
+    expect(clauses.join('；')).not.toContain('跌倒频率');
+
+    // Nothing extra when the page was not full.
+    expect(composeFallClausesZh(buildFallsSummary(rows, { atCap: false }))[0]).not.toContain(
+      '跌倒记录未读全',
+    );
+  });
+
+  it('drops the denominator half of that clause when no fall has details', () => {
+    const clauses = composeFallClausesZh(
+      buildFallsSummary([fall({ fall_day_age: 5 }), fall({ fall_day_age: 200 })], { atCap: true }),
+    );
+    expect(clauses).toHaveLength(1);
+    expect(clauses[0]).toContain('跌倒记录未读全');
+    // There is no detail clause to qualify, so the sentence must not
+    // point at one.
+    expect(clauses[0]).not.toContain('跌倒详情');
+  });
+
   it('reports an empty quarter between two recorded ones', () => {
     // This one IS evidence: the record demonstrably spans the gap.
     const summary = buildFallsSummary([fall({ fall_day_age: 2 }), fall({ fall_day_age: 200 })], {

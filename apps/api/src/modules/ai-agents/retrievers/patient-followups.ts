@@ -372,9 +372,30 @@ type EventRow = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const daysAgo = (value: string | Date, now: number): number | null => {
+/** The instant a row was recorded, or null when the driver handed back
+ *  something that does not parse as a date. */
+const toTime = (value: string | Date): number | null => {
   const t = value instanceof Date ? value.getTime() : new Date(value).getTime();
-  if (Number.isNaN(t)) return null;
+  return Number.isNaN(t) ? null : t;
+};
+
+/**
+ * How old a row is, in whole days, FOR DISPLAY.
+ *
+ * Rounded, because「16 小时前」reads better as「1天前」than as「0天前」,
+ * and clamped at zero because `performedAt` is caller-supplied
+ * (`z.string().datetime()`, no upper bound) so a row dated tomorrow
+ * must not come back as a negative age.
+ *
+ * THIS IS A BIN INDEX RELATIVE TO NOW, NOT A DURATION, AND NOTHING MAY
+ * SUBTRACT TWO OF THEM TO GET AN INTERVAL. Rounding puts the bin
+ * boundary at 12 hours, so two readings ONE MINUTE apart that straddle
+ * it differ by 1 — see `spanDays` at the grouping loop for what that
+ * produced and what replaced it.
+ */
+const daysAgo = (value: string | Date, now: number): number | null => {
+  const t = toTime(value);
+  if (t === null) return null;
   return Math.max(0, Math.round((now - t) / DAY_MS));
 };
 
@@ -388,7 +409,12 @@ const toNumber = (value: string | number): number | null => {
  *  and a fake-precise regression on four self-timed readings would
  *  read as more certain than the data supports. */
 const describeDirection = (earliest: number, latest: number): 'up' | 'down' | 'flat' => {
-  if (earliest === 0) return latest === 0 ? 'flat' : 'up';
+  // A relative delta has no denominator at zero, so the sign of the
+  // later reading is the whole answer — and it is asked for rather
+  // than assumed, because `measuredValue` is
+  // `z.coerce.number().finite()` with no lower bound and a series
+  // running 0 → −5 is not「较前升高」.
+  if (earliest === 0) return latest === 0 ? 'flat' : latest > 0 ? 'up' : 'down';
   const delta = (latest - earliest) / Math.abs(earliest);
   if (delta > 0.1) return 'up';
   if (delta < -0.1) return 'down';
@@ -562,7 +588,18 @@ ${FALL_HISTORY_SQL}
     const unableByMetric = new Map(
       (unableResult.rows ?? []).map((r) => [
         r.metric_key,
-        { count: r.unable_count, mostRecentDays: r.most_recent_days },
+        {
+          count: r.unable_count,
+          // CLAMPED THE WAY `daysAgo` IS, AND IT WAS THE ONE AGE ON
+          // THIS FILE THAT WAS NOT. `performedAt` is caller-supplied
+          // with no upper bound, so a row dated tomorrow makes SQL
+          // return a negative and the sentence below reached both
+          // modes as「最近一次 -3 天前」— driven through the retriever
+          // and read off the rendered prompt.
+          mostRecentDays: Number.isFinite(r.most_recent_days)
+            ? Math.max(0, Math.round(r.most_recent_days))
+            : 0,
+        },
       ]),
     );
 
@@ -591,14 +628,18 @@ ${FALL_HISTORY_SQL}
         .map((row) => ({
           value: toNumber(row.value),
           age: daysAgo(row.recorded_at, now),
+          // The reading's own instant, carried beside its rounded age
+          // because an INTERVAL may only ever be computed from these.
+          // See `spanDays` below.
+          at: toTime(row.recorded_at),
           // Per point, not per series. See UNIT IS PART OF WHICH CURVE
           // in the header: a row whose unit fails the allowlist keeps
           // its own null instead of inheriting a neighbour's suffix.
           unit: canonicalUnit(row.unit),
         }))
         .filter(
-          (p): p is { value: number; age: number; unit: string | null } =>
-            p.value !== null && p.age !== null,
+          (p): p is { value: number; age: number; at: number; unit: string | null } =>
+            p.value !== null && p.age !== null && p.at !== null,
         );
       if (allPoints.length === 0) continue;
 
@@ -633,10 +674,42 @@ ${FALL_HISTORY_SQL}
       // model reads the field and applies it to the whole list.
       const unit =
         !mixedUnits && allPoints.every((p) => p.unit !== null) ? allPoints[0].unit : null;
-      const spanDays = earliest.age - latest.age;
+      /**
+       * REAL ELAPSED TIME BETWEEN THE OLDEST AND NEWEST READING, IN
+       * WHOLE DAYS — AND IT USED TO BE THE DIFFERENCE OF TWO ROUNDED
+       * AGES, WHICH IS NOT A DURATION.
+       *
+       * `earliest.age - latest.age` subtracted two `daysAgo` bin
+       * indices. `daysAgo` rounds, so the bin boundary sits at 12
+       * hours and TWO READINGS ONE MINUTE APART that straddle it come
+       * out 1 apart. Driven through this retriever with 10sec at
+       * now−12h−30s and 16sec at now−12h+30s, both modes rendered
+       * 「跨度(天): 1」and「最近变化: 较前升高」— a fabricated
+       * deterioration from a single sitting, with the 跨度(天): 0 that
+       * used to sit beside it and refute it now reading 1 instead.
+       *
+       * So the span comes off the timestamps, and off the whole series
+       * rather than the two array ends, which also stops it depending
+       * on the ORDER BY. FLOORED, so a 20-hour gap is never rounded up
+       * into a day the record does not contain and `spanDays >= 1`
+       * means exactly「a full day of real time passed」.
+       *
+       * At the row cap this is a floor the same way `count` is: the
+       * rows that were cut are the OLDEST, so the real series is both
+       * longer and older than either number says. `countAtCap` is the
+       * flag for both.
+       */
+      let firstAt = allPoints[0].at;
+      let lastAt = allPoints[0].at;
+      for (const point of allPoints) {
+        if (point.at < firstAt) firstAt = point.at;
+        if (point.at > lastAt) lastAt = point.at;
+      }
+      const spanDays = Math.floor((lastAt - firstAt) / DAY_MS);
       /**
        * A DIRECTION NEEDS TWO POINTS AND SOME TIME BETWEEN THEM, AND
-       * THIS ONE WAS ASSERTED OFF ONE POINT, THEN OFF ZERO DAYS.
+       * THIS ONE WAS ASSERTED OFF ONE POINT, THEN OFF ZERO DAYS, THEN
+       * OFF A DAY THAT WAS A ROUNDING ARTEFACT.
        *
        * `describeDirection(earliest.value, latest.value)` was applied
        * unconditionally, and on a one-reading series earliest IS
@@ -648,25 +721,46 @@ ${FALL_HISTORY_SQL}
        * 了」. A patient who has recorded once was told their trend is
        * 基本持平.
        *
-       * Counting points closed half of it. The other half is that a
-       * zero-day span contains no change either, and the length >= 2
-       * test admits one: 上楼计时 is routinely done twice in a sitting,
-       * a practice attempt and then the real one, and those two rows
-       * were being read as a trend. 10 秒 then 16 秒 on the same
-       * afternoon came out as 「最近变化: 较前升高」 beside 「跨度(天):
-       * 0」 — the retriever printing the refutation next to the claim.
-       * Which of the two same-day rows is「earliest」is decided by an
-       * arbitrary tiebreak inside ORDER BY, so the direction was not
-       * even stable.
+       * Counting points closed the first half. The second is that a
+       * zero-day span contains no change either: 上楼计时 is routinely
+       * done twice in a sitting, a practice attempt and then the real
+       * one, and those two rows were being read as a trend. 10 秒 then
+       * 16 秒 on the same afternoon came out as 「最近变化: 较前升高」.
        *
-       * So a direction needs a second point AND elapsed time, and a
-       * mixed-unit series gets none at all. The absence is the honest
-       * answer and it is legible to the model: the fields are simply
-       * not there, the same way an event-only chunk carries no series.
+       * `spanDays >= 1` was the fix for that and it did not hold,
+       * because the span it tested was two rounded ages subtracted —
+       * see `spanDays` above. Now that the span is real elapsed time,
+       * this test is what it always claimed to be: a full day has to
+       * have passed between the first reading and the last. Which of
+       * two same-sitting rows counts as「earliest」is decided by an
+       * arbitrary ORDER BY tiebreak, so nothing stable was ever being
+       * asserted.
+       *
+       * So a direction needs a second point AND a real elapsed day,
+       * and a mixed-unit series gets none at all.
        */
       const direction =
         !mixedUnits && allPoints.length >= 2 && spanDays >= 1
           ? describeDirection(earliest.value, latest.value)
+          : null;
+      /**
+       * ...AND THE REFUSAL IS SAID OUT LOUD RATHER THAN LEFT AS A HOLE.
+       *
+       * Silence is what let the same-sitting pair keep doing damage
+       * after the direction went: the model still sees two readings
+       * that got slower, and「the failure mode of a model handed a hole
+       * is that it fills it」(see the mixed-unit band below). The point
+       * ages are bins relative to now, so the pair can still render as
+       * 「1天前」and「0天前」beside 跨度(天): 0 — this is the sentence
+       * that tells the reader which of the two to believe.
+       *
+       * `latestBand` is where this file puts its refusals, and it is on
+       * BOTH allowlists for that reason. Not emitted for a single
+       * reading: 记录次数: 1 explains that chunk on its own.
+       */
+      const sameSittingBand =
+        !mixedUnits && direction === null && allPoints.length >= 2
+          ? '本期这些记录都落在不到一天之内，时间跨度不足一天，不能据此判断变化方向'
           : null;
 
       // The point list is what costs tokens, so that is what gets cut.
@@ -712,8 +806,11 @@ ${FALL_HISTORY_SQL}
             // `count` and `spanDays` are on BOTH allowlists, but the
             // 「以上」banner that admits truncation lives in `series`,
             // which is precise-only. Without this flag a strict-mode
-            // answer reads `count: 200` as an exact total. Booleans
-            // carry no patient data, so it goes in both lists too.
+            // answer reads `count: 200` as an exact total — and
+            // `spanDays` with it, because the rows the cap cut are the
+            // OLDEST ones, so the real series is longer AND older than
+            // either number says. One flag covers both. Booleans carry
+            // no patient data, so it goes in both lists too.
             countAtCap: atRowCap,
             spanDays,
             // Both of these describe a change, so both are absent from
@@ -730,6 +827,10 @@ ${FALL_HISTORY_SQL}
                         ? '较前降低'
                         : '基本持平',
                 }),
+            // The other half of that absence, in the same field. A
+            // mixed-unit series overwrites it below with its own
+            // reason, which is why this one tests `!mixedUnits`.
+            ...(sameSittingBand === null ? {} : { latestBand: sameSittingBand }),
             // A MIXED-UNIT SERIES SAYS WHY IT IS EMPTY RATHER THAN
             // GOING QUIET.
             //
@@ -797,7 +898,17 @@ ${FALL_HISTORY_SQL}
             metricKey,
             metricLabel: labelForMetric(metricKey),
             count: 0,
-            spanDays: 0,
+            // NO `spanDays` EITHER, AND 「0」 WAS NOT A HARMLESS ONE.
+            //
+            // There is no series in this branch, so there is no span
+            // to report — and 「跨度(天): 0」 printed beside 「本期共 6
+            // 次记录为「做不到」…最近一次 2 天前」 reads as six attempts
+            // on one day, which is the opposite of what six 做不到
+            // records spread over the window mean. The days these rows
+            // actually cover are not queried (the unable query returns
+            // a count and a MIN age, nothing else), so the honest
+            // value is no field, the same call `changeDirection` gets
+            // immediately below.
             // NO `changeDirection` HERE EITHER, AND 「flat」 WAS THE
             // WORST POSSIBLE VALUE FOR IT.
             //
@@ -830,12 +941,28 @@ ${FALL_HISTORY_SQL}
     }
 
     const eventRowCount = eventsResult.rowCount ?? 0;
+    /**
+     * The event query came back full, so the OLDEST events in the
+     * window were never read and EVERY count below is a floor.
+     *
+     * Computed once and used for all three of the things that depend
+     * on it — the falls comparison, the tally, and the count field —
+     * because it was already being computed inline for the first of
+     * them while the other two shipped as exact totals. See the
+     * `eventSummary` note below.
+     */
+    const eventsAtCap = eventRowCount >= MAX_EVENT_ROWS;
     if (eventRowCount > 0 && !metricFilter) {
       // Counted by (type, severity) rather than listed: the patient's
       // own description of each event is free text we don't ship, and
       // "跌倒（轻）×2，最近 3 天前" is the clinically useful residue.
       const tally = new Map<string, { count: number; mostRecentAge: number }>();
       const fallRows: EventRow[] = [];
+      // Rows that made it into the tally. NOT `eventRowCount`: a row
+      // whose date does not parse is skipped below, and `eventCount:
+      // 2` printed beside 「跌倒（轻）×1」 in the same chunk left the
+      // model to reconcile a missing event by inventing one.
+      let countedEvents = 0;
       for (const row of eventsResult.rows) {
         // Falls carry a day-precision age computed in SQL, because
         // their date column is a DATE and a JS-side midnight would age
@@ -844,6 +971,7 @@ ${FALL_HISTORY_SQL}
         const age =
           row.event_type === 'fall' ? fallDayAge(row, now) : daysAgo(row.occurred_at, now);
         if (age === null) continue;
+        countedEvents += 1;
         // Falls stay IN the tally as well as feeding the summary below.
         // Pulling them out would leave 跌倒 off the event line it has
         // always appeared on, and the standing rule this release is
@@ -884,13 +1012,50 @@ ${FALL_HISTORY_SQL}
         // window, so refusal (2) could only look at the oldest fall
         // until it was told.
         const fallsSummary = buildFallsSummary(fallRows, {
-          atCap: eventRowCount >= MAX_EVENT_ROWS,
+          atCap: eventsAtCap,
           now,
           windowDays,
         });
+        /**
+         * THE TALLY IS A FLOOR AT THE CAP AND WAS PRINTED AS A TOTAL.
+         *
+         * The measurement series got `countAtCap` for exactly this —
+         * 「Without this flag a strict-mode answer reads count: 200 as
+         * an exact total」— and this chunk carried no equivalent even
+         * though `eventsAtCap` is the same expression the falls
+         * comparison is already suppressed on three lines above. So
+         * the code KNEW the list was truncated, dropped the quarterly
+         * clause without saying why, and still handed the model
+         * 「跌倒（轻）×200」and「事件条数: 200」under a label that reads
+         * as a total. Driven through the retriever with 200 falls over
+         * a 730-day window, that is verbatim what both modes rendered
+         * — and this population reaches that ceiling: about 30% of
+         * adults with FSHD fall at least monthly.
+         *
+         * Said in `eventSummary` because that field is on BOTH
+         * allowlists, so the admission travels with the numbers in
+         * every consent mode. The machine-readable half — an
+         * `eventCountAtCap` boolean to match `countAtCap` — needs an
+         * allowlist entry this lane may not write; see the note on the
+         * chunk's `fields` below.
+         */
+        // Counted off the rows actually described rather than off
+        // MAX_EVENT_ROWS, so the number in this sentence is the same
+        // number as `eventCount` and as the tally beside it. The
+        // constant would be right in production (the LIMIT is what
+        // produced the cap) and wrong the moment anything else feeds
+        // this function a longer list.
+        const capNote = eventsAtCap
+          ? `本次只读取到最近 ${countedEvents} 条随访事件（已达查询上限），更早的没有读到，` +
+            `所以下面每一类的次数都只是下限，不是总数`
+          : null;
         const summary = [
+          ...(capNote === null ? [] : [capNote]),
           [...tally.entries()]
-            .map(([label, v]) => `${label}×${v.count}，最近 ${v.mostRecentAge} 天前`)
+            .map(
+              ([label, v]) =>
+                `${label}×${v.count}${eventsAtCap ? ' 以上' : ''}，最近 ${v.mostRecentAge} 天前`,
+            )
             .join('；'),
           ...composeFallClausesZh(fallsSummary),
         ].join('；');
@@ -898,7 +1063,32 @@ ${FALL_HISTORY_SQL}
           id: chunkId,
           source: this.id,
           content: '',
-          metadata: { fields: { eventSummary: summary, eventCount: eventRowCount } },
+          /**
+           * NO `eventCountAtCap` BOOLEAN HERE, AND ITS ABSENCE IS A
+           * DEPENDENCY RATHER THAN A JUDGEMENT.
+           *
+           * `eventCount` has exactly the defect `countAtCap` exists to
+           * stop on the series chunk, so the twin field is the shape
+           * this wants. It cannot be added from here: layer 3 drops
+           * any key off PROMPT_ALLOWLIST, and it does so with a
+           * `logger.warn` per call — so emitting one ahead of its
+           * allowlist entry buys a field that reaches nobody and a
+           * warning on every answer that mentions an event, which is
+           * how the warning that exists to catch real leaks stops
+           * being read.
+           *
+           * TO ADD IT: `eventCountAtCap` on PROMPT_ALLOWLIST.followups
+           * under BOTH `strict` and `precise` (a boolean carries no
+           * patient data — the same argument `countAtCap` is listed
+           * under), a FOLLOWUP_FIELD_LABELS entry in render.ts, and
+           * this field emitted here. All three together, or
+           * tool-descriptions.test.ts fails on the dead key.
+           *
+           * Until then the truncation reaches the prompt through the
+           * words in `eventSummary`, which is on both allowlists and
+           * is where the patient-facing half of this fix lives anyway.
+           */
+          metadata: { fields: { eventSummary: summary, eventCount: countedEvents } },
           distance: null,
           sourceFile: 'patient_followups/events',
           chunkIndex: 0,
@@ -928,7 +1118,11 @@ ${FALL_HISTORY_SQL}
         windowDays,
         metricKey: metricFilter,
         seriesCount: byMetric.size,
-        eventCount: eventRowCount,
+        // Rows the event query returned, which is telemetry rather
+        // than prompt content — only `reason` is read off result
+        // metadata. The prompt-facing count is the `eventCount` FIELD
+        // above, and it counts only the rows that could be dated.
+        eventRowCount,
       },
     };
   }

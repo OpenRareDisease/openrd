@@ -2,6 +2,7 @@ import { resolveOccurrenceDate, type OccurrenceDate } from './export/index.js';
 import { TRANSCRIBED_EVIDENCE_LABEL_ZH } from './genetic-evidence.js';
 import {
   buildClinicalPassportSummary,
+  formatProductDate,
   withValueOrigin,
   type ClinicalPassportSummaryDTO,
   type GeneticRecordSource,
@@ -420,44 +421,46 @@ const getTimestamp = (value?: string | null): number => {
 };
 
 /**
- * Local-time accessors, matching `formatDate` in profile.passport.ts
- * rather than formatting in UTC.
+ * THE PRODUCT'S CALENDAR, VIA THE ONE PLACE THAT DEFINES IT.
  *
- * Not because local is right — it is not, in general. A stored
- * timestamp printed with the *process's* timezone follows the server,
- * not the patient, so a report the patient filed at 01:00 Beijing time
- * can print as the previous day on a UTC host. The reason to match is
- * that this pack and the clinical-passport export are generated from
- * one profile and are meant to be read side by side; two documents from
- * one app disagreeing about the date of one report is a worse failure
- * in front of a clinician than both being off by the same day.
+ * This used to be a private copy of profile.passport.ts's accessor
+ * chain, reading every instant in the *process's* timezone, and the
+ * note above it said why it matched rather than why it was right:
+ * 「A stored timestamp printed with the process's timezone follows the
+ * server, not the patient... Fixing it properly means giving the whole
+ * module one timezone (the patient's, or an explicitly configured one)
+ * in a single place. That is a change to profile.passport.ts」.
  *
- * Fixing it properly means giving the whole module one timezone (the
- * patient's, or an explicitly configured one) in a single place. That
- * is a change to profile.passport.ts, which this lane does not own.
+ * That change is made. `PRODUCT_TIME_ZONE` is Asia/Shanghai and
+ * `formatProductDate` is the whole of the rule, shared by this pack,
+ * the markdown export, the share page and — with the identical
+ * arithmetic and the identical constant — the mobile PDF in
+ * apps/mobile/lib/clinical-visuals.ts. Matching on the ambient zone
+ * only ever kept the three SERVER documents together; the fourth
+ * document is rendered on a handset in China against a server that
+ * runs UTC, and it was a day out from all three.
  *
  * AN ALREADY-FORMATTED DATE IS RETURNED UNTOUCHED
  * -----------------------------------------------
  * Some inputs have been through this once already: the passport hands
  * `PassportMonitoringItemDTO.latestDate` over as a bare `YYYY-MM-DD`.
  * Re-parsing that string is not a no-op — `new Date('2026-02-10')` is
- * UTC midnight, and every accessor below then reads it in local time,
- * so on any host west of Greenwich it comes back a day earlier. That
- * put 「已上传该类报告（2026-02-09）」 in a slot whose own `latestDate`
- * field said 2026-02-10: one document, one report, two dates, in front
- * of the reader least able to check which is right. Nothing here can
- * improve a date that carries no time, so nothing here touches it.
+ * UTC midnight, and reading it back through zoned accessors gives the
+ * day before on any host west of Greenwich. That put 「已上传该类报告
+ * （2026-02-09）」 in a slot whose own `latestDate` field said
+ * 2026-02-10: one document, one report, two dates, in front of the
+ * reader least able to check which is right. Nothing can improve a date
+ * that carries no time, so `formatProductDate` does not touch it.
+ *
+ * NULL, NOT THE RAW STRING, for a value that is neither. This pack is
+ * printed and handed over; a caller here would rather print nothing
+ * than an unparsed fragment.
  */
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 const formatDate = (value?: string | null): string | null => {
-  if (!value) return null;
-  if (DATE_ONLY.test(value)) return value;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+  const formatted = formatProductDate(value);
+  return formatted && DATE_ONLY.test(formatted) ? formatted : null;
 };
 
 /**
@@ -630,12 +633,20 @@ const repeatCountNotConfirming = (
 
 /** A `switch` for the same reason `buildDiagnosisStatement` has one: a
  *  third state added to `PassportFieldOriginDTO` has to fail the build
- *  rather than print 「来源记录读不出来」 about itself. */
+ *  rather than print 「来源记录读不出来」 about itself.
+ *
+ *  `origin.at` GOES THROUGH `formatDate`. It is a stored instant, and
+ *  this line interpolated it raw — so the pack a neurologist reads
+ *  carried 「本平台管理员于 2026-01-15T18:00:00.000Z 代为录入」 while the
+ *  markdown export, the share page and the mobile PDF of the same
+ *  profile each printed a calendar day for the same event. A machine
+ *  timestamp is not a thing to show a clinician, and the four documents
+ *  are meant to be read side by side. */
 const formatFieldOriginLine = (origin: PassportFieldOriginDTO): string => {
   const label = escapeMarkdown(origin.labelZh);
   switch (origin.state) {
     case 'admin_entered':
-      return `- ${label}：本平台管理员于 ${origin.at ?? '未记录时间'} 代为录入（管理员账号 ${
+      return `- ${label}：本平台管理员于 ${formatDate(origin.at) ?? '未记录时间'} 代为录入（管理员账号 ${
         origin.adminUserId ?? '未记录'
       }）`;
     case 'unreadable':

@@ -147,7 +147,12 @@
           "subject": {
             "reference": "urn:uuid:11111111-1111-4111-8111-111111111111"
           },
-          "recordedDate": "2014"
+          "recordedDate": "2014",
+          "note": [
+            {
+              "text": "本文件的 FSHD 分型由档案里记录的「FSHD1」归一而来；本平台读作这份档案基因证据的那一份上没有这一项。"
+            }
+          ]
         }
       },
       {
@@ -745,6 +750,10 @@
     {
       "field": "Patient.name / Patient.telecom / Patient.address",
       "reasonZh": "直接身份信息一律不写入 FHIR 资源，无论是否请求本地留存版本——这样即使调用方把标志位传错，也不会从这里泄露身份信息。姓名等只出现在 TREAT-NMD 对齐导出的 localOnly 节。"
+    },
+    {
+      "field": "Condition（临床护照的基因证据分级、检测方法与诊断进度）",
+      "reasonZh": "本 Bundle 承载报告上的读数与「是否基因确诊」这一判定，不承载临床护照上围绕它的其余内容：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法（FHIR 的 Observation.method 是它的位置，本导出尚未填写），以及患者在基线问卷上自己勾选的「诊断进度」。判定本身在 Condition.verificationStatus 上，它的 text 与 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh、Phenopacket 导出中对应的 omission 是同一句话。verificationStatus 只有 confirmed / unconfirmed 两个取值，「实验室读到的单倍型不是允许型」与「什么都没读到」都落在 unconfirmed 上——这两种情况的区别写在同一元素的 text 里，请读它，不要只读编码。"
     },
     {
       "field": "CodeableConcept.coding (LOINC)",

@@ -240,6 +240,16 @@ const documentEvidenceText = (document: GeneticEvidenceDocumentLike): string => 
  * now on, this holds it for the ones already stored. Not a vocabulary:
  * no disease word belongs on this list, because scoring a document on
  * the words it contains is the defect it exists to end.
+ *
+ * AND NOT A SIGNATURE, A TIMESTAMP OR AN IDENTIFIER. 医师签名 was added
+ * here and had to come out: every genetics report is signed, so one
+ * 「医师签名：王医师」 on an otherwise unchanged Southern blot took it out
+ * of `isLaboratoryGeneticReport` — 基因确诊 to self_reported, and 病历摘要
+ * on the citation chip. A hit here is disqualifying on its own and
+ * outranks every laboratory marker, so the test for an entry is 「no
+ * genetics laboratory prints this」. Checked by execution against a real
+ * Southern blot, a methylation report and a WES report: the seventeen
+ * below score zero on all three.
  */
 const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
   '病历摘要',
@@ -259,7 +269,6 @@ const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
   '体格检查',
   '专科检查',
   '诊疗经过',
-  '医师签名',
 ];
 
 /**

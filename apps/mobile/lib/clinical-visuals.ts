@@ -154,10 +154,37 @@ const pushRegion = (
  * 05-09, on the PDF that gets handed to a clinician, while the share
  * page and the markdown export of the same passport both said 05-09.
  * A calendar date has no zone to convert between; the digits are the
- * answer. Anything carrying an actual time still falls through to the
- * `Date` path below, where a zone is the right thing to apply.
+ * answer.
  */
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * THE ONE CALENDAR THIS PRODUCT PRINTS DATES IN — the same one
+ * apps/api/src/modules/patient-profile/profile.passport.ts declares,
+ * with the same value and the same arithmetic, because the passport
+ * PDF this file dates is handed to the SAME CLINICIAN who is reading
+ * the share page and the referral pack the server rendered.
+ *
+ * The values that reach the `Date` path below are instants — the
+ * summary's `generatedAt`, a timeline row's `timestamp`, the moment an
+ * administrator typed a baseline field — and this file resolved them
+ * in the DEVICE's zone while the server resolved them in the SERVER's.
+ * apps/api/Dockerfile sets no TZ and node:20-bookworm-slim is UTC,
+ * while the handsets are in China at UTC+8: eight hours apart in
+ * production, which is a DIFFERENT DAY on the printed sheet for
+ * anything filed between 16:00 and 24:00 UTC. A device is even less
+ * fixable than a server — a patient who lands in another country has
+ * moved the zone, and no deployment setting reaches that.
+ *
+ * A FIXED OFFSET, NOT `Intl.DateTimeFormat({ timeZone })`: this runs
+ * on Hermes, where a full ICU timezone database is not something to
+ * depend on, and the server has to compute the identical answer.
+ * China has run a single UTC+8 zone with no daylight saving since
+ * 1991, and everything older than that arrives here as bare
+ * 「YYYY-MM-DD」 and is sliced above without any arithmetic at all.
+ */
+export const PRODUCT_TIME_ZONE = 'Asia/Shanghai';
+const PRODUCT_UTC_OFFSET_MINUTES = 8 * 60;
 
 export const formatDateLabel = (value?: string | null) => {
   if (!value) return '—';
@@ -168,8 +195,12 @@ export const formatDateLabel = (value?: string | null) => {
   if (parts) return `${parts[2]}-${parts[3]}`;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  // Shift the instant onto the product calendar, then read it back
+  // with the UTC accessors — the only ones on `Date` that do not
+  // consult whatever zone this handset is set to.
+  const shifted = new Date(date.getTime() + PRODUCT_UTC_OFFSET_MINUTES * 60_000);
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
   return `${month}-${day}`;
 };
 

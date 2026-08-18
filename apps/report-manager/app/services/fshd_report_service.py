@@ -231,6 +231,19 @@ REPORT_TYPE_RULES: Dict[str, List[Tuple[str, int]]] = {
 #: 检测项目 / 检测方法 / 送检单位 / 报告医师 a report shows. This is not a
 #: vocabulary: adding an FSHD term to it would put the old bug back.
 #:
+#: AND NOT A SIGNATURE, A TIMESTAMP OR AN IDENTIFIER. 医师签名 was added
+#: here and had to come out: every genetics report is signed, so one
+#: extra line 「医师签名：王医师」 on an otherwise unchanged Southern blot
+#: flipped it from 基因确诊 to self_reported and relabelled it 病历摘要 on
+#: the citation chip the patient taps. This file already classifies that
+#: string correctly, in `_BLOCK_STOP_MARKERS`, under the note that
+#: signature blocks are never part of a clinical conclusion. THE TEST
+#: FOR AN ENTRY IS 「no genetics laboratory prints this」, and a single
+#: hit is disqualifying on its own precisely because it is supposed to
+#: be impossible on a report — checked by execution against a real
+#: Southern blot, a methylation report and a WES report, on which the
+#: seventeen entries below score zero and 医师签名 scored three.
+#:
 #: The API mirrors this list as CLINICAL_NARRATIVE_MARKERS in
 #: apps/api/src/modules/patient-profile/genetic-evidence.ts, and the
 #: mobile bundle carries a third copy, because a classifier change does
@@ -254,7 +267,6 @@ MEDICAL_SUMMARY_STRUCTURE_MARKERS: Tuple[str, ...] = (
     "体格检查",
     "专科检查",
     "诊疗经过",
-    "医师签名",
 )
 
 CRITICAL_FIELDS: Dict[str, List[str]] = {
@@ -651,8 +663,72 @@ def _gap_names_a_method(gap: str) -> bool:
     return bool(re.fullmatch(f"(?:{'|'.join(_METHOD_GAP_WORDS)})+", stripped))
 
 
+#: WHICH MEASUREMENT A WORD IN THE GAP NAMES.
+#:
+#: One analyte per key, the words a laboratory writes for it per value.
+#: A gap that names an analyte OTHER than the one the pattern is reading
+#: is not a label-to-value gap however it is punctuated — see
+#: `_gap_names_another_analyte`.
+#:
+#: THE CLASS THIS TABLE CLOSES: a cell label that is a PREFIX of another
+#: cell's name. 「D4Z4」 is the label of the repeat count and also the
+#: opening of 「D4Z4甲基化」 and 「D4Z4 EcoRI 片段长度」, so the repeat
+#: count's own last-resort pattern reaches into both of those rows and
+#: reports whatever number it finds as a count. Every FSHD genetics cell
+#: in this file was walked for the same shape: 甲基化 opens 甲基化水平
+#: (same analyte, so the fraction spelling still reads), EcoRI and
+#: 片段长度 both open only length rows, and 重复数 opens nothing else.
+_ANALYTE_GAP_WORDS: Dict[str, Tuple[str, ...]] = {
+    "repeat_count": ("重复单元", "重复数", "重复拷贝", "repeat", "ru数"),
+    "methylation": ("甲基化", "甲基", "methylation"),
+    "fragment_length": ("片段", "长度", "大小", "fragment", "size", "kb"),
+}
+
+
+def _gap_names_another_analyte(gap: str, analyte: Optional[str]) -> bool:
+    """Does the gap name a DIFFERENT measurement than the one being read?
+
+    A gap naming another analyte is not a label separator however many
+    colons it has, and the colon is the whole reason this exists
+    separately from `_gap_names_a_method`: that one treats a value
+    separator as settling the question, because 「甲基化分析: 35%」 really
+    is the methylation result row with the assay name doing duty as the
+    label. 「D4Z4甲基化: 35%」 has the same shape and is NOT the repeat
+    count's row — it is the methylation row, whose label merely starts
+    with the repeat count's label.
+
+    So the last-resort `D4Z4(?P<gap>[^\\d\\n]{0,16})(?P<value>\\d+)`
+    accepted 「D4Z4甲基化: 35%」 at confidence 0.97, the confidence of a
+    cell we actually read, and the platform reported a laboratory count
+    of 35 to a patient whose report states no count at all — while the
+    same cell was ALSO read correctly as `methylation_value`, so one
+    methylation reading became two answers about two different
+    measurements. The fraction spelling 「D4Z4 甲基化水平：0.35」 gave
+    `d4z4_repeat_pathogenic` = 0, and the passport then told the patient
+    the laboratory had printed a count of zero, with 报告读取 beside it.
+
+    Refusing the match rather than refusing the VALUE, because
+    `_find_adjacent_regex` goes on to the next candidate: a report that
+    prints a methylation row above a genuine count still reads the
+    count. It also keeps the `length_in_kb` refusal in `_extract_genetic`
+    live for the spelling this cannot see — 「D4Z4: 38 kb」 has a gap of
+    just 「: 」 and is caught there, by the unit AFTER the number.
+    """
+    if not analyte:
+        return False
+    return any(
+        word in gap.lower()
+        for name, words in _ANALYTE_GAP_WORDS.items()
+        if name != analyte
+        for word in words
+    )
+
+
 def _find_adjacent_regex(
-    text: str, patterns: Iterable[str], flags: int = re.IGNORECASE
+    text: str,
+    patterns: Iterable[str],
+    flags: int = re.IGNORECASE,
+    analyte: Optional[str] = None,
 ) -> Tuple[Optional[re.Match], Optional[str]]:
     """`_find_regex`, for patterns that carry a `(?P<gap>…)` group.
 
@@ -675,14 +751,24 @@ def _find_adjacent_regex(
         confidence 0.97, while the report's own count sat unread below
         it.
 
-    So the gap may not cross a line, and a gap that is only the name of
-    the method is not a label-to-value gap at all. Where every candidate
-    fails those tests the answer is no reading, which is the honest one:
-    the cell this platform could not locate is a cell it has not read.
+    So the gap may not cross a line, a gap that is only the name of the
+    method is not a label-to-value gap at all, and — `analyte` — a gap
+    that names a DIFFERENT measurement belongs to that measurement's row
+    rather than to this one. Where every candidate fails those tests the
+    answer is no reading, which is the honest one: the cell this platform
+    could not locate is a cell it has not read.
+
+    `analyte` names what the patterns read, as a key of
+    `_ANALYTE_GAP_WORDS`. Left unset the third test does not run, which
+    is right for the callers outside `_extract_genetic` whose labels
+    prefix nothing.
     """
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags):
-            if _gap_names_a_method(match.groupdict().get("gap") or ""):
+            gap = match.groupdict().get("gap") or ""
+            if _gap_names_a_method(gap):
+                continue
+            if _gap_names_another_analyte(gap, analyte):
                 continue
             return match, pattern
     return None, None
@@ -1673,6 +1759,136 @@ def _is_hedged(text: str, match: "re.Match") -> bool:
     return any(marker in line for marker in _HEDGE_MARKERS)
 
 
+#: The 4q35 allele token, matched on its own and not inside a word.
+_HAPLOTYPE_TOKEN = re.compile(r"\b(4qA|4qB)\b", re.IGNORECASE)
+
+#: Labels under which a line is STATING THIS PATIENT'S ALLELE.
+_HAPLOTYPE_RESULT_LABELS = (
+    "单倍型",
+    "haplotype",
+    "等位基因",
+    "allele",
+    "分型",
+    "结果",
+    "结论",
+)
+
+#: Labels under which a line is naming the ASSAY, not this patient's
+#: allele — and which OUTRANK the result labels above, because the
+#: standard Southern blot 检测方法 line contains both: 「联合 p13E-11
+#: 探针，再结合 4qA / 4qB 探针判断单倍型」 names 单倍型 while naming a
+#: probe pair. That is the exact wording this platform's own patient
+#: copy tells people to ask their laboratory for, so it is on the first
+#: page of an ordinary report rather than an edge case.
+_HAPLOTYPE_METHOD_LABELS = (
+    "探针",
+    "probe",
+    "p13e-11",
+    "p13e11",
+    "方法",
+    "项目",
+    "引物",
+    "primer",
+    "试剂",
+)
+
+
+def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str]]:
+    """The 4qA / 4qB tokens a line states, split by whether a result
+    label introduces them: `(labelled, unlabelled)`.
+
+    A LABEL INTRODUCES THE TOKEN THAT FOLLOWS IT, not the one that
+    precedes it. 「附注: 4qA 为允许型单倍型」 is a footnote defining the
+    term and it contains 单倍型, so a line-contains test read it as a
+    second stated result and withheld the 4qB the report actually
+    printed above it. The label sits AFTER the token there and BEFORE it
+    on every real result row — 「4q35 单倍型: 4qA」, 「结果示 … 单倍型
+    4qA」 — which is the same 「the value belongs to the label next to
+    it」 rule `_find_adjacent_regex` applies to the numeric cells.
+
+    Method and probe lines state nothing in either bucket, and neither
+    does a line asserting the allele was NOT found.
+    """
+    lowered = line.lower()
+    if any(label in lowered for label in _HAPLOTYPE_METHOD_LABELS):
+        return [], []
+    if any(marker in lowered for marker in _ABSENCE_MARKERS):
+        return [], []
+    label_positions = [
+        lowered.find(label) for label in _HAPLOTYPE_RESULT_LABELS if label in lowered
+    ]
+    first_label = min(label_positions) if label_positions else None
+    labelled: List[str] = []
+    unlabelled: List[str] = []
+    for match in _HAPLOTYPE_TOKEN.finditer(line):
+        token = match.group(1)[:2].lower() + match.group(1)[2].upper()
+        bucket = (
+            labelled if first_label is not None and match.start() > first_label else unlabelled
+        )
+        if token not in bucket:
+            bucket.append(token)
+    return labelled, unlabelled
+
+
+def _read_haplotype(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    """THE HAPLOTYPE IS WHAT THE RESULT SECTION STATES.
+
+    This was `re.search(r"\\b(4qA|4qB)\\b")` over the whole document —
+    the FIRST token anywhere on the page. On a real Southern blot report
+    the first occurrence is the 检测方法 line naming the standard probe
+    pair, so a report whose RESULT reads 4qB was read as 4qA: FSHD1
+    cannot be the mechanism on a 4qB allele, and that misreading turned
+    a non-diagnosis into 基因确诊 and 可用于入组.
+
+    IT WAS NOT ENOUGH TO FLAG IT. The old code dropped confidence to
+    0.60 on a document naming both tokens and left the value in place,
+    and nothing downstream reads confidence: the bridge writes
+    `fields.haplotype` unconditionally, `parsePermissiveHaplotype` sees
+    one token and returns `true`, and the assistant prompt and the
+    patient-facing passport both assert a permissive allele. A flag only
+    the parser can see is not a warning, so what is withheld now is the
+    VALUE — the platform already renders a missing one as
+    `unspecified_haplotype`, which is the honest answer and the one every
+    downstream reader already handles. The sentence the report printed
+    survives on `interpretation_summary`, which is displayed and never
+    graded.
+
+    Two tiers, in this order:
+
+      1. lines that LABEL a result — 单倍型 / 检测结果 / 等位基因. If any
+         of them state a token, they decide, and they decide alone.
+      2. otherwise any remaining line, because an OCR that recovered the
+         result lines and lost their headings is common and dropping the
+         allele there loses a real reading.
+
+    A method or probe line is excluded from both tiers, and either tier
+    answers only when what it saw is UNANIMOUS. Both tokens stated, or
+    nothing stated outside the method line, returns no haplotype rather
+    than whichever came first.
+    """
+    labelled: List[str] = []
+    labelled_source: Optional[str] = None
+    unlabelled: List[str] = []
+    unlabelled_source: Optional[str] = None
+    for line in lines:
+        on_line_labelled, on_line_unlabelled = _haplotype_tokens_on(line)
+        for token in on_line_labelled:
+            if token not in labelled:
+                labelled.append(token)
+        for token in on_line_unlabelled:
+            if token not in unlabelled:
+                unlabelled.append(token)
+        if on_line_labelled and labelled_source is None:
+            labelled_source = line.strip()
+        if on_line_unlabelled and unlabelled_source is None:
+            unlabelled_source = line.strip()
+    if labelled:
+        return (labelled[0], labelled_source) if len(labelled) == 1 else (None, None)
+    if len(unlabelled) == 1:
+        return unlabelled[0], unlabelled_source
+    return None, None
+
+
 def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     diagnosis_match, _ = _find_regex(text, [r"\b(FSHD1|FSHD2)\b", r"(FSHD\s*[12])"])
@@ -1691,26 +1907,11 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         else None
     )
 
-    haplotype_match, _ = _find_regex(text, [r"\b(4qA|4qB)\b"])
-    # 4qA is the token the whole FSHD1 reading rests on — a contraction
-    # on 4qB is not pathogenic — and 「未检出 4qA 等位基因」 was minting it
-    # out of the sentence saying it was not found.
-    haplotype = (
-        haplotype_match.group(1)
-        if haplotype_match and not _asserts_absence(text, haplotype_match)
-        else None
-    )
-    # 「4qA/4qB」 is a real diploid genotype and 「致病侧为 4qB」 is a real
-    # sentence, so a report naming both alleles is not wrong — but this
-    # pattern takes whichever is PRINTED FIRST, which makes the print
-    # order decide which allele we call this patient's. Not guessed
-    # differently, just dropped below the 0.75 review threshold so a
-    # human answers it.
-    haplotype_ambiguous = bool(
-        haplotype
-        and re.search(r"\b4qA\b", text, re.IGNORECASE)
-        and re.search(r"\b4qB\b", text, re.IGNORECASE)
-    )
+    # 4qA is the token the whole FSHD1 reading rests on — FSHD1 cannot be
+    # the mechanism on a 4qB allele — so it is read off the RESULT, never
+    # off the first place the page happens to print it. See
+    # `_read_haplotype`.
+    haplotype, haplotype_source = _read_haplotype(lines)
 
     # EVERY NUMERIC CELL BELOW IS READ WITH `_find_adjacent_regex`, which
     # is where the 「a number near the label is the label's number」 bug
@@ -1723,6 +1924,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             r"EcoRI(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
             r"片段长度(?P<gap>[^\d\n]{0,16})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>kb|KB)",
         ],
+        analyte="fragment_length",
     )
     ecori_fragment = ecori_match.group("value") if ecori_match else None
 
@@ -1732,6 +1934,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             r"D4Z4(?P<gap>[^\d\n]{0,24})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
             r"重复数(?P<gap>[^\d\n]{0,20})(?P<value>\d+)\s*[/／]\s*(?P<other>\d+)",
         ],
+        analyte="repeat_count",
     )
     d4z4_pathogenic = d4z4_pair_match.group("value") if d4z4_pair_match else None
     d4z4_other = d4z4_pair_match.group("other") if d4z4_pair_match else None
@@ -1751,6 +1954,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         d4z4_range_match, _ = _find_adjacent_regex(
             text,
             [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"],
+            analyte="repeat_count",
         )
         if d4z4_range_match:
             d4z4_pathogenic = re.sub(r"\s+", "", d4z4_range_match.group("value"))
@@ -1759,7 +1963,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             d4z4_is_range = True
         else:
             d4z4_single_match, _ = _find_adjacent_regex(
-                text, [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+)"]
+                text,
+                [r"D4Z4(?P<gap>[^\d\n]{0,16})(?P<value>\d+)"],
+                analyte="repeat_count",
             )
             if d4z4_single_match:
                 d4z4_pathogenic = d4z4_single_match.group("value")
@@ -1815,7 +2021,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # in `numericValuesWithheld`, and a 4 in that cell is a claim about
     # this patient either way.
     methylation_match, _ = _find_adjacent_regex(
-        text, [r"甲基化(?P<gap>[^\d\n]{0,8})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%?)"]
+        text,
+        [r"甲基化(?P<gap>[^\d\n]{0,8})(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%?)"],
+        analyte="methylation",
     )
     methylation_value = methylation_match.group("value") if methylation_match else None
     # THE UNIT IS WHAT THE REPORT PRINTED, OR NOTHING. It used to fall
@@ -1886,8 +2094,14 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         _build_field(
             "haplotype",
             haplotype,
-            source_text=haplotype_match.group(0) if haplotype_match else None,
-            confidence=0.60 if haplotype_ambiguous else 0.95,
+            source_text=haplotype_source,
+            # ONE CONFIDENCE, because there is only one state left that
+            # emits a value. The ambiguous case used to be emitted at
+            # 0.60 to put it in the review queue; the queue is a human
+            # process and the value reached the passport, the assistant
+            # and the registry export in the meantime. It is withheld at
+            # the parse now — see `_read_haplotype`.
+            confidence=0.95,
         )
         if haplotype
         else None,

@@ -960,7 +960,15 @@ describe('第四种来源 — a value our own back office typed', () => {
     // rows instead of from the provenance block.
     expect(result.markdown).toContain('家族史');
     expect(result.markdown).toContain(ADMIN_ID);
-    expect(result.markdown).toContain(AT.toISOString());
+    // THE DAY, NOT THE INSTANT. This line asserted `AT.toISOString()`,
+    // which is what the pack printed: 「本平台管理员于
+    // 2026-08-13T04:11:07.912Z 代为录入」, a machine timestamp on a sheet
+    // a neurologist reads, while the markdown export, the share page
+    // and the mobile PDF each printed a calendar day for the same
+    // event. See formatFieldOriginLine in referral-pack.ts and the
+    // four-document comparison in profile.passport.dates.test.ts.
+    expect(result.markdown).toContain('本平台管理员于 2026-08-13 代为录入');
+    expect(result.markdown).not.toContain(AT.toISOString());
 
     // The note at the top promises the list is 「在第一节末尾」. It has to
     // be there, not after 功能测试.

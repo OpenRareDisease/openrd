@@ -1256,3 +1256,221 @@ describe('FHIR R4 —— 读不出结果的基因栏位，不发成结果', () =
     expect(notesOf(result, 'D4Z4 重复单元数').join('\n')).not.toContain('grey_zone_8_10');
   });
 });
+
+/**
+ * THE SUBTYPE ON `Condition.code`, AND WHERE IT COMES FROM.
+ *
+ * THE DEFECT. This resource classified the ARCHIVED 分型 —
+ * `diseaseBackground.diagnosisType`, else
+ * `patient_profiles.genetic_mutation` — while the clinical passport,
+ * the markdown export, the share page, the referral pack and the
+ * anaesthesia card all resolve the evidence document's own 分型 cell
+ * FIRST. The two disagree over an entirely ordinary profile:
+ * `applyGeneticReportAutofill` fills an EMPTY archive slot and never
+ * corrects a full one, so a patient who answered the questionnaire
+ * before uploading the corrected report keeps their old answer forever.
+ * Rendered, that patient's bundle asserted 面肩肱型肌营养不良 1 型 with
+ * OMIM 158900 attached while every surface they and their doctor can
+ * see said FSHD2 — two different mechanisms, in the element a registry
+ * indexes on.
+ */
+describe('FHIR R4 —— Condition 上的分型跟着报告，不跟着旧问卷答案', () => {
+  const reportSaysFshd2 = {
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: {
+      fields: { reportTime: '2024-01-28', diagnosisType: 'FSHD2', methylationValue: '18%' },
+    },
+  };
+
+  /** 问卷 FSHD1 + 报告 FSHD2, with the autofill run over it exactly as
+   *  `getProfileByUserId` runs it before any exporter sees the profile
+   *  — so this is a state the service can actually produce. */
+  const mismatched = () => {
+    const base: PatientProfileDTO = {
+      ...EXPORT_FIXTURE_PROFILE,
+      documents: [reportSaysFshd2, ...EXPORT_FIXTURE_PROFILE.documents.slice(1)],
+    };
+    return { ...base, ...applyGeneticReportAutofill(base, base.documents) } as PatientProfileDTO;
+  };
+
+  const conditionOf = (result: ReturnType<typeof build>) => resourcesOf(result, 'Condition')[0];
+
+  it('报告写 FSHD2、问卷写 FSHD1 时，Condition 断言的是 FSHD2', () => {
+    const condition = conditionOf(build(mismatched()));
+    expect((condition.code as { text: string }).text).toContain('FSHD2');
+    expect((condition.code as { text: string }).text).toContain('158901');
+    expect((condition.code as { text: string }).text).not.toContain('158900');
+  });
+
+  it('两个值都写在 note 里 —— 不静默地替换，也不静默地保留', () => {
+    const notes = ((conditionOf(build(mismatched())).note ?? []) as Array<{ text: string }>).map(
+      (note) => note.text,
+    );
+    const joined = notes.join('\n');
+    expect(joined).toContain('FSHD2');
+    expect(joined).toContain('FSHD1');
+    expect(joined).toContain('不一致');
+    // Names where the archived value still travels, so a receiver
+    // holding both documents is not left to guess which is which.
+    expect(joined).toContain('diagnosis.type');
+  });
+
+  it('报告没有分型那一项时，档案值照旧，句子也说清楚是档案值', () => {
+    // The shared fixture's genetics report carries no 分型 cell, so the
+    // archive answers and nothing changes — which is the common case,
+    // and the sentence still says which store answered.
+    const condition = conditionOf(build());
+    expect((condition.code as { text: string }).text).toContain('158900');
+    const joined = ((condition.note ?? []) as Array<{ text: string }>)
+      .map((note) => note.text)
+      .join('\n');
+    expect(joined).toContain('档案里记录的「FSHD1」');
+    expect(joined).toContain('那一份上没有这一项');
+  });
+});
+
+/**
+ * THE TWO CELLS THIS BUNDLE USED TO DROP ON THE FLOOR.
+ *
+ * `REPORT_FIELD_SPECS` had entries for CK, myoglobin, LDH, CK-MB, FVC,
+ * TLC, DLCO, LVEF, QTc, the serratus fat grade, D4Z4 重复数 and 单倍型 —
+ * and none for 甲基化 or the EcoRI fragment. Both readings were
+ * available, both are printed on every human-facing surface, and this
+ * bundle builds its Observations off that table, so both vanished while
+ * the omissions list declared other pipeline gaps and said nothing
+ * about either.
+ *
+ * WHAT THAT COST, PER PROFILE. 甲基化 is the FSHD2 discriminator, and
+ * the profile where it matters most is the one whose repeat count is
+ * above 10 — whose own passport grade tells the patient to go and add
+ * D4Z4 甲基化分析 and SMCHD1 测序. The EcoRI fragment is, for a report
+ * that states its length in kb and gives no repeat count, the ONLY size
+ * measurement the laboratory made; without it a registry saw a patient
+ * with a 4qA haplotype and no D4Z4 size measurement at all.
+ *
+ * AND NEITHER MAY TRAVEL BARE. This repository states no kb boundary
+ * and no methylation boundary. A number emitted with no caveat is a
+ * number a receiver compares against a threshold nothing here derived,
+ * which is worse than the omission it replaces.
+ */
+describe('FHIR R4 —— EcoRI 片段与甲基化：照原样带走，并且说明没有判断过', () => {
+  const geneticReport = (cells: Record<string, string>) => ({
+    ...EXPORT_FIXTURE_PROFILE.documents[0],
+    ocrPayload: { fields: { reportTime: '2024-01-28', ...cells } },
+  });
+
+  const reported = (cells: Record<string, string>) =>
+    build({ documents: [geneticReport(cells), ...EXPORT_FIXTURE_PROFILE.documents.slice(1)] });
+
+  const observationFor = (result: ReturnType<typeof build>, labelZh: string) =>
+    resourcesOf(result, 'Observation').find(
+      (resource) => (resource.code as { text: string }).text === labelZh,
+    );
+
+  const notesOf = (result: ReturnType<typeof build>, labelZh: string): string =>
+    ((observationFor(result, labelZh)?.note ?? []) as Array<{ text: string }>)
+      .map((note) => note.text)
+      .join('\n');
+
+  it('只有 kb 长度、没有重复数的报告，仍然带着实验室做过的那一次测量', () => {
+    const result = reported({ ecoRIFragment: '18 kb', haplotype: '4qA' });
+    expect(observationFor(result, 'EcoRI 片段')?.valueString).toBe('18 kb');
+    // The point of the whole case: this bundle used to describe a
+    // patient with a haplotype and no size measurement of any kind.
+    expect(observationFor(result, 'D4Z4 重复单元数')).toBeUndefined();
+  });
+
+  it('kb 长度旁边写着本平台没有换算、也没有界限', () => {
+    const notes = notesOf(reported({ ecoRIFragment: '18 kb', haplotype: '4qA' }), 'EcoRI 片段');
+    expect(notes).toContain('不在 kb 和重复单元数之间做换算');
+    expect(notes).toContain('不要把它当作 D4Z4 重复单元数');
+  });
+
+  /**
+   * 可用于入组 IS THE STATE THE PASSPORT'S OWN SENTENCE DOES NOT COVER.
+   * `readingsNotJudged` is composed only when the grade WITHHELD
+   * something, so a report that earns 可用于入组 while also stating an
+   * EcoRI fragment prints the kb number on every human surface with
+   * that field null. An Observation carries one cell and travels alone,
+   * so its caveat has to be as unconditional as the cell.
+   */
+  it('报告已经够入组时，kb 长度的说明照旧在', () => {
+    const notes = notesOf(
+      reported({ d4z4Repeats: '5', haplotype: '4qA', ecoRIFragment: '18 kb' }),
+      'EcoRI 片段',
+    );
+    expect(notes).toContain('不在 kb 和重复单元数之间做换算');
+  });
+
+  /**
+   * A NEGATION CARRIES A NUMBER. 「未检出10kb以下片段」 has a 10 in it, and
+   * a presence test would have published that string as this patient's
+   * fragment size. `readSizeCell` is the passport's own reader and is
+   * exported for exactly this caller.
+   */
+  it('否定式的片段格子不发成结果，原文照旧带走', () => {
+    const result = reported({ ecoRIFragment: '未检出10kb以下片段', haplotype: '4qA' });
+    expect(observationFor(result, 'EcoRI 片段')?.valueString).toBeUndefined();
+    expect(
+      (observationFor(result, 'EcoRI 片段')?.dataAbsentReason as { text: string }).text,
+    ).toContain('未检出10kb以下片段');
+  });
+
+  it('重复数大于 10 的那份报告上，甲基化跟着走', () => {
+    const result = reported({ d4z4Repeats: '30', haplotype: '4qA', methylationValue: '32%' });
+    expect(observationFor(result, '甲基化')?.valueString).toBe('32%');
+  });
+
+  /** No gate here reads 甲基化 and no parser here refuses it, so the
+   *  sentence says the platform holds no boundary — and quotes the
+   *  guideline's instruction as an instruction for a clinician rather
+   *  than applying it. */
+  it('甲基化旁边写着本平台没有判读界限，指南那一条交给医生', () => {
+    const notes = notesOf(
+      reported({ d4z4Repeats: '30', haplotype: '4qA', methylationValue: '32%' }),
+      '甲基化',
+    );
+    expect(notes).toContain('没有任何判读界限');
+    expect(notes).toContain('SMCHD1');
+    expect(notes).toContain('由医生看着报告原件说');
+  });
+
+  /** The verdict value set is normal/abnormal/high/low, and this cell
+   *  has no verdict at all. */
+  it('这两项都不写 interpretation', () => {
+    const result = reported({ ecoRIFragment: '18 kb', methylationValue: '32%', haplotype: '4qA' });
+    expect(observationFor(result, 'EcoRI 片段')?.interpretation).toBeUndefined();
+    expect(observationFor(result, '甲基化')?.interpretation).toBeUndefined();
+  });
+
+  it('信封里声明了这两项是给出数值但不判读的', () => {
+    const result = reported({ ecoRIFragment: '18 kb', haplotype: '4qA' });
+    const omission = result.omissions.find((entry) => entry.field.includes('EcoRI 片段'));
+    expect(omission?.reasonZh).toContain('不带任何判读');
+  });
+
+  /** Gated on the survivors, like every other statement this envelope
+   *  makes about what the bundle contains. */
+  it('没有这两项时，不声明它们', () => {
+    const result = reported({ d4z4Repeats: '5', haplotype: '4qA' });
+    expect(result.omissions.some((entry) => entry.field.includes('EcoRI 片段'))).toBe(false);
+  });
+
+  /** Same rule as the other two genetic cells: read off the ONE
+   *  document `pickGeneticEvidenceDocument` names, and off no other. */
+  it('这两项也只从被点名的那一份读，别的上传件不参与', () => {
+    const otherReport = {
+      ...EXPORT_FIXTURE_PROFILE.documents[1],
+      id: '88888888-8888-4888-8888-888888888877',
+      ocrPayload: { fields: { reportTime: '2025-05-09', ecoRIFragment: '99 kb' } },
+    };
+    const result = build({
+      documents: [
+        geneticReport({ d4z4Repeats: '5', haplotype: '4qA' }),
+        otherReport,
+        ...EXPORT_FIXTURE_PROFILE.documents.slice(1),
+      ],
+    });
+    expect(JSON.stringify(result.document)).not.toContain('99 kb');
+  });
+});

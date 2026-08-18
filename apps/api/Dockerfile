@@ -116,6 +116,26 @@ COPY scripts/admin-role.mjs ./scripts/admin-role.mjs
 
 WORKDIR /app/apps/api
 ENV NODE_ENV=production
+# BELT AND BRACES ONLY. node:20-bookworm-slim has no TZ set and runs UTC,
+# and the patients this serves are at UTC+8 — so every date this image
+# rendered was eight hours away from the date the handset rendered for
+# the same instant, and the passport, the share page and the referral
+# pack disagreed with the mobile PDF by a full day for any report filed
+# between 16:00 and 24:00 UTC.
+#
+# Setting this line was NOT the fix, and nothing may be allowed to
+# depend on it. It makes exactly this deployment agree, and the next one
+# — another region, a maintainer's laptop, a CI box, a patient's phone
+# set to another zone — goes back to disagreeing with no error anywhere.
+# The calendar is declared in the code, as PRODUCT_TIME_ZONE in
+# src/modules/patient-profile/profile.passport.ts and again, with the
+# same value and the same arithmetic, in
+# apps/mobile/lib/clinical-visuals.ts. Both sides compute the product
+# day from an absolute instant and never read the ambient zone, which is
+# what profile.passport.dates.test.ts pins by rendering all four
+# documents under mismatched zones. Deleting this line must not change
+# a single printed date; if it ever does, the code regressed.
+ENV TZ=Asia/Shanghai
 ENV OCR_PYTHON_BIN=python3
 # Production OCR is Tesseract-only, and that is a decision rather than an
 # accident: paddleocr is in neither requirements file this image installs, so

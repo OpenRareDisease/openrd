@@ -305,6 +305,14 @@
   },
   "omissions": [
     {
+      "field": "sections.diagnosis（临床护照的诊断判定与检查申请说明）",
+      "reasonZh": "本节承载的是这份档案上的基因读数本身，不承载本平台对它们的判定。临床护照另有一组内容不随本导出发送：一是基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）及其面向患者的说明文字；二是随分级生成的《检查申请说明》与它引用的指南出处；三是报告上写的检测方法。判定的可映射部分已经在 diagnosis.geneticallyConfirmed 上，连同它的 provenanceZh —— 那句话与 FHIR 导出的 Condition.verificationStatus.text 和 Phenopacket 导出的对应 omission 是同一句。此外，患者在基线问卷上自己勾选的「诊断进度」（临床诊断 / 已做基因检测等）也不在本导出中：它与 diagnosis.geneticallyConfirmed 回答的不是同一个问题（「你告诉我们什么」与「证据显示什么」），本平台在护照上两者并列不作调和，而本导出没有能同时承载两者又不被误读为一个的位置。"
+    },
+    {
+      "field": "diagnosis（基因证据来自哪一份文件、有多旧）",
+      "reasonZh": "本导出不含上传文件清单，因此本节的基因读数没有可指向的文件条目：本节各项的 provenanceZh 说明了它们读自本平台认定为这份档案基因证据的那一份文件，但没有给出那份文件的标识或日期，本导出也不给出临床护照上按该日期算出的「新鲜度」。需要知道这些读数出自哪一份、什么时候上传的，请改用 FHIR 导出（DocumentReference.date 与 Observation.derivedFrom）或 Phenopacket 导出（files[].fileAttributes.uploadedAt）。另外，临床护照上的「证据摘要」是把分型、单倍型、EcoRI 片段与 D4Z4 重复数拼成的一行展示文本，本导出不拼它——各项分别在上面，拼接会把来源不同的几项塞进一个无法归因的字符串。"
+    },
+    {
       "field": "sections.familyHistory",
       "reasonZh": "家族史涉及第二数据主体（亲属），默认不外发。"
     },

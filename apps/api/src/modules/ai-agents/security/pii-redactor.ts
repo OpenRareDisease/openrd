@@ -199,6 +199,53 @@ const isCategoryLabel = (key: string, value: unknown): boolean =>
   SINGLE_CATEGORY_TOKEN.test(value.trim());
 
 /**
+ * THE CELL THAT NAMES THE DIAGNOSIS, IN EVERY SPELLING — and the one
+ * genetics cell on this projection that had no branch of its own.
+ *
+ * `projectOcrFields` dispatches the genetics cells on the substrings
+ * 「d4z4」/「ecori」/「methylation」/「haplotype」. `diagnosisType` matches
+ * none of them, so it fell through to the `OCR_FIELDS_SAFE_KEYS_PRECISE`
+ * branch, which asks only whether a key is safe to NAME — a PII
+ * question — and published 「FSHD1」 verbatim in precise mode and again
+ * in strict via `isCategoryLabel`, on the stated ground that a category
+ * label is non-PII. That ground is sound and it is not the question the
+ * siblings answer: `fromLaboratoryReport` was computed and passed into
+ * this projection, and every other genetics cell on the same 病历摘要
+ * rendered `not_read_off_a_laboratory_report` beside itself. Stating
+ * the refusal beside everything EXCEPT the diagnosis is not neutral —
+ * it implies the diagnosis is the one this platform did read off a
+ * laboratory report. On a 出院小结 that row is the only genetics content
+ * on the page.
+ *
+ * DISPATCHED OFF THE PASSPORT'S OWN KEY TABLE, NOT OFF A SUBSTRING.
+ * Every other reader here matches a substring, and that is right for
+ * them: 「d4z4」 and 「ecori」 name an assay, so a key containing one is
+ * that cell whatever else is spelled around it. The substring this
+ * class shares is 「gene」, and matching it would sweep in
+ * `geneticPositive` — the verdict `_extract_genetic` used to compute,
+ * deliberately absent from every allowlist and currently dropped by
+ * deny-by-default — and publish it with a sibling reading beside it.
+ * `GENETIC_FIELD_KEYS.geneticType` is the closed list this platform
+ * already keeps of the spellings that ARE this cell, legacy paths
+ * included, and reading it here is what keeps the assistant and the
+ * passport naming the same cells.
+ *
+ * PLUS EACH SPELLING'S SNAKE FORM, because the bridge in
+ * services/ocr/embedded-report-ocr.ts writes every structured field
+ * under BOTH its camelCase and its snake_case name, and the passport's
+ * table happens to carry `geneType` without `gene_type`. That table is
+ * a preference ORDER for reading one value — a missing alias costs it
+ * nothing, because the camel spelling is right beside it on the same
+ * blob. Here a missing alias costs a cell its origin, so the two
+ * spellings are derived rather than enumerated.
+ */
+const toSnake = (key: string): string => key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+
+const GENETIC_TYPE_KEYS_LOWER: ReadonlySet<string> = new Set(
+  GENETIC_FIELD_KEYS.geneticType.flatMap((key) => [key.toLowerCase(), toSnake(key)]),
+);
+
+/**
  * WHAT THE ASSISTANT MAY SAY ABOUT A GENETICS CELL THIS PLATFORM DID
  * NOT READ OFF THE LABORATORY'S OWN REPORT.
  *
@@ -767,6 +814,24 @@ const isUntrustworthyValue = (value: unknown): boolean => {
  * parser writes `classifiedType` into the blob, and the retriever puts
  * `documentType` beside it.
  *
+ * AND THE DOCUMENT'S OWN PAGE, WHICH THIS PATH USED TO BE THE ONE
+ * WITHOUT. `isLaboratoryGeneticReport` closes on the uploader's
+ * declared type only where the page shows NEITHER a clinical narrative
+ * nor a laboratory's structure — and with no page on the projection
+ * that was every archived row, so an archived 病历摘要 whose uploader
+ * ALSO picked 基因检测报告 from the menu was believed here and refused
+ * on every other surface. Its own note said so: 「the gap closes the
+ * moment the retriever's projection carries the OCR text; nothing here
+ * has to change for that」. `buildReportFields` carries it now, under
+ * `extractedText`, and this is where it is read.
+ *
+ * THE TEXT IS READ AND NOT PUBLISHED. It is on `HARD_DELETE_KEYS`, so
+ * layer 1 deletes it in both modes at any depth — which is why this
+ * question is asked of `redactFields`'s INPUT rather than of the
+ * working map, and why the answer is computed once and carried. A page
+ * that reached the prompt would be the OCR full-text dump, names and
+ * all.
+ *
  * The two members of that shape this projection has no value for are
  * the row's id and its upload time. Neither is read by the question —
  * they are `pickGeneticEvidenceDocument`'s ordering keys, and no pick
@@ -775,7 +840,10 @@ const isUntrustworthyValue = (value: unknown): boolean => {
  */
 const chunkIsLaboratoryGeneticReport = (chunk: Record<string, unknown>): boolean =>
   isLaboratoryGeneticReport({
-    ocrPayload: { fields: chunk.fields },
+    ocrPayload: {
+      fields: chunk.fields,
+      extractedText: typeof chunk.extractedText === 'string' ? chunk.extractedText : null,
+    },
     documentType: typeof chunk.documentType === 'string' ? chunk.documentType : null,
     status: typeof chunk.status === 'string' ? chunk.status : null,
     // Required by the shape, read by nothing on this path.
@@ -902,13 +970,41 @@ const projectOcrFields = (
      * those cells through `patchDocumentOcrFields`, which spreads the
      * patch straight onto the stored fields.
      *
-     * THE READING STILL GOES OUT. The refused thing is the cell's own
-     * text, not this platform's reading of it — the model is told what
-     * this platform makes of a cell it is not being shown, and
-     * `fieldsDroppedAsUnsafe` tells it a cell was refused, exactly as
-     * for a safe key whose value failed the same check.
+     * THE GUARD IS ASKED FIRST, AND A REFUSED CELL IS NOT READ.
+     *
+     * It used to run the reader and then let `publishRawCell` ask —
+     * so the reading was minted from a string this platform had
+     * already decided it would not show. The production ECG dump is
+     * the live case, because `patchDocumentOcrFields` lets a patient
+     * hand-correct exactly these cells: an inpatient record number
+     * pasted into `d4z4Repeats` went through `readSizeCell`, THE
+     * DIGITS OF THE RECORD NUMBER became the repeat count, and the
+     * model was told 「above_fshd1_repeat_range」 — the label whose
+     * whole documented meaning is that the guideline is sending this
+     * reader off to evaluate FSHD2. In precise mode the same
+     * projection carried that band and `fieldsDroppedAsUnsafe` in one
+     * breath; in strict mode the band was all there was.
+     *
+     * The note that used to sit here said 「THE READING STILL GOES OUT.
+     * The refused thing is the cell's own text, not this platform's
+     * reading of it」. A reading of a string this platform will not
+     * show is not a reading of anything: there is no cell, so there is
+     * nothing to read and nothing to say about it beyond
+     * `fieldsDroppedAsUnsafe`, which still tells the model a cell was
+     * refused — exactly as for a safe key whose value failed the same
+     * check.
+     *
+     * The reader is passed as a thunk rather than called at the call
+     * site so that ordering is structural rather than remembered: an
+     * argument is evaluated before the guard sees it, and this is the
+     * defect that came of exactly that.
      */
-    const publishGeneticCell = (clinical: string | null) => {
+    const publishGeneticCell = (read: () => string | null) => {
+      if (isUntrustworthyValue(value)) {
+        droppedUntrusted.push(key);
+        return;
+      }
+      const clinical = read();
       if (clinical === null) return;
       if (mode === 'precise' && value !== null && value !== undefined && value !== '') {
         publishRawCell();
@@ -919,7 +1015,7 @@ const projectOcrFields = (
       // 「other」 is how every spelling of the uncontracted allele's cell
       // names itself, and it has to be asked before the band. See
       // `clinicaliseOtherD4Z4Allele`.
-      publishGeneticCell(
+      publishGeneticCell(() =>
         lower.includes('other')
           ? clinicaliseOtherD4Z4Allele(value, fromLaboratoryReport)
           : clinicaliseD4Z4(value, fromLaboratoryReport, haplotypePermissive),
@@ -927,7 +1023,7 @@ const projectOcrFields = (
     } else if (lower.includes('ecori')) {
       // The other size cell. See `clinicaliseEcoRIFragment` for why it
       // is read by its own reader and not by the one above.
-      publishGeneticCell(clinicaliseEcoRIFragment(value, fromLaboratoryReport));
+      publishGeneticCell(() => clinicaliseEcoRIFragment(value, fromLaboratoryReport));
     } else if (lower.includes('methylation')) {
       // No reading, in either mode — see `methylationCell`. The word
       // survives as the cell it is; the measurement is counted with
@@ -935,6 +1031,50 @@ const projectOcrFields = (
       // it DOES carry now, in both modes, is where the value came from:
       // this cell sits beside siblings that state the refusal, and a
       // 病历摘要's quoted percentage used to sit there stating nothing.
+      //
+      // AND THE GUARD IS ASKED FIRST HERE TOO, WHICH IS THE ONE THING
+      // THIS BRANCH HAD AND `publishGeneticCell` DID NOT LEND IT.
+      //
+      // This is the only genetics branch that mints no `_clinical`
+      // sibling, so it does not go through that helper — and it
+      // inherited none of the helper's guard-first discipline either.
+      // `publishRawCell` asked `isUntrustworthyValue` about the RAW
+      // CELL and nothing asked it about the two statements this branch
+      // makes beside the cell, so a refused value still produced both
+      // of them:
+      //
+      //   - `methylationValue_origin`, which asserts that a methylation
+      //     result exists and says where it came from, about a cell
+      //     the same projection then declined to publish. Its siblings
+      //     print NOTHING for the identical string — the loop above
+      //     drops `d4z4Repeats` and `haplotype` whole — so the prompt
+      //     carried a provenance line for the FSHD2 discriminator and
+      //     no value, no reading and no refusal anywhere near it.
+      //   - in strict mode, `numericValuesWithheld`, which is the
+      //     consent channel: 「there is a measurement here and the
+      //     patient did not share the number」. A refusal to read a
+      //     cell is not a redaction, and the two modes therefore gave
+      //     one cell two different accounts — precise called it
+      //     `fieldsDroppedAsUnsafe`, strict called it a real
+      //     methylation number consent was hiding. On a genuine
+      //     laboratory report, where the origin is null and that count
+      //     is all that is left, strict said a methylation measurement
+      //     was withheld off a report that printed none.
+      //
+      // The live case is the one `EDITABLE_OCR_FIELDS` opens:
+      // `methylationValue` is on it, `ocrFieldsPatchSchema` accepts any
+      // string up to `SAFE_VALUE_MAX_LENGTH`, and a patient
+      // hand-correcting 甲基化 pasted an inpatient record number —
+      // 「住院号:R000000」, the same string this file already refuses on
+      // `d4z4Repeats`. There is no cell, so there is nothing to read,
+      // nothing to say about where it came from, and nothing to count
+      // as withheld: `fieldsDroppedAsUnsafe` is the whole of what the
+      // model gets, in both modes, exactly as for a safe key whose
+      // value failed the same check.
+      if (isUntrustworthyValue(value)) {
+        droppedUntrusted.push(key);
+        continue;
+      }
       const survives = methylationCell(value, mode, fromLaboratoryReport);
       if (survives !== null) {
         if (survives.value === 'raw') publishRawCell();
@@ -942,7 +1082,30 @@ const projectOcrFields = (
         if (survives.origin !== null) out[`${key}_origin`] = survives.origin;
       }
     } else if (lower.includes('haplotype')) {
-      publishGeneticCell(clinicaliseHaplotype(value, fromLaboratoryReport));
+      publishGeneticCell(() => clinicaliseHaplotype(value, fromLaboratoryReport));
+    } else if (GENETIC_TYPE_KEYS_LOWER.has(lower)) {
+      // THE CELL THAT NAMES THE DIAGNOSIS — see
+      // `GENETIC_TYPE_KEYS_LOWER` for why it is dispatched off the
+      // passport's own key table and not off a substring.
+      if (value === null || value === undefined || value === '') continue;
+      // A safe key is not a safe value, asked here for the same reason
+      // the branch below asks it: these keys skip that branch entirely.
+      if (isUntrustworthyValue(value)) {
+        droppedUntrusted.push(key);
+        continue;
+      }
+      // The cell itself, on exactly the terms it had before: precise
+      // consent buys it whole, and strict keeps a single-token
+      // classification because 「FSHD1」 is a category label rather than
+      // a measurement. That is a PII decision and it stands.
+      if (mode === 'precise' || isQualitativeResult(value) || isCategoryLabel(key, value)) {
+        out[key] = value;
+      } else {
+        withheldNumeric += 1;
+      }
+      // ...and the provenance decision, which was never made at all.
+      // Stated in both modes, like every other refusal here.
+      if (!fromLaboratoryReport) out[`${key}_origin`] = NOT_A_LABORATORY_READING;
     } else if (lower.includes('date')) {
       // Both modes: strip to year-only. Even in precise mode we don't
       // want the exact day-of-month leaving the server.
@@ -1048,23 +1211,43 @@ const clinicalise = (
     const fromLaboratory = (key: string): boolean => input[key] === true;
     drop.add('d4z4FromLaboratoryReport');
     drop.add('haplotypeFromLaboratoryReport');
-    // The methylation cell asks the same question as its two siblings
-    // now, so its flag is dropped on the same footing. NOTE: the
-    // profile retriever does not yet WRITE this flag — see
-    // `geneticCellsFromLaboratoryReport` in
-    // retrievers/patient-profile.ts, which computes the answer for
-    // `d4z4` and `haplotype` only — so the cell currently always reads
-    // `not_read_off_a_laboratory_report`. That is the refusal, which is
-    // the direction that only ever withholds; the flag is read here so
-    // that the day the retriever answers for methylation too, an
-    // autofilled laboratory value stops being refused.
+    // The methylation cell asks the same question as its siblings, and
+    // the retriever ANSWERS it now. It did not: this comment used to
+    // record that `geneticCellsFromLaboratoryReport` computed the flag
+    // for `d4z4` and `haplotype` only, so the cell always read
+    // `not_read_off_a_laboratory_report` — a negative asserted about a
+    // value the same request attributed to the laboratory report on
+    // five other surfaces, printed INSIDE the same profile block as two
+    // sibling readings that can only be minted when the flag is true.
+    // One document, two answers, in one prompt.
     drop.add('methylationFromLaboratoryReport');
+    // Same for the cell that names the diagnosis. It is autofilled off
+    // the picked report by `applyGeneticReportAutofill` exactly as the
+    // other three are, so a 病历摘要's quoted 「FSHD1」 lands in the same
+    // box a laboratory's does.
+    drop.add('diagnosisTypeFromLaboratoryReport');
     // The haplotype the same profile records, for the D4Z4 grey-zone
     // gate — `permissiveHaplotype !== false`, the passport's own gate.
     // See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
     const haplotypePermissive = parsePermissiveHaplotype(
       typeof input.haplotype === 'string' ? input.haplotype : null,
     );
+    // WHERE THE SUBTYPE CAME FROM, on the same footing as its three
+    // siblings and under a key that states an origin rather than
+    // grading anything. The cell itself is untouched — it is a
+    // classification, it is on both allowlists, and this platform is
+    // not reading FSHD1 against any boundary. What it lacked was the
+    // sentence beside it: 分型/诊断方式 printed bare while D4Z4 本平台判读
+    // and 单倍型本平台判读 both refused, three lines apart, about one
+    // registration form. See the reports-scope branch in
+    // `projectOcrFields`, which is the same cell on the OCR blob.
+    if ('diagnosisType' in input && !fromLaboratory('diagnosisTypeFromLaboratoryReport')) {
+      const cell = readGeneticCell(input.diagnosisType);
+      if (cell.kind !== 'empty') {
+        added.diagnosisType_origin = NOT_A_LABORATORY_READING;
+        changed.push('diagnosisType');
+      }
+    }
     if ('d4z4' in input) {
       const v = clinicaliseD4Z4(
         input.d4z4,
@@ -1219,6 +1402,20 @@ export const redactFields = (
     notAllowed: [],
   };
 
+  // THE LABORATORY GATE IS ASKED OF THE INPUT, BEFORE LAYER 1, and its
+  // answer is carried to layer 2b below.
+  //
+  // The question reads the document's own page (see
+  // `chunkIsLaboratoryGeneticReport`), and the page is on
+  // `HARD_DELETE_KEYS` — so asking it after layer 1, where it used to
+  // be asked, would be asking it of a projection the page had just been
+  // deleted from, which is the state the gap it closes was measured in.
+  // Everything else the question reads (`classifiedType` inside the
+  // blob, `documentType`, `status`) survives layer 1 untouched, so the
+  // answer is the same one the old call site computed wherever no page
+  // is present.
+  const fromLaboratoryReport = scope === 'reports' && chunkIsLaboratoryGeneticReport(fields);
+
   // Layer 1 — recursive hard-delete (covers nested OCR blobs).
   const layer1 = hardDelete(fields);
   stats.hardDeleted = layer1.removed;
@@ -1243,11 +1440,7 @@ export const redactFields = (
   // them, and only for keys we explicitly trust as structured /
   // non-PII. Free-form OCR keys are dropped in both modes.
   if (scope === 'reports' && isPlainObject(working.fields)) {
-    const projected = projectOcrFields(
-      working.fields,
-      mode,
-      chunkIsLaboratoryGeneticReport(working),
-    );
+    const projected = projectOcrFields(working.fields, mode, fromLaboratoryReport);
     if (mode === 'strict') {
       working.fields_clinical = projected;
       delete working.fields;

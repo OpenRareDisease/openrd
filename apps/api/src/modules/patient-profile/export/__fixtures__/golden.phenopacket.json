@@ -55,7 +55,11 @@
   "omissions": [
     {
       "field": "diseases[].term（诊断依据）",
-      "reasonZh": "Phenopacket 的 Disease 消息只有 term、excluded、发病与分期等字段，没有记录「这个诊断是怎么确立的」的位置；excluded 表示「已排除该病」，它取默认值 false 不是一次确认。因此本文件里的 Disease.term 只表示档案记录的分型归一到了这个本体项，不表示基因确诊。本平台把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，且报告上有可作确诊依据的基因结果。文件类型以解析器的判定为准，解析未落地时按上传时声明的类型；报告内容未经本平台人工复核。本平台读作这份档案基因证据的那一份是基因检测报告。这个判定与 FHIR 导出的 Condition.verificationStatus 以及 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 出自同一个答案；该分型的值本身如何进入档案，见 TREAT-NMD 对齐导出中 diagnosis.type 的 provenanceZh 与本信封的 fieldOrigins。"
+      "reasonZh": "Phenopacket 的 Disease 消息只有 term、excluded、发病与分期等字段，没有记录「这个诊断是怎么确立的」的位置；excluded 表示「已排除该病」，它取默认值 false 不是一次确认。因此本文件里的 Disease.term 只表示本平台记录的分型归一到了这个本体项，不表示基因确诊；分型取自何处见下一条 omission。本平台把这份档案判定为基因确诊：作为这份档案基因证据来读的那一份是基因检测报告，且报告上有可作确诊依据的基因结果。文件类型以解析器的判定为准，解析未落地时按上传时声明的类型；报告内容未经本平台人工复核。本平台读作这份档案基因证据的那一份是基因检测报告。这个判定与 FHIR 导出的 Condition.verificationStatus 以及 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 出自同一个答案；档案里那个分型值本身如何进入档案，见 TREAT-NMD 对齐导出中 diagnosis.type 的 provenanceZh 与本信封的 fieldOrigins。"
+    },
+    {
+      "field": "diseases[].term（分型取自何处）",
+      "reasonZh": "本文件的 FSHD 分型由档案里记录的「FSHD1」归一而来；本平台读作这份档案基因证据的那一份上没有这一项。"
     },
     {
       "field": "measurements",
@@ -71,7 +75,15 @@
     },
     {
       "field": "interpretations",
-      "reasonZh": "FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。D4Z4 重复数与单倍型在 TREAT-NMD 对齐导出中按其本来面目呈现。"
+      "reasonZh": "FSHD1 是 4q35 上 D4Z4 重复序列的缩短（且需要允许型 4qA 单倍型），不是 DUX4 的序列变异。把 DUX4 填进 geneContext / gene-studied 会让本文件通过基因组学 profile 的校验，却向下游谎报了致病机制，因此不写 interpretations。基因报告上的各项读数按其本来面目呈现在另外两份导出里，见下一条。"
+    },
+    {
+      "field": "diseases（临床护照的基因证据分级、检测方法与诊断进度）",
+      "reasonZh": "本文件在诊断这件事上只写了一个本体项。临床护照上围绕它的其余内容都不在这里：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法，以及患者在基线问卷上自己勾选的「诊断进度」。是否基因确诊这一判定见上面 diseases[].term（诊断依据）那一条，它与 FHIR 导出的 Condition.verificationStatus.text 和 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh 是同一句话。"
+    },
+    {
+      "field": "diseases / measurements（基因报告上的读数）",
+      "reasonZh": "本文件不承载基因报告上的任何一项读数：D4Z4 重复单元数、4q 单倍型、EcoRI 片段与甲基化都不出现在这个 Phenopacket 里。Phenopacket v2 里能放这些的位置只有 interpretations 下的变异描述（上一条说明了为什么不写）与要求本体项的 Measurement，两者本导出都填不诚实。这四项连同各自的来源说明，完整出现在 TREAT-NMD 对齐导出的 diagnosis 一节与 FHIR 导出的 Observation 里——其中 EcoRI 片段与甲基化是照原样给出、本平台不作判断的读数，各自带着说明。请不要因为本文件里没有这些数据就认为患者没有做过这些检测。"
     }
   ],
   "fieldOrigins": [],

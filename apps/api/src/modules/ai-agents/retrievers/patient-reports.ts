@@ -125,6 +125,13 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
   // after. `assertedOccurrence` still rules out 未萎缩 / 萎缩不明显, and
   // the longer compounds still win the dedupe below, so this only adds
   // the occurrences the compounds could not reach.
+  //
+  // THAT LAST CLAUSE WAS NOT TRUE WHEN IT WAS WRITTEN. The dedupe keyed
+  // on the severity qualifier, and a nested term reads a different one,
+  // so 「肩胛带重度肌肉萎缩」 emitted 「重度肌肉萎缩、萎缩」 — this entry
+  // duplicating the compound it was only ever meant to reach past. It is
+  // true now: the dedupe asks about the match SPAN. See the span test in
+  // `buildFindingsSummary`.
   '萎缩',
   '炎性改变',
   '水肿',
@@ -180,7 +187,28 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
   // A finding this vocabulary can state about genetics is a finding the
   // structured channel states better; a finding it cannot is one this
   // platform has decided not to state at all. Do not add them back.
-  // Cardiopulmonary — the other systems this cohort is monitored for
+  // Cardiopulmonary — the other systems this cohort is monitored for.
+  //
+  // 障碍 / 心律不齐 / 传导阻滞 NAME AN ABNORMALITY; 射血分数 / 弥散功能 /
+  // 膈肌 NAME A MEASUREMENT. The first three are findings on their own.
+  // The last three are nouns whose entire clinical content is the
+  // DIRECTION word that follows them, and that word is not in this
+  // vocabulary and was never emitted, so:
+  //
+  //   - 「射血分数降低」 and 「射血分数升高」 — a failing heart and a
+  //     normal-to-hyperdynamic one — both rendered
+  //     「影像/报告印象: 射血分数」, byte-identical.
+  //   - 「膈肌运动度正常范围」 rendered 「影像/报告印象: 膈肌」: a NORMAL
+  //     diaphragm on a cohort screened for diaphragmatic weakness,
+  //     delivered to the model as a diaphragm finding.
+  //   - 「射血分数轻度降低」 rendered 「轻度射血分数」 — the severity
+  //     binder gluing the qualifier that belonged to 降低 onto the bare
+  //     noun, which is exactly the detached-severity reading
+  //     SEVERITY_QUALIFIERS exists to prevent.
+  //
+  // They stay in the vocabulary, but only ever emitted BOUND to a
+  // direction word from MEASUREMENT_DIRECTIONS. A noun that carries no
+  // direction carries no finding, and is dropped.
   '限制性通气功能障碍',
   '通气功能障碍',
   '弥散功能',
@@ -191,7 +219,8 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
 ];
 
 /** Cap on the assembled summary. Matched terms are short; a long
- *  result means the vocabulary matched too broadly. */
+ *  result means the vocabulary matched too broadly. Applied by
+ *  `capFindings`, which cuts on whole findings — never inside one. */
 const FINDINGS_SUMMARY_MAX = 120;
 
 /**
@@ -243,6 +272,21 @@ const NEGATION_MARKERS = [
  * A clause naming a third party is dropped whole rather than read: this
  * channel is 影像/报告印象, and a family history has a structured home
  * on the profile (`familyHistory`) that carries its own provenance.
+ *
+ * 其X IS A WHOLE FAMILY, NOT TWO ENTRIES. The list carried 其母 and 其父
+ * and stopped there, so the identical construction with a sibling walked
+ * straight through: executing 「其兄确诊肌营养不良，本人双侧大腿未见脂肪
+ * 浸润。」 returned 「影像/报告印象: 肌营养不良」 — the BROTHER's
+ * diagnosis emitted as this patient's imaging conclusion while their own
+ * negative result in the next clause was correctly dropped, byte for
+ * byte the failure above with a different relative. FSHD is autosomal
+ * dominant and a proband is very often worked up because a sibling was
+ * diagnosed first, so 其兄 / 其姐 / 其弟 / 其妹 are at least as common in
+ * these reports as 其母.
+ *
+ * 其子 / 其女 are here for the same reason and cost a false kill on
+ * 其子宫: that drops a pelvic clause this vocabulary has almost nothing
+ * to say about anyway, which is the cheap direction of the trade.
  */
 const THIRD_PARTY_MARKERS: readonly string[] = [
   '家族史',
@@ -252,6 +296,12 @@ const THIRD_PARTY_MARKERS: readonly string[] = [
   '患者父亲',
   '其母',
   '其父',
+  '其兄',
+  '其姐',
+  '其弟',
+  '其妹',
+  '其子',
+  '其女',
   '母亲',
   '父亲',
   '哥哥',
@@ -369,6 +419,44 @@ const HEDGE_MARKERS: readonly string[] = [
 const SEVERITY_QUALIFIERS: readonly string[] = ['轻度', '中度', '重度', '弥漫性', '局灶性'];
 
 /**
+ * The measurement nouns from CLINICAL_FINDING_TERMS, and the direction
+ * words that turn one into a finding. See the cardiopulmonary block
+ * above for what these emitted before: opposite results as identical
+ * bytes, and a normal diaphragm as a finding.
+ *
+ * The direction word is emitted from THIS list and never copied out of
+ * the text, so the deny-by-default property is unchanged.
+ *
+ * THE QUALIFIER GOES BETWEEN THE NOUN AND THE DIRECTION, not in front
+ * of the noun: 「射血分数轻度降低」, because 轻度 grades 降低 and not
+ * 射血分数. That IS the qualifier-first rule of SEVERITY_QUALIFIERS,
+ * applied to the word the qualifier actually belongs to — the same
+ * reading that made 「轻度射血分数」 wrong.
+ *
+ * 运动 / 运动度 / 水平 / 值 / 功能 sit between the noun and its
+ * direction often enough to be worth stepping over (膈肌运动受限), and
+ * stepping over them cannot invert anything: the direction word still
+ * has to be one of these, so 膈肌运动度正常范围 finds none and is
+ * dropped.
+ */
+const MEASUREMENT_NOUNS: ReadonlySet<string> = new Set(['射血分数', '弥散功能', '膈肌']);
+const MEASUREMENT_DIRECTIONS: readonly string[] = [
+  '降低',
+  '减低',
+  '下降',
+  '减退',
+  '减弱',
+  '受限',
+  '升高',
+  '增高',
+  '抬高',
+  '上抬',
+  '上移',
+  '麻痹',
+];
+const MEASUREMENT_BRIDGES: readonly string[] = ['运动度', '运动', '水平', '功能', '值'];
+
+/**
  * Clause boundaries. Negation scopes to its own clause: in
  * 「见脂肪浸润，未见肌肉萎缩」the negation must not swallow the first
  * half.
@@ -384,6 +472,9 @@ const SEVERITY_QUALIFIERS: readonly string[] = ['轻度', '中度', '重度', '�
  * infiltration — produced no findings_summary at all, and the redactor
  * drops the raw impression, so the model was left with a report it
  * could see the type of and nothing else.
+ *
+ * BUT WHITESPACE IS ONLY A BOUNDARY WHERE THE PHRASE ALREADY ENDED —
+ * see `healWrappedClauseMarkers`, which runs first.
  */
 const CLAUSE_SPLIT = /[，,。.；;、\r\n\t 　]/;
 
@@ -427,8 +518,25 @@ const NEGATION_SUFFIXES: readonly string[] = ['不明显', '未见', '阴性', '
 /**
  * A finding the report says has RESOLVED is not a current finding.
  * 「水肿已基本吸收」 was emitted as 「影像/报告印象: 水肿」.
+ *
+ * 消失 IS THE MOST DIRECT FORM AND WAS THE ONE MISSING. 吸收 / 消退 /
+ * 好转 / 恢复 all say a finding is receding; 消失 is how a Chinese
+ * radiologist writes that it is GONE, and executing 「双侧大腿水肿已消
+ * 失」 returned 「影像/报告印象: 水肿」 — the report saying the oedema
+ * has cleared, delivered to the model as oedema present, with the raw
+ * impression dropped by the redactor so nothing downstream disagrees.
+ * 缓解 and 纠正 are the same statement for a symptom and for a rhythm
+ * (「心律不齐已纠正」 → 「影像/报告印象: 心律不齐」).
  */
-const RESOLUTION_SUFFIXES: readonly string[] = ['吸收', '消退', '好转', '恢复'];
+const RESOLUTION_SUFFIXES: readonly string[] = [
+  '吸收',
+  '消退',
+  '好转',
+  '恢复',
+  '消失',
+  '缓解',
+  '纠正',
+];
 
 /** Adverbs that sit between the finding and the word that kills it —
  *  「水肿已基本吸收」,「信号增高大致正常」. Stripped before the suffix
@@ -447,6 +555,60 @@ const SUFFIX_LEAD_ADVERBS: readonly string[] = [
 
 const OCCURRENCE_KILL_SUFFIXES: readonly string[] = [...NEGATION_SUFFIXES, ...RESOLUTION_SUFFIXES];
 
+/**
+ * OCR LINE-WRAPS INSIDE PHRASES, AND A WRAP IS NOT A CLAUSE BOUNDARY.
+ *
+ * Adding whitespace to CLAUSE_SPLIT bought the space-separated clauses
+ * OCR really does give us, and paid for them with the exact inversion
+ * this whole function exists to prevent. 「未见明显脂肪浸润」 typeset
+ * across two lines arrives as 「双侧大腿肌群未见\n明显脂肪浸润」 — one
+ * ordinary two-line impression, not two clauses. Split on the wrap, the
+ * negation marker becomes a clause that asserts nothing (correctly
+ * killed, to no effect) and the RULED-OUT finding in the next fragment
+ * is emitted as the report's conclusion: executing that string returned
+ * 「影像/报告印象: 脂肪浸润」 for a report saying there is none. Same for
+ * a space instead of a newline, which is what a justified two-column
+ * page gives.
+ *
+ * So a whitespace run is healed away — treated as the wrap it is —
+ * whenever the text to its LEFT ends mid-kill-phrase: on a clause-kill
+ * marker (未见 / 其母 / 既往 / 甲基化 …), on the bare 未 / 无 / 非 / 不
+ * that a wrap through the middle of 未见 leaves dangling, or on the 原
+ * whose 原发 lookahead cannot see across a break. Everything else keeps
+ * its boundary, so 「双侧大腿脂肪浸润明显 未见肌肉萎缩」 — whitespace
+ * AFTER a completed finding, before the marker — still splits and still
+ * yields 脂肪浸润.
+ *
+ * ONLY THE MARKERS THAT GOVERN WHAT COMES AFTER THEM. 不明显 / 未受累 /
+ * 未累及 / 阴性 negate the finding to their LEFT, which is already in
+ * the same fragment, so a wrap cannot strand them from anything and
+ * healing there would only swallow the NEXT clause: 「基因检测阴性 双侧
+ * 大腿脂肪浸润」 would lose a definite finding to a marker that was
+ * never about it. They are excluded.
+ *
+ * A wrap we heal wrongly costs a dropped finding; a wrap we split
+ * wrongly asserts the negative of one. This file is wrong in the first
+ * direction on purpose.
+ */
+const WHITESPACE_RUN = /[\r\n\t 　]+/g;
+const TRAILING_KILL_MARKERS: readonly string[] = ['不明显', '未受累', '未累及', '阴性'];
+const WRAP_DANGLING_MARKERS: readonly string[] = [
+  ...CLAUSE_KILL_MARKERS.filter((marker) => !TRAILING_KILL_MARKERS.includes(marker)),
+  '原',
+];
+
+const endsMidKillPhrase = (before: string): boolean => {
+  if (before.length === 0) return false;
+  if (NEGATION_PREFIX_CHARS.has(before[before.length - 1])) return true;
+  const lowered = before.toLowerCase();
+  return WRAP_DANGLING_MARKERS.some((marker) => lowered.endsWith(marker));
+};
+
+const healWrappedClauseMarkers = (raw: string): string =>
+  raw.replace(WHITESPACE_RUN, (whitespace, offset: number) =>
+    endsMidKillPhrase(raw.slice(0, offset)) ? '' : whitespace,
+  );
+
 const stripLeadingAdverbs = (text: string): string => {
   let rest = text;
   for (;;) {
@@ -454,6 +616,26 @@ const stripLeadingAdverbs = (text: string): string => {
     if (!adverb) return rest;
     rest = rest.slice(adverb.length);
   }
+};
+
+/**
+ * The direction word a measurement noun is carrying, or null. Steps
+ * over the adverbs, the severity qualifier and the measurement bridges
+ * that can sit between the noun and its direction; see
+ * MEASUREMENT_DIRECTIONS for why the null answer drops the finding.
+ */
+const readMeasurementDirection = (after: string): string | null => {
+  let rest = after;
+  for (;;) {
+    let next = stripLeadingAdverbs(rest);
+    const severity = SEVERITY_QUALIFIERS.find((q) => next.startsWith(q));
+    if (severity) next = next.slice(severity.length);
+    const bridge = MEASUREMENT_BRIDGES.find((b) => next.startsWith(b));
+    if (bridge) next = next.slice(bridge.length);
+    if (next === rest) break;
+    rest = next;
+  }
+  return MEASUREMENT_DIRECTIONS.find((direction) => rest.startsWith(direction)) ?? null;
 };
 
 /** Index of the first occurrence of `term` in `clause` that the clause
@@ -473,6 +655,39 @@ const assertedOccurrence = (clause: string, term: string): number => {
     from = at + 1;
   }
   return -1;
+};
+
+/**
+ * Apply FINDINGS_SUMMARY_MAX ON WHOLE FINDINGS, AND SAY WHAT WAS CUT.
+ *
+ * This was `summary.slice(0, 120)` over the already-assembled string,
+ * which cuts wherever character 120 happens to fall — including between
+ * a term and the 「（待排）」 that qualifies it. A nine-finding impression
+ * ending 「…股四头肌脂肪化待排」 came out as 「…、脂肪化…」: the hedge
+ * sheared off the last finding, leaving it BYTE-IDENTICAL to the
+ * definite form, which is precisely the failure HEDGE_MARKERS was added
+ * to end. The trailing 「…」 is not a hedge and the model does not read
+ * it as one. A mid-term cut is worse still — 「限制性通气功能障碍」 cut
+ * at 「限制性通气」 is not a finding in any vocabulary.
+ *
+ * So the last WHOLE finding that fits is the last one printed, and the
+ * count of the ones that did not is stated rather than implied: a
+ * truncated list that admits it is truncated is something the model can
+ * act on (ask, or read the report again), and a silently shortened one
+ * is a report it believes it has seen all of. If even the first finding
+ * exceeds the cap it is emitted whole and over-length — the cap is a
+ * did-the-vocabulary-match-too-broadly sanity check, not a byte budget
+ * anything downstream depends on.
+ */
+const capFindings = (phrases: readonly string[]): string => {
+  const whole = phrases.join('、');
+  if (whole.length <= FINDINGS_SUMMARY_MAX) return whole;
+  const dropped = (n: number) => `（另 ${n} 项未列出）`;
+  for (let take = phrases.length - 1; take >= 1; take -= 1) {
+    const line = `${phrases.slice(0, take).join('、')}${dropped(phrases.length - take)}`;
+    if (line.length <= FINDINGS_SUMMARY_MAX) return line;
+  }
+  return `${phrases[0]}${dropped(phrases.length - 1)}`;
 };
 
 /**
@@ -499,7 +714,9 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
 
   // Only clauses that assert something about THIS patient, in THIS
   // study, about something other than methylation, contribute terms.
-  const assertedClauses = raw
+  // The wrap healing runs FIRST, or a line break inside 未见明显脂肪浸润
+  // splits the negation off the thing it negates.
+  const assertedClauses = healWrappedClauseMarkers(raw)
     .split(CLAUSE_SPLIT)
     .map((clause) => clause.trim())
     .filter((clause) => clause.length > 0)
@@ -512,23 +729,68 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
     // 「双侧大腿脂肪浸润明显」 hedges nothing.
     const hedge = HEDGE_MARKERS.find((marker) => clause.includes(marker)) ?? '';
 
+    // Where in THIS clause a term has already matched. A shorter term
+    // whose occurrence falls inside one of these spans is not a second
+    // finding, it is the same characters read again — see below.
+    const claimed: { start: number; end: number }[] = [];
+
     for (const term of CLINICAL_FINDING_TERMS) {
       const at = assertedOccurrence(clause, term);
       if (at === -1) continue;
+      const end = at + term.length;
+
+      // ONE PHRASE IS ONE FINDING, AND THE TEST FOR THAT IS THE SPAN,
+      // NOT THE QUALIFIER.
+      //
+      // The dedupe below asks whether a longer entry already covers this
+      // term AT THE SAME SEVERITY, and a nested term starts at a
+      // different index, so its slices are different text and its
+      // qualifier comes out different — usually empty. Both directions
+      // of that leaked, and both emitted one phrase as two findings:
+      //
+      //   - 「肩胛带重度肌肉萎缩」 — the ordinary Chinese word order —
+      //     gave 肌肉萎缩 the qualifier 重度 off its before-slice, while
+      //     the nested 萎缩 starts two characters later so ITS
+      //     before-slice ends 肌肉 and its after-slice is empty. The
+      //     qualifiers differed, the skip never fired, and the summary
+      //     read 「重度肌肉萎缩、萎缩」: a bare 萎缩 standing next to a
+      //     graded one, which is exactly the detached-severity reading
+      //     SEVERITY_QUALIFIERS exists to prevent.
+      //   - 「重度限制性通气功能障碍」 did the same thing to the
+      //     nested 通气功能障碍.
+      //
+      // So the question asked is whether this occurrence lies INSIDE a
+      // span a longer term already matched in this clause. If it does it
+      // is the same phrase, whatever the two qualifier reads say. The
+      // span is recorded even when the cross-clause dedupe below then
+      // skips the longer term, or a second mention of one compound would
+      // un-cover its own nested term.
+      if (claimed.some((span) => at >= span.start && end <= span.end)) continue;
+      claimed.push({ start: at, end });
 
       // The severity glued to THIS occurrence, on either side of it.
       const before = clause.slice(0, at);
-      const after = clause.slice(at + term.length);
+      const after = clause.slice(end);
       const qualifier =
         SEVERITY_QUALIFIERS.find((q) => before.endsWith(q)) ??
         SEVERITY_QUALIFIERS.find((q) => after.startsWith(q)) ??
         '';
 
-      // Skip a term already covered by a longer match at the same
-      // severity and the same hedge ('肌营养不良' when '肌营养不良改变'
-      // is present, '萎缩' when '肌肉萎缩' is). Different severities are
-      // different findings and both are kept — collapsing them is how
-      // 轻度 and 重度 got swapped in the first place.
+      // A measurement noun says nothing without its direction word, and
+      // the qualifier belongs to the direction rather than to the noun.
+      let body = `${qualifier}${term}`;
+      if (MEASUREMENT_NOUNS.has(term)) {
+        const direction = readMeasurementDirection(after);
+        if (!direction) continue;
+        body = `${term}${qualifier}${direction}`;
+      }
+
+      // Skip a term a longer entry in an EARLIER clause already covers
+      // at the same severity and the same hedge ('肌营养不良' when
+      // '肌营养不良改变' is present). Different severities are different
+      // findings and both are kept — collapsing them is how 轻度 and
+      // 重度 got swapped in the first place. Within one clause the span
+      // test above has already settled it.
       if (
         kept.some(
           (entry) =>
@@ -538,16 +800,13 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
         continue;
       }
 
-      const phrase = hedge ? `${qualifier}${term}（${hedge}）` : `${qualifier}${term}`;
+      const phrase = hedge ? `${body}（${hedge}）` : body;
       kept.push({ term, qualifier, hedge, phrase });
     }
   }
   if (kept.length === 0) return null;
 
-  const summary = kept.map((entry) => entry.phrase).join('、');
-  return summary.length > FINDINGS_SUMMARY_MAX
-    ? `${summary.slice(0, FINDINGS_SUMMARY_MAX)}…`
-    : summary;
+  return capFindings(kept.map((entry) => entry.phrase));
 };
 
 /**
@@ -621,6 +880,31 @@ const buildReportFields = (row: ReportRow): Record<string, unknown> => {
   // recognises, precise emits `fields` with the raw value beside that
   // reading and only for the keys named on
   // OCR_FIELDS_SAFE_KEYS_PRECISE. Nothing passes here verbatim.
+  // THE DOCUMENT'S OWN PAGE, CARRIED SO THE LABORATORY GATE CAN READ
+  // IT — AND HARD-DELETED BEFORE ANYTHING ELSE SEES IT.
+  //
+  // `isLaboratoryGeneticReport` decides whether a repeat count off this
+  // document may be read against the FSHD1 range, and it answers that
+  // by looking at the document's own structure: a page showing 主诉 /
+  // 现病史 / 出院小结 is a clinical narrative and is refused, whatever
+  // label is on the row. This projection was the only one without the
+  // page, so the gate fell through to the type the UPLOADER declared —
+  // and an archived 病历摘要 whose uploader also picked 基因检测报告
+  // from the menu was graded on the assistant path while the passport,
+  // the share page, the referral pack and the exports all refused the
+  // same document in the same request. The classifier that mislabelled
+  // those rows is fixed; nothing re-runs the parse, so every one of
+  // them is still on disk with the old label.
+  //
+  // `extractedText` IS ON `HARD_DELETE_KEYS`, so it is deleted in both
+  // modes at any depth before layer 2 runs — the redactor asks the gate
+  // of its INPUT, ahead of layer 1, precisely so that this cell can be
+  // read and then removed. It is the OCR full-text dump: it carries the
+  // patient's name, the physician's name and every identifier the page
+  // printed, and no prompt may contain it.
+  const page = row.ocr_payload?.extractedText ?? row.ocr_payload?.extracted_text;
+  if (typeof page === 'string' && page.trim()) fields.extractedText = page;
+
   if (isPlainObject(row.ocr_payload?.fields)) {
     fields.fields = row.ocr_payload.fields;
 
@@ -674,12 +958,31 @@ const YEAR_MONTH = /^(\d{4})-(\d{2})/;
  * referral-pack.ts and passport-share.html.ts each carry a DATE_ONLY
  * short-circuit for exactly this; this call site was the one that
  * missed it.
+ *
+ * AND IT SAYS WHICH DATE IT IS. `resolveReportDate` returns `fromReport`
+ * precisely so the caller can 「label it honestly rather than passing it
+ * off as the report's date」, and this function threw the flag away and
+ * joined the value onto the report-type label with no marker either way.
+ * So a genetics report whose OCR carried no `reportTime` produced the
+ * chip 「基因检测报告 · 2026-08」 — the month the patient happened to
+ * upload the file, sitting where a patient reads the date of the result.
+ * The prompt side of this same row already refuses to make that claim:
+ * `uploadDate` reaches the model as 上传年份 and never as 报告年份. In
+ * one turn the assistant said 上传年份 and the 依据 chip beside its
+ * answer asserted a report date anyway, and how old a D4Z4 result is
+ * decides whether a clinician re-tests it.
+ *
+ * The upload fallback is still shown — two reports of the same kind
+ * otherwise give two identical chips — but marked 上传, so the bare
+ * month stays what it has always looked like: the laboratory's own date.
  */
 const reportDateLabel = (row: ReportRow): string => {
-  const { value } = resolveReportDate(row);
+  const { value, fromReport } = resolveReportDate(row);
   if (!value) return '';
   const parts = YEAR_MONTH.exec(value);
-  return parts ? `${parts[1]}-${parts[2]}` : '';
+  if (!parts) return '';
+  const yearMonth = `${parts[1]}-${parts[2]}`;
+  return fromReport ? yearMonth : `上传 ${yearMonth}`;
 };
 
 export class PatientReportsRetriever implements IRetriever {
@@ -787,11 +1090,12 @@ export class PatientReportsRetriever implements IRetriever {
       // Two reports of the same kind produce two identical chips —
       // observed:「引用 2 条：粪便/幽门检测报告、粪便/幽门检测报告」,
       // which tells the patient no more than one chip would have. The
-      // report date separates them. It is the patient's own data going
-      // to their own client, not to the prompt — the redactor still
-      // governs everything the model sees.
-      const reportYear = reportDateLabel(row);
-      const citationLabel = [row.report_type_label?.trim() || '你上传的检查报告', reportYear]
+      // report date separates them — carrying its own origin marker, so
+      // an upload month is never read as the date of the result. It is
+      // the patient's own data going to their own client, not to the
+      // prompt — the redactor still governs everything the model sees.
+      const dateLabel = reportDateLabel(row);
+      const citationLabel = [row.report_type_label?.trim() || '你上传的检查报告', dateLabel]
         .filter(Boolean)
         .join(' · ');
       const fields = buildReportFields(row);

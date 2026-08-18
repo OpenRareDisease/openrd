@@ -954,6 +954,68 @@ describe('轮椅 / 无创通气 / 睡眠分支', () => {
   });
 });
 
+/**
+ * 里程碑日期：只知道年份的那一种，不能印成 1 月 1 日。
+ *
+ * `patient_followup_events.occurred_at` 是 TIMESTAMPTZ NOT NULL，存不下
+ * 「只知道 2019 年」，于是年份答案被钉在 2019 年的第一毫秒上。转诊包
+ * (referral-pack.ts `milestoneDateZh`)、FHIR bundle (`toPartialFhirDate`)
+ * 和 TREAT-NMD 文档对同一行都只印年份；这一页曾经是唯一印出那个捏造的
+ * 1 月 1 日的界面。参见 apps/api 的 export/occurrence-date.ts。
+ *
+ * 同一 profile 在两个时区下必须给出同一个答案，见
+ * milestone-date-timezone.test.ts。
+ */
+describe('随访里程碑的日期只印得出记录里有的那部分', () => {
+  const startedAt = (eventType: string, occurredAt: string) =>
+    profile({
+      followupEvents: [{ id: 'e1', eventType, occurredAt }] as PatientProfile['followupEvents'],
+    });
+
+  it('轮椅只记到年份时印「2019 年」，不印 2019-01-01', () => {
+    const repeat = row(
+      'pulmonary_repeat',
+      undefined,
+      startedAt('started_wheelchair', '2019-01-01T00:00:00.000Z'),
+    );
+    expect(repeat.applicability).toBe('matched');
+    expect(repeat.evidence).toContain('（2019 年）');
+    expect(repeat.evidence).not.toContain('2019-01-01');
+    expect(repeat.evidence).not.toContain('01-01');
+  });
+
+  it('无创通气走的是同一条规则 —— 同一张表、同一列', () => {
+    const sleep = row(
+      'sleep_referral',
+      undefined,
+      startedAt('started_niv', '2021-01-01T00:00:00.000Z'),
+    );
+    expect(sleep.applicability).toBe('matched');
+    expect(sleep.evidence).toContain('（2021 年）');
+    expect(sleep.evidence).not.toContain('2021-01-01');
+  });
+
+  it('真的记到某一天时，那一天原样留着 —— 不会被降级成年份', () => {
+    const repeat = row(
+      'pulmonary_repeat',
+      undefined,
+      startedAt('started_wheelchair', '2019-06-14T00:00:00.000Z'),
+    );
+    expect(repeat.evidence).toContain('（2019-06-14）');
+  });
+
+  // 1 月以外的月初不是年份钉住的形态，一天也不能少印。
+  it('2 月 1 日不是「只知道年份」，照常印整日期', () => {
+    const repeat = row(
+      'pulmonary_repeat',
+      undefined,
+      startedAt('started_wheelchair', '2020-02-01T00:00:00.000Z'),
+    );
+    expect(repeat.evidence).toContain('（2020-02-01）');
+    expect(repeat.evidence).not.toContain('2020 年');
+  });
+});
+
 describe('术前肺功能这一条与麻醉卡同源', () => {
   it('引用的就是麻醉卡「术前评估」里的那一行，一字不差', () => {
     const s = summary();

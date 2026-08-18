@@ -44,7 +44,7 @@ import { PatientReportsRetriever } from '../retrievers/patient-reports.js';
 import type { RedactionMode, RedactionScope } from '../security/allowlist.js';
 import { PROMPT_ALLOWLIST } from '../security/allowlist.js';
 import { GENETIC_READING_REFUSALS, redactFields } from '../security/pii-redactor.js';
-import { SCOPE_LABELS } from '../security/render.js';
+import { SCOPE_LABELS, renderChunkForPrompt } from '../security/render.js';
 
 const snapshotMock = vi.fn();
 
@@ -479,6 +479,52 @@ describe('tool descriptions name only fields the result can carry', () => {
     // patient can ever satisfy — `ageGroup` and `symptomCategories`
     // were both, and both reached get_my_profile's description.
     expect(dead).toEqual([]);
+  });
+
+  /**
+   * THE REVERSE OF THE CHECK BELOW, WHICH IS THE ONE THAT WAS MISSING.
+   *
+   * 「every label names a reachable key」 and 「every reachable key has a
+   * label」 are two claims, and only the first was asked. So
+   * `methylation_origin` went onto both profile allowlists, became
+   * reachable in both modes, and had no entry in `PROFILE_FIELD_LABELS`
+   * — and `renderFieldsByScope` falls back to the raw key, so an
+   * otherwise fully-labelled Chinese block printed
+   *「methylation_origin: not_read_off_a_laboratory_report」. The row
+   * carrying this platform's refusal to attribute the FSHD2
+   * discriminator read as engineering leftover rather than as a caveat.
+   *
+   * `fields` and `fields_clinical` are the two exemptions and they are
+   * exempt structurally, not by fiat: `renderFieldsByScope` gives the
+   * OCR blob a block of its own under 「OCR 字段」 and never looks either
+   * key up in the label table. That is asserted here rather than
+   * assumed, so the exemption cannot outlive the rendering it describes.
+   */
+  const RENDERED_AS_THEIR_OWN_BLOCK: ReadonlySet<string> = new Set(['fields', 'fields_clinical']);
+
+  it('SCOPE_LABELS labels every field a result can carry', async () => {
+    const reachable = await reachableFields();
+    const unlabelled: string[] = [];
+    for (const scope of Object.keys(SCOPE_LABELS) as RedactionScope[]) {
+      for (const key of bothModes(reachable[scope])) {
+        if (RENDERED_AS_THEIR_OWN_BLOCK.has(key)) continue;
+        if (!SCOPE_LABELS[scope][key]) unlabelled.push(`${scope}.${key}`);
+      }
+    }
+    expect(unlabelled).toEqual([]);
+  });
+
+  it('renders the exempt keys as a block of their own rather than by label', async () => {
+    const chunks = await chunksByScope();
+    for (const mode of MODES) {
+      const rendered = renderChunkForPrompt(chunks.reports[0], { mode });
+      expect(rendered.content).toContain('OCR 字段');
+      // The key itself is never printed — which is what makes it exempt
+      // from needing a label, and is false the moment that changes.
+      for (const key of RENDERED_AS_THEIR_OWN_BLOCK) {
+        expect(rendered.content).not.toContain(`${key}:`);
+      }
+    }
   });
 
   it('SCOPE_LABELS has a label for no field a retriever cannot produce', async () => {

@@ -119,21 +119,52 @@ const baselineSection = (
  * longer matches the report it was autofilled from are all cells this
  * platform did not read off a laboratory report, and the redactor's
  * refusal is correct for every one of them.
+ *
+ * EVERY CELL THE AUTOFILL WRITES IS ANSWERED FOR, AND IT USED TO BE
+ * TWO OF FOUR. `applyGeneticReportAutofill` copies 分型, D4Z4 重复数,
+ * 单倍型 and 甲基化 out of the picked report into the registration
+ * form's empty boxes; this function computed the answer for `d4z4` and
+ * `haplotype` alone. So `buildProfileFields` wrote `fields.methylation`
+ * with no flag beside it and the redactor, reading an absent flag as
+ * `false`, asserted `not_read_off_a_laboratory_report` about a value
+ * the passport, the share page, the referral pack, the PDF and the
+ * registry export were all attributing to the laboratory report in the
+ * same request — printed inside the same profile block as two sibling
+ * readings that can only be minted when the flag is TRUE. A prompt
+ * contradicting itself about one document is worse than either answer
+ * alone, because nothing in it says the other exists. 分型 was the same
+ * gap one cell further on, and it had no refusal at all.
  */
+type GeneticCellOrigins = {
+  diagnosisType: boolean;
+  d4z4: boolean;
+  haplotype: boolean;
+  methylation: boolean;
+};
+
+const NO_LABORATORY_ORIGIN: GeneticCellOrigins = {
+  diagnosisType: false,
+  d4z4: false,
+  haplotype: false,
+  methylation: false,
+};
+
 const geneticCellsFromLaboratoryReport = (
   disease: Record<string, unknown> | null,
   documents: readonly GeneticEvidenceDocumentLike[],
-): { d4z4: boolean; haplotype: boolean } => {
+): GeneticCellOrigins => {
   const evidence = readGeneticEvidence(documents);
-  if (!evidence.laboratory) return { d4z4: false, haplotype: false };
+  if (!evidence.laboratory) return NO_LABORATORY_ORIGIN;
   const matches = (archived: unknown, line: string | null): boolean =>
     line !== null &&
     archived !== null &&
     archived !== undefined &&
     String(archived).trim() === line;
   return {
+    diagnosisType: matches(disease?.diagnosisType, evidence.diagnosisType),
     d4z4: matches(disease?.d4z4, evidence.d4z4),
     haplotype: matches(disease?.haplotype, evidence.haplotype),
+    methylation: matches(disease?.methylation, evidence.methylation),
   };
 };
 
@@ -151,7 +182,7 @@ const geneticCellsFromLaboratoryReport = (
  */
 const buildProfileFields = (
   row: ProfileRow,
-  fromLaboratoryReport: { d4z4: boolean; haplotype: boolean },
+  fromLaboratoryReport: GeneticCellOrigins,
 ): Record<string, unknown> => {
   const fields: Record<string, unknown> = {};
 
@@ -184,12 +215,15 @@ const buildProfileFields = (
   if (disease) {
     if (typeof disease.diagnosisType === 'string' && disease.diagnosisType) {
       fields.diagnosisType = disease.diagnosisType;
+      fields.diagnosisTypeFromLaboratoryReport = fromLaboratoryReport.diagnosisType;
     }
     // Each genetics cell travels with the answer to 「did this platform
-    // read this off a laboratory's own report」. Neither flag reaches a
-    // prompt — the redactor consumes both and drops them (see
+    // read this off a laboratory's own report」. No flag reaches a
+    // prompt — the redactor consumes them and drops them all (see
     // `clinicalise`) — they exist so the reading beside the cell can be
     // this platform's real position rather than a hardcoded refusal.
+    // ALL FOUR CELLS THE AUTOFILL WRITES CARRY ONE; 分型 and 甲基化 used
+    // to travel bare, and an absent flag reads as `false`.
     // See `geneticCellsFromLaboratoryReport`.
     if (disease.d4z4 !== undefined && disease.d4z4 !== null && disease.d4z4 !== '') {
       fields.d4z4 = disease.d4z4;
@@ -205,6 +239,7 @@ const buildProfileFields = (
       disease.methylation !== ''
     ) {
       fields.methylation = disease.methylation;
+      fields.methylationFromLaboratoryReport = fromLaboratoryReport.methylation;
     }
     if (typeof disease.onsetRegion === 'string' && disease.onsetRegion) {
       fields.onsetRegion = disease.onsetRegion;

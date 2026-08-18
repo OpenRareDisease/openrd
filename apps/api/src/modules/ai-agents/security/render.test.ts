@@ -545,3 +545,140 @@ describe('renderChunkForPrompt — non-patient sources', () => {
     expect(rendered.fieldsUsed).toEqual([]);
   });
 });
+
+/**
+ * EVERY ROW IN A PATIENT-FACING BLOCK IS LABELLED IN CHINESE.
+ *
+ * `renderFieldsByScope` falls back to the raw key when
+ * `PROFILE_FIELD_LABELS` has no entry, and `methylation_origin` had
+ * none — so an otherwise fully-labelled block printed
+ *「methylation_origin: not_read_off_a_laboratory_report」, the one
+ * snake_case row on the projection, and the row carrying this
+ * platform's refusal to attribute the FSHD2 discriminator at that. A
+ * caveat that reads as engineering leftover is a caveat the model
+ * discounts.
+ *
+ * Asked of the rendered bytes rather than of the label table, because
+ * the table is what was already checked: tool-descriptions.test.ts asks
+ * whether every LABEL has a reachable key, and the reverse — a
+ * reachable key with no label — is what landed here.
+ */
+describe('the profile block prints no bare field key', () => {
+  const HAN = /\p{Script=Han}/u;
+
+  it.each(['strict', 'precise'] as const)('labels every row in %s mode', async (mode) => {
+    const retriever = new PatientProfileRetriever(fakePool([PROFILE_ROW]));
+    const result = await retriever.search(
+      { question: '' },
+      makeCtx({ consentLevel: mode === 'precise' ? 'precise' : 'basic' }),
+    );
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode });
+
+    const [header, ...rows] = rendered.content.split('\n');
+    expect(header).toBe('【患者基础档案】');
+    expect(rows.length).toBeGreaterThan(0);
+    const unlabelled = rows
+      .map((row) => row.slice(0, row.indexOf(':')))
+      .filter((label) => !HAN.test(label));
+    expect(unlabelled).toEqual([]);
+  });
+
+  // The row this was found on, pinned by the bytes a reader gets.
+  it('prints the methylation origin under a Chinese label that grades nothing', async () => {
+    const retriever = new PatientProfileRetriever(fakePool([PROFILE_ROW]));
+    const result = await retriever.search({ question: '' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    expect(rendered.content).toContain('甲基化值来源: not_read_off_a_laboratory_report');
+    expect(rendered.content).not.toContain('methylation_origin');
+    // 来源, never 分级: this repo states no methylation boundary.
+    expect(rendered.content).not.toContain('甲基化临床分级');
+  });
+});
+
+/**
+ * AN ARCHIVED 病历摘要 WHOSE UPLOADER ALSO PICKED 基因检测报告.
+ *
+ * The assistant path was the one surface without the document's page,
+ * so `isLaboratoryGeneticReport` fell through to the uploader's
+ * declaration and believed it — while the passport, the share page, the
+ * referral pack and the exports all read the same row's 主诉 / 现病史 /
+ * 查体 and refused. End to end here, from the row on disk to the prompt
+ * line, because that is the gap: every piece worked and the page never
+ * travelled.
+ */
+describe('renderChunkForPrompt — a transcription declared as a genetics report', () => {
+  const DISCHARGE_PAGE =
+    '出院小结\n主诉：双上肢抬举无力5年。现病史：患者2019年起病，外院查体见翼状肩胛。' +
+    '诊疗经过：外院基因检测提示 FSHD1，D4Z4 3 个重复单元。患者张三，电话 13812345678。';
+
+  const misclassifiedRow = (ocrPayload: Record<string, unknown>) => ({
+    id: 'doc-9',
+    document_type: 'genetic_report',
+    title: '出院小结',
+    uploaded_at: '2026-04-01T08:00:00Z',
+    status: 'processed',
+    classified_type: 'genetic_report',
+    ocr_payload: ocrPayload,
+  });
+
+  const CELLS = {
+    classifiedType: 'genetic_report',
+    diagnosisType: 'FSHD1',
+    d4z4Repeats: '3',
+    haplotype: '4qA',
+    methylationValue: '12%',
+  };
+
+  it.each(['strict', 'precise'] as const)('grades none of it in %s mode', async (mode) => {
+    const retriever = new PatientReportsRetriever(
+      fakePool([misclassifiedRow({ extractedText: DISCHARGE_PAGE, fields: CELLS })]),
+    );
+    const result = await retriever.search(
+      { question: '' },
+      makeCtx({ consentLevel: mode === 'precise' ? 'precise' : 'basic' }),
+    );
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode });
+
+    // Every genetics cell on the page says where it came from, and none
+    // of them is banded.
+    expect(rendered.content).toContain('d4z4Repeats_clinical: not_read_off_a_laboratory_report');
+    expect(rendered.content).toContain('haplotype_clinical: not_read_off_a_laboratory_report');
+    expect(rendered.content).toContain('methylationValue_origin: not_read_off_a_laboratory_report');
+    expect(rendered.content).toContain('diagnosisType_origin: not_read_off_a_laboratory_report');
+    expect(rendered.content).not.toContain('within_fshd1_repeat_range');
+    expect(rendered.content).not.toContain('permissive_haplotype');
+
+    // The page itself reaches no prompt: it is the OCR full-text dump,
+    // and it carries the patient's name and phone number here.
+    for (const fragment of ['出院小结', '主诉', '现病史', '查体', '诊疗经过', 'extractedText']) {
+      expect(rendered.content).not.toContain(fragment);
+    }
+    // The strict-mode probe set is about the raw cells, which precise
+    // consent buys; what neither mode buys is the page.
+    if (mode === 'strict') assertNoLeak(rendered.content);
+    expect(rendered.content).not.toContain('张三');
+    expect(rendered.content).not.toContain('13812345678');
+    expect(rendered.fieldsUsed).not.toContain('extractedText');
+    expect(rendered.stats?.hardDeleted).toContain('extractedText');
+  });
+
+  it('still reads the laboratory’s own report off the same path', async () => {
+    // The mirror: the gate must not be "fixed" by refusing everything.
+    const retriever = new PatientReportsRetriever(
+      fakePool([
+        misclassifiedRow({
+          extractedText: '基因检测报告\n检测方法：Southern blot\n检测结论：D4Z4 3 个重复单元。',
+          fields: CELLS,
+        }),
+      ]),
+    );
+    const result = await retriever.search({ question: '' }, makeCtx());
+    const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
+
+    expect(rendered.content).toContain('d4z4Repeats_clinical: within_fshd1_repeat_range');
+    expect(rendered.content).toContain('haplotype_clinical: permissive_haplotype');
+    expect(rendered.content).not.toContain('not_read_off_a_laboratory_report');
+    expect(rendered.content).not.toContain('检测方法');
+  });
+});

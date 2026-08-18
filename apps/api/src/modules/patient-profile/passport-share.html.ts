@@ -1,5 +1,9 @@
 import { MAX_PICKUP_ATTEMPTS, PICKUP_TTL_MINUTES } from './passport-share.service.js';
-import type { ClinicalPassportSummaryDTO, PassportValueOriginDTO } from './profile.passport.js';
+import {
+  formatProductDate,
+  type ClinicalPassportSummaryDTO,
+  type PassportValueOriginDTO,
+} from './profile.passport.js';
 
 /**
  * The page a clinician opens.
@@ -50,24 +54,32 @@ const dash = (value: string | null | undefined): string => {
   return text && text !== '—' ? esc(text) : '—';
 };
 
-/** A calendar date that is already a calendar date. Several of the
- *  values below have been through `formatDate` in profile.passport.ts
- *  and arrive as `YYYY-MM-DD` — a monitoring slot's `latestDate`, the
- *  imaging date. `new Date('2026-02-10')` is UTC midnight and every
- *  accessor under it reads local, so re-parsing one of those on a host
- *  west of Greenwich printed the day before the one the passport
- *  itself carries. */
+/** A calendar date that is already a calendar date, and an instant
+ *  resolved on the ONE calendar this product prints dates in.
+ *
+ *  Several of the values below have been through `formatProductDate` in
+ *  profile.passport.ts and arrive as `YYYY-MM-DD` — a monitoring slot's
+ *  `latestDate`, the imaging date. `new Date('2026-02-10')` is UTC
+ *  midnight and every accessor under it reads local, so re-parsing one
+ *  of those on a host west of Greenwich printed the day before the one
+ *  the passport itself carries.
+ *
+ *  The rest are instants: `generatedAt`, a timeline row's `timestamp`,
+ *  the moment an administrator typed a baseline field. Those had a
+ *  private copy of the accessor chain here, which resolved them in the
+ *  SERVER's zone — so this page and the mobile PDF of the same passport
+ *  dated one report two different days in front of one clinician.
+ *  `formatProductDate` is the single answer; see PRODUCT_TIME_ZONE.
+ *
+ *  A string that is neither a calendar date nor a parseable instant
+ *  still prints as 「—」 and never as itself: `formatProductDate` hands
+ *  such a value back for callers that would rather show what they have
+ *  than nothing, and a public share link is not one of them. */
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 const day = (value: string | null | undefined): string => {
-  if (!value) return '—';
-  const trimmed = value.trim();
-  if (DATE_ONLY.test(trimmed)) return trimmed;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-    d.getDate(),
-  ).padStart(2, '0')}`;
+  const formatted = formatProductDate(value);
+  return formatted && DATE_ONLY.test(formatted) ? formatted : '—';
 };
 
 /**

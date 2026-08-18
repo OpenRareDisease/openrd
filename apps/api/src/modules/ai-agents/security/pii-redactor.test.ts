@@ -1038,20 +1038,53 @@ describe('redactFields (reports)', () => {
     },
   );
 
-  it('still publishes this platform’s reading of a genetics cell it refused to show', () => {
-    // The refused thing is the cell's own text, not the reading of it —
-    // otherwise strict mode drops the raw cell, no reading is written,
-    // and the assistant reports the report as having no such cell.
-    const { fields } = redactFields(
-      {
-        documentType: 'genetic_report',
-        fields: { classifiedType: 'genetic_report', d4z4Repeats: IDENTIFIED_DUMP },
-      },
-      { scope: 'reports', mode: 'precise' },
-    );
-    const f = fields.fields as Record<string, unknown>;
-    expect(f.d4z4Repeats).toBeUndefined();
-    expect(f.d4z4Repeats_clinical).toBe('unspecified');
+  /**
+   * A CELL THIS PLATFORM WILL NOT SHOW IS NOT A CELL IT HAS READ.
+   *
+   * This test used to assert the opposite — 「still publishes this
+   * platform's reading of a genetics cell it refused to show」, on the
+   * ground that the refused thing is the cell's own text and not the
+   * reading of it. `publishGeneticCell` ran the reader BEFORE
+   * `publishRawCell` asked `isUntrustworthyValue`, so the reading was
+   * minted from a string the same projection then refused, and in
+   * precise mode both statements went out together.
+   *
+   * The case that shows why it cannot stand is an inpatient record
+   * number, which `patchDocumentOcrFields` lets a patient paste into
+   * this very cell: THE DIGITS OF THE RECORD NUMBER became the repeat
+   * count, and the model was told the report's D4Z4 count is above the
+   * FSHD1 range — the label whose whole documented meaning is that the
+   * guideline is sending this reader off to evaluate FSHD2. In strict
+   * mode, where the raw cell is dropped anyway, that band was the only
+   * thing the prompt carried about the cell.
+   *
+   * `fieldsDroppedAsUnsafe` is what the model gets instead, and it is
+   * the same answer a safe key whose value failed the same check gets.
+   */
+  it.each([
+    ['an identified dump', IDENTIFIED_DUMP],
+    // A bare record number: `readSizeCell` reads 000000 → 0 out of
+    // 「R000000」 in one spelling and a count out of the other, so the
+    // band this produced was 「above_fshd1_repeat_range」.
+    ['a bare record number', '住院号:R000000'],
+    ['a record number with a department', '住院号 R12345678 科别:神经内科'],
+  ])('reads nothing off a genetics cell it refuses to show (%s)', (_label, raw) => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: { classifiedType: 'genetic_report', d4z4Repeats: raw },
+        },
+        { scope: 'reports', mode },
+      );
+      const f = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+      expect(f.d4z4Repeats).toBeUndefined();
+      // No band, no refusal-shaped reading, nothing at all: there is no
+      // cell to have read.
+      expect(f.d4z4Repeats_clinical).toBeUndefined();
+      expect(Object.keys(f).filter((key) => key.startsWith('d4z4'))).toEqual([]);
+      expect(f.fieldsDroppedAsUnsafe).toBe(1);
+    }
   });
 
   it('keeps a normal conclusion', () => {
@@ -1184,5 +1217,283 @@ describe('OCR fields — lab panels in precise mode', () => {
     // only.
     const { fields } = redactFields({ fields: COAGULATION }, { scope: 'reports', mode: 'strict' });
     expect(JSON.stringify(fields)).not.toContain('13.7');
+  });
+});
+
+/**
+ * THE CELL THAT NAMES THE DIAGNOSIS, AND WHERE IT CAME FROM.
+ *
+ * `projectOcrFields` dispatches the genetics cells on the substrings
+ * 「d4z4」/「ecori」/「methylation」/「haplotype」, and `diagnosisType` —
+ * with its `geneticType` / `geneType` / `diagnosis_type` /
+ * `genetic_type` spellings, all of them `GENETIC_FIELD_KEYS.geneticType`
+ * — matches none of them. It fell through to the safe-key branch, which
+ * asks only whether a key is safe to NAME, and was published verbatim
+ * in both modes on the stated ground that a category label like
+ *「FSHD1」is non-PII. That is a PII argument, and the question the
+ * siblings answer is a provenance one: `fromLaboratoryReport` was
+ * computed and passed into this projection, and every other genetics
+ * cell on the same 病历摘要 rendered `not_read_off_a_laboratory_report`
+ * beside itself. Stating the refusal beside everything EXCEPT the
+ * diagnosis implies the diagnosis is the one cell that WAS read off a
+ * laboratory report — and on a 出院小结 that row is the only genetics
+ * content on the page.
+ */
+describe('the diagnosis cell carries the origin its siblings carry', () => {
+  const projected = (
+    mode: RedactionMode,
+    documentType: string,
+    cells: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const { fields } = redactFields(
+      { documentType, fields: { classifiedType: documentType, ...cells } },
+      { scope: 'reports', mode },
+    );
+    return (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+  };
+
+  it.each([
+    'diagnosisType',
+    'geneticType',
+    'geneType',
+    'diagnosis_type',
+    'genetic_type',
+    // On the safe list and NOT in the passport's key table, which is a
+    // preference order for reading one value rather than a census of
+    // spellings. The bridge writes both forms of every field.
+    'gene_type',
+  ])('states the origin beside 「%s」 in both modes', (key) => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const blob = projected(mode, 'medical_record', { [key]: 'FSHD1' });
+      // The label itself still reaches the model — it is a
+      // classification, and withholding it was never the point.
+      expect(blob[key]).toBe('FSHD1');
+      expect(blob[`${key}_origin`]).toBe('not_read_off_a_laboratory_report');
+    }
+  });
+
+  it('says it beside the siblings that already said it, and not alone', () => {
+    // The rendered block, which is where the implication lived: one
+    // cell silent among four that refuse.
+    const blob = projected('strict', 'medical_record', {
+      diagnosisType: 'FSHD1',
+      d4z4Repeats: '3',
+      haplotype: '4qA',
+      methylationValue: '12%',
+    });
+    expect(blob.diagnosisType_origin).toBe('not_read_off_a_laboratory_report');
+    expect(blob.d4z4Repeats_clinical).toBe('not_read_off_a_laboratory_report');
+    expect(blob.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
+    expect(blob.methylationValue_origin).toBe('not_read_off_a_laboratory_report');
+  });
+
+  it('refuses nothing off the laboratory’s own report', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const blob = projected(mode, 'genetic_report', { diagnosisType: 'FSHD1' });
+      expect(blob.diagnosisType).toBe('FSHD1');
+      expect(blob.diagnosisType_origin).toBeUndefined();
+    }
+  });
+
+  // The class is closed by the passport's own key table rather than by
+  // a substring, and 「gene」 is why: a substring match would sweep in
+  // the verdict `_extract_genetic` used to compute and publish it with
+  // a sibling beside it. It stays denied by default.
+  it('does not promote the parser’s own verdict into a genetics cell', () => {
+    const blob = projected('precise', 'medical_record', {
+      geneticPositive: 'yes',
+      genetic_positive: 'yes',
+    });
+    expect(blob.geneticPositive).toBeUndefined();
+    expect(blob.genetic_positive).toBeUndefined();
+    expect(blob.geneticPositive_origin).toBeUndefined();
+    expect(blob.genetic_positive_origin).toBeUndefined();
+  });
+
+  // The same cell on the profile scope, where the autofill puts a
+  // report's 分型 into the registration form's own box.
+  it('states the origin of the profile’s own subtype cell in both modes', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { diagnosisType: 'FSHD1', d4z4: '3' },
+        { scope: 'profile', mode },
+      );
+      expect(fields.diagnosisType).toBe('FSHD1');
+      expect(fields.diagnosisType_origin).toBe('not_read_off_a_laboratory_report');
+      expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
+    }
+    // And with the flag the retriever now writes, there is nothing to
+    // refuse — nor does the flag itself reach a prompt.
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { diagnosisType: 'FSHD1', diagnosisTypeFromLaboratoryReport: true },
+        { scope: 'profile', mode },
+      );
+      expect(fields.diagnosisType).toBe('FSHD1');
+      expect(fields.diagnosisType_origin).toBeUndefined();
+      expect(fields.diagnosisTypeFromLaboratoryReport).toBeUndefined();
+    }
+  });
+
+  it('says nothing about a subtype cell that is not there', () => {
+    const { fields } = redactFields({ gender: 'female' }, { scope: 'profile', mode: 'strict' });
+    expect(fields.diagnosisType_origin).toBeUndefined();
+  });
+});
+
+/**
+ * THE PROFILE'S METHYLATION CELL, ONCE THE RETRIEVER ANSWERS FOR IT.
+ *
+ * `geneticCellsFromLaboratoryReport` computed the laboratory-origin
+ * flag for `d4z4` and `haplotype` only, so `fields.methylation` arrived
+ * with no flag beside it and an absent flag reads as `false`: the
+ * prompt asserted `not_read_off_a_laboratory_report` about a value the
+ * same request attributed to the laboratory report on five other
+ * surfaces — INSIDE the same profile block as two sibling readings that
+ * can only be minted when the flag is TRUE.
+ */
+describe('the profile block does not contradict itself about one document', () => {
+  it('refuses nothing when the cell came off the laboratory report', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        {
+          d4z4: '3',
+          d4z4FromLaboratoryReport: true,
+          haplotype: '4qA',
+          haplotypeFromLaboratoryReport: true,
+          methylation: '12%',
+          methylationFromLaboratoryReport: true,
+          diagnosisType: 'FSHD1',
+          diagnosisTypeFromLaboratoryReport: true,
+        },
+        { scope: 'profile', mode },
+      );
+      // The two readings that can only be minted off a laboratory
+      // report...
+      expect(fields.d4z4_clinical).toBe('within_fshd1_repeat_range');
+      expect(fields.haplotype_clinical).toBe('permissive_haplotype');
+      // ...and no sentence beside them saying the same document is not
+      // one.
+      expect(fields.methylation_origin).toBeUndefined();
+      expect(fields.diagnosisType_origin).toBeUndefined();
+      expect(JSON.stringify(fields)).not.toContain('not_read_off_a_laboratory_report');
+    }
+  });
+
+  it('still refuses all four when no document supplied them', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { d4z4: '3', haplotype: '4qA', methylation: '12%', diagnosisType: 'FSHD1' },
+        { scope: 'profile', mode },
+      );
+      expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
+      expect(fields.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
+      expect(fields.methylation_origin).toBe('not_read_off_a_laboratory_report');
+      expect(fields.diagnosisType_origin).toBe('not_read_off_a_laboratory_report');
+    }
+  });
+
+  it('never lets a laboratory-origin flag reach a prompt', () => {
+    const { fields } = redactFields(
+      {
+        d4z4: '3',
+        d4z4FromLaboratoryReport: true,
+        haplotype: '4qA',
+        haplotypeFromLaboratoryReport: true,
+        methylation: '12%',
+        methylationFromLaboratoryReport: true,
+        diagnosisType: 'FSHD1',
+        diagnosisTypeFromLaboratoryReport: true,
+      },
+      { scope: 'profile', mode: 'precise' },
+    );
+    for (const flag of [
+      'd4z4FromLaboratoryReport',
+      'haplotypeFromLaboratoryReport',
+      'methylationFromLaboratoryReport',
+      'diagnosisTypeFromLaboratoryReport',
+    ]) {
+      expect(fields[flag]).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * THE DOCUMENT'S OWN PAGE DECIDES THE LABORATORY GATE ON THIS PATH TOO.
+ *
+ * `isLaboratoryGeneticReport` falls back to the type the UPLOADER
+ * declared only where the page shows neither a clinical narrative nor a
+ * laboratory's structure — and this projection was the one without the
+ * page, so that fallback was every archived row. An archived 病历摘要
+ * whose uploader ALSO picked 基因检测报告 was believed here and refused
+ * on every other surface. `buildReportFields` carries the page now, and
+ * the redactor asks the gate of its INPUT so that layer 1 can delete
+ * the text immediately afterwards.
+ */
+describe('the laboratory gate reads the page the chunk now carries', () => {
+  const DISCHARGE_PAGE =
+    '出院小结\n主诉：双上肢抬举无力5年。现病史：患者于2019年起病。查体：翼状肩胛。' +
+    '诊疗经过：外院基因检测提示 FSHD1。';
+
+  const projected = (mode: RedactionMode, extra: Record<string, unknown>) => {
+    const { fields } = redactFields(
+      {
+        // The uploader picked 基因检测报告 and the archived label agrees
+        // — the exact state the gate could not see through.
+        documentType: 'genetic_report',
+        ...extra,
+        fields: { classifiedType: 'genetic_report', d4z4Repeats: '3', haplotype: '4qA' },
+      },
+      { scope: 'reports', mode },
+    );
+    return {
+      blob: (fields.fields ?? fields.fields_clinical) as Record<string, unknown>,
+      all: JSON.stringify(fields),
+    };
+  };
+
+  it('refuses a grade once the page shows a clinical narrative', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { blob } = projected(mode, { extractedText: DISCHARGE_PAGE });
+      expect(blob.d4z4Repeats_clinical).toBe('not_read_off_a_laboratory_report');
+      expect(blob.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
+    }
+  });
+
+  it('still grades the laboratory’s own report', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { blob } = projected(mode, {
+        extractedText: '基因检测报告\n检测方法：Southern blot\n检测结论：D4Z4 3 拷贝',
+      });
+      expect(blob.d4z4Repeats_clinical).toBe('within_fshd1_repeat_range');
+      expect(blob.haplotype_clinical).toBe('permissive_haplotype');
+    }
+  });
+
+  it('publishes no part of the page in either mode', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const { all } = projected(mode, { extractedText: DISCHARGE_PAGE });
+      for (const fragment of ['出院小结', '主诉', '现病史', '查体', '诊疗经过', 'extractedText']) {
+        expect(all).not.toContain(fragment);
+      }
+    }
+  });
+
+  it('deletes the page at layer 1 rather than dropping it at layer 3', () => {
+    // The difference matters: layer 3 is an allowlist, and an
+    // allowlist entry added later would publish the OCR full-text dump.
+    // Layer 1 is unconditional, recursive and mode-independent.
+    const { stats } = redactFields(
+      {
+        documentType: 'genetic_report',
+        extractedText: DISCHARGE_PAGE,
+        fields: { classifiedType: 'genetic_report', extracted_text: DISCHARGE_PAGE },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    expect(stats.hardDeleted).toEqual(
+      expect.arrayContaining(['extractedText', 'fields.extracted_text']),
+    );
+    expect(stats.notAllowed).not.toContain('extractedText');
   });
 });

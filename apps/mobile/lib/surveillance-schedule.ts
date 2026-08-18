@@ -240,8 +240,15 @@ const hasValue = (value: string | null | undefined): value is string =>
  *  to apply. */
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** YYYY-MM-DD, or null. Full year on purpose: 「05-14」 on a wheelchair
- *  event tells the patient nothing about whether it was this spring. */
+/** YYYY-MM-DD, or null. Full year on purpose: 「05-14」 on a dated
+ *  result tells the patient nothing about whether it was this spring.
+ *
+ *  THIS IS THE RENDERER FOR A VALUE THAT REALLY IS A DAY — a monitoring
+ *  slot's `latestDate`, a symptom score's `recordedAt`, both of which
+ *  are written the moment the observation is made. It is the wrong
+ *  renderer for a follow-up milestone, because it always produces a
+ *  day: see `formatMilestoneDate` below, which is what the wheelchair
+ *  and the non-invasive-ventilation rows go through now. */
 const formatFullDate = (value: string | null | undefined): string | null => {
   if (!hasValue(value)) return null;
   const trimmed = value.trim();
@@ -251,6 +258,75 @@ const formatFullDate = (value: string | null | undefined): string | null => {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${date.getFullYear()}-${month}-${day}`;
+};
+
+/**
+ * A FOLLOW-UP MILESTONE'S DATE, AS MUCH OF IT AS THIS PAGE MAY PRINT.
+ *
+ * `patient_followup_events.occurred_at` is TIMESTAMPTZ NOT NULL and has
+ * no way to say 「只知道是哪一年」, so a patient whose wheelchair answer
+ * was 「2019 年」 is stored as the first instant of 2019. That is the
+ * shape apps/api's occurrence-date.ts names `pinnedToYearStart`, and
+ * refusing to print it as a calendar day is the whole reason that
+ * module exists.
+ *
+ * WHAT THIS ROW USED TO PRINT was `formatFullDate` over exactly that
+ * instant: 「你在随访里记录了「开始使用轮椅」（2019-01-01）」 — the
+ * fabricated 1 January that the referral pack, the FHIR bundle and the
+ * TREAT-NMD document all decline to print for the same event, off the
+ * same column, in the same run. And because `formatFullDate` reads a
+ * UTC instant back through `getFullYear`/`getMonth`/`getDate`, every
+ * device west of Greenwich printed （2018-12-31）: the wrong YEAR on the
+ * milestone a neurologist reads as the start of wheelchair use. China
+ * is UTC+8, so the product's own timezone can never show that half.
+ *
+ * WHAT IT PRINTS INSTEAD is the referral pack's own answer for the same
+ * column, word for word — 「2019 年」 (referral-pack.ts's
+ * `milestoneDateZh`; `toPartialFhirDate` emits 「2019」 for it). The test
+ * for the pin is done in UTC, the way occurrence-date.ts does it,
+ * because in any other zone one stored row would answer differently on
+ * two handsets.
+ *
+ * A REAL 1 JANUARY LOSES ITS MONTH AND DAY HERE, and that is the trade
+ * every other surface in this repo has already made. The event form
+ * sends whatever date the patient typed, so a genuine 2019-01-01 and a
+ * pinned 「2019 年」 are the same bytes by the time anything reads them
+ * — nothing downstream can tell the two apart. Under-claiming precision
+ * for the first patient is recoverable; asserting an observation date
+ * nobody ever gave is not. Printing a day here while the pack printed a
+ * year was also two documents built from one profile disagreeing about
+ * when one person started using a wheelchair.
+ *
+ * AND THE WHOLE DATE IS READ IN UTC, not only the test for the pin.
+ * `formatFullDate` states the rule it is built on — that `occurredAt`
+ * is a real instant, so applying the device's zone to it is right — and
+ * for a milestone that premise does not hold. The event form posts a
+ * bare 「YYYY-MM-DD」 the patient typed; the API parses it (UTC
+ * midnight), stores it in TIMESTAMPTZ and hands it back through
+ * `toISOString`, so what arrives here is a calendar day wearing an
+ * instant's clothes. Read through `getDate`, a wheelchair start of
+ * 2019-06-14 printed 2019-06-13 on any handset west of Greenwich —
+ * one stored row answering differently on two phones, which is the same
+ * complaint occurrence-date.ts makes when it insists its own pin test
+ * be done against a fixed zone. Should a path ever start writing a real
+ * time of day into this column, this reads it a day early in Shanghai;
+ * no path writes one today, and a handset-dependent answer is the worse
+ * of the two.
+ */
+const formatMilestoneDate = (value: string | null | undefined): string | null => {
+  if (!hasValue(value)) return null;
+  const date = new Date(value.trim());
+  if (Number.isNaN(date.getTime())) return null;
+  const atMonthStart =
+    date.getUTCDate() === 1 &&
+    date.getUTCHours() === 0 &&
+    date.getUTCMinutes() === 0 &&
+    date.getUTCSeconds() === 0 &&
+    date.getUTCMilliseconds() === 0;
+  if (atMonthStart && date.getUTCMonth() === 0) return `${date.getUTCFullYear()} 年`;
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${month}-${day}`;
 };
 
 const daysBetween = (from: string, today: Date): number | null => {
@@ -659,7 +735,8 @@ const buildRespiratoryRows = (
   };
 
   const wheelchair = latestFollowupEvent(profile, 'started_wheelchair');
-  const wheelchairDate = formatFullDate(wheelchair?.occurredAt);
+  // A milestone, not an observation time — see formatMilestoneDate.
+  const wheelchairDate = formatMilestoneDate(wheelchair?.occurredAt);
   const repeat: SurveillanceRow = {
     id: 'pulmonary_repeat',
     title: '肺功能要不要定期复查',
@@ -676,7 +753,11 @@ const buildRespiratoryRows = (
   };
 
   const niv = latestFollowupEvent(profile, 'started_niv');
-  const nivDate = formatFullDate(niv?.occurredAt);
+  // The same column and the same year-only answer as the wheelchair
+  // row above: 「开始无创通气」 is one of the three device milestones
+  // occurrence-date.ts is written about, and it was printing the same
+  // fabricated 1 January.
+  const nivDate = formatMilestoneDate(niv?.occurredAt);
   const sleep = latestSymptomScore(profile, 'sleep_quality');
   const sleepDate = formatFullDate(sleep?.recordedAt);
   const sleepIsRecent = sleep ? isRecent(sleep.recordedAt, today) : false;

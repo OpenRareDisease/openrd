@@ -108,9 +108,67 @@ const pushBucketValue = (
   buckets.set(key, { timestamp, values: [value] });
 };
 
+/**
+ * A DAY BUCKET THAT KEEPS THE DAY'S LATEST READING, AND NOT AN AVERAGE
+ * OF THE DAY'S READINGS.
+ *
+ * WHAT THIS REPLACED, AND WHY IT HAD TO BE REPLACED. 睡眠质量 and 上楼
+ * 计时 went through `pushBucketValue` above and came back out of
+ * `finalizeTrendPoints` as a per-day MEAN, and then `getSleepSummary`
+ * and `getStairSummary` put 「最近一次」 in front of it. Two submissions
+ * on one day is not an edge case here: 上楼计时 is routinely done twice
+ * in a sitting, a practice attempt and then the real one — the pattern
+ * the AI retriever's own note (patient-followups.ts) describes, and
+ * refuses to read as a trend for exactly this reason. A 30 秒 practice
+ * run and a 12 秒 real one came out as 「最近一次 10 级台阶用时 21.0
+ * 秒」, a number the patient never recorded, on the tracked functional
+ * metric; sleep scores of 8 and 2 came out as 「最近一次睡眠评分一般」
+ * when the reading that actually happened last was a 2. 我的随访计划
+ * reads the same rows straight off `symptomScores` and told the same
+ * patient 「你最近一次睡眠评分是 2/10」 in the same session.
+ *
+ * 最近一次 HAS TO BE A READING THAT HAPPENED, so the bucket keeps the
+ * latest one instead of averaging. The chart still shows one point per
+ * day — its x labels are formatted days and two points on one day
+ * collide — but every point on it is now a number someone wrote down.
+ *
+ * ON AN EXACT TIMESTAMP TIE the first row seen wins, and no ordering of
+ * the two is defensible: the retriever's note records that the tiebreak
+ * between same-instant rows lives inside an ORDER BY and is arbitrary.
+ * First-seen at least keeps this function's answer stable for one
+ * payload instead of depending on which arm of a sort ran.
+ *
+ * NOT FOR THE DOMAIN TREND CARDS — see `finalizeTrendPoints` below.
+ */
+const pushLatestValue = (
+  buckets: Map<string, { timestamp: string; value: number }>,
+  timestamp: string,
+  value: number,
+) => {
+  const key = toIsoDate(timestamp);
+  const current = buckets.get(key);
+  if (current && new Date(timestamp).getTime() <= new Date(current.timestamp).getTime()) {
+    return;
+  }
+
+  buckets.set(key, { timestamp, value });
+};
+
 /** How many points a trend chart shows. */
 const CHART_POINT_LIMIT = 6;
 
+/**
+ * The averaging finalizer, and it still averages ON PURPOSE.
+ *
+ * Its only callers are the domain trend cards, where one day's bucket
+ * holds several DIFFERENT metrics — deltoid, biceps and triceps all
+ * land in 上肢 — and the mean across them is the composite the card is
+ * about. Nothing built on it claims to be one observation:
+ * `formatTrendSummary` says 「上肢目前影响较明显」, a level, never
+ * 「最近一次」. The patient visualization cards used to share this
+ * function and did make that claim; they use `pushLatestValue` /
+ * `finalizeScalarPoints` now.
+ */
 const finalizeTrendPoints = (
   buckets: Map<string, { timestamp: string; values: number[] }>,
   limit = CHART_POINT_LIMIT,
@@ -124,7 +182,17 @@ const finalizeTrendPoints = (
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
     .slice(-limit);
 
-const finalizeSummedPoints = (
+/**
+ * The finalizer for a bucket that already holds ONE number per day —
+ * the day's total for 跌倒次数, the day's latest reading for 睡眠质量
+ * and 上楼计时. Nothing here reduces anything; the reduction happened
+ * on the way in, where the caller could still say what it meant.
+ *
+ * One function rather than a per-card copy: the twin of this that this
+ * file used to keep (`finalizeSummedPoints`, byte for byte the same
+ * body) is the shape a later change gets applied to only one of.
+ */
+const finalizeScalarPoints = (
   buckets: Map<string, { timestamp: string; value: number }>,
   limit = CHART_POINT_LIMIT,
 ): DomainTrendPoint[] =>
@@ -215,6 +283,13 @@ const resolveComparisonTrend = (
   return currentValue < previousValue ? 'better' : 'worse';
 };
 
+/**
+ * 「最近一次」 IS A PROMISE ABOUT WHAT `currentValue` IS, and the two
+ * summaries below are the only place this file makes it. It holds only
+ * because the caller now hands them the day's latest reading rather
+ * than the day's mean — see `pushLatestValue`. A future caller that
+ * goes back to averaging has to change this wording with it.
+ */
 const getSleepSummary = (
   currentValue: number | null,
   previousValue: number | null,
@@ -294,10 +369,42 @@ const getStairSummary = (
 
 const FALL_HELPER_TEXT = '每次日常记录都会问“最近跌倒次数”，答 0 次同样是记录。';
 
+/**
+ * THIS CARD COUNTS DAYS, AND IT USED TO SAY IT COUNTED RECORDS.
+ *
+ * `fallBuckets` is keyed by calendar day on purpose — the seeded zero
+ * and the `fall` events that land on top of it have to meet somewhere,
+ * and the event's `occurred_at` is written as a bare date by the daily
+ * form, so a day is the only key the two share. That is not the defect.
+ * The defect was the wording built on it: a day total was printed as
+ * 「最近一次记录跌倒 N 次」 and a run of days as 「已经连续 N 次日常
+ * 记录没有跌倒」.
+ *
+ * Both are false the moment a patient files twice in one day, which the
+ * form invites — it pre-fills 跌倒次数 from the previous event, so the
+ * second submission of an afternoon re-sends the same answer. Two
+ * records each reporting 「最近跌倒 2 次」 rendered as 「最近一次记录
+ * 跌倒 4 次」: a count no record holds, attributed to one record. Three
+ * daily records over two days rendered as 「连续 2 次日常记录」 when
+ * there were three.
+ *
+ * So the sentences say day, because a day is what the number is. The
+ * sleep and stair cards took the other road offered — they kept their
+ * 「最近一次」 wording and take the day's actual latest reading instead
+ * (see `pushLatestValue`) — and that road is closed here: the seeded
+ * zero carries the daily record's real timestamp while the fall event
+ * carries midnight UTC of the same date, so 「latest wins」 would keep
+ * every zero and throw away every fall reported on the same day.
+ *
+ * WHAT IS STILL WRONG AND IS NOT THIS FILE'S TO FIX: 「最近跌倒 N 次」
+ * is a standing answer about a period, not an increment, and summing
+ * two of them in a day double-counts. Deciding that belongs with the
+ * write side that composes the description.
+ */
 const getFallSummary = (
   currentValue: number | null,
   previousValue: number | null,
-  zeroRecordStreak: number,
+  zeroRecordDayStreak: number,
 ): Pick<PatientVisualizationCard, 'latestDisplay' | 'summary' | 'helperText'> => {
   // Only "no daily record has ever been made" lands here. A record
   // that answered 0 is a result, and is handled below.
@@ -313,12 +420,12 @@ const getFallSummary = (
     return {
       latestDisplay: '0 次',
       summary:
-        zeroRecordStreak > 1
-          ? `已经连续 ${zeroRecordStreak} 次日常记录没有跌倒。`
+        zeroRecordDayStreak > 1
+          ? `最近连续 ${zeroRecordDayStreak} 天有日常记录，都没有跌倒。`
           : previousValue === null
-            ? '最近一次日常记录没有跌倒。'
-            : // A streak of 1 means the record before it wasn't zero.
-              '最近一次日常记录没有跌倒，比上次更少。',
+            ? '最近一天的日常记录没有跌倒。'
+            : // A streak of 1 means the day before it wasn't zero.
+              '最近一天的日常记录没有跌倒，比上一个有记录的日子更少。',
       helperText: FALL_HELPER_TEXT,
     };
   }
@@ -327,14 +434,14 @@ const getFallSummary = (
     previousValue === null
       ? '已建立第一条跌倒记录。'
       : currentValue === previousValue
-        ? '和上次相比次数接近。'
+        ? '和上一个有记录的日子相比次数接近。'
         : currentValue < previousValue
-          ? '比上次更少。'
-          : '比上次更多。';
+          ? '比上一个有记录的日子更少。'
+          : '比上一个有记录的日子更多。';
 
   return {
     latestDisplay: `${Math.round(currentValue)} 次`,
-    summary: `最近一次记录跌倒 ${Math.round(currentValue)} 次，${comparison}`,
+    summary: `最近一天的记录里一共跌倒 ${Math.round(currentValue)} 次，${comparison}`,
     helperText: FALL_HELPER_TEXT,
   };
 };
@@ -386,10 +493,15 @@ const collectFollowupRecordDays = (profile: PatientProfile | null): Map<string, 
   return days;
 };
 
-/** How many of the most recent records in a row came back zero. Counted
+/** How many of the most recent DAYS in a row came back zero. Counted
  *  over the full history, not the charted window, so a patient who has
- *  gone twenty records without a fall gets told twenty. */
-const countTrailingZeroRecords = (points: DomainTrendPoint[]): number => {
+ *  gone twenty days without a fall gets told twenty.
+ *
+ *  It said 「records」 and it has always counted points, and a point is
+ *  a day: two daily records filed the same afternoon are one bucket.
+ *  The sentence it feeds says 天 for the same reason — see
+ *  `getFallSummary`. */
+const countTrailingZeroDays = (points: DomainTrendPoint[]): number => {
   let streak = 0;
   for (let index = points.length - 1; index >= 0; index -= 1) {
     if (points[index].value !== 0) {
@@ -481,19 +593,22 @@ export const buildDomainTrendCards = (profile: PatientProfile | null): DomainTre
 export const buildPatientVisualizationCards = (
   profile: PatientProfile | null,
 ): PatientVisualizationCard[] => {
-  const sleepBuckets = new Map<string, { timestamp: string; values: number[] }>();
-  const stairBuckets = new Map<string, { timestamp: string; values: number[] }>();
+  // `pushLatestValue`, not `pushBucketValue`: both of these cards
+  // present their newest point as 「最近一次」, so a day that carries two
+  // submissions has to resolve to one of them and not to their mean.
+  const sleepBuckets = new Map<string, { timestamp: string; value: number }>();
+  const stairBuckets = new Map<string, { timestamp: string; value: number }>();
   const fallBuckets = new Map<string, { timestamp: string; value: number }>();
 
   profile?.symptomScores.forEach((item) => {
     if (item.symptomKey === 'sleep_quality') {
-      pushBucketValue(sleepBuckets, item.recordedAt, Number(item.score));
+      pushLatestValue(sleepBuckets, item.recordedAt, Number(item.score));
     }
   });
 
   profile?.functionTests.forEach((item) => {
     if (item.testType === 'stair_climb' && item.measuredValue !== null) {
-      pushBucketValue(stairBuckets, item.performedAt, Number(item.measuredValue));
+      pushLatestValue(stairBuckets, item.performedAt, Number(item.measuredValue));
     }
   });
 
@@ -540,11 +655,11 @@ export const buildPatientVisualizationCards = (
     });
   });
 
-  const sleepPoints = finalizeTrendPoints(sleepBuckets);
-  const stairPoints = finalizeTrendPoints(stairBuckets);
+  const sleepPoints = finalizeScalarPoints(sleepBuckets);
+  const stairPoints = finalizeScalarPoints(stairBuckets);
   // The streak sentence reads the full history; the chart still shows
   // the same window as every other card.
-  const fallHistory = finalizeSummedPoints(fallBuckets, fallBuckets.size);
+  const fallHistory = finalizeScalarPoints(fallBuckets, fallBuckets.size);
   const fallPoints = fallHistory.slice(-CHART_POINT_LIMIT);
   const latestLegacyStairs = profile?.dailyImpacts.find((item) => item.adlKey === 'stairs') ?? null;
 
@@ -557,7 +672,7 @@ export const buildPatientVisualizationCards = (
 
   const sleepText = getSleepSummary(sleepCurrent, sleepPrevious);
   const stairText = getStairSummary(stairCurrent, stairPrevious, Boolean(latestLegacyStairs));
-  const fallText = getFallSummary(fallCurrent, fallPrevious, countTrailingZeroRecords(fallHistory));
+  const fallText = getFallSummary(fallCurrent, fallPrevious, countTrailingZeroDays(fallHistory));
 
   return [
     {

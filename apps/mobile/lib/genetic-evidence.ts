@@ -166,6 +166,14 @@ const documentClassifiedType = (document: GeneticEvidenceDocumentLike): string =
  * because scoring a document on the genetics words it CONTAINS is
  * exactly the defect they exist to end: a 门诊病历摘要 quoting a repeat
  * count contains all of them.
+ *
+ * And a narrative marker is not a SIGNATURE, a timestamp or an
+ * identifier. 医师签名 was added to the narrative half and had to come
+ * out: every genetics report is signed, so one 「医师签名：王医师」 on an
+ * otherwise unchanged Southern blot took it out of
+ * `isLaboratoryGeneticReport` — 基因确诊 to self_reported, and 病历摘要 on
+ * the citation chip. A hit is disqualifying on its own, so the test for
+ * an entry is 「no genetics laboratory prints this」.
  */
 /** The `fields` cells whose value is TEXT OFF THE PAGE. An allowlist,
  *  not 「every string on the blob」: an arbitrary OCR key can hold
@@ -201,7 +209,6 @@ const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
   '体格检查',
   '专科检查',
   '诊疗经过',
-  '医师签名',
 ];
 
 /** Cells only the narrative extractor writes — a key-shaped witness for

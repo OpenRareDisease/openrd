@@ -63,6 +63,16 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       // this repo states no methylation boundary, so the key states an
       // origin and grades nothing. See `methylationCell`.
       'methylation_origin',
+      // THE SAME STATEMENT OVER THE CELL THAT NAMES THE DIAGNOSIS, and
+      // it was the last genetics cell on this scope without one.
+      // `diseaseBackground.diagnosisType` is filled by the same
+      // read-time autofill as `d4z4` and `methylation`
+      // (`applyGeneticReportAutofill`), so it is a 病历摘要's quoted
+      //「FSHD1」 as readily as a laboratory's — and it printed under
+      // 分型/诊断方式 with nothing beside it while its siblings on the
+      // same profile both said `not_read_off_a_laboratory_report`.
+      // Same shape as the methylation origin: an origin, not a grade.
+      'diagnosisType_origin',
       'onsetRegion',
       'familyHistory',
       'independentlyAmbulatory',
@@ -73,6 +83,9 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'diagnosisStage',
       'diagnosisYear',
       'diagnosisType',
+      // In this mode too — a refusal to attribute a cell to a
+      // laboratory report is not a redaction. See the strict list.
+      'diagnosisType_origin',
       'd4z4', // raw repeat count, e.g. "3/22"
       'd4z4_clinical', // what this platform reads that cell as, or refuses to
       'haplotype', // raw, e.g. "4qA"
@@ -241,6 +254,28 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
   'raw_text',
   'fullText',
   'full_text',
+  // THE OCR PAGE ITSELF, under the two names the pipeline has given it.
+  //
+  // It is on this list for the reason the rest of that family is — the
+  // full-text dump carries the patient's name, the issuing physician's
+  // name and every identifier the page printed — and
+  // profile.controller.ts's `generateDocumentSummary` already told its
+  // reader that 「the `extractedText` / `rawFreeText` / `fullText`
+  // family is in HARD_DELETE_KEYS」. It was not: the family had two of
+  // the three, so the one key actually spelled `extractedText` was
+  // being dropped by layer 3 for want of an allowlist entry rather
+  // than deleted for what it holds — which is a different guarantee,
+  // and not the one the comment claimed.
+  //
+  // AND IT IS NOW A KEY A RETRIEVER DELIBERATELY WRITES.
+  // `buildReportFields` puts the page on the chunk so the laboratory
+  // gate can read the document's own structure (see
+  // `chunkIsLaboratoryGeneticReport`); that question is asked of the
+  // redactor's INPUT, before layer 1 runs, and this entry is what
+  // guarantees the text itself goes no further — in both modes, at any
+  // depth, whatever any future allowlist entry says.
+  'extractedText',
+  'extracted_text',
   // Medical identifiers — beyond patientId / patientCode, OCR pipelines
   // and import schemas surface a long tail of equally identifying ids.
   // Listed explicitly so a future allowlist addition can never let one

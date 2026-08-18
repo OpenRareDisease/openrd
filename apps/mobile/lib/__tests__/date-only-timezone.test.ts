@@ -34,11 +34,37 @@ import { buildSurveillanceSchedule } from '../surveillance-schedule';
  * markdown export both dated 05-09.
  *
  * China is UTC+8, so the product's own timezone can never show this.
+ *
+ * AN INSTANT IS NOW READ ON THE PRODUCT'S CALENDAR TOO, NOT THE
+ * DEVICE'S. The values the API hands over that DO carry a time —
+ * `generatedAt`, a timeline row's `timestamp`, the moment an
+ * administrator typed a baseline field — used to be resolved here with
+ * the device's zone, and the note above this file's instant case said
+ * 「there a zone is exactly the right thing to apply」. A zone is; THIS
+ * zone is not. The server resolved the same instants in its own zone,
+ * and apps/api/Dockerfile sets no TZ while node:20-bookworm-slim runs
+ * UTC — so against a handset in China the two were eight hours apart
+ * and printed different DAYS for one report, on a sheet handed to the
+ * clinician who is already looking at the share page. See
+ * `PRODUCT_TIME_ZONE` in ../clinical-visuals and the four-document
+ * comparison in apps/api's profile.passport.dates.test.ts.
  */
 const DAY = '2025-05-09';
 
-/** An instant, not a calendar day. Falls on 01-31 in Los Angeles. */
+/**
+ * An instant, not a calendar day.
+ *
+ * Chosen because the three zones give three different answers: 01-31 in
+ * Los Angeles (which is where these tests run), 02-01 in UTC, and 02-01
+ * in Asia/Shanghai. It is the product's calendar that decides, so the
+ * answer is 02-01 on every device.
+ */
 const INSTANT = '2026-02-01T00:00:00.000Z';
+
+/** Beijing midnight, so a shift in the wrong direction or of the wrong
+ *  size cannot pass: 15:59:59.999Z is still the 8th in Shanghai. */
+const BOUNDARY_BEFORE = '2026-02-08T15:59:59.999Z';
+const BOUNDARY_AFTER = '2026-02-08T16:00:00.000Z';
 
 const summary = {
   generatedAt: '2026-08-05T02:00:00.000Z',
@@ -128,10 +154,24 @@ describe('只有年月日的日期，设备时区不能改掉它', () => {
     expect(formatDateLabel(` ${DAY} `)).toBe('05-09');
   });
 
-  // A value that really does carry a time still gets converted, because
-  // there a zone is exactly the right thing to apply.
-  it('带时刻的值仍然按设备时区换算', () => {
-    expect(formatDateLabel(INSTANT)).toBe('01-31');
+  // A value that really does carry a time gets converted — onto the
+  // product's calendar, which is the one the server printed it on and
+  // the one the clinic reading it runs on. Not this handset's.
+  it('带时刻的值按产品时区换算，不跟着手机走', () => {
+    expect(formatDateLabel(INSTANT)).toBe('02-01');
+    expect(formatDateLabel(BOUNDARY_BEFORE)).toBe('02-08');
+    expect(formatDateLabel(BOUNDARY_AFTER)).toBe('02-09');
+  });
+
+  it('护照 PDF 里带时刻的字段也按产品时区换算', () => {
+    // 生成时间 is 02:00Z, which is 08-05 in Beijing and 08-04 here. The
+    // PDF is the one document in this product rendered off-server, and
+    // this line is the whole reason it stopped agreeing with the other
+    // three.
+    const html = buildClinicalPassportPdfHtml(summary);
+
+    expect(matchAll(html, /生成时间：([^<\n]+)/g)).toEqual(['08-05']);
+    expect(html).not.toContain('08-04');
   });
 
   it('导出的护照 PDF 印出的是报告上的那一天', () => {

@@ -125,6 +125,12 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   diagnosisStage: '诊断阶段',
   diagnosisYear: '确诊年份',
   diagnosisType: '分型/诊断方式',
+  // NOT 分级, AND NOT OPTIONAL. This key holds where the subtype came
+  // from — `not_read_off_a_laboratory_report` — and nothing else, which
+  // is why the label says 来源 and grades nothing. It is written
+  // whenever the archived 分型 is not the one this platform read off
+  // the laboratory's own report; see `clinicalise` in pii-redactor.ts.
+  diagnosisType_origin: '分型/诊断方式来源',
   d4z4: 'D4Z4 重复数',
   // NOT 「临床分级」, FOR EITHER OF THESE.
   //
@@ -152,6 +158,24 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   // there is no grade to label — `methylation_withheld` says a number
   // is on file and is not being shared, which is not one.
   methylation_withheld: '甲基化数值',
+  // THE ROW THIS TABLE HAD NO ENTRY FOR AT ALL.
+  //
+  // `methylation_origin` is on both profile allowlists and reachable in
+  // both modes, and `renderFieldsByScope` falls back to the raw key
+  // when the label is missing — so an otherwise fully-labelled Chinese
+  // block printed 「methylation_origin: not_read_off_a_laboratory_report」,
+  // the only snake_case key on the projection. That row carries this
+  // platform's refusal to attribute the FSHD2 discriminator, and
+  // unlabelled it reads as engineering leftover rather than as the
+  // caveat it is. 来源 and not 分级, for the same reason
+  // 甲基化临床分级 was deleted: the key states where a cell came from
+  // and passes no judgement on the value.
+  //
+  // The reverse of this table's own fence — a label with no reachable
+  // key — is what tools/tool-descriptions.test.ts checked; a reachable
+  // allowlisted key with no label had no check, which is how this
+  // landed. It has one now.
+  methylation_origin: '甲基化值来源',
   onsetRegion: '首发部位',
   familyHistory: '家族史',
   // Was 「独立行走」 while the value was a yes/no. It is one of three

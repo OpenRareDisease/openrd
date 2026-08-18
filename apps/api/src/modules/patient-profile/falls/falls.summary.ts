@@ -72,6 +72,15 @@
  *    forced on the measurement series, where under-reporting `count`
  *    was allowed but claiming a total was not.
  *
+ *    AND IT SUPPRESSED IT IN SILENCE, WHICH IS ONLY HALF THE REFUSAL.
+ *    Every denominator refusal (1) is so careful to state —
+ *    「已记录是否受伤的 3 次中，2 次受伤」,「其余 5 次只有日期」— is
+ *    counted over the truncated list, so at the cap they are floors
+ *    printed in the grammar of totals, and the one clause that would
+ *    have hinted the list was cut is exactly the clause `atCap`
+ *    removes. A reader was left with more confident numbers than
+ *    before, not fewer. `composeFallCapClauseZh` says it instead.
+ *
  * The sentence this file builds lands in the retriever's `eventSummary`
  * field, which is on the prompt allowlist in BOTH strict and precise
  * modes. That is only safe because every value in it is either a count
@@ -448,6 +457,30 @@ export const composeFallQuarterClauseZh = (summary: FallsSummary): string | null
 };
 
 /**
+ * The truncation clause, or null when nothing was truncated.
+ *
+ * Refusal (3) used to be discharged entirely by DELETING the quarterly
+ * clause, which leaves a reader with `total`, a set of denominators and
+ * no reason to doubt any of them. This is the sentence that says the
+ * list is a floor. It goes FIRST among the clauses, before the numbers
+ * it qualifies.
+ *
+ * `total` is named rather than the caller's row limit because this
+ * module is not told what that limit was, and because the falls are
+ * only part of what filled it — the retriever's ceiling counts every
+ * event type. What is true either way is that these are the most
+ * recent N and there are older ones nobody read.
+ */
+export const composeFallCapClauseZh = (summary: FallsSummary): string | null => {
+  if (!summary.atCap) return null;
+  const detailNote = summary.detailed > 0 ? '下面的跌倒详情只统计这部分，分母不是全部跌倒；' : '';
+  return (
+    `跌倒记录未读全：查询已达条数上限，只读取到最近 ${summary.total} 次跌倒，更早的没有读到；` +
+    `${detailNote}因此不做每 ${FALL_QUARTER_DAYS} 天的频率比较`
+  );
+};
+
+/**
  * The detail clause, or null when no fall has any detail filled in.
  *
  * Every sub-clause states its denominator. See refusal (1) — this is
@@ -543,7 +576,10 @@ export const composeFallDetailClauseZh = (summary: FallsSummary): string | null 
  */
 export const composeFallClausesZh = (summary: FallsSummary): string[] => {
   if (summary.total === 0) return [];
-  return [composeFallDetailClauseZh(summary), composeFallQuarterClauseZh(summary)].filter(
-    (clause): clause is string => clause !== null,
-  );
+  return [
+    // First, because it is the caveat on everything after it.
+    composeFallCapClauseZh(summary),
+    composeFallDetailClauseZh(summary),
+    composeFallQuarterClauseZh(summary),
+  ].filter((clause): clause is string => clause !== null);
 };

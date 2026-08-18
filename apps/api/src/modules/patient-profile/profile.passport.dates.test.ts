@@ -2,12 +2,18 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyAdminBaselineWrite } from './baseline-provenance.js';
 import { buildPassportSharePage } from './passport-share.html.js';
-import { buildClinicalPassportExport, buildClinicalPassportSummary } from './profile.passport.js';
+import {
+  buildClinicalPassportExport,
+  buildClinicalPassportSummary,
+  formatProductDate,
+  PRODUCT_TIME_ZONE,
+  type ClinicalPassportSummaryDTO,
+} from './profile.passport.js';
 import type { PatientProfileDTO } from './profile.service.js';
 import { buildReferralPack } from './referral-pack.js';
 
 /**
- * ONE PROFILE, ONE CLOCK, THREE DOCUMENTS, ONE DATE PER RECORD.
+ * ONE PROFILE, ONE CLOCK, FOUR DOCUMENTS, ONE DATE PER RECORD.
  *
  * The markdown export, the share page and the referral pack are built
  * from the same summary in the same request and are meant to be read
@@ -28,6 +34,52 @@ import { buildReferralPack } from './referral-pack.js';
  *     from one app disagreeing about the date of one report is a worse
  *     failure in front of a clinician than both being off by the same
  *     day」.
+ *
+ * THE FOURTH DOCUMENT WAS NEVER IN THIS COMPARISON, AND IT DISAGREED.
+ * ------------------------------------------------------------------
+ * The three documents above are rendered by the SERVER, and this file
+ * used to pin them against each other while letting the answer move
+ * with `process.env.TZ` — 2026-03-06 under America/Los_Angeles and
+ * 2026-03-07 under Asia/Shanghai for one instant. Agreeing with each
+ * other was all that was asked of them, and they got it by all reading
+ * the same ambient zone.
+ *
+ * The clinical passport PDF is rendered on the HANDSET, from the same
+ * summary, and handed to the SAME CLINICIAN. It read the DEVICE's zone.
+ * apps/api/Dockerfile sets no TZ and node:20-bookworm-slim is UTC while
+ * the patients this ships to are at UTC+8, so in production the two
+ * sides were EIGHT HOURS APART: every date on the printed sheet was a
+ * day ahead of the share page open on the screen beside it, for any
+ * report filed between 16:00 and 24:00 UTC. Rendered and measured, not
+ * reasoned about — server at TZ=UTC, device at TZ=Asia/Shanghai, one
+ * fixture: 生成时间 2026-03-06 / 03-07, 最近更新 2026-03-05 / 03-06,
+ * 管理员录入 2026-01-15 / 01-16, and all five 最近来源 rows a day apart.
+ *
+ * So the assertions below are no longer 「the three agree, whatever the
+ * host says」. They are 「all four print THIS day」 — the day in
+ * `PRODUCT_TIME_ZONE`, which is a fact about the Chinese clinic the
+ * document is being carried into and about nothing else. Setting TZ in
+ * the Dockerfile would have made one deployment agree by accident;
+ * these expectations are constants, so any host that changes an answer
+ * fails here.
+ *
+ * WHY THE DEVICE SIDE IS A FORMATTER AND NOT THE PDF ITSELF.
+ * apps/mobile/lib/clinical-passport-pdf.ts reaches AsyncStorage through
+ * api.ts and cannot load outside jest-expo; every date it prints goes
+ * through its `safeDate`, which is `formatDateLabel` from
+ * clinical-visuals.ts and nothing else. `deviceDates` below calls that
+ * function on exactly the summary fields the PDF passes it, in the same
+ * order. The whole PDF is rendered against the same expectations in
+ * apps/mobile/lib/__tests__/date-only-timezone.test.ts.
+ *
+ * AND WHY THE TWO ZONES ARE RUN ONE AFTER THE OTHER RATHER THAN AT THE
+ * SAME TIME. A Node process has one TZ, so a single run cannot put the
+ * server in UTC and the device in Asia/Shanghai. It does not need to:
+ * each side is asserted to give the SAME answer in both zones, and two
+ * functions that are each invariant across zones agree in every
+ * pairing. The production pairing was also rendered in two real
+ * processes while this was written, along with UTC/UTC, LA/LA,
+ * Shanghai/LA, and Lord_Howe/St_Johns for the half-hour offsets.
  *
  * FIXTURE TIMESTAMPS ARE 18:00 UTC, NOT MIDDAY. Midday absorbs every
  * real offset, which is what the other suites in this module want and
@@ -166,6 +218,49 @@ afterAll(() => {
   else process.env.TZ = ORIGINAL_TZ;
 });
 
+/**
+ * THE DEVICE FORMATTER, LOADED OUT OF THE MOBILE APP FOR REAL.
+ *
+ * Not a copy of it — the point of this file is that the two sides
+ * cannot drift, and a second implementation here would be the drift.
+ * The specifier is built at runtime rather than written as a literal
+ * because apps/api's `rootDir` is `src`, so a static import of a file
+ * in apps/mobile is a TS6059 from `tsc -p tsconfig.test.json`. Vitest
+ * resolves it fine, and `PRODUCT_TIME_ZONE` is asserted below — if this
+ * ever stops loading the real module, that assertion fails rather than
+ * this file quietly proving nothing.
+ */
+const deviceModulePath = new URL('../../../../mobile/lib/clinical-visuals.ts', import.meta.url)
+  .href;
+const device = (await import(deviceModulePath)) as {
+  PRODUCT_TIME_ZONE: string;
+  formatDateLabel: (value?: string | null) => string;
+};
+
+/**
+ * Every date the mobile PDF prints, taken off the same summary and
+ * through the same function the PDF puts them through.
+ *
+ * Mirrors `safeDate` in apps/mobile/lib/clinical-passport-pdf.ts — see
+ * its 生成时间 / 最近更新 block, its `timeline-date` cell, its
+ * `monitor-meta` line, its 代为录入 sentence and the two dated cells of
+ * its info grid. All of these are RAW ISO INSTANTS in the summary the
+ * handset receives, which is why the device's zone reached them at all.
+ */
+const deviceDates = (summary: ClinicalPassportSummaryDTO) => ({
+  生成时间: device.formatDateLabel(summary.generatedAt),
+  最近更新: device.formatDateLabel(summary.latestUpdatedAt),
+  timeline: summary.timeline.map((item) => device.formatDateLabel(item.timestamp)),
+  admin: summary.fieldOrigins
+    .filter((origin) => origin.state === 'admin_entered')
+    .map((origin) => device.formatDateLabel(origin.at)),
+  mri: device.formatDateLabel(summary.imaging.latestMriDate),
+  motor: device.formatDateLabel(
+    summary.motor.latestActivityAt || summary.motor.latestMeasurementAt,
+  ),
+  monitoring: summary.monitoring.items.map((item) => device.formatDateLabel(item.latestDate)),
+});
+
 const build = (timeZone: string) => {
   process.env.TZ = timeZone;
   const summary = buildClinicalPassportSummary(profile(), NOW);
@@ -174,8 +269,15 @@ const build = (timeZone: string) => {
     exported: buildClinicalPassportExport(summary),
     pack: buildReferralPack(profile(), NOW),
     share: buildPassportSharePage(summary, { expiresAt: T('2026-03-20') }),
+    device: deviceDates(summary),
   };
 };
+
+/** The three server documents print `YYYY-MM-DD`; the handset prints
+ *  `MM-DD` because the PDF's cells are narrow. Comparing them is
+ *  comparing the last five characters, and nothing else about this
+ *  suite depends on that difference. */
+const mmdd = (value: string) => value.slice(-5);
 
 /** Every 最近来源 row's date, in the order the document prints them. */
 const exportTimelineDates = (markdown: string) =>
@@ -205,12 +307,20 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(built.exported.markdown.match(ISO_INSTANT) ?? []).toEqual([]);
     });
 
-    it('agrees with the share page and the referral pack on 生成时间', () => {
+    it('prints no machine timestamp anywhere in the referral pack either', () => {
+      // The 「不是本人填写」 list interpolated `origin.at` raw, so the
+      // pack a neurologist reads carried 「本平台管理员于
+      // 2026-01-15T18:00:00.000Z 代为录入」 while the other three
+      // documents printed a calendar day for the same event.
+      expect(built.pack.markdown.match(ISO_INSTANT) ?? []).toEqual([]);
+    });
+
+    it('all four documents print 生成时间 as the same clinic day', () => {
       const day = built.summary.generatedAt.slice(0, 10);
-      const expected =
-        timeZone === 'Asia/Shanghai'
-          ? '2026-03-07' // 2026-03-06T18:00Z is already the 7th in Beijing
-          : '2026-03-06';
+      // 2026-03-06T18:00Z is already the 7th in Beijing, and the clinic
+      // this is carried into is in Beijing. Not conditional on the host
+      // any more: the constant IS the assertion.
+      const expected = '2026-03-07';
       // The instant is one instant; only the calendar day it lands on
       // moves. Guarding the raw field too, because 生成时间 reading the
       // wall clock instead of the injected one is the other half of the
@@ -219,29 +329,57 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(line(built.exported.markdown, '生成时间')).toBe(`- 生成时间：${expected}`);
       expect(built.pack.markdown).toContain(`- 生成时间：${expected}`);
       expect(built.share).toContain(`生成时间 ${expected}`);
+      expect(built.device.生成时间).toBe(mmdd(expected));
     });
 
-    it('agrees with the referral pack on 最近更新', () => {
-      const expected = timeZone === 'Asia/Shanghai' ? '2026-03-06' : '2026-03-05';
+    it('all four documents print 最近更新 as the same clinic day', () => {
+      const expected = '2026-03-06';
       expect(line(built.exported.markdown, '最近更新')).toBe(`- 最近更新：${expected}`);
       expect(built.pack.markdown).toContain(`- 平台内最近更新：${expected}`);
+      expect(built.device.最近更新).toBe(mmdd(expected));
     });
 
-    it('prints the same 最近来源 days, in the same order, as the share page', () => {
+    it('prints the same 最近来源 days, in the same order, on all four', () => {
       const dates = exportTimelineDates(built.exported.markdown);
       expect(dates.length).toBeGreaterThan(0);
       expect(dates).toEqual(shareTimelineDates(built.share));
-      expect(dates).toEqual(
-        timeZone === 'Asia/Shanghai'
-          ? ['2026-03-05', '2026-03-03', '2026-02-15', '2026-02-13', '2026-02-11']
-          : ['2026-03-04', '2026-03-02', '2026-02-14', '2026-02-12', '2026-02-10'],
-      );
+      expect(dates).toEqual(['2026-03-05', '2026-03-03', '2026-02-15', '2026-02-13', '2026-02-11']);
+      // The row the handset prints for the same record, in the same
+      // order. This is the comparison that was missing.
+      expect(built.device.timeline).toEqual(dates.map(mmdd));
     });
 
-    it('prints the administrator entry date the way the share page does', () => {
-      const expected = timeZone === 'Asia/Shanghai' ? '2026-01-16' : '2026-01-15';
+    it('prints the administrator entry date the same way on all four', () => {
+      const expected = '2026-01-16';
       expect(built.exported.markdown).toContain(`本平台管理员于 ${expected} 代为录入`);
       expect(built.share).toContain(`本平台管理员于 ${expected} 代为录入`);
+      expect(built.pack.markdown).toContain(`本平台管理员于 ${expected} 代为录入`);
+      expect(built.device.admin).toEqual([mmdd(expected)]);
+    });
+
+    it('hands the handset the same 最近 MRI and 最近监测 days the server printed', () => {
+      // These reach the device already formatted, which is why they
+      // survived the split — and they are asserted anyway, because the
+      // fix must not have moved them either.
+      expect(built.summary.imaging.latestMriDate).toBe('2026-02-13');
+      expect(built.device.mri).toBe('02-13');
+      expect(built.summary.monitoring.items.map((item) => item.latestDate)).toEqual([
+        null,
+        '2026-02-15',
+        null,
+      ]);
+      expect(built.device.monitoring).toEqual(['—', '02-15', '—']);
+      // 最近记录 in the info grid: an instant, so it was a day out.
+      expect(built.device.motor).toBe('03-05');
+    });
+
+    it('answers with the product calendar and not with the host', () => {
+      // The whole file is this assertion, but stated once and directly:
+      // both sides name the same zone, and neither `built` nor
+      // `built.device` above changed when %s did.
+      expect(PRODUCT_TIME_ZONE).toBe('Asia/Shanghai');
+      expect(device.PRODUCT_TIME_ZONE).toBe(PRODUCT_TIME_ZONE);
+      expect(process.env.TZ).toBe(timeZone);
     });
 
     it('reports the generation instant it actually rendered', () => {
@@ -270,3 +408,45 @@ describe('the summary clock', () => {
     expect(generated).toBeLessThanOrEqual(Date.now());
   });
 });
+
+/**
+ * WHERE THE PRODUCT'S DAY STARTS, ON BOTH SIDES, TO THE MILLISECOND.
+ *
+ * The suites above would still pass if both sides shared a wrong offset
+ * — the same hour in the wrong direction, or seven hours instead of
+ * eight — because they only ever compare the two against each other and
+ * against a fixture whose instants are all 18:00Z. Beijing midnight is
+ * 16:00 UTC, so these four instants are the boundary itself.
+ */
+describe.each(['UTC', 'America/Los_Angeles', 'Asia/Shanghai', 'Australia/Lord_Howe'])(
+  'the product day boundary under TZ=%s',
+  (timeZone) => {
+    beforeEach(() => {
+      process.env.TZ = timeZone;
+    });
+
+    it('turns over at 16:00 UTC, which is 00:00 in Asia/Shanghai', () => {
+      const summary = (generatedAt: string) =>
+        line(
+          buildClinicalPassportExport(
+            buildClinicalPassportSummary(profile(), new Date(generatedAt)),
+          ).markdown,
+          '生成时间',
+        );
+
+      expect(summary('2026-03-06T15:59:59.999Z')).toBe('- 生成时间：2026-03-06');
+      expect(summary('2026-03-06T16:00:00.000Z')).toBe('- 生成时间：2026-03-07');
+      expect(device.formatDateLabel('2026-03-06T15:59:59.999Z')).toBe('03-06');
+      expect(device.formatDateLabel('2026-03-06T16:00:00.000Z')).toBe('03-07');
+    });
+
+    it('does not shift a value that is already a calendar day', () => {
+      // A `date` column and an OCR reading carry no instant, so there is
+      // nothing to convert and converting is how the day gets lost.
+      expect(formatProductDate('2019-05-03')).toBe('2019-05-03');
+      expect(formatProductDate(' 2019-05-03 ')).toBe('2019-05-03');
+      expect(device.formatDateLabel('2019-05-03')).toBe('05-03');
+      expect(device.formatDateLabel(' 2019-05-03 ')).toBe('05-03');
+    });
+  },
+);

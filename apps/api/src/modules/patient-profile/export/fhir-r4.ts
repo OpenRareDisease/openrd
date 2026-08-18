@@ -3,6 +3,7 @@ import type { ExportOmission, PortableExportEnvelope } from './envelope.js';
 import {
   deterministicUuid,
   diagnosisTypeMarkerPath,
+  diagnosisTypeSourceZh,
   diagnosisYearMarkerPath,
   geneticConfirmationReasonZh,
   geneticEvidenceDocumentZh,
@@ -207,6 +208,9 @@ interface ObservationCandidate {
     /** True for a genetic cell this platform reads no result off, which
      *  is why that Observation carries no `value[x]`. */
     readonly geneticNonResult?: boolean;
+    /** True for a cell this bundle DISPLAYS AND DOES NOT JUDGE — the
+     *  EcoRI fragment and 甲基化. See `ReportField.notJudgedZh`. */
+    readonly geneticNotJudged?: boolean;
   };
 }
 
@@ -216,6 +220,7 @@ interface KeptDeclarations {
   readonly hasUndatedReportField: boolean;
   readonly hasTranscribedGeneticReading: boolean;
   readonly hasGeneticNonResult: boolean;
+  readonly hasGeneticNotJudged: boolean;
 }
 
 /** Everything the envelope may assert about the bundle, read off the survivors. */
@@ -225,6 +230,7 @@ const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations
   let hasUndatedReportField = false;
   let hasTranscribedGeneticReading = false;
   let hasGeneticNonResult = false;
+  let hasGeneticNotJudged = false;
   kept.forEach(({ declares }) => {
     if (!declares) return;
     if (declares.codingKey) codingKeys.add(declares.codingKey);
@@ -232,6 +238,7 @@ const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations
     if (declares.undatedReportField) hasUndatedReportField = true;
     if (declares.transcribedGeneticReading) hasTranscribedGeneticReading = true;
     if (declares.geneticNonResult) hasGeneticNonResult = true;
+    if (declares.geneticNotJudged) hasGeneticNotJudged = true;
   });
   return {
     codingKeys,
@@ -239,6 +246,7 @@ const declaredByKept = (kept: readonly ObservationCandidate[]): KeptDeclarations
     hasUndatedReportField,
     hasTranscribedGeneticReading,
     hasGeneticNonResult,
+    hasGeneticNotJudged,
   };
 };
 
@@ -289,10 +297,23 @@ export const buildFhirExport = (
   });
 
   // ---------------------------------------------------------- Condition
+  //
+  // THE SUBTYPE IS THE ONE THE PASSPORT PRINTS, and this resource is
+  // one of the two that used to take a different one. `diagnosisType`
+  // classifies the ARCHIVED string; `passportDiagnosisType` classifies
+  // the evidence document's own 分型 cell first and the archive after
+  // it, which is `buildClinicalPassportSummary`'s chain and therefore
+  // what the patient, their neurologist and the anaesthetist are all
+  // looking at. Over a profile whose questionnaire says FSHD1 and whose
+  // genetics report reads FSHD2 — ordinary, because the read-time
+  // autofill only ever fills an EMPTY slot — this `Condition` asserted
+  // 158900 with a verified OMIM number while every human-facing surface
+  // said FSHD2. `diagnosisTypeSourceZh` in `note` is where the archived
+  // string is still reported, so nothing is resolved silently.
   const diseaseEntry =
-    source.diagnosisType === 'FSHD1'
+    source.passportDiagnosisType === 'FSHD1'
       ? verifiedCoding('disease.fshd1')
-      : source.diagnosisType === 'FSHD2'
+      : source.passportDiagnosisType === 'FSHD2'
         ? verifiedCoding('disease.fshd2')
         : null;
 
@@ -304,8 +325,8 @@ export const buildFhirExport = (
       // and a number inside a sentence cannot be consumed by a
       // machine as an assertion the way system+code can.
       `${diseaseEntry.labelZh}（OMIM ${diseaseEntry.code}）`
-    : source.diagnosisTypeRawZh
-      ? `面肩肱型肌营养不良（档案记录分型：${source.diagnosisTypeRawZh}，未能明确归入 1 型或 2 型）`
+    : source.passportDiagnosisTypeRawZh
+      ? `面肩肱型肌营养不良（记录的分型：${source.passportDiagnosisTypeRawZh}，未能明确归入 1 型或 2 型）`
       : '面肩肱型肌营养不良（未记录分型）';
 
   const conditionId = deterministicUuid(`condition:${profile.id}`);
@@ -377,7 +398,18 @@ export const buildFhirExport = (
       // its note here would put an administrator's name on a string
       // they never wrote. Asked through the shared answer so this note
       // and the TREAT-NMD provenance sentence cannot disagree.
-      const typeMarkerPath = diagnosisTypeMarkerPath(source);
+      //
+      // AND NULL AGAIN WHEN THE EVIDENCE DOCUMENT SUPPLIED THE 分型.
+      // The marker is about a baseline slot; when the report answers,
+      // that slot holds a DIFFERENT string from the one this resource
+      // asserts, and an administrator's name folded in here would be
+      // signed against a value they did not write and this document
+      // does not print — the same failure the paragraph above is
+      // written about, one store further along.
+      const typeMarkerPath =
+        source.geneticEvidenceReading.values.diagnosisType === null
+          ? diagnosisTypeMarkerPath(source)
+          : null;
       const typeOrigin = typeMarkerPath ? originNoteZh(source, typeMarkerPath) : null;
       const notes = [
         ...(source.diagnosisYear.kind === 'unknown'
@@ -385,6 +417,12 @@ export const buildFhirExport = (
           : []),
         ...(yearOrigin ? [`确诊年份${yearOrigin}。`] : []),
         ...(typeOrigin ? [`FSHD 分型${typeOrigin}。`] : []),
+        // UNCONDITIONAL. `Condition.code` is the element a registry
+        // indexes on, and which string this platform classified into it
+        // is not something a receiver can recover from the bundle. The
+        // sentence is shared with the Phenopacket, which asserts the
+        // same term with no note slot to put it in.
+        diagnosisTypeSourceZh(source),
       ];
       return notes.length > 0 ? { note: notes.map((text) => ({ text })) } : {};
     })(),
@@ -621,6 +659,7 @@ export const buildFhirExport = (
         undatedReportField: field.observedAtIsUploadTime,
         transcribedGeneticReading: field.transcribedGeneticReading,
         geneticNonResult: field.readsAsResult === false,
+        geneticNotJudged: field.notJudgedZh !== null,
       },
       // Not `sortKey(field.observedAt)`: for an undated report field
       // that value is the upload time, and this Observation is about
@@ -739,6 +778,17 @@ export const buildFhirExport = (
                 },
               ]
             : []),
+          // WHY THIS NUMBER CHANGED NOTHING, beside the number.
+          //
+          // The EcoRI fragment and 甲基化 reach this bundle at all only
+          // as of this change, and the reason they may is that they
+          // reach it with this sentence attached. `note` and not
+          // `interpretation`: this is a statement about what this
+          // platform DID NOT DO, and the interpretation value set has
+          // only verdicts in it. `dataAbsentReason` is not it either —
+          // the value is present and is published; what is absent is a
+          // judgement, and R4 has no element for that.
+          ...(field.notJudgedZh ? [{ text: field.notJudgedZh }] : []),
           ...(field.transcribedGeneticReading
             ? [
                 {
@@ -901,6 +951,46 @@ export const buildFhirExport = (
         '本 Bundle 中有基因结果的 Observation 没有给出结果值：报告上那一项写着东西，但本平台从它读不出这一项的结果。这类条目按 FHIR 的写法给出 dataAbsentReason（data-absent-reason 取值集，code=unknown），报告上那一项的原文原样放在同一个元素的 text 里供人阅读。请不要把那段原文当作该项的检测结果导入。',
     });
   }
+
+  // Gated on the survivors like the three above, and for the same
+  // reason. What it explains is not a missing element but a PRESENT
+  // one that a receiver would otherwise read as a graded result.
+  //
+  // THE ABSENCE THIS REPLACES. `REPORT_FIELD_SPECS` had no entry for
+  // 甲基化 and none for the EcoRI fragment, so this bundle dropped both
+  // silently — the FSHD2 discriminator, and, for a report that states
+  // its length in kb and gives no repeat count, the only size
+  // measurement the laboratory made. The omissions list declared other
+  // pipeline gaps and said nothing about either, so a registry
+  // receiving the bundle saw a patient with a 4qA haplotype and no D4Z4
+  // size measurement at all, which is a different patient from the one
+  // the passport describes.
+  if (declared.hasGeneticNotJudged) {
+    omissions.push({
+      field: 'Observation.interpretation（EcoRI 片段 / 甲基化）',
+      reasonZh:
+        '本 Bundle 中有基因结果的 Observation 给出了数值但不带任何判读：EcoRI 片段是以 kb 写的长度，本仓库内没有可核对的 kb 界限，本平台也不在 kb 和重复单元数之间做换算；甲基化则没有任何门槛读它，也没有解析器判断它是不是一项结果。这两项照原样带到接收方，是因为对一些患者来说本平台是唯一把它们结构化保存下来的地方；它们不参与本平台对这份档案的任何判定，本 Bundle 也不写 interpretation——observation-interpretation 取值集里只有「正常/异常/偏高/偏低」这类结论，而这里恰恰没有结论。逐条的说明写在各自 Observation 的 note 里。',
+    });
+  }
+
+  // WHAT THE PASSPORT'S 诊断 BLOCK HOLDS AND THIS BUNDLE DOES NOT.
+  //
+  // Unconditional, because it is about what this exporter does and not
+  // about which resources a particular profile produced. The readings
+  // themselves all travel now — 甲基化 and the EcoRI fragment were the
+  // two that did not — so what is left is this platform's judgement of
+  // the report, the copy written around that judgement, the assay
+  // method, and the patient's own answer about their diagnostic
+  // journey. Declared rather than emitted for the reason the TREAT-NMD
+  // document gives at the same point: the mappable part of the verdict
+  // is already on `Condition.verificationStatus`, in the sentence all
+  // three exports share, and the rest is copy written for a patient and
+  // their own clinician holding the original report.
+  omissions.push({
+    field: 'Condition（临床护照的基因证据分级、检测方法与诊断进度）',
+    reasonZh:
+      '本 Bundle 承载报告上的读数与「是否基因确诊」这一判定，不承载临床护照上围绕它的其余内容：基因证据的分级（未检测 / 方法不适用 / 结果不全 / 转录件 / 单倍型非允许型 / 可用于入组）与面向患者的说明文字、随分级生成的《检查申请说明》及其指南出处、报告上写的检测方法（FHIR 的 Observation.method 是它的位置，本导出尚未填写），以及患者在基线问卷上自己勾选的「诊断进度」。判定本身在 Condition.verificationStatus 上，它的 text 与 TREAT-NMD 对齐导出中 diagnosis.geneticallyConfirmed 的 provenanceZh、Phenopacket 导出中对应的 omission 是同一句话。verificationStatus 只有 confirmed / unconfirmed 两个取值，「实验室读到的单倍型不是允许型」与「什么都没读到」都落在 unconfirmed 上——这两种情况的区别写在同一元素的 text 里，请读它，不要只读编码。',
+  });
 
   // The three statements this bundle makes about external terminology
   // — this omission, `conformanceZh` and `notes.编码` — are derived

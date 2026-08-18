@@ -115,6 +115,25 @@ describe('PatientFollowupRetriever', () => {
     expect(JSON.stringify(f)).not.toContain('description');
   });
 
+  it('counts the events it tallied, not the rows it fetched', async () => {
+    // A row whose date does not parse is skipped by the tally, and
+    // `eventCount` was the raw row count — so 「事件条数: 2」 sat in the
+    // same chunk as 「跌倒（轻）×1」 and left the model to account for
+    // an event that has no description, no type and no date, which it
+    // does by inventing one.
+    const pool = poolWith(
+      [],
+      [
+        { event_type: 'fall', severity: 'mild', occurred_at: daysAgoIso(3) },
+        { event_type: 'new_foot_drop', severity: null, occurred_at: 'not-a-date' },
+      ],
+    );
+    const r = await new PatientFollowupRetriever(pool).search({ question: '' }, ctx());
+    const f = r.chunks[0].metadata.fields as Record<string, unknown>;
+    expect(f.eventSummary).toBe('跌倒（轻）×1，最近 3 天前');
+    expect(f.eventCount).toBe(1);
+  });
+
   it('excludes retracted records from every table it reads', async () => {
     // Soft delete (migration 016) exists because a mistyped 185-second
     // stair climb otherwise becomes a permanent spike. Eight read paths
@@ -378,7 +397,7 @@ describe('no direction without something to compare', () => {
     expect(f.latestBand).toBe('较前升高');
   });
 
-  it('two readings on ONE DAY carry neither', async () => {
+  it('two readings on ONE DAY carry neither, and say why', async () => {
     // 上楼计时 is routinely done twice in a sitting — a practice
     // attempt, then the real one — and the length >= 2 test admitted
     // that pair as a trend. 10 秒 then 16 秒 the same afternoon came
@@ -394,9 +413,79 @@ describe('no direction without something to compare', () => {
     expect(f.count).toBe(2);
     expect(f.spanDays).toBe(0);
     expect(f.changeDirection).toBeUndefined();
-    expect(f.latestBand).toBeUndefined();
+    // Deleting the claim is not the same as answering the question.
+    // The model still sees two readings that got slower, and a hole
+    // is the thing it fills — so the refusal is stated, in the field
+    // this file puts its refusals in, on both allowlists.
+    expect(String(f.latestBand)).toContain('时间跨度不足一天');
     // The readings themselves are still there; only the claim goes.
     expect(f.series).toBe('10sec(0天前)、16sec(0天前)');
+  });
+
+  /**
+   * A SPAN IS AN INTERVAL, AND IT WAS THE DIFFERENCE OF TWO ROUNDED
+   * BIN INDICES.
+   *
+   * `daysAgo` rounds, so its boundary sits at 12 hours: two readings a
+   * MINUTE apart across it come out 1 apart. The guard above tested
+   * `spanDays >= 1`
+   * against exactly that number, so the case its own comment was
+   * written for — 上楼计时 twice in a sitting — walked straight
+   * through it, and the 跨度(天): 0 that used to refute the fabricated
+   * 「较前升高」 now read 1 and corroborated it instead.
+   */
+  describe('the span comes off the timestamps, not off the rounded ages', () => {
+    /** now − `ms`, so a test can place a reading to the second. */
+    const msAgoIso = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const HOUR = 60 * 60 * 1000;
+
+    const pairAt = async (olderMs: number, newerMs: number) =>
+      fieldsOf([
+        { metric_key: 'stair_climb', unit: 'sec', value: '10', recorded_at: msAgoIso(olderMs) },
+        { metric_key: 'stair_climb', unit: 'sec', value: '16', recorded_at: msAgoIso(newerMs) },
+      ]);
+
+    it('reads one minute apart as one minute, not as a day', async () => {
+      // The two readings straddle the 12-hour rounding boundary, so
+      // their ages round to 1 and 0 while 60 seconds separate them.
+      const f = await pairAt(12 * HOUR + 30_000, 12 * HOUR - 30_000);
+      expect(f.spanDays).toBe(0);
+      expect(f.changeDirection).toBeUndefined();
+      expect(f.latestBand).not.toBe('较前升高');
+      expect(String(f.latestBand)).toContain('时间跨度不足一天');
+    });
+
+    it('reads four hours across midnight as four hours', async () => {
+      // Two different calendar days is not a day of elapsed time, and
+      // a stair-climb pair four hours apart is fatigue, not course.
+      const f = await pairAt(26 * HOUR, 22 * HOUR);
+      expect(f.spanDays).toBe(0);
+      expect(f.changeDirection).toBeUndefined();
+    });
+
+    it('never rounds a twenty-hour gap up into a day', async () => {
+      const f = await pairAt(21 * HOUR, HOUR);
+      expect(f.spanDays).toBe(0);
+      expect(f.changeDirection).toBeUndefined();
+    });
+
+    it('admits a direction as soon as a full day has really passed', async () => {
+      const f = await pairAt(25 * HOUR, HOUR);
+      expect(f.spanDays).toBe(1);
+      expect(f.changeDirection).toBe('up');
+      expect(f.latestBand).toBe('较前升高');
+    });
+
+    it('measures the span across the whole series, not the array ends', async () => {
+      // Order-independent by construction, so a change to the SQL
+      // ORDER BY cannot quietly turn the span negative.
+      const f = await fieldsOf([
+        { metric_key: 'fatigue', unit: null, value: 3, recorded_at: daysAgoIso(9) },
+        { metric_key: 'fatigue', unit: null, value: 5, recorded_at: daysAgoIso(40) },
+        { metric_key: 'fatigue', unit: null, value: 7, recorded_at: daysAgoIso(1) },
+      ]);
+      expect(f.spanDays).toBe(39);
+    });
   });
 
   it('a metric whose every row is 做不到 asserts no direction either', async () => {
@@ -409,6 +498,33 @@ describe('no direction without something to compare', () => {
     expect(f.count).toBe(0);
     expect(f.changeDirection).toBeUndefined();
     expect(f.latestBand).toBe('本期均记录为做不到');
+  });
+
+  it('...and asserts no span either, where 0 was not a harmless value', async () => {
+    // There is no series in this branch, so there is no span. 「跨度
+    // (天): 0」 printed beside 「本期共 6 次记录为「做不到」…最近一次 2
+    // 天前」 reads as six attempts on one day — the opposite of six
+    // 做不到 records spread across the window, which is what it is.
+    // The days these rows cover are never queried, so the honest
+    // value is no field at all.
+    const f = await fieldsOf(
+      [],
+      [{ metric_key: 'stair_climb', unable_count: 6, most_recent_days: 2 }],
+    );
+    expect(f.spanDays).toBeUndefined();
+  });
+
+  it('never ages a future-dated 做不到 row into a negative', async () => {
+    // `performedAt` is `z.string().datetime()` with no upper bound, so
+    // a client can post tomorrow. `daysAgo` clamps at zero for the
+    // series and the events; the unable query's SQL-side age was the
+    // one that did not, and 「最近一次 -3 天前」 reached both modes.
+    const f = await fieldsOf(
+      [],
+      [{ metric_key: 'stair_climb', unable_count: 2, most_recent_days: -3 }],
+    );
+    expect(String(f.unableSummary)).toContain('最近一次 0 天前');
+    expect(String(f.unableSummary)).not.toContain('-');
   });
 });
 

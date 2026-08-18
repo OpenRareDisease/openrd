@@ -1,6 +1,10 @@
 import unittest
 
-from app.services.fshd_report_service import analyze_fshd_report, extract_lab_table_rows
+from app.services.fshd_report_service import (
+    MEDICAL_SUMMARY_STRUCTURE_MARKERS,
+    analyze_fshd_report,
+    extract_lab_table_rows,
+)
 
 
 class FshdReportServiceCoverageTest(unittest.TestCase):
@@ -779,15 +783,95 @@ class VerdictsAreNotReadingsTest(unittest.TestCase):
         self.assertNotIn("haplotype", self._fields(result))
         self.assertIsNone(self._summary(result)["haplotype"])
 
-    def test_both_alleles_named_goes_to_review_not_to_print_order(self):
-        result = self._analyze("4qB/4qA 双等位基因均已分型，致病侧为 4qB")
-        self.assertLess(self._fields(result)["haplotype"]["confidence"], 0.75)
-        self.assertIn("haplotype", [q["field_name"] for q in result["fshd"]["review_queue"]])
+    def test_both_alleles_named_is_withheld_not_queued_for_review(self):
+        """A LOW CONFIDENCE IS NOT A WARNING — NOTHING DOWNSTREAM READS IT.
+
+        This used to emit whichever allele was printed first at 0.60, on
+        the theory that dropping below the 0.75 review threshold put a
+        human on it. The queue is a human process and the value did not
+        wait for it: the bridge writes `fields.haplotype`
+        unconditionally, `parsePermissiveHaplotype` sees one token and
+        returns true, and the assistant prompt and the patient-facing
+        passport both assert a permissive allele in the meantime.
+
+        So the VALUE is withheld. The platform renders a missing one as
+        `unspecified_haplotype`, which every downstream reader already
+        handles, and the report's own sentence still travels on
+        `interpretation_summary`.
+        """
+        result = self._analyze("单倍型: 4qB/4qA 双等位基因均已分型，致病侧为 4qB")
+        self.assertNotIn("haplotype", self._fields(result))
+        self.assertIsNone(self._summary(result)["haplotype"])
+        self.assertNotIn("haplotype", [q["field_name"] for q in result["fshd"]["review_queue"]])
 
     def test_a_single_stated_haplotype_keeps_its_confidence(self):
         result = self._analyze("单倍型: 4qA", "D4Z4重复单元数: 3")
         self.assertEqual(self._summary(result)["haplotype"], "4qA")
         self.assertGreaterEqual(self._fields(result)["haplotype"]["confidence"], 0.75)
+
+    def test_the_probe_pair_on_the_method_line_is_not_this_patients_allele(self):
+        """THE DEFECT THIS SECTION EXISTS FOR, ON A REAL REPORT.
+
+        The haplotype was `re.search(r"\\b(4qA|4qB)\\b")` over the whole
+        document — the FIRST token on the page. On a Southern blot report
+        that is the 检测方法 line naming the standard probe pair, and the
+        wording below is the exact wording this platform's own patient
+        copy tells people to ask their laboratory for. So a report whose
+        RESULT is 4qB was read as 4qA.
+
+        FSHD1 cannot be the mechanism on a 4qB allele, so this turned a
+        non-diagnosis into 基因确诊 and 可用于入组.
+        """
+        result = self._analyze(
+            "检测方法: 脉冲场凝胶电泳,联合 p13E-11 探针,再结合 4qA / 4qB 探针判断单倍型",
+            "检测结果",
+            "4q35 单倍型: 4qB",
+            "D4Z4重复单元数: 6",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_the_probe_pair_does_not_lower_a_genuine_4qa_reading(self):
+        """The same method line above a 4qA result is still a clean read.
+
+        Flagging on 「both tokens appear anywhere」 put every ordinary
+        Southern blot into the review queue at 0.60, because the probe
+        line names both on every one of them.
+        """
+        result = self._analyze(
+            "检测方法: 联合 p13E-11 探针,再结合 4qA / 4qB 探针判断单倍型",
+            "检测结果",
+            "4q35 单倍型: 4qA",
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qA")
+        self.assertGreaterEqual(self._fields(result)["haplotype"]["confidence"], 0.75)
+
+    def test_a_footnote_defining_the_term_does_not_suppress_the_result(self):
+        """「附注: 4qA 为允许型单倍型」 is a definition, not a second result.
+
+        It contains 单倍型, so a line-contains test read it as a stated
+        result and withheld the 4qB printed above it — costing the
+        patient the one sentence that says a 4qB contraction does not
+        support FSHD1. The label sits AFTER the token in a footnote and
+        BEFORE it on every real result row, which is the same rule
+        `_find_adjacent_regex` applies to the numeric cells.
+        """
+        result = self._analyze(
+            "检测结果", "单倍型: 4qB", "附注: 4qA 为允许型单倍型"
+        )
+        self.assertEqual(self._summary(result)["haplotype"], "4qB")
+
+    def test_a_bare_token_with_no_heading_is_still_read(self):
+        """An OCR that recovered the results and lost the headings.
+
+        Requiring a 单倍型 label outright would drop a real allele for
+        every report whose layout the OCR flattened, so an unlabelled
+        line is still read — but only when the whole document, method
+        lines aside, is unanimous about which allele it names.
+        """
+        self.assertEqual(
+            self._summary(self._analyze("FSHD1", "4qA", "D4Z4重复单元数: 4"))["haplotype"],
+            "4qA",
+        )
 
     # --- a unit nobody printed ---------------------------------------
 
@@ -882,7 +966,93 @@ class TheNumberBelongsToTheLabelNextToItTest(unittest.TestCase):
             self._analyze("基因检测报告", "检测结果", "检测项目 甲基化分析 4qA")
         )
         self.assertIsNone(summary["methylation_value"])
-        self.assertEqual(summary["haplotype"], "4qA")
+        # NOR IS THE 4qA A HAPLOTYPE. It sits on a 检测项目 line, which
+        # names the assay — the reason the methylation cell above it
+        # reports nothing is the same reason this one does. This
+        # assertion read `== "4qA"` while the haplotype was taken from
+        # the first token anywhere on the page.
+        self.assertIsNone(summary["haplotype"])
+
+    def test_a_methylation_row_is_never_a_repeat_count(self):
+        """ONE CELL, TWO ANSWERS ABOUT TWO DIFFERENT MEASUREMENTS.
+
+        「D4Z4」 labels the repeat count and also opens 「D4Z4甲基化」, so
+        the count's last-resort pattern reached into the methylation row.
+        The gap 「甲基化: 」 carries a colon, which is what
+        `_gap_names_a_method` treats as settling the question, so the
+        match was accepted at 0.97 — the confidence of a cell we really
+        read. The same cell was ALSO read correctly as
+        `methylation_value`, so one methylation reading became a
+        methylation value AND a fabricated repeat count, and the count
+        drove the FSHD1/FSHD2 branch.
+
+        This repo states no methylation boundary, and neither report
+        below contains a repeat count at all.
+        """
+        percent = self._summary(
+            self._analyze("基因检测报告", "检测结果", "D4Z4甲基化: 35%")
+        )
+        self.assertEqual(percent["methylation_value"], 35.0)
+        self.assertIsNone(percent["d4z4_repeat_pathogenic"])
+
+    def test_the_fraction_spelling_does_not_mint_a_count_of_zero(self):
+        """「D4Z4 甲基化水平：0.35」 gave `d4z4_repeat_pathogenic` = 0.
+
+        The pattern stopped at the 0 before the decimal point, and the
+        platform then told the patient the laboratory had printed a count
+        of zero with 报告读取 beside it. A bisulfite ratio is commonly
+        printed as a fraction, so this is the ordinary spelling.
+        """
+        summary = self._summary(
+            self._analyze("基因检测报告", "检测结果", "D4Z4 甲基化水平：0.35")
+        )
+        self.assertEqual(summary["methylation_value"], 0.35)
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
+
+    def test_no_d4z4_cell_is_emitted_off_a_methylation_row(self):
+        """Not merely ungraded — the row must not exist.
+
+        `normalized_value` alone is not enough: the passport prints the
+        raw `field_value` with 报告读取 in its bracket, so a `d4z4` field
+        carrying 「35」 or 「0」 attributes a count to a report that states
+        none however the number is typed.
+        """
+        for row in ("D4Z4甲基化: 35%", "D4Z4 甲基化水平：0.35"):
+            with self.subTest(row=row):
+                names = {
+                    f["field_name"]
+                    for f in self._analyze("基因检测报告", "检测结果", row)["fshd"][
+                        "structured_fields"
+                    ]
+                }
+                self.assertNotIn("d4z4_repeat_pathogenic", names)
+
+    def test_a_methylation_row_does_not_hide_a_real_count_below_it(self):
+        """The match is refused, not the cell — so the scan goes on.
+
+        A report carrying both must still read the count the laboratory
+        printed.
+        """
+        summary = self._summary(
+            self._analyze(
+                "基因检测报告",
+                "检测结果",
+                "D4Z4甲基化: 28%",
+                "D4Z4 重复单元数: 7",
+            )
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 7)
+        self.assertEqual(summary["methylation_value"], 28.0)
+
+    def test_a_length_row_is_still_refused_by_its_unit(self):
+        """The `length_in_kb` refusal stays live for the bare spelling.
+
+        「D4Z4: 38 kb」 has a gap of just 「: 」 — no analyte word in it —
+        so the gap test cannot see it and the unit AFTER the number is
+        what catches it.
+        """
+        summary = self._summary(self._analyze("基因检测报告", "检测结果", "D4Z4: 38 kb"))
+        self.assertIsNone(summary["d4z4_repeat_pathogenic"])
 
 
 class AGeneticReportIsIdentifiedByItsStructureTest(unittest.TestCase):
@@ -961,6 +1131,45 @@ class AGeneticReportIsIdentifiedByItsStructureTest(unittest.TestCase):
             with self.subTest(hint=hint):
                 result = self._analyze(self.REPORT, hint)
                 self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+
+    def test_a_signature_line_does_not_relabel_a_laboratory_report(self):
+        """医师签名 IS A SIGNATURE BLOCK, NOT A CLINICAL NARRATIVE.
+
+        It was added to MEDICAL_SUMMARY_STRUCTURE_MARKERS, where a single
+        hit is disqualifying on its own and outranks every laboratory
+        marker — so one extra line on an otherwise unchanged Southern
+        blot flipped it from 基因确诊 to self_reported and relabelled it
+        病历摘要 on the citation chip the patient taps.
+
+        Every genetics report is signed. This file already classifies the
+        string correctly in `_BLOCK_STOP_MARKERS`, under the note that
+        signature blocks are never part of a clinical conclusion.
+        """
+        signed = self.REPORT + ("医师签名：王医师",)
+        for hint in ("genetic_report", "other"):
+            with self.subTest(hint=hint):
+                self.assertEqual(self._analyze(signed, hint)["fshd"]["report_type"], "genetic_report")
+
+    def test_no_narrative_marker_appears_on_a_laboratory_report(self):
+        """The rule the list is audited against, kept executable.
+
+        A marker that a genetics laboratory prints is not a narrative
+        marker, and because a hit is disqualifying on its own, one such
+        entry demotes every report carrying it. The signatures, the
+        timestamps and the identifiers a report DOES print belong in
+        `_BLOCK_STOP_MARKERS`, which is where 医师签名 already was.
+        """
+        report = "\n".join(self.REPORT + (
+            "样本号: SB2024-0417",
+            "实验者: 周某某   复核者: 吴某某",
+            "审核医师: 赵某某",
+            "医师签名：王某某",
+            "报告日期: 2024-04-20   打印日期: 2024-04-21",
+            "本报告仅供临床参考,不作诊断依据。",
+        ))
+        for marker in MEDICAL_SUMMARY_STRUCTURE_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, report)
 
     def test_a_report_with_no_recognisable_structure_is_still_promoted(self):
         """Demoting here would lose the numbers, not just the grade.

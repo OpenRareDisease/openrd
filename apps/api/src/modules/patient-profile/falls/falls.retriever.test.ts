@@ -245,6 +245,56 @@ describe('what the model is told about falls', () => {
     expect(fields.eventCount).toBe(200);
   });
 
+  /**
+   * A TALLY OVER A FULL PAGE IS A FLOOR, AND IT WAS PRINTED AS A TOTAL.
+   *
+   * The measurement series got `countAtCap` for exactly this reason.
+   * The event chunk carried no equivalent even though `eventRowCount >=
+   * MAX_EVENT_ROWS` is the same expression that already suppresses the
+   * quarterly clause — so the code knew the list was truncated, dropped
+   * the comparison in silence, and still handed the model 「跌倒（轻）
+   * ×200」 and 「事件条数: 200」 under a label that reads as a total.
+   * This population reaches that ceiling: roughly 30% of adults with
+   * FSHD fall at least monthly, and the window goes to 730 days.
+   */
+  describe('a full page says it is a floor', () => {
+    const capped = (detail: Record<string, unknown> = {}) =>
+      Array.from({ length: 200 }, (_, index) => fallRow(index * 3, index < 40 ? detail : {}));
+
+    it('says the tally is a lower bound, in words, in the field both modes get', async () => {
+      const summary = String((await eventFields(capped())).eventSummary);
+      expect(summary).toContain('已达查询上限');
+      expect(summary).toContain('都只是下限，不是总数');
+      // The count itself is marked where it is printed, not only in
+      // the preamble — the model reads the number, not the paragraph.
+      expect(summary).toContain('跌倒×200 以上');
+      // ...and the comparison that would have hinted at truncation is
+      // still gone, so this sentence is the only thing carrying it.
+      expect(summary).not.toContain('跌倒频率');
+    });
+
+    it('marks the fall denominators as covering only what was read', async () => {
+      // Refusal (1)'s denominators are counted over the truncated list,
+      // so at the cap 「已记录是否受伤的 40 次中」 and 「其余 160 次只有
+      // 日期」 are floors written in the grammar of totals.
+      const summary = String(
+        (await eventFields(capped({ fall_injured: true, fall_location: 'indoor' }))).eventSummary,
+      );
+      expect(summary).toContain('跌倒记录未读全');
+      expect(summary).toContain('分母不是全部跌倒');
+      expect(summary).toContain('已记录是否受伤的 40 次中');
+    });
+
+    it('says none of it one row under the cap', async () => {
+      const rows = Array.from({ length: 199 }, (_, index) => fallRow(index * 3));
+      const summary = String((await eventFields(rows)).eventSummary);
+      expect(summary).not.toContain('已达查询上限');
+      expect(summary).not.toContain('跌倒记录未读全');
+      expect(summary).not.toContain('以上');
+      expect(summary).toContain('跌倒×199，最近 0 天前');
+    });
+  });
+
   it('keeps falls out of a metric-scoped retrieval', async () => {
     const result = await new PatientFollowupRetriever(
       poolWith([fallRow(3, { fall_injured: true })]),

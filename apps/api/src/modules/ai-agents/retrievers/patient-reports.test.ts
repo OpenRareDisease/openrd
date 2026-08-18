@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RetrieveContext } from './base.js';
 import { PatientReportsRetriever } from './patient-reports.js';
+import { renderChunkForPrompt } from '../security/render.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -170,11 +171,11 @@ describe('findings_summary', () => {
     classified_type: 'muscle_mri',
   });
 
-  const fieldsFor = async (ocrFields: Record<string, unknown>) => {
+  const searchFor = async (ocrFields: Record<string, unknown>) => {
     const pool = {
       query: vi.fn().mockResolvedValue({ rows: [rowWith(ocrFields)], rowCount: 1 }),
     } as unknown as Pool;
-    const result = await new PatientReportsRetriever(pool).search(
+    return new PatientReportsRetriever(pool).search(
       { question: '' },
       {
         userId: 'u1',
@@ -182,7 +183,30 @@ describe('findings_summary', () => {
         logger: silentLogger as unknown as RetrieveContext['logger'],
       },
     );
+  };
+
+  const fieldsFor = async (ocrFields: Record<string, unknown>) => {
+    const result = await searchFor(ocrFields);
     return result.chunks[0].metadata.fields as Record<string, unknown>;
+  };
+
+  /**
+   * The 影像/报告印象 line the model actually reads, in one mode.
+   *
+   * `findings_summary` is allowed on BOTH allowlists, so a fixture that
+   * only inspects `metadata.fields` is checking a value the renderer
+   * still has to agree with. These read the rendered bytes.
+   */
+  const impressionLine = async (
+    ocrFields: Record<string, unknown>,
+    mode: 'strict' | 'precise' = 'strict',
+  ): Promise<string | undefined> => {
+    const result = await searchFor(ocrFields);
+    const rendered = renderChunkForPrompt(result.chunks[0], {
+      mode,
+      logger: silentLogger as unknown as RetrieveContext['logger'],
+    });
+    return rendered.content.split('\n').find((line) => line.startsWith('影像/报告印象:'));
   };
 
   it('surfaces the clinical substance of an impression', async () => {
@@ -548,6 +572,317 @@ describe('findings_summary', () => {
       expect(f.findings_summary).toBe('重度脂肪浸润');
     });
   });
+
+  /**
+   * OCR LINE-WRAPS INSIDE PHRASES, AND A WRAP IS NOT A CLAUSE BOUNDARY.
+   *
+   * Whitespace went into CLAUSE_SPLIT for the space-separated clauses
+   * OCR really does give us, and it bought them at the price of the
+   * exact inversion this whole function exists to prevent: a wrap after
+   * 未见 made the negation marker its own clause — killed, to no effect
+   * — and emitted the RULED-OUT finding on the next line as the report's
+   * conclusion. 未见明显脂肪浸润 broken after 未见 is an ordinary
+   * two-line typeset impression, not two clauses.
+   */
+  describe('OCR line-wrap inside a negated phrase', () => {
+    it('does not assert the finding the next line is ruling out', async () => {
+      // Was: 「影像/报告印象: 脂肪浸润」 for a report saying there is none.
+      expect(await impressionLine({ reportImpression: '双侧大腿肌群未见\n明显脂肪浸润' })).toBe(
+        undefined,
+      );
+      const f = await fieldsFor({ reportImpression: '双侧大腿肌群未见\n明显脂肪浸润' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('reads a wrap written as a space, a full-width space or a tab', async () => {
+      for (const gap of [' ', '　', '\t', '\r\n']) {
+        const f = await fieldsFor({ reportImpression: `双侧大腿肌群未见${gap}明显脂肪浸润` });
+        expect(f.findings_summary).toBeUndefined();
+      }
+    });
+
+    it('survives a wrap through the middle of the marker itself', async () => {
+      // 未见 broken between its two characters leaves a bare 未 dangling,
+      // which no marker in the list covers.
+      const f = await fieldsFor({ reportImpression: '双侧大腿肌群未\n见明显脂肪浸润' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('heals a wrapped 其母 / 既往 / 甲基化 for the same reason', async () => {
+      // Same shape, other kill markers: the marker alone becomes a
+      // clause that asserts nothing and the next line is emitted whole.
+      const relative = await fieldsFor({ reportImpression: '其母\n确诊肌营养不良' });
+      expect(relative.findings_summary).toBeUndefined();
+      const past = await fieldsFor({ reportImpression: '既往\n水肿，现已吸收' });
+      expect(past.findings_summary).toBeUndefined();
+      const methylation = await fieldsFor({ reportImpression: '甲基化\n水平中度降低' });
+      expect(methylation.findings_summary).toBeUndefined();
+    });
+
+    it('still reads 原发性 across a wrap, because 原发 is not the past', async () => {
+      // The 原 marker is a lookahead that cannot see across a break, so
+      // healing has to happen before it is tested.
+      const primary = await fieldsFor({ reportImpression: '原\n发性肌营养不良改变' });
+      expect(primary.findings_summary).toBe('肌营养不良改变');
+      const past = await fieldsFor({ reportImpression: '原\n有资料示脂肪浸润' });
+      expect(past.findings_summary).toBeUndefined();
+    });
+
+    it('leaves the whitespace boundaries that are real boundaries alone', async () => {
+      // Whitespace AFTER a completed finding, BEFORE the marker, is what
+      // put whitespace in CLAUSE_SPLIT in the first place. Healing must
+      // not take these back.
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿脂肪浸润明显 未见肌肉萎缩' }))
+          .findings_summary,
+      ).toBe('脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '右侧腓肠肌炎性改变　未见水肿' })).findings_summary,
+      ).toBe('炎性改变');
+      expect(
+        (await fieldsFor({ reportImpression: '右侧腓肠肌炎性改变\t未见水肿' })).findings_summary,
+      ).toBe('炎性改变');
+      expect(
+        (await fieldsFor({ reportImpression: '未见脂肪浸润 右侧脂肪浸润明显' })).findings_summary,
+      ).toBe('脂肪浸润');
+    });
+
+    it('does not heal after a marker that negates what is to its left', async () => {
+      // 阴性 / 不明显 / 未累及 / 未受累 negate the finding BEFORE them,
+      // already in the same fragment, so a wrap cannot strand them and
+      // healing would only swallow the next clause whole.
+      expect(
+        (await fieldsFor({ reportImpression: '基因检测阴性 双侧大腿脂肪浸润' })).findings_summary,
+      ).toBe('脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '腓肠肌未累及 双侧大腿重度脂肪浸润' }))
+          .findings_summary,
+      ).toBe('重度脂肪浸润');
+      expect(
+        (await fieldsFor({ reportImpression: '大腿萎缩不明显 肩胛带肌重度萎缩' })).findings_summary,
+      ).toBe('重度萎缩');
+    });
+  });
+
+  /**
+   * A SIBLING IS A THIRD PARTY TOO.
+   *
+   * THIRD_PARTY_MARKERS carried 其母 and 其父 and stopped, so the
+   * identical construction with a brother walked straight through.
+   */
+  describe('其X covers the whole family', () => {
+    it('does not emit a sibling diagnosis as the patient own impression', async () => {
+      // Was, byte for byte, the failure the 患者母亲 fixture above fences,
+      // with a brother instead of a mother: 「影像/报告印象: 肌营养不良」
+      // while the patient's own negative result was correctly dropped.
+      const line = await impressionLine({
+        reportImpression: '其兄确诊肌营养不良，本人双侧大腿未见脂肪浸润。',
+      });
+      expect(line).toBeUndefined();
+    });
+
+    it('covers 其姐 / 其弟 / 其妹 / 其子 / 其女 as well', async () => {
+      for (const relative of ['其兄', '其姐', '其弟', '其妹', '其子', '其女']) {
+        const f = await fieldsFor({
+          reportImpression: `${relative}确诊肌营养不良，本人未见脂肪浸润。`,
+        });
+        expect(f.findings_summary).toBeUndefined();
+      }
+    });
+  });
+
+  /**
+   * A FINDING THE REPORT SAYS IS GONE IS NOT A CURRENT FINDING.
+   */
+  describe('resolution verbs', () => {
+    it('reads 消失, the most direct way of writing it', async () => {
+      // Was: 「影像/报告印象: 水肿」 for oedema the report says has gone.
+      expect(await impressionLine({ reportImpression: '双侧大腿水肿已消失' })).toBeUndefined();
+    });
+
+    it('reads 缓解 and 纠正 too', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '双侧大腿水肿明显缓解' })).findings_summary,
+      ).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '心律不齐已纠正' })).findings_summary,
+      ).toBeUndefined();
+    });
+
+    it('does not mistake an unresolved finding for a resolved one', async () => {
+      const f = await fieldsFor({ reportImpression: '双侧大腿水肿明显' });
+      expect(f.findings_summary).toBe('水肿');
+    });
+  });
+
+  /**
+   * ONE PHRASE IS ONE FINDING.
+   *
+   * The dedupe keyed on the severity qualifier, and a nested term starts
+   * at a different index, so it reads a different qualifier — usually an
+   * empty one — and the skip never fired. Both directions emitted one
+   * phrase as two findings, the second an unqualified copy standing next
+   * to a graded one, which is the detached-severity reading
+   * SEVERITY_QUALIFIERS exists to prevent.
+   */
+  describe('nested terms are the same phrase, not a second finding', () => {
+    it('does not emit a bare 萎缩 beside the compound it is nested in', async () => {
+      // Was: 「影像/报告印象: 重度肌肉萎缩、萎缩」 for the ordinary Chinese
+      // word order.
+      expect(await impressionLine({ reportImpression: '肩胛带重度肌肉萎缩' })).toBe(
+        '影像/报告印象: 重度肌肉萎缩',
+      );
+      expect((await fieldsFor({ reportImpression: '重度肌萎缩' })).findings_summary).toBe(
+        '重度肌萎缩',
+      );
+    });
+
+    it('does the same for the nested 通气功能障碍 and 肌营养不良', async () => {
+      expect(
+        (await fieldsFor({ reportImpression: '重度限制性通气功能障碍' })).findings_summary,
+      ).toBe('重度限制性通气功能障碍');
+      // Severity written BEHIND the compound: the nested 肌营养不良 ends
+      // one character earlier, so its after-slice starts 改变 and its
+      // qualifier came out empty.
+      expect((await fieldsFor({ reportImpression: '肌营养不良改变重度' })).findings_summary).toBe(
+        '重度肌营养不良改变',
+      );
+      expect((await fieldsFor({ reportImpression: '弥漫性肌营养不良改变' })).findings_summary).toBe(
+        '弥漫性肌营养不良改变',
+      );
+    });
+
+    it('still keeps the same finding twice at two different severities', async () => {
+      // Two occurrences, two spans — collapsing these is how 轻度 and
+      // 重度 got swapped in the first place.
+      const f = await fieldsFor({ reportImpression: '右侧轻度脂肪浸润；左侧重度脂肪浸润。' });
+      expect(f.findings_summary).toBe('轻度脂肪浸润、重度脂肪浸润');
+    });
+
+    it('does not un-cover a nested term when a later clause repeats the compound', async () => {
+      // The second clause's 肌肉萎缩 is dropped by the cross-clause
+      // dedupe; its span still has to claim the 萎缩 inside it.
+      const f = await fieldsFor({ reportImpression: '肩胛带重度肌肉萎缩；大腿重度肌肉萎缩。' });
+      expect(f.findings_summary).toBe('重度肌肉萎缩');
+    });
+
+    it('leaves the bare 萎缩 reachable where no compound covers it', async () => {
+      const f = await fieldsFor({ reportImpression: '肩胛带肌重度萎缩，余大致正常。' });
+      expect(f.findings_summary).toBe('重度萎缩');
+    });
+  });
+
+  /**
+   * THE CAP CUTS ON WHOLE FINDINGS.
+   *
+   * It was `slice(0, 120)` over the assembled string, so it cut wherever
+   * character 120 landed — including between a term and the 「（待排）」
+   * that qualifies it.
+   */
+  describe('FINDINGS_SUMMARY_MAX', () => {
+    // 20 findings, the last one hedged, assembling to 124 characters —
+    // so the old blind slice landed exactly after 脂肪化 and threw its
+    // hedge away.
+    const LONG =
+      '双侧大腿弥漫性脂肪浸润；右小腿局灶性脂肪浸润；左小腿轻度脂肪浸润；' +
+      '腹直肌中度脂肪浸润；竖脊肌重度脂肪浸润；肩胛带肌重度萎缩；' +
+      '腓肠肌局灶性炎性改变；胫前肌中度水肿；三角肌弥漫性水肿；' +
+      '斜方肌信号增高；冈上肌信号异常；比目鱼肌受累；' +
+      '髂腰肌轻度水肿；臀大肌重度水肿；' +
+      '腹壁肌弥漫性肌营养不良改变；心律不齐；传导阻滞；重度限制性通气功能障碍；' +
+      '双侧股四头肌脂肪化待排。';
+
+    it('never shears the hedge off the last finding it prints', async () => {
+      // Was: 「…、重度限制性通气功能障碍、脂肪化…」 — the hedged finding cut
+      // down to BYTE-IDENTICAL with the definite form, which is exactly
+      // the failure HEDGE_MARKERS was added to end. The trailing 「…」 is
+      // not a hedge and the model does not read it as one.
+      const s = String((await fieldsFor({ reportImpression: LONG })).findings_summary);
+      expect(s).not.toMatch(/脂肪化(?!（)/);
+      expect(s.endsWith('…')).toBe(false);
+    });
+
+    it('cuts between findings and says how many it dropped', async () => {
+      const s = String((await fieldsFor({ reportImpression: LONG })).findings_summary);
+      expect(s).toBe(
+        '弥漫性脂肪浸润、局灶性脂肪浸润、轻度脂肪浸润、中度脂肪浸润、重度脂肪浸润、重度萎缩、' +
+          '局灶性炎性改变、中度水肿、弥漫性水肿、信号增高、信号异常、受累、轻度水肿、重度水肿、' +
+          '弥漫性肌营养不良改变、心律不齐、传导阻滞（另 2 项未列出）',
+      );
+      expect(s.length).toBeLessThanOrEqual(120);
+      // Every printed finding is whole: nothing between the last 、 and
+      // the count marker is a fragment of a vocabulary term.
+      expect(s).toContain('传导阻滞（另 2 项未列出）');
+    });
+
+    it('says nothing about a count when nothing was dropped', async () => {
+      const f = await fieldsFor({ reportImpression: '双侧大腿脂肪浸润；肩胛带肌肉萎缩。' });
+      expect(f.findings_summary).toBe('脂肪浸润、肌肉萎缩');
+    });
+  });
+
+  /**
+   * A MEASUREMENT NOUN CARRIES NO FINDING WITHOUT ITS DIRECTION WORD.
+   *
+   * 射血分数 / 弥散功能 / 膈肌 name a thing that was measured. The
+   * clinical content is the direction word after them, which was not in
+   * the vocabulary and was never emitted.
+   */
+  describe('cardiopulmonary measurement nouns', () => {
+    it('tells a falling ejection fraction from a rising one', async () => {
+      // Was: both 「影像/报告印象: 射血分数」, byte-identical — a failing
+      // heart and a normal one rendered the same.
+      const down = await impressionLine({ reportImpression: '射血分数降低' });
+      const up = await impressionLine({ reportImpression: '射血分数升高' });
+      expect(down).toBe('影像/报告印象: 射血分数降低');
+      expect(up).toBe('影像/报告印象: 射血分数升高');
+      expect(down).not.toBe(up);
+    });
+
+    it('binds the severity to the direction word it graded', async () => {
+      // Was: 「轻度射血分数」 — the qualifier that belonged to 降低 glued
+      // onto the bare noun.
+      const f = await fieldsFor({ reportImpression: '射血分数轻度降低' });
+      expect(f.findings_summary).toBe('射血分数轻度降低');
+      const g = await fieldsFor({ reportImpression: '弥散功能中度下降' });
+      expect(g.findings_summary).toBe('弥散功能中度下降');
+      const h = await fieldsFor({ reportImpression: '射血分数明显下降' });
+      expect(h.findings_summary).toBe('射血分数下降');
+    });
+
+    it('does not render a NORMAL diaphragm as a finding', async () => {
+      // Was: 「影像/报告印象: 膈肌」 for a diaphragm the report calls
+      // normal, on a cohort screened for diaphragmatic weakness.
+      expect(await impressionLine({ reportImpression: '膈肌运动度正常范围' })).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '膈肌形态可' })).findings_summary,
+      ).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '射血分数正常' })).findings_summary,
+      ).toBeUndefined();
+      expect(
+        (await fieldsFor({ reportImpression: '射血分数未降低' })).findings_summary,
+      ).toBeUndefined();
+    });
+
+    it('reads the diaphragm findings that do carry a direction', async () => {
+      expect((await fieldsFor({ reportImpression: '双侧膈肌抬高' })).findings_summary).toBe(
+        '膈肌抬高',
+      );
+      expect((await fieldsFor({ reportImpression: '膈肌运动受限' })).findings_summary).toBe(
+        '膈肌受限',
+      );
+    });
+
+    it('leaves the cardiopulmonary terms that are findings on their own', async () => {
+      // 障碍 / 心律不齐 / 传导阻滞 name an abnormality; they need no
+      // direction word and must not be dropped with the nouns.
+      expect((await fieldsFor({ reportImpression: '心律不齐' })).findings_summary).toBe('心律不齐');
+      expect(
+        (await fieldsFor({ reportImpression: '重度限制性通气功能障碍' })).findings_summary,
+      ).toBe('重度限制性通气功能障碍');
+    });
+  });
 });
 
 describe('report date vs upload date', () => {
@@ -594,7 +929,51 @@ describe('report date vs upload date', () => {
     const f = result.chunks[0].metadata.fields as Record<string, unknown>;
     expect(f.reportDate).toBeUndefined();
     expect(f.uploadDate).toBe('2026-08-18T00:00:00.000Z');
-    expect(result.citations[0].sourceFile).toBe('基因检测报告 · 2026-08');
+    // Was: 「基因检测报告 · 2026-08」 — the upload month printed where a
+    // patient reads the date of the result. See the chip fence below.
+    expect(result.citations[0].sourceFile).toBe('基因检测报告 · 上传 2026-08');
+  });
+
+  /**
+   * THE CHIP MUST NOT CLAIM A REPORT DATE THIS PLATFORM DOES NOT HAVE.
+   *
+   * `resolveReportDate` returns `fromReport` so the caller can label the
+   * upload fallback honestly, and `reportDateLabel` dropped the flag and
+   * joined the value straight onto the report-type label. The prompt
+   * side of this same row already refuses the claim — `uploadDate`
+   * renders as 上传年份 and never as 报告年份 — so in one turn the
+   * assistant said 上传年份 and the 依据 chip beside its answer asserted
+   * a report date anyway.
+   */
+  describe('the 依据 chip states which date it is showing', () => {
+    it('marks the upload fallback and leaves the laboratory date bare', async () => {
+      const uploaded = await searchWith({ classifiedType: 'genetic_report' });
+      const reported = await searchWith({
+        classifiedType: 'genetic_report',
+        reportTime: '2019-03-14',
+      });
+      expect(uploaded.citations[0].sourceFile).toBe('基因检测报告 · 上传 2026-08');
+      expect(reported.citations[0].sourceFile).toBe('基因检测报告 · 2019-03');
+      // The two origins are distinguishable, which is the whole point.
+      expect(uploaded.citations[0].sourceFile).not.toBe(reported.citations[0].sourceFile);
+    });
+
+    it('agrees with the prompt line rendered from the same row', async () => {
+      // 报告年份 and 上传年份 are two cells (see allowlist.ts); the chip
+      // must not answer 报告 where the prompt answers 上传.
+      const uploaded = await searchWith({ classifiedType: 'genetic_report' });
+      const f = uploaded.chunks[0].metadata.fields as Record<string, unknown>;
+      expect(f.reportDate).toBeUndefined();
+      expect(uploaded.citations[0].sourceFile).toContain('上传');
+
+      const reported = await searchWith({
+        classifiedType: 'genetic_report',
+        report_time: '2019-03-14',
+      });
+      const g = reported.chunks[0].metadata.fields as Record<string, unknown>;
+      expect(g.reportDate).toBe('2019-03-14T00:00:00.000Z');
+      expect(reported.citations[0].sourceFile).not.toContain('上传');
+    });
   });
 
   /**
