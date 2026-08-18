@@ -89,7 +89,6 @@ describe('buildContext', () => {
       ok('tc1', 'get_my_profile', [
         profileChunk({
           gender: '男',
-          ageGroup: '30-40',
           diagnosisStage: 'stage 2',
           d4z4_clinical: 'short',
         }),
@@ -103,7 +102,7 @@ describe('buildContext', () => {
 
     expect(built.usedPersonalData).toBe(true);
     expect(built.fieldsUsed).toEqual(
-      expect.arrayContaining(['gender', 'ageGroup', 'diagnosisStage', 'd4z4_clinical']),
+      expect.arrayContaining(['gender', 'diagnosisStage', 'd4z4_clinical']),
     );
     expect(built.toolMessages[0].content).toMatch(/【患者基础档案】/);
     expect(built.toolMessages[0].content).toMatch(/性别: 男/);

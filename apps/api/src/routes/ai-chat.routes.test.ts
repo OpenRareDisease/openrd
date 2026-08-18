@@ -320,7 +320,7 @@ describe('POST /api/ai/ask', () => {
             latencyMs: 18,
           },
         ],
-        fieldsUsed: ['gender', 'ageGroup'],
+        fieldsUsed: ['gender', 'diagnosisYear'],
         usedPersonalData: true,
         consentLevel: 'basic',
       }),

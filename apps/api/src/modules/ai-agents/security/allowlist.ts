@@ -36,23 +36,29 @@ export type RedactionMode = 'strict' | 'precise';
 
 export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, readonly string[]>> = {
   profile: {
+    // A KEY LISTED HERE READS AS AN INVENTORY OF WHAT THE RESULT
+    // CARRIES, and `get_my_profile`'s description was written from it.
+    // So `ageGroup` and `symptomCategories` are gone from both modes:
+    // no retriever could produce either, and listing them was enough
+    // to put an age band and symptom categories into a sentence the
+    // model then asserted. The birthday is hard-deleted before the
+    // derivation that would band it is handed the input, and no
+    // profile field carries symptoms at all.
     strict: [
-      'ageGroup',
       'gender',
       'diagnosisStage',
       'diagnosisYear',
       'diagnosisType', // category label like "FSHD1" is non-PII
       'd4z4_clinical',
       'haplotype_clinical',
-      'methylation_clinical',
+      'methylation', // the laboratory's own word, when the cell is one
+      'methylation_withheld', // ...and the statement that a number is not being shared
       'onsetRegion',
       'familyHistory',
       'independentlyAmbulatory',
       'assistiveDevices',
-      'symptomCategories',
     ],
     precise: [
-      'ageGroup',
       'gender',
       'diagnosisStage',
       'diagnosisYear',
@@ -62,14 +68,15 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'haplotype', // raw, e.g. "4qA"
       'haplotype_clinical', // same, for the haplotype cell
       'methylation', // raw percentage, e.g. "12%"
-      // `methylation_clinical` is deliberately absent, and it is the
-      // only one of the three that is: it holds no reading to carry
-      // here. See `clinicaliseMethylation`.
+      // There is no `methylation_clinical` in either mode, and it is
+      // the only one of the three with no reading at all: this repo
+      // states no methylation boundary, so the key held a consent
+      // statement or the laboratory's own word under a label that
+      // called it a grade. See `methylationCell`.
       'onsetRegion',
       'familyHistory',
       'independentlyAmbulatory',
       'assistiveDevices',
-      'symptomCategories',
     ],
   },
   followups: {
@@ -307,8 +314,27 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   'ecoRIFragment',
   'ecoriFragmentKb',
   'ecori_fragment_kb',
-  'geneticPositive',
-  'genetic_positive',
+  // `geneticPositive` / `genetic_positive` ARE DELIBERATELY ABSENT.
+  //
+  // Every other key on this list is a value a laboratory printed. That
+  // one is a verdict this platform computed: `_extract_genetic` in the
+  // report parser sets it to 「yes」 when the text named FSHD1 or FSHD2
+  // or when any digit followed D4Z4, and to 「uncertain」 otherwise. So a
+  // count cell reading 0, a length the report gave in kb, and 「未检出3个
+  // 重复单元」 each came out 「yes」 — read off the same cell this
+  // platform refuses to read, in a vocabulary of its own, with no 「no」
+  // in it to say the other thing. And it reached the model in BOTH
+  // modes: the value carries no digit, so strict mode passed it as a
+  // qualitative result and set it directly beside
+  // `d4z4Repeats_clinical: zero_repeat_count_not_a_valid_reading`.
+  //
+  // A value would invite a question; a flag reads as settled, which is
+  // why the answer here is deletion rather than a caveat beside it. What
+  // the verdict was computed FROM is still on this list — `diagnosisType`
+  // is the report's own word for the diagnosis, and the D4Z4 cell
+  // travels with this platform's reading of it (see `clinicaliseD4Z4`) —
+  // so the model still has everything the laboratory stated. The prompt
+  // was this field's only reader anywhere outside the parser.
   'haplotype',
 
   // Muscle enzymes / biochemistry

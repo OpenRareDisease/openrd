@@ -82,8 +82,21 @@ const validate = (raw: unknown): GetMyRecordsArgs => {
 
 export class GetMyRecordsTool implements ITool {
   readonly name = 'get_my_records';
+  /**
+   * A tool description is an instruction, so it may not name a field
+   * the result cannot carry.
+   *
+   * It opened on 「stair-climb times, sleep scores」. The readings
+   * themselves — `latestValue`, `series`, `unit` — are on the precise
+   * allowlist only, so at basic consent that sentence promised a model
+   * numbers it was never going to be handed, over a patient who had
+   * recorded them. What survives both modes is which metric, how many
+   * readings, over how many days and which way they moved, so that is
+   * what the sentence claims; the raw points are in front of the model
+   * when consent allows them and need no promise.
+   */
   readonly description =
-    "Retrieve the authenticated user's own followup records as trends: stair-climb times, sleep scores and other tracked metrics (each with how many readings, over how many days, and which direction they moved), plus a tally of logged events such as falls. Use this for any question about how the user has been doing over time — 「我最近是不是变差了」, 「我的上楼速度有变化吗」, 「最近摔过几次」 — and before drafting anything that summarises recent change.";
+    "Retrieve the authenticated user's own followup records as trends: tracked metrics such as stair climb and sleep quality, each with how many readings, over how many days, and which direction they moved, plus a tally of logged events such as falls. Use this for any question about how the user has been doing over time — 「我最近是不是变差了」, 「我的上楼速度有变化吗」, 「最近摔过几次」 — and before drafting anything that summarises recent change.";
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

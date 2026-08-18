@@ -153,8 +153,18 @@ const validate = (raw: unknown): GetMyReportsArgs => {
 
 export class GetMyReportsTool implements ITool {
   readonly name = 'get_my_reports';
+  /**
+   * A tool description is an instruction, so it may not name a field
+   * the result cannot carry.
+   *
+   * It promised the full report date to a precise-consent reader. The
+   * day never leaves in either mode — `clinicalise` drops `reportDate`
+   * unconditionally and `reportDate_year` is the only form either
+   * allowlist carries — so that clause was an instruction to answer
+   * 「你这份报告是 X 月 X 日的」 out of a field that had already gone.
+   */
   readonly description =
-    'Retrieve the authenticated user\'s recent uploaded medical reports (most recent first). Each report carries a classified type, document type, report year (or full date in precise mode), and structured OCR fields. Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
+    'Retrieve the authenticated user\'s recent uploaded medical reports (most recent first). Each report carries a classified type, document type, report year, and structured OCR fields. Use this when the user asks about their own past tests or reports ("my MRI", "我之前的基因检测", etc.).';
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

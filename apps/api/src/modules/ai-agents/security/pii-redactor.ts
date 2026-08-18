@@ -36,10 +36,11 @@
  *             them in strict alone left a precise-consent patient with
  *             no date at all.
  *
- *             `clinicaliseMethylation` is the one that stays strict-
- *             only, and for the opposite reason: its output is not a
- *             reading. `value_withheld` is a statement about what was
- *             shared, and beside a shared value it would be false.
+ *             The methylation cell is the one this function never
+ *             reads, and for the opposite reason: there is no boundary
+ *             stated anywhere in this repo to read it against, so
+ *             there is nothing to carry into either mode. See
+ *             `methylationCell`.
  *
  *             WHAT A LABEL MAY CLAIM. It is answered to a patient by
  *             the assistant, so it may say only what this repo says
@@ -132,28 +133,11 @@ const hardDelete = (
 
 // ---------------------------------------------------------------- layer 2
 
-const ageGroupFromDate = (raw: unknown): string | null => {
-  if (typeof raw !== 'string') return null;
-  const match = raw.match(/(\d{4})/);
-  if (!match) return null;
-  const year = Number(match[1]);
-  if (!Number.isFinite(year)) return null;
-  const age = new Date().getUTCFullYear() - year;
-  if (age < 0 || age > 120) return null;
-  if (age < 18) return 'under_18';
-  if (age < 30) return '18_29';
-  if (age < 40) return '30_39';
-  if (age < 50) return '40_49';
-  if (age < 60) return '50_59';
-  if (age < 70) return '60_69';
-  return '70_plus';
-};
-
 /**
  * Is this value a qualitative result rather than a measurement?
  *
  * Qualitative results survive strict mode — see `projectOcrFields` for
- * the OCR blob and `clinicaliseMethylation` for the genetics cell. The
+ * the OCR blob and `methylationCell` for the genetics cell. The
  * test is deliberately conservative: anything carrying a digit is
  * treated as a measurement, so「1.02」stays withheld and so does a
  * borderline string like「阳性(1:8)」whose titre is the number the
@@ -166,6 +150,42 @@ const isQualitativeResult = (value: unknown): boolean => {
   if (!text || text.length > 24) return false;
   return !/\d/.test(text);
 };
+
+/**
+ * IS THIS CELL A CLASSIFICATION RATHER THAN A MEASUREMENT?
+ *
+ * `isQualitativeResult` refuses anything carrying a digit, and it is
+ * right to — 「阳性(1:8)」 hides the titre the patient withheld. But a
+ * classification key is named for what it holds, and this disease's
+ * subtypes are spelled with a numeral on the end. So strict mode
+ * dropped 「diagnosisType: FSHD1」 off the OCR blob AND counted it into
+ * `numericValuesWithheld`, which told the model a measurement it could
+ * not see existed on a report where none did — while the profile scope
+ * printed that same value one section above, on the stated ground that
+ *「category label like "FSHD1" is non-PII」. One value, two answers,
+ * and the wrong one also miscounted what it withheld.
+ *
+ * ON THE KEY'S NAME, so the class is closed rather than enumerated:
+ * `classifiedType`, `reportType`, `documentType`, `diagnosisType`,
+ * `geneType`, `geneticType` and every snake spelling of them end in
+ *「type」, and so will the next one. (`haplotype` ends in it too and is
+ * dispatched to its own reader long before this branch.)
+ *
+ * AND ON THE VALUE BEING A SINGLE TOKEN, because a classification cell
+ * is where an extractor puts its overflow: 「FSHD1(D4Z4 3拷贝)」 is a
+ * subtype with a repeat count stapled to it, and that count is exactly
+ * what the precise consent buys. Any separator — a space, a bracket, a
+ * colon, a slash, a decimal point, a percent, a hyphen — sends the
+ * value back to the measurement test, as does a value with no letter
+ * in it at all, which is a number however the key is named.
+ */
+const CATEGORY_LABEL_KEY = /type$/i;
+const SINGLE_CATEGORY_TOKEN = /^(?=.*\p{L})[\p{L}\p{N}_]{1,24}$/u;
+
+const isCategoryLabel = (key: string, value: unknown): boolean =>
+  CATEGORY_LABEL_KEY.test(key) &&
+  typeof value === 'string' &&
+  SINGLE_CATEGORY_TOKEN.test(value.trim());
 
 /**
  * WHAT THE ASSISTANT MAY SAY ABOUT A GENETICS CELL THIS PLATFORM DID
@@ -191,6 +211,20 @@ const isQualitativeResult = (value: unknown): boolean => {
  * about an archived value.
  */
 const NOT_A_LABORATORY_READING = 'not_read_off_a_laboratory_report';
+
+/**
+ * WHAT THIS PLATFORM SAYS ABOUT A LENGTH IN KB, wherever a genetics
+ * cell turns out to be holding one.
+ *
+ * A constant for the same reason `NOT_A_LABORATORY_READING` is one: two
+ * cells reach it — the repeat-count cell when the report gave that cell
+ * in kb, and the EcoRI fragment, which is a kb measurement by
+ * definition — and it is one fact about both. The passport says it in
+ * Chinese to a reader (`KB_LENGTH_NOT_JUDGED_ZH`: 指南给出的界限是按重复
+ * 单元数写的，本平台不在 kb 和重复单元数之间做换算); this is the same
+ * refusal in the vocabulary the labels here are written in.
+ */
+const LENGTH_IN_KB_NOT_A_REPEAT_COUNT = 'length_in_kb_not_a_repeat_count';
 
 /**
  * THE D4Z4 CELL, READ BY THE READER THE REST OF THE PLATFORM READS IT
@@ -245,7 +279,101 @@ const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | 
   // The kb branch comes first, because a kb cell reading 0 is a length
   // and not an unreadable count — the same order `zeroRepeatCount`
   // keeps by gating itself on the unit.
-  if (reading.unit === 'kb' && reading.value !== null) return 'length_in_kb_not_a_repeat_count';
+  if (reading.unit === 'kb' && reading.value !== null) return LENGTH_IN_KB_NOT_A_REPEAT_COUNT;
+  if (reading.value === 0) return 'zero_repeat_count_not_a_valid_reading';
+  return 'unspecified';
+};
+
+/**
+ * THE ECORI FRAGMENT — THE OTHER SIZE CELL, AND A LENGTH IN KB WHATEVER
+ * THE CELL PRINTS.
+ *
+ * IT REACHED THE MODEL AS A BARE NUMBER. `clinicaliseD4Z4` is dispatched
+ * on the cell's name, the name has no 「d4z4」 in it, and no other branch
+ * claimed it — so precise mode printed the fragment with none of the
+ * refusal every other surface prints for the same number, and strict
+ * mode swept it into `numericValuesWithheld`, once for every spelling of
+ * it in the blob. Worse than a stated 「18kb」: the bridge writes
+ * `ecoriFragmentKb` as the bare reading without its unit, so a cell on
+ * the prompt read 「18」 — indistinguishable, to a model asked about D4Z4
+ * 重复数, from a repeat count of 18.
+ *
+ * NOT `clinicaliseD4Z4` WITH ANOTHER NAME. That function bands whatever
+ * `isDeterminateRepeatCount` accepts, and a bare 「18」 with no stated
+ * unit is exactly what it accepts — so routing this cell through it
+ * would answer 「above_fshd1_repeat_range」 about a fragment length, which
+ * is the misreading in the other direction and the one the boundary was
+ * written to prevent. This cell is not a count in any state, so it is
+ * never banded and the unit is never asked for: `kbLengthsNotJudged` in
+ * the passport tests the parsed EcoRI cell for a value and nothing else,
+ * and this is that test.
+ *
+ * DISPATCHED ON THE SUBSTRING, like every other cell reader in
+ * `projectOcrFields`, and that is what makes the class closed rather
+ * than enumerated. Every spelling in the passport's
+ * `GENETIC_FIELD_KEYS.ecoRIFragment` — the current bridge's and the
+ * legacy extraction paths' alike — lowercases to something containing
+ * 「ecori」, and so will the next one. Naming a subset here is how this
+ * cell came to be handled under some of its names and none of the
+ * others.
+ */
+const clinicaliseEcoRIFragment = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const reading = readSizeCell(String(raw));
+  if (reading === null) return null;
+  if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
+  // `readSizeCell` is what withholds the value from a negated cell, so
+  //「未检出10kb以下片段」 arrives here with no length to name.
+  return reading.value !== null ? LENGTH_IN_KB_NOT_A_REPEAT_COUNT : 'unspecified';
+};
+
+/**
+ * THE SECOND NUMBER IN 「3/22」 — THE ALLELE THAT WAS NOT CONTRACTED, and
+ * the length-carrying cell on this projection that no boundary is about.
+ *
+ * IT WAS BEING BANDED ON THE FSHD1 BOUNDARY. `clinicaliseD4Z4` is
+ * dispatched on 「d4z4」, this cell's name contains it, and so a report
+ * printing 「D4Z4 重复数 3/22」 handed the model two readings of itself:
+ * `d4z4RepeatPathogenic_clinical: within_fshd1_repeat_range` and,
+ * directly beneath it, `d4z4RepeatOther_clinical:
+ * above_fshd1_repeat_range` — the label whose whole meaning is that the
+ * guideline is sending this report's reader off to evaluate FSHD2. The
+ * arithmetic is right and the claim is false: 22 units is what the
+ * uncontracted allele is supposed to be, and the boundary is stated
+ * about the contracted one.
+ *
+ * SO NO BAND, AND NOT BECAUSE THE NUMBER IS UNREADABLE. `unspecified`
+ * is what this file says when a cell pins nothing down; when this one
+ * pins a count down it is simply not the count any boundary in this
+ * repo is about. `GENETIC_FIELD_KEYS.d4z4Repeats` is the passport's
+ * list of the cells that ARE, and every spelling of this one is
+ * deliberately outside it: no surface on this platform reads the other
+ * allele, prints it, or grades it. The assistant was the only one that
+ * did, and it graded it wrongly.
+ *
+ * BUT THE LABEL IS A CLAIM ABOUT THE CELL, so the cell has to be read
+ * before it is granted. The first cut asked only whether the value was
+ * non-empty, which made 「0」, 「18 kb」, 「未检出」 and 「—」 come out
+ * identical to a determinate 22 — and in strict mode the raw cell is
+ * dropped, so that sentence was the whole of what the prompt carried:
+ * a report whose other-allele cell says 未检出 was handed over as an
+ * allele this platform had read and placed. The three refusals below
+ * are its sibling's, in its sibling's order and for its reasons —
+ * `readSizeCell` is what the cell says, `isDeterminateRepeatCount` is
+ * whether that is a count, and the kb branch precedes the zero branch
+ * because a kb cell reading 0 is a length and not an unreadable count.
+ */
+const OTHER_ALLELE_NOT_THE_CONTRACTED_ONE = 'other_allele_not_the_contracted_one';
+
+const clinicaliseOtherD4Z4Allele = (raw: unknown, fromLaboratoryReport: boolean): string | null => {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const reading = readSizeCell(String(raw));
+  if (reading === null) return null;
+  // The laboratory gate first, as everywhere else: what a 病历摘要 quoted
+  // is not this platform's reading of anything, this cell included.
+  if (!fromLaboratoryReport) return NOT_A_LABORATORY_READING;
+  if (isDeterminateRepeatCount(reading)) return OTHER_ALLELE_NOT_THE_CONTRACTED_ONE;
+  if (reading.unit === 'kb' && reading.value !== null) return LENGTH_IN_KB_NOT_A_REPEAT_COUNT;
   if (reading.value === 0) return 'zero_repeat_count_not_a_valid_reading';
   return 'unspecified';
 };
@@ -275,18 +403,35 @@ const clinicaliseD4Z4 = (raw: unknown, fromLaboratoryReport: boolean): string | 
  * qualitative result, for the same reason. What the patient withheld is
  *「精确数值」, and 未检出 is not one.
  *
- * THE ONE HELPER HERE THAT IS ASKED IN STRICT MODE ALONE, because
- * neither branch of it is a reading. `value_withheld` is a statement
- * about what the patient shared, and printed beside the shared number
- * it would be false; the laboratory's own word is the cell itself,
- * which precise mode already prints. This platform has no judgement of
- * a methylation result to carry into the other mode — that is what the
- * paragraph above says, and it is why there is nothing here to keep.
+ * SO THERE IS NO `methylation_clinical`, AND THE KEY WAS THE LAST
+ * PLACE THE GRADE SURVIVED. Deleting the ladder left a key still
+ * spelled `_clinical` and still labelled 甲基化临床分级 in
+ * `PROFILE_FIELD_LABELS`, holding one of two things that are not a
+ * grade: `value_withheld`, which is a statement about what the patient
+ * consented to, and — worse — the laboratory's own qualitative word.
+ * Rendered, a numeric cell printed 「甲基化临床分级: value_withheld」 and
+ * a qualitative one printed 「甲基化临床分级: 未检出」, handing the
+ * laboratory's word back to the model as this platform's grading of
+ * the FSHD2 discriminator. Every other surface refuses it: the
+ * passport, the share page, the referral pack and the mobile PDF print
+ * 甲基化 as a value with its origin bracket and no grade, and the
+ * TREAT-NMD document gives `diagnosis.d4z4` and `diagnosis.haplotype` a
+ * verdict while `diagnosis.methylation` gets a bare string.
+ *
+ * WHAT IS LEFT IS THE TWO CHANNELS THIS FILE ALREADY HAS FOR A CELL IT
+ * DOES NOT GRADE. The laboratory's own word survives under the cell's
+ * own key — the rule `projectOcrFields` applies to every other
+ * qualitative result, because what the patient withheld is 「精确数值」
+ * and 未检出 is not one. A measurement is withheld and said to be
+ * withheld, so the model reports a result it cannot read rather than
+ * no result: `numericValuesWithheld` on the reports blob, and
+ * `methylation_withheld` on the profile, which is the same sentence
+ * under a label that states it instead of one that grades it.
  */
-const clinicaliseMethylation = (raw: unknown): string | null => {
+const methylationCell = (raw: unknown, mode: RedactionMode): 'raw' | 'withheld' | null => {
   if (raw === null || raw === undefined || raw === '') return null;
-  if (typeof raw === 'string' && isQualitativeResult(raw)) return raw.trim();
-  return 'value_withheld';
+  if (mode === 'precise') return 'raw';
+  return isQualitativeResult(raw) ? 'raw' : 'withheld';
 };
 
 /**
@@ -483,17 +628,26 @@ const projectOcrFields = (
     };
     if (lower.includes('d4z4')) {
       emitRawUnderPrecise();
-      const v = clinicaliseD4Z4(value, fromLaboratoryReport);
+      // 「other」 is how every spelling of the uncontracted allele's cell
+      // names itself, and it has to be asked before the band. See
+      // `clinicaliseOtherD4Z4Allele`.
+      const v = lower.includes('other')
+        ? clinicaliseOtherD4Z4Allele(value, fromLaboratoryReport)
+        : clinicaliseD4Z4(value, fromLaboratoryReport);
+      if (v !== null) out[`${key}_clinical`] = v;
+    } else if (lower.includes('ecori')) {
+      // The other size cell. See `clinicaliseEcoRIFragment` for why it
+      // is read by its own reader and not by the one above.
+      emitRawUnderPrecise();
+      const v = clinicaliseEcoRIFragment(value, fromLaboratoryReport);
       if (v !== null) out[`${key}_clinical`] = v;
     } else if (lower.includes('methylation')) {
-      // Strict-only, and the reason is in `clinicaliseMethylation`:
-      // neither of its answers is a reading to carry over.
-      if (mode === 'strict') {
-        const v = clinicaliseMethylation(value);
-        if (v !== null) out[`${key}_clinical`] = v;
-      } else {
-        emitRawUnderPrecise();
-      }
+      // No reading, in either mode — see `methylationCell`. The word
+      // survives as the cell it is; the measurement is counted with
+      // every other withheld measurement rather than relabelled.
+      const survives = methylationCell(value, mode);
+      if (survives === 'raw') out[key] = value;
+      else if (survives === 'withheld') withheldNumeric += 1;
     } else if (lower.includes('haplotype')) {
       emitRawUnderPrecise();
       const v = clinicaliseHaplotype(value, fromLaboratoryReport);
@@ -512,7 +666,7 @@ const projectOcrFields = (
       }
       if (mode === 'precise') {
         out[key] = value;
-      } else if (isQualitativeResult(value)) {
+      } else if (isQualitativeResult(value) || isCategoryLabel(key, value)) {
         // Strict mode keeps qualitative results.
         //
         // The consent step the patient did not take is「精确数值」— the
@@ -584,13 +738,17 @@ const clinicalise = (
       }
       if (dropRawCell) drop.add('d4z4');
     }
-    if ('methylation' in input && mode === 'strict') {
-      const v = clinicaliseMethylation(input.methylation);
-      if (v !== null) {
-        added.methylation_clinical = v;
+    if ('methylation' in input) {
+      // Not graded, in either mode — see `methylationCell`. Precise
+      // keeps the cell; strict keeps the laboratory's own word and
+      // withholds a number under a key that says the number is
+      // withheld, rather than under one that says it was graded.
+      const survives = methylationCell(input.methylation, mode);
+      if (survives === 'withheld') {
+        added.methylation_withheld = 'value_withheld';
         changed.push('methylation');
+        drop.add('methylation');
       }
-      drop.add('methylation');
     }
     if ('haplotype' in input) {
       const v = clinicaliseHaplotype(input.haplotype, false);
@@ -633,26 +791,16 @@ const clinicalise = (
     // (both modes need projection, not just strict). See projectOcrFields.
   }
 
-  // Birthday handling lives outside the scope branch because both
-  // profile and reports may carry one.
-  //
-  // NOTHING REACHES IT. `dateOfBirth`, `date_of_birth` and `birthday`
-  // are all on HARD_DELETE_KEYS, so layer 1 removes the cell before
-  // this function is ever handed it, and `ageGroup` is therefore
-  // derived in neither mode — the assistant only ever sees an age band
-  // when a retriever puts one there itself, which none does. Deriving
-  // it would mean reading the birthday off the input before layer 1
-  // runs, and that is a decision about what reaches an LLM rather than
-  // a tidy-up, so it is left as it stands and stated here rather than
-  // implied by the branch below.
-  if ('dateOfBirth' in input) {
-    const ageGroup = ageGroupFromDate(input.dateOfBirth);
-    if (ageGroup !== null && !('ageGroup' in input)) {
-      added.ageGroup = ageGroup;
-      changed.push('dateOfBirth');
-    }
-    drop.add('dateOfBirth');
-  }
+  // THERE IS NO AGE BAND, in either mode, and this is where a reader
+  // looks for one. `dateOfBirth`, `date_of_birth` and `birthday` are
+  // all on HARD_DELETE_KEYS, so layer 1 removes the cell before this
+  // function is ever handed it; banding it would mean reading the
+  // birthday off the input before layer 1 runs, and that is a decision
+  // about what reaches an LLM rather than a tidy-up. Left undecided it
+  // grew a derivation nothing called and an inventory nothing could
+  // fill, and out of that inventory an age band in `get_my_profile`'s
+  // description — which is an instruction a model obeys. Decided: no
+  // band, and nothing downstream that reads as one.
 
   return { added, drop, changed };
 };

@@ -121,7 +121,6 @@ const formatFieldValue = (key: string, value: unknown): string => {
 };
 
 const PROFILE_FIELD_LABELS: Record<string, string> = {
-  ageGroup: '年龄段',
   gender: '性别',
   diagnosisStage: '诊断阶段',
   diagnosisYear: '确诊年份',
@@ -131,7 +130,10 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   haplotype: '单倍型',
   haplotype_clinical: '单倍型临床分级',
   methylation: '甲基化值',
-  methylation_clinical: '甲基化临床分级',
+  // No 甲基化临床分级. This platform states no methylation boundary, so
+  // there is no grade to label — `methylation_withheld` says a number
+  // is on file and is not being shared, which is not one.
+  methylation_withheld: '甲基化数值',
   onsetRegion: '首发部位',
   familyHistory: '家族史',
   // Was 「独立行走」 while the value was a yes/no. It is one of three
@@ -139,16 +141,18 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   // contradiction rather than an answer.
   independentlyAmbulatory: '行走能力',
   assistiveDevices: '辅具',
-  symptomCategories: '症状分类',
 };
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
   classifiedType: '报告类型',
   documentType: '文档类型',
-  reportDate: '报告日期',
+  // No 报告日期 and no 报告标题. `clinicalise` drops `reportDate` in
+  // both modes and `title` is on neither allowlist, so a row could
+  // never be printed under either label — and `get_my_reports` told the
+  // model it would get the full date in precise mode, which is what a
+  // label for an unreachable field is worth.
   reportDate_year: '报告年份',
   status: '处理状态',
-  title: '报告标题',
   findings_summary: '影像/报告印象',
 };
 
@@ -174,7 +178,14 @@ const SCOPE_HEADERS: Record<RedactionScope, string> = {
   followups: '【患者随访记录】',
 };
 
-const SCOPE_LABELS: Record<RedactionScope, Record<string, string>> = {
+/**
+ * Exported for `tools/tool-descriptions.test.ts`, which reads it as
+ * the second inventory a description gets written from: a label here
+ * for a field the result cannot carry is the same invitation as an
+ * allowlist entry for one. `ageGroup` and `symptomCategories` each had
+ * both, and `get_my_profile` promised the model both.
+ */
+export const SCOPE_LABELS: Record<RedactionScope, Record<string, string>> = {
   profile: PROFILE_FIELD_LABELS,
   reports: REPORT_FIELD_LABELS,
   followups: FOLLOWUP_FIELD_LABELS,

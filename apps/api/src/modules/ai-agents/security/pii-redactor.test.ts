@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RedactionMode } from './allowlist.js';
 import { redactFields } from './pii-redactor.js';
+import { GENETIC_FIELD_KEYS } from '../../patient-profile/genetic-evidence.js';
 
 const silentLogger = {
   fatal: vi.fn(),
@@ -30,7 +31,6 @@ const profileSample = {
   haplotype: '4qA',
   diagnosisDate: '2023-06-01',
   // Already-clinical or non-PII fields
-  ageGroup: '30_39',
   gender: 'female',
   diagnosisStage: 'confirmed',
   diagnosisYear: 2023,
@@ -76,8 +76,11 @@ describe('redactFields (profile, strict mode)', () => {
     // banded at all, whatever it says. The block below drives the
     // classifier through the document that earns a band.
     expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
-    expect(fields.methylation_clinical).toBe('value_withheld');
     expect(fields.haplotype_clinical).toBe('not_read_off_a_laboratory_report');
+    // And the methylation cell earns no `_clinical` sibling in either
+    // mode — the number is withheld under a key that says so.
+    expect(fields.methylation_clinical).toBeUndefined();
+    expect(fields.methylation_withheld).toBe('value_withheld');
   });
 
   it('replaces diagnosisDate with diagnosisYear', () => {
@@ -117,7 +120,6 @@ describe('redactFields (profile, strict mode)', () => {
       scope: 'profile',
       mode: 'strict',
     });
-    expect(fields.ageGroup).toBe('30_39');
     expect(fields.gender).toBe('female');
     expect(fields.diagnosisType).toBe('FSHD1');
     expect(fields.onsetRegion).toBe('肩胛带');
@@ -199,20 +201,28 @@ describe('the genetics cells the assistant is handed', () => {
   });
 
   it('says a methylation value is on file without grading it', () => {
-    const methylation = (raw: unknown): unknown =>
-      redactFields({ methylation: raw }, { scope: 'profile', mode: 'strict' }).fields
-        .methylation_clinical;
+    /** Both channels, because the cell has two shapes and they do not
+     *  share a key: a measurement is withheld and said to be withheld,
+     *  a word is the laboratory's own and stays the cell it is. Neither
+     *  is a `_clinical` sibling — that key was the last place the
+     *  deleted band survived, and it labelled both of these as a grade. */
+    const methylation = (raw: unknown) => {
+      const { fields } = redactFields({ methylation: raw }, { scope: 'profile', mode: 'strict' });
+      expect(fields.methylation_clinical).toBeUndefined();
+      return { cell: fields.methylation, withheld: fields.methylation_withheld };
+    };
     // No methylation boundary is stated anywhere in this repo, and the
     // band that used to be computed here also guessed the unit: 0.35
     // was multiplied out to 35% while the report parser reads that same
     // cell as 0.35%.
-    expect(methylation('12%')).toBe('value_withheld');
-    expect(methylation('0.35')).toBe('value_withheld');
-    expect(methylation('0')).toBe('value_withheld');
-    expect(methylation('20-30%')).toBe('value_withheld');
-    // The laboratory's own word is not a number the patient withheld.
-    expect(methylation('未检出')).toBe('未检出');
-    expect(methylation('低甲基化')).toBe('低甲基化');
+    for (const measurement of ['12%', '0.35', '0', '20-30%']) {
+      expect(methylation(measurement)).toEqual({ cell: undefined, withheld: 'value_withheld' });
+    }
+    // The laboratory's own word is not a number the patient withheld,
+    // so it survives as the cell rather than as a statement about
+    // consent — and never under a label calling it a grade.
+    expect(methylation('未检出')).toEqual({ cell: '未检出', withheld: undefined });
+    expect(methylation('低甲基化')).toEqual({ cell: '低甲基化', withheld: undefined });
   });
 
   it('reads the haplotype cell for what it says', () => {
@@ -223,6 +233,65 @@ describe('the genetics cells the assistant is handed', () => {
     // allele by a bare substring match. Neither states a result.
     expect(haplotype('未检出 4qA 等位基因')).toBe('unspecified_haplotype');
     expect(haplotype('4qA/4qB')).toBe('unspecified_haplotype');
+  });
+
+  /**
+   * THE OTHER SIZE CELL, and the one the dispatch had no branch for.
+   * The refusal every other surface prints for an EcoRI fragment was
+   * absent here entirely, so a fragment reached the model as a number.
+   */
+  it('reads the EcoRI fragment as a length and never as a count', () => {
+    const ecoRI = (raw: unknown): unknown => cellOf('genetic_report', 'ecoRIFragment', raw);
+    expect(ecoRI('18kb')).toBe('length_in_kb_not_a_repeat_count');
+    // The bridge writes `ecoriFragmentKb` as the bare reading without
+    // its unit, and that is the case that matters: an unqualified 「18」
+    // is what `isDeterminateRepeatCount` would have accepted as a count
+    // above the FSHD1 range.
+    expect(cellOf('genetic_report', 'ecoriFragmentKb', '18')).toBe(
+      'length_in_kb_not_a_repeat_count',
+    );
+    expect(ecoRI('3')).toBe('length_in_kb_not_a_repeat_count');
+    // A negation carries a number of its own, here twice over.
+    expect(ecoRI('未检出10kb以下片段')).toBe('unspecified');
+    expect(ecoRI('未检出')).toBe('unspecified');
+    // A range pins down no length.
+    expect(ecoRI('10-20kb')).toBe('unspecified');
+  });
+
+  /**
+   * `GENETIC_FIELD_KEYS.ecoRIFragment` is the passport's list of every
+   * spelling this cell has ever been written under, across the current
+   * bridge and the legacy extraction paths. Read from there rather than
+   * restated, because handling a named subset is how this cell came to
+   * be handled for nobody.
+   */
+  it.each([...GENETIC_FIELD_KEYS.ecoRIFragment])(
+    'reads the EcoRI fragment under the spelling「%s」',
+    (key) => {
+      expect(cellOf('genetic_report', key, '18kb')).toBe('length_in_kb_not_a_repeat_count');
+    },
+  );
+
+  /**
+   * The third length-carrying cell, and the one the FSHD1 boundary is
+   * not about. A report printing 「3/22」 was handed to the model as
+   * 「within_fshd1_repeat_range」 and 「above_fshd1_repeat_range」 at once.
+   */
+  it('bands the uncontracted allele on no boundary at all', () => {
+    const other = (raw: unknown): unknown => cellOf('genetic_report', 'd4z4RepeatOther', raw);
+    // The number the second half of 「3/22」 actually carries. It is a
+    // determinate count, so 「unspecified」 would be false of it too.
+    expect(other('22')).toBe('other_allele_not_the_contracted_one');
+    expect(other('8')).toBe('other_allele_not_the_contracted_one');
+    expect(other('100')).toBe('other_allele_not_the_contracted_one');
+    // Both spellings the bridge writes, and neither reaches the band.
+    expect(cellOf('genetic_report', 'd4z4_repeat_other', '22')).toBe(
+      'other_allele_not_the_contracted_one',
+    );
+    // The laboratory gate still comes first.
+    expect(cellOf('medical_record', 'd4z4RepeatOther', '22')).toBe(
+      'not_read_off_a_laboratory_report',
+    );
   });
 
   /**
@@ -261,7 +330,7 @@ describe('the genetics cells the assistant is handed', () => {
   it('says nothing at all about a cell that is not there', () => {
     const { fields } = redactFields({ gender: 'female' }, { scope: 'profile', mode: 'strict' });
     expect(fields.d4z4_clinical).toBeUndefined();
-    expect(fields.methylation_clinical).toBeUndefined();
+    expect(fields.methylation_withheld).toBeUndefined();
     expect(fields.haplotype_clinical).toBeUndefined();
   });
 });
@@ -330,6 +399,29 @@ describe('the refusal survives the mode that shares more', () => {
     bothModes('genetic_report', 'haplotype', raw, reading);
   });
 
+  // Precise mode is where this cell was bare: strict counted it into
+  // `numericValuesWithheld` and precise printed the fragment with
+  // nothing beside it.
+  it.each([
+    ['18kb', 'length_in_kb_not_a_repeat_count'],
+    ['18', 'length_in_kb_not_a_repeat_count'],
+    ['未检出10kb以下片段', 'unspecified'],
+    ['10-20kb', 'unspecified'],
+  ])('reads the EcoRI fragment「%s」the same way in both modes', (raw, reading) => {
+    bothModes('genetic_report', 'ecoRIFragment', raw, reading);
+  });
+
+  it('withholds a grade from a transcribed fragment in both modes', () => {
+    bothModes('medical_record', 'ecoRIFragment', '18kb', 'not_read_off_a_laboratory_report');
+  });
+
+  // The uncontracted allele, whose count is determinate and whose band
+  // is nobody's. Both modes printed it as a report sending its reader
+  // off to evaluate FSHD2.
+  it.each(['22', '8'])('refuses the uncontracted allele「%s」a band in both modes', (raw) => {
+    bothModes('genetic_report', 'd4z4RepeatOther', raw, 'other_allele_not_the_contracted_one');
+  });
+
   // The laboratory gate is the same refusal one step further out, and
   // it was lost the same way: a repeat count a clinic letter quoted
   // reached a precise-consent patient as a number with no origin.
@@ -352,17 +444,23 @@ describe('the refusal survives the mode that shares more', () => {
     },
   );
 
-  // The one cell whose sibling is deliberately strict-only.
-  // `value_withheld` is true of a value that was withheld and false
-  // beside one that was shared, and there is no reading to put in its
-  // place — this repo states no methylation boundary.
-  it('says nothing beside a methylation value it is printing', () => {
+  // The one cell with no sibling in either mode: this repo states no
+  // methylation boundary, so there is no reading to carry. A
+  // measurement joins `numericValuesWithheld` with every other withheld
+  // measurement rather than being relabelled as a grade of it.
+  it('says nothing beside a methylation value, and grades it in neither mode', () => {
     expect(cell('strict', 'genetic_report', 'methylationValue', '0.35')).toEqual({
       raw: undefined,
-      reading: 'value_withheld',
+      reading: undefined,
     });
     expect(cell('precise', 'genetic_report', 'methylationValue', '0.35')).toEqual({
       raw: '0.35',
+      reading: undefined,
+    });
+    // The laboratory's own word survives strict mode as itself — the
+    // same rule every other qualitative result on the blob gets.
+    expect(cell('strict', 'genetic_report', 'methylationValue', '未检出')).toEqual({
+      raw: '未检出',
       reading: undefined,
     });
   });
@@ -379,6 +477,59 @@ describe('the refusal survives the mode that shares more', () => {
       expect(fields.reportDate).toBeUndefined();
       expect(fields.reportDate_year).toBe(2026);
     }
+  });
+});
+
+/**
+ * A VERDICT THE PARSER COMPUTED IS NOT A CELL THE LABORATORY PRINTED.
+ *
+ * `_extract_genetic` derives `genetic_positive` as 「yes if the text
+ * named FSHD1/FSHD2 or any digit followed D4Z4, else uncertain」, and
+ * every state this platform refuses to read produced 「yes」. The flag
+ * carried no digit, so it cleared the qualitative-result gate and
+ * reached the model in strict mode too — settled, and standing beside
+ * the reading that says the cell cannot be read.
+ */
+describe('a verdict the parser computed never reaches the assistant', () => {
+  const promptFields = (mode: RedactionMode, cells: Record<string, unknown>) => {
+    const { fields } = redactFields(
+      {
+        documentType: 'genetic_report',
+        fields: { classifiedType: 'genetic_report', ...cells },
+      },
+      { scope: 'reports', mode },
+    );
+    return (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+  };
+
+  it.each([
+    ['0', 'zero_repeat_count_not_a_valid_reading'],
+    ['3kb', 'length_in_kb_not_a_repeat_count'],
+    ['未检出3个重复单元', 'unspecified'],
+    ['3', 'within_fshd1_repeat_range'],
+  ])('drops it beside the cell「%s」in both modes', (raw, reading) => {
+    for (const mode of ['strict', 'precise'] as const) {
+      const projected = promptFields(mode, {
+        d4z4Repeats: raw,
+        geneticPositive: 'yes',
+        genetic_positive: 'yes',
+      });
+      expect(projected.geneticPositive).toBeUndefined();
+      expect(projected.genetic_positive).toBeUndefined();
+      // What it was derived from stays, with this platform's reading.
+      expect(projected.d4z4Repeats_clinical).toBe(reading);
+    }
+  });
+
+  it('leaves the words the report itself printed where the parser found them', () => {
+    // The flag's inputs are on the allowlist already, so nothing the
+    // laboratory printed is lost with it.
+    const projected = promptFields('precise', {
+      diagnosisType: 'FSHD1',
+      geneticPositive: 'uncertain',
+    });
+    expect(projected.diagnosisType).toBe('FSHD1');
+    expect(projected.geneticPositive).toBeUndefined();
   });
 });
 
@@ -441,6 +592,7 @@ describe('redactFields (profile, precise mode)', () => {
     });
     expect(fields.methylation).toBe('12%');
     expect(fields.methylation_clinical).toBeUndefined();
+    expect(fields.methylation_withheld).toBeUndefined();
   });
 
   // Derived in strict mode alone, and on neither allowlist in its raw
@@ -504,8 +656,62 @@ describe('redactFields (reports)', () => {
     expect(fc).toBeDefined();
     expect(fc.d4z4Repeats_clinical).toBe('within_fshd1_repeat_range');
     expect(fc.haplotype_clinical).toBe('permissive_haplotype');
-    expect(fc.methylationValue_clinical).toBe('value_withheld');
+    // The methylation measurement is withheld and counted, not graded:
+    // there is no boundary in this repo to read it against.
+    expect(fc.methylationValue_clinical).toBeUndefined();
+    expect(fc.methylationValue).toBeUndefined();
+    expect(fc.numericValuesWithheld).toBe(1);
+    // The subtype is a classification and survives, as it does on the
+    // profile — see the block below.
+    expect(fc.diagnosisType).toBe('FSHD1');
     expect(fc.reportIssueDate_year).toBe(2026);
+  });
+
+  // 「FSHD1」 carries a digit, so the conservative measurement test read
+  // the subtype as a measurement: strict mode dropped it off the blob
+  // and counted it into `numericValuesWithheld`, announcing a
+  // measurement the model could not see on a report that had none —
+  // while the profile scope printed the same value under 分型/诊断方式.
+  describe('a classification cell whose name ends in 「type」', () => {
+    const blob = (key: string, raw: unknown, mode: RedactionMode = 'strict') => {
+      const { fields } = redactFields(
+        { fields: { classifiedType: 'genetic_report', [key]: raw } },
+        { scope: 'reports', mode },
+      );
+      return (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+    };
+
+    it('survives strict mode on every spelling the safe list carries', () => {
+      for (const key of ['diagnosisType', 'diagnosis_type', 'geneType', 'geneticType']) {
+        expect(blob(key, 'FSHD1')[key]).toBe('FSHD1');
+      }
+      expect(blob('diagnosisType', 'FSHD1').numericValuesWithheld).toBeUndefined();
+    });
+
+    it('agrees with what the profile scope prints for the same value', () => {
+      const { fields } = redactFields(
+        { diagnosisType: 'FSHD1' },
+        { scope: 'profile', mode: 'strict' },
+      );
+      expect(fields.diagnosisType).toBe(blob('diagnosisType', 'FSHD1').diagnosisType);
+    });
+
+    it('withholds the cell the moment it stops being one token', () => {
+      // A classification cell is where an extractor puts its overflow,
+      // and the count stapled on is exactly what precise consent buys.
+      for (const overflow of ['FSHD1(D4Z4 3拷贝)', 'FSHD1 / D4Z4 3', 'FSHD1：3拷贝', '20-30']) {
+        const fc = blob('diagnosisType', overflow);
+        expect(fc.diagnosisType).toBeUndefined();
+        expect(fc.numericValuesWithheld).toBe(1);
+      }
+      // ...and a value with no letter in it is a number however the key
+      // is named.
+      expect(blob('diagnosisType', '320').diagnosisType).toBeUndefined();
+      // Precise consent still buys all of it.
+      expect(blob('diagnosisType', 'FSHD1(D4Z4 3拷贝)', 'precise').diagnosisType).toBe(
+        'FSHD1(D4Z4 3拷贝)',
+      );
+    });
   });
 
   it('strict mode drops unknown OCR keys (deny-by-default)', () => {

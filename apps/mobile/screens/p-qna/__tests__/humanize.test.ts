@@ -23,18 +23,20 @@ describe('humanizeToolName', () => {
 
 describe('humanizeFieldKeys', () => {
   it('maps allowlist keys to plain labels', () => {
-    expect(humanizeFieldKeys(['ageGroup', 'diagnosisType', 'findings_summary'])).toEqual([
-      '年龄段',
+    expect(humanizeFieldKeys(['gender', 'diagnosisType', 'findings_summary'])).toEqual([
+      '性别',
       '诊断分型',
       '报告要点',
     ]);
   });
 
-  it('collapses _clinical variants onto the same label and dedupes', () => {
-    expect(humanizeFieldKeys(['d4z4_clinical', 'd4z4', 'methylation_clinical'])).toEqual([
-      'D4Z4 基因结果',
-      '甲基化结果',
-    ]);
+  it('collapses derived variants onto the same label and dedupes', () => {
+    // `_withheld` as well as `_clinical`: an unmapped key is printed to
+    // the patient verbatim, so a strict-mode methylation measurement
+    // would have read 「其他（methylation_withheld）」 on the answer.
+    expect(
+      humanizeFieldKeys(['d4z4_clinical', 'd4z4', 'methylation_withheld', 'methylation']),
+    ).toEqual(['D4Z4 基因结果', '甲基化结果']);
   });
 
   it('unknown keys fall through verbatim instead of vanishing', () => {
@@ -46,10 +48,10 @@ describe('buildCitationSummary', () => {
   it('groups personal fields by asset in plain language', () => {
     const line = buildCitationSummary({
       usedPersonalData: true,
-      fieldsUsed: ['ageGroup', 'd4z4_clinical', 'classifiedType', 'findings_summary'],
+      fieldsUsed: ['gender', 'd4z4_clinical', 'classifiedType', 'findings_summary'],
     });
     expect(line).toBe(
-      '本次引用了你的：健康档案（年龄段、D4Z4 基因结果）、检查报告（报告类型、报告要点）',
+      '本次引用了你的：健康档案（性别、D4Z4 基因结果）、检查报告（报告类型、报告要点）',
     );
   });
 
@@ -62,9 +64,9 @@ describe('buildCitationSummary', () => {
   it('unmapped keys group under 其他数据, not under 检查报告', () => {
     const line = buildCitationSummary({
       usedPersonalData: true,
-      fieldsUsed: ['ageGroup', 'brandNewKey'],
+      fieldsUsed: ['gender', 'brandNewKey'],
     });
-    expect(line).toBe('本次引用了你的：健康档案（年龄段）、其他数据（brandNewKey）');
+    expect(line).toBe('本次引用了你的：健康档案（性别）、其他数据（brandNewKey）');
   });
 
   it('KB-only answers state the negative explicitly', () => {

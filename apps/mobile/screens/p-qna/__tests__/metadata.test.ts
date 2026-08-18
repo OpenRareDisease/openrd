@@ -40,14 +40,14 @@ describe('normalizeStoredMetadata', () => {
     // chunkCount/latency data exists.
     const legacy = {
       toolsCalled: ['search_medical_kb', 'get_my_profile'],
-      fieldsUsed: ['ageGroup'],
+      fieldsUsed: ['gender'],
       usedPersonalData: false,
       citations: [],
     };
     const out = normalizeStoredMetadata(legacy);
     expect(out?.legacyToolNames).toEqual(['search_medical_kb', 'get_my_profile']);
     expect(out?.toolCalls).toBeUndefined();
-    expect(out?.fieldsUsed).toEqual(['ageGroup']);
+    expect(out?.fieldsUsed).toEqual(['gender']);
     expect(out?.usedPersonalData).toBe(false);
   });
 

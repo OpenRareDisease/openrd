@@ -22,12 +22,18 @@ const TOOL_LABELS: Record<string, string> = {
 
 export const humanizeToolName = (name: string): string => TOOL_LABELS[name] ?? name;
 
-/** Allowlist key → plain label. `_clinical` variants collapse onto
- *  their base key before lookup (strict mode surfaces d4z4_clinical
- *  where precise mode surfaces d4z4 — same asset to the patient). */
+/** Allowlist key → plain label. `_clinical` and `_withheld` variants
+ *  collapse onto their base key before lookup: strict mode surfaces
+ *  d4z4_clinical where precise mode surfaces d4z4, and a methylation
+ *  measurement surfaces methylation_withheld where a laboratory word
+ *  surfaces methylation — the same asset to the patient either way,
+ *  and an unmapped key is printed to them verbatim.
+ *
+ *  No 年龄段 and no 症状类型: both are off the API's allowlists, so
+ *  neither key can arrive and a label here is one this screen can
+ *  never use. See PROMPT_ALLOWLIST. */
 const FIELD_LABELS: Record<string, string> = {
   // profile scope
-  ageGroup: '年龄段',
   gender: '性别',
   diagnosisStage: '诊断分期',
   diagnosisYear: '诊断年份',
@@ -39,7 +45,6 @@ const FIELD_LABELS: Record<string, string> = {
   familyHistory: '家族史',
   independentlyAmbulatory: '行走能力',
   assistiveDevices: '辅助器具',
-  symptomCategories: '症状类型',
   // reports scope
   classifiedType: '报告类型',
   documentType: '文档类型',
@@ -50,7 +55,6 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 const PROFILE_KEYS = new Set([
-  'ageGroup',
   'gender',
   'diagnosisStage',
   'diagnosisYear',
@@ -62,11 +66,16 @@ const PROFILE_KEYS = new Set([
   'familyHistory',
   'independentlyAmbulatory',
   'assistiveDevices',
-  'symptomCategories',
 ]);
 
-const baseKey = (key: string): string =>
-  key.endsWith('_clinical') ? key.slice(0, -'_clinical'.length) : key;
+const DERIVED_SUFFIXES = ['_clinical', '_withheld'] as const;
+
+const baseKey = (key: string): string => {
+  for (const suffix of DERIVED_SUFFIXES) {
+    if (key.endsWith(suffix)) return key.slice(0, -suffix.length);
+  }
+  return key;
+};
 
 /** Map allowlist keys to deduped plain labels, preserving order of
  *  first appearance. Unknown keys pass through verbatim. */
@@ -92,8 +101,8 @@ export interface CitationSummaryInput {
 /**
  * The headline transparency line for an assistant answer.
  *
- * - Personal data used → 「本次引用了你的：健康档案（年龄段、诊断分型）、
- *   检查报告（报告要点）」 grouped by asset, in plain labels.
+ * - Personal data used → 「本次引用了你的：健康档案（诊断分型、甲基化
+ *   结果）、检查报告（报告要点）」 grouped by asset, in plain labels.
  * - Tools ran but nothing personal was read →「本次回答仅基于公共
  *   FSHD 知识资料，未读取你的个人数据。」— the negative case is
  *   transparency too, and today it renders as nothing at all.

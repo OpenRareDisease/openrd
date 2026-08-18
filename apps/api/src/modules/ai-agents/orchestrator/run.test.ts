@@ -589,7 +589,7 @@ describe('Orchestrator.run', () => {
       .register(
         mkTool(
           'get_my_profile',
-          stubResult('patient_profile', 1, { gender: '男', ageGroup: '30-40' }),
+          stubResult('patient_profile', 1, { gender: '男', diagnosisStage: 'confirmed' }),
         ),
       );
     const orch = new Orchestrator(
@@ -630,7 +630,7 @@ describe('Orchestrator.run', () => {
     expect(result.toolCalls.every((c) => typeof c.latencyMs === 'number')).toBe(true);
     expect(result.toolCalls.every((c) => c.chunkCount > 0)).toBe(true);
     expect(result.usedPersonalData).toBe(true);
-    expect(result.fieldsUsed).toEqual(expect.arrayContaining(['gender', 'ageGroup']));
+    expect(result.fieldsUsed).toEqual(expect.arrayContaining(['gender', 'diagnosisStage']));
     expect(result.citations).toHaveLength(3); // 2 kb + 1 profile
     expect(result.redactionMode).toBe('strict');
     expect(result.redactedPromptHash).toMatch(/^[0-9a-f]{64}$/);

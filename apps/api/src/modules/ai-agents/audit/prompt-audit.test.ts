@@ -15,7 +15,7 @@ const baseEntry: AuditEntryInput = {
   redactedPromptHash: 'abc',
   promptCharLength: 1234,
   usedPersonalData: true,
-  fieldsUsed: ['ageGroup', 'd4z4_clinical'],
+  fieldsUsed: ['diagnosisYear', 'd4z4_clinical'],
   toolsCalled: [
     {
       name: 'medical_kb',
@@ -88,7 +88,7 @@ describe('AuditLogger.record', () => {
     expect(params[8]).toBe(0);
     expect(params[9]).toBeNull();
     expect(params[10]).toBe(true);
-    expect(JSON.parse(params[11] as string)).toEqual(['ageGroup', 'd4z4_clinical']);
+    expect(JSON.parse(params[11] as string)).toEqual(['diagnosisYear', 'd4z4_clinical']);
     expect(JSON.parse(params[12] as string)).toEqual([
       {
         name: 'medical_kb',
@@ -142,7 +142,7 @@ describe('AuditLogger.listByUser', () => {
     redacted_prompt_hash: 'abc',
     prompt_char_length: 1234,
     used_personal_data: true,
-    fields_used: ['ageGroup'],
+    fields_used: ['diagnosisYear'],
     tools_called: ['medical_kb'],
     latency_ms: 1500,
     status: 'success',
@@ -161,7 +161,7 @@ describe('AuditLogger.listByUser', () => {
     const entries = await logger.listByUser('user-1');
     expect(entries).toHaveLength(1);
     expect(entries[0].id).toBe('audit-1');
-    expect(entries[0].fieldsUsed).toEqual(['ageGroup']);
+    expect(entries[0].fieldsUsed).toEqual(['diagnosisYear']);
     // sampleRow uses the legacy string[] shape; the decoder folds
     // it into the current ToolCallSummary[] with promoted defaults.
     expect(entries[0].toolsCalled).toEqual([

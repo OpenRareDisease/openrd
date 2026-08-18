@@ -231,21 +231,25 @@ const buildReportFields = (row: ReportRow): Record<string, unknown> => {
   if (row.status) fields.status = row.status;
 
   // `title` is a user-named field on the document upload and can
-  // contain the patient's name. Strict mode drops it via the
-  // allowlist; precise mode lets it through. We expose it raw here
-  // so the redactor sees it and the orchestrator's decision is
-  // visible in the audit row.
+  // contain the patient's name, so it is on NEITHER allowlist and
+  // reaches no prompt in either mode. Exposed raw here anyway so the
+  // redactor sees it and drops it where the audit row can show that it
+  // did, rather than the retriever silently never offering it.
   if (row.title) fields.title = row.title;
 
-  // `reportDate` is the raw upload timestamp string. Strict mode
-  // collapses it to `reportDate_year`; precise mode keeps the date.
+  // `reportDate` is the raw upload timestamp string. Both modes
+  // collapse it to `reportDate_year` — the day never leaves, because
+  // the precise consent is to a clinical value and not to a calendar
+  // date, and the year is the only form either allowlist carries.
   const uploadedAt = formatTimestamp(row.uploaded_at);
   if (uploadedAt) fields.reportDate = uploadedAt;
 
-  // The OCR payload itself: structured fields the redactor can
-  // clinicalise per key (`d4z4*`, `methylation*`, `haplotype*`,
-  // `*date*`) in strict mode, or pass through verbatim in precise
-  // mode.
+  // The OCR payload itself. `projectOcrFields` runs over it in BOTH
+  // modes and is deny-by-default in both: strict emits
+  // `fields_clinical` with this platform's reading of each key it
+  // recognises, precise emits `fields` with the raw value beside that
+  // reading and only for the keys named on
+  // OCR_FIELDS_SAFE_KEYS_PRECISE. Nothing passes here verbatim.
   if (isPlainObject(row.ocr_payload?.fields)) {
     fields.fields = row.ocr_payload.fields;
 
