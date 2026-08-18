@@ -992,6 +992,11 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
    * the picker and grades the passport.
    */
   it('判定基因确诊时的文件类型以解析器为准，不是上传时选的那一项', () => {
+    // 载荷里带着报告自己写的 检测方法，因为真的基因报告就带着它。
+    // `isLaboratoryGeneticReport` 不再只认分类标签——关键词分类器是按
+    // 文档里出现了多少基因词打分的，所以一份抄了结果的病历摘要同样会被
+    // 判成基因报告，而这份 fixture 去掉方法这一格之后就正是那份病历摘要。
+    // 区分两者的是页面本身长什么样，所以这里让它长出来。
     const withType = (documentType: string, classifiedType: string) =>
       itemOf(
         sectionOf(
@@ -1000,7 +1005,14 @@ describe('管理员代填的字段不能在导出里抹平（§B3）', () => {
               {
                 ...EXPORT_FIXTURE_PROFILE.documents[0],
                 documentType,
-                ocrPayload: { fields: { classifiedType, d4z4Repeats: '5', haplotype: '4qA' } },
+                ocrPayload: {
+                  fields: {
+                    classifiedType,
+                    geneticTestMethod: 'southern_blot',
+                    d4z4Repeats: '5',
+                    haplotype: '4qA',
+                  },
+                },
               },
             ] as PatientProfileDTO['documents'],
           } as Partial<PatientProfileDTO>),

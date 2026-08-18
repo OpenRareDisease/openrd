@@ -88,7 +88,7 @@ const formatStructuredValue = (field: StructuredField) => {
 const withKbUnit = (value: string) => (/kb\s*$/i.test(value) ? value : `${value}kb`);
 
 /**
- * THE OTHER TWO CELLS THIS BRIDGE USED TO MINT TWICE, and the same fix
+ * THE OTHER CELLS THIS BRIDGE USED TO MINT TWICE, and the same fix
  * the EcoRI fragment got below: one cell on the report is one key in
  * the payload, and the key is the one every reader's alias list is
  * headed by.
@@ -104,13 +104,29 @@ const withKbUnit = (value: string) => (/kb\s*$/i.test(value) ? value : `${value}
  * OCR's `methylation_value` sitting next to it, disagreeing, and both
  * reached the prompt.
  *
- * `aliases` are the structured-field loop's own spellings of that same
- * cell — the snake name the Python parser gives the field and the
- * camelCase form `toCamelCase` derives from it. They are DELETED rather
- * than left beside the canonical key, for the reason the EcoRI note
- * gives in full: nothing on this platform reads any of them on its own,
- * every reader goes through an alias list that contains the canonical
- * name, and a spelling left behind is a row on the prompt.
+ * `aliases` are the other spellings of that same cell this bridge has
+ * ever minted — the snake name the Python parser gives the field, the
+ * camelCase form `toCamelCase` derives from it, and (for the subtype)
+ * a second hand-written copy under a name of this file's own. They are
+ * DELETED rather than left beside the canonical key, for the reason the
+ * EcoRI note gives in full: nothing on this platform reads any of them
+ * on its own, every reader goes through an alias list that contains the
+ * canonical name, and a spelling left behind is a row on the prompt.
+ *
+ * THE SUBTYPE WAS THE LAST ONE, and it was not a snake/camel pair — it
+ * was this file assigning the parsed 分型 to two different keys in two
+ * consecutive statements, `fields.diagnosisType` and
+ * `fields.geneticType`. Both are on `OCR_FIELDS_SAFE_KEYS_PRECISE`,
+ * neither has an underscore so `projectOcrFields` has no snake/camel
+ * pair to collapse, and both end in 「type」 with a single-token value,
+ * so `isCategoryLabel` passed them through strict mode too. One 分型 on
+ * one laboratory report reached the model as 「diagnosisType: FSHD1」 and
+ *「geneticType: FSHD1」 one under the other, in BOTH modes — the EcoRI
+ * note's 「three measurements where the laboratory printed one」 applied
+ * to the diagnosis itself, and the one row on the blob a model asked
+ *「这份报告说是几型」 answers from. `GENETIC_FIELD_KEYS.geneticType` is
+ * headed by `diagnosisType`, so that is the survivor; `geneticType` is
+ * listed in that same table as LEGACY, which is what it now is again.
  *
  * The value is preferred off the canonical key when the loop already
  * wrote one there (methylation: the parser's field IS `methylation_value`,
@@ -134,6 +150,7 @@ const CANONICAL_GENETIC_CELLS: ReadonlyArray<{
 }> = [
   { canonical: 'd4z4Repeats', aliases: ['d4z4RepeatPathogenic', 'd4z4_repeat_pathogenic'] },
   { canonical: 'methylationValue', aliases: ['methylation_value'] },
+  { canonical: 'diagnosisType', aliases: ['geneticType', 'diagnosis_type'] },
 ];
 
 const canonicaliseGeneticCells = (fields: Record<string, string>) => {
@@ -300,8 +317,12 @@ export const buildFields = (
     const interpretationSummary = toStringField(geneticSummary.interpretation_summary);
 
     if (diagnosisType) {
+      // ONE 分型, ONE KEY. `fields.geneticType = diagnosisType` used to
+      // stand on the next line and is gone — see the subtype paragraph
+      // on `CANONICAL_GENETIC_CELLS`, which is what deletes the spelling
+      // now that the structured-field loop also mints `diagnosis_type` /
+      // `diagnosisType` from the very same cell.
       fields.diagnosisType = diagnosisType;
-      fields.geneticType = diagnosisType;
     }
     if (ecoriFragmentKb) {
       // ONE MEASUREMENT, ONE CELL.
@@ -401,24 +422,28 @@ export const buildFields = (
   }
 
   // Outside the `genetic_summary` guard on purpose: the cells it
-  // collapses are the structured-field loop's, and that loop runs for
-  // any document whose parse produced them.
+  // collapses are mostly the structured-field loop's, and that loop
+  // runs for any document whose parse produced them. The subtype's
+  // `diagnosisType` is written inside the guard as well, and running
+  // after it is what lets the group take the canonical key's own value
+  // rather than racing the write.
   //
   // PAYLOADS ALREADY STORED KEEP EVERY SPELLING, and every read path
   // still understands them — the same statement the EcoRI note above
-  // makes, checked the same way. The alias lists are untouched, and
-  // both `GENETIC_FIELD_KEYS.d4z4Repeats` and
-  // `GENETIC_FIELD_KEYS.methylationValue` still list the removed
-  // spellings after the canonical one, so the passport, the profile
-  // autofill, the exports, the app's report-detail table and its
-  // correction sheet all still find an archived cell. The redactor
-  // dispatches on the 「d4z4」 and 「methylation」 substrings rather than
-  // on a spelling, so an archived row still gets its reading on each of
-  // them — including the duplicate rows, which is exactly the state
-  // this stops being minted rather than one it rewrites. The one
-  // archived reader that names spellings without the canonical
-  // fallback, `profile.controller.ts`, reads
-  // ['d4z4Repeats', 'd4z4RepeatPathogenic'] and so covers both.
+  // makes, checked the same way. The alias lists are untouched:
+  // `GENETIC_FIELD_KEYS.d4z4Repeats`, `.methylationValue` and
+  // `.geneticType` all still list the removed spellings after the
+  // canonical one, so the passport, the profile autofill, the exports,
+  // the app's report-detail table and its correction sheet all still
+  // find an archived cell. The redactor dispatches on the 「d4z4」 and
+  //「methylation」 substrings rather than on a spelling, so an archived
+  // row still gets its reading on each of them — including the
+  // duplicate rows, which is exactly the state this stops being minted
+  // rather than one it rewrites. The two archived readers that name
+  // spellings without the canonical fallback are both in
+  // `profile.controller.ts`, and both cover the removed one:
+  // ['d4z4Repeats', 'd4z4RepeatPathogenic'] and
+  // ['diagnosisType', 'geneticType'].
   canonicaliseGeneticCells(fields);
 
   const muscleStrength = Array.isArray(normalizedSummary?.muscle_strength)

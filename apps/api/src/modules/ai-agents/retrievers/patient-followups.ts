@@ -60,6 +60,26 @@
  * this mapping are the same rule applied to columns of different
  * shapes — never forward text we cannot vouch for.
  *
+ * A UNIT IS PART OF WHICH CURVE A READING BELONGS TO, NOT A SUFFIX ON
+ * THE NUMBERS. The series used to take the FIRST recognised unit in the
+ * group and stamp it on every point, and `describeDirection` compared
+ * the raw numbers underneath as if they were commensurable.
+ * FUNCTION_TEST_UNITS admits both `sec` and `m/s` for the same
+ * `test_type`, so a patient who switched their 10-metre walk from a
+ * stopwatch to a gait-speed readout got 0.9 m/s — which is 11.1 s, and
+ * slightly WORSE than their previous 10 s — rendered as 「0.9sec」 and
+ * banded 「较前降低」. A fabricated improvement, on the one metric this
+ * product exists to track, produced by the rendering rather than by the
+ * record.
+ *
+ * The muscle branch of the UNION already makes this argument for
+ * `side`（「side belongs to the series identity, not to a note」）; a
+ * unit is the same kind of thing. So: each point carries its own
+ * canonical unit and is rendered with it, the series-level `unit` is
+ * emitted only when every point agrees, and a series holding more than
+ * one recognised unit reports `count` / `spanDays` and refuses to
+ * assert a direction, a band, a latest value or a point list at all.
+ *
  * Soft deletes
  * -------------
  * The three tables above carry `deleted_at` (migration 016). Every
@@ -568,19 +588,55 @@ ${FALL_HISTORY_SQL}
       // were cut before describeDirection ever saw them. The more
       // diligently someone recorded, the more wrong the answer got.
       const allPoints = rows
-        .map((row) => ({ value: toNumber(row.value), age: daysAgo(row.recorded_at, now) }))
-        .filter((p): p is { value: number; age: number } => p.value !== null && p.age !== null);
+        .map((row) => ({
+          value: toNumber(row.value),
+          age: daysAgo(row.recorded_at, now),
+          // Per point, not per series. See UNIT IS PART OF WHICH CURVE
+          // in the header: a row whose unit fails the allowlist keeps
+          // its own null instead of inheriting a neighbour's suffix.
+          unit: canonicalUnit(row.unit),
+        }))
+        .filter(
+          (p): p is { value: number; age: number; unit: string | null } =>
+            p.value !== null && p.age !== null,
+        );
       if (allPoints.length === 0) continue;
 
       const earliest = allPoints[0];
       const latest = allPoints[allPoints.length - 1];
-      // First unit we recognise, not first unit present: a row whose
-      // unit fails the allowlist contributes nothing rather than
-      // poisoning the whole series' suffix.
-      const unit = rows.map((row) => canonicalUnit(row.unit)).find((u) => u !== null) ?? null;
       /**
-       * A DIRECTION NEEDS TWO POINTS, AND THIS ONE WAS ASSERTED OFF
-       * ONE.
+       * ONE SERIES IS ONE UNIT, OR IT IS NOT A SERIES.
+       *
+       * Insertion-ordered, so the message below names the units in the
+       * order the patient recorded them.
+       *
+       * The test is on RECOGNISED units, and a point with none does
+       * not trigger it. Migration 015 NULLs every legacy unit its
+       * alias table cannot read, so a live series really can hold a
+       * NULL from 2024 beside a 「sec」 from today — and suppressing
+       * those would cost a true trend to defend against a
+       * contradiction that is not there: the NULL row asserts no unit,
+       * so nothing disagrees with it. What the NULL must not do is
+       * borrow the neighbour's suffix, which is why the point carries
+       * its own and `unit` below stays absent unless every point
+       * agrees. `m/s` and the other five are recognised, so the case
+       * this whole block exists for — a stopwatch series continued
+       * with a gait-speed readout — is caught here and not by this
+       * softer half.
+       */
+      const unitsPresent = new Set<string>();
+      for (const point of allPoints) if (point.unit !== null) unitsPresent.add(point.unit);
+      const mixedUnits = unitsPresent.size > 1;
+      // Emitted only when EVERY point carries the same recognised unit.
+      // 「单位: sec」 beside a point that recorded no unit is the same
+      // stamping this block exists to stop, moved up one level: the
+      // model reads the field and applies it to the whole list.
+      const unit =
+        !mixedUnits && allPoints.every((p) => p.unit !== null) ? allPoints[0].unit : null;
+      const spanDays = earliest.age - latest.age;
+      /**
+       * A DIRECTION NEEDS TWO POINTS AND SOME TIME BETWEEN THEM, AND
+       * THIS ONE WAS ASSERTED OFF ONE POINT, THEN OFF ZERO DAYS.
        *
        * `describeDirection(earliest.value, latest.value)` was applied
        * unconditionally, and on a one-reading series earliest IS
@@ -592,14 +648,26 @@ ${FALL_HISTORY_SQL}
        * 了」. A patient who has recorded once was told their trend is
        * 基本持平.
        *
-       * So a one-point series carries `count`, `spanDays` and the
-       * value itself, and no direction of any kind. The absence is the
-       * honest answer and it is legible to the model: the fields are
-       * simply not there, the same way an event-only chunk carries no
-       * series.
+       * Counting points closed half of it. The other half is that a
+       * zero-day span contains no change either, and the length >= 2
+       * test admits one: 上楼计时 is routinely done twice in a sitting,
+       * a practice attempt and then the real one, and those two rows
+       * were being read as a trend. 10 秒 then 16 秒 on the same
+       * afternoon came out as 「最近变化: 较前升高」 beside 「跨度(天):
+       * 0」 — the retriever printing the refutation next to the claim.
+       * Which of the two same-day rows is「earliest」is decided by an
+       * arbitrary tiebreak inside ORDER BY, so the direction was not
+       * even stable.
+       *
+       * So a direction needs a second point AND elapsed time, and a
+       * mixed-unit series gets none at all. The absence is the honest
+       * answer and it is legible to the model: the fields are simply
+       * not there, the same way an event-only chunk carries no series.
        */
       const direction =
-        allPoints.length >= 2 ? describeDirection(earliest.value, latest.value) : null;
+        !mixedUnits && allPoints.length >= 2 && spanDays >= 1
+          ? describeDirection(earliest.value, latest.value)
+          : null;
 
       // The point list is what costs tokens, so that is what gets cut.
       const shownPoints = allPoints.slice(-MAX_POINTS_PER_SERIES);
@@ -609,6 +677,8 @@ ${FALL_HISTORY_SQL}
       // the cap looking back at us.
       const atRowCap = rows.length >= MAX_ROWS_PER_SERIES;
       const totalLabel = atRowCap ? `${allPoints.length} 次以上` : `${allPoints.length} 次`;
+      const renderPoint = (p: { value: number; age: number; unit: string | null }) =>
+        `${p.value}${p.unit ?? ''}(${p.age}天前)`;
 
       const chunkId = randomUUID();
       chunks.push({
@@ -645,7 +715,7 @@ ${FALL_HISTORY_SQL}
             // answer reads `count: 200` as an exact total. Booleans
             // carry no patient data, so it goes in both lists too.
             countAtCap: atRowCap,
-            spanDays: earliest.age - latest.age,
+            spanDays,
             // Both of these describe a change, so both are absent from
             // a series that records none. See `direction` above.
             ...(direction === null
@@ -660,16 +730,41 @@ ${FALL_HISTORY_SQL}
                         ? '较前降低'
                         : '基本持平',
                 }),
-            // precise-mode raw values
-            unit,
-            latestValue: latest.value,
-            // Say so when the list is a tail, otherwise the model reads
-            // `count: 20` next to 12 points and reconciles the gap by
-            // inventing something.
-            series: truncated
-              ? `（仅列出最近 ${shownPoints.length} 次，共 ${totalLabel}）` +
-                shownPoints.map((p) => `${p.value}${unit ?? ''}(${p.age}天前)`).join('、')
-              : shownPoints.map((p) => `${p.value}${unit ?? ''}(${p.age}天前)`).join('、'),
+            // A MIXED-UNIT SERIES SAYS WHY IT IS EMPTY RATHER THAN
+            // GOING QUIET.
+            //
+            // `latestBand` is the field that carries this file's
+            // refusals — 「本期均记录为做不到」 is the other one, and it
+            // is on BOTH allowlists for exactly this reason: a
+            // statement that no series is being read is the platform
+            // declining to read one, not a value withheld for consent.
+            // Left silent, the model would see three readings over 60
+            // days with no direction, no unit and no point list, and
+            // the failure mode of a model handed a hole is that it
+            // fills it. The unit names come from UNIT_ALIASES — chosen
+            // in this file, never the patient's own string.
+            ...(mixedUnits
+              ? {
+                  latestBand:
+                    `本期记录混用了 ${[...unitsPresent].join(' / ')} 等不同单位，` +
+                    `不能当作同一条曲线比较，因此不给出变化方向和历次数值`,
+                }
+              : {}),
+            // precise-mode raw values. All three describe the curve as
+            // one comparable thing, so all three go when it is not one.
+            ...(mixedUnits
+              ? {}
+              : {
+                  unit,
+                  latestValue: latest.value,
+                  // Say so when the list is a tail, otherwise the model
+                  // reads `count: 20` next to 12 points and reconciles
+                  // the gap by inventing something.
+                  series: truncated
+                    ? `（仅列出最近 ${shownPoints.length} 次，共 ${totalLabel}）` +
+                      shownPoints.map(renderPoint).join('、')
+                    : shownPoints.map(renderPoint).join('、'),
+                }),
           },
         },
         distance: null,
@@ -777,9 +872,21 @@ ${FALL_HISTORY_SQL}
         // the oldest falls just as effectively as a window crowded with
         // falls, and the quarterly comparison has to be suppressed
         // either way.
+        //
+        // `windowDays` IS THE OTHER HALF OF THAT SUPPRESSION AND WAS
+        // NOT BEING PASSED. It is chosen by the model — `windowDays` on
+        // get_my_records, anything from 1 to 730 — while the bucket
+        // width over there is a fixed 90, so an arbitrary window was
+        // being sliced by a fixed ruler and the leftover was printed as
+        // a whole quarter. At `windowDays: 100` the model read 「2 次、
+        // 1 次」 as a doubling; the comparison quarter had been observed
+        // for 11 of its 90 days. falls.summary.ts cannot see the
+        // window, so refusal (2) could only look at the oldest fall
+        // until it was told.
         const fallsSummary = buildFallsSummary(fallRows, {
           atCap: eventRowCount >= MAX_EVENT_ROWS,
           now,
+          windowDays,
         });
         const summary = [
           [...tally.entries()]

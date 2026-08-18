@@ -10,24 +10,51 @@
  * keys fall through verbatim rather than being hidden — transparency
  * beats polish, and a missing mapping shows up in the UI as a to-do
  * instead of silently vanishing.
+ *
+ * THAT SENTENCE STOPPED BEING TRUE ONCE, AND A TEST NOW HOLDS IT TO IT.
+ * The allowlist grew a third scope — `followups`, everything
+ * `get_my_records` contributes — and this file had no entry for a single
+ * one of its thirteen keys, so an answer built from the patient's own
+ * 随访记录 printed 「其他数据（metricKey、metricLabel、count…）」: the
+ * engineering vocabulary this module exists to remove, under a group
+ * name that calls the patient's own follow-up record 其他. `uploadYear`
+ * was in the same state on the reports side while its sibling
+ * `reportDate_year` had a label, and `get_my_records` /
+ * `list_clinical_trials` — both registered on the live route — printed
+ * their raw tool ids in the trace chips. The fallback did its job
+ * (nothing vanished); what it could not do is notice.
+ *
+ * `humanize-allowlist-parity.test.ts` now reads PROMPT_ALLOWLIST and the
+ * route's registry out of the API source and fails when a key or a tool
+ * id has no label here, so the next scope cannot land silently.
  */
 
 import type { AiToolCallSummary } from '../../lib/api';
 
+/** Tool id → the action, in the words a patient would use. Every tool
+ *  the live route registers (`new ToolRegistry()` in
+ *  apps/api/src/routes/ai-chat.routes.ts) needs one; the parity test
+ *  reads that chain and fails when one is missing. */
 const TOOL_LABELS: Record<string, string> = {
   search_medical_kb: '检索 FSHD 知识库',
   get_my_profile: '读取你的健康档案',
   get_my_reports: '查阅你的检查报告',
+  get_my_records: '读取你的随访记录',
+  // Public registry data, not the patient's — the label says which
+  // thing was looked up rather than 「查阅你的…」, which every other
+  // patient-scoped tool above says.
+  list_clinical_trials: '查询临床试验登记信息',
 };
 
 export const humanizeToolName = (name: string): string => TOOL_LABELS[name] ?? name;
 
-/** Allowlist key → plain label. `_clinical` and `_withheld` variants
- *  collapse onto their base key before lookup: strict mode surfaces
- *  d4z4_clinical where precise mode surfaces d4z4, and a methylation
- *  measurement surfaces methylation_withheld where a laboratory word
- *  surfaces methylation — the same asset to the patient either way,
- *  and an unmapped key is printed to them verbatim.
+/** Allowlist key → plain label. `_clinical`, `_withheld` and `_origin`
+ *  variants collapse onto their base key before lookup: strict mode
+ *  surfaces d4z4_clinical where precise mode surfaces d4z4, a
+ *  methylation measurement surfaces methylation_withheld where a
+ *  laboratory word surfaces methylation, and methylation_origin says
+ *  where that same cell came from — the same asset to the patient in
+ *  every case, and an unmapped key is printed to them verbatim.
  *
  *  No 年龄段 and no 症状类型: both are off the API's allowlists, so
  *  neither key can arrive and a label here is one this screen can
@@ -49,11 +76,46 @@ const FIELD_LABELS: Record<string, string> = {
   classifiedType: '报告类型',
   documentType: '文档类型',
   reportDate_year: '报告年份',
+  // NOT the same cell as `reportDate_year`, and it gets its own label
+  // for that reason. The API's own note says they were one key once —
+  // 报告年份 was derived from the upload time and the prompt dated a
+  // 2019 report to 2026. One label for both would put that conflation
+  // back on the patient's side of the wire.
+  uploadYear: '上传年份',
   status: '报告状态',
   fields: '报告识别指标',
   findings_summary: '报告要点',
+  // followups scope — everything `get_my_records` contributes.
+  //
+  // SEVERAL KEYS SHARE A LABEL ON PURPOSE, the same way `d4z4` and
+  // `d4z4_clinical` do above: this line names WHICH of the patient's
+  // data was read, not how the retriever spells it. `metricKey` and
+  // `metricLabel` are one datum (which measurement); `count` and
+  // `countAtCap` are one (how many readings, and whether that number is
+  // a floor); `changeDirection` and `latestBand` are one (which way it
+  // moved, or that it could not be measured this period); `eventSummary`
+  // and `eventCount` are one (the logged events). `humanizeFieldKeys`
+  // dedupes by label, so each pair prints once.
+  metricKey: '记录项目',
+  metricLabel: '记录项目',
+  count: '记录次数',
+  countAtCap: '记录次数',
+  spanDays: '记录时间跨度',
+  unableSummary: '记录为「做不到」的次数',
+  changeDirection: '变化趋势',
+  latestBand: '变化趋势',
+  unit: '测量单位',
+  latestValue: '最近一次数值',
+  series: '历次数值',
+  eventSummary: '随访事件',
+  eventCount: '随访事件',
 };
 
+/** The three scopes, as the allowlist declares them. Membership decides
+ *  which group a label is printed under, so these are checked against
+ *  PROMPT_ALLOWLIST by the parity test rather than kept by hand — a key
+ *  in the wrong set puts the patient's follow-up record under 检查报告
+ *  without changing a single label. */
 const PROFILE_KEYS = new Set([
   'gender',
   'diagnosisStage',
@@ -68,7 +130,47 @@ const PROFILE_KEYS = new Set([
   'assistiveDevices',
 ]);
 
-const DERIVED_SUFFIXES = ['_clinical', '_withheld'] as const;
+const REPORT_KEYS = new Set([
+  'classifiedType',
+  'documentType',
+  'reportDate_year',
+  'uploadYear',
+  'status',
+  'fields',
+  'findings_summary',
+]);
+
+const FOLLOWUP_KEYS = new Set([
+  'metricKey',
+  'metricLabel',
+  'count',
+  'countAtCap',
+  'spanDays',
+  'unableSummary',
+  'changeDirection',
+  'latestBand',
+  'unit',
+  'latestValue',
+  'series',
+  'eventSummary',
+  'eventCount',
+]);
+
+/**
+ * Suffixes that mark a statement ABOUT a cell rather than a second
+ * cell. All three name the same asset to the patient, so all three
+ * resolve to the base key's label and to the base key's scope.
+ *
+ * `_origin` was added because the parity test caught it arriving:
+ * `methylation_origin` is on the profile allowlist — it says where the
+ * methylation cell came from, on the same footing as `d4z4_clinical` —
+ * and with only two suffixes here it resolved to nothing, so an answer
+ * that read the patient's methylation origin printed 「其他数据
+ * （methylation_origin）」. Nothing in this app would have noticed; the
+ * test that reads the API's list did, which is the whole reason it
+ * exists.
+ */
+const DERIVED_SUFFIXES = ['_clinical', '_withheld', '_origin'] as const;
 
 const baseKey = (key: string): string => {
   for (const suffix of DERIVED_SUFFIXES) {
@@ -114,16 +216,29 @@ export const buildCitationSummary = (input: CitationSummaryInput): string | null
     if (labels.length === 0) {
       return '本次引用了你的个人健康数据。';
     }
-    // Three buckets: profile keys, known report keys, and unmapped
-    // keys. Unknown keys get their own bucket instead of being
+    // One bucket per allowlist scope, plus one for keys this bundle has
+    // no mapping for. Unknown keys get their own bucket instead of being
     // mislabeled as report data — verbatim but honestly grouped.
+    //
+    // 其他数据 IS FOR KEYS WE DO NOT KNOW, AND NOTHING ELSE. It used to
+    // catch a whole scope: the bucket was chosen as 「profile, else
+    // anything with a label, else other」, so every `followups` key —
+    // none of which had a label — landed in 其他数据 and the patient's
+    // own 随访记录 was filed under 其他. Each scope now names itself.
     const profileLabels: string[] = [];
     const reportLabels: string[] = [];
+    const followupLabels: string[] = [];
     const otherLabels: string[] = [];
     for (const key of input.fieldsUsed ?? []) {
       const base = baseKey(key);
       const known = FIELD_LABELS[base];
-      const bucket = PROFILE_KEYS.has(base) ? profileLabels : known ? reportLabels : otherLabels;
+      const bucket = PROFILE_KEYS.has(base)
+        ? profileLabels
+        : REPORT_KEYS.has(base)
+          ? reportLabels
+          : FOLLOWUP_KEYS.has(base)
+            ? followupLabels
+            : otherLabels;
       const label = known ?? key;
       if (!bucket.includes(label)) bucket.push(label);
     }
@@ -133,6 +248,9 @@ export const buildCitationSummary = (input: CitationSummaryInput): string | null
     }
     if (reportLabels.length > 0) {
       parts.push(`检查报告（${reportLabels.join('、')}）`);
+    }
+    if (followupLabels.length > 0) {
+      parts.push(`随访记录（${followupLabels.join('、')}）`);
     }
     if (otherLabels.length > 0) {
       parts.push(`其他数据（${otherLabels.join('、')}）`);

@@ -46,6 +46,12 @@ export interface GeneticEvidenceDocumentLike {
   uploadedAt?: string | null;
   ocrPayload?: {
     fields?: Record<string, string | number>;
+    /** The page the parser read. Present on every document the profile
+     *  endpoint returns — PROFILE_OCR_PAYLOAD_PROJECTION in
+     *  apps/api/src/modules/patient-profile/profile.service.ts collapses
+     *  the parser's two spellings into this one — and it is what
+     *  `isLaboratoryGeneticReport` reads the document's structure off. */
+    extractedText?: string | null;
   } | null;
 }
 
@@ -145,6 +151,125 @@ const documentClassifiedType = (document: GeneticEvidenceDocumentLike): string =
   pickReading(payloadFields(document), CLASSIFIED_TYPE_KEYS) ?? document.documentType ?? '';
 
 /**
+ * THE STRUCTURE TABLES AND THE THREE READERS BELOW ARE THE API'S.
+ *
+ * `CLINICAL_NARRATIVE_MARKERS`, `LABORATORY_REPORT_MARKERS` and the
+ * functions over them are copied from
+ * apps/api/src/modules/patient-profile/genetic-evidence.ts, whose
+ * narrative half in turn mirrors MEDICAL_SUMMARY_STRUCTURE_MARKERS in
+ * apps/report-manager/app/services/fshd_report_service.py. Three copies
+ * of one question, and nothing in the build links them — the same
+ * standing condition this whole file is written under. IF ONE MOVES
+ * THEY ALL MOVE.
+ *
+ * Neither table is a vocabulary. No disease word belongs on either,
+ * because scoring a document on the genetics words it CONTAINS is
+ * exactly the defect they exist to end: a 门诊病历摘要 quoting a repeat
+ * count contains all of them.
+ */
+/** The `fields` cells whose value is TEXT OFF THE PAGE. An allowlist,
+ *  not 「every string on the blob」: an arbitrary OCR key can hold
+ *  arbitrary prose, and a two-character section label matched inside
+ *  somebody's free text is not the document showing its structure.
+ *  `classifiedType` and `reportTypeLabel` are absent on purpose —
+ *  `reportTypeLabel` on a document the classifier called a genetics
+ *  report is the literal string 基因检测报告, so reading it would let the
+ *  classifier corroborate itself. */
+const PAGE_TEXT_FIELD_KEYS: readonly string[] = [
+  'interpretationSummary',
+  'interpretation_summary',
+  'facility',
+  'department',
+  'specimen',
+];
+
+const CLINICAL_NARRATIVE_MARKERS: readonly string[] = [
+  '病历摘要',
+  '门诊病历',
+  '住院病历',
+  '出院小结',
+  '住院小结',
+  '出院记录',
+  '入院记录',
+  '病程记录',
+  '主诉',
+  '现病史',
+  '既往史',
+  '个人史',
+  '婚育史',
+  '查体',
+  '体格检查',
+  '专科检查',
+  '诊疗经过',
+  '医师签名',
+];
+
+/** Cells only the narrative extractor writes — a key-shaped witness for
+ *  the same question, which survives where the page text does not. */
+const CLINICAL_NARRATIVE_FIELD_KEYS: readonly string[] = [
+  'onsetAge',
+  'onset_age',
+  'progressionNode',
+  'progression_node',
+  'familyHistory',
+  'family_history',
+  'keyClinicalSigns',
+  'key_clinical_signs',
+  'currentFunctionStatus',
+  'current_function_status',
+];
+
+const LABORATORY_REPORT_MARKERS: readonly string[] = [
+  '基因检测报告',
+  '遗传病检测报告',
+  '分子诊断',
+  '检测项目',
+  '检测方法',
+  '检测结果',
+  '检测结论',
+  '检测机构',
+  '送检单位',
+  '送检医师',
+  '报告医师',
+  '审核医师',
+  '实验室',
+  'southern',
+];
+
+/** The document's own page, as much of it as the payload kept. */
+const documentEvidenceText = (document: GeneticEvidenceDocumentLike): string => {
+  const parts: string[] = [];
+  const text = document.ocrPayload?.extractedText;
+  if (typeof text === 'string' && text.trim()) parts.push(text);
+  const fields = payloadFields(document);
+  if (fields) {
+    for (const key of PAGE_TEXT_FIELD_KEYS) {
+      const value = fields[key];
+      if (typeof value === 'string' && value.trim()) parts.push(value);
+    }
+  }
+  return parts.join('\n').toLowerCase();
+};
+
+/** Does this document read as a clinical narrative. */
+const showsClinicalNarrative = (document: GeneticEvidenceDocumentLike): boolean => {
+  const fields = payloadFields(document);
+  if (fields && CLINICAL_NARRATIVE_FIELD_KEYS.some((key) => pickReading(fields, [key]))) {
+    return true;
+  }
+  const text = documentEvidenceText(document);
+  return CLINICAL_NARRATIVE_MARKERS.some((marker) => text.includes(marker));
+};
+
+/** Does it read as a laboratory's report. The 检测方法 the parser read
+ *  off the page counts: it states what the laboratory did. */
+const showsLaboratoryReportStructure = (document: GeneticEvidenceDocumentLike): boolean => {
+  if (pickReading(payloadFields(document), GENETIC_FIELD_KEYS.testMethod)) return true;
+  const text = documentEvidenceText(document);
+  return LABORATORY_REPORT_MARKERS.some((marker) => text.includes(marker));
+};
+
+/**
  * IS THIS DOCUMENT THE GENETICS LABORATORY'S OWN REPORT.
  *
  * The API's `isLaboratoryGeneticReport`, carried here for the reason
@@ -158,9 +283,38 @@ const documentClassifiedType = (document: GeneticEvidenceDocumentLike): string =
  * decision about DISPLAY: the value may be shown, always with its
  * origin beside it, and no sentence over it may be written in a
  * laboratory's voice.
+ *
+ * A CLASSIFICATION ALONE NO LONGER SATISFIES IT. This was one string
+ * compare against a label written by a keyword classifier that scores a
+ * document on the genetics words it CONTAINS — so a 门诊病历摘要 quoting
+ * the patient's own result classified as the laboratory's report and
+ * was graded like one, on 我的档案 and 病程 as well as on the server. And
+ * a classifier fix reclassifies nothing already stored, so the gate has
+ * to be satisfiable only by agreement between the inferred label and
+ * the document's own page:
+ *
+ *   1. the parser has to have called it a genetics report;
+ *   2. its page must not show a clinical narrative — 主诉 / 现病史 /
+ *      查体 — and the parser must not have read narrative-only cells
+ *      off it;
+ *   3. its page has to show a laboratory report — 检测项目 / 检测方法 /
+ *      送检单位 / 报告医师 — or the parser has to have read the report's
+ *      stated 检测方法 off it;
+ *   4. and only where it shows neither does the uploader's declared
+ *      type decide.
+ *
+ * (2) outranks (3) rather than being weighed against it: a 病历摘要 with
+ * the whole report pasted into it is still a 病历摘要, and it would
+ * otherwise show more laboratory sections than narrative ones. A real
+ * genetics report uploaded under the 其他 picker keeps its grade,
+ * because (3) reads the document and not the dropdown.
  */
-export const isLaboratoryGeneticReport = (document: GeneticEvidenceDocumentLike): boolean =>
-  documentClassifiedType(document) === 'genetic_report';
+export const isLaboratoryGeneticReport = (document: GeneticEvidenceDocumentLike): boolean => {
+  if (documentClassifiedType(document) !== 'genetic_report') return false;
+  if (showsClinicalNarrative(document)) return false;
+  if (showsLaboratoryReportStructure(document)) return true;
+  return document.documentType === 'genetic_report';
+};
 
 /**
  * WHAT A VALUE READ OFF SUCH A DOCUMENT IS CALLED.

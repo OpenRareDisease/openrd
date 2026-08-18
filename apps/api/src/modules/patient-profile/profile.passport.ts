@@ -1451,7 +1451,23 @@ const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) =>
     .slice(0, limit)
     .map((item) => item.label ?? '受累区域');
 
-const getFreshness = (value?: string | null): PassportFreshnessDTO => {
+/**
+ * 最新 / 待更新 / 过期 for one date, on the summary's clock.
+ *
+ * `now` is passed rather than read here for the same reason
+ * `generatedAt` is: this label is RENDERED — on the share page, in the
+ * markdown export, on the mobile card — and every one of them must get
+ * the label of one generation. Five separate `Date.now()` reads inside
+ * one summary was five clocks for one document.
+ *
+ * `date` is the string `formatDate` produced, so a caller that already
+ * has a calendar date gets it back unchanged. The DAY COUNT below is
+ * deliberately computed off that string's UTC midnight and an absolute
+ * instant, both of which are timezone-free — so the bucket a report
+ * falls in does not depend on where the process runs, even though the
+ * date printed beside it does.
+ */
+const getFreshness = (value: string | null | undefined, now: Date): PassportFreshnessDTO => {
   const date = formatDate(value);
   if (!date) {
     return { label: '缺失', tone: 'neutral', date: null, daysSince: null };
@@ -1462,7 +1478,7 @@ const getFreshness = (value?: string | null): PassportFreshnessDTO => {
     return { label: '未知', tone: 'neutral', date, daysSince: null };
   }
 
-  const daysSince = Math.floor((Date.now() - timestamp) / (1000 * 60 * 60 * 24));
+  const daysSince = Math.floor((now.getTime() - timestamp) / (1000 * 60 * 60 * 24));
   if (daysSince <= 90) {
     return { label: '最新', tone: 'success', date, daysSince };
   }
@@ -1479,6 +1495,7 @@ const buildMonitoringItem = (input: {
   latestDate: string | null;
   latestDocumentId: string | null;
   note?: string;
+  now: Date;
 }): PassportMonitoringItemDTO => {
   const available = hasMeaningfulValue(input.summary);
   // A document id is set whenever a report of this class was found,
@@ -1498,7 +1515,7 @@ const buildMonitoringItem = (input: {
     summary: input.summary,
     latestDate: input.latestDate,
     latestDocumentId: input.latestDocumentId,
-    freshness: getFreshness(input.latestDate),
+    freshness: getFreshness(input.latestDate, input.now),
     state,
     ...(input.note ? { note: input.note } : {}),
   };
@@ -3370,20 +3387,44 @@ const readDiagnosisLadder = (profile: PatientProfileDTO): DiagnosisLadderState |
     : null;
 };
 
-/** Whole years old on the server clock, or null when no birth date is on file. */
-const ageInYears = (dateOfBirth: string | null): number | null => {
+/**
+ * Whole years old on the passed clock, or null when no birth date is on
+ * file.
+ *
+ * `now` is the summary's clock rather than a fresh `new Date()` because
+ * this number GATES A RENDERED RECOMMENDATION — the 每年做一次听力筛查
+ * step, which appears only up to age 6. Two documents built from one
+ * profile across the patient's seventh birthday would otherwise have
+ * disagreed about whether the step is on the list at all, which is a
+ * louder disagreement than a date being off by a day.
+ */
+const ageInYears = (dateOfBirth: string | null, now: Date): number | null => {
   if (!dateOfBirth) return null;
   const born = new Date(dateOfBirth);
   if (Number.isNaN(born.getTime())) return null;
-  const now = new Date();
   let age = now.getUTCFullYear() - born.getUTCFullYear();
   const monthDelta = now.getUTCMonth() - born.getUTCMonth();
   if (monthDelta < 0 || (monthDelta === 0 && now.getUTCDate() < born.getUTCDate())) age -= 1;
   return age >= 0 && age < 130 ? age : null;
 };
 
+/**
+ * `now` is injectable for the same reason `buildReferralPack` takes one:
+ * the pack, the share page and the markdown export are three documents
+ * built from ONE profile in ONE request, and 生成时间 has to be the same
+ * instant on all three. It used to be a bare `new Date()` here and
+ * another bare `new Date()` inside `buildClinicalPassportExport`, so the
+ * two disagreed by however long the build took — and across a midnight
+ * boundary that is a different DAY on the two pages a clinician holds
+ * side by side.
+ *
+ * Optional with the wall clock as the default, so no call site has to
+ * care; the callers that build more than one document from one profile
+ * pass their own clock through.
+ */
 export const buildClinicalPassportSummary = (
   profile: PatientProfileDTO,
+  now: Date = new Date(),
 ): ClinicalPassportSummaryDTO => {
   const reportInsights = buildReportInsights(profile);
   const mriDocuments = collectMriDocuments(profile.documents);
@@ -3688,6 +3729,7 @@ export const buildClinicalPassportSummary = (
       // No guideline in the corpus asks for serial CK in FSHD. It shows
       // what you uploaded; it is not a progression measure.
       note: 'CK 等指标常用于诊断阶段。目前没有指南建议靠定期抽血来追踪 FSHD 的进展 —— 这一栏展示的是你已上传的结果。',
+      now,
     }),
     buildMonitoringItem({
       key: 'respiratory',
@@ -3699,6 +3741,7 @@ export const buildClinicalPassportSummary = (
       // Second sentence is the anesthesia case, which is the reason a
       // patient with no symptoms might still need this on file.
       note: '指南建议每位 FSHD 患者都做一次肺功能基线。另外，如果要做全身麻醉的手术，术前应先查一次 —— 呼吸肌受累可能没有任何症状。',
+      now,
     }),
     buildMonitoringItem({
       key: 'cardiac',
@@ -3720,6 +3763,7 @@ export const buildClinicalPassportSummary = (
       // sentence the note is something a patient could hand to a
       // pre-op clinic as grounds to skip the ECG.
       note: '没有症状的 FSHD 患者不需要常规做心电图或心脏超声 —— 这一点和 DMD 等其他肌营养不良不同。两种情况例外：出现胸痛、心悸或不寻常的气短时应该去做心脏评估；以及手术前 —— FSHD 的术前评估应当包括心电图和心脏超声。',
+      now,
     }),
   ];
   const monitoringReady = monitoringItems.some((item) => item.available);
@@ -4134,7 +4178,7 @@ export const buildClinicalPassportSummary = (
       }。指南把散瞳间接检眼镜这一条限定在大片段缺失（1–4 个重复）的那一组人身上；你在不在这一组，本平台不拿一个自己没读过报告的数字来判断，这句话要医生看着报告原件说。`,
     });
   }
-  const age = ageInYears(profile.dateOfBirth);
+  const age = ageInYears(profile.dateOfBirth, now);
   if (age !== null && age <= 6) {
     nextSteps.push({
       title: '每年做一次听力筛查',
@@ -4245,7 +4289,7 @@ export const buildClinicalPassportSummary = (
   ];
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     passportId,
     patientName,
     hasRecordedData,
@@ -4287,7 +4331,7 @@ export const buildClinicalPassportSummary = (
       ladderLabel: diagnosisLadder ? DIAGNOSIS_LADDER_LABELS[diagnosisLadder] : null,
       ladderOriginZh: diagnosisLadder ? passportOriginLabelZh(diagnosisLadderOrigin) : null,
       geneticEvidence,
-      freshness: getFreshness(reportInsights.latestGeneticDate),
+      freshness: getFreshness(reportInsights.latestGeneticDate, now),
       geneticType: reportInsights.geneticType,
       d4z4Repeats: reportInsights.d4z4Repeats,
       methylationValue: reportInsights.methylationValue,
@@ -4311,7 +4355,7 @@ export const buildClinicalPassportSummary = (
       ready: imagingReady,
       latestMriDate: reportInsights.latestMriDate,
       latestDocumentId: reportInsights.latestMriDocumentId,
-      freshness: getFreshness(reportInsights.latestMriDate),
+      freshness: getFreshness(reportInsights.latestMriDate, now),
       summary: reportInsights.mriSummary,
       highlights: mriHighlights,
       bodyRegions: mriBodyMap.regions,
@@ -4327,6 +4371,35 @@ export const buildClinicalPassportSummary = (
 
 const escapeMarkdown = (value: string) => value.replace(/\|/g, '\\|');
 
+/**
+ * EVERY DATE IN THIS MARKDOWN GOES THROUGH `formatDate` ABOVE.
+ *
+ * The summary DTO carries raw ISO 8601 instants — `generatedAt`,
+ * `latestUpdatedAt`, each `timeline[].timestamp`, each
+ * `fieldOrigins[].at` — on purpose: the clients format them (`day` in
+ * passport-share.html.ts, `safeDate` in mobile's
+ * clinical-passport-pdf.ts). This renderer used to interpolate them
+ * bare, and that was two separate failures at once.
+ *
+ * It printed a MACHINE TIMESTAMP —「2026-02-10T18:00:00.000Z」— into a
+ * markdown file a patient downloads and hands to a doctor, Z suffix and
+ * all.
+ *
+ * And it printed a DIFFERENT DAY from the other two documents built
+ * from the same profile in the same request. Under any process
+ * timezone east of UTC, a report uploaded at 18:00Z on the 10th shows
+ * as 2026-02-11 on the share page and in the mobile PDF, and the export
+ * said 2026-02-10 — one report, one profile, two documents, two dates,
+ * in front of the reader least able to check which is right. That is
+ * exactly the failure referral-pack.ts says it matched `formatDate` in
+ * order to avoid: 「two documents from one app disagreeing about the
+ * date of one report is a worse failure in front of a clinician than
+ * both being off by the same day」.
+ *
+ * `formatDate` short-circuits an already-formatted `YYYY-MM-DD`, so the
+ * values that arrive formatted (a monitoring slot's `latestDate`, the
+ * imaging date, 诊断日期) are safe to pass through it too.
+ */
 export const buildClinicalPassportExport = (
   summary: ClinicalPassportSummaryDTO,
 ): ClinicalPassportExportDTO => {
@@ -4334,8 +4407,12 @@ export const buildClinicalPassportExport = (
     `# ${summary.patientName} 临床护照摘要`,
     '',
     `- 护照 ID：${summary.passportId}`,
-    `- 生成时间：${summary.generatedAt}`,
-    `- 最近更新：${summary.latestUpdatedAt ?? '—'}`,
+    // Not a fresh `new Date()`. The summary was built from this
+    // generation's clock and the referral pack from the same one; a
+    // second clock read here made the export's 生成时间 disagree with
+    // the pack's for one generation of one profile.
+    `- 生成时间：${formatDate(summary.generatedAt) ?? '—'}`,
+    `- 最近更新：${formatDate(summary.latestUpdatedAt) ?? '—'}`,
     `- 完整度：${summary.completion.completed}/${summary.completion.total}`,
     '',
     '## 核心摘要',
@@ -4391,7 +4468,12 @@ export const buildClinicalPassportExport = (
           '',
           ...summary.fieldOrigins.map((origin) =>
             origin.state === 'admin_entered'
-              ? `- ${origin.labelZh}：本平台管理员于 ${origin.at ?? '未记录时间'} 代为录入（管理员账号 ${
+              ? // `at` is an ISO instant off the provenance block. The
+                // share page prints `day(origin.at)` and the mobile PDF
+                // `safeDate(origin.at)`; printing it raw here put a
+                // 「2026-01-15T18:00:00.000Z」 in a patient's download
+                // beside two other documents that said 2026-01-16.
+                `- ${origin.labelZh}：本平台管理员于 ${formatDate(origin.at) ?? '未记录时间'} 代为录入（管理员账号 ${
                   origin.adminUserId ?? '未记录'
                 }）`
               : `- ${origin.labelZh}：来源记录读不出来（${origin.detail ?? '原因未记录'}），只能确定不是本人填写`,
@@ -4461,8 +4543,15 @@ export const buildClinicalPassportExport = (
     '',
     '## 最近来源',
     '',
+    // The same rows, in the same order, that the share page renders in
+    // its 最近记录 list — so the two must print the same day for each.
+    // `?? item.timestamp` rather than `?? '—'`: `formatDate` only
+    // returns null for an empty value, and a timeline row always has
+    // one, so this keeps whatever unparseable string the row carries
+    // instead of hiding it behind a dash.
     ...summary.timeline.map(
-      (item) => `- [${item.tag}] ${item.title}（${item.timestamp}）：${item.description}`,
+      (item) =>
+        `- [${item.tag}] ${item.title}（${formatDate(item.timestamp) ?? item.timestamp}）：${item.description}`,
     ),
     '',
   ];
@@ -4470,7 +4559,10 @@ export const buildClinicalPassportExport = (
   const safeName = summary.patientName.replace(/[^\p{L}\p{N}_-]+/gu, '_');
 
   return {
-    generatedAt: new Date().toISOString(),
+    // The generation's clock, not a third reading of the wall clock.
+    // This field and the 生成时间 line above are the same moment stated
+    // twice — one for a machine, one for a reader — and they were not.
+    generatedAt: summary.generatedAt,
     documentTitle: `${summary.patientName} 临床护照摘要`,
     fileName: `${safeName || 'patient'}-clinical-passport.md`,
     contentType: 'text/markdown',

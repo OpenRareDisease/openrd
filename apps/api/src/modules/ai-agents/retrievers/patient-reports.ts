@@ -118,23 +118,42 @@ const CLINICAL_FINDING_TERMS: readonly string[] = [
   '脂肪化',
   '肌肉萎缩',
   '肌萎缩',
+  // THE BARE 萎缩, BECAUSE THE TWO COMPOUNDS ABOVE ARE NOT HOW A
+  // RADIOLOGIST WRITES IT. 「肩胛带肌重度萎缩」 names the muscle and then
+  // the change, so neither 肌肉萎缩 nor 肌萎缩 appears as a substring and
+  // the finding was lost entirely — for the one region FSHD is named
+  // after. `assertedOccurrence` still rules out 未萎缩 / 萎缩不明显, and
+  // the longer compounds still win the dedupe below, so this only adds
+  // the occurrences the compounds could not reach.
+  '萎缩',
   '炎性改变',
   '水肿',
   '信号增高',
   '信号异常',
   '不对称',
   '受累',
-  // Common qualifiers
-  // NOTE: '未见明显异常' / '未见异常' were here, but they are
+  // NO 大致正常, AND NO SEVERITY QUALIFIERS.
+  //
+  // '未见明显异常' / '未见异常' were removed because they are
   // negation-shaped by construction and can never survive the clause
-  // filter below. A report that asserts normality says so via the
-  // absence of positive findings — findings_summary returning null.
-  '大致正常',
-  '轻度',
-  '中度',
-  '重度',
-  '弥漫性',
-  '局灶性',
+  // filter below. '大致正常' is the same claim in an assertion-shaped
+  // wrapper and it survived that removal, so it went on being emitted
+  // as a finding: 「肩胛带肌重度萎缩，余大致正常。」 — before the bare
+  // 萎缩 above existed — reached the model as
+  // 「影像/报告印象: 大致正常」, i.e. this platform telling a patient
+  // their shoulder-girdle MRI was unremarkable because the vocabulary
+  // missed the only finding on it. A report that asserts normality says
+  // so through the ABSENCE of positive findings — findings_summary
+  // returning null — which is the one form of this claim a vocabulary
+  // miss cannot forge.
+  //
+  // '轻度' / '中度' / '重度' / '弥漫性' / '局灶性' were here as
+  // INDEPENDENT terms and were emitted in this list's order, detached
+  // from whatever they qualified: 「双侧大腿脂肪浸润轻度；肩胛带肌肉萎缩
+  // 重度。」 came out as 「脂肪浸润、肌肉萎缩、轻度、重度」, which pairs
+  // 脂肪浸润 with 轻度 by reading order and hands the model the severe
+  // finding as the mild one. They live in SEVERITY_QUALIFIERS now and
+  // are only emitted GLUED to the occurrence they sit against.
   // NO GENETICS VOCABULARY, AND THIS IS THE ONE SUBJECT THIS CHANNEL
   // HAS NOTHING TO ADD ABOUT.
   //
@@ -209,10 +228,164 @@ const NEGATION_MARKERS = [
   '不支持',
 ];
 
-/** Clause boundaries. Negation scopes to its own clause: in
- *  「见脂肪浸润，未见肌肉萎缩」the negation must not swallow the first
- *  half. */
-const CLAUSE_SPLIT = /[，,。.；;、\n]/;
+/**
+ * A finding the report attributes to SOMEONE ELSE is not this patient's
+ * imaging impression.
+ *
+ * 「患者母亲确诊肌营养不良，本人双侧大腿未见脂肪浸润。」 reached the model
+ * as 「影像/报告印象: 肌营养不良」: the relative's diagnosis emitted as the
+ * patient's own report conclusion, while the patient's own NEGATIVE
+ * result in the next clause was correctly dropped — so the only thing
+ * the model was told about this report was a fact about a different
+ * person. The raw impression never reaches it, so there is nothing to
+ * correct that against.
+ *
+ * A clause naming a third party is dropped whole rather than read: this
+ * channel is 影像/报告印象, and a family history has a structured home
+ * on the profile (`familyHistory`) that carries its own provenance.
+ */
+const THIRD_PARTY_MARKERS: readonly string[] = [
+  '家族史',
+  '家族中',
+  '家系',
+  '患者母亲',
+  '患者父亲',
+  '其母',
+  '其父',
+  '母亲',
+  '父亲',
+  '哥哥',
+  '姐姐',
+  '弟弟',
+  '妹妹',
+  '兄弟',
+  '姐妹',
+  '儿子',
+  '女儿',
+  '家属',
+  '亲属',
+  '祖母',
+  '祖父',
+  '外祖母',
+  '外祖父',
+];
+
+/**
+ * A finding the report places in the PAST is not the current
+ * impression.
+ *
+ * Two shapes, one consequence:
+ *   - 「既往水肿，现已吸收。」 emitted 「影像/报告印象: 水肿」 — a resolved
+ *     finding stated as present.
+ *   - 「前次报告示脂肪浸润，本次复查未见脂肪浸润。」 emitted
+ *     「影像/报告印象: 脂肪浸润」 — the prior study's finding, asserted
+ *     beside the current study that contradicts it, leaving the model a
+ *     self-contradictory line to guess its way out of. The current
+ *     study's answer (negative) was the half that got dropped.
+ *
+ * 原 IS THE BARE CHARACTER, WITH ONE EXCEPTION. As a plain substring it
+ * is deliberately broad — 原有资料 / 原片 / 原报告 are all the past — and
+ * a false kill costs a dropped finding, the direction this file is wrong
+ * in on purpose everywhere else. But 原发性 is not the past, it is
+ * 「primary」, and executing the bare marker over 「原发性肌营养不良改变」
+ * returned nothing: the FSHD conclusion itself, dropped by a tense
+ * marker, on a channel whose null result the model reads as 「the report
+ * says nothing」. That one compound is worth reading before killing.
+ */
+const HISTORY_MARKERS: readonly string[] = ['既往', '曾', '外院', '前次', '上次'];
+const HISTORY_PATTERNS: readonly RegExp[] = [/原(?!发)/];
+
+/**
+ * NOTHING GRADES A METHYLATION RESULT HERE. See the NO GENETICS
+ * VOCABULARY block above: the genetics terms were stripped from
+ * CLINICAL_FINDING_TERMS precisely so this channel could not restate
+ * what the structured cells already say, and the severity qualifiers
+ * walked straight past that decision — 「甲基化水平中度降低。」 emitted
+ * 「影像/报告印象: 中度」, a bare grade of a methylation value, on a
+ * platform that states no methylation boundary and therefore has no
+ * grade to give. A clause about methylation is dropped before any term
+ * is matched, so no future vocabulary addition can reopen the hole.
+ */
+const METHYLATION_MARKERS: readonly string[] = ['甲基化', 'methylation'];
+
+/** Every clause-level kill, in one pass. Lower-cased before the test so
+ *  the Latin entries match 「Methylation」 / 「METHYLATION」 too. */
+const CLAUSE_KILL_MARKERS: readonly string[] = [
+  ...NEGATION_MARKERS,
+  ...THIRD_PARTY_MARKERS,
+  ...HISTORY_MARKERS,
+  ...METHYLATION_MARKERS,
+];
+
+const clauseIsDisqualified = (clause: string): boolean => {
+  const lowered = clause.toLowerCase();
+  if (CLAUSE_KILL_MARKERS.some((marker) => lowered.includes(marker))) return true;
+  return HISTORY_PATTERNS.some((pattern) => pattern.test(lowered));
+};
+
+/**
+ * A HEDGE IS NOT A FINDING, AND IT IS NOT NOTHING EITHER.
+ *
+ * 待排 / 可疑 / 不除外 is how a radiologist writes 「I can see something
+ * and I am not calling it」. Every one of them used to be flattened:
+ * 「脂肪浸润待排」 and 「双侧大腿脂肪浸润明显」 produced BYTE-IDENTICAL
+ * prompt lines (「影像/报告印象: 脂肪浸润」), so a patient whose MRI
+ * raised a question was told by this platform that it had answered it.
+ *
+ * WE CARRY THE HEDGE RATHER THAN DROPPING THE CLAUSE. Dropping would be
+ * the cheaper fix and it is the wrong one here: an equivocal muscle MRI
+ * is the commonest early-FSHD imaging result, it is exactly the finding
+ * that should send a patient to follow-up, and a null summary tells the
+ * model nothing happened. The hedge word is emitted from THIS list, not
+ * copied out of the text, so the deny-by-default property is unchanged
+ * — a name still cannot ride out on it.
+ */
+const HEDGE_MARKERS: readonly string[] = [
+  '待排',
+  '可疑',
+  '疑似',
+  '不除外',
+  '未除外',
+  '倾向于',
+  '考虑',
+  '可能',
+  '建议随访',
+];
+
+/**
+ * Severity, emitted ONLY glued to the occurrence it sits against.
+ *
+ * As independent vocabulary entries these were emitted in list order,
+ * detached: 「双侧大腿脂肪浸润轻度；肩胛带肌肉萎缩重度。」 rendered as
+ * 「脂肪浸润、肌肉萎缩、轻度、重度」, which any reader pairs by position
+ * — handing the model 轻度脂肪浸润 and 重度肌肉萎缩 exactly inverted.
+ * A detached 重度 carries no information; an incorrectly paired one is
+ * worse than none.
+ *
+ * Chinese writes severity on either side of the finding (重度脂肪浸润,
+ * 脂肪浸润重度); both are read, and both are emitted in the
+ * qualifier-first form so two reports never disagree about word order.
+ */
+const SEVERITY_QUALIFIERS: readonly string[] = ['轻度', '中度', '重度', '弥漫性', '局灶性'];
+
+/**
+ * Clause boundaries. Negation scopes to its own clause: in
+ * 「见脂肪浸润，未见肌肉萎缩」the negation must not swallow the first
+ * half.
+ *
+ * WHITESPACE IS A CLAUSE BOUNDARY, because OCR routinely gives us one.
+ * Chinese radiology impressions are typeset with spaces between
+ * clauses at least as often as with punctuation, and the OCR keeps
+ * whatever the page had — spaces, full-width spaces, tabs. Without them
+ * in this set the whole impression is ONE clause, so a single negated
+ * clause anywhere in it trips the whole-clause marker filter below and
+ * every asserted finding in the string is dropped with it:
+ * 「双侧大腿脂肪浸润明显 未见肌肉萎缩」 — a report of definite fat
+ * infiltration — produced no findings_summary at all, and the redactor
+ * drops the raw impression, so the model was left with a report it
+ * could see the type of and nothing else.
+ */
+const CLAUSE_SPLIT = /[，,。.；;、\r\n\t 　]/;
 
 /**
  * THE NEGATION IS TESTED AT THE MATCH SITE, not at the clause.
@@ -231,38 +404,92 @@ const CLAUSE_SPLIT = /[，,。.；;、\n]/;
  *
  * So the question asked is about the characters either side of THIS
  * occurrence. A term preceded by 未 / 无 / 非 / 不, or followed
- * immediately by 不明显 / 未见 / 阴性 / 正常, is ruled out at that
- * occurrence and the search moves on: a term negated in one place and
- * asserted in another (「未见脂肪浸润 右侧脂肪浸润明显」inside one
- * clause) is still asserted.
+ * immediately by 不明显 / 未见 / 阴性 / 正常 / a resolution verb, is
+ * ruled out at that occurrence and the search moves on.
+ *
+ * WHAT THIS TEST DOES AND DOES NOT BUY, stated correctly. It was
+ * documented here as keeping 「未见脂肪浸润 右侧脂肪浸润明显」 asserted
+ * 「inside one clause」, and executing that exact string produced
+ * nothing — because a clause carrying a LISTED marker (未见) is
+ * discarded whole by `clauseIsDisqualified` before this function is
+ * ever called, and no per-occurrence test can rescue it. (That string
+ * does now yield 脂肪浸润, but from CLAUSE_SPLIT: the space between the
+ * halves makes them two clauses and only the first is discarded.)
+ *
+ * What this test actually buys is the forms that are NOT listed
+ * markers — a bare 无 / 非 / 不 glued to the term, or a qualifier glued
+ * behind it. 「左侧无水肿而右侧水肿明显」 is genuinely one clause,
+ * carries no listed marker, and is still asserted.
  */
 const NEGATION_PREFIX_CHARS: ReadonlySet<string> = new Set(['未', '无', '非', '不']);
 const NEGATION_SUFFIXES: readonly string[] = ['不明显', '未见', '阴性', '正常'];
 
-const clauseAssertsTerm = (clause: string, term: string): boolean => {
+/**
+ * A finding the report says has RESOLVED is not a current finding.
+ * 「水肿已基本吸收」 was emitted as 「影像/报告印象: 水肿」.
+ */
+const RESOLUTION_SUFFIXES: readonly string[] = ['吸收', '消退', '好转', '恢复'];
+
+/** Adverbs that sit between the finding and the word that kills it —
+ *  「水肿已基本吸收」,「信号增高大致正常」. Stripped before the suffix
+ *  test, or the suffix list would only ever match the bare forms
+ *  nobody writes. */
+const SUFFIX_LEAD_ADVERBS: readonly string[] = [
+  '已经',
+  '已',
+  '基本',
+  '大部分',
+  '大致',
+  '完全',
+  '明显',
+  '较前',
+];
+
+const OCCURRENCE_KILL_SUFFIXES: readonly string[] = [...NEGATION_SUFFIXES, ...RESOLUTION_SUFFIXES];
+
+const stripLeadingAdverbs = (text: string): string => {
+  let rest = text;
+  for (;;) {
+    const adverb = SUFFIX_LEAD_ADVERBS.find((a) => rest.startsWith(a));
+    if (!adverb) return rest;
+    rest = rest.slice(adverb.length);
+  }
+};
+
+/** Index of the first occurrence of `term` in `clause` that the clause
+ *  actually asserts, or -1. Returns the index rather than a boolean so
+ *  the caller can read the severity qualifier sitting against THAT
+ *  occurrence instead of guessing which finding it belonged to. */
+const assertedOccurrence = (clause: string, term: string): number => {
   for (let from = 0; from <= clause.length - term.length; ) {
     const at = clause.indexOf(term, from);
-    if (at === -1) return false;
+    if (at === -1) return -1;
     const before = at > 0 ? clause[at - 1] : '';
     const after = clause.slice(at + term.length);
     const negated =
       NEGATION_PREFIX_CHARS.has(before) ||
-      NEGATION_SUFFIXES.some((suffix) => after.startsWith(suffix));
-    if (!negated) return true;
+      OCCURRENCE_KILL_SUFFIXES.some((suffix) => stripLeadingAdverbs(after).startsWith(suffix));
+    if (!negated) return at;
     from = at + 1;
   }
-  return false;
+  return -1;
 };
 
 /**
  * Extract the recognised clinical findings a report actually asserts.
  *
- * Deny-by-default twice over: the output is assembled from
- * `CLINICAL_FINDING_TERMS`, never from the text (so no name can pass),
- * and a term is only kept when its own clause is not negated AND the
- * occurrence itself is not negated (so no ruled-out finding is reported
- * as present). See `clauseAssertsTerm` for why the clause test alone
- * was not enough.
+ * Deny-by-default three times over: every character of the output comes
+ * from `CLINICAL_FINDING_TERMS`, `SEVERITY_QUALIFIERS` or
+ * `HEDGE_MARKERS` and never from the text (so no name can pass); a
+ * clause naming a negation, a third party, a past study or methylation
+ * is discarded before any term is matched; and a term inside a
+ * surviving clause is kept only where the occurrence itself is not
+ * ruled out or resolved. See `assertedOccurrence` for what the
+ * occurrence test does and does not buy on top of the clause test.
+ *
+ * Findings come out in READING ORDER, clause by clause, rather than in
+ * vocabulary order — the order the qualifiers are bound in, and the
+ * order the report itself puts them in.
  */
 const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null => {
   const raw = IMPRESSION_KEYS.map((key) => ocrFields[key]).find(
@@ -270,24 +497,54 @@ const buildFindingsSummary = (ocrFields: Record<string, unknown>): string | null
   );
   if (!raw) return null;
 
-  // Only clauses that assert something contribute terms.
+  // Only clauses that assert something about THIS patient, in THIS
+  // study, about something other than methylation, contribute terms.
   const assertedClauses = raw
     .split(CLAUSE_SPLIT)
     .map((clause) => clause.trim())
     .filter((clause) => clause.length > 0)
-    .filter((clause) => !NEGATION_MARKERS.some((marker) => clause.includes(marker)));
+    .filter((clause) => !clauseIsDisqualified(clause));
 
-  const matched: string[] = [];
-  for (const term of CLINICAL_FINDING_TERMS) {
-    if (!assertedClauses.some((clause) => clauseAssertsTerm(clause, term))) continue;
-    // Skip a term already covered by a longer match ('肌营养不良' when
-    // '肌营养不良改变' is present) so the summary reads cleanly.
-    if (matched.some((kept) => kept.includes(term))) continue;
-    matched.push(term);
+  const kept: { term: string; qualifier: string; hedge: string; phrase: string }[] = [];
+
+  for (const clause of assertedClauses) {
+    // A hedge scopes to its clause: 「可疑炎性改变」 hedges 炎性改变, and
+    // 「双侧大腿脂肪浸润明显」 hedges nothing.
+    const hedge = HEDGE_MARKERS.find((marker) => clause.includes(marker)) ?? '';
+
+    for (const term of CLINICAL_FINDING_TERMS) {
+      const at = assertedOccurrence(clause, term);
+      if (at === -1) continue;
+
+      // The severity glued to THIS occurrence, on either side of it.
+      const before = clause.slice(0, at);
+      const after = clause.slice(at + term.length);
+      const qualifier =
+        SEVERITY_QUALIFIERS.find((q) => before.endsWith(q)) ??
+        SEVERITY_QUALIFIERS.find((q) => after.startsWith(q)) ??
+        '';
+
+      // Skip a term already covered by a longer match at the same
+      // severity and the same hedge ('肌营养不良' when '肌营养不良改变'
+      // is present, '萎缩' when '肌肉萎缩' is). Different severities are
+      // different findings and both are kept — collapsing them is how
+      // 轻度 and 重度 got swapped in the first place.
+      if (
+        kept.some(
+          (entry) =>
+            entry.qualifier === qualifier && entry.hedge === hedge && entry.term.includes(term),
+        )
+      ) {
+        continue;
+      }
+
+      const phrase = hedge ? `${qualifier}${term}（${hedge}）` : `${qualifier}${term}`;
+      kept.push({ term, qualifier, hedge, phrase });
+    }
   }
-  if (matched.length === 0) return null;
+  if (kept.length === 0) return null;
 
-  const summary = matched.join('、');
+  const summary = kept.map((entry) => entry.phrase).join('、');
   return summary.length > FINDINGS_SUMMARY_MAX
     ? `${summary.slice(0, FINDINGS_SUMMARY_MAX)}…`
     : summary;
@@ -397,15 +654,32 @@ const PLACEHOLDER_SNIPPET = '你的患者报告';
 const placeholderContent = (reportType: string | null): string =>
   `${PLACEHOLDER_CONTENT_PREFIX} / ${reportType ?? 'unknown'} — 字段经 PIIRedactor 处理后由 ContextBuilder 渲染】`;
 
-/** `2023-12-22` → `2023-12`. Enough to tell two reports of the same
- *  kind apart in a citation chip without turning the chip into a date
- *  field. */
+/** Leading `YYYY-MM` of an already-resolved date. */
+const YEAR_MONTH = /^(\d{4})-(\d{2})/;
+
+/**
+ * `2023-12-22` → `2023-12`. Enough to tell two reports of the same
+ * kind apart in a citation chip without turning the chip into a date
+ * field.
+ *
+ * SLICE THE DIGITS, DO NOT RE-PARSE. `resolveReportDate` has already
+ * resolved the answer to an ISO instant; this used to feed that string
+ * back through `new Date(...)` and read it out with `getFullYear` /
+ * `getMonth`, which are the SERVER's zone. A report whose OCR
+ * `reportTime` says 2025-01-01 becomes UTC midnight, and on any host
+ * west of Greenwich the local accessors slide it back across both the
+ * month and the year boundary — the chip read 「基因检测报告 · 2024-12」
+ * for a January 2025 report, a whole year wrong on the one chip whose
+ * job is to tell the patient how old the result is. profile.passport.ts,
+ * referral-pack.ts and passport-share.html.ts each carry a DATE_ONLY
+ * short-circuit for exactly this; this call site was the one that
+ * missed it.
+ */
 const reportDateLabel = (row: ReportRow): string => {
   const { value } = resolveReportDate(row);
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  const parts = YEAR_MONTH.exec(value);
+  return parts ? `${parts[1]}-${parts[2]}` : '';
 };
 
 export class PatientReportsRetriever implements IRetriever {

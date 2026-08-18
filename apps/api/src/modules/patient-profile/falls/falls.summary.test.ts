@@ -223,3 +223,137 @@ describe('buildFallsSummary — quarters', () => {
     expect(summary.total).toBe(1);
   });
 });
+
+/**
+ * THE SECOND HALF OF REFUSAL (2): THE QUERY WINDOW.
+ *
+ * The oldest fall bounds the buckets from the record's side. The window
+ * bounds them from the query's side, and this module was not being told
+ * it — so a caller reading 100 days got a 90-day bucket built out of 11
+ * observed days, printed beside a full one.
+ */
+describe('buildFallsSummary — the window the caller actually read', () => {
+  const rows = [fall({ fall_day_age: 5 }), fall({ fall_day_age: 40 }), fall({ fall_day_age: 95 })];
+
+  it('emits only buckets the window covers end to end', () => {
+    // 100 days reaches the fall at day 95, so the oldest-fall bound
+    // alone would emit the 90–179 bucket. It was observed for 11 of its
+    // 90 days.
+    const summary = buildFallsSummary(rows, { atCap: false, windowDays: 100 });
+    expect(summary.quarters).toHaveLength(1);
+    expect(summary.quartersCoverDays).toBe(90);
+    expect(summary.quarters[0].count).toBe(2);
+    // ...and with one bucket there is nothing to compare, so the clause
+    // goes entirely — the same call `atCap` forces in refusal (3).
+    expect(composeFallQuarterClauseZh(summary)).toBeNull();
+  });
+
+  it('reads 2 次 against 1 次 as a comparison only when both quarters were observed', () => {
+    // The failure this closes: at windowDays 100 the model was handed
+    // 「2 次、1 次」 and read a DOUBLING.
+    expect(
+      composeFallQuarterClauseZh(buildFallsSummary(rows, { atCap: false, windowDays: 100 })),
+    ).toBeNull();
+    const full = composeFallQuarterClauseZh(
+      buildFallsSummary(rows, { atCap: false, windowDays: 180 }),
+    );
+    expect(full).toContain('只统计被完整覆盖的最近 180 天）：2 次、1 次');
+  });
+
+  it('a 90-day window can hold one bucket and therefore no comparison', () => {
+    const summary = buildFallsSummary(rows, { atCap: false, windowDays: 90 });
+    expect(summary.quarters).toHaveLength(1);
+    expect(composeFallQuarterClauseZh(summary)).toBeNull();
+  });
+
+  it('never emits more buckets than the record supports, however long the window', () => {
+    // 730 days of window, 95 days of record: the oldest-fall bound is
+    // still the binding one, and the window must not widen it.
+    const summary = buildFallsSummary(rows, { atCap: false, windowDays: 730 });
+    expect(summary.quarters).toHaveLength(2);
+    expect(summary.quartersCoverDays).toBe(180);
+    expect(summary.unbucketedOlder).toBe(0);
+  });
+
+  it('counts the falls that fall outside the last full bucket instead of folding them in', () => {
+    // A 200-day window reaches the fall at day 190 but does not cover
+    // the 180–269 bucket. Folding it into the last bucket would inflate
+    // the comparison quarter; dropping it would contradict `total` on
+    // the same line.
+    const summary = buildFallsSummary(
+      [fall({ fall_day_age: 5 }), fall({ fall_day_age: 40 }), fall({ fall_day_age: 190 })],
+      { atCap: false, windowDays: 200 },
+    );
+    expect(summary.total).toBe(3);
+    expect(summary.quarters.map((q) => q.count)).toEqual([2, 0]);
+    expect(summary.unbucketedOlder).toBe(1);
+    expect(composeFallQuarterClauseZh(summary)).toContain(
+      '更早还有 1 次跌倒，落在查询窗口没有完整覆盖的时段里',
+    );
+  });
+
+  it('claims nothing about coverage when the caller named no window', () => {
+    // The pre-existing callers pass no window, and a module that was
+    // not told one cannot say the buckets were observed end to end.
+    const summary = buildFallsSummary(rows, { atCap: false });
+    expect(summary.windowDays).toBeNull();
+    expect(composeFallQuarterClauseZh(summary)).not.toContain('完整覆盖');
+  });
+
+  it('emits no bucket at all for a window shorter than one', () => {
+    // 0–89 was not observed end to end either, so printing it as a
+    // quarter would be the same defect at the near end.
+    const summary = buildFallsSummary([fall({ fall_day_age: 3 })], {
+      atCap: false,
+      windowDays: 30,
+    });
+    expect(summary.total).toBe(1);
+    expect(summary.quarters).toEqual([]);
+    expect(summary.quartersCoverDays).toBe(0);
+    expect(summary.unbucketedOlder).toBe(1);
+    expect(composeFallQuarterClauseZh(summary)).toBeNull();
+  });
+});
+
+/**
+ * 「最多的是」 IS A COMPARISON AND IT NEEDS SOMETHING TO WIN AGAINST.
+ */
+describe('composeFallDetailClauseZh — the most common situation', () => {
+  it('will not call one answered row the most common', () => {
+    const clause = composeFallDetailClauseZh(
+      buildFallsSummary([fall({ fall_day_age: 3, fall_activity: 'walking' })], { atCap: false }),
+    );
+    expect(clause).toContain('已记录当时情形的 1 次中，全部都是「走路时」');
+    expect(clause).not.toContain('最多的是');
+  });
+
+  it('will not break a tie and present the winner as a pattern', () => {
+    // 「最多的是走路时」 out of one walking fall and one stairs fall was
+    // decided by which row the query returned first.
+    const clause = composeFallDetailClauseZh(
+      buildFallsSummary(
+        [
+          fall({ fall_day_age: 3, fall_activity: 'walking' }),
+          fall({ fall_day_age: 9, fall_activity: 'stairs' }),
+        ],
+        { atCap: false },
+      ),
+    );
+    expect(clause).toContain('「走路时」1 次、「上下楼梯时」1 次，次数相同，没有更常见的一种');
+    expect(clause).not.toContain('最多的是');
+  });
+
+  it('still names a real winner', () => {
+    const clause = composeFallDetailClauseZh(
+      buildFallsSummary(
+        [
+          fall({ fall_day_age: 3, fall_activity: 'stairs' }),
+          fall({ fall_day_age: 9, fall_activity: 'stairs' }),
+          fall({ fall_day_age: 20, fall_activity: 'walking' }),
+        ],
+        { atCap: false },
+      ),
+    );
+    expect(clause).toContain('已记录当时情形的 3 次中，最多的是「上下楼梯时」2 次');
+  });
+});

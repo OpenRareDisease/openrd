@@ -806,5 +806,172 @@ class VerdictsAreNotReadingsTest(unittest.TestCase):
         )
 
 
+class TheNumberBelongsToTheLabelNextToItTest(unittest.TestCase):
+    """A cell label reached down into the line below it.
+
+    Every numeric pattern in `_extract_genetic` was written
+    `标签[^\\d]{0,N}(\\d+)`, and `[^\\d]` matches a newline — so a label
+    sitting on the 检测项目 line captured whatever number the NEXT line
+    happened to start with. On an FSHD report the next line is very
+    often the haplotype, and 「4qA」 starts with a digit.
+    """
+
+    @staticmethod
+    def _summary(result):
+        return result["fshd"]["normalized_summary"]["genetic_summary"]
+
+    def _analyze(self, *body):
+        return analyze_fshd_report("\n".join(body), "genetic_report", "G.pdf")
+
+    def test_the_methylation_cell_is_not_read_out_of_the_haplotype(self):
+        """甲基化分析 is the name of the FSHD2 assay, not a reading of it.
+
+        With the 检测项目 line naming the method and the next line stating
+        the haplotype, `甲基化[^\\d]{0,12}` captured the 4 of 4qA — and
+        because the first match wins, the laboratory's own 甲基化 35%
+        further down was never reached. Precise mode handed the
+        assistant that 4; strict mode counted it in
+        `numericValuesWithheld`.
+        """
+        summary = self._summary(
+            self._analyze(
+                "示例医学检验实验室 基因检测报告",
+                "送检单位: 示例市第一人民医院神经内科",
+                "检测项目: FSHD 甲基化分析",
+                "单倍型: 4qA",
+                "D4Z4重复单元数: 4",
+                "甲基化: 35%",
+                "报告医师: 王某某",
+            )
+        )
+        self.assertEqual(summary["methylation_value"], 35.0)
+        self.assertNotEqual(summary["methylation_value"], 4.0)
+        self.assertEqual(summary["haplotype"], "4qA")
+
+    def test_the_repeat_count_is_not_read_out_of_the_haplotype(self):
+        """The same shape on the cell the whole FSHD1 reading rests on.
+
+        「检测项目: D4Z4 重复单元数检测」 above 「单倍型: 4qA」 reported a
+        repeat count of 4 at confidence 0.97 — a confirmed FSHD1-range
+        count taken from an allele name — while the report's own count,
+        9 and in the grey zone, sat unread below it.
+        """
+        summary = self._summary(
+            self._analyze(
+                "示例医学检验实验室 基因检测报告",
+                "检测项目: D4Z4 重复单元数检测",
+                "单倍型: 4qA",
+                "检测结果",
+                "D4Z4重复单元数: 9",
+                "报告医师: 王某某",
+            )
+        )
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 9)
+
+    def test_the_assay_name_may_still_label_its_own_result_row(self):
+        """「甲基化分析: 35%」 IS the result row, and must still read.
+
+        The gap is the same method word; what separates the two cases is
+        the colon. Forbidding the method word outright would have made
+        this laboratory's number disappear.
+        """
+        self.assertEqual(self._summary(self._analyze("基因检测报告", "甲基化分析: 35%"))["methylation_value"], 35.0)
+
+    def test_a_method_word_with_no_separator_reports_nothing(self):
+        summary = self._summary(
+            self._analyze("基因检测报告", "检测结果", "检测项目 甲基化分析 4qA")
+        )
+        self.assertIsNone(summary["methylation_value"])
+        self.assertEqual(summary["haplotype"], "4qA")
+
+
+class AGeneticReportIsIdentifiedByItsStructureTest(unittest.TestCase):
+    """A 病历摘要 quoting a genetic result classified as the report.
+
+    `REPORT_TYPE_RULES` scores VOCABULARY, and a clinic letter that
+    transcribes the patient's own result contains every genetics word
+    the rules look for: measured on a real one, genetic_report 18
+    (基因检测 4 + fshd1 5 + d4z4 5 + 4qa 4) against medical_summary 16,
+    with the uploader's declared 「other」 losing to the classifier. The
+    label is what the API's `isLaboratoryGeneticReport` asks before
+    anything may GRADE a genetics cell, so the transcribed count was
+    graded on the FSHD1 boundary and the transcribed haplotype called
+    permissive.
+
+    The failure was self-reinforcing: the more of the result the letter
+    quoted, the more certainly it flipped.
+    """
+
+    SUMMARY = (
+        "示例市第一人民医院 门诊病历摘要",
+        "主诉: 双上肢抬举无力10年,加重2年。",
+        "现病史: 2019年于外院行基因检测,结果示 D4Z4 重复单元数 4 个,"
+        "单倍型 4qA,考虑 FSHD1。",
+        "既往史: 否认高血压、糖尿病史。",
+        "查体: 双侧翼状肩胛,面肌无力。",
+    )
+    REPORT = (
+        "示例医学检验实验室 基因检测报告",
+        "送检单位: 示例市第一人民医院神经内科",
+        "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+        "检测方法: 脉冲场凝胶电泳,p13E-11探针Southern blotting",
+        "检测结果",
+        "单倍型: 4qA",
+        "D4Z4重复单元数: 4",
+        "报告医师: 王某某",
+    )
+
+    @staticmethod
+    def _analyze(body, hint):
+        return analyze_fshd_report("\n".join(body), hint, "Upload.pdf")
+
+    def test_a_transcription_is_not_promoted_to_a_genetic_report(self):
+        result = self._analyze(self.SUMMARY, "other")
+        self.assertEqual(result["fshd"]["report_type"], "medical_summary")
+
+    def test_the_quoted_values_are_still_read_off_the_transcription(self):
+        """Refusing the LABEL must not lose the patient's numbers.
+
+        For some patients the 病历摘要 is the only page in the account
+        carrying the D4Z4 count, and the platform's answer has always
+        been 「display it with its origin, never grade it」. The API can
+        only stamp `not_read_off_a_laboratory_report` onto a cell that
+        exists.
+        """
+        summary = self._analyze(self.SUMMARY, "other")["fshd"]["normalized_summary"][
+            "genetic_summary"
+        ]
+        self.assertEqual(summary["d4z4_repeat_pathogenic"], 4)
+        self.assertEqual(summary["haplotype"], "4qA")
+        self.assertEqual(summary["diagnosis_type"], "FSHD1")
+
+    def test_the_narrative_cells_are_still_read_as_well(self):
+        names = {
+            f["field_name"] for f in self._analyze(self.SUMMARY, "other")["fshd"]["structured_fields"]
+        }
+        self.assertIn("progression_node", names)
+
+    def test_the_uploader_calling_it_a_genetic_report_does_not_promote_it(self):
+        """Patients pick 基因检测报告 for the letter that quotes one."""
+        result = self._analyze(self.SUMMARY, "genetic_report")
+        self.assertEqual(result["fshd"]["report_type"], "medical_summary")
+
+    def test_a_real_report_is_still_a_genetic_report(self):
+        for hint in ("genetic_report", "other"):
+            with self.subTest(hint=hint):
+                result = self._analyze(self.REPORT, hint)
+                self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+
+    def test_a_report_with_no_recognisable_structure_is_still_promoted(self):
+        """Demoting here would lose the numbers, not just the grade.
+
+        Where neither structure appears — an OCR that recovered the
+        result lines and none of the headings — this rule abstains. The
+        API-side gate is what refuses to grade an unconfirmed document.
+        """
+        result = self._analyze(("FSHD1", "4qA", "D4Z4重复单元数: 4"), "other")
+        self.assertEqual(result["fshd"]["report_type"], "genetic_report")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,11 +36,16 @@
  *             them in strict alone left a precise-consent patient with
  *             no date at all.
  *
- *             The methylation cell is the one this function never
- *             reads, and for the opposite reason: there is no boundary
- *             stated anywhere in this repo to read it against, so
- *             there is nothing to carry into either mode. See
- *             `methylationCell`.
+ *             The methylation cell is the one whose VALUE this
+ *             function never reads, and for the opposite reason: there
+ *             is no boundary stated anywhere in this repo to read it
+ *             against, so it earns no `_clinical` sibling in either
+ *             mode. What it does carry, in both, is where the cell came
+ *             from — it was the one genetics cell stating nothing at
+ *             all, so a percentage typed into the registration form or
+ *             quoted on a 病历摘要 sat beside siblings that DO state
+ *             the refusal, looking like a result this platform stood
+ *             behind. See `methylationCell`.
  *
  *             WHAT A LABEL MAY CLAIM. It is answered to a patient by
  *             the assistant, so it may say only what this repo says
@@ -60,6 +65,7 @@ import {
   HARD_DELETE_KEYS_LOWER,
   OCR_FIELDS_SAFE_KEYS_PRECISE,
   PROMPT_ALLOWLIST,
+  SAFE_VALUE_MAX_LENGTH,
 } from './allowlist.js';
 import type { AppLogger } from '../../../config/logger.js';
 import {
@@ -336,6 +342,42 @@ const readGeneticCell = (raw: unknown): GeneticCellText => {
  * keeps it, which is the direction that only ever adds uncertainty.
  */
 const WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE = 'within_fshd1_repeat_range_grey_zone_8_to_10';
+
+/**
+ * THE REPORT THIS COUNT CAME OFF STATES 4qB, SO THE COUNT IS NOT READ
+ * AGAINST THE FSHD1 RANGE AT ALL.
+ *
+ * THE HAPLOTYPE USED TO GATE THE GREY-ZONE VARIANT AND NOTHING ELSE.
+ * The plain in-range branch returned `within_fshd1_repeat_range`
+ * whatever the haplotype said, so a laboratory report stating 4qB —
+ * where FSHD1 by definition CANNOT be the mechanism, because FSHD1 is a
+ * contracted D4Z4 array ON A PERMISSIVE 4qA ALLELE — handed the model a
+ * label asserting the count sits inside the FSHD1 range. Every other
+ * surface built off that same report refuses it in so many words: the
+ * passport's grade says 「不拿它上面的重复数去套指南里按重复数分组的建议」,
+ * the referral 结论 says 「本平台不把这份报告算作已确认的分子遗传学诊断」,
+ * and the FHIR Condition text says 「这一条不构成可作确诊依据的基因结果」.
+ * `PassportDiagnosisConfirmation.genetic_non_permissive` states the
+ * reason: a contraction reported on 4qB 「is not weaker evidence towards
+ * the diagnosis; it is a finding that argues against this mechanism」.
+ * Commit ca4a261 removed exactly this from the mobile card; the
+ * assistant, which is the surface that generates ADVICE, kept it.
+ *
+ * IT WAS WORSE INSIDE THE GREY ZONE. Gating only the grey-zone variant
+ * meant a 4qB report of 9 units DOWNGRADED to the plain in-range label
+ * — so the 8–10 uncertainty vanished and the bytes were indistinguishable
+ * from a count of 5 on the same allele. The gate belongs on the whole
+ * in-range answer, and the answer it produces is a refusal rather than a
+ * quieter band.
+ *
+ * `above_fshd1_repeat_range` IS DELIBERATELY LEFT UNGATED. That label's
+ * whole content is the guideline sending this report's reader off to
+ * evaluate FSHD2, and that instruction does not stop being the right
+ * next step because the 4q allele is 4qB.
+ */
+const REPEAT_COUNT_ON_NON_PERMISSIVE_HAPLOTYPE =
+  'repeat_count_not_read_against_fshd1_range_non_permissive_haplotype';
+
 const clinicaliseD4Z4 = (
   raw: unknown,
   fromLaboratoryReport: boolean,
@@ -349,9 +391,13 @@ const clinicaliseD4Z4 = (
   if (reading === null) return null;
   if (isDeterminateRepeatCount(reading)) {
     if (reading.value > FSHD1_MAX_REPEAT_UNITS) return 'above_fshd1_repeat_range';
+    // The WHOLE in-range answer is gated on the haplotype, not just its
+    // grey-zone variant. See `REPEAT_COUNT_ON_NON_PERMISSIVE_HAPLOTYPE`.
+    if (haplotypePermissive === false) return REPEAT_COUNT_ON_NON_PERMISSIVE_HAPLOTYPE;
     // The 8–10 grey zone, on the passport's own predicate and gated the
-    // passport's own way. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
-    return haplotypePermissive !== false && isD4Z4GreyZone(reading)
+    // passport's own way — `!== false`, so a report naming no haplotype
+    // keeps the note. See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
+    return isD4Z4GreyZone(reading)
       ? WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE
       : 'within_fshd1_repeat_range';
   }
@@ -519,13 +565,57 @@ const clinicaliseOtherD4Z4Allele = (raw: unknown, fromLaboratoryReport: boolean)
  * refuses everywhere else on this platform. It takes the withheld
  * channel: there is a methylation cell on file and no number is
  * reaching the prompt, which is true of it in both modes.
+ *
+ * BUT WHERE THE CELL CAME FROM IS STILL A QUESTION THIS READER HAS TO
+ * ASK, AND IT WAS THE ONE GENETICS READER THAT DID NOT.
+ *
+ * `clinicaliseD4Z4`, `clinicaliseEcoRIFragment`,
+ * `clinicaliseOtherD4Z4Allele` and `clinicaliseHaplotype` all take
+ * `fromLaboratoryReport` and all answer `not_read_off_a_laboratory_report`
+ * when the value did not come off the laboratory's own report. This one
+ * took no such argument and neither call site passed an origin — so a
+ * percentage a patient typed into the registration form's 甲基化 box,
+ * and a percentage a 病历摘要 quoted off somebody else's report, were
+ * rendered to the assistant as bare results sitting directly beside
+ * sibling cells that DO carry the refusal:
+ *
+ *     - d4z4Repeats_clinical: not_read_off_a_laboratory_report
+ *     - haplotype_clinical: not_read_off_a_laboratory_report
+ *     - methylationValue: 12%
+ *
+ * The third line is the FSHD2 discriminator, printed as though this
+ * platform stood behind it, on the cell 甲基化临床分级 was deleted for
+ * overclaiming about. The passport's rule does not have a methylation
+ * exception: a value not read off a laboratory genetics report may be
+ * DISPLAYED with its origin and may never decide anything.
+ *
+ * THE ORIGIN IS STATED IN BOTH MODES, like every other refusal in this
+ * file. What the precise consent buys is the number beside the
+ * sentence; it does not buy the cell a promotion to a reading this
+ * platform never made. And it is stated WITHOUT grading the cell —
+ * there is still no methylation boundary in this repo, so the origin
+ * travels under its own key rather than under a `_clinical` sibling
+ * that would read as this platform's verdict on the value.
  */
-const methylationCell = (raw: unknown, mode: RedactionMode): 'raw' | 'withheld' | null => {
+interface MethylationCell {
+  /** What happens to the number: published, or withheld and counted. */
+  value: 'raw' | 'withheld';
+  /** `NOT_A_LABORATORY_READING` when this platform did not read the
+   *  cell off the laboratory's own report, `null` when it did. */
+  origin: string | null;
+}
+
+const methylationCell = (
+  raw: unknown,
+  mode: RedactionMode,
+  fromLaboratoryReport: boolean,
+): MethylationCell | null => {
   const cell = readGeneticCell(raw);
   if (cell.kind === 'empty') return null;
-  if (cell.kind === 'not_a_reading') return 'withheld';
-  if (mode === 'precise') return 'raw';
-  return isQualitativeResult(raw) ? 'raw' : 'withheld';
+  const origin = fromLaboratoryReport ? null : NOT_A_LABORATORY_READING;
+  if (cell.kind === 'not_a_reading') return { value: 'withheld', origin };
+  if (mode === 'precise') return { value: 'raw', origin };
+  return { value: isQualitativeResult(raw) ? 'raw' : 'withheld', origin };
 };
 
 /**
@@ -603,6 +693,11 @@ export const GENETIC_READING_REFUSALS: ReadonlySet<string> = new Set([
   NOT_A_LABORATORY_READING,
   LENGTH_IN_KB_NOT_A_REPEAT_COUNT,
   OTHER_ALLELE_NOT_THE_CONTRACTED_ONE,
+  // A count this platform declines to read against the FSHD1 range
+  // because the same report says 4qB. It parses and it is a count; what
+  // it is not is a reading of that count against a boundary stated for
+  // the other allele. See `REPEAT_COUNT_ON_NON_PERMISSIVE_HAPLOTYPE`.
+  REPEAT_COUNT_ON_NON_PERMISSIVE_HAPLOTYPE,
   'zero_repeat_count_not_a_valid_reading',
   'unspecified',
   'unspecified_haplotype',
@@ -652,11 +747,10 @@ const ID_PATTERNS: readonly RegExp[] = [
   /\b\d{9,}\b/,
 ];
 
-/** A free-text field long enough that it is evidently not the short
- *  value the key promised. Impressions in these reports run well under
- *  this; the observed ECG dump was 230+. */
-const SAFE_VALUE_MAX_LENGTH = 200;
-
+/** The length ceiling lives on `allowlist.ts` beside the key list whose
+ *  premise it states, and is imported by the write-path schema as well
+ *  — see `SAFE_VALUE_MAX_LENGTH` there for why it is not declared in
+ *  this file. */
 const isUntrustworthyValue = (value: unknown): boolean => {
   if (typeof value !== 'string') return false;
   const text = value.trim();
@@ -763,6 +857,20 @@ const projectOcrFields = (
     }
     const lower = key.toLowerCase();
     /**
+     * Publish the cell's own text, having asked whether it is the short
+     * structured value its key promised. One helper for every branch
+     * that publishes a raw cell, so that 「a safe key is not a safe
+     * value」 cannot hold on the safe-key branch and quietly not hold on
+     * the genetics ones. See `isUntrustworthyValue`.
+     */
+    const publishRawCell = (): void => {
+      if (isUntrustworthyValue(value)) {
+        droppedUntrusted.push(key);
+        return;
+      }
+      out[key] = value;
+    };
+    /**
      * A GENETICS CELL AND THIS PLATFORM'S READING OF IT, PUBLISHED
      * TOGETHER OR NOT AT ALL.
      *
@@ -779,11 +887,31 @@ const projectOcrFields = (
      * precise consent with no reading of any kind beside it. A raw
      * genetics cell never reaches a prompt without this platform's
      * reading of it, and now it structurally cannot.
+     *
+     * AND THE CELL IS CHECKED AS A VALUE, NOT ONLY AS A KEY — the same
+     * check `OCR_FIELDS_SAFE_KEYS_PRECISE` values get, applied here
+     * because these keys skip that branch entirely. It used to write
+     * `out[key] = value` with no value check at all, so the identical
+     * production string — 「…年龄:23 … 科别:神经内科 … 住院号:R000000 …」
+     * plus a patient's NAME — was dropped under `ecgSummary` and
+     * published verbatim to the prompt under `d4z4Repeats`,
+     * `haplotype` or `methylationValue`. The name is inside the cell
+     * rather than under `patientName`, so layer 1 does not see it
+     * either, and none of this needs an extractor regression to
+     * reach: `EDITABLE_OCR_FIELDS` lets a patient hand-correct exactly
+     * those cells through `patchDocumentOcrFields`, which spreads the
+     * patch straight onto the stored fields.
+     *
+     * THE READING STILL GOES OUT. The refused thing is the cell's own
+     * text, not this platform's reading of it — the model is told what
+     * this platform makes of a cell it is not being shown, and
+     * `fieldsDroppedAsUnsafe` tells it a cell was refused, exactly as
+     * for a safe key whose value failed the same check.
      */
     const publishGeneticCell = (clinical: string | null) => {
       if (clinical === null) return;
       if (mode === 'precise' && value !== null && value !== undefined && value !== '') {
-        out[key] = value;
+        publishRawCell();
       }
       out[`${key}_clinical`] = clinical;
     };
@@ -803,10 +931,16 @@ const projectOcrFields = (
     } else if (lower.includes('methylation')) {
       // No reading, in either mode — see `methylationCell`. The word
       // survives as the cell it is; the measurement is counted with
-      // every other withheld measurement rather than relabelled.
-      const survives = methylationCell(value, mode);
-      if (survives === 'raw') out[key] = value;
-      else if (survives === 'withheld') withheldNumeric += 1;
+      // every other withheld measurement rather than relabelled. What
+      // it DOES carry now, in both modes, is where the value came from:
+      // this cell sits beside siblings that state the refusal, and a
+      // 病历摘要's quoted percentage used to sit there stating nothing.
+      const survives = methylationCell(value, mode, fromLaboratoryReport);
+      if (survives !== null) {
+        if (survives.value === 'raw') publishRawCell();
+        else withheldNumeric += 1;
+        if (survives.origin !== null) out[`${key}_origin`] = survives.origin;
+      }
     } else if (lower.includes('haplotype')) {
       publishGeneticCell(clinicaliseHaplotype(value, fromLaboratoryReport));
     } else if (lower.includes('date')) {
@@ -816,7 +950,9 @@ const projectOcrFields = (
       if (y !== null) out[`${key}_year`] = y;
     } else if (OCR_FIELDS_SAFE_KEYS_PRECISE.has(key)) {
       if (value === null || value === undefined || value === '') continue;
-      // A safe key is not a safe value — see isUntrustworthyValue.
+      // A safe key is not a safe value — see isUntrustworthyValue. The
+      // check is asked once, here, so the strict branch below cannot
+      // publish what the precise branch refused.
       if (isUntrustworthyValue(value)) {
         droppedUntrusted.push(key);
         continue;
@@ -912,6 +1048,17 @@ const clinicalise = (
     const fromLaboratory = (key: string): boolean => input[key] === true;
     drop.add('d4z4FromLaboratoryReport');
     drop.add('haplotypeFromLaboratoryReport');
+    // The methylation cell asks the same question as its two siblings
+    // now, so its flag is dropped on the same footing. NOTE: the
+    // profile retriever does not yet WRITE this flag — see
+    // `geneticCellsFromLaboratoryReport` in
+    // retrievers/patient-profile.ts, which computes the answer for
+    // `d4z4` and `haplotype` only — so the cell currently always reads
+    // `not_read_off_a_laboratory_report`. That is the refusal, which is
+    // the direction that only ever withholds; the flag is read here so
+    // that the day the retriever answers for methylation too, an
+    // autofilled laboratory value stops being refused.
+    drop.add('methylationFromLaboratoryReport');
     // The haplotype the same profile records, for the D4Z4 grey-zone
     // gate — `permissiveHaplotype !== false`, the passport's own gate.
     // See `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE`.
@@ -935,11 +1082,32 @@ const clinicalise = (
       // keeps the cell; strict keeps the laboratory's own word and
       // withholds a number under a key that says the number is
       // withheld, rather than under one that says it was graded.
-      const survives = methylationCell(input.methylation, mode);
-      if (survives === 'withheld') {
-        added.methylation_withheld = 'value_withheld';
-        changed.push('methylation');
-        drop.add('methylation');
+      //
+      // AND IT STATES WHERE THE CELL CAME FROM, in both modes, under a
+      // key that says origin rather than grade. `diseaseBackground.
+      // methylation` is the registration form's own box; a percentage
+      // typed into it used to reach the prompt as 「甲基化值: 12%」 with
+      // nothing beside it, directly under two sibling readings that
+      // both said `not_read_off_a_laboratory_report` about the very
+      // same profile. Methylation is the FSHD2 discriminator.
+      const survives = methylationCell(
+        input.methylation,
+        mode,
+        fromLaboratory('methylationFromLaboratoryReport'),
+      );
+      if (survives !== null) {
+        if (survives.value === 'withheld') {
+          added.methylation_withheld = 'value_withheld';
+          drop.add('methylation');
+        }
+        if (survives.origin !== null) {
+          added.methylation_origin = survives.origin;
+        }
+        // `clinicalised` is the audit list of cells this pass acted on.
+        // A laboratory's own qualitative word published untouched is
+        // not one of them, so the push is conditional rather than
+        // unconditional on the cell existing.
+        if (survives.value === 'withheld' || survives.origin !== null) changed.push('methylation');
       }
     }
     if ('haplotype' in input) {

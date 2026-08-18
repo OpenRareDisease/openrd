@@ -378,6 +378,27 @@ describe('no direction without something to compare', () => {
     expect(f.latestBand).toBe('较前升高');
   });
 
+  it('two readings on ONE DAY carry neither', async () => {
+    // 上楼计时 is routinely done twice in a sitting — a practice
+    // attempt, then the real one — and the length >= 2 test admitted
+    // that pair as a trend. 10 秒 then 16 秒 the same afternoon came
+    // out as 「最近变化: 较前升高」 printed beside 「跨度(天): 0」: a
+    // claim about change over a span that contains none, with the
+    // refutation on the next line. Which row counted as 「earliest」
+    // was decided by an arbitrary ORDER BY tiebreak, so the direction
+    // was not even stable between runs.
+    const f = await fieldsOf([
+      { metric_key: 'stair_climb', unit: 'sec', value: '10', recorded_at: daysAgoIso(0) },
+      { metric_key: 'stair_climb', unit: 'sec', value: '16', recorded_at: daysAgoIso(0) },
+    ]);
+    expect(f.count).toBe(2);
+    expect(f.spanDays).toBe(0);
+    expect(f.changeDirection).toBeUndefined();
+    expect(f.latestBand).toBeUndefined();
+    // The readings themselves are still there; only the claim goes.
+    expect(f.series).toBe('10sec(0天前)、16sec(0天前)');
+  });
+
   it('a metric whose every row is 做不到 asserts no direction either', async () => {
     // 「flat」 about a patient who has LOST the ability to perform the
     // test was the worst available value for this field.
@@ -388,5 +409,87 @@ describe('no direction without something to compare', () => {
     expect(f.count).toBe(0);
     expect(f.changeDirection).toBeUndefined();
     expect(f.latestBand).toBe('本期均记录为做不到');
+  });
+});
+
+/**
+ * A SERIES IS ONE CURVE ONLY IF EVERY POINT WAS MEASURED THE SAME WAY.
+ *
+ * `FUNCTION_TEST_UNITS` admits both `sec` and `m/s` for one
+ * `test_type`, so a patient who moved their 10-metre walk from a
+ * stopwatch to a gait-speed readout has two incommensurable numbers in
+ * one metric key.
+ */
+describe('units belong to the series identity', () => {
+  const fieldsOf = async (seriesRows: unknown[]): Promise<Record<string, unknown>> => {
+    const r = await new PatientFollowupRetriever(poolWith(seriesRows)).search(
+      { question: '' },
+      ctx(),
+    );
+    return r.chunks[0].metadata.fields as Record<string, unknown>;
+  };
+
+  it('refuses a direction across two recognised units, and says why', async () => {
+    // 0.9 m/s over 10 metres is 11.1 seconds — SLOWER than the 10 s
+    // reading two months earlier. The retriever stamped the series'
+    // first recognised unit on every point and compared the raw
+    // numbers, so it rendered 「0.9sec」 and banded 「较前降低」: a
+    // fabricated improvement, on the metric this product exists to
+    // track, produced entirely by the rendering.
+    const f = await fieldsOf([
+      { metric_key: 'ten_meter_walk', unit: 'sec', value: '10', recorded_at: daysAgoIso(60) },
+      { metric_key: 'ten_meter_walk', unit: 'm/s', value: '0.9', recorded_at: daysAgoIso(0) },
+    ]);
+    expect(f.count).toBe(2);
+    expect(f.spanDays).toBe(60);
+    expect(f.changeDirection).toBeUndefined();
+    expect(f.latestValue).toBeUndefined();
+    expect(f.unit).toBeUndefined();
+    // Nothing may render the m/s reading with a seconds suffix, in any
+    // field, in any mode.
+    expect(JSON.stringify(f)).not.toContain('0.9sec');
+    // Silence would leave the model a hole to fill. `latestBand` is
+    // where this file puts its refusals — 「本期均记录为做不到」 is the
+    // other one — and it is on both allowlists.
+    expect(String(f.latestBand)).toContain('混用');
+    expect(String(f.latestBand)).toContain('m/s');
+  });
+
+  it('renders each point in its own unit rather than a neighbour’s', async () => {
+    // Migration 015 NULLs any legacy unit its alias table cannot read,
+    // so a live series really can hold an unlabelled 2024 row beside a
+    // 「sec」 row from today. The unlabelled row asserts no unit, so it
+    // does not suppress the trend — but it must not borrow one either,
+    // and the series-level `unit` field has to stay away until every
+    // point agrees.
+    const f = await fieldsOf([
+      { metric_key: 'ten_meter_walk', unit: null, value: '10', recorded_at: daysAgoIso(30) },
+      { metric_key: 'ten_meter_walk', unit: 'sec', value: '20', recorded_at: daysAgoIso(0) },
+    ]);
+    expect(f.series).toBe('10(30天前)、20sec(0天前)');
+    // Null, and the renderer drops null fields, so no 单位 line reaches
+    // the prompt to be applied to the point that has none.
+    expect(f.unit).toBeNull();
+    expect(f.changeDirection).toBe('up');
+  });
+
+  it('still labels a series whose every point agrees', async () => {
+    const f = await fieldsOf([
+      { metric_key: 'ten_meter_walk', unit: 'sec', value: '10', recorded_at: daysAgoIso(30) },
+      { metric_key: 'ten_meter_walk', unit: '秒', value: '20', recorded_at: daysAgoIso(0) },
+    ]);
+    // 「秒」 canonicalises to the same unit, so this is one curve.
+    expect(f.unit).toBe('sec');
+    expect(f.series).toBe('10sec(30天前)、20sec(0天前)');
+    expect(f.changeDirection).toBe('up');
+  });
+
+  it('leaves a symptom score, which never carries a unit, alone', async () => {
+    const f = await fieldsOf([
+      { metric_key: 'fatigue', unit: null, value: 3, recorded_at: daysAgoIso(30) },
+      { metric_key: 'fatigue', unit: null, value: 7, recorded_at: daysAgoIso(0) },
+    ]);
+    expect(f.changeDirection).toBe('up');
+    expect(f.series).toBe('3(30天前)、7(0天前)');
   });
 });

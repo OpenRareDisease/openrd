@@ -36,6 +36,30 @@
  * file and is not being shared. Promising a reading here is how the
  * key came to be labelled 甲基化临床分级 while holding the laboratory's
  * own word. See `methylationCell` in the redactor.
+ *
+ * AND THE WITHHOLDING IS NOT PURELY A CONSENT RULE, WHICH IS WHAT THIS
+ * SENTENCE USED TO SAY. It read 「a numeric result is withheld without
+ * precise-value consent」 — a claim about one mode, stated as the whole
+ * rule. Under precise consent the profile scope still renders
+ * `methylation_withheld` for any methylation cell this platform cannot
+ * read as a single value: an array reaches `formatScalar`, which would
+ * join `['35', '40']` into 「甲基化值: 35、40」 and publish it as this
+ * patient's result, and the redactor documents refusing that as
+ * deliberate and true of BOTH modes. So a precise-consent reader met
+ * 「甲基化数值: value_withheld」 having been instructed that withholding
+ * only happens in its absence, and the honest reading of that is that
+ * a value was hidden from them rather than that none could be read.
+ * The sentence names both conditions now.
+ *
+ * `tool-descriptions.test.ts` could not catch it: its reachability
+ * check UNIONED the two modes, so a claim conditional on a mode passed
+ * as long as the key existed in either. A clause naming a consent
+ * level is checked against that mode alone there now.
+ *
+ * ORIGIN IS THE THIRD THING THIS CELL CARRIES and it is deliberately
+ * not spelled out in the sentence: 「never graded」 already covers it,
+ * and `methylation_origin` holds a refusal rather than something the
+ * model should go looking for.
  */
 
 import type { ITool, ToolContext, ToolExecutionResult } from './base.js';
@@ -52,7 +76,7 @@ const PARAMETERS_SCHEMA = {
 export class GetMyProfileTool implements ITool {
   readonly name = 'get_my_profile';
   readonly description =
-    'Retrieve the authenticated user\'s own patient profile: gender, diagnosis stage / year / type, D4Z4 / haplotype (this platform\'s reading of the cell, the raw value, or both, depending on consent), methylation (the cell as recorded, never graded — this platform states no methylation boundary; a numeric result is withheld without precise-value consent), onset region, family history, ambulatory status, assistive devices. Use this when the user asks about themselves ("my", "我的", "我目前") or when their personal context is required to give a useful answer.';
+    'Retrieve the authenticated user\'s own patient profile: gender, diagnosis stage / year / type, D4Z4 / haplotype (this platform\'s reading of the cell, the raw value, or both, depending on consent), methylation (the cell as recorded, never graded — this platform states no methylation boundary; a measurement is withheld without precise-value consent, and a cell this platform cannot read as a single value is withheld whatever the consent), onset region, family history, ambulatory status, assistive devices. Use this when the user asks about themselves ("my", "我的", "我目前") or when their personal context is required to give a useful answer.';
   readonly parametersSchema: Record<string, unknown> = PARAMETERS_SCHEMA;
   readonly minConsent: ConsentLevel = 'basic';
 

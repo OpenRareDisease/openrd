@@ -10,10 +10,14 @@ const call = (name: string): AiToolCallSummary => ({
 });
 
 describe('humanizeToolName', () => {
-  it('maps the three registered tools to plain actions', () => {
+  it('maps every registered tool to a plain action', () => {
     expect(humanizeToolName('search_medical_kb')).toBe('检索 FSHD 知识库');
     expect(humanizeToolName('get_my_profile')).toBe('读取你的健康档案');
     expect(humanizeToolName('get_my_reports')).toBe('查阅你的检查报告');
+    // Both of these were registered on the live route with no label
+    // here, so the trace chip printed the raw tool id at the patient.
+    expect(humanizeToolName('get_my_records')).toBe('读取你的随访记录');
+    expect(humanizeToolName('list_clinical_trials')).toBe('查询临床试验登记信息');
   });
 
   it('passes unknown tool names through verbatim', () => {
@@ -42,6 +46,33 @@ describe('humanizeFieldKeys', () => {
   it('unknown keys fall through verbatim instead of vanishing', () => {
     expect(humanizeFieldKeys(['brandNewKey'])).toEqual(['brandNewKey']);
   });
+
+  it('_origin is a statement about a cell, not a second cell', () => {
+    // `methylation_origin` says where the methylation cell came from —
+    // the same asset to the patient as the cell itself. Without the
+    // suffix it read 「methylation_origin」 on the answer.
+    expect(humanizeFieldKeys(['methylation', 'methylation_origin'])).toEqual(['甲基化结果']);
+  });
+
+  it('maps the followups keys the 随访记录 tool contributes', () => {
+    // Every one of these fell to the verbatim fallback: this file had
+    // no entry for the `followups` scope at all.
+    expect(
+      humanizeFieldKeys(['metricLabel', 'spanDays', 'latestValue', 'series', 'eventSummary']),
+    ).toEqual(['记录项目', '记录时间跨度', '最近一次数值', '历次数值', '随访事件']);
+  });
+
+  it('keys that are one datum to the patient print once', () => {
+    expect(humanizeFieldKeys(['metricKey', 'metricLabel'])).toEqual(['记录项目']);
+    expect(humanizeFieldKeys(['count', 'countAtCap'])).toEqual(['记录次数']);
+    expect(humanizeFieldKeys(['changeDirection', 'latestBand'])).toEqual(['变化趋势']);
+    expect(humanizeFieldKeys(['eventSummary', 'eventCount'])).toEqual(['随访事件']);
+  });
+
+  it('上传年份 and 报告年份 stay two labels, because they are two cells', () => {
+    // The API conflated them once and dated a 2019 report to 2026.
+    expect(humanizeFieldKeys(['reportDate_year', 'uploadYear'])).toEqual(['报告年份', '上传年份']);
+  });
 });
 
 describe('buildCitationSummary', () => {
@@ -67,6 +98,30 @@ describe('buildCitationSummary', () => {
       fieldsUsed: ['gender', 'brandNewKey'],
     });
     expect(line).toBe('本次引用了你的：健康档案（性别）、其他数据（brandNewKey）');
+  });
+
+  it('随访记录 is its own group, not 其他数据', () => {
+    // What this printed before: 「本次引用了你的：健康档案（诊断分型）、
+    // 其他数据（metricLabel、spanDays、changeDirection、eventSummary）」
+    // — the engineering vocabulary this module exists to remove, under
+    // a group name that calls the patient's own follow-up record 其他.
+    const line = buildCitationSummary({
+      usedPersonalData: true,
+      fieldsUsed: ['diagnosisType', 'metricLabel', 'spanDays', 'changeDirection', 'eventSummary'],
+    });
+    expect(line).toBe(
+      '本次引用了你的：健康档案（诊断分型）、随访记录（记录项目、记录时间跨度、变化趋势、随访事件）',
+    );
+  });
+
+  it('all three scopes at once, each under its own heading', () => {
+    const line = buildCitationSummary({
+      usedPersonalData: true,
+      fieldsUsed: ['d4z4_clinical', 'classifiedType', 'uploadYear', 'metricLabel', 'latestBand'],
+    });
+    expect(line).toBe(
+      '本次引用了你的：健康档案（D4Z4 基因结果）、检查报告（报告类型、上传年份）、随访记录（记录项目、变化趋势）',
+    );
   });
 
   it('KB-only answers state the negative explicitly', () => {

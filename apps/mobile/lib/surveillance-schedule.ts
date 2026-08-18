@@ -567,11 +567,44 @@ const STRENGTH_DRUG_PATTERNS: Array<{ label: string; needles: string[] }> = [
   { label: '地尔硫䓬', needles: ['diltiazem', '地尔硫', '合心爽', '恬尔心'] },
 ];
 
-const matchedStrengthDrugs = (profile: PatientProfile | null): string[] => {
-  const names = (profile?.medications ?? [])
-    .map((item) => (item.medicationName ?? '').toLowerCase())
+/**
+ * THE THREE STATES THIS ROW OWES THE READER, AND IT USED TO HAVE TWO.
+ *
+ *  null  — there is no medication list to read. No profile, no
+ *          `medications` key on the wire, a list with no rows, or a
+ *          list whose every row has a blank name.
+ *  []    — a list with readable names was read, and none of them is
+ *          one of the three drugs.
+ *  [...] — the drugs that matched, by their guideline label.
+ *
+ * WHAT THIS REPLACED. It returned `string[]`, and all four of the
+ * states above collapsed onto the empty array — so `buildMedicationRow`
+ * printed one sentence for all of them: 「你的用药记录里没有这三类药」.
+ * That is a NEGATIVE FINDING about a medication record this platform
+ * does not have. `medications` is optional on the wire and the
+ * medication module is one most patients never open, so the empty list
+ * is the COMMON case, not an edge: a patient on prednisone who has
+ * never typed it in here was reading a Level B 「不要开」 row telling
+ * them their own record is clear. Nothing on this platform asks 「你没
+ * 在吃药吧」 and nothing records the answer, so an empty list is the
+ * absence of a question, never the presence of a no.
+ *
+ * This file's header states the rule the old shape broke: `not_matched`
+ * never means 你不需要, and every row has to say in its own words that
+ * what it holds is a gap in the platform's records. `pain_management`
+ * says 本平台没有你的疼痛记录; `hearing_child` says 档案里没有可用的出生
+ * 日期. This row alone claimed it had looked.
+ */
+const matchedStrengthDrugs = (profile: PatientProfile | null): string[] | null => {
+  const medications = profile?.medications;
+  if (!Array.isArray(medications)) return null;
+  // Trimmed before the emptiness test, so a row whose name is
+  // whitespace counts as unread rather than as read-and-clear. Trimming
+  // cannot change what `includes` finds.
+  const names = medications
+    .map((item) => (item.medicationName ?? '').trim().toLowerCase())
     .filter((name) => name.length > 0);
-  if (names.length === 0) return [];
+  if (names.length === 0) return null;
   return STRENGTH_DRUG_PATTERNS.filter((drug) =>
     drug.needles.some((needle) => names.some((name) => name.includes(needle.toLowerCase()))),
   ).map((drug) => drug.label);
@@ -657,6 +690,39 @@ const buildRespiratoryRows = (
     dyspneaRatio >= 0.5 &&
     isRecent(dyspnea.recordedAt, today);
 
+  /**
+   * THE OTHER HALF OF THIS ROW'S CONDITION — 「FVC 明显偏低」 — SAID
+   * ACCORDING TO WHAT THE PASSPORT ACTUALLY HOLDS.
+   *
+   * Found by the same sweep that produced the medication row above, and
+   * it is the same defect in a second place: a flat 「本平台没有你的 FVC
+   * 百分比」 was printed for every patient who has no sleep score,
+   * including the ones whose uploaded pulmonary function report parsed.
+   * `respiratorySummary` is built from `fvcPredPct` among other cells
+   * (profile.passport.ts), so a patient with 「FVC 58%」 on file read
+   * 「你的档案里有肺功能结果：… FVC 58%」 in the 肺功能基线 row and
+   * 「本平台…也没有 FVC 百分比」 two rows below it — one page, two
+   * answers, and the patient it contradicts itself for is the one under
+   * the guideline's own 60% example.
+   *
+   * WHAT IT STILL DOES NOT DO IS READ THE NUMBER. The summary is free
+   * text assembled from whatever cells the OCR found, and pulling a
+   * percentage back out of it here would be a second parser on this
+   * side of the wire — the mistake the D4Z4 note above this file
+   * records at length. Whether the value clears the guideline's line is
+   * the doctor's read of the report, so this says what is on file and
+   * stops.
+   */
+  const fvcHalfEvidence = (() => {
+    if (hasReadableRespiratory) {
+      return '你的档案里有肺功能结果（上面「做一次肺功能基线」那一条写着是什么），但这一页不替你判断那些数字够不够指南说的那条线 —— 那要医生看着报告原件读。';
+    }
+    if (respiratory?.state === 'unreadable') {
+      return '你上传过肺功能报告，但系统没能自动读出数值，所以指南里 FVC 的那一半这里判断不了。';
+    }
+    return '本平台没有你的 FVC 百分比，所以指南的另一半条件这里判断不了。';
+  })();
+
   const sleepEvidence = (() => {
     if (niv) {
       return `你记录过「开始无创通气」${nivDate ? `（${nivDate}）` : ''}。对你来说这一条已经不是要不要转诊，而是随访：参数合不合适、戴得住戴不住、白天有没有变精神，需要有人定期看。`;
@@ -683,9 +749,9 @@ const buildRespiratoryRows = (
       return `你有过偏低的睡眠评分（${sleep.score}/10，${sleepDate ?? '日期不详'}），但那已经是半年以前的记录了，不能代表你现在的情况。`;
     }
     if (sleep) {
-      return `你最近一次睡眠评分是 ${sleep.score}/10（${sleepDate ?? '日期不详'}），不在偏低的区间。本平台没有你的 FVC 百分比，所以指南的另一半条件这里判断不了。`;
+      return `你最近一次睡眠评分是 ${sleep.score}/10（${sleepDate ?? '日期不详'}），不在偏低的区间。${fvcHalfEvidence}`;
     }
-    return '本平台没有你的睡眠评分，也没有 FVC 百分比，这一条判断不了。白天特别困、早上起来头痛、夜里反复醒 —— 这些只有你自己知道，出现了就值得说。';
+    return `本平台没有你的睡眠评分。${fvcHalfEvidence}白天特别困、早上起来头痛、夜里反复醒 —— 这些只有你自己知道，出现了就值得说。`;
   })();
 
   const sleepReferral: SurveillanceRow = {
@@ -945,8 +1011,30 @@ const buildPainRow = (profile: PatientProfile | null, today: Date): Surveillance
   };
 };
 
+/** Why the row is on the page for someone it does not match. Shared by
+ *  both non-matching states so the two sentences differ only in the
+ *  clause that is actually different — what this platform holds. */
+const MEDICATION_ROW_RATIONALE =
+  '这一条放在这里，是因为它可能会被推荐给你 —— 到时候你知道指南是怎么说的。';
+
 const buildMedicationRow = (profile: PatientProfile | null): SurveillanceRow => {
   const matched = matchedStrengthDrugs(profile);
+  const evidence = (() => {
+    if (matched === null) {
+      // NO LIST TO READ. The old copy for this state said 「你的用药记录
+      // 里没有这三类药」 — see matchedStrengthDrugs. What is true is only
+      // about the platform's holdings, so that is all this says.
+      return `本平台没有你的用药记录，所以这一条对不对得上，这里看不出来 —— 这不代表你没在吃药，只说明你还没有在本平台填过用药。${MEDICATION_ROW_RATIONALE}`;
+    }
+    if (matched.length === 0) {
+      // A list WAS read. This is the only state in which a sentence
+      // about what the record does not contain is a statement this
+      // platform can make — and it still says whose list it is, because
+      // the platform only ever sees what the patient typed in.
+      return `你填在本平台的用药记录里没有这三类药 —— 本平台只看得到你自己填的那些，在别处开的药它不知道。${MEDICATION_ROW_RATIONALE}`;
+    }
+    return `你的用药记录里出现了${matched.join('、')}。如果这是为了改善肌力开的，值得再和医生确认一次；如果是为了别的病（比如哮喘、高血压），那不在这一条的范围里 —— 请不要自己停药。`;
+  })();
   return {
     id: 'no_strength_drugs',
     title: '不要为了「增肌力」吃这三类药',
@@ -954,11 +1042,13 @@ const buildMedicationRow = (profile: PatientProfile | null): SurveillanceRow => 
     polarity: 'do_not',
     guideline:
       '指南写得很明确：医生不应当为了改善肌力而给 FSHD 患者开沙丁胺醇（albuterol）、糖皮质激素或地尔硫䓬。沙丁胺醇的随机对照试验是阴性结果，糖皮质激素和地尔硫䓬的开放标签试验都没看到获益。到目前为止，没有任何药物被证明能延缓、停止或逆转 FSHD 的肌无力，FDA 也没有批准过这样的药。',
-    applicability: matched.length > 0 ? 'matched' : 'everyone',
-    evidence:
-      matched.length > 0
-        ? `你的用药记录里出现了${matched.join('、')}。如果这是为了改善肌力开的，值得再和医生确认一次；如果是为了别的病（比如哮喘、高血压），那不在这一条的范围里 —— 请不要自己停药。`
-        : '你的用药记录里没有这三类药。这一条放在这里，是因为它可能会被推荐给你 —— 到时候你知道指南是怎么说的。',
+    // 'everyone' for both non-matching states, and deliberately not
+    // `not_matched` for either: a 「不要为了增肌力开这三类药」 row is
+    // addressed to every FSHD patient, and the difference between 「读过
+    // 你的用药记录，没有这三类药」 and 「本平台没有你的用药记录」 lives in
+    // the evidence line, which is where this file puts the reason.
+    applicability: matched !== null && matched.length > 0 ? 'matched' : 'everyone',
+    evidence,
     ask: '可以问：「这个药是为了什么开的？如果是为了肌力，还有必要继续吗？」',
     source: SURVEILLANCE_SOURCE,
   };

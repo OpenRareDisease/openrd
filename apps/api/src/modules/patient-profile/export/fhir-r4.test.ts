@@ -210,6 +210,15 @@ describe('FHIR R4 — Condition tells the truth about confirmation', () => {
    * uploader filed as 其他医疗文件. Reading the declaration alone lost
    * a real laboratory report, which is the half of this rule that
    * costs a patient a confirmation they earned.
+   *
+   * The payload carries the report's stated 检测方法 because a real
+   * genetics report does. `isLaboratoryGeneticReport` stopped accepting
+   * a classification on its own — a keyword classifier scores a
+   * document on the genetics words it CONTAINS, so a 病历摘要 quoting a
+   * result classified as a genetics report too, and this exact payload
+   * minus the method cell is that 病历摘要 as well as this report. What
+   * separates them is what the page shows it IS, so this fixture shows
+   * it.
    */
   it('is confirmed by a genetics report the uploader filed as something else', () => {
     const condition = resourcesOf(
@@ -219,7 +228,12 @@ describe('FHIR R4 — Condition tells the truth about confirmation', () => {
             ...EXPORT_FIXTURE_PROFILE.documents[0],
             documentType: 'other',
             ocrPayload: {
-              fields: { classifiedType: 'genetic_report', d4z4Repeats: '5', haplotype: '4qA' },
+              fields: {
+                classifiedType: 'genetic_report',
+                geneticTestMethod: 'southern_blot',
+                d4z4Repeats: '5',
+                haplotype: '4qA',
+              },
             },
           },
         ],

@@ -101,7 +101,13 @@ describe('是不是实验室自己出的那份报告 —— 排序用它，排�
       isLaboratoryGeneticReport(
         doc({
           documentType: 'other',
-          ocrPayload: { fields: { classifiedType: 'genetic_report', d4z4Repeats: '4' } },
+          ocrPayload: {
+            fields: {
+              classifiedType: 'genetic_report',
+              geneticTestMethod: 'southern_blot',
+              d4z4Repeats: '4',
+            },
+          },
         }),
       ),
     ).toBe(true);
@@ -113,6 +119,121 @@ describe('是不是实验室自己出的那份报告 —— 排序用它，排�
         }),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * A CLASSIFICATION IS NOT A DOCUMENT.
+ *
+ * `isLaboratoryGeneticReport` was one string compare against
+ * `classifiedType`, a label written by a keyword classifier that scores
+ * a document on the genetics words it CONTAINS. A 门诊病历摘要 quoting
+ * the patient's result therefore classified as the laboratory's own
+ * report — measured on a real one, genetic_report 18 against
+ * medical_summary 16 — and the uploader's declared 「other」 lost to it.
+ * Driven through the real retriever and `renderChunkForPrompt`, the
+ * transcribed count came out graded on the FSHD1 boundary and the
+ * transcribed haplotype called permissive, in BOTH redaction modes,
+ * with the citation chip calling the clinic letter 基因检测报告.
+ *
+ * The parser's classifier is fixed too, and that fixes nothing already
+ * stored: no row is reclassified by a code change. These cases are
+ * written as ARCHIVED payloads — `classifiedType: 'genetic_report'`
+ * exactly as the old rule wrote it — because that is the population
+ * this gate has to hold against.
+ */
+describe('分类标签本身不再是通行证 —— 库里存着的行也要拦住', () => {
+  const archived = (
+    documentType: string,
+    fields: Record<string, unknown>,
+    extractedText?: string,
+  ): GeneticEvidenceDocumentLike => ({
+    id: 'archived',
+    documentType,
+    status: 'parsed',
+    uploadedAt: '2020-06-01T00:00:00.000Z',
+    ocrPayload: { fields: { classifiedType: 'genetic_report', ...fields }, extractedText },
+  });
+
+  const TRANSCRIBED = { diagnosisType: 'FSHD1', haplotype: '4qA', d4z4RepeatPathogenic: '4' };
+  const SUMMARY_PAGE =
+    '示例市第一人民医院 门诊病历摘要\n主诉: 双上肢抬举无力10年\n' +
+    '现病史: 2019年于外院行基因检测,结果示 D4Z4 重复单元数 4 个,单倍型 4qA,考虑 FSHD1。\n' +
+    '查体: 双侧翼状肩胛';
+  const REPORT_PAGE =
+    '示例医学检验实验室 基因检测报告\n送检单位: 神经内科\n检测项目: D4Z4\n' +
+    '检测结果\n单倍型: 4qA\nD4Z4重复单元数: 4\n报告医师: 王某某';
+
+  it('存量病历摘要：页面上有主诉/现病史/查体，就不是实验室出的那份', () => {
+    expect(isLaboratoryGeneticReport(archived('other', TRANSCRIBED, SUMMARY_PAGE))).toBe(false);
+    // Even when the patient picked 基因检测报告 from the dropdown for
+    // their clinic letter — which they do, because it is where their
+    // genetic result is written down.
+    expect(isLaboratoryGeneticReport(archived('genetic_report', TRANSCRIBED, SUMMARY_PAGE))).toBe(
+      false,
+    );
+  });
+
+  it('存量病历摘要：连页面都没存下来时，光有分类标签也不够', () => {
+    // The assistant path is this case: a chunk's projection is the
+    // `fields` blob, and no 主诉 travels with it. What refuses here is
+    // the absence of any laboratory structure, not the presence of
+    // narrative.
+    expect(isLaboratoryGeneticReport(archived('other', TRANSCRIBED))).toBe(false);
+  });
+
+  it('叙述性字段本身就是证据 —— 只有病历摘要抽取器会写它们', () => {
+    expect(
+      isLaboratoryGeneticReport(
+        archived('other', { ...TRANSCRIBED, onsetAge: '18', progressionNode: '10年前起病' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('上传时选了「其他」的真基因报告，不能因此丢掉判读', () => {
+    // The case this rule must not break: patients leave the picker
+    // alone, and the dropdown may not decide whether a laboratory
+    // result counts. The document's own page answers instead.
+    expect(isLaboratoryGeneticReport(archived('other', TRANSCRIBED, REPORT_PAGE))).toBe(true);
+    // And on the assistant path, where there is no page: the 检测方法
+    // the parser read off it is the same witness in cell form.
+    expect(
+      isLaboratoryGeneticReport(
+        archived('other', { ...TRANSCRIBED, geneticTestMethod: 'southern_blot' }),
+      ),
+    ).toBe(true);
+    // As is the 检测结论 block, which travels in `interpretationSummary`.
+    expect(
+      isLaboratoryGeneticReport(
+        archived('other', {
+          ...TRANSCRIBED,
+          interpretationSummary: '检测结论: 符合 FSHD1',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('分类器自己写的那几个键不算第二个证人', () => {
+    // `reportTypeLabel` for a document the classifier called a genetics
+    // report is the literal string 基因检测报告. Counting it would let
+    // the classifier corroborate itself and put the whole defect back.
+    expect(
+      isLaboratoryGeneticReport(
+        archived('other', { ...TRANSCRIBED, reportTypeLabel: '基因检测报告' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('还没解析的上传，只有上传时声明的类型可读，按声明算', () => {
+    expect(
+      isLaboratoryGeneticReport({
+        id: 'processing',
+        documentType: 'genetic_report',
+        status: 'processing',
+        uploadedAt: '2026-02-01T00:00:00.000Z',
+        ocrPayload: null,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -160,7 +281,17 @@ describe('不是基因报告的文件，压不过基因报告', () => {
         doc({
           id: 'reclassified',
           documentType: 'other',
-          ocrPayload: { fields: { classifiedType: 'genetic_report', d4z4Repeats: '4' } },
+          ocrPayload: {
+            fields: {
+              classifiedType: 'genetic_report',
+              // The 检测方法 the parser read off this report's own page.
+              // Present because a real genetics report's payload has it
+              // and because `isLaboratoryGeneticReport` no longer takes
+              // a classification on its own — see the block below.
+              geneticTestMethod: 'southern_blot',
+              d4z4Repeats: '4',
+            },
+          },
         }),
         medicalSummary('summary', { d4z4Repeats: '7', haplotype: '4qA' }),
       ]),

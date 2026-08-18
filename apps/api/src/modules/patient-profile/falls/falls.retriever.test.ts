@@ -68,8 +68,11 @@ const fallRow = (
   ...detail,
 });
 
-const eventFields = async (rows: unknown[]) => {
-  const result = await new PatientFollowupRetriever(poolWith(rows)).search({ question: '' }, ctx());
+const eventFields = async (rows: unknown[], filter?: Record<string, unknown>) => {
+  const result = await new PatientFollowupRetriever(poolWith(rows)).search(
+    { question: '', ...(filter ? { filter } : {}) },
+    ctx(),
+  );
   const chunk = result.chunks.find((c) => c.sourceFile === 'patient_followups/events');
   expect(chunk).toBeDefined();
   return chunk!.metadata.fields as Record<string, unknown>;
@@ -157,9 +160,61 @@ describe('what the model is told about falls', () => {
     expect(summary).toContain('已记录地点的 2 次中，室外 1 次、室内 1 次');
     expect(summary).toContain('已记录是否受伤的 2 次中，1 次受伤');
     expect(summary).toContain('已记录能否自行起身的 1 次中，1 次无法自行起身');
-    expect(summary).toContain('跌倒频率（每 90 天一段，由近及远）：2 次、1 次');
+    // The default window is 180 days, which is two whole buckets, so
+    // both survive — and the clause now names the span it counted
+    // over, because that span is the window's and not the record's.
+    expect(summary).toContain(
+      '跌倒频率（每 90 天一段，由近及远，只统计被完整覆盖的最近 180 天）：2 次、1 次',
+    );
     expect(summary).toContain('最早一次跌倒记录在 120 天前');
     expect(fields.eventCount).toBe(4);
+  });
+
+  /**
+   * THE WINDOW IS THE MODEL'S TO CHOOSE AND THE BUCKET IS FIXED AT 90.
+   *
+   * `get_my_records` lets the model ask for any window from 1 to 730
+   * days; falls.summary.ts buckets in fixed quarters. Whenever the two
+   * do not divide, the oldest bucket was only partly fetched, and it
+   * used to be printed beside the full ones as though it were one.
+   */
+  it('will not compare a quarter against one the window only partly reached', async () => {
+    const rows = [fallRow(5), fallRow(40), fallRow(95)];
+
+    // 100 days: the 90–179 bucket was observed for 11 of its 90 days.
+    // 「2 次、1 次」 read as a doubling; the honest answer is no
+    // comparison at all, the same call `atCap` already forces.
+    const partial = await eventFields(rows, { windowDays: 100 });
+    expect(String(partial.eventSummary)).not.toContain('跌倒频率');
+    // The falls themselves are still reported — only the comparison goes.
+    expect(String(partial.eventSummary)).toContain('跌倒×3，最近 5 天前');
+
+    // Exactly one bucket fits in 90 days, so there is still nothing to
+    // compare against.
+    const oneQuarter = await eventFields(rows, { windowDays: 90 });
+    expect(String(oneQuarter.eventSummary)).not.toContain('跌倒频率');
+
+    // 180 days is two whole buckets and the comparison is honest.
+    const twoQuarters = await eventFields(rows, { windowDays: 180 });
+    expect(String(twoQuarters.eventSummary)).toContain(
+      '跌倒频率（每 90 天一段，由近及远，只统计被完整覆盖的最近 180 天）：2 次、1 次',
+    );
+  });
+
+  it('says how many falls sit outside the buckets rather than folding them in', async () => {
+    // 200 days reaches the fall at day 190 but does not cover the
+    // 180–269 bucket, so that fall belongs to no quarter. Folding it
+    // into the last bucket would inflate the comparison quarter;
+    // dropping it would contradict the count on the same line.
+    const fields = await eventFields([fallRow(5), fallRow(40), fallRow(190)], {
+      windowDays: 200,
+    });
+    const summary = String(fields.eventSummary);
+    expect(summary).toContain('跌倒×3，最近 5 天前');
+    expect(summary).toContain(
+      '跌倒频率（每 90 天一段，由近及远，只统计被完整覆盖的最近 180 天）：2 次、0 次',
+    );
+    expect(summary).toContain('更早还有 1 次跌倒，落在查询窗口没有完整覆盖的时段里');
   });
 
   it('says nothing extra when the falls are date-only and recent', async () => {

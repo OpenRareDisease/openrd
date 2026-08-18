@@ -340,14 +340,212 @@ describe('findings_summary', () => {
     });
 
     it('still asserts a term negated somewhere else in the same clause', async () => {
-      // The new test is per OCCURRENCE, not per clause: 无水肿 in the
-      // first half must not silence the asserted 水肿 in the second.
-      // (A clause carrying a listed marker — 未见, 无明显 — is still
-      // discarded whole, which is the older and more conservative
-      // rule; this fixture deliberately uses a bare 无 prefix, which
-      // is not a marker, so the match-site test is what answers.)
-      const f = await fieldsFor({ reportImpression: '左侧无水肿 右侧水肿明显' });
+      // The occurrence test is per OCCURRENCE, not per clause: 无水肿 in
+      // the first half must not silence the asserted 水肿 in the second.
+      //
+      // NO SPACE IN THIS FIXTURE, deliberately. It used to read
+      // 「左侧无水肿 右侧水肿明显」, which whitespace now splits into two
+      // clauses — so it would pass without the occurrence test doing
+      // any work at all and stop fencing the thing it was written for.
+      // 而 keeps it one clause, and it carries no listed marker, so the
+      // occurrence test is the only thing that can answer.
+      const f = await fieldsFor({ reportImpression: '左侧无水肿而右侧水肿明显' });
       expect(f.findings_summary).toBe('水肿');
+    });
+  });
+
+  /**
+   * OCR SEPARATES CLAUSES WITH WHITESPACE, and one negated clause used
+   * to take the whole impression down with it.
+   */
+  describe('whitespace clause boundaries', () => {
+    it('keeps the asserted half of a space-separated impression', async () => {
+      // Was: undefined — every real finding in the string dropped
+      // because 未见肌肉萎缩 made the ONE clause a negated clause.
+      const f = await fieldsFor({ reportImpression: '双侧大腿脂肪浸润明显 未见肌肉萎缩' });
+      expect(f.findings_summary).toBe('脂肪浸润');
+    });
+
+    it('splits on a full-width space and on a tab too', async () => {
+      const full = await fieldsFor({ reportImpression: '右侧腓肠肌炎性改变　未见水肿' });
+      expect(full.findings_summary).toBe('炎性改变');
+      const tab = await fieldsFor({ reportImpression: '右侧腓肠肌炎性改变\t未见水肿' });
+      expect(tab.findings_summary).toBe('炎性改变');
+    });
+
+    it('asserts the second half of the string the old comment named', async () => {
+      // 「未见脂肪浸润 右侧脂肪浸润明显」 was documented above
+      // `assertedOccurrence` as surviving 「inside one clause」, and
+      // executing it produced nothing: a LISTED marker discards its
+      // clause whole, before any occurrence test runs. It survives now
+      // because the space makes it two clauses — which is what the
+      // comment says today.
+      const f = await fieldsFor({ reportImpression: '未见脂肪浸润 右侧脂肪浸润明显' });
+      expect(f.findings_summary).toBe('脂肪浸润');
+    });
+  });
+
+  /**
+   * WHOSE FINDING, FROM WHEN, AND HOW SURE.
+   */
+  describe('attribution, tense and hedging', () => {
+    it('does not report a relative diagnosis as the patient impression', async () => {
+      // Was: 「影像/报告印象: 肌营养不良」 — the mother's diagnosis, while
+      // the patient's own negative result in the next clause was
+      // correctly dropped. The only thing the model was told about this
+      // report was a fact about a different person.
+      const f = await fieldsFor({
+        reportImpression: '患者母亲确诊肌营养不良，本人双侧大腿未见脂肪浸润。',
+      });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('does not read a 家族史 clause as imaging', async () => {
+      // Was: 「影像/报告印象: 肌肉萎缩」 for a report whose own conclusion
+      // was 未见明显异常.
+      const f = await fieldsFor({
+        reportImpression: '家族史：父亲有肌肉萎缩；本次检查未见明显异常。',
+      });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('does not report a resolved finding as current', async () => {
+      // Was: 「影像/报告印象: 水肿」 for oedema the report says is gone.
+      const f = await fieldsFor({ reportImpression: '既往水肿，现已吸收。' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('reads the resolution verb at the occurrence, not just the 既往', async () => {
+      const f = await fieldsFor({ reportImpression: '双侧大腿水肿已基本吸收' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('does not emit a prior-study finding beside the study contradicting it', async () => {
+      // Was: 「影像/报告印象: 脂肪浸润」 — the previous report's finding
+      // asserted, and the current study's negative answer dropped, so
+      // the model got the stale half of a contradiction and no sign
+      // there had been one.
+      const f = await fieldsFor({
+        reportImpression: '前次报告示脂肪浸润，本次复查未见脂肪浸润。',
+      });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('kills 原有资料 but reads 原发性, which is not the past', async () => {
+      // The bare 原 marker is deliberately broad, and executing it over
+      // 「原发性肌营养不良改变」 returned nothing — the FSHD conclusion
+      // itself dropped by a tense marker, on a channel whose null
+      // result the model reads as 「the report says nothing」.
+      const past = await fieldsFor({
+        reportImpression: '原有资料示脂肪浸润，本次未见脂肪浸润。',
+      });
+      expect(past.findings_summary).toBeUndefined();
+      const primary = await fieldsFor({ reportImpression: '原发性肌营养不良改变' });
+      expect(primary.findings_summary).toBe('肌营养不良改变');
+    });
+
+    it('does not restate an 外院 report as this study', async () => {
+      const f = await fieldsFor({
+        reportImpression: '外院MRI示肌营养不良改变，本院复查大致正常。',
+      });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('renders a hedged finding differently from a definite one', async () => {
+      // These two produced BYTE-IDENTICAL prompt lines
+      // (「影像/报告印象: 脂肪浸润」), so a patient whose MRI raised a
+      // question was told this platform had answered it.
+      const hedged = await fieldsFor({ reportImpression: '脂肪浸润待排' });
+      const definite = await fieldsFor({ reportImpression: '双侧大腿脂肪浸润明显' });
+      expect(hedged.findings_summary).toBe('脂肪浸润（待排）');
+      expect(definite.findings_summary).toBe('脂肪浸润');
+      expect(hedged.findings_summary).not.toBe(definite.findings_summary);
+    });
+
+    it('carries 可疑 and 不除外 into the phrase as well', async () => {
+      const suspected = await fieldsFor({ reportImpression: '可疑炎性改变，建议随访。' });
+      expect(suspected.findings_summary).toBe('炎性改变（可疑）');
+      const notExcluded = await fieldsFor({ reportImpression: '不除外肌营养不良改变' });
+      expect(notExcluded.findings_summary).toBe('肌营养不良改变（不除外）');
+    });
+  });
+
+  /**
+   * SEVERITY BELONGS TO A FINDING, NOT TO THE SUMMARY.
+   */
+  describe('severity qualifiers', () => {
+    it('binds each severity to the finding it qualified', async () => {
+      // Was: 「脂肪浸润、肌肉萎缩、轻度、重度」 — emitted in vocabulary
+      // order, so reading it by position gives 轻度脂肪浸润 and
+      // 重度肌肉萎缩 exactly inverted.
+      const f = await fieldsFor({
+        reportImpression: '双侧大腿脂肪浸润轻度；肩胛带肌肉萎缩重度。',
+      });
+      expect(f.findings_summary).toBe('轻度脂肪浸润、重度肌肉萎缩');
+    });
+
+    it('reads a qualifier written in front of the finding too', async () => {
+      const f = await fieldsFor({ reportImpression: '弥漫性脂肪浸润；局灶性水肿。' });
+      expect(f.findings_summary).toBe('弥漫性脂肪浸润、局灶性水肿');
+    });
+
+    it('never emits a severity on its own', async () => {
+      // A detached 重度 carries no information; the vocabulary no
+      // longer contains one.
+      const f = await fieldsFor({ reportImpression: '病变程度重度。' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+  });
+
+  /**
+   * A VOCABULARY MISS MUST NOT LEAVE 大致正常 STANDING ALONE.
+   */
+  describe('bare 萎缩 and the normality claim', () => {
+    it('reads shoulder-girdle atrophy the compounds could not', async () => {
+      // Was: 「影像/报告印象: 大致正常、重度」 — this platform telling a
+      // patient their shoulder-girdle MRI was unremarkable, for the one
+      // region FSHD is named after.
+      const f = await fieldsFor({ reportImpression: '肩胛带肌重度萎缩，余大致正常。' });
+      expect(f.findings_summary).toBe('重度萎缩');
+    });
+
+    it('says nothing at all about a normal report', async () => {
+      // Normality is asserted through the ABSENCE of positive findings,
+      // which is the one form of the claim a vocabulary miss cannot
+      // forge. Same reasoning that removed 未见明显异常.
+      const f = await fieldsFor({ reportImpression: '双侧大腿肌群大致正常。' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('still rules out a negated 萎缩', async () => {
+      const f = await fieldsFor({ reportImpression: '肩胛带肌未萎缩 大腿萎缩不明显' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+  });
+
+  /**
+   * NOTHING HERE GRADES A METHYLATION RESULT.
+   */
+  describe('methylation', () => {
+    it('does not grade a methylation sentence', async () => {
+      // Was: 「影像/报告印象: 中度」 — a bare grade of a methylation
+      // value, on a platform that states no methylation boundary. The
+      // genetics vocabulary was stripped for exactly this reason and
+      // the severity qualifiers walked straight past the decision.
+      const f = await fieldsFor({ reportImpression: '甲基化水平中度降低。' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('kills the clause on the Latin spelling too, in any case', async () => {
+      const f = await fieldsFor({ reportImpression: 'D4Z4 Methylation 轻度降低' });
+      expect(f.findings_summary).toBeUndefined();
+    });
+
+    it('does not let a methylation clause silence the rest of the report', async () => {
+      const f = await fieldsFor({
+        reportImpression: '甲基化水平中度降低；双侧大腿重度脂肪浸润。',
+      });
+      expect(f.findings_summary).toBe('重度脂肪浸润');
     });
   });
 });
@@ -397,5 +595,43 @@ describe('report date vs upload date', () => {
     expect(f.reportDate).toBeUndefined();
     expect(f.uploadDate).toBe('2026-08-18T00:00:00.000Z');
     expect(result.citations[0].sourceFile).toBe('基因检测报告 · 2026-08');
+  });
+
+  /**
+   * THE CHIP MUST NOT MOVE WHEN THE SERVER DOES.
+   *
+   * `reportDateLabel` re-parsed the ISO instant `resolveReportDate` had
+   * already produced and read it back with `getFullYear` / `getMonth`,
+   * which are the process's zone. A date-only `reportTime` is UTC
+   * midnight, so on any host west of Greenwich a 1 January report slid
+   * back over both boundaries at once — the chip whose job is to tell
+   * the patient how old a D4Z4 result is read a whole year early.
+   */
+  describe('under a process timezone west of UTC', () => {
+    const withTz = async (tz: string, fields: Record<string, unknown>) => {
+      const previous = process.env.TZ;
+      process.env.TZ = tz;
+      try {
+        const result = await searchWith(fields);
+        return result.citations[0].sourceFile;
+      } finally {
+        if (previous === undefined) delete process.env.TZ;
+        else process.env.TZ = previous;
+      }
+    };
+
+    it('labels a 1 January report with January, in every zone', async () => {
+      // Was: 「基因检测报告 · 2024-12」 under America/Los_Angeles.
+      const fields = { classifiedType: 'genetic_report', reportTime: '2025-01-01' };
+      expect(await withTz('America/Los_Angeles', fields)).toBe('基因检测报告 · 2025-01');
+      expect(await withTz('Asia/Shanghai', fields)).toBe('基因检测报告 · 2025-01');
+      expect(await withTz('UTC', fields)).toBe('基因检测报告 · 2025-01');
+    });
+
+    it('gives the same chip for a mid-month report in every zone', async () => {
+      const fields = { classifiedType: 'genetic_report', reportTime: '2019-03-14' };
+      expect(await withTz('America/Los_Angeles', fields)).toBe('基因检测报告 · 2019-03');
+      expect(await withTz('Asia/Shanghai', fields)).toBe('基因检测报告 · 2019-03');
+    });
   });
 });

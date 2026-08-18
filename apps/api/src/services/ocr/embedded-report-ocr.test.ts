@@ -1,14 +1,17 @@
 /**
  * ONE CELL ON THE REPORT IS ONE ROW ON THE PROMPT.
  *
- * The bridge's job is to turn one parse into one payload, and three
+ * The bridge's job is to turn one parse into one payload, and four
  * separate cells have now reached the model more than once because it
  * wrote the same reading under several names: the EcoRI fragment (three
  * keys, two strings), the methylation cell (two keys, one of them
- * without its unit) and the D4Z4 repeat count (two keys, each
- * independently graded by the redactor). All three had the same shape —
- * a `genetic_summary` copy written on top of what the structured-field
- * loop had already written from the same cell.
+ * without its unit), the D4Z4 repeat count (two keys, each
+ * independently graded by the redactor) and the FSHD subtype (two keys,
+ * in both modes). The first three had the same shape — a
+ * `genetic_summary` copy written on top of what the structured-field
+ * loop had already written from the same cell. The subtype was blunter:
+ * two consecutive assignments in this file, `fields.diagnosisType` and
+ * `fields.geneticType`, off one parsed 分型.
  *
  * THE ASSERTION IS MADE ON THE RENDERED PROMPT AND NOT ON THE KEYS,
  * because that is the surface the defect was visible on. Counting keys
@@ -18,6 +21,14 @@
  * values AGREE, plus its dispatch on the 「d4z4」 / 「methylation」
  * substrings giving every surviving spelling its own `_clinical` row.
  * So these tests run the real renderer in both modes and count lines.
+ *
+ * AND THE COUNT IS TAKEN OVER `GENETIC_FIELD_KEYS` AS WELL AS OVER
+ * SUBSTRINGS, because the subtype proved a substring list cannot state
+ * this invariant: `diagnosisType` and `geneticType` are two spellings of
+ * one cell that share no substring at all, so the `CELLS` list at the
+ * bottom of this file could not have caught them. The alias table is
+ * every spelling any writer in this pipeline has ever produced for a
+ * cell, which makes 「two rows in one group」 exactly the defect.
  *
  * THE PARSER FIXTURES ARE REAL. Each `analysis` below was captured from
  * `analyze_fshd_report` in apps/report-manager — the pure-text half of
@@ -95,6 +106,57 @@ const COUNT_IN_RANGE_WITH_METHYLATION_PERCENT = geneticAnalysis(
     },
   ],
   {
+    haplotype: '4qA',
+    d4z4_repeat_pathogenic: 3,
+    d4z4_repeat_other: 22,
+    genetic_test_method: 'southern_blot',
+    methylation_value: 35.0,
+  },
+);
+
+/** The same report with the sentence that states the subtype:
+ *  「检测结论: 本次检测结果符合 FSHD1 的分子诊断标准」. The parser writes
+ *  一个 分型 to TWO places — its own `diagnosis_type` structured field
+ *  and `genetic_summary.diagnosis_type` — and this bridge used to turn
+ *  those into three keys. Fixture kept beside the one above rather than
+ *  folded into it: a report whose 结论 excludes or merely suspects a
+ *  type states none (see `_extract_genetic`), and that state is what
+ *  `COUNT_IN_RANGE_WITH_METHYLATION_PERCENT` holds. */
+const SUBTYPE_STATED_WITH_A_COUNT = geneticAnalysis(
+  '基因检测报告\n检测方法: Southern blot\nD4Z4 重复单元数: 3/22\n4qA 等位基因\n甲基化: 35%\n检测结论: 本次检测结果符合 FSHD1 的分子诊断标准。',
+  [
+    {
+      field_name: 'diagnosis_type',
+      field_value: 'FSHD1',
+      normalized_value: 'FSHD1',
+      unit: null,
+      confidence: 0.98,
+    },
+    HAPLOTYPE_FIELD,
+    {
+      field_name: 'd4z4_repeat_pathogenic',
+      field_value: '3',
+      normalized_value: 3,
+      unit: null,
+      confidence: 0.97,
+    },
+    {
+      field_name: 'd4z4_repeat_other',
+      field_value: '22',
+      normalized_value: 22,
+      unit: null,
+      confidence: 0.94,
+    },
+    {
+      field_name: 'methylation_value',
+      field_value: '35',
+      normalized_value: 35.0,
+      unit: '%',
+      confidence: 0.9,
+    },
+  ],
+  {
+    diagnosis_type: 'FSHD1',
     haplotype: '4qA',
     d4z4_repeat_pathogenic: 3,
     d4z4_repeat_other: 22,
@@ -298,6 +360,54 @@ describe('the methylation cell', () => {
   });
 });
 
+describe('the FSHD subtype', () => {
+  /**
+   * ONE 分型, ONE KEY — and unlike the two cells above, this one was
+   * never a snake/camel pair. `fields.diagnosisType` and
+   * `fields.geneticType` sat on consecutive lines of this bridge, both
+   * on `OCR_FIELDS_SAFE_KEYS_PRECISE`, neither with an underscore for
+   * `projectOcrFields` to collapse against.
+   */
+  it('is stored under one key', () => {
+    const fields = fieldsFor(SUBTYPE_STATED_WITH_A_COUNT);
+    expect(fields.diagnosisType).toBe('FSHD1');
+    expect(fields.geneticType).toBeUndefined();
+    expect(fields.diagnosis_type).toBeUndefined();
+    expect(pickReading(fields, GENETIC_FIELD_KEYS.geneticType)).toBe('FSHD1');
+  });
+
+  /**
+   * IN BOTH MODES, which is what separated this from the measurement
+   * duplicates. A subtype is a classification, so `isCategoryLabel`
+   * carries it through strict mode intact rather than withholding it —
+   * the duplicate was therefore not counted into
+   * `numericValuesWithheld` either, it was simply printed twice to the
+   * patients who consented to share least as well as to those who
+   * consented to share most.
+   */
+  it('reaches the prompt once in each mode', () => {
+    const fields = fieldsFor(SUBTYPE_STATED_WITH_A_COUNT);
+    for (const mode of ['precise', 'strict'] as const) {
+      const rows = promptRowsFor(fields, mode);
+      const spellings: readonly string[] = GENETIC_FIELD_KEYS.geneticType;
+      expect(rows.filter((row) => spellings.includes(row.split(':')[0]))).toEqual([
+        'diagnosisType: FSHD1',
+      ]);
+    }
+  });
+
+  /** A 结论 that excludes or only suspects a type has stated none, and
+   *  the bridge must not mint a subtype key at all — under any of its
+   *  spellings — for the report the parser refused. */
+  it('writes no subtype at all when the report states none', () => {
+    const fields = fieldsFor(COUNT_IN_RANGE_WITH_METHYLATION_PERCENT);
+    expect(pickReading(fields, GENETIC_FIELD_KEYS.geneticType)).toBeNull();
+    for (const spelling of GENETIC_FIELD_KEYS.geneticType) {
+      expect(fields[spelling]).toBeUndefined();
+    }
+  });
+});
+
 describe('the D4Z4 repeat count', () => {
   /**
    * ONE COUNT, ONE KEY, AND THE SAME KEY IN EVERY STATE.
@@ -360,15 +470,18 @@ describe('the D4Z4 repeat count', () => {
 describe('one cell on the report, one row on the prompt', () => {
   const CELLS = ['d4z4repeats', 'd4z4repeatother', 'ecori', 'methylation', 'haplotype'] as const;
 
-  it.each([
+  const EVERY_FIXTURE: ReadonlyArray<readonly [string, ParserCase]> = [
     ['a count in range with a methylation percent', COUNT_IN_RANGE_WITH_METHYLATION_PERCENT],
+    ['a stated subtype beside a count', SUBTYPE_STATED_WITH_A_COUNT],
     ['a methylation cell with no unit', METHYLATION_WITHOUT_A_UNIT],
     ['a count above the FSHD1 range', COUNT_ABOVE_RANGE],
     ['a count of 0', COUNT_OF_ZERO],
     ['an interval rather than a count', COUNT_IS_A_RANGE],
     ['a kb length in the count cell', KB_LENGTH_IN_THE_D4Z4_CELL],
     ['a negation carrying a number', NEGATED_COUNT],
-  ])('%s', (_label, testCase) => {
+  ];
+
+  it.each(EVERY_FIXTURE)('%s', (_label, testCase) => {
     const fields = fieldsFor(testCase as ParserCase);
 
     for (const mode of ['precise', 'strict'] as const) {
@@ -387,6 +500,47 @@ describe('one cell on the report, one row on the prompt', () => {
         expect(
           clinicalRows.length,
           `${mode}: _clinical rows for ${cell} → ${clinicalRows.join(' | ')}`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  /**
+   * THE SAME CLAIM STATED OVER THE ALIAS TABLES, which is the form the
+   * subtype needed. `diagnosisType` and `geneticType` are two spellings
+   * of one cell sharing no substring, so no entry in `CELLS` above could
+   * have named both; `GENETIC_FIELD_KEYS` is every spelling any writer
+   * in this pipeline has ever produced for a cell, so a group holding
+   * two rows IS one cell reaching the model twice. Read off the shared
+   * table rather than restated here, so a spelling added there is
+   * covered without a second edit.
+   *
+   * The raw bound is 1 in BOTH modes rather than 0 in strict: strict
+   * withholds measurements but keeps classifications, so the subtype's
+   * own row survives it — see `isCategoryLabel` in pii-redactor.ts. The
+   * measurement groups are pinned to 0 in strict by the substring test
+   * above; what this adds is that no group is ever printed twice.
+   */
+  it.each(EVERY_FIXTURE)('one row per alias group — %s', (_label, testCase) => {
+    const fields = fieldsFor(testCase);
+
+    for (const mode of ['precise', 'strict'] as const) {
+      const rows = promptRowsFor(fields, mode);
+      for (const [group, spellings] of Object.entries(GENETIC_FIELD_KEYS)) {
+        const keyOf = (row: string) => row.split(':')[0];
+        const rawRows = rows.filter((row) => (spellings as readonly string[]).includes(keyOf(row)));
+        const clinicalRows = rows.filter((row) =>
+          (spellings as readonly string[]).some(
+            (spelling) => keyOf(row) === `${spelling}_clinical`,
+          ),
+        );
+        expect(
+          rawRows.length,
+          `${mode}: raw rows for ${group} → ${rawRows.join(' | ')}`,
+        ).toBeLessThanOrEqual(1);
+        expect(
+          clinicalRows.length,
+          `${mode}: _clinical rows for ${group} → ${clinicalRows.join(' | ')}`,
         ).toBeLessThanOrEqual(1);
       }
     }
@@ -418,5 +572,70 @@ describe('one cell on the report, one row on the prompt', () => {
       'd4z4Repeats_clinical: within_fshd1_repeat_range',
       'numericValuesWithheld: 1',
     ]);
+  });
+
+  /** The same blob with the 分型 the report states, in full. Spelled out
+   *  separately rather than folded into the case above because the row
+   *  that has to appear exactly once is the one this bridge printed
+   *  twice, and a count assertion would pass on a payload that lost it
+   *  altogether. */
+  it('renders a stated subtype exactly once, in both modes', () => {
+    const fields = fieldsFor(SUBTYPE_STATED_WITH_A_COUNT);
+    expect(promptRowsFor(fields, 'precise')).toEqual([
+      'documentType: genetic_report',
+      'classifiedType: genetic_report',
+      'diagnosisType: FSHD1',
+      'haplotype: 4qA',
+      'haplotype_clinical: permissive_haplotype',
+      'd4z4RepeatOther: 22',
+      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
+      'methylationValue: 35%',
+      'd4z4Repeats: 3',
+      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+    ]);
+    // The subtype survives strict beside the readings and NOT beside a
+    // second copy of itself: it is a classification, not a measurement.
+    expect(promptRowsFor(fields, 'strict')).toEqual([
+      'documentType: genetic_report',
+      'classifiedType: genetic_report',
+      'diagnosisType: FSHD1',
+      'haplotype_clinical: permissive_haplotype',
+      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
+      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+      'numericValuesWithheld: 1',
+    ]);
+  });
+
+  /**
+   * ARCHIVED PAYLOADS ARE NOT REWRITTEN, and every reader still finds
+   * their subtype. The three spellings this bridge used to mint sit on
+   * document rows already in the database; the alias table is untouched,
+   * so `pickReading` — which is what the passport, the profile autofill,
+   * the exports, the app's report-detail table and its correction sheet
+   * all go through — resolves each of them, including the ones no
+   * writer emits any more. Asserted rather than asserted-in-a-comment,
+   * because 「the readers already cover it」 is the claim a deletion
+   * lives or dies on.
+   */
+  it.each([
+    [
+      'the shape this bridge wrote before today',
+      { diagnosis_type: 'FSHD1', diagnosisType: 'FSHD1', geneticType: 'FSHD1' },
+    ],
+    ['a legacy payload holding only geneticType', { geneticType: 'FSHD1' }],
+    ['a legacy payload holding only geneType', { geneType: 'FSHD2' }],
+    ['a legacy payload holding only genetic_type', { genetic_type: 'FSHD1' }],
+    ['a legacy payload holding only diagnosis_type', { diagnosis_type: 'FSHD1' }],
+  ])('still resolves the subtype off %s', (_label, archived) => {
+    expect(pickReading(archived, GENETIC_FIELD_KEYS.geneticType)).toMatch(/^FSHD[12]$/);
+  });
+
+  /** And a patient's hand-correction wins over the archived spelling
+   *  beside it. `EDITABLE_OCR_FIELDS` accepts `diagnosisType`, which is
+   *  the head of the alias list, so a correction lands ON the cell —
+   *  the reason the canonical key is the one the bridge keeps. */
+  it('prefers a hand-corrected subtype over an archived spelling', () => {
+    const corrected = { geneticType: 'FSHD1', diagnosisType: 'FSHD2' };
+    expect(pickReading(corrected, GENETIC_FIELD_KEYS.geneticType)).toBe('FSHD2');
   });
 });

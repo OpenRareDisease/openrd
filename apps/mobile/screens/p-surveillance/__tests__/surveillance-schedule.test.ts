@@ -225,6 +225,143 @@ describe('指南的否定推荐必须在页面上', () => {
   });
 });
 
+/**
+ * 「不要为了增肌力吃这三类药」 is a Level B do-not-prescribe row, and the
+ * sentence under it used to be the same for four different states: no
+ * profile, no `medications` key on the wire, an empty list, and a list
+ * that was read and matched nothing. All four printed 「你的用药记录里没
+ * 有这三类药」 — a negative finding about a record this platform does not
+ * have. `medications` is optional on the wire and the medication module
+ * is one most patients never open, so the empty list is the ordinary
+ * case: a patient taking prednisone who never typed it in was told
+ * their own record is clear, on the one row that is about that drug.
+ *
+ * The file's header states the rule: 「not_matched never means 你不需要」
+ * and every row has to say in its own words that what it holds is a gap
+ * in the platform's records. These pin the three states apart.
+ */
+describe('用药那一条：说「没有这三类药」之前，得真的有一份用药记录', () => {
+  const noRecordStates: Array<[string, PatientProfile | null]> = [
+    ['一条用药都没填过', profile({ medications: [] } as Partial<PatientProfile>)],
+    [
+      '旧版 API 根本不发 medications 这个字段',
+      profile({ medications: undefined } as Partial<PatientProfile>),
+    ],
+    [
+      '有行但药名是空白，等于没读到',
+      profile({ medications: [{ id: 'm1', medicationName: '   ' }] } as Partial<PatientProfile>),
+    ],
+    ['连档案都没有', null],
+  ];
+
+  it.each(noRecordStates)('%s：说的是平台没有记录，不是记录里没有这三类药', (_label, p) => {
+    const drugs = row('no_strength_drugs', undefined, p);
+    expect(drugs.evidence).toContain('本平台没有你的用药记录');
+    // The exact sentence that was wrong. It may not come back in any
+    // of these four states.
+    expect(drugs.evidence).not.toContain('你的用药记录里没有这三类药');
+    // A patient on a drug they never typed in must not read this as
+    // 「你没在吃药」.
+    expect(drugs.evidence).toContain('这不代表你没在吃药');
+    // Still everyone's row — 不要为了增肌力开药 is addressed to every
+    // FSHD patient, and a gap in our records is not a `not_matched`.
+    expect(drugs.applicability).toBe('everyone');
+  });
+
+  it('读过一份真的用药记录、里面没有这三类药时，才可以说记录里没有', () => {
+    const other = profile({
+      medications: [{ id: 'm1', medicationName: '布洛芬' }],
+    } as Partial<PatientProfile>);
+    const drugs = row('no_strength_drugs', undefined, other);
+    expect(drugs.evidence).toContain('你填在本平台的用药记录里没有这三类药');
+    expect(drugs.evidence).not.toContain('本平台没有你的用药记录');
+    // Even here the sentence stays inside what this platform can see.
+    expect(drugs.evidence).toContain('只看得到你自己填的那些');
+    expect(drugs.applicability).toBe('everyone');
+  });
+
+  it('三种状态各说各的话，没有两种共用同一句', () => {
+    const evidence = [
+      row('no_strength_drugs', undefined, profile({ medications: [] } as Partial<PatientProfile>))
+        .evidence,
+      row(
+        'no_strength_drugs',
+        undefined,
+        profile({
+          medications: [{ id: 'm1', medicationName: '布洛芬' }],
+        } as Partial<PatientProfile>),
+      ).evidence,
+      row(
+        'no_strength_drugs',
+        undefined,
+        profile({
+          medications: [{ id: 'm1', medicationName: '泼尼松片 5mg' }],
+        } as Partial<PatientProfile>),
+      ).evidence,
+    ];
+    expect(new Set(evidence).size).toBe(3);
+  });
+});
+
+/**
+ * The same sweep found the same shape one row up. 「睡不好、白天困，问一
+ * 次夜间通气」 has two halves in its guideline — a low FVC, or daytime
+ * somnolence — and the evidence line asserted 「本平台没有你的 FVC 百分
+ * 比」 for every patient with no sleep score, including the ones whose
+ * uploaded pulmonary function report parsed. The passport's respiratory
+ * summary is built from `fvcPredPct` among other cells, so one page told
+ * the same patient 「你的档案里有肺功能结果：… FVC 58%」 and 「本平台…也没
+ * 有 FVC 百分比」, and the patient it contradicted itself for is the one
+ * under the guideline's own 60% example.
+ */
+describe('夜间通气那一条：FVC 这半边不能说「没有」，如果档案里其实有', () => {
+  const withRespiratory = (state: string, text: string) =>
+    summary({
+      monitoring: {
+        items: [
+          {
+            key: 'respiratory',
+            available: true,
+            state,
+            summary: text,
+            latestDate: '2026-03-02',
+          },
+        ],
+      },
+    });
+
+  it('肺功能读出来了：不说没有，也不替医生判断那个数字', () => {
+    const s = withRespiratory('present', '限制性通气功能障碍 / FVC 58%');
+    const sleepRow = row('sleep_referral', s, profile({ symptomScores: [] }));
+    expect(sleepRow.evidence).not.toContain('没有你的 FVC 百分比');
+    expect(sleepRow.evidence).toContain('你的档案里有肺功能结果');
+    // It must not grade the number: 58% versus the guideline's 60%
+    // example is the doctor's read of the report, not this page's.
+    expect(sleepRow.evidence).toContain('要医生看着报告原件读');
+    expect(sleepRow.evidence).not.toContain('58');
+    // Same page, same patient: the baseline row above says the result
+    // is on file. These two may not disagree.
+    expect(row('pulmonary_baseline', s, profile({ symptomScores: [] })).evidence).toContain(
+      'FVC 58%',
+    );
+  });
+
+  it('传了肺功能但没读出来：说的是没读出来，不是没有', () => {
+    const s = withRespiratory('unreadable', '—');
+    const sleepRow = row('sleep_referral', s, profile({ symptomScores: [] }));
+    expect(sleepRow.evidence).toContain('你上传过肺功能报告');
+    expect(sleepRow.evidence).toContain('没能自动读出数值');
+    expect(sleepRow.evidence).not.toContain('本平台没有你的 FVC 百分比');
+  });
+
+  it('确实一份肺功能都没有时，才说没有', () => {
+    const s = summary({ monitoring: { items: [] } });
+    expect(row('sleep_referral', s, profile({ symptomScores: [] })).evidence).toContain(
+      '本平台没有你的 FVC 百分比',
+    );
+  });
+});
+
 describe('大片段缺失分支', () => {
   /**
    * A passport as the API builds one for a genetics report whose

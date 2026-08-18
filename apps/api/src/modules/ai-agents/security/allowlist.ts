@@ -53,6 +53,16 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       'haplotype_clinical',
       'methylation', // the laboratory's own word, when the cell is one
       'methylation_withheld', // ...and the statement that a number is not being shared
+      // WHERE THE CELL CAME FROM, on the same footing as
+      // `d4z4_clinical` and `haplotype_clinical` — and it was the one
+      // genetics cell that carried no such statement at all. A
+      // percentage typed into the registration form's 甲基化 box, or
+      // quoted on a 病历摘要, reached the prompt as a bare result while
+      // its two siblings on the same profile both said
+      // `not_read_off_a_laboratory_report`. It is NOT `_clinical`:
+      // this repo states no methylation boundary, so the key states an
+      // origin and grades nothing. See `methylationCell`.
+      'methylation_origin',
       'onsetRegion',
       'familyHistory',
       'independentlyAmbulatory',
@@ -77,6 +87,12 @@ export const PROMPT_ALLOWLIST: Record<RedactionScope, Record<RedactionMode, read
       // sits on. Listed under strict alone, it left the precise reader
       // with the cell silently gone.
       'methylation_withheld',
+      // The origin, in this mode too — a refusal to read a cell off a
+      // laboratory report is not a redaction, so it belongs in BOTH
+      // modes. Precise consent buys the number printed beside this
+      // sentence; it does not buy the cell a promotion to a reading
+      // this platform never made. See the strict list above.
+      'methylation_origin',
       // There is no `methylation_clinical` in either mode, and it is
       // the only one of the three with no reading at all: this repo
       // states no methylation boundary, so the key held a consent
@@ -271,6 +287,32 @@ export const HARD_DELETE_KEYS: ReadonlySet<string> = new Set([
 export const HARD_DELETE_KEYS_LOWER: ReadonlySet<string> = new Set(
   Array.from(HARD_DELETE_KEYS, (key) => key.toLowerCase()),
 );
+
+/**
+ * A free-text field long enough that it is evidently not the short
+ * value its key promised. Impressions in these reports run well under
+ * this; the ECG dump observed in production was 230+. The redactor
+ * refuses anything over it — see `isUntrustworthyValue` in
+ * pii-redactor.ts, which owns the rest of that check.
+ *
+ * IT LIVES HERE, WITH THE KEY LISTS, BECAUSE IT IS THE OTHER HALF OF
+ * WHAT THOSE LISTS PROMISE. `OCR_FIELDS_SAFE_KEYS_PRECISE` is a list of
+ * keys carrying an unstated premise — that a listed key holds a short,
+ * structured value — and this number is where that premise is written
+ * down.
+ *
+ * AND BECAUSE A SECOND CEILING EXISTED AND THE TWO DISAGREED.
+ * `ocrFieldsPatchSchema` in patient-profile/profile.schema.ts, the
+ * write path a patient hand-corrects their own OCR cells through,
+ * accepted 300 characters — 100 above this line — so the product's own
+ * correction screen could store under `d4z4Repeats` / `haplotype` /
+ * `methylationValue` a value the read path would then refuse. That
+ * schema imports this constant now. This module imports nothing, which
+ * is what lets it: the constant cannot live in the redactor without
+ * profile.schema.ts → pii-redactor.ts → profile.passport.ts →
+ * profile.schema.ts closing a cycle that leaves it in the TDZ.
+ */
+export const SAFE_VALUE_MAX_LENGTH = 200;
 
 /**
  * Per-key handling for OCR `fields` blobs in precise mode.

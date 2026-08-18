@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RedactionMode } from './allowlist.js';
-import { redactFields } from './pii-redactor.js';
+import { GENETIC_READING_REFUSALS, redactFields } from './pii-redactor.js';
 import { GENETIC_FIELD_KEYS } from '../../patient-profile/genetic-evidence.js';
 
 const silentLogger = {
@@ -182,12 +182,26 @@ describe('the genetics cells the assistant is handed', () => {
     expect(d4z4('11')).toBe('above_fshd1_repeat_range');
   });
 
-  it('withholds the grey-zone note over a report stating 4qB', () => {
-    // Giardina 2024 states the 1%–2% asymptomatic-carrier figure for
-    // 8–10 U 4qA arrays. Over a 4qB report the note would be a
-    // paragraph about the other allele — the passport gates its own
-    // flag the same way, and on `!== false` so a report naming no
-    // haplotype keeps the note.
+  it('reads no repeat count against the FSHD1 range over a report stating 4qB', () => {
+    // THE NAME AND THE 4qB EXPECTATION BOTH MOVED, because what the
+    // haplotype gates moved. It used to gate the grey-zone VARIANT
+    // alone: Giardina 2024 states the 1%–2% asymptomatic-carrier figure
+    // for 8–10 U 4qA arrays, so over a 4qB report the note would be a
+    // paragraph about the other allele. True, and not enough — the
+    // fall-through was `within_fshd1_repeat_range`, a label asserting
+    // the count sits inside the FSHD1 range, over a report where FSHD1
+    // by definition cannot be the mechanism. Two ways that showed:
+    //
+    //   - a 4qB report of 5 units was answered as an in-range FSHD1
+    //     count, while the passport grade, the referral 结论 and the
+    //     FHIR Condition text on the same report all refuse it; and
+    //   - a 4qB report of 9 units DOWNGRADED to that same label, so
+    //     the 8–10 uncertainty disappeared and the bytes were
+    //     indistinguishable from a count of 5.
+    //
+    // The gate is on the whole in-range answer now and the answer is a
+    // refusal. `!== false` is unchanged, so a report naming no
+    // haplotype, or naming both probes, still keeps the note.
     const withHaplotype = (haplotype: string | undefined, repeats: string): unknown => {
       const { fields } = redactFields(
         {
@@ -202,10 +216,23 @@ describe('the genetics cells the assistant is handed', () => {
       );
       return (fields.fields_clinical as Record<string, unknown>).d4z4Repeats_clinical;
     };
-    expect(withHaplotype('4qB', '9')).toBe('within_fshd1_repeat_range');
+    const REFUSED = 'repeat_count_not_read_against_fshd1_range_non_permissive_haplotype';
+    expect(withHaplotype('4qB', '9')).toBe(REFUSED);
+    // The plain in-range count on the same allele, which is the half
+    // the grey-zone gate never covered.
+    expect(withHaplotype('4qB', '5')).toBe(REFUSED);
+    // And the two counts are no longer spelled the same as each other's
+    // 4qA readings, which is what the downgrade produced.
+    expect(withHaplotype('4qB', '9')).not.toBe(withHaplotype('4qA', '9'));
     expect(withHaplotype('4qA', '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
     expect(withHaplotype('4qA/4qB', '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
     expect(withHaplotype(undefined, '9')).toBe('within_fshd1_repeat_range_grey_zone_8_to_10');
+    // Above the range the instruction is 「go and evaluate FSHD2」, and
+    // that is the right next step whatever the 4q allele says.
+    expect(withHaplotype('4qB', '30')).toBe('above_fshd1_repeat_range');
+    // It is a refusal, so the 分级 check in tool-descriptions.test.ts
+    // has to know about it.
+    expect(GENETIC_READING_REFUSALS.has(REFUSED)).toBe(true);
   });
 
   it('does not read a length in kb as a repeat count', () => {
@@ -573,6 +600,68 @@ describe('the refusal survives the mode that shares more', () => {
     });
   });
 
+  /**
+   * NO READING, BUT AN ORIGIN — the one thing this cell was missing,
+   * and the one its siblings all carried.
+   *
+   * `methylationCell` was the ONLY genetics reader with no
+   * `fromLaboratoryReport` argument, and neither call site passed an
+   * origin. So a percentage a patient typed into the registration form,
+   * and a percentage a 病历摘要 quoted off somebody else's report, were
+   * rendered to the assistant as bare results sitting directly beside
+   * sibling cells that DO state the refusal — on the FSHD2
+   * discriminator, the cell 甲基化临床分级 was deleted for overclaiming
+   * about.
+   *
+   * The origin is stated in BOTH modes, like every other refusal here:
+   * a refusal to read a cell is not a redaction.
+   */
+  const origin = (mode: RedactionMode, documentType: string, raw: unknown): unknown => {
+    const { fields } = redactFields(
+      { documentType, fields: { classifiedType: documentType, methylationValue: raw } },
+      { scope: 'reports', mode },
+    );
+    const projected = (fields.fields ?? fields.fields_clinical) as Record<string, unknown>;
+    return projected.methylationValue_origin;
+  };
+
+  it('states where a methylation cell came from, in both modes', () => {
+    for (const mode of ['strict', 'precise'] as const) {
+      // A transcription quoting a percentage, and quoting a word.
+      expect(origin(mode, 'medical_record', '12%')).toBe('not_read_off_a_laboratory_report');
+      expect(origin(mode, 'medical_record', '未检出')).toBe('not_read_off_a_laboratory_report');
+      // A cell this platform cannot read as a value at all still says
+      // where the cell came from.
+      expect(origin(mode, 'medical_record', ['35', '40'])).toBe('not_read_off_a_laboratory_report');
+      // Off the laboratory's own report there is nothing to refuse.
+      expect(origin(mode, 'genetic_report', '12%')).toBeUndefined();
+    }
+  });
+
+  it('states the origin of the profile methylation cell in both modes', () => {
+    // `diseaseBackground.methylation` is the registration form's own
+    // box. Its two siblings said `not_read_off_a_laboratory_report`
+    // about the same profile in the same run; this cell said nothing.
+    for (const mode of ['strict', 'precise'] as const) {
+      const { fields } = redactFields(
+        { methylation: '12%', d4z4: '3', haplotype: '4qA' },
+        { scope: 'profile', mode },
+      );
+      expect(fields.methylation_origin).toBe('not_read_off_a_laboratory_report');
+      expect(fields.d4z4_clinical).toBe('not_read_off_a_laboratory_report');
+      // Still no grade of the value itself, in either mode.
+      expect(fields.methylation_clinical).toBeUndefined();
+    }
+    // And the flag the redactor reads it off never reaches a prompt.
+    const { fields } = redactFields(
+      { methylation: '未检出', methylationFromLaboratoryReport: true },
+      { scope: 'profile', mode: 'precise' },
+    );
+    expect(fields.methylationFromLaboratoryReport).toBeUndefined();
+    expect(fields.methylation_origin).toBeUndefined();
+    expect(fields.methylation).toBe('未检出');
+  });
+
   // The report's own date, on the same footing as `diagnosisYear`:
   // `reportDate` is on neither allowlist, so deriving the year in
   // strict alone left a precise-consent patient with an undated report.
@@ -912,6 +1001,57 @@ describe('redactFields (reports)', () => {
     const f = fields.fields as Record<string, unknown>;
     expect(f.ecgSummary).toBeUndefined();
     expect(f.fieldsDroppedAsUnsafe).toBe(1);
+  });
+
+  /**
+   * THE SAME CHECK ON THE GENETICS CELLS, WHICH SKIP THE SAFE-KEY
+   * BRANCH ENTIRELY.
+   *
+   * `publishGeneticCell` wrote `out[key] = value` in precise mode with
+   * NO value check at all, so the identical production string — the one
+   * dropped under `ecgSummary` two tests above — was published verbatim
+   * under `d4z4Repeats`, `haplotype` or `methylationValue`. It needs no
+   * extractor regression to arrive there: `EDITABLE_OCR_FIELDS` lets a
+   * patient hand-correct exactly those cells, and a name typed INSIDE
+   * the cell is not under `patientName`, so layer 1 does not see it.
+   */
+  const IDENTIFIED_DUMP =
+    '3个重复单元 患者姓名 张伟 年龄:23 科别:神经内科 门诊号: 住院号:R000000 ' +
+    '标本号:20260818001 送检医师 李医生 本报告仅供临床医师结合临床参考';
+
+  it.each(['d4z4Repeats', 'haplotype', 'methylationValue', 'ecoriFragmentKb'])(
+    'drops a genetics cell whose value carries an identifier (%s)',
+    (key) => {
+      const { fields } = redactFields(
+        {
+          documentType: 'genetic_report',
+          fields: { classifiedType: 'genetic_report', [key]: IDENTIFIED_DUMP },
+        },
+        { scope: 'reports', mode: 'precise' },
+      );
+      const f = fields.fields as Record<string, unknown>;
+      expect(f[key]).toBeUndefined();
+      expect(String(JSON.stringify(f))).not.toContain('住院号');
+      expect(String(JSON.stringify(f))).not.toContain('张伟');
+      // Named rather than silent, exactly as for a safe key.
+      expect(f.fieldsDroppedAsUnsafe).toBe(1);
+    },
+  );
+
+  it('still publishes this platform’s reading of a genetics cell it refused to show', () => {
+    // The refused thing is the cell's own text, not the reading of it —
+    // otherwise strict mode drops the raw cell, no reading is written,
+    // and the assistant reports the report as having no such cell.
+    const { fields } = redactFields(
+      {
+        documentType: 'genetic_report',
+        fields: { classifiedType: 'genetic_report', d4z4Repeats: IDENTIFIED_DUMP },
+      },
+      { scope: 'reports', mode: 'precise' },
+    );
+    const f = fields.fields as Record<string, unknown>;
+    expect(f.d4z4Repeats).toBeUndefined();
+    expect(f.d4z4Repeats_clinical).toBe('unspecified');
   });
 
   it('keeps a normal conclusion', () => {

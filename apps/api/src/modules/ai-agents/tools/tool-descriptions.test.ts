@@ -354,6 +354,37 @@ const bothModes = (reachable: Record<RedactionMode, Set<string>>): Set<string> =
 interface Promised {
   says: string;
   carriedBy: readonly string[];
+  /**
+   * THE MODES THIS CLAUSE SAYS ITS KEYS APPEAR IN — and, taken with
+   * every other clause naming the same key, the ONLY modes they may
+   * appear in.
+   *
+   * The reachability question used to be asked of `bothModes(...)` — a
+   * UNION — for every clause alike, and a union cannot falsify a claim
+   * about one mode. `get_my_profile` said a methylation measurement is
+   * 「withheld without precise-value consent」 while the handler renders
+   * `methylation_withheld` under precise consent too, for any cell it
+   * cannot read as a single value (the redactor documents that refusal
+   * as deliberate). The key is reachable in strict, the union contained
+   * it, and the sentence passed — leaving the model, which obeys the
+   * sentence, to read a precise-consent 「value_withheld」 as a value
+   * hidden from it rather than one this platform could not read.
+   *
+   * So reachability alone is not the test. The declared modes for a key
+   * must EQUAL the modes it is reachable in: a clause that says
+   * 「without precise-value consent」 and nothing else claims the key is
+   * a strict-mode thing, and a key that also turns up under precise
+   * consent falsifies it. Two clauses may share a key — that is how one
+   * sentence states a consent rule and its exception — and it is their
+   * union that has to match.
+   *
+   * Absent, the plain union check stands, and that is the right
+   * question for a clause naming no level: 「the raw value, or both,
+   * depending on consent」 asserts nothing about WHICH mode carries
+   * which, so demanding the raw cell in strict would fail an honest
+   * sentence. Naming a level is what moves a clause onto this check.
+   */
+  inModes?: readonly RedactionMode[];
 }
 
 const profileTool = new GetMyProfileTool({} as unknown as PatientProfileRetriever);
@@ -375,8 +406,25 @@ const PROMISES: readonly { tool: ITool; scope: RedactionScope; promises: Promise
         carriedBy: ['d4z4', 'd4z4_clinical', 'haplotype', 'haplotype_clinical'],
       },
       {
-        says: 'methylation (the cell as recorded, never graded — this platform states no methylation boundary; a numeric result is withheld without precise-value consent)',
-        carriedBy: ['methylation', 'methylation_withheld'],
+        says:
+          'methylation (the cell as recorded, never graded — this platform states no ' +
+          'methylation boundary;',
+        carriedBy: ['methylation'],
+      },
+      // The two halves of the withholding rule, each checked against
+      // the mode it names. Together they are the sentence; apart they
+      // are two claims, and the second one is the one the union hid.
+      {
+        says: 'a measurement is withheld without precise-value consent',
+        carriedBy: ['methylation_withheld'],
+        inModes: ['strict'],
+      },
+      {
+        says:
+          'a cell this platform cannot read as a single value is withheld whatever ' +
+          'the consent',
+        carriedBy: ['methylation_withheld'],
+        inModes: ['strict', 'precise'],
       },
       { says: 'onset region', carriedBy: ['onsetRegion'] },
       { says: 'family history', carriedBy: ['familyHistory'] },
@@ -495,13 +543,39 @@ describe('tool descriptions name only fields the result can carry', () => {
     const broken: string[] = [];
     for (const { tool, scope, promises } of PROMISES) {
       const usable = bothModes(reachable[scope]);
-      for (const { says, carriedBy } of promises) {
+      /** Every mode any clause on this tool claims a key appears in.
+       *  Checked as a set against the modes the key is really
+       *  reachable in — see `Promised.inModes`. */
+      const declaredModes = new Map<string, Set<RedactionMode>>();
+      for (const { says, carriedBy, inModes } of promises) {
         if (!tool.description.includes(says)) {
           broken.push(`${tool.name}: description no longer says 「${says}」`);
           continue;
         }
         for (const key of carriedBy) {
+          if (inModes) {
+            const declared = declaredModes.get(key) ?? new Set<RedactionMode>();
+            for (const mode of inModes) declared.add(mode);
+            declaredModes.set(key, declared);
+            continue;
+          }
           if (!usable.has(key)) broken.push(`${tool.name}: 「${says}」 needs ${key}`);
+        }
+      }
+      for (const [key, declared] of declaredModes) {
+        for (const mode of MODES) {
+          const claimed = declared.has(mode);
+          const real = reachable[scope][mode].has(key);
+          if (claimed && !real) {
+            broken.push(`${tool.name}: description claims ${key} in ${mode} mode; unreachable`);
+          }
+          if (!claimed && real) {
+            // The direction the union could not see. A sentence that
+            // conditions a key on one consent level, over a key the
+            // handler also emits under the other, is an instruction
+            // the handler does not follow.
+            broken.push(`${tool.name}: ${key} is reachable in ${mode} mode; description omits it`);
+          }
         }
       }
     }
