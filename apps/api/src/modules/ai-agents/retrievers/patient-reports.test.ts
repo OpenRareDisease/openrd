@@ -1282,3 +1282,128 @@ describe('除外 / 排除 — negated is a hedge, bare is a rule-out', () => {
     }
   });
 });
+
+/**
+ * THE ASSISTANT PATH USED TO BYPASS THE READ GUARD ENTIRELY.
+ *
+ * `withholdUnsafeReadings` is the check every other reader of a stored
+ * payload goes through. This retriever has its own raw SQL and went
+ * through none of it, so a reading withheld from the passport, the
+ * share page, the referral pack, the exports and the report screen was
+ * still handed to the model here — and read back to the patient as
+ * their own laboratory value, in a sentence, on the surface that speaks
+ * with the most authority and shows no number to contradict it.
+ *
+ * Every fixture below is synthetic.
+ */
+describe('PatientReportsRetriever — the read guard on the assistant path', () => {
+  const labRow = (fields: Record<string, string>, page: string, extra = {}) => ({
+    id: 'doc-lab-1',
+    document_type: 'blood_panel',
+    title: null,
+    uploaded_at: '2026-04-01T08:00:00.000Z',
+    status: 'parsed',
+    ocr_payload: {
+      provider: 'embedded',
+      extractedText: page,
+      fields: { documentType: 'blood_panel', analysisStatus: 'completed', ...fields },
+      ...extra,
+    },
+    classified_type: 'blood_panel',
+    report_type_label: '生化报告',
+  });
+
+  const innerFields = async (row: unknown) => {
+    const { pool } = fakePool([row]);
+    const result = await new PatientReportsRetriever(pool).search(
+      { question: '我的生化指标' },
+      makeCtx(),
+    );
+    const meta = result.chunks[0].metadata.fields as Record<string, unknown>;
+    return { meta, inner: meta.fields as Record<string, unknown> };
+  };
+
+  it('does not hand the model a reading the rest of the product withholds', async () => {
+    const { inner } = await innerFields(
+      labRow({ ck: '693 U/L', ldh: '693 U/L' }, '肌酸激酶 CK 693 U/L'),
+    );
+
+    expect(inner.ck).toBeUndefined();
+    expect(inner.ldh).toBeUndefined();
+  });
+
+  it('withholds every spelling, so no alias reaches the prompt either', async () => {
+    const { inner } = await innerFields(
+      labRow(
+        { ck: '693', creatineKinase: '693', table_ck: '693', ldh: '693', table_ldh: '693' },
+        '肌酸激酶 CK 693 U/L',
+      ),
+    );
+
+    expect(Object.keys(inner).sort()).toEqual(['analysisStatus', 'documentType']);
+  });
+
+  /** Over-deletion is a clinical defect too, and the assistant is the
+   *  surface a patient asks BECAUSE they cannot read the paper. */
+  it('keeps a shared figure the report itself printed twice', async () => {
+    const { inner } = await innerFields(
+      labRow({ alt: '32 U/L', ast: '32 U/L' }, 'ALT 32 U/L\nAST 32 U/L'),
+    );
+
+    expect(inner.alt).toBe('32 U/L');
+    expect(inner.ast).toBe('32 U/L');
+  });
+
+  it('reads the reference intervals off the payload it selects whole', async () => {
+    const { meta } = await innerFields(
+      labRow({ ck: '693 U/L' }, 'CK 693 U/L', {
+        aiExtraction: {
+          latest_summary: { by_analyte: { ck: { reference_low: 50, reference_high: 310 } } },
+        },
+      }),
+    );
+
+    expect(meta.unsafeReadings).toEqual([
+      expect.objectContaining({
+        analyte: 'ck',
+        disposition: 'flagged',
+        reason: 'outside_reference_interval',
+      }),
+    ]);
+  });
+
+  /** The record carries analyte names and `fields` spellings. It must
+   *  never carry the figure, or the deletion is undone by the key
+   *  beside it. */
+  it('offers the disposition record without the number in it', async () => {
+    const { meta } = await innerFields(
+      labRow({ ck: '693 U/L', ldh: '693 U/L' }, '肌酸激酶 CK 693 U/L'),
+    );
+
+    expect(meta.unsafeReadings).toHaveLength(2);
+    expect(JSON.stringify(meta.unsafeReadings)).not.toContain('693');
+  });
+
+  it('leaves a clean report exactly as it found it', async () => {
+    const { meta, inner } = await innerFields(
+      labRow({ ck: '200 U/L', ldh: '241 U/L' }, 'CK 200 U/L\nLDH 241 U/L'),
+    );
+
+    expect(inner.ck).toBe('200 U/L');
+    expect(inner.ldh).toBe('241 U/L');
+    expect(meta.unsafeReadings).toBeUndefined();
+  });
+
+  /** The guard replaces the row before anything reads it, and the
+   *  citation chip reads the same row. */
+  it('leaves the citation chip date alone', async () => {
+    const { pool } = fakePool([
+      labRow({ ck: '693', ldh: '693', reportTime: '2025-01-01' }, 'CK 693 U/L'),
+    ]);
+    const result = await new PatientReportsRetriever(pool).search(
+      { question: '我的生化指标' },
+      makeCtx(),
+    );
+    expect(result.citations[0].sourceFile).toBe('生化报告 · 2025-01');
+  });
+});

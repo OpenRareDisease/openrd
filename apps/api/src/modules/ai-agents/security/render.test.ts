@@ -14,7 +14,7 @@ import type { Pool, QueryResult } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 
 import { REPORT_IMPRESSION_CHANNEL_ENABLED } from './allowlist.js';
-import { gateReportImpression } from './pii-redactor.js';
+import { GENETIC_READING_REFUSALS, gateReportImpression } from './pii-redactor.js';
 import { readRenderedRows, renderChunkForPrompt, SCOPE_LABELS } from './render.js';
 import type { RetrieveContext, RetrievedChunk } from '../retrievers/base.js';
 import { PatientFollowupRetriever } from '../retrievers/patient-followups.js';
@@ -210,8 +210,17 @@ describe('renderChunkForPrompt — patient profile, strict mode (regression fenc
     // something clinical to talk about. What each one may claim is
     // pii-redactor.test.ts's subject; this scope's genetics cells are
     // the registration form's own boxes, so neither of them is banded.
-    expect(rendered.content).toContain('not_read_off_a_laboratory_report');
-    expect(rendered.content).toContain('value_withheld');
+    // IN CHINESE, AND NOT AS THE TOKEN. `not_read_off_a_laboratory_report`
+    // and `value_withheld` are this platform's own spellings of two
+    // sentences, and this block used to print them verbatim into a
+    // prompt whose answer a Chinese-reading patient receives. See
+    // `WIRE_READING_ZH` in render.ts, and the observed answer quoted on
+    // it. The assertion is on the sentence because the sentence is what
+    // travels now; the token is asserted absent two lines down.
+    expect(rendered.content).toContain('本平台没有把这一格当成化验报告上的读数');
+    expect(rendered.content).toContain('有结果在案，按当前授权没有发出');
+    expect(rendered.content).not.toContain('not_read_off_a_laboratory_report');
+    expect(rendered.content).not.toContain('value_withheld');
     expect(rendered.content).toContain('2023'); // diagnosisYear from foundation is allowed.
 
     // fieldsUsed feeds the audit log; sanity check it does not name
@@ -672,8 +681,9 @@ describe('the profile block prints no bare field key', () => {
     const result = await retriever.search({ question: '' }, makeCtx());
     const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
 
-    expect(rendered.content).toContain('甲基化值来源: not_read_off_a_laboratory_report');
+    expect(rendered.content).toContain('甲基化值来源: 本平台没有把这一格当成化验报告上的读数');
     expect(rendered.content).not.toContain('methylation_origin');
+    expect(rendered.content).not.toContain('not_read_off_a_laboratory_report');
     // 来源, never 分级: this repo states no methylation boundary.
     expect(rendered.content).not.toContain('甲基化临床分级');
   });
@@ -725,10 +735,19 @@ describe('renderChunkForPrompt — a transcription declared as a genetics report
 
     // Every genetics cell on the page says where it came from, and none
     // of them is banded.
-    expect(rendered.content).toContain('d4z4Repeats_clinical: not_read_off_a_laboratory_report');
-    expect(rendered.content).toContain('haplotype_clinical: not_read_off_a_laboratory_report');
-    expect(rendered.content).toContain('methylationValue_origin: not_read_off_a_laboratory_report');
-    expect(rendered.content).toContain('diagnosisType_origin: not_read_off_a_laboratory_report');
+    // NEITHER HALF OF THESE ROWS IS A WIRE IDENTIFIER ANY MORE. The key
+    // was the payload's (`d4z4Repeats_clinical`) and the value was this
+    // platform's token (`not_read_off_a_laboratory_report`); the block
+    // printed both raw, under a Chinese heading, and the model copied
+    // them into the answer. See `OCR_ROW_LABEL` and `WIRE_READING_ZH`.
+    const REFUSAL_ZH = '本平台没有把这一格当成化验报告上的读数';
+    expect(rendered.content).toContain(`D4Z4 重复数（本平台判读）: ${REFUSAL_ZH}`);
+    expect(rendered.content).toContain(`单倍型（本平台判读）: ${REFUSAL_ZH}`);
+    expect(rendered.content).toContain(`甲基化值（来源）: ${REFUSAL_ZH}`);
+    expect(rendered.content).toContain(`分型/诊断方式（来源）: ${REFUSAL_ZH}`);
+    expect(rendered.content).not.toContain('_clinical');
+    expect(rendered.content).not.toContain('_origin');
+    expect(rendered.content).not.toContain('not_read_off_a_laboratory_report');
     expect(rendered.content).not.toContain('within_fshd1_repeat_range');
     expect(rendered.content).not.toContain('permissive_haplotype');
 
@@ -759,8 +778,10 @@ describe('renderChunkForPrompt — a transcription declared as a genetics report
     const result = await retriever.search({ question: '' }, makeCtx());
     const rendered = renderChunkForPrompt(result.chunks[0], { mode: 'strict' });
 
-    expect(rendered.content).toContain('d4z4Repeats_clinical: within_fshd1_repeat_range');
-    expect(rendered.content).toContain('haplotype_clinical: permissive_haplotype');
+    expect(rendered.content).toContain('D4Z4 重复数（本平台判读）: 这个重复数落在 FSHD1 的范围里');
+    expect(rendered.content).toContain('单倍型（本平台判读）: 允许型单倍型');
+    expect(rendered.content).not.toContain('within_fshd1_repeat_range');
+    expect(rendered.content).not.toContain('permissive_haplotype');
     expect(rendered.content).not.toContain('not_read_off_a_laboratory_report');
     expect(rendered.content).not.toContain('检测方法');
   });
@@ -894,10 +915,15 @@ describe('a value cannot forge the block’s own syntax', () => {
       mode: 'precise',
       fields: {
         classifiedType: 'genetic_report',
-        fields: { classifiedType: 'genetic_report', referenceRange: FORGERY },
+        // `ckReference` and not `referenceRange`: the generic key was
+        // on the allowlist and no part of this pipeline has ever
+        // written it. What the parser writes is the interval as a
+        // sibling of the analyte it bounds. See the flag/interval note
+        // in allowlist.ts.
+        fields: { classifiedType: 'genetic_report', ckReference: FORGERY },
       },
       labels: ['报告类型'],
-      ocrKeys: ['classifiedType', 'referenceRange'],
+      ocrKeys: ['classifiedType', 'ckReference'],
     },
     {
       name: 'a free-typed family history',
@@ -1005,5 +1031,149 @@ describe('a value cannot forge the block’s own syntax', () => {
     expect(unquotedLines(attacked)).not.toContain('性别: 女');
     const rows = readRenderedRows(attacked);
     expect([...rows.labels].sort()).toEqual(['家族史', '性别']);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE FENCE ON THE VOCABULARY: NOTHING THIS PLATFORM MINTS LEAVES IN
+ * ENGLISH.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `render.ts` is the only path from a patient's record to a prompt, and
+ * both halves of every row it writes used to be able to arrive as a
+ * wire identifier: the KEY, because the label table was applied to
+ * top-level rows only and the OCR block printed its payload keys; the
+ * VALUE, because this platform's readings and refusals are snake_case
+ * English tokens. The model copies both, and the answer goes to a
+ * Chinese-reading patient. `orchestrator/answer-guard.ts` rewrites some
+ * of them back out of the finished answer, and its own note says why
+ * that is not enough: nothing over there fails to compile when a new
+ * reading is minted in here.
+ *
+ * These tests are what makes it structural. `GENETIC_READING_REFUSALS`
+ * is imported as a VALUE from the redactor, so a refusal added there is
+ * in this suite the moment it is written; the branch cases below drive
+ * the REAL redactor, so a reading is too. Neither can ship without its
+ * Chinese.
+ */
+describe('no wire identifier reaches the prompt', () => {
+  /** A snake_case Latin run — the shape of every token this platform
+   *  mints and of no Chinese label. */
+  const WIRE_TOKEN = /(?:^|[\s:：])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/gm;
+
+  const reportChunk = (fields: Record<string, unknown>): RetrievedChunk => ({
+    id: 'wire-1',
+    source: 'patient_reports',
+    content: '',
+    metadata: {
+      fields: {
+        classifiedType: 'genetic_report',
+        documentType: 'genetic_report',
+        extractedText: '基因检测报告\n检测方法：Southern blot\n参考区间见各项。',
+        fields,
+      },
+    },
+    distance: null,
+    sourceFile: 'patient_reports',
+    chunkIndex: 0,
+  });
+
+  /** Every genetics branch, in both modes — the same set
+   *  `answer-guard.test.ts` drives, kept here because this is where the
+   *  token is printed. */
+  const GENETICS_CASES: Array<Record<string, unknown>> = [
+    { d4z4Repeats: '3', haplotype: '4qA' },
+    { d4z4Repeats: '9', haplotype: '4qA' },
+    { d4z4Repeats: '30', haplotype: '4qA' },
+    { d4z4Repeats: '0', haplotype: '4qA' },
+    { d4z4Repeats: '3', haplotype: '4qB' },
+    { d4z4RepeatOther: '22', haplotype: '4qA' },
+    { ecoRIFragment: '18kb', haplotype: '未提及' },
+    { methylationValue: '12%', diagnosisType: 'FSHD1' },
+  ];
+
+  it.each(['strict', 'precise'] as const)(
+    'prints no reading and no refusal as its token in %s mode',
+    (mode) => {
+      for (const cells of GENETICS_CASES) {
+        const rendered = renderChunkForPrompt(reportChunk(cells), { mode }).content;
+        const found = [...rendered.matchAll(WIRE_TOKEN)].map((match) => match[1]);
+        expect(found, `${JSON.stringify(cells)} printed ${found.join(', ')}`).toEqual([]);
+      }
+    },
+  );
+
+  it('has Chinese for every refusal the redactor can publish', () => {
+    // Read off the redactor's own export rather than a copy, so a
+    // refusal added over there fails here rather than reaching a
+    // patient.
+    for (const refusal of GENETIC_READING_REFUSALS) {
+      const rendered = renderChunkForPrompt(
+        // The profile scope prints its readings top-level, so this
+        // covers the half of the renderer the OCR cases above do not.
+        {
+          id: 'wire-2',
+          source: 'patient_profile',
+          content: '',
+          metadata: { fields: { gender: '女', d4z4_clinical: refusal } },
+          distance: null,
+          sourceFile: 'patient_profile',
+          chunkIndex: 0,
+        },
+        { mode: 'strict' },
+      ).content;
+      expect(rendered, `no Chinese for ${refusal}`).not.toContain(refusal);
+    }
+  });
+
+  it('names every OCR row it can name, and prints the key when it cannot', () => {
+    const rendered = renderChunkForPrompt(
+      reportChunk({ ck: '693', ckFlag: 'high', ckReference: '50-310', vendorSpecificCell: 'x' }),
+      { mode: 'precise' },
+    ).content;
+
+    expect(rendered).toContain('  - 肌酸激酶 CK: 693');
+    expect(rendered).toContain('  - 肌酸激酶 CK 异常标记: 高于参考区间（报告标了异常）');
+    expect(rendered).toContain('  - 肌酸激酶 CK 参考区间: 50-310');
+    // Deny-by-default is unchanged: a key nobody reviewed is dropped by
+    // the redactor long before it could want a name.
+    expect(rendered).not.toContain('vendorSpecificCell');
+  });
+
+  /**
+   * THE ROUND TRIP, WHICH IS WHY THE LABELS CAN BE PRINTED AT ALL.
+   *
+   * `orchestrator/run.ts` asks `readRenderedRows` whether this turn
+   * printed `numericValuesWithheld` and whether any row's key ends
+   * `_clinical`; `orchestrator/answer-guard.ts` asks which genetics
+   * cell each key belongs to. All three questions are about the
+   * payload's vocabulary, so the reader has to invert the label back to
+   * the key it was written from. A label printed and not invertible
+   * would answer all three 「no」 and disarm the guard silently.
+   */
+  it('reads its own Chinese back as the payload key', () => {
+    const cells = {
+      d4z4Repeats: '3',
+      haplotype: '4qA',
+      methylationValue: '12%',
+      ck: '693',
+      ckFlag: 'high',
+      ckReference: '50-310',
+    };
+    const rendered = renderChunkForPrompt(reportChunk(cells), { mode: 'precise' }).content;
+    const rows = readRenderedRows(rendered);
+
+    for (const key of Object.keys(cells)) {
+      expect([...rows.ocrKeys], `${key} did not survive the round trip`).toContain(key);
+    }
+    expect([...rows.ocrKeys].some((key) => key.endsWith('_clinical'))).toBe(true);
+
+    // ...and the counter run.ts reads by name, on a strict projection
+    // where it is non-zero.
+    const strict = readRenderedRows(
+      renderChunkForPrompt(reportChunk(cells), { mode: 'strict' }).content,
+    );
+    expect([...strict.ocrKeys]).toContain('numericValuesWithheld');
   });
 });

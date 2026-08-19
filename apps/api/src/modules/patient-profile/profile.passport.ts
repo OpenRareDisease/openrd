@@ -23,6 +23,11 @@ import type {
   PatientDocumentDTO,
   PatientProfileDTO,
 } from './profile.service.js';
+// The two suffixes the OCR bridge writes the laboratory's abnormal
+// marker and its reference interval under. Imported rather than spelled
+// again: this page reads what that bridge writes, and a suffix written
+// twice is one that can disagree with itself.
+import { OCR_FLAG_SUFFIX, OCR_REFERENCE_SUFFIX } from '../ai-agents/security/allowlist.js';
 
 /** Only what this file reads. `aiExtraction` / `ai_extraction` used to
  *  be declared here and referenced nowhere — and the profile query no
@@ -68,11 +73,53 @@ export interface PassportMetricDTO {
   hint: string;
 }
 
+/**
+ * WHICH DAY THE DATE BESIDE A FRESHNESS BADGE IS.
+ *
+ * `report` — the day the laboratory printed on the report. This is what
+ *   「最近肺功能 2026-02-10 · 最新」 claims: the TEST is recent.
+ * `upload` — the day the file reached this platform, which is what a
+ *   report whose OCR carried no 报告时间 has instead. A 2019 genetics
+ *   report uploaded last week is 上传日期 2026 and 最新, and the test is
+ *   seven years old.
+ *
+ * THE TWO WERE THE SAME FIELD AND THE SAME BADGE. Every monitoring slot
+ * resolved `reportTime ?? uploadedAt` into one `latestDate`, printed it
+ * under 最近日期 with a freshness verdict beside it, and said nothing
+ * about which of the two it was — so 「this test is recent」 and 「we
+ * received this file recently」 were indistinguishable on the share page
+ * a clinician opens, in the referral pack, and on the anaesthesia card.
+ * The assistant side of this platform split exactly this pair into
+ * `reportDate_year` and `uploadYear` for exactly this reason (see
+ * PROMPT_ALLOWLIST's reports scope: 「the prompt said 报告年份: 2026 about
+ * a report the citation chip on the same turn dated 2019-03」); the
+ * passport did not follow.
+ *
+ * WHY THE VERDICT IS NOT DEGRADED WHEN THE BASIS IS `upload`, said
+ * plainly because it is the obvious next move and it is wrong. An
+ * upload date is a real bound: the test happened on or before it, so
+ * 过期 read off one is TRUE. Only 最新 is unsupported, and the honest
+ * answer to 「is this unsupported」 is to say which day it is rather than
+ * to withhold a verdict a reader can then draw for themselves. A
+ * renderer that prints the badge prints the basis with it.
+ *
+ * `null` where there is no date at all — the 缺失 case, which is a
+ * statement about this platform's records and not about either day.
+ */
+export type PassportDateBasis = 'report' | 'upload';
+
+export const PASSPORT_DATE_BASIS_ZH: Record<PassportDateBasis, string> = {
+  report: '报告日期',
+  upload: '上传日期',
+};
+
 export interface PassportFreshnessDTO {
   label: '最新' | '待更新' | '过期' | '缺失' | '未知';
   tone: 'success' | 'warning' | 'danger' | 'neutral';
   date: string | null;
   daysSince: number | null;
+  /** Which day `date` is. See `PassportDateBasis`. */
+  basis: PassportDateBasis | null;
 }
 
 export interface PassportSummaryCardDTO {
@@ -356,8 +403,14 @@ export interface PassportDiagnosisDTO {
    *  which was a claim the renderer had no way to check. */
   ladderOriginZh: string | null;
   /**
-   * When the document this block's genetic values were read off was
-   * uploaded, and the id of that document.
+   * The day the document this block's genetic values were read off is
+   * dated by, and the id of that document.
+   *
+   * THE REPORT'S OWN DAY WHERE IT HAS ONE. This slot was the only one
+   * of the five that never asked — `formatDate(geneticDoc.uploadedAt)`
+   * and nothing else — so a 2019 laboratory report uploaded this year
+   * was dated this year. `freshness.basis` beside it says which of the
+   * two days this is; see `PassportDateBasis`.
    *
    * NOT 「the newest report」 and not 「the newest genetics report」.
    * `pickGeneticEvidenceDocument` answers which document is this
@@ -498,6 +551,10 @@ export interface PassportMonitoringItemDTO {
   title: string;
   available: boolean;
   summary: string;
+  /** The day this slot's report is dated by. WHICH day — the
+   *  laboratory's or this platform's — is on `freshness.basis`, and a
+   *  renderer that prints the date must print that too. See
+   *  `PassportDateBasis`. */
   latestDate: string | null;
   latestDocumentId: string | null;
   freshness: PassportFreshnessDTO;
@@ -658,18 +715,27 @@ type ReportInsights = {
    *  `geneticRecord.source` answers that, and the two together decide
    *  the bracket. */
   geneEvidenceFromDocument: boolean;
+  /** The five slot dates, each with the day it IS — see
+   *  `PassportDateBasis`. They were bare strings resolved from
+   *  `reportTime ?? uploadedAt`, which made 「the test is recent」 and
+   *  「the file arrived recently」 the same value. */
   latestGeneticDate: string | null;
+  latestGeneticDateBasis: PassportDateBasis | null;
   latestGeneticDocumentId: string | null;
   latestMriDate: string | null;
+  latestMriDateBasis: PassportDateBasis | null;
   latestMriDocumentId: string | null;
   mriSummary: string;
   latestBloodDate: string | null;
+  latestBloodDateBasis: PassportDateBasis | null;
   latestBloodDocumentId: string | null;
   bloodSummary: string;
   latestRespiratoryDate: string | null;
+  latestRespiratoryDateBasis: PassportDateBasis | null;
   latestRespiratoryDocumentId: string | null;
   respiratorySummary: string;
   latestCardiacDate: string | null;
+  latestCardiacDateBasis: PassportDateBasis | null;
   latestCardiacDocumentId: string | null;
   cardiacSummary: string;
   strengthAverage: string;
@@ -956,6 +1022,113 @@ const pickField = (fields: Record<string, unknown> | undefined, keys: string[]) 
     if (text) return text;
   }
   return undefined;
+};
+
+/**
+ * The same pick, and WHICH SPELLING ANSWERED IT.
+ *
+ * `pickField` throws the key away, which is right for a caller that
+ * only wants the value and wrong for one that then has to read a
+ * SIBLING of that value. The laboratory's abnormal marker and its
+ * reference interval are written as siblings of the analyte's own key
+ * (`ckFlag`, `ckReference` — see the flag/interval note in
+ * services/ocr/embedded-report-ocr.ts), so 「which key held the number」
+ * is the only way to be sure the marker beside it belongs to it.
+ * Re-picking with a second key list would let a flag from one spelling
+ * land beside a value from another.
+ */
+const pickFieldEntry = (
+  fields: Record<string, unknown> | undefined,
+  keys: string[],
+): { key: string; value: string } | undefined => {
+  if (!fields) return undefined;
+  for (const key of keys) {
+    const value = fields[key];
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return { key, value: text };
+  }
+  return undefined;
+};
+
+/** `creatine_kinase` → `creatineKinase`. The bridge writes the flag and
+ *  the interval under the CAMEL spelling only, deliberately and for
+ *  once — they are new cells, so no snake twin is on disk — while the
+ *  value itself is on the payload under both. So a value picked off a
+ *  snake key has to ask for its siblings under the camel one. */
+const toCamelKey = (key: string): string =>
+  key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+
+/**
+ * THE DAY A SLOT IS DATED BY, AND WHICH DAY IT IS.
+ *
+ * Every slot on this page used to write `reportTime ?? uploadedAt` into
+ * one string and lose the distinction; see `PassportDateBasis` for what
+ * that cost. Resolved in one place so the five slots cannot disagree
+ * about the rule, and returning the pair so nothing downstream has to
+ * re-derive which branch was taken.
+ *
+ * The report's own day is preferred and not merely accepted: it is the
+ * day the reader means when they ask how old the test is. The upload
+ * day is the FALLBACK, not the answer.
+ */
+const resolveSlotDate = (
+  reportTime: string | null | undefined,
+  uploadedAt: string | null | undefined,
+): { date: string | null; basis: PassportDateBasis | null } => {
+  const fromReport = formatDate(reportTime ?? null);
+  if (fromReport) return { date: fromReport, basis: 'report' };
+  const fromUpload = formatDate(uploadedAt ?? null);
+  if (fromUpload) return { date: fromUpload, basis: 'upload' };
+  return { date: null, basis: null };
+};
+
+/** 「2026-02-10 报告日期」, or the date alone where this platform cannot
+ *  say which day it is. For the artefacts this module prints itself. */
+const dateWithBasis = (
+  date: string | null | undefined,
+  basis: PassportDateBasis | null | undefined,
+): string => {
+  if (!date) return '—';
+  return basis ? `${date} ${PASSPORT_DATE_BASIS_ZH[basis]}` : date;
+};
+
+/** The sibling of a picked cell, under either spelling of its key. */
+const siblingField = (
+  fields: Record<string, unknown> | undefined,
+  key: string,
+  suffix: string,
+): string | undefined => {
+  const camel = toCamelKey(key);
+  return pickField(
+    fields,
+    camel === key ? [`${key}${suffix}`] : [`${key}${suffix}`, `${camel}${suffix}`],
+  );
+};
+
+/**
+ * THE LABORATORY'S ABNORMAL MARKER, IN CHINESE.
+ *
+ * `_read_row_flag` in the parser maps 「↑」, 「偏高」 and a bare 「H」 onto
+ * `high`, so what reaches this page is an English token this platform
+ * minted — the same shape as `VENTILATORY_PATTERN_ZH` above and
+ * localised for the same reason. A closed vocabulary; anything outside
+ * it is dropped rather than printed, because a marker this page cannot
+ * read is not one it should paraphrase onto a clinician's sheet.
+ *
+ * NOT SHARED WITH `ANALYTE_FLAG_ZH` IN ai-agents/security/render.ts,
+ * which localises the same three tokens for the PROMPT. That table
+ * writes sentences a model has to read without context
+ * (「高于参考区间（报告标了异常）」); this one writes the word that goes
+ * inside a bracket next to the number, on a sheet where the interval is
+ * printed two characters later. Same vocabulary, two registers — the
+ * arrangement `DOCUMENT_TYPE_VALUE_LABELS` in that file already
+ * describes for the document types.
+ */
+const ANALYTE_FLAG_ZH: Record<string, string> = {
+  high: '偏高',
+  low: '偏低',
+  abnormal_unspecified: '异常',
 };
 
 const latestDoc = (
@@ -1269,20 +1442,50 @@ const VENTILATORY_PATTERN_ZH: Record<string, string> = {
   normal: '通气功能正常',
 };
 
-/** Reads each spec off the payload and names every value it prints.
- *  A metric that did not parse contributes no segment — and because
- *  every surviving segment carries its own name, a gap can no longer
- *  shift the meaning of its neighbours. */
+/**
+ * Reads each spec off the payload and names every value it prints.
+ * A metric that did not parse contributes no segment — and because
+ * every surviving segment carries its own name, a gap can no longer
+ * shift the meaning of its neighbours.
+ *
+ * AND IT SAYS WHETHER THE NUMBER IS ABNORMAL, which is the thing this
+ * row exists for and the thing it did not carry.
+ *
+ * The laboratory prints three things on a muscle-enzyme row — the
+ * analyte, the value, and its own verdict on that value against its own
+ * interval — and the parser reads all three. Two of them stopped here:
+ * this function read `spec.keys` and nothing else, while `ckFlag` and
+ * `ckReference` sat in the same map. So a CK of 693 against a stated
+ * upper limit of 310 printed 「CK 693」, in the same words and the same
+ * weight a CK of 90 would print, on 血检指标 — a row that goes into the
+ * referral pack a neurologist reads, the share page a clinician opens
+ * from a link, and the PDF the patient hands over at the desk. The one
+ * enzyme this disease is monitored by, 2.2 times its own upper limit,
+ * with nothing on the sheet saying so.
+ *
+ * BOTH HALVES OR NEITHER IS NOT THE RULE HERE. A flag with no interval
+ * is still the laboratory's own verdict and prints alone; an interval
+ * with no flag is what a row prints when the value is inside it, and
+ * printing the bracket lets the reader check rather than trust. What
+ * neither may do is arrive without the value, which is why they are
+ * read off the key the value came from — see `pickFieldEntry`.
+ */
 const buildMonitoringSummary = (
   fields: Record<string, unknown> | undefined,
   specs: MonitoringMetricSpec[],
   fallback: string,
 ) => {
   const parts = specs.flatMap((spec) => {
-    const raw = pickField(fields, spec.keys);
-    if (!raw) return [];
-    const value = spec.values?.[raw] ?? withUnit(raw, spec.unit);
-    return [`${spec.label} ${value}`];
+    const picked = pickFieldEntry(fields, spec.keys);
+    if (!picked) return [];
+    const value = spec.values?.[picked.value] ?? withUnit(picked.value, spec.unit);
+    const rawFlag = siblingField(fields, picked.key, OCR_FLAG_SUFFIX);
+    const flag = rawFlag ? ANALYTE_FLAG_ZH[rawFlag.toLowerCase()] : undefined;
+    const reference = siblingField(fields, picked.key, OCR_REFERENCE_SUFFIX);
+    const bracket = [flag, reference ? `参考区间 ${reference}` : undefined]
+      .filter(Boolean)
+      .join('，');
+    return [bracket ? `${spec.label} ${value}（${bracket}）` : `${spec.label} ${value}`];
   });
   return parts.length > 0 ? parts.join('，') : fallback;
 };
@@ -1630,6 +1833,15 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
   const strengthPayload = toPayload(strengthDoc?.ocrPayload);
   const strengthSummary = buildStrengthSummary(strengthPayload?.fields);
 
+  // The five slot dates, resolved through the one rule. See
+  // `resolveSlotDate`, and `PassportDateBasis` for what the pair is for.
+  const geneticReportTime = pickField(geneticFields, ['reportTime', 'report_time']);
+  const geneticDate = resolveSlotDate(geneticReportTime, geneticDoc?.uploadedAt);
+  const mriDate = resolveSlotDate(mriReportTime, mriDoc?.uploadedAt);
+  const bloodDate = resolveSlotDate(bloodReportTime, bloodDoc?.uploadedAt);
+  const respiratoryDate = resolveSlotDate(respiratoryReportTime, respiratoryDoc?.uploadedAt);
+  const cardiacDate = resolveSlotDate(cardiacReportTime, cardiacDoc?.uploadedAt);
+
   // A JOIN, so the row can hold two sources at once: 单倍型, EcoRI 片段
   // and D4Z4 重复数 come straight off `geneticRecord`, while
   // `geneticType` falls back to the baseline and to
@@ -1666,18 +1878,29 @@ const buildReportInsights = (profile: PatientProfileDTO): ReportInsights => {
     diagnosisValueSlots,
     geneEvidence: geneEvidence || NO_GENE_EVIDENCE,
     geneEvidenceFromDocument: documentOnlyEvidence.length > 0,
-    latestGeneticDate: formatDate(geneticDoc?.uploadedAt ?? null),
+    // THE GENETICS SLOT READS THE REPORT'S OWN DAY TOO. It was the one
+    // of the five that never asked: `formatDate(geneticDoc.uploadedAt)`
+    // and nothing else, so 最近基因报告 on a 2019 laboratory report
+    // uploaded this year was dated this year and badged 最新 — the
+    // longest-lived document on this page and the one whose age a
+    // clinician is most likely to act on.
+    latestGeneticDate: geneticDate.date,
+    latestGeneticDateBasis: geneticDate.basis,
     latestGeneticDocumentId: geneticDoc?.id ?? null,
-    latestMriDate: formatDate(mriReportTime ?? mriDoc?.uploadedAt ?? null),
+    latestMriDate: mriDate.date,
+    latestMriDateBasis: mriDate.basis,
     latestMriDocumentId: mriDoc?.id ?? null,
     mriSummary,
-    latestBloodDate: formatDate(bloodReportTime ?? bloodDoc?.uploadedAt ?? null),
+    latestBloodDate: bloodDate.date,
+    latestBloodDateBasis: bloodDate.basis,
     latestBloodDocumentId: bloodDoc?.id ?? null,
     bloodSummary,
-    latestRespiratoryDate: formatDate(respiratoryReportTime ?? respiratoryDoc?.uploadedAt ?? null),
+    latestRespiratoryDate: respiratoryDate.date,
+    latestRespiratoryDateBasis: respiratoryDate.basis,
     latestRespiratoryDocumentId: respiratoryDoc?.id ?? null,
     respiratorySummary,
-    latestCardiacDate: formatDate(cardiacReportTime ?? cardiacDoc?.uploadedAt ?? null),
+    latestCardiacDate: cardiacDate.date,
+    latestCardiacDateBasis: cardiacDate.basis,
     latestCardiacDocumentId: cardiacDoc?.id ?? null,
     cardiacSummary,
     strengthAverage: strengthSummary.average !== null ? strengthSummary.average.toFixed(1) : '—',
@@ -2006,25 +2229,33 @@ const summarizeBodyRegions = (regions: PassportBodyRegionMap, limit = 4) => {
  * made THIS COUNT ambient too, one zone-dependent number feeding a
  * label a clinician reads as 最新 or 过期.
  */
-const getFreshness = (value: string | null | undefined, now: Date): PassportFreshnessDTO => {
+const getFreshness = (
+  value: string | null | undefined,
+  now: Date,
+  /** Which day `value` is — see `PassportDateBasis`. Defaulted to
+   *  `null` rather than to `'report'`: a caller that has not been
+   *  taught the question must not be able to answer it wrongly, and
+   *  「unstated」 is the one answer that claims nothing. */
+  basis: PassportDateBasis | null = null,
+): PassportFreshnessDTO => {
   const date = formatDate(value);
   if (!date) {
-    return { label: '缺失', tone: 'neutral', date: null, daysSince: null };
+    return { label: '缺失', tone: 'neutral', date: null, daysSince: null, basis: null };
   }
 
   const timestamp = getTimestamp(date);
   if (!timestamp) {
-    return { label: '未知', tone: 'neutral', date, daysSince: null };
+    return { label: '未知', tone: 'neutral', date, daysSince: null, basis };
   }
 
   const daysSince = Math.floor((now.getTime() - timestamp) / (1000 * 60 * 60 * 24));
   if (daysSince <= 90) {
-    return { label: '最新', tone: 'success', date, daysSince };
+    return { label: '最新', tone: 'success', date, daysSince, basis };
   }
   if (daysSince <= 180) {
-    return { label: '待更新', tone: 'warning', date, daysSince };
+    return { label: '待更新', tone: 'warning', date, daysSince, basis };
   }
-  return { label: '过期', tone: 'danger', date, daysSince };
+  return { label: '过期', tone: 'danger', date, daysSince, basis };
 };
 
 const buildMonitoringItem = (input: {
@@ -2032,6 +2263,10 @@ const buildMonitoringItem = (input: {
   title: string;
   summary: string;
   latestDate: string | null;
+  /** Which day `latestDate` is. Required rather than optional: a slot
+   *  that forgot to say would print a freshness badge over a day
+   *  nobody can name, which is the state this field exists to end. */
+  latestDateBasis: PassportDateBasis | null;
   latestDocumentId: string | null;
   note?: string;
   now: Date;
@@ -2054,7 +2289,7 @@ const buildMonitoringItem = (input: {
     summary: input.summary,
     latestDate: input.latestDate,
     latestDocumentId: input.latestDocumentId,
-    freshness: getFreshness(input.latestDate, input.now),
+    freshness: getFreshness(input.latestDate, input.now, input.latestDateBasis),
     state,
     ...(input.note ? { note: input.note } : {}),
   };
@@ -4372,6 +4607,7 @@ export const buildClinicalPassportSummary = (
       title: '血检指标',
       summary: reportInsights.bloodSummary,
       latestDate: reportInsights.latestBloodDate,
+      latestDateBasis: reportInsights.latestBloodDateBasis,
       latestDocumentId: reportInsights.latestBloodDocumentId,
       // No guideline in the corpus asks for serial CK in FSHD. It shows
       // what you uploaded; it is not a progression measure.
@@ -4383,6 +4619,7 @@ export const buildClinicalPassportSummary = (
       title: '肺功能',
       summary: reportInsights.respiratorySummary,
       latestDate: reportInsights.latestRespiratoryDate,
+      latestDateBasis: reportInsights.latestRespiratoryDateBasis,
       latestDocumentId: reportInsights.latestRespiratoryDocumentId,
       // The one slot here that every FSHD patient is meant to have.
       // Second sentence is the anesthesia case, which is the reason a
@@ -4395,6 +4632,7 @@ export const buildClinicalPassportSummary = (
       title: '心脏检查',
       summary: reportInsights.cardiacSummary,
       latestDate: reportInsights.latestCardiacDate,
+      latestDateBasis: reportInsights.latestCardiacDateBasis,
       latestDocumentId: reportInsights.latestCardiacDocumentId,
       // AAN Level C, stated as a condition rather than a schedule.
       // A patient who does have palpitations needs to know to act; a
@@ -4959,10 +5197,14 @@ export const buildClinicalPassportSummary = (
           ? mriHighlights.join('、')
           : reportInsights.mriSummary
         : '缺少 MRI 报告或影像提取结果',
+      // WHICH DAY, on the card the handset renders the PDF from. See
+      // `PassportDateBasis`: a report with no 报告时间 of its own is
+      // dated by the day it arrived here, and 最近 MRI 2026-08 over a
+      // 2019 scan is the reading this says out loud instead.
       meta:
         mriDocuments.length > 1
-          ? `最近 MRI ${formatDate(reportInsights.latestMriDate) ?? '—'} · 累计 ${mriDocuments.length} 份`
-          : `最近 MRI ${formatDate(reportInsights.latestMriDate) ?? '—'}`,
+          ? `最近 MRI ${dateWithBasis(reportInsights.latestMriDate, reportInsights.latestMriDateBasis)} · 累计 ${mriDocuments.length} 份`
+          : `最近 MRI ${dateWithBasis(reportInsights.latestMriDate, reportInsights.latestMriDateBasis)}`,
     },
     {
       key: 'monitoring',
@@ -5053,7 +5295,11 @@ export const buildClinicalPassportSummary = (
       ladderLabel: diagnosisLadder ? DIAGNOSIS_LADDER_LABELS[diagnosisLadder] : null,
       ladderOriginZh: diagnosisLadder ? passportOriginLabelZh(diagnosisLadderOrigin) : null,
       geneticEvidence,
-      freshness: getFreshness(reportInsights.latestGeneticDate, now),
+      freshness: getFreshness(
+        reportInsights.latestGeneticDate,
+        now,
+        reportInsights.latestGeneticDateBasis,
+      ),
       geneticType: reportInsights.geneticType,
       d4z4Repeats: reportInsights.d4z4Repeats,
       methylationValue: reportInsights.methylationValue,
@@ -5077,7 +5323,7 @@ export const buildClinicalPassportSummary = (
       ready: imagingReady,
       latestMriDate: reportInsights.latestMriDate,
       latestDocumentId: reportInsights.latestMriDocumentId,
-      freshness: getFreshness(reportInsights.latestMriDate, now),
+      freshness: getFreshness(reportInsights.latestMriDate, now, reportInsights.latestMriDateBasis),
       summary: reportInsights.mriSummary,
       highlights: mriHighlights,
       bodyRegions: mriBodyMap.regions,
@@ -5243,7 +5489,10 @@ export const buildClinicalPassportExport = (
     '',
     '## MRI 受累',
     '',
-    `- 最近 MRI：${summary.imaging.latestMriDate ?? '—'}`,
+    // WHICH DAY, NOT JUST WHICH DATE. A report whose OCR carried no
+    // 报告时间 is dated by the day it reached this platform, and a
+    // reader cannot tell that from the number. See `PassportDateBasis`.
+    `- 最近 MRI：${dateWithBasis(summary.imaging.latestMriDate, summary.imaging.freshness.basis)}`,
     `- 影像摘要：${summary.imaging.summary}`,
     `- 重点区域：${summary.imaging.highlights.join('、') || '暂无可视化分布'}`,
     '',
@@ -5253,7 +5502,9 @@ export const buildClinicalPassportExport = (
     // here would leave the markdown export saying「心脏检查：暂无数据，
     // 缺失」with nothing to distinguish 'not done' from 'not needed'.
     ...summary.monitoring.items.flatMap((item) => [
-      `- ${item.title}：${item.summary}（${item.latestDate ?? '无日期'}，${item.freshness.label}）`,
+      `- ${item.title}：${item.summary}（${
+        item.latestDate ? dateWithBasis(item.latestDate, item.freshness.basis) : '无日期'
+      }，${item.freshness.label}）`,
       ...(item.note ? [`  - ${item.note}`] : []),
     ]),
     '',

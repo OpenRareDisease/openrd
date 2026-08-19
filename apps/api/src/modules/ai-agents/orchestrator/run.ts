@@ -39,10 +39,11 @@ import {
   buildGuardEvidence,
   buildRegenerationDirective,
   EMPTY_AFTER_EXCISION_FALLBACK,
-  redactViolations,
+  exciseUntilClean,
   inspectAnswer,
   isSubstantiveRewrite,
   localiseWireTokens,
+  restoreUnits,
   type ClinicalGuardState,
 } from './answer-guard.js';
 import { isPreambleOnly, scrubToolCallMarkup, StreamingAnswerScrubber } from './answer-text.js';
@@ -1050,22 +1051,57 @@ export class Orchestrator {
       // all. A chatty answer to「确诊后我要注意什么」stops mid-list and
       // reads finished.
       const cutOff = Boolean(cleaned) && plan.llmResponse.finishReason === 'length';
-      const directAnswer = cleaned
-        ? this.markCutOff(cleaned, cutOff)
+
+      // AND THE CLINICAL GUARD RUNS HERE TOO.
+      //
+      // It did not, and this is the same hole as the one
+      // `collectConversationNumbers` was written for, one layer up: a
+      // patient whose report was read last turn asks
+      // 「那 3 个重复单元是不是意味着我以后会更严重」, the planner reads a
+      // question that names no record and answers it out of the
+      // history — and the whole file below was skipped because no tool
+      // ran. The turn holding no retrieval is not the turn that needs
+      // no check; it is the one where the numbers came in from the
+      // conversation, which is exactly what the guard now reads.
+      const emptyContext: BuiltContext = {
+        toolMessages: [],
+        citations: [],
+        fieldsUsed: [],
+        usedPersonalData: false,
+        failures: { corpus: false, personal: false },
+      };
+      let guardedDirect = cleaned;
+      let directGuardState: ClinicalGuardState | undefined;
+      if (cleaned) {
+        const guarded = await this.applyClinicalGuard({
+          answer: cleaned,
+          executed: [],
+          context: emptyContext,
+          question: input.question,
+          history: input.history ?? [],
+          messages: plan.messages,
+          // The planner round is never streamed, so there is no bubble
+          // on screen to reset into — see `answer_reset` in types.ts.
+          stream: false,
+          requestId: input.requestId,
+          signal: input.signal,
+          emit,
+        });
+        guardedDirect = guarded.answer;
+        directGuardState = guarded.state;
+      }
+
+      const directAnswer = guardedDirect
+        ? this.markCutOff(guardedDirect, cutOff)
         : '抱歉，我暂时无法生成回答。';
       const result = this.composeResult({
         input,
         start,
         redactionMode,
         answerCutOff: cutOff,
+        clinicalGuard: directGuardState,
         executed: [],
-        context: {
-          toolMessages: [],
-          citations: [],
-          fieldsUsed: [],
-          usedPersonalData: false,
-          failures: { corpus: false, personal: false },
-        },
+        context: emptyContext,
         finalAnswer: directAnswer,
         finalMessages: plan.messages,
         llmUsage: plan.llmResponse.usage,
@@ -1409,6 +1445,8 @@ export class Orchestrator {
         answer: answerText,
         executed: allExecuted,
         context,
+        question: input.question,
+        history: input.history ?? [],
         messages: round2Messages,
         stream: Boolean(opts.streamFinalAnswer),
         requestId: input.requestId,
@@ -1506,15 +1544,30 @@ export class Orchestrator {
    *     visibility notice is built from, so the two can never disagree
    *     about which cells carry a reading.
    *   - WHAT A SOURCE STATES comes from the non-patient chunks' own
-   *     text, before the renderer touches it.
+   *     text, before the renderer touches it, PLUS this turn's own tool
+   *     messages. The second half is what lets a table cell be judged:
+   *     a cell restating this platform's reading in plain Chinese is
+   *     sourced — its source is the projection in this same prompt.
+   *   - WHAT THE CONVERSATION IS CARRYING — the question and the
+   *     assistant turns of the history — is handed over so the guard
+   *     can recover the patient's numbers on a follow-up turn that
+   *     retrieved nothing of theirs. `buildGuardEvidence` reads it ONLY
+   *     in that case; see `collectConversationNumbers` for why the
+   *     fallback is bounded that tightly. The USER turns of the history
+   *     are deliberately included and the assistant's are too: both are
+   *     text this conversation already put in front of this patient
+   *     about this patient.
    *
    * The remedy is one regeneration and then excision; see
-   * `buildExcisionNotice` for why those two and not a refusal.
+   * `buildExcisionNotice` for why those two and not a refusal, and
+   * `exciseUntilClean` for why the excision is re-inspected.
    */
   private async applyClinicalGuard(args: {
     answer: string;
     executed: readonly ExecutedToolCall[];
     context: BuiltContext;
+    question: string;
+    history: readonly { role: 'user' | 'assistant'; content: string }[];
     messages: LlmMessage[];
     stream: boolean;
     requestId: string;
@@ -1530,9 +1583,14 @@ export class Orchestrator {
   }> {
     const patientPayloads: Record<string, unknown>[] = [];
     const corpusTexts: string[] = [];
+    // The tool calls whose result is the PATIENT'S record. Collected by
+    // call id rather than by tool name so there is no second list of
+    // 「which tools are personal」 to keep in step with `PERSONAL_SOURCES`.
+    const personalCallIds = new Set<string>();
     for (const call of args.executed) {
       if (!call.retrieval) continue;
       const personal = PERSONAL_SOURCES.has(call.retrieval.retrieverId);
+      if (personal) personalCallIds.add(call.toolCallId);
       for (const chunk of call.retrieval.chunks) {
         if (personal) {
           const fields = chunk.metadata?.fields;
@@ -1544,21 +1602,43 @@ export class Orchestrator {
         }
       }
     }
+    // ONLY THE PATIENT'S OWN ROWS GO IN HERE, and the distinction is
+    // load-bearing rather than tidy. `renderedTexts` is what answers
+    // 「did the record print this reference interval」, and the first
+    // version handed it EVERY tool message — so a 1–10 the knowledge
+    // base stated became an interval 「the record carried」, and the
+    // fabricated 参考范围 column the check exists for passed. Driven
+    // against the running stack, that is exactly how it passed:
+    // 「| D4Z4 重复数 | 3 个单位 | 正常 >10 个单位；FSHD1 致病范围 1–10 |」
+    // was published with the guard silent.
+    const recordTexts = args.context.toolMessages
+      .filter((message) => personalCallIds.has(message.toolCallId))
+      .map((message) => message.content);
     const evidence = buildGuardEvidence({
       patientPayloads,
       emitted: readEmission(args.context.fieldsUsed, args.context.toolMessages),
       corpusTexts,
+      renderedTexts: recordTexts,
+      conversationTexts: [args.question, ...args.history.map((turn) => turn.content)],
     });
 
-    const first = localiseWireTokens(args.answer);
-    const localisedTokens = [...first.tokens];
+    // THE TWO REPAIRS RUN FIRST, AND THE CHECKS READ WHAT THEY LEFT.
+    // Both rewrite a true sentence into the sentence it was meant to be
+    // — a wire token into Chinese, a measurement back onto its unit —
+    // and inspecting the draft rather than the published text would
+    // judge a document nobody is going to read. See `restoreUnits`.
+    const localised = localiseWireTokens(args.answer);
+    const united = restoreUnits(localised.text, evidence);
+    const first = { text: united.text };
+    const localisedTokens = [...localised.tokens];
+    const restoredUnits = [...united.restored];
     const violations = inspectAnswer(first.text, evidence);
     if (violations.length === 0) {
-      // Nothing to report unless the localisation actually rewrote
-      // something — a guard state on a clean run reads like a finding.
+      // Nothing to report unless a repair actually rewrote something —
+      // a guard state on a clean run reads like a finding.
       const state: ClinicalGuardState | undefined =
-        localisedTokens.length > 0
-          ? { violations: [], action: 'localised', localisedTokens }
+        localisedTokens.length > 0 || restoredUnits.length > 0
+          ? { violations: [], action: 'localised', localisedTokens, restoredUnits }
           : undefined;
       return {
         answer: first.text,
@@ -1626,20 +1706,27 @@ export class Orchestrator {
 
     // What excision alone would have left. Computed here because it is
     // both the fallback answer and the yardstick the rewrite is measured
-    // against — see `isSubstantiveRewrite`.
-    const excisedFirst = redactViolations(first.text, violations);
+    // against — see `isSubstantiveRewrite`. Run to a fixed point rather
+    // than once: the notice below promises the claim is gone, and one
+    // pass could not keep that promise — see `exciseUntilClean`.
+    const excisedFirst = exciseUntilClean(first.text, violations, evidence);
 
     if (regenerated) {
-      const second = localiseWireTokens(regenerated.text);
-      for (const token of second.tokens) {
+      const secondLocalised = localiseWireTokens(regenerated.text);
+      const secondUnited = restoreUnits(secondLocalised.text, evidence);
+      const second = { text: secondUnited.text };
+      for (const token of secondLocalised.tokens) {
         if (!localisedTokens.includes(token)) localisedTokens.push(token);
       }
+      for (const value of secondUnited.restored) {
+        if (!restoredUnits.includes(value)) restoredUnits.push(value);
+      }
       const remaining = inspectAnswer(second.text, evidence);
-      if (remaining.length === 0 && isSubstantiveRewrite(second.text, excisedFirst)) {
+      if (remaining.length === 0 && isSubstantiveRewrite(second.text, excisedFirst.text)) {
         if (!args.stream) args.emit({ type: 'answer_reset', text: second.text });
         return {
           answer: second.text,
-          state: { violations, action: 'regenerated', localisedTokens },
+          state: { violations, action: 'regenerated', localisedTokens, restoredUnits },
           regenerated: true,
           finishReason: regenerated.finishReason,
           usage: regenerated.usage,
@@ -1654,12 +1741,17 @@ export class Orchestrator {
           { requestId: args.requestId, rewriteChars: second.text.length },
           'clinical output guard regeneration came back clean but stunted; excising the first answer instead',
         );
-        const body = excisedFirst.trim() ? excisedFirst : EMPTY_AFTER_EXCISION_FALLBACK;
-        const answer = `${buildExcisionNotice(violations)}\n\n---\n\n${body}`;
+        const body = excisedFirst.text.trim() ? excisedFirst.text : EMPTY_AFTER_EXCISION_FALLBACK;
+        const answer = `${buildExcisionNotice(excisedFirst.violations)}\n\n---\n\n${body}`;
         args.emit({ type: 'answer_reset', text: answer });
         return {
           answer,
-          state: { violations, action: 'excised', localisedTokens },
+          state: {
+            violations: excisedFirst.violations,
+            action: 'excised',
+            localisedTokens,
+            restoredUnits,
+          },
           regenerated: false,
           finishReason: 'unknown',
           usage: regenerated.usage,
@@ -1669,11 +1761,11 @@ export class Orchestrator {
       // The second answer is the one the patient would have read, so it
       // is the one the excision operates on and the one the audit
       // records.
-      const excised = redactViolations(second.text, remaining);
-      const body = excised.trim() ? excised : EMPTY_AFTER_EXCISION_FALLBACK;
-      const answer = `${buildExcisionNotice(remaining)}\n\n---\n\n${body}`;
+      const excised = exciseUntilClean(second.text, remaining, evidence);
+      const body = excised.text.trim() ? excised.text : EMPTY_AFTER_EXCISION_FALLBACK;
+      const answer = `${buildExcisionNotice(excised.violations)}\n\n---\n\n${body}`;
       this.logger.warn(
-        { requestId: args.requestId, kinds: remaining.map((v) => v.kind) },
+        { requestId: args.requestId, kinds: excised.violations.map((v) => v.kind) },
         'clinical output guard fired again after regeneration; excised and told the patient',
       );
       // Non-empty `answer_reset` in BOTH branches, deliberately. A
@@ -1683,7 +1775,12 @@ export class Orchestrator {
       args.emit({ type: 'answer_reset', text: answer });
       return {
         answer,
-        state: { violations: remaining, action: 'excised', localisedTokens },
+        state: {
+          violations: excised.violations,
+          action: 'excised',
+          localisedTokens,
+          restoredUnits,
+        },
         regenerated: true,
         finishReason: regenerated.finishReason,
         usage: regenerated.usage,
@@ -1694,12 +1791,17 @@ export class Orchestrator {
     // The regeneration produced nothing usable. Excise the first
     // answer — it is the only answer there is, and it is still mostly
     // the patient's.
-    const body = excisedFirst.trim() ? excisedFirst : EMPTY_AFTER_EXCISION_FALLBACK;
-    const answer = `${buildExcisionNotice(violations)}\n\n---\n\n${body}`;
+    const body = excisedFirst.text.trim() ? excisedFirst.text : EMPTY_AFTER_EXCISION_FALLBACK;
+    const answer = `${buildExcisionNotice(excisedFirst.violations)}\n\n---\n\n${body}`;
     args.emit({ type: 'answer_reset', text: answer });
     return {
       answer,
-      state: { violations, action: 'excised', localisedTokens },
+      state: {
+        violations: excisedFirst.violations,
+        action: 'excised',
+        localisedTokens,
+        restoredUnits,
+      },
       regenerated: false,
       finishReason: 'unknown',
       usage: undefined,

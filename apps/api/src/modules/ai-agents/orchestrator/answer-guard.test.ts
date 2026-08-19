@@ -16,9 +16,12 @@ import {
   buildExcisionNotice,
   buildGuardEvidence,
   buildRegenerationDirective,
+  exciseUntilClean,
   redactViolations,
   inspectAnswer,
   localiseWireTokens,
+  normaliseForMatch,
+  restoreUnits,
   WIRE_TOKEN_ZH,
   type GuardEvidence,
 } from './answer-guard.js';
@@ -67,9 +70,11 @@ const evidenceFor = (
   mode: RedactionMode,
   payloads: readonly Record<string, unknown>[] = [REPORT_PAYLOAD, PROFILE_PAYLOAD],
   corpusTexts: readonly string[] = [],
+  conversationTexts: readonly string[] = [],
 ): GuardEvidence => {
   const fields = new Set<string>();
   const ocrKeys = new Set<string>();
+  const renderedTexts: string[] = [];
   for (const [index, payload] of payloads.entries()) {
     const source = index === 0 ? 'patient_reports' : 'patient_profile';
     const rendered = renderChunkForPrompt(
@@ -89,11 +94,18 @@ const evidenceFor = (
     // `fieldsUsed`, so the allowlist key list is the honest stand-in.
     for (const key of rendered.fieldsUsed) fields.add(key);
     for (const key of rows.ocrKeys) ocrKeys.add(key);
+    // The rendered block IS the prompt this turn carried, so it is what
+    // 「the record printed a reference interval」 and 「a source states
+    // this」 are answered against. Passed through rather than
+    // reconstructed for the same reason `emitted` is.
+    renderedTexts.push(rendered.content);
   }
   return buildGuardEvidence({
     patientPayloads: [...payloads],
     emitted: { fields, ocrKeys },
     corpusTexts,
+    renderedTexts,
+    conversationTexts,
   });
 };
 
@@ -155,28 +167,47 @@ describe('a severity claim landing on this patient own number', () => {
     expect(violations).toHaveLength(1);
   });
 
-  // The prompt explicitly PERMITS this, and it is most of an honest
-  // answer to 「重复数少是不是更重」. A guard that deleted it would be
-  // enforcing a rule this platform does not have.
-  it('leaves a cohort statement said as a cohort statement alone', () => {
+  // A COHORT STATEMENT THAT DOES NOT STAND THE READER IN THE BAND. This
+  // is what the prompt permits and what an honest answer to
+  // 「重复数少是不是更重」 is made of; it carries no digit, so the check
+  // never had anything to match and never touches it.
+  it('leaves a cohort statement that names no band alone', () => {
     expect(
-      inspectAnswer('在人群研究里，1–3 个重复单元与更早的发病年龄、更重的表型相关 [2]。', evidence),
+      inspectAnswer(
+        '在人群研究里，重复数越短总体上发病越早、表型越重，但这是趋势，不是对某一个人的预测 [2]。',
+        evidence,
+      ),
     ).toHaveLength(0);
   });
 
-  // Removed from a live answer for not repeating the word 群体 inside
-  // itself, while the sentence that opened the list said it.
-  it('lets a list item inherit its lead-in framing', () => {
+  // ...and this is the sentence the population escape used to wave
+  // through. Driven against the running stack, the model wrote
+  // 「在群体研究层面，D4Z4 重复数 1–3 确实与更早发病、更严重的病情相关」
+  // to a patient whose count is 3 and the guard recorded nothing.
+  it('catches a cohort-framed sentence that names the band this reader is standing in', () => {
+    const violations = inspectAnswer(
+      '在人群研究里，1–3 个重复单元与更早的发病年龄、更重的表型相关 [2]。',
+      evidence,
+    );
+    expect(violations.map((violation) => violation.kind)).toEqual(['severity_from_patient_number']);
+    // The reason quoted back to the model says why the framing did not
+    // save it, because that is the half the system prompt could not
+    // contain.
+    expect(violations[0].because).toContain('在人群里');
+  });
+
+  it('catches it in a list item under a cohort lead-in, which is the same sentence over two lines', () => {
     const answer = [
       '在群体研究中，1–3 个重复单元是较短的 D4Z4 阵列。研究显示：',
       '- 1–3 个重复单元的患者更有可能属于「早发型」FSHD，病情可能相对更严重，进展可能相对较快 [2]',
     ].join('\n');
-    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+    const kinds = inspectAnswer(answer, evidence).map((violation) => violation.kind);
+    expect(kinds).toContain('severity_from_patient_number');
+    // The lead-in itself says nothing about severity and survives.
+    expect(kinds).toHaveLength(1);
   });
 
-  // ...and the inheritance is not a hole: a list under a lead-in that
-  // frames nothing is judged on its own.
-  it('does not let a list item inherit framing that is not there', () => {
+  it('catches a plain severity claim in a list item too', () => {
     const answer = [
       '你的报告是这样的：',
       '- 你的 3 个重复单元属于病情较严重的那一档，进展也更快',
@@ -609,5 +640,502 @@ describe('a clean answer', () => {
     ].join('\n');
     expect(inspectAnswer(answer, evidence)).toEqual([]);
     expect(localiseWireTokens(answer).text).toBe(answer);
+  });
+});
+
+// ---------------------------------------------------------------------
+// THE SECOND ROUND AGAINST THE RUNNING STACK.
+//
+// Every answer quoted below is the model's, produced against the real
+// LLM and the real KB service on :5010 with the synthetic patient above
+// (d4z4Repeats 3 / 4qA / 95%) and no database. They are the answers the
+// first version of this file passed.
+// ---------------------------------------------------------------------
+
+describe('markdown does not defeat the lexicons', () => {
+  const evidence = evidenceFor('precise');
+
+  it('takes emphasis off before matching and leaves the words alone', () => {
+    expect(normaliseForMatch('**更严重**受累')).toBe('更严重受累');
+    expect(normaliseForMatch('`95%`')).toBe('95%');
+    // A wire token is snake_case and must survive intact — see the note
+    // on EMPHASIS about single `_`.
+    expect(normaliseForMatch('not_read_off_a_laboratory_report')).toBe(
+      'not_read_off_a_laboratory_report',
+    );
+  });
+
+  // The emphasis stops the topic clause from being recognised, and the
+  // sentence that gets deleted is this platform's own reading read back
+  // verbatim — the worst outcome this check has.
+  it('still reads a bolded 「关于…：」 as a topic clause rather than a claim', () => {
+    expect(
+      inspectAnswer(
+        '**关于病情严重程度**：你的 D4Z4 重复数是 3 个，这个重复数落在 FSHD1 的范围里。',
+        evidence,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('finds the cell name even when emphasis is inside the word', () => {
+    expect(
+      inspectAnswer('你的甲基**化**数值属于很高的一档。', evidence).map((v) => v.kind),
+    ).toContain('ungraded_cell_graded');
+  });
+
+  it('finds a severity claim whose band and severity word are both bolded', () => {
+    expect(
+      inspectAnswer('**1–3 个重复单元**的患者**进展更快**。', evidence).map((v) => v.kind),
+    ).toContain('severity_from_patient_number');
+  });
+});
+
+describe('a claim split across a nested list, which is how markdown writes a table of bands', () => {
+  const evidence = evidenceFor('precise');
+
+  // Verbatim shape from a run against the stack: the band on one line,
+  // the claim on the next, neither line carrying both.
+  it('judges a nested item carrying the band its parent label named', () => {
+    const answer = [
+      '- **1–3 个重复单元**',
+      '  - 发病风险最高，属于「早发型」FSHD 的高危人群',
+      '  - 病情通常较严重，肌肉无力进展较快',
+    ].join('\n');
+    const kinds = inspectAnswer(answer, evidence).map((violation) => violation.kind);
+    expect(kinds.filter((kind) => kind === 'severity_from_patient_number')).toHaveLength(2);
+  });
+
+  it('does not let a sibling inherit from a sibling', () => {
+    const answer = ['- D4Z4 重复数：3', '- 重复数更少的人群整体上进展更快'].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  // A parent that is a SENTENCE carries its own claim; only a label
+  // carries the claim of everything under it. See LABEL_CONTENT_MAX.
+  it('does not inherit from a parent that is a sentence rather than a label', () => {
+    const answer = [
+      '- 你的 D4Z4 重复数是 3 个，这个重复数落在 FSHD1 的范围里',
+      '  - 具体的进展速度需要靠随访来看',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+
+  it('does not inherit a severity word downward, only the number', () => {
+    const answer = ['- 病情严重程度', '  - 你的 D4Z4 重复数是 3', '  - 单倍型是 4qA'].join('\n');
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+});
+
+describe('a band referred to by a pronoun in the sentence after it', () => {
+  const evidence = evidenceFor('precise');
+
+  // Verbatim from a run against the stack. The first sentence is
+  // permitted and correct; the second carries the claim and holds no
+  // digit at all.
+  it('judges the claim carrying the band the sentence before it named', () => {
+    const answer =
+      '你的重复数是 3，落在 1–3 这个区间里。根据研究，这个区间的患者整体上更容易出现早发型、病情相对更重的情况。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['severity_from_patient_number']);
+    expect(violations[0].sentence).toContain('这个区间的患者');
+    // ...and the sentence that merely states his value survives.
+    expect(violations[0].sentence).not.toContain('落在 1–3 这个区间里');
+  });
+
+  it('reaches back exactly one sentence and no further', () => {
+    const answer = [
+      '重复数 1–3 是比较短的一档。',
+      '甲基化这一格本平台不下结论。',
+      '这个区间的患者进展更快。',
+    ].join('\n');
+    // The band is two sentences back; the referent of 这个区间 is the
+    // sentence before, which names none.
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // Three sentences, one referent, and every link carries its own
+  // anaphor. The middle one contains the digit in FSHD1 and no number
+  // of its own, which is why the chain asks `namesANumber` rather than
+  // 「is there a digit」.
+  it('follows a chain of anaphora as long as every link points back explicitly', () => {
+    const answer = '你落在 1–3 个重复单元这一档。这一档在 FSHD1 里最短。这一档的发病年龄相对更早。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['severity_from_patient_number']);
+    expect(violations[0].sentence).toContain('发病年龄相对更早');
+  });
+
+  it('breaks the chain at a sentence that changed the subject', () => {
+    const answer = '重复数 1–3 是最短的一档。甲基化这一格本平台不下结论。这一档的预后更差。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  it('does not borrow a number for a sentence that has one of its own', () => {
+    const answer = '你的重复数是 3。8–10 这一档的预后说不清楚。';
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+});
+
+describe('a follow-up turn, where the number is in the conversation and not in the retrieval', () => {
+  // Driven against the stack: 「那 3 个重复单元，是不是意味着我以后会更严重、
+  // 进展更快？」 asked after a turn that had already read the report
+  // retrieved nothing of the patient's — the question names no record —
+  // and every check stood down for want of a number.
+  const followUp = buildGuardEvidence({
+    patientPayloads: [],
+    emitted: { fields: new Set(), ocrKeys: new Set() },
+    corpusTexts: [],
+    conversationTexts: [
+      '你的基因检测报告里，D4Z4 重复数是 3 个，单倍型是 4qA，甲基化值是 95%。',
+      '那 3 个重复单元，是不是意味着我以后会更严重、进展更快？',
+    ],
+  });
+
+  it('recovers the numbers the conversation is carrying', () => {
+    expect(followUp.numbers.map((number) => number.value)).toContain(3);
+    expect(followUp.numbers.map((number) => number.value)).toContain(95);
+    expect(followUp.numbers.every((number) => number.origin === 'conversation')).toBe(true);
+  });
+
+  it('catches the severity claim that had no evidence to be checked against', () => {
+    const violations = inspectAnswer('1 到 3 个单元的患者，往往属于进展更快的那一端。', followUp);
+    expect(violations.map((violation) => violation.kind)).toContain('severity_from_patient_number');
+    // The reason says where the turn learned the number is his, because
+    // that is a different fact from 「it is on his report」.
+    expect(violations[0].because).toContain('这轮对话');
+  });
+
+  it('does not read a year in the conversation as a measurement', () => {
+    const withYear = buildGuardEvidence({
+      patientPayloads: [],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      conversationTexts: ['我 2019 年做的甲基化检测，2 年前又复查过一次。'],
+    });
+    expect(withYear.numbers.map((number) => number.value)).not.toContain(2019);
+    expect(withYear.numbers.map((number) => number.value)).not.toContain(2);
+  });
+
+  it('does not read a bare number from a sentence that names no cell', () => {
+    const noCell = buildGuardEvidence({
+      patientPayloads: [],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      conversationTexts: ['我一共上传了 7 份材料。'],
+    });
+    expect(noCell.numbers).toHaveLength(0);
+  });
+
+  // The fallback is confined to the turn that has nothing else. With
+  // the record in hand the record is authoritative, and a cohort band
+  // the conversation quoted must not enter the set as though it were
+  // his.
+  it('stands down entirely when this turn retrieved the record', () => {
+    const withRecord = evidenceFor(
+      'precise',
+      [REPORT_PAYLOAD, PROFILE_PAYLOAD],
+      [],
+      ['文献里说 8–10 个重复单元是灰区。'],
+    );
+    expect(withRecord.numbers.map((number) => number.value)).not.toContain(8);
+    expect(withRecord.numbers.every((number) => number.origin === 'record')).toBe(true);
+  });
+});
+
+describe('a reference range the record never printed', () => {
+  const evidence = evidenceFor('precise');
+
+  // Verbatim from a run against the stack, asked for a table with a
+  // 参考范围 column. 1-10 is not on this patient's report and is standing
+  // in the column that promises it is.
+  it('catches an interval invented in a 参考范围 column', () => {
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 | 意义 |',
+      '|---|---|---|---|',
+      '| D4Z4 重复数 | 3 | 1-10 | 落在 FSHD1 的范围里 |',
+    ].join('\n');
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((violation) => violation.kind)).toContain('fabricated_reference_range');
+    expect(violations[0].sentence).toContain('1-10');
+  });
+
+  it('catches it in prose too', () => {
+    expect(
+      inspectAnswer('甲基化的正常范围一般是 40%-60%，你的 95% 高于这个区间。', evidence).map(
+        (v) => v.kind,
+      ),
+    ).toContain('fabricated_reference_range');
+  });
+
+  // Driven against the stack: a DATA row whose reference cell says
+  // 正常范围 was read as a second header, so the column was
+  // re-registered and the row itself was never checked.
+  it('does not read a data row that spells 正常范围 as a second header', () => {
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 | 意义 |',
+      '|------|----------|----------|------|',
+      '| **D4Z4 重复数** | 3 | 1–10（FSHD 患者范围）<br>≥11（正常范围） | 落在 FSHD1 的范围里 |',
+      '| **EcoRI 片段长度** | 14 kb | 10–38 kb（FSHD 患者范围） | 片段长度 |',
+    ].join('\n');
+    const kinds = inspectAnswer(answer, evidence).map((v) => v.kind);
+    expect(kinds.filter((kind) => kind === 'fabricated_reference_range')).toHaveLength(2);
+  });
+
+  it('leaves a 参考范围 column that says there is no interval alone', () => {
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 |',
+      '|---|---|---|',
+      '| D4Z4 重复数 | 3 | 报告没有给参考区间 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // A range the record itself printed is the laboratory's, and the
+  // patient is entitled to read it back.
+  it('leaves an interval the record actually carried alone', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { ck: '320', ckReference: '40-200' } }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['CK: 320\n参考范围: 40-200'],
+    });
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 |',
+      '|---|---|---|',
+      '| CK | 320 | 40-200 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, withRange)).toHaveLength(0);
+  });
+
+  // Verbatim from a run against the stack, and it passed: the guard was
+  // handed EVERY tool message as 「what the record printed」, so a range
+  // the knowledge base stated counted as one the laboratory printed.
+  it('catches the invented column even when the knowledge base states the same range', () => {
+    const withCorpus = evidenceFor(
+      'precise',
+      [REPORT_PAYLOAD, PROFILE_PAYLOAD],
+      ['FSHD1 的 D4Z4 重复单元数通常在 1-10 之间，10-11 是发病的近似阈值。'],
+    );
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 | 意义 |',
+      '|---|---|---|---|',
+      '| D4Z4 重复数 | 3 个单位 | 正常 >10 个单位；FSHD1 致病范围 1–10 个单位 | 落在范围内 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, withCorpus).map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // The corpus is deliberately NOT a source for this column: a
+  // threshold a paper states is a fact about a cohort, and reprinting it
+  // beside this patient's own value makes it a fact about their report.
+  it('does not accept a corpus interval as this report reference range', () => {
+    const withCorpus = evidenceFor(
+      'precise',
+      [REPORT_PAYLOAD, PROFILE_PAYLOAD],
+      ['FSHD1 患者的 D4Z4 重复单元数通常在 1-10 之间。'],
+    );
+    const answer = [
+      '| 项目 | 我的数值 | 参考范围 |',
+      '|---|---|---|',
+      '| D4Z4 重复数 | 3 | 1-10 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, withCorpus).map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+  });
+});
+
+describe('a mechanism claim inside a table', () => {
+  const corpus = [
+    'FSHD 的发病机制是 4 号染色体 D4Z4 重复序列收缩，导致染色质结构松弛，DUX4 基因在骨骼肌中异常表达。',
+  ];
+  const evidence = evidenceFor('precise', [REPORT_PAYLOAD, PROFILE_PAYLOAD], corpus);
+
+  it('catches an invented mechanism written into a table cell', () => {
+    expect(
+      inspectAnswer(
+        '| 甲基化 | 95% | 因为剩下的重复单元太短，会代偿性地维持在高度甲基化的状态 |',
+        evidence,
+      ).map((v) => v.kind),
+    ).toContain('unsourced_mechanism');
+  });
+
+  // ...and the cell that restates this platform's own reading in plain
+  // Chinese is still left alone: its source is the projection in this
+  // turn's own prompt, which the support set now contains.
+  it('leaves a cell restating this platform own reading alone', () => {
+    expect(
+      inspectAnswer(
+        '| **单倍型** | 4qA | 这是「允许型」单倍型——意味着你的 D4Z4 收缩是能导致 FSHD 的类型 |',
+        evidence,
+      ).map((v) => v.kind),
+    ).not.toContain('unsourced_mechanism');
+  });
+});
+
+describe('whose absence the sentence asserts', () => {
+  const strict = evidenceFor('strict');
+
+  // Verbatim from a run against the stack. The cell is 这一项 and its
+  // name is in another sentence; no window of any size reaches it.
+  it('catches an absence claimed about a cell named by a pronoun', () => {
+    const answer = ['你问的是甲基化那一项。', '目前获取到的报告中没有包含这一项数据。'].join('\n');
+    const violations = inspectAnswer(answer, strict);
+    expect(violations.map((v) => v.kind)).toContain('retest_of_a_value_on_file');
+    expect(violations[0].sentence).toContain('这一项');
+  });
+
+  // The consent vocabulary had become a password: naming 授权 anywhere
+  // in the sentence used to skip the whole check.
+  it('catches 「报告里没有」 even when the sentence blames the privacy setting', () => {
+    expect(
+      inspectAnswer('根据你的隐私设置，报告里没有甲基化结果。', strict).map((v) => v.kind),
+    ).toContain('retest_of_a_value_on_file');
+  });
+
+  // ...and the true sentence, which predicates the absence of THIS
+  // ASSISTANT rather than of the report, still survives — it is the one
+  // wording that is correct here.
+  it('leaves 「按当前授权没有发给我」 alone', () => {
+    expect(inspectAnswer('你的报告里的甲基化数值，按当前授权没有发给我。', strict)).toHaveLength(0);
+  });
+
+  it('leaves 「具体数值系统没有显示出来」 alone', () => {
+    expect(
+      inspectAnswer('甲基化的具体数值系统没有显示出来（按当前授权扣下的测量值个数: 1）。', strict),
+    ).toHaveLength(0);
+  });
+});
+
+describe('putting a measurement back on its unit', () => {
+  const evidence = evidenceFor('precise');
+
+  // Driven against the stack, asked for the number alone, the model
+  // answered with two characters and nothing else.
+  it('restores the unit when the answer is nothing but the number', () => {
+    const { text, restored } = restoreUnits('95', evidence);
+    expect(text).toBe('95%');
+    expect(restored).toEqual(['95%']);
+  });
+
+  it('restores it in a sentence that names the cell', () => {
+    expect(restoreUnits('你的甲基化值是 95。', evidence).text).toBe('你的甲基化值是 95%。');
+  });
+
+  it('does not double it up when the unit is already there', () => {
+    const answer = '你的甲基化值是 **95%**。';
+    expect(restoreUnits(answer, evidence).text).toBe(answer);
+  });
+
+  it('does not touch a number that is already carrying a different unit', () => {
+    const answer = '这项甲基化研究纳入了 95 名患者。';
+    expect(restoreUnits(answer, evidence).text).toBe(answer);
+  });
+
+  // The unit is copied off the record, never invented: a value the
+  // record printed bare stays bare.
+  it('leaves a value the record printed without a unit alone', () => {
+    const answer = '你的 D4Z4 重复数是 3。';
+    expect(restoreUnits(answer, evidence).text).toBe(answer);
+  });
+});
+
+describe('a gloss is a translation, not a wire token reaching a patient', () => {
+  // Driven against the stack, asked to gloss the Chinese with the
+  // English original: the blind substitution turned this into
+  // 「允许型（允许型）」.
+  it('collapses 「允许型（permissive）」 to the Chinese', () => {
+    const { text, tokens } = localiseWireTokens(
+      '你的单倍型是 4qA，对应的是「允许型（permissive）」单倍型。',
+    );
+    expect(text).toBe('你的单倍型是 4qA，对应的是「允许型」单倍型。');
+    expect(tokens).toContain('permissive');
+  });
+
+  it('collapses the gloss written the other way up', () => {
+    expect(localiseWireTokens('属于 permissive（允许型）。').text).toBe('属于 允许型。');
+  });
+
+  it('does not read 「非允许型（non-permissive）」 as the shorter pair', () => {
+    expect(localiseWireTokens('属于非允许型（non-permissive）。').text).toBe('属于非允许型。');
+  });
+
+  it('collapses a snake_case token glossed beside its own Chinese', () => {
+    expect(localiseWireTokens('允许型单倍型（permissive_haplotype）').text).toBe('允许型单倍型');
+  });
+
+  it('still substitutes a bare wire word that is not a gloss', () => {
+    expect(localiseWireTokens('单倍型是 permissive。').text).toBe('单倍型是 允许型。');
+  });
+
+  // Observed reaching a patient: a true and useful sentence with a
+  // snake_case identifier in the middle of it, whose key the table
+  // above does not carry because the table is a list of keys.
+  it('rewrites a per-cell projection key the table has no entry for', () => {
+    const { text, tokens } = localiseWireTokens(
+      '判读栏里没有 methylation_clinical 这个字段，也没有 d4z4Repeats_origin。',
+    );
+    expect(text).not.toMatch(/methylation_clinical|d4z4Repeats_origin/);
+    expect(text).toContain('本平台判读');
+    expect(text).toContain('来源');
+    expect(tokens).toContain('methylation_clinical');
+  });
+
+  it('leaves the exact table entry to the exact table', () => {
+    expect(localiseWireTokens('fields_clinical').text).toBe('本平台对报告字段的判读');
+  });
+});
+
+describe('the excision is re-inspected before the notice promises anything', () => {
+  const evidence = evidenceFor('precise');
+
+  // The notice says 「这条回答里有 N 处被我删掉了」. Before this, what
+  // stood under it had never been looked at again, so the identical
+  // claim could survive one line down and the patient read an assurance
+  // that was false of the text below it.
+  it('runs to a fixed point and counts everything that had to go', () => {
+    const answer = [
+      '你的 3 个重复单元属于病情较严重的一档。',
+      '在群体研究中，1–3 个重复单元的人发病更早、进展更快。',
+    ].join('\n');
+    const found = inspectAnswer(answer, evidence);
+    expect(found).toHaveLength(2);
+    // Feed it only the first, as a pass that missed one would have.
+    const result = exciseUntilClean(answer, [found[0]], evidence);
+    expect(result.text).not.toContain('病情较严重的一档');
+    expect(result.text).not.toContain('发病更早');
+    expect(result.violations).toHaveLength(2);
+    // ...and what is left no longer violates, which is the promise the
+    // notice makes.
+    expect(inspectAnswer(result.text, evidence)).toEqual([]);
+  });
+
+  // Driven against the running stack: the removed row left its newline
+  // behind, the blank line ended the table, and the client rendered the
+  // rows below it as literal pipes.
+  it('does not leave a blank line where a table row was', () => {
+    const answer = [
+      '| 重复数区间 | 病情特点 |',
+      '|---|---|',
+      '| 1–3 个 | 发病更早、进展更快 |',
+      '| 7–10 个 | 临床变异性更大 |',
+    ].join('\n');
+    const excised = redactViolations(answer, inspectAnswer(answer, evidence));
+    expect(excised).not.toContain('发病更早');
+    expect(excised.split('\n').every((line) => line.trim().startsWith('|'))).toBe(true);
+    expect(excised).toContain('| 7–10 个 | 临床变异性更大 |');
+  });
+
+  it('does not re-inspect its own redaction marks as claims', () => {
+    const answer = '你的 3 个重复单元属于病情较严重的一档。';
+    const result = exciseUntilClean(answer, inspectAnswer(answer, evidence), evidence);
+    expect(result.text).toContain('这里有一句被我删掉了');
+    expect(result.violations).toHaveLength(1);
   });
 });

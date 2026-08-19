@@ -45,6 +45,8 @@ import type {
   RetrievedChunk,
 } from './base.js';
 import { emptyResult } from './base.js';
+import { withholdUnsafeReadings } from '../../patient-profile/profile.service.js';
+import type { UnsafeReading } from '../../patient-profile/profile.service.js';
 
 interface ReportRow {
   id: string;
@@ -59,6 +61,39 @@ interface ReportRow {
 
 const RECENT_LIMIT_DEFAULT = 5;
 const RECENT_LIMIT_MAX = 20;
+
+/**
+ * THE READ GUARD, ON THE PATH THAT SPEAKS WITH THE MOST AUTHORITY.
+ *
+ * `withholdUnsafeReadings` is the check every OTHER reader of a stored
+ * payload goes through — the profile projection, the single-document
+ * endpoint, the passport, the exports. This retriever had its own raw
+ * SQL and went through none of it, so a reading the guard withholds
+ * everywhere else was still handed to the model here and read back to
+ * the patient as their own laboratory value, in a sentence, with no
+ * number on any screen to contradict it.
+ *
+ * That is the worst place of the lot for it to leak. A wrong figure in
+ * a table is a figure a patient can compare against their paper report;
+ * the same figure spoken by the assistant is an answer to a question
+ * they asked because they could not read the report themselves.
+ *
+ * APPLIED TO THE WHOLE ROW, ONCE, BEFORE ANY READER OF IT RUNS.
+ * `buildReportFields` reads `fields`, the page and the impression off
+ * this object, and `resolveReportDate` reads it again for the citation
+ * chip. Guarding at one of those and not the others is how this class
+ * of hole gets reopened, so the row itself is replaced and there is no
+ * unguarded copy left in scope.
+ *
+ * The guard needs the report's own page and its `aiExtraction`
+ * reference intervals, and this query selects the whole `ocr_payload` —
+ * so unlike the profile projection there is nothing to arrange for it
+ * here.
+ */
+const guardReportRow = (row: ReportRow): ReportRow => ({
+  ...row,
+  ocr_payload: withholdUnsafeReadings(row.ocr_payload),
+});
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -250,6 +285,33 @@ const buildReportFields = (row: ReportRow): Record<string, unknown> => {
     if (impression) fields.reportImpressionAsPrinted = impression;
   }
 
+  // WHAT THE GUARD DID TO THIS ROW, OFFERED TO THE REDACTOR.
+  //
+  // `guardReportRow` has already deleted the withheld cells above, so
+  // nothing here is needed to keep a bad number out of the prompt. This
+  // is the other half: the readings still PRINTED but marked — outside
+  // the interval the report itself carries, or duplicated on a page
+  // that could not settle it — reach the model as ordinary numbers, and
+  // the assistant will read one out as flatly as any other.
+  //
+  // It carries analyte names, `fields` spellings and dispositions. NO
+  // VALUES: `UnsafeReading` has no `value` by construction, so this
+  // cannot hand a withheld figure back under a second key.
+  //
+  // ⚠ IT REACHES NO PROMPT YET. `projectOcrFields` is deny-by-default
+  // and `unsafeReadings` is on neither allowlist, so layer 3 drops it —
+  // the same posture `title` is carried under, and for the same reason:
+  // offered where the audit row can show it was dropped, rather than
+  // silently never offered. Allowlisting it is a change to
+  // ai-agents/security/allowlist.ts, which is not this module's file.
+  // Until that lands the assistant can be stopped from repeating a
+  // withheld reading but cannot be told to hedge a flagged one.
+  const unsafeReadings = (row.ocr_payload as { unsafeReadings?: UnsafeReading[] } | null)
+    ?.unsafeReadings;
+  if (Array.isArray(unsafeReadings) && unsafeReadings.length) {
+    fields.unsafeReadings = unsafeReadings;
+  }
+
   return fields;
 };
 
@@ -410,7 +472,11 @@ export class PatientReportsRetriever implements IRetriever {
     const chunks: RetrievedChunk[] = [];
     const citations: Citation[] = [];
 
-    result.rows.forEach((row, idx) => {
+    result.rows.forEach((rawRow, idx) => {
+      // BEFORE ANYTHING READS IT. Every use of the payload below —
+      // `buildReportFields`, `reportDateLabel` — takes the guarded row,
+      // and `rawRow` is not referenced again.
+      const row = guardReportRow(rawRow);
       const chunkId = randomUUID();
       const sourceFile = `patient_reports/${row.id}`;
       // What the「依据」chip shows the patient. `sourceFile` stays the

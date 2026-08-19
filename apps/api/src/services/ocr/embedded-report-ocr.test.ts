@@ -42,7 +42,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildFields } from './embedded-report-ocr.js';
 import type { RedactionMode } from '../../modules/ai-agents/security/allowlist.js';
-import { renderChunkForPrompt } from '../../modules/ai-agents/security/render.js';
+import { ocrRowKeyOfLabel, renderChunkForPrompt } from '../../modules/ai-agents/security/render.js';
 import { GENETIC_FIELD_KEYS, pickReading } from '../../modules/patient-profile/genetic-evidence.js';
 
 interface ParserCase {
@@ -291,7 +291,23 @@ const fieldsFor = (testCase: ParserCase): Record<string, string> =>
 /** The rows the model actually receives for this payload, as lines of
  *  the rendered prompt with their 「  - 」 bullet stripped. Run through
  *  the real renderer over a chunk shaped like the one
- *  `patient-reports.ts` builds. */
+ *  `patient-reports.ts` builds.
+ *
+ *  RE-KEYED TO THE PAYLOAD'S OWN VOCABULARY. The OCR block used to
+ *  print its raw payload keys, so a row's label WAS its key and every
+ *  assertion below could be written in the spellings this bridge emits.
+ *  It prints Chinese now — 「D4Z4 重复数（本平台判读）」 rather than
+ *  `d4z4Repeats_clinical` — for the same reason the document-type
+ *  VALUE was localised earlier (see the note in the first `toEqual`
+ *  below): a snake_case identifier under a Chinese heading is one the
+ *  model copies into the patient's answer.
+ *
+ *  What this file asks is 「one cell on the report, one row on the
+ *  prompt」, and that question is about keys. So the label is mapped
+ *  back through the renderer's own inverse rather than through a
+ *  second copy of its table here — `ocrRowKeyOfLabel` is exported for
+ *  exactly this, and a row whose key has no Chinese name printed its
+ *  key and comes back unchanged. */
 const promptRowsFor = (fields: Record<string, string>, mode: RedactionMode): string[] => {
   const chunk = {
     id: 'doc-1',
@@ -312,7 +328,11 @@ const promptRowsFor = (fields: Record<string, string>, mode: RedactionMode): str
   return renderChunkForPrompt(chunk as never, { mode })
     .content.split('\n')
     .filter((line) => line.startsWith('  - '))
-    .map((line) => line.slice(4));
+    .map((line) => line.slice(4))
+    .map((row) => {
+      const cut = row.indexOf(': ');
+      return cut < 0 ? row : `${ocrRowKeyOfLabel(row.slice(0, cut))}:${row.slice(cut + 1)}`;
+    });
 };
 
 const rowsNaming = (rows: string[], cell: string): string[] =>
@@ -563,22 +583,30 @@ describe('one cell on the report, one row on the prompt', () => {
       // What this test is actually about — one cell on the report
       // producing exactly one row on the prompt — is untouched by that:
       // the keys and the row count are the same either way.
+      //
+      // The `_clinical` values below read the same way for the same
+      // reason, one round later: a READING is a token this platform
+      // mints (`within_fshd1_repeat_range`), and it was printed
+      // verbatim into the prompt until security/render.ts took the
+      // Chinese for this vocabulary home from answer-guard.ts. The keys
+      // and the row count are again untouched — which is the whole of
+      // what these two lists are pinning.
       'documentType: 基因报告',
       'classifiedType: 基因报告',
       'haplotype: 4qA',
-      'haplotype_clinical: permissive_haplotype',
+      'haplotype_clinical: 允许型单倍型',
       'd4z4RepeatOther: 22',
-      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
+      'd4z4RepeatOther_clinical: 这一格是另一条等位基因，不是收缩的那一条',
       'methylationValue: 35%',
       'd4z4Repeats: 3',
-      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+      'd4z4Repeats_clinical: 这个重复数落在 FSHD1 的范围里',
     ]);
     expect(promptRowsFor(fields, 'strict')).toEqual([
       'documentType: 基因报告',
       'classifiedType: 基因报告',
-      'haplotype_clinical: permissive_haplotype',
-      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
-      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+      'haplotype_clinical: 允许型单倍型',
+      'd4z4RepeatOther_clinical: 这一格是另一条等位基因，不是收缩的那一条',
+      'd4z4Repeats_clinical: 这个重复数落在 FSHD1 的范围里',
       'numericValuesWithheld: 1',
     ]);
   });
@@ -595,12 +623,12 @@ describe('one cell on the report, one row on the prompt', () => {
       'classifiedType: 基因报告',
       'diagnosisType: FSHD1',
       'haplotype: 4qA',
-      'haplotype_clinical: permissive_haplotype',
+      'haplotype_clinical: 允许型单倍型',
       'd4z4RepeatOther: 22',
-      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
+      'd4z4RepeatOther_clinical: 这一格是另一条等位基因，不是收缩的那一条',
       'methylationValue: 35%',
       'd4z4Repeats: 3',
-      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+      'd4z4Repeats_clinical: 这个重复数落在 FSHD1 的范围里',
     ]);
     // The subtype survives strict beside the readings and NOT beside a
     // second copy of itself: it is a classification, not a measurement.
@@ -608,9 +636,9 @@ describe('one cell on the report, one row on the prompt', () => {
       'documentType: 基因报告',
       'classifiedType: 基因报告',
       'diagnosisType: FSHD1',
-      'haplotype_clinical: permissive_haplotype',
-      'd4z4RepeatOther_clinical: other_allele_not_the_contracted_one',
-      'd4z4Repeats_clinical: within_fshd1_repeat_range',
+      'haplotype_clinical: 允许型单倍型',
+      'd4z4RepeatOther_clinical: 这一格是另一条等位基因，不是收缩的那一条',
+      'd4z4Repeats_clinical: 这个重复数落在 FSHD1 的范围里',
       'numericValuesWithheld: 1',
     ]);
   });

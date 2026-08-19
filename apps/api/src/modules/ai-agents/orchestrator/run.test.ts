@@ -1456,8 +1456,15 @@ describe('Orchestrator.run — strict visibility notice', () => {
     }
 
     // The specific pair the old derivation got backwards: strict prints
-    // 甲基化数值 (value_withheld) and never 甲基化值.
-    expect(tools).toContain('甲基化数值: value_withheld');
+    // 甲基化数值 and never 甲基化值.
+    //
+    // The VALUE half of that row used to be asserted here as the raw
+    // `value_withheld`, and it is now the sentence that token spells:
+    // security/render.ts localises this platform's wire vocabulary where
+    // it is printed rather than leaving `WIRE_TOKEN_ZH` in answer-guard.ts
+    // to rewrite it out of the finished answer. Which KEY strict emits
+    // — the thing this test is about — is unchanged.
+    expect(tools).toContain('甲基化数值: 有结果在案，按当前授权没有发出');
     expect(tools).not.toContain('甲基化值');
     expect(inventory).toContain('甲基化数值');
     expect(inventory).not.toContain('甲基化值');
@@ -2842,5 +2849,159 @@ describe('the clinical output guard, through Orchestrator.run', () => {
     );
     expect(result.clinicalGuard?.violations[0].kind).toBe('retest_of_a_value_on_file');
     expect(result.answer).not.toContain('这里面没有甲基化的结果');
+  });
+
+  // Driven against the running stack: the model kept the claim and put
+  // 「在群体研究层面」 in front of it, then named the band 1–3. Every
+  // sentence was exempt and the guard recorded nothing at all.
+  it('does not let a cohort framing carry the band this patient is standing in', async () => {
+    const cohortFramed = [
+      '从检索到的文献来看，在群体研究层面：',
+      '',
+      '- 1–3 个重复单元的患者更有可能属于「早发型」FSHD，病情进展也更快 [2]',
+      '',
+      '这是群体层面的趋势，不是对个人的预测。',
+    ].join('\n');
+    const { result } = await runWith([cohortFramed, CLEAN]);
+    expect(result.clinicalGuard?.violations[0].kind).toBe('severity_from_patient_number');
+    expect(result.answer).not.toContain('早发型');
+  });
+
+  // The notice says N sentences were removed. Before the excision ran to
+  // a fixed point, what stood under it had never been looked at again.
+  it('publishes nothing that still violates under a notice saying it was removed', async () => {
+    const twice = [
+      '你的基因报告是这样的：',
+      '',
+      '- D4Z4 重复数：3，这个重复数落在 FSHD1 的范围里',
+      '- 3 个重复单元属于病情较严重的那一档。',
+      '',
+      '在群体研究中，1–3 个重复单元的人发病更早、进展更快 [1]。',
+    ].join('\n');
+    const { result } = await runWith([OFFENDING, twice]);
+    expect(result.clinicalGuard?.action).toBe('excised');
+    expect(result.answer).not.toContain('病情较严重的那一档');
+    expect(result.answer).not.toContain('发病更早');
+    // Both had to go, and the notice counts both.
+    expect(result.clinicalGuard?.violations).toHaveLength(2);
+    expect(result.answer).toContain('有 2 处被我删掉了');
+    // The platform's own reading still reaches the patient.
+    expect(result.answer).toContain('这个重复数落在 FSHD1 的范围里');
+  });
+
+  it('puts a measurement back on the unit the record holds for it', async () => {
+    const { result, llm } = await runWith(['你的甲基化值是 95。']);
+    expect(result.answer).toBe('你的甲基化值是 95%。');
+    expect(result.clinicalGuard?.action).toBe('localised');
+    expect(result.clinicalGuard?.restoredUnits).toContain('95%');
+    // A repair, not a claim: no regeneration is spent on it.
+    expect(llm.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('collapses an English gloss instead of stuttering the Chinese back', async () => {
+    const { result } = await runWith([
+      '你的单倍型是 4qA，对应的是「允许型（permissive）」单倍型。',
+    ]);
+    expect(result.answer).toBe('你的单倍型是 4qA，对应的是「允许型」单倍型。');
+    expect(result.clinicalGuard?.localisedTokens).toContain('permissive');
+  });
+
+  // The guard is handed the PATIENT'S tool messages as 「what the record
+  // printed」. It used to be handed all of them, so an interval the
+  // knowledge base stated counted as one the laboratory printed and the
+  // fabricated 参考范围 column walked through.
+  it('does not accept a knowledge-base interval as this report reference range', async () => {
+    const kbChunk = {
+      ...stubResult('medical_kb', 1),
+      chunks: [
+        {
+          id: 'c-kb-0',
+          source: 'medical_kb',
+          content: 'FSHD1 的 D4Z4 重复单元数通常在 1-10 之间，是分子诊断的常用范围。',
+          metadata: {},
+          distance: 0.1,
+          sourceFile: 'fshd/0.md',
+        },
+      ],
+    } as unknown as ReturnType<typeof stubResult>;
+    const llm = mkLlm([
+      {
+        content: null,
+        toolCalls: [
+          { id: 't1', name: 'get_my_reports', argumentsJson: '{}' },
+          { id: 't2', name: 'search_medical_kb', argumentsJson: '{}' },
+        ],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: [
+          '| 项目 | 我的数值 | 参考范围 |',
+          '|---|---|---|',
+          '| D4Z4 重复数 | 3 | 1-10 |',
+        ].join('\n'),
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    ]);
+    const registry = new ToolRegistry()
+      .register(mkTool('get_my_reports', stubResult('patient_reports', 1, REPORT_FIELDS)))
+      .register(mkTool('search_medical_kb', kbChunk));
+    const orch = new Orchestrator(
+      llm,
+      registry,
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 1 },
+    );
+    const result = await orch.run({
+      userId: 'u-synthetic',
+      question: '把我的报告列成带参考范围的表格。',
+      requestId: 'r-guard-range',
+      consentLevel: 'precise',
+    });
+    expect(result.clinicalGuard?.violations.map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+    expect(result.answer).not.toContain('| D4Z4 重复数 | 3 | 1-10 |');
+  });
+
+  // THE FOLLOW-UP TURN THE PLANNER ANSWERS BY ITSELF. No tool ran, so
+  // there is no projection and no retrieval — and before this the whole
+  // guard was skipped on this path. The number is in the history, which
+  // is the ordinary shape of a conversation about your own report.
+  it('guards the planner direct answer, reading the numbers off the conversation', async () => {
+    const llm = mkLlm([
+      {
+        content: '3 个重复单元的人，往往属于进展更快、发病更早的那一端。',
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+      {
+        content:
+          '在人群里重复数越短总体上发病越早，但这是趋势，不是对你个人的预测。具体怎么走，最好带着报告问你的主治医生。',
+        toolCalls: [],
+        finishReason: 'stop',
+      },
+    ]);
+    const orch = new Orchestrator(
+      llm,
+      new ToolRegistry(),
+      silentLogger as unknown as RetrieveContext['logger'],
+      { maxToolRounds: 1 },
+    );
+    const result = await orch.run({
+      userId: 'u-synthetic',
+      question: '那 3 个重复单元，是不是意味着我以后会更严重、进展更快？',
+      requestId: 'r-guard-followup',
+      consentLevel: 'precise',
+      history: [
+        { role: 'user', content: '我的基因报告说了什么？' },
+        {
+          role: 'assistant',
+          content: '你的 D4Z4 重复数是 3 个，单倍型是 4qA，甲基化值是 95%。',
+        },
+      ],
+    });
+    expect(result.clinicalGuard?.violations[0].kind).toBe('severity_from_patient_number');
+    expect(result.answer).not.toContain('进展更快、发病更早的那一端');
   });
 });

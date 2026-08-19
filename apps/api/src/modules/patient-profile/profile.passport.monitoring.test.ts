@@ -924,3 +924,193 @@ describe('血检指标：挑的是真的有血检值的那份报告', () => {
     );
   });
 });
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE LABORATORY SAID MORE THAN THE NUMBER.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * A muscle-enzyme row prints three things — the analyte, the value, and
+ * the laboratory's own verdict on that value against its own interval —
+ * and the parser reads all three. `buildMonitoringSummary` read the
+ * first two, so a CK of 693 against a stated upper limit of 310 printed
+ * 「CK 693」, in the same words and the same weight a CK of 90 would
+ * print, on the row that goes into the referral pack, onto the share
+ * page a clinician opens, and onto the PDF the patient hands over.
+ *
+ * SYNTHETIC. The payload below is shaped like the one
+ * `services/ocr/embedded-report-ocr.ts` writes from a parse of
+ * 「*14肌酸激酶(CK) 693 ↑ 50-310 U/L」 — the row quoted in that file's own
+ * flag/interval note. No real patient's report was read.
+ */
+describe('血检指标：报告标了异常，这一栏就得说', () => {
+  const bloodReport = (fields: Record<string, string>, uploadedAt = '2026-07-01T00:00:00.000Z') =>
+    ({
+      id: 'lab-1',
+      documentType: 'muscle_enzyme',
+      title: null,
+      fileName: 'ck.pdf',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 1,
+      storageUri: 'local://ck',
+      status: 'parsed',
+      uploadedAt,
+      checksum: null,
+      submissionId: null,
+      ocrPayload: {
+        fields: { classifiedType: 'muscle_enzyme', documentType: 'muscle_enzyme', ...fields },
+      },
+    }) as unknown as PatientProfileDTO['documents'][number];
+
+  const bloodSummaryFor = (fields: Record<string, string>) =>
+    itemFor(base({ documents: [bloodReport(fields)] } as never), 'blood')?.summary ?? '';
+
+  it('印出偏高和参考区间，不再让一个 2.2 倍上限的 CK 长得像正常值', () => {
+    expect(bloodSummaryFor({ ck: '693', ckFlag: 'high', ckReference: '50-310' })).toBe(
+      'CK 693（偏高，参考区间 50-310）',
+    );
+  });
+
+  it('只有标记没有区间时也照说 —— 那仍然是化验室自己的判断', () => {
+    expect(bloodSummaryFor({ ck: '693', ckFlag: 'high' })).toBe('CK 693（偏高）');
+  });
+
+  it('只有区间没有标记时印出区间 —— 让读的人自己核对，而不是让他相信', () => {
+    expect(bloodSummaryFor({ ck: '120', ckReference: '50-310' })).toBe('CK 120（参考区间 50-310）');
+  });
+
+  it('两样都没有的行和以前一模一样', () => {
+    expect(bloodSummaryFor({ ck: '120' })).toBe('CK 120');
+  });
+
+  it('本平台读不懂的标记不印 —— 不替化验室改写它的判断', () => {
+    expect(bloodSummaryFor({ ck: '693', ckFlag: 'critically_elevated' })).toBe('CK 693');
+  });
+
+  /**
+   * The bridge writes the flag under the CAMEL spelling only while the
+   * value is on the payload under both, so a value picked off the snake
+   * key has to find its own siblings. Reading them off a second key
+   * list would let one report's flag land beside another report's
+   * value; `pickFieldEntry` is what makes it the same cell.
+   */
+  it('值从蛇形拼写上读到时，标记仍然跟着它 —— 桥只写驼峰那一个', () => {
+    expect(bloodSummaryFor({ uric_acid: '520', uricAcidFlag: 'high' })).toBe('UA 520（偏高）');
+  });
+
+  it('每一项自己带自己的标记，不会串到隔壁那一项上', () => {
+    expect(bloodSummaryFor({ ck: '693', ckFlag: 'high', ldh: '210' })).toBe(
+      'CK 693（偏高），LDH 210',
+    );
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 报告日期 AND 上传日期 ARE NOT THE SAME DAY.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * See `PassportDateBasis` in profile.passport.ts. A report whose OCR
+ * carried no 报告时间 is dated by the day it reached this platform, and
+ * the badge beside it read 最新 either way — so 「this test is recent」
+ * and 「we received this file recently」 were the same sentence.
+ */
+describe('最近日期：这一天是化验室写的，还是我们收到文件的那天', () => {
+  const NOW = new Date('2026-08-05T00:00:00.000Z');
+
+  const pulmonaryReport = (fields: Record<string, string>, uploadedAt: string) =>
+    ({
+      id: 'pft-1',
+      documentType: 'pulmonary_function',
+      title: null,
+      fileName: 'pft.pdf',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 1,
+      storageUri: 'local://pft',
+      status: 'parsed',
+      uploadedAt,
+      checksum: null,
+      submissionId: null,
+      ocrPayload: {
+        fields: {
+          classifiedType: 'pulmonary_function',
+          documentType: 'pulmonary_function',
+          ...fields,
+        },
+      },
+    }) as unknown as PatientProfileDTO['documents'][number];
+
+  const respiratoryFor = (fields: Record<string, string>, uploadedAt: string) =>
+    buildClinicalPassportSummary(
+      base({ documents: [pulmonaryReport(fields, uploadedAt)] } as never),
+      NOW,
+    ).monitoring.items.find((item) => item.key === 'respiratory');
+
+  it('化验室写了报告时间时，那一天就是报告日期', () => {
+    const item = respiratoryFor(
+      { fvcPredPct: '78', reportTime: '2026-07-20' },
+      '2026-08-01T00:00:00.000Z',
+    );
+    expect(item?.latestDate).toBe('2026-07-20');
+    expect(item?.freshness.basis).toBe('report');
+    expect(item?.freshness.label).toBe('最新');
+  });
+
+  /**
+   * THE CASE THE BADGE WAS LYING ABOUT. A 2019 test uploaded last week
+   * is 最新 by the only day this platform has, and the verdict is not
+   * degraded — an upload day is a real bound and 过期 read off one
+   * would be true. What was missing is the word saying which day it is.
+   */
+  it('没有报告时间时，那一天是上传日期，并且明说是上传日期', () => {
+    const item = respiratoryFor({ fvcPredPct: '78' }, '2026-08-01T00:00:00.000Z');
+    expect(item?.latestDate).toBe('2026-08-01');
+    expect(item?.freshness.basis).toBe('upload');
+    expect(item?.freshness.label).toBe('最新');
+  });
+
+  it('一天都没有时不认领任何一种 —— 那是在说本平台的记录，不是在说哪一天', () => {
+    const item = buildClinicalPassportSummary(base(), NOW).monitoring.items.find(
+      (entry) => entry.key === 'respiratory',
+    );
+    expect(item?.latestDate).toBeNull();
+    expect(item?.freshness.basis).toBeNull();
+    expect(item?.freshness.label).toBe('缺失');
+  });
+
+  it('导出的 markdown 把这个词印出来 —— 算了不给人看的判断等于没算', () => {
+    const summary = buildClinicalPassportSummary(
+      base({
+        documents: [pulmonaryReport({ fvcPredPct: '78' }, '2026-08-01T00:00:00.000Z')],
+      } as never),
+      NOW,
+    );
+    const markdown = buildClinicalPassportExport(summary).markdown;
+    expect(markdown).toContain('（2026-08-01 上传日期，最新）');
+  });
+
+  /**
+   * The genetics slot was the one of the five that never asked for the
+   * report's own day at all, and it is the longest-lived document on
+   * this page: a laboratory report from 2019 is still the answer in
+   * 2026, and dating it by the upload put 最新 on a seven-year-old test.
+   */
+  it('基因报告也读它自己的日期 —— 这一格以前只看上传时间', () => {
+    const summary = buildClinicalPassportSummary(
+      base({
+        documents: [
+          geneticReport(
+            { d4z4Repeats: '3', haplotype: '4qA', reportTime: '2019-03-11' },
+            {
+              uploadedAt: '2026-07-30T00:00:00.000Z',
+            },
+          ),
+        ],
+      } as never),
+      NOW,
+    );
+    expect(summary.diagnosis.latestSourceDate).toBe('2019-03-11');
+    expect(summary.diagnosis.freshness.basis).toBe('report');
+    expect(summary.diagnosis.freshness.label).toBe('过期');
+  });
+});

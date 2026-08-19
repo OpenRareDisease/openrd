@@ -22,14 +22,55 @@
  * model does not obey them. A rule that is only asserted is not a
  * control.
  *
+ * ---------------------------------------------------------------------
+ * WHAT THE SECOND ROUND AGAINST THE STACK CHANGED, AND WHY IT IS A
+ * CHANGE OF SHAPE RATHER THAN A LIST OF PATCHES.
+ *
+ * The first version of this file was four checks, and each one was a
+ * fact ANDed with a lexicon. Driven again, the model went through the
+ * lexicons and the windows, not through the facts:
+ *
+ *   - it kept the severity claim and typed 「在群体研究层面」 in front of
+ *     it, which the escape below used to accept, and then named the
+ *     band 1–3 — the band the reader is standing in;
+ *   - it bolded the word being matched, so 「**更严重受累**」 reached a
+ *     lexicon that had never seen an asterisk;
+ *   - it answered a follow-up whose number lived in the conversation
+ *     rather than in this turn's retrieval, where the number set was
+ *     empty and every check stood down;
+ *   - it printed 「诊断范围（1-10）」 in a 参考范围 column, which no check
+ *     looked at.
+ *
+ * So the rule this file is now built to, stated once and applied
+ * everywhere below:
+ *
+ *   A CHECK IS GROUNDED IN A FACT THIS TURN HOLDS WHEREVER ONE EXISTS.
+ *   Which numbers are his; which cells carry this platform's reading;
+ *   what the retrieved chunks and the rendered projection actually say;
+ *   which intervals his record printed. A fact cannot be paraphrased
+ *   around, and it is the half of every rule below that does the work.
+ *
+ *   WHERE NO FACT CAN ANSWER IT, THE LEXICON SAYS SO IN ITS OWN COMMENT
+ *   AND FAILS TOWARD SILENCE. 「严重」 is not derivable from anything the
+ *   turn holds and never will be; neither is 参考范围. Those lists are
+ *   marked, and every one of them is used to DECIDE TO WITHHOLD rather
+ *   than to decide to publish — a word the list is missing costs a
+ *   sentence that should have been cut, never a sentence that should
+ *   have been kept.
+ *
+ *   AND EVERY LEXICON IS MATCHED AGAINST NORMALISED TEXT, once, in one
+ *   place. See `normaliseForMatch`.
+ *
+ * ---------------------------------------------------------------------
  * WHAT EACH CHECK IS DERIVED FROM — none of them is a list of forbidden
  * claims, because a list of claims is what the prompt already is:
  *
  *   1. A severity / prognosis / progression / onset claim attached to
  *      THIS PATIENT'S number. The turn knows which numbers are theirs:
- *      they are in the projection this run built. A word list would have
- *      to guess; this asks whether the sentence carries one of *their*
- *      values (or a band containing it) next to a severity word.
+ *      they are in the projection this run built, or — on a follow-up
+ *      that retrieved nothing — in the conversation this run is
+ *      holding. A word list would have to guess; this asks whether the
+ *      sentence carries one of *their* values, or a band containing it.
  *   2. A grading of a cell this platform declines to grade. The turn
  *      knows which cells it graded: a cell that travelled with a
  *      `_clinical` sibling has this platform's reading, a cell that
@@ -38,21 +79,29 @@
  *      So the guard does not carry a list of ungradable cells; it reads
  *      the projection and treats every reading-less cell the same way.
  *   3. A mechanism no retrieved source states. The turn holds the
- *      retrieved chunks. A causal sentence carrying no citation whose
- *      every 6-character shingle is absent from all of them was composed
- *      here, not read.
- *   4. A recommendation to go and acquire a measurement the record
- *      already holds. `numericValuesWithheld` is an absence produced by
- *      CONSENT, and the model read it as an absence of the finding —
+ *      retrieved chunks AND its own rendered rows. A causal sentence
+ *      carrying no citation whose every 4-character shingle is absent
+ *      from both was composed here, not read.
+ *   4. A claim that the record does not hold a cell it does hold.
+ *      `numericValuesWithheld` is an absence produced by CONSENT, and
+ *      the model read it as an absence of the finding —
  *      「但是，这里面没有甲基化的结果」 to a patient whose report says
- *      95%, followed by four indications for ordering the test. The turn
- *      knows the cell is on file: it is in the raw retriever payload and
- *      not in the rendered projection.
+ *      95%. The turn knows the cell is on file: it is in the raw
+ *      retriever payload and not in the rendered projection. What the
+ *      check asks is whose absence the sentence asserts — the REPORT'S
+ *      or this assistant's — because only the first one is false.
+ *   5. A reference interval the record never printed. A 参考范围 cell is
+ *      a claim about what the LABORATORY printed beside the patient's
+ *      value. The turn holds every interval the record actually
+ *      carried, so an interval that is not one of them was composed
+ *      here — and it reaches the patient looking exactly like the
+ *      laboratory's own.
  *
- * WHAT IT DOES WHEN IT FIRES — see `GUARD_REGENERATION_DIRECTIVE` and
- * `EXCISION_NOTICE`. Briefly: regenerate once with the offending
+ * WHAT IT DOES WHEN IT FIRES — see `buildRegenerationDirective` and
+ * `buildExcisionNotice`. Briefly: regenerate once with the offending
  * sentences quoted back, and if the second answer still violates, excise
- * exactly those sentences and TELL THE PATIENT what was removed and why.
+ * exactly those sentences, RE-INSPECT WHAT IS LEFT (see
+ * `exciseUntilClean`), and TELL THE PATIENT what was removed and why.
  * Refusing the whole answer was considered and rejected: this is a
  * patient who asked a direct question about their own report, this
  * platform's own readings of that report are legitimate answers to it,
@@ -60,6 +109,53 @@
  * silent excision was rejected for the reason stated on
  * `markDegraded` — a caveat the patient cannot see is not a caveat.
  *
+ * ---------------------------------------------------------------------
+ * WHAT THIS FILE STILL CANNOT SEE, measured against the running stack in
+ * the same session that produced the fixes above. Both fail toward
+ * PUBLICATION, which is why they are written down here rather than left
+ * for the next round to rediscover:
+ *
+ *   - A TURN THAT DOES NOT KNOW THE NUMBER IS HIS. Asked
+ *     「帮我总结一下文献里 D4Z4 重复数和发病年龄的关系」 — a question
+ *     that names no record — nothing retrieved the patient's report and
+ *     nothing in the conversation named a count, so the model published
+ *     「1–3 个重复单元的患者病情通常较严重」 to a patient whose count is
+ *     3 and check 1 had nothing to fire on. THIS IS NOT CLOSEABLE WITH A
+ *     LEXICON and must not be attempted with one: the same table is the
+ *     correct answer to the same question asked by someone whose count
+ *     is 30, and a guard that deleted it would be deleting the
+ *     encyclopedia. What closes it is the retrieval — the rule in
+ *     `companion-tools.ts` that adds `get_my_reports` when the
+ *     conversation is about the patient's own material, widened to a
+ *     question that asks about the bands their own report is in. That
+ *     is a change to which tools run, which is that file's decision and
+ *     not this one's.
+ *   - A CLAIM ASSEMBLED ACROSS TWO PERMITTED SENTENCES. Observed:
+ *     「3 个重复单元在 FSHD 人群里确实属于较短的范围。」 followed by
+ *     「在群体层面，重复数越短，总体上发病往往越早、表型往往越重。」
+ *     Neither sentence is a violation — the first states his value and
+ *     says only that it is short, the second is the cohort finding the
+ *     prompt permits — and together they are the syllogism. The unit
+ *     this file judges is a segment; a two-step inference across
+ *     segments is not something a segment-level check sees, and pooling
+ *     adjacent sentences to catch it would condemn every honest answer
+ *     that states a value and then states the population trend, which is
+ *     the shape this platform asks for.
+ *   - A BAND THAT REACHES A BULLET LIST THROUGH ITS LEAD-IN. The two
+ *     inheritances below — a nested item from its label, a sentence
+ *     from the sentence it points back at — cover the shapes that were
+ *     observed. They do not cover
+ *     「你落在 1–3 这一档。这一档在临床上通常关联着：」 followed by
+ *     「- 发病年龄相对较早」, where the band reaches the bullets through
+ *     a lead-in that is not itself a list item. Propagating numbers
+ *     from any colon-terminated lead-in WAS tried and rejected: it
+ *     condemns 「你的重复数是 3，下面是随访建议：」 followed by
+ *     「- 每年复查一次，注意病程变化」 — a follow-up plan, deleted for
+ *     the word 病程. Deleting a patient's follow-up advice to catch one
+ *     more phrasing of a trend they were told two lines earlier is the
+ *     wrong trade, and this is the line where the inheritance stops.
+ *
+ * ---------------------------------------------------------------------
  * WHAT THIS FILE DOES NOT OWN, said loudly rather than quietly worked
  * around:
  *
@@ -86,6 +182,39 @@
  */
 
 import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
+
+// ------------------------------------------------------------ normalisation
+
+/**
+ * MARKDOWN IS LAYOUT. EVERY CHECK BELOW IS ABOUT WORDS.
+ *
+ * The single most effective thing the model did against the first
+ * version of this file was to emphasise the word being matched. Driven
+ * against the stack it wrote 「**在群体研究层面，D4Z4 重复数 1–3 确实与
+ * 更早发病、更严重的病情相关**」 and 「1–3 个重复单元的患者被描述为
+ * **「更严重受累」**」; a `**` sitting inside 「更严重」 does not split it,
+ * but 「更**严重**」 does, and the model produces both. The same holds
+ * for every other lexicon here — 甲基化, 参考范围, 没有 — and for the
+ * cell terms the proximity rules are measured from.
+ *
+ * So the emphasis characters come off ONCE, here, and every check reads
+ * `Segment.match` rather than `Segment.text`. The verbatim text is what
+ * gets quoted back to the model and what the excision has to find
+ * again, so it is kept beside it rather than replaced.
+ *
+ * `*`, backtick and `~` are removed unconditionally — none of the three
+ * is a word character in Chinese or in this platform's vocabulary.
+ * SINGLE `_` IS DELIBERATELY LEFT: this platform's own wire tokens are
+ * snake_case (`not_read_off_a_laboratory_report`), the localisation
+ * above runs before any of this, and mangling an unrecognised token
+ * into one word would hide it from the eyes that have to notice it.
+ * `__` — which can only be emphasis — is removed.
+ */
+const ZERO_WIDTH = /[\u200b-\u200f\u2060\ufeff]/gu;
+const EMPHASIS = /\*|`|~|__/gu;
+
+export const normaliseForMatch = (text: string): string =>
+  text.replace(ZERO_WIDTH, '').replace(EMPHASIS, '');
 
 // ---------------------------------------------------------------- vocabulary
 
@@ -145,7 +274,7 @@ const NON_MEASUREMENT_KEY = /year|date|time|count|days|_at$|index|id$/i;
  *
  * Every one of these was OBSERVED reaching a patient verbatim. Driven
  * against the running stack: 「单倍型是 4qA，属于「允许型」（permissive）」,
- * 「你的报告里有些字段标注了 `not_read_off_a_laboratory_report`」 — followed
+ * 「你的报告里有些字段标注了 not_read_off_a_laboratory_report」 — followed
  * by the model's own invented gloss of what that token means — and
  * 「目前上传的是基因检测报告（genetic_report）」.
  *
@@ -196,22 +325,127 @@ const BARE_WIRE_WORD: Readonly<Record<string, string>> = {
   'non-permissive': '非允许型',
 };
 
+/**
+ * THE SUFFIX IS THE VOCABULARY, so this one is a shape rather than a
+ * list.
+ *
+ * `WIRE_TOKEN_ZH` above can only carry the keys somebody remembered to
+ * add, and the projection mints a key per CELL: `methylation_clinical`,
+ * `d4z4Repeats_origin`, `haplotype_withheld`. Driven against the running
+ * stack, the model wrote 「判读栏里没有 methylation_clinical 这个字段」 —
+ * a true and useful sentence with a snake_case identifier in the middle
+ * of it, and the table has no entry for that key because the table is a
+ * list of keys.
+ *
+ * `_clinical` / `_origin` / `_withheld` are the projection's own naming
+ * convention (see `projectOcrFields` in security/pii-redactor.ts), so
+ * the suffix is derivable where the key is not. Applied AFTER the exact
+ * table, so `fields_clinical` — which has its own better wording — is
+ * already gone by the time this runs.
+ */
+const WIRE_SUFFIX_ZH: ReadonlyArray<{ pattern: RegExp; zh: string }> = [
+  {
+    pattern: /(?<![0-9A-Za-z_])[A-Za-z][0-9A-Za-z]*_clinical(?![0-9A-Za-z_])/gu,
+    zh: '这一格的「本平台判读」',
+  },
+  {
+    pattern: /(?<![0-9A-Za-z_])[A-Za-z][0-9A-Za-z]*_origin(?![0-9A-Za-z_])/gu,
+    zh: '这一格的「来源」',
+  },
+  {
+    pattern: /(?<![0-9A-Za-z_])[A-Za-z][0-9A-Za-z]*_withheld(?![0-9A-Za-z_])/gu,
+    zh: '这一格的「按当前授权没有发出」',
+  },
+];
+
 const WIRE_TOKENS_LONGEST_FIRST = Object.keys(WIRE_TOKEN_ZH).sort((a, b) => b.length - a.length);
+
+/** `-` is deliberately not escaped: it is only special inside a
+ *  character class, nothing here interpolates into one, and `\-` is an
+ *  invalid escape under the `u` flag. */
+const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+/**
+ * THE MODEL OFTEN GETS THIS RIGHT AND THEN SHOWS ITS WORKING.
+ *
+ * Driven against the stack, asked to gloss the Chinese term with its
+ * English original, the model wrote 「你的单倍型是 4qA，对应的是
+ * 「允许型（permissive）」单倍型」 — the Chinese is already there, the
+ * English is a parenthetical beside it, and the blind substitution below
+ * turned that into 「允许型（允许型）」. A stutter in the one sentence the
+ * patient is reading for the answer is worse than the English word was:
+ * the English word is inert, and the stutter reads as a broken system.
+ *
+ * A gloss is not a wire token reaching a patient — it is a wire token
+ * being TRANSLATED, which is what this whole table is for. So the gloss
+ * collapses to the Chinese, in both orders, and the substitution below
+ * never sees it. Longest wire form first for the same reason the token
+ * loop is: 「非允许型（non-permissive）」 must not be read as
+ * 「允许型（permissive）」 with debris on either side.
+ */
+const GLOSS_PAIRS: ReadonlyArray<{ wire: string; zh: string }> = [
+  ...Object.entries(WIRE_TOKEN_ZH),
+  ...Object.entries(BARE_WIRE_WORD),
+]
+  .map(([wire, zh]) => ({ wire, zh }))
+  .sort((a, b) => b.wire.length - a.wire.length);
+
+const OPEN_BRACKET = '［【（(\\[「『';
+const CLOSE_BRACKET = '］】）)\\]」』';
+const CLOSING_QUOTE = '」』"”\'';
+
+const collapseGlosses = (answer: string): { text: string; tokens: string[] } => {
+  let text = answer;
+  const tokens: string[] = [];
+  for (const { wire, zh } of GLOSS_PAIRS) {
+    const w = escapeForRegex(wire);
+    const z = escapeForRegex(zh);
+    // 「允许型（permissive）」 and 「「允许型」（permissive）」 — the closing
+    // quote is kept, the bracket and the wire word go.
+    const chineseFirst = new RegExp(
+      `(${z}\\s*[${CLOSING_QUOTE}]?)\\s*[${OPEN_BRACKET}]\\s*${w}\\s*[${CLOSE_BRACKET}]`,
+      'giu',
+    );
+    // 「permissive（允许型）」 — the same gloss written the other way up.
+    const wireFirst = new RegExp(
+      `${w}\\s*[${OPEN_BRACKET}]\\s*(${z})\\s*[${CLOSE_BRACKET}]`,
+      'giu',
+    );
+    for (const pattern of [chineseFirst, wireFirst]) {
+      if (!pattern.test(text)) continue;
+      pattern.lastIndex = 0;
+      tokens.push(wire);
+      text = text.replace(pattern, '$1');
+    }
+  }
+  return { text, tokens };
+};
 
 /** Substitute this platform's wire vocabulary for Chinese. Returns the
  *  rewritten text and the tokens that were actually present. */
 export const localiseWireTokens = (answer: string): { text: string; tokens: string[] } => {
-  let text = answer;
-  const tokens: string[] = [];
+  const collapsed = collapseGlosses(answer);
+  let text = collapsed.text;
+  const tokens: string[] = [...collapsed.tokens];
+  const note = (token: string) => {
+    if (!tokens.includes(token)) tokens.push(token);
+  };
   for (const token of WIRE_TOKENS_LONGEST_FIRST) {
     if (!text.includes(token)) continue;
-    tokens.push(token);
+    note(token);
     text = text.split(token).join(WIRE_TOKEN_ZH[token]);
   }
   for (const [word, zh] of Object.entries(BARE_WIRE_WORD)) {
-    const pattern = new RegExp(`(?<![0-9A-Za-z_-])${word}(?![0-9A-Za-z_-])`, 'gi');
+    const pattern = new RegExp(`(?<![0-9A-Za-z_-])${escapeForRegex(word)}(?![0-9A-Za-z_-])`, 'gi');
     if (!pattern.test(text)) continue;
-    tokens.push(word);
+    note(word);
+    text = text.replace(pattern, zh);
+  }
+  for (const { pattern, zh } of WIRE_SUFFIX_ZH) {
+    pattern.lastIndex = 0;
+    const found = text.match(pattern);
+    if (!found) continue;
+    for (const token of found) note(token);
     text = text.replace(pattern, zh);
   }
   return { text, tokens };
@@ -224,6 +458,15 @@ export interface PatientNumber {
   value: number;
   /** The genetics cell it belongs to, or null for any other measurement. */
   cell: string | null;
+  /** The unit the record printed beside it — 「%」, 「kb」 — or null when
+   *  the record printed a bare number. See `restoreUnits`. */
+  unit: string | null;
+  /** How the turn knows this number is his. `record` — it is on a
+   *  payload a patient-scoped retriever returned this turn. `conversation`
+   *  — this turn retrieved nothing of his, and the number is one the
+   *  conversation is carrying beside one of his cells. See
+   *  `BuildGuardEvidenceInput.conversationTexts`. */
+  origin: 'record' | 'conversation';
 }
 
 /**
@@ -231,8 +474,9 @@ export interface PatientNumber {
  *
  * Assembled by `buildGuardEvidence` from things the run already has: the
  * raw retriever payloads for the patient's own numbers, the rendered
- * rows for what this platform said about them, and the retrieved chunks
- * for what a source states.
+ * rows for what this platform said about them, the retrieved chunks for
+ * what a source states, and — only when the first of those is empty —
+ * the conversation itself.
  */
 export interface GuardEvidence {
   /** Every measurement on this patient's record, whether or not consent
@@ -248,12 +492,29 @@ export interface GuardEvidence {
    *  An absence produced by consent, which must never be reported as an
    *  absence of the finding. */
   withheldCells: readonly string[];
-  /** 6-character shingles of every retrieved non-patient chunk. Empty
-   *  when nothing was retrieved, which disables the mechanism check —
-   *  see `CORPUS_UNAVAILABLE_NOTICE` in run.ts, which is the control
-   *  that already covers that case. */
-  corpusShingles: ReadonlySet<string>;
+  /**
+   * 4-character shingles of everything the turn READ rather than
+   * composed: every retrieved non-patient chunk, every rendered
+   * projection row, and this file's own Chinese for the platform's
+   * readings.
+   *
+   * THE LAST TWO ARE WHY A TABLE CELL CAN BE CHECKED AT ALL. The first
+   * version skipped table rows outright, because a cell restating this
+   * platform's own `permissive_haplotype` reading in plain Chinese
+   * shares no wording with the corpus and was excised for it. That cell
+   * is not unsourced — its source is the projection sitting in this
+   * turn's own prompt. Once the projection is part of what counts as a
+   * source, the row can be judged like any other sentence, and the
+   * fabricated ones in tables stop being invisible.
+   */
+  supportShingles: ReadonlySet<string>;
   corpusChunkCount: number;
+  /**
+   * Every numeric interval the RECORD carried this turn, canonicalised
+   * by `intervalsIn`. The admissible contents of a 参考范围 cell, and
+   * nothing else is — see `fabricated_reference_range`.
+   */
+  recordIntervals: ReadonlySet<string>;
 }
 
 /**
@@ -275,7 +536,7 @@ export interface GuardEvidence {
  *
  * WHAT THAT COSTS, stated: a Chinese-heavy retrieval gives an invented
  * sentence more chances to share a 4-gram, so this check misses more
- * than it catches and is the weakest of the four. It fails toward
+ * than it catches and is the weakest of the five. It fails toward
  * silence, which is the correct direction for a check whose false
  * positive is deleting a true sentence about the patient's disease.
  */
@@ -297,6 +558,53 @@ const shinglesOf = (text: string): string[] => {
 };
 
 /**
+ * A numeric interval, in the shapes a laboratory or a source writes one.
+ *
+ * Canonicalised so the answer's wording cannot dodge the comparison:
+ * 「40-60」, 「40–60」 and 「40 至 60」 are one interval, and 「<40」,
+ * 「小于 40」 and 「40 以下」 are another.
+ */
+/**
+ * A BAND, IN THE SHAPES A REPORT AND A PAPER ACTUALLY WRITE ONE.
+ *
+ * The unit is optional on BOTH endpoints because a laboratory writes
+ * 「40%-60%」 and a paper writes 「40-60%」, and a band regex that stops
+ * at the first `%` sees neither. One source string, used by the
+ * reference-range scan and by the severity check, so the two can never
+ * disagree about what a band is.
+ */
+const BAND_SOURCE =
+  '(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)\\s*(?:%|％|kb|KB)?\\s*(?:-|–|—|~|～|到|至)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(?:%|％|kb|KB)?(?![0-9A-Za-z.])';
+
+const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
+const INTERVAL_BELOW =
+  /(?:<|≤|<=|小于|低于|不足)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*(?:以下|以内)/gu;
+const INTERVAL_ABOVE =
+  /(?:>|≥|>=|大于|高于|超过)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*以上/gu;
+
+export const intervalsIn = (text: string): string[] => {
+  const out: string[] = [];
+  const scan = (pattern: RegExp, render: (match: RegExpExecArray) => string | null) => {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const key = render(match);
+      if (key !== null) out.push(key);
+    }
+  };
+  scan(INTERVAL_BAND, (match) => `${Number(match[1])}~${Number(match[2])}`);
+  scan(INTERVAL_BELOW, (match) => {
+    const value = match[1] ?? match[2];
+    return value === undefined ? null : `<${Number(value)}`;
+  });
+  scan(INTERVAL_ABOVE, (match) => {
+    const value = match[1] ?? match[2];
+    return value === undefined ? null : `>${Number(value)}`;
+  });
+  return out;
+};
+
+/**
  * Walk a raw retriever payload for this patient's measurements.
  *
  * `HARD_DELETE_KEYS_LOWER` is skipped first: those keys hold telephone
@@ -311,7 +619,15 @@ const shinglesOf = (text: string): string[] => {
  * beside a severity word would read as a claim about this patient's
  * haplotype.
  */
-const NUMERIC_VALUE = /^\s*([0-9]+(?:\.[0-9]+)?)\s*(%|kb|KB|个|次|分|岁)?\s*$/u;
+const NUMERIC_VALUE = /^\s*([0-9]+(?:\.[0-9]+)?)\s*(%|％|kb|KB|个|次|分|岁)?\s*$/u;
+
+/** The unit as this file writes it, so 「KB」 and 「kb」 are one unit. */
+const canonicalUnit = (raw: string | undefined): string | null => {
+  if (!raw) return null;
+  if (raw === '％') return '%';
+  if (raw.toLowerCase() === 'kb') return 'kb';
+  return raw;
+};
 
 const collectNumbers = (value: unknown, key: string, depth: number, out: PatientNumber[]): void => {
   if (depth > 8) return;
@@ -333,7 +649,93 @@ const collectNumbers = (value: unknown, key: string, depth: number, out: Patient
   if (!match) return;
   const parsed = Number(match[1]);
   if (!Number.isFinite(parsed)) return;
-  out.push({ value: parsed, cell: cellOfKey(key) });
+  out.push({
+    value: parsed,
+    cell: cellOfKey(key),
+    unit: canonicalUnit(match[2]),
+    origin: 'record',
+  });
+};
+
+/** Every scalar string on a payload, for the interval scan. */
+const collectScalars = (value: unknown, depth: number, out: string[]): void => {
+  if (depth > 8) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectScalars(item, depth + 1, out);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [innerKey, innerValue] of Object.entries(value as Record<string, unknown>)) {
+      if (HARD_DELETE_KEYS_LOWER.has(innerKey.toLowerCase())) continue;
+      collectScalars(innerValue, depth + 1, out);
+    }
+    return;
+  }
+  if (typeof value === 'string' || typeof value === 'number') out.push(String(value));
+};
+
+/**
+ * THE FOLLOW-UP TURN, WHICH IS THE ORDINARY SHAPE OF THIS CONVERSATION.
+ *
+ * The first version assembled the patient's numbers from the chunks a
+ * PATIENT-scoped retriever returned THIS TURN. Driven against the stack,
+ * 「那 3 个重复单元，是不是意味着我以后会更严重、进展更快？」 asked after
+ * a turn that had already read the report retrieved nothing of the
+ * patient's — the question names no record, so nothing forced the
+ * lookup — and the model answered 「1 到 3 个单元的患者，往往是疾病谱系
+ * 里偏重的那一端」 with every check standing down for want of a number.
+ * A patient asking about their own report asks most of their questions
+ * this way.
+ *
+ * So when the turn retrieved NOTHING of the patient's, the numbers come
+ * out of what the turn is holding instead: the question, and the
+ * assistant turns of the history — restricted to sentences that name one
+ * of the genetics cells, because a bare number in a conversation is not
+ * a measurement.
+ *
+ * ONLY AS A FALLBACK, and the bound is the point. Where the record IS in
+ * this turn, it is authoritative and the conversation adds nothing but
+ * noise: a cohort band the previous turn quoted would enter the set as
+ * though it were his, and honest cohort sentences would start
+ * disappearing from answers that had a perfectly good number set. The
+ * fallback is confined to the case that currently has no check at all.
+ *
+ * WHAT THE FALLBACK CANNOT DO, stated rather than papered over. It
+ * cannot tell his number from a cohort number the conversation
+ * mentioned, so inside the fallback it treats both as his and fails
+ * toward silence. And it recovers only NUMBERS: `ungradedCells` and
+ * `withheldCells` are read off the projection, there is no projection on
+ * such a turn, and checks 2 and 4 therefore stay down. Inventing them
+ * from model prose would be guessing what this platform said.
+ */
+const CALENDAR_LITERAL = /^(?:19|20)[0-9]{2}$/u;
+const CALENDAR_SUFFIX = /^\s*(?:年|月|日|岁|周|天|次|小时|分钟|号|名|人|例|篇|项)/u;
+const NUMBER_IN_PROSE =
+  /(?<![0-9A-Za-z./])([0-9]+(?:\.[0-9]+)?)\s*(%|％|kb|KB)?(?![0-9A-Za-z./])/gu;
+
+const collectConversationNumbers = (texts: readonly string[], out: PatientNumber[]): void => {
+  for (const text of texts) {
+    for (const segment of segmentsOf(text)) {
+      const cells = CELL_NAMES.filter((cell) => cellTermsPresent(segment.match, cell));
+      if (cells.length === 0) continue;
+      NUMBER_IN_PROSE.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = NUMBER_IN_PROSE.exec(segment.match)) !== null) {
+        const literal = match[1];
+        if (CALENDAR_LITERAL.test(literal)) continue;
+        const after = segment.match.slice(match.index + match[0].length);
+        if (!match[2] && CALENDAR_SUFFIX.test(after)) continue;
+        const value = Number(literal);
+        if (!Number.isFinite(value)) continue;
+        out.push({
+          value,
+          cell: cells.length === 1 ? cells[0] : null,
+          unit: canonicalUnit(match[2]),
+          origin: 'conversation',
+        });
+      }
+    }
+  }
 };
 
 /**
@@ -358,11 +760,32 @@ export interface BuildGuardEvidenceInput {
   emitted: EmittedRows;
   /** `content` of every chunk a non-patient retriever returned. */
   corpusTexts: readonly string[];
+  /**
+   * The tool messages this turn put in the prompt FOR THE PATIENT'S OWN
+   * RECORD — this platform's rendered rows and nothing else. A source
+   * for a claim, and the record's own reference intervals if it printed
+   * any.
+   *
+   * A CORPUS TOOL MESSAGE MUST NOT BE PASSED HERE. Every interval in
+   * this text is admissible as 「what the laboratory printed beside this
+   * patient's value」, and a knowledge-base chunk that states FSHD1's
+   * repeat range would make an invented 参考范围 column look sourced —
+   * which is what happened when this was every tool message. Corpus
+   * text belongs in `corpusTexts`, where it supports a mechanism claim
+   * and nothing else.
+   */
+  renderedTexts?: readonly string[];
+  /** The question, and the assistant turns of the history. Read ONLY
+   *  when `patientPayloads` is empty; see `collectConversationNumbers`. */
+  conversationTexts?: readonly string[];
 }
 
 export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidence => {
   const numbers: PatientNumber[] = [];
   for (const payload of input.patientPayloads) collectNumbers(payload, '', 0, numbers);
+  if (input.patientPayloads.length === 0) {
+    collectConversationNumbers(input.conversationTexts ?? [], numbers);
+  }
 
   // Which cells this platform graded, and which it merely printed. Both
   // sets are read off the SAME rows: a `_clinical` row is this
@@ -417,17 +840,40 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
   }
   const withheldCells = [...onFile].filter((cell) => !valuePrinted.has(cell));
 
-  const corpusShingles = new Set<string>();
-  for (const text of input.corpusTexts) {
-    for (const shingle of shinglesOf(text)) corpusShingles.add(shingle);
+  const renderedTexts = input.renderedTexts ?? [];
+  const supportShingles = new Set<string>();
+  // The Chinese for a reading counts as a source ONLY when this turn
+  // actually printed that reading. The whole table would be a different
+  // thing: 「这一格记的是长度（kb），不是重复单元数」 contributes the
+  // shingle 重复单元 to every turn, and an invented sentence containing
+  // 重复单元 would score as sourced. What is admissible is what the
+  // prompt in front of the model said, in the language the model is
+  // obliged to say it back in.
+  const readingsPrinted = WIRE_TOKENS_LONGEST_FIRST.filter((token) =>
+    renderedTexts.some((text) => text.includes(token)),
+  ).map((token) => WIRE_TOKEN_ZH[token]);
+  for (const text of [...input.corpusTexts, ...renderedTexts, ...readingsPrinted]) {
+    for (const shingle of shinglesOf(text)) supportShingles.add(shingle);
+  }
+
+  // The intervals the RECORD carried. Deliberately NOT the corpus: a
+  // threshold a paper states is a fact about a cohort, and printing it
+  // in a 参考范围 column beside this patient's value presents it as the
+  // interval their laboratory printed. See `fabricated_reference_range`.
+  const recordIntervals = new Set<string>();
+  const scalars: string[] = [];
+  for (const payload of input.patientPayloads) collectScalars(payload, 0, scalars);
+  for (const text of [...scalars, ...renderedTexts]) {
+    for (const interval of intervalsIn(normaliseForMatch(text))) recordIntervals.add(interval);
   }
 
   return {
     numbers,
     ungradedCells,
     withheldCells,
-    corpusShingles,
+    supportShingles,
     corpusChunkCount: input.corpusTexts.length,
+    recordIntervals,
   };
 };
 
@@ -443,24 +889,37 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
  * punctuation would have judged 「1–3 个重复单元属于病情较严重的遗传基础」
  * as a fragment of the row above it. Removing half a row would also
  * leave a broken table on the patient's screen.
+ *
+ * `text` is verbatim — it is quoted back to the model and it is what the
+ * excision has to find again. `match` is the same span with the
+ * markdown taken off, and it is what every check reads. See
+ * `normaliseForMatch`.
  */
 interface Segment {
   text: string;
+  match: string;
   start: number;
   end: number;
 }
 
 const SENTENCE_END = /[。！？；!?;]/u;
 
+const makeSegment = (text: string, start: number, end: number): Segment => ({
+  text,
+  match: normaliseForMatch(text),
+  start,
+  end,
+});
+
 const segmentsOf = (answer: string): Segment[] => {
   const segments: Segment[] = [];
   let lineStart = 0;
   for (const line of answer.split('\n')) {
-    const trimmed = line.trim();
+    const trimmed = normaliseForMatch(line).trim();
     const isRowOrHeading = trimmed.startsWith('|') || trimmed.startsWith('#');
-    if (trimmed.length > 0) {
+    if (line.trim().length > 0) {
       if (isRowOrHeading) {
-        segments.push({ text: line, start: lineStart, end: lineStart + line.length });
+        segments.push(makeSegment(line, lineStart, lineStart + line.length));
       } else {
         let cursor = 0;
         let sentenceStart = 0;
@@ -469,13 +928,13 @@ const segmentsOf = (answer: string): Segment[] => {
           if (!SENTENCE_END.test(ch)) continue;
           const text = line.slice(sentenceStart, cursor);
           if (text.trim())
-            segments.push({ text, start: lineStart + sentenceStart, end: lineStart + cursor });
+            segments.push(makeSegment(text, lineStart + sentenceStart, lineStart + cursor));
           sentenceStart = cursor;
         }
         if (sentenceStart < line.length) {
           const text = line.slice(sentenceStart);
           if (text.trim())
-            segments.push({ text, start: lineStart + sentenceStart, end: lineStart + line.length });
+            segments.push(makeSegment(text, lineStart + sentenceStart, lineStart + line.length));
         }
       }
     }
@@ -484,34 +943,89 @@ const segmentsOf = (answer: string): Segment[] => {
   return segments;
 };
 
+const isTableRow = (segment: Segment): boolean => segment.match.trim().startsWith('|');
+
+/** The cells of a markdown row, without the outer pipes. */
+const rowCells = (match: string): string[] => {
+  const trimmed = match.trim().replace(/^\|/u, '').replace(/\|$/u, '');
+  return trimmed.split('|');
+};
+
+const isSeparatorRow = (match: string): boolean => /^\s*\|[\s:|-]+\|?\s*$/u.test(match);
+
+/**
+ * WHICH ROW IS THE HEADER — asked of markdown's own structure rather
+ * than of the words in the row.
+ *
+ * The first version called any row containing 参考范围 a header, which
+ * held until a run against the stack produced
+ *
+ *   | **D4Z4 重复数** | 3 | 1–10（FSHD 患者范围）<br>≥11（正常范围） | … |
+ *
+ * — a DATA row whose reference cell says 正常范围, read as a second
+ * header, so the column was re-registered and the row itself was never
+ * checked. The invented interval was published under the guard's nose.
+ *
+ * A markdown header is the row immediately above the separator. That is
+ * a fact about the document and a data row cannot spell its way into
+ * being one.
+ */
+const isHeaderRow = (segments: readonly Segment[], index: number): boolean => {
+  const next = segments[index + 1];
+  return next !== undefined && isTableRow(next) && isSeparatorRow(next.match);
+};
+
 // ------------------------------------------------------------------- checks
 
 /**
  * The words that turn a value into a prediction.
  *
  * A LEXICON, and it has to be: 「严重」 is not derivable from anything the
- * turn holds. What IS derived is the other half of every rule below —
- * whose number the sentence is about, and whether this platform graded
- * the cell. A lexicon alone would flag every sentence in a disease
- * encyclopedia; it fires here only when it lands on the patient's own
- * value.
+ * turn holds. What IS derived is the other half of the rule — whose
+ * number the sentence is about. A lexicon alone would flag every
+ * sentence in a disease encyclopedia; it fires here only when it lands
+ * on the patient's own value.
  */
 const SEVERITY_WORD =
-  /严重|重症|轻重|轻型|重型|预后|进展|恶化|加重|发病早|早发|晚发|越早|越重|越快|更快|更重|更早|病程|残疾|轮椅|走不了|失能|寿命|活不|发病年龄|表型更/u;
+  /严重|重症|轻重|轻型|重型|预后|进展|恶化|加重|发病早|早发|晚发|越早|越重|越快|更快|更重|更早|病程|残疾|轮椅|走不了|失能|寿命|活不|发病年龄|表型更|受累/u;
 
 /**
- * The escape the prompt explicitly grants: a cohort statement said AS a
- * cohort statement. `CLINICAL_INFERENCE_BOUNDS` allows exactly this
- * (「群体层面的结论要说成群体层面的」), so the guard must not delete it —
- * the population trend is real, publishable, and is most of what an
- * honest answer to 「重复数少是不是更重」 consists of.
+ * WHY THERE IS NO LONGER A POPULATION ESCAPE ON THIS CHECK.
+ *
+ * There was one: a sentence carrying 群体 / 人群 / 队列 / 研究 was
+ * exempt, because `CLINICAL_INFERENCE_BOUNDS` permits a cohort statement
+ * said as a cohort statement and the population trend is real,
+ * publishable, and most of an honest answer to 「重复数少是不是更重」.
+ *
+ * Driven against the running stack, that exemption is the hole the model
+ * walks through. Asked 「从群体研究的角度讲，重复数落在 1-3 这一档的人，
+ * 病情是不是更重、发病更早？」 about a patient whose count is 3, it wrote
+ * 「在群体研究层面，D4Z4 重复数 1–3 确实与更早发病、更严重的病情相关」,
+ * 「1–3 个重复单元的患者更高风险属于「早发型」FSHD」 and
+ * 「早发型患者的中位重复数为 3」 — every one of them exempt, every one of
+ * them naming the band this reader is standing in, and the guard
+ * recorded no violation at all.
+ *
+ * The prompt already said what the code did not: a cohort framing is a
+ * licence to state a cohort fact, not a licence to name the band the
+ * reader is standing in. So the escape is gone, and what replaces it is
+ * not another word list — it is the fact the check was already built
+ * on. A cohort sentence that does not carry his number or a band around
+ * it never matched this check to begin with:
+ * 「在人群层面，重复数越短总体上发病越早、越重，但这是趋势，不是对你个人
+ * 的预测」 has no digits in it and passes untouched, which is the shape
+ * the prompt asks for and the shape this check now leaves alone.
+ *
+ * WHAT THAT COSTS, stated: a cohort finding whose whole content is the
+ * band — 「早发型患者的中位重复数为 3」 — cannot be published to the
+ * patient whose count is 3. That is the intended trade. The
+ * regeneration directive says so explicitly, so the model gets one
+ * chance to write the same finding without standing the reader in it.
  */
-const POPULATION_MARKER =
-  /群体|人群|队列|研究|文献|指南|报道|数据显示|平均|统计|总体上|一般来说|在这项/u;
 
 /**
- * ...and the other thing that is not a prediction: the model REFUSING to
- * make one, or handing the question to a clinician.
+ * The thing that is not a prediction: the model REFUSING to make one, or
+ * handing the question to a clinician.
  *
  * Both were excised in a live run, which is the worst possible outcome
  * for this check — the sentence removed was the platform's own position,
@@ -525,7 +1039,7 @@ const POPULATION_MARKER =
  * so a guard that deletes them is enforcing the opposite of the rule.
  */
 const CLAIM_DISCLAIMED =
-  /不能|不会|无法|没法|没能|没办法|不做|不是对|不要自己|不是用来|不能用来|不作为|不足以|说不准|由医生|请医生|主治医生|问医生|医生判断|医生评估/u;
+  /不能|不会|无法|没法|没能|没办法|不做|不拿|不据此|不是对|不要自己|不是用来|不能用来|不作为|不足以|不预测|不推断|不判断|说不准|由医生|请医生|主治医生|问医生|医生判断|医生评估/u;
 
 /** Words that put a cell on a scale. Paired with a cell the platform
  *  declined to grade, this is the platform drawing a line it refuses to
@@ -559,54 +1073,12 @@ const NEGATION = /不|没|无法|拒绝|未|别|勿/u;
  */
 const CAUSAL_MARKER = /由于|导致|引起|造成|代偿|使得|是因为|所致|机制(?:是|上|在于)/u;
 
-/** A sentence that says the record lacks something.
- *
- *  `(?<!有)` because 「有没有」 is a QUESTION.
- *  「如果你想了解目前有没有甲基化筛查的项目正在进行」 was removed from a
- *  live answer on the 没有 inside it. */
-const ABSENCE_MARKER = /(?<!有)没有|不含|未包含|缺少|没做|未做|查不到|未检出这一项|报告里没/u;
-
-/** How close an absence word has to stand to the cell it is denying.
- *
- *  Without it, any 没有 anywhere in a sentence that also mentions the
- *  cell counted: 「至于「是否需要再做甲基化检测」，这个没有标准答案，需要
- *  结合你的具体情况来判断」 denies nothing about the report and was
- *  removed from a live answer. 「你的报告里确实没有甲基化的结果」 puts
- *  the two characters apart. */
-const ABSENCE_PROXIMITY = 8;
-
-/**
- * ...unless the sentence already says WHY it cannot see the value.
- *
- * 「具体数值系统没有显示出来（按当前授权扣下的测量值个数: 1）」 is the
- * true statement, and it contains 没有. Flagging it would push the model
- * off the one wording that is correct here and toward saying nothing at
- * all, which is the opposite of what this check is for: the defect is
- * 「报告里没有」, not 「我这边看不到」.
- */
-const CONSENT_AWARE = /授权|隐私设置|精确数值|没有显示|未显示|扣下|没发给|没有发给|看不到原始/u;
-
-/**
- * A sentence RECOMMENDING the patient go and get a test — as opposed to
- * one restating the question they asked.
- *
- * 「需要」 and 「可以」 were in here, and 「至于「是否需要再做甲基化检测」，
- * 这个问题没有标准答案」 was removed from a live answer to a patient
- * whose own question was 「需不需要再去做一个甲基化检测？」. Engaging with
- * the question they asked is not the defect; the defect is telling them
- * the report lacks the value, and then sending them to buy it again. So
- * only the advisory shapes count.
- */
-const ACQUIRE_MARKER =
-  /建议(?:你|您)?(?:再|去|做|查|加做)|最好(?:再|去)?(?:做|查)|应该(?:再|去)?(?:做|查)|可以去(?:做|查)|去补(?:做|查)/u;
-
-const TEST_MARKER = /检测|检查|化验|测一下|做一个/u;
-
 export type ClinicalViolationKind =
   | 'severity_from_patient_number'
   | 'ungraded_cell_graded'
   | 'unsourced_mechanism'
-  | 'retest_of_a_value_on_file';
+  | 'retest_of_a_value_on_file'
+  | 'fabricated_reference_range';
 
 export interface ClinicalViolation {
   kind: ClinicalViolationKind;
@@ -622,7 +1094,7 @@ export interface ClinicalViolation {
  *  of an identifier? 「FSHD1」 must not match 1 and 「D4Z4」 must not
  *  match 4 — both appear in every correct answer about this patient. */
 const carriesNumber = (segment: string, value: number): boolean => {
-  const literal = Number.isInteger(value) ? String(value) : String(value);
+  const literal = String(value);
   // 「/」 is a boundary too. 「没有统一的 Stage 1/2/3 之类的分期」 — a
   // sentence saying this platform has NO severity ladder — was removed
   // from a live answer because its 3 was read as the patient's repeat
@@ -634,8 +1106,7 @@ const carriesNumber = (segment: string, value: number): boolean => {
 /** ...or a band containing it. 「属于 1–3 个单元的范围」 never prints the
  *  patient's 3 as a standalone token in some phrasings, and the band is
  *  the same claim about the same person. */
-const BAND =
-  /(?<![0-9A-Za-z.])([0-9]+(?:\.[0-9]+)?)\s*(?:-|–|—|~|～|到|至)\s*([0-9]+(?:\.[0-9]+)?)(?![0-9A-Za-z.])/gu;
+const BAND = new RegExp(BAND_SOURCE, 'gu');
 
 const carriesBandAround = (segment: string, value: number): boolean => {
   BAND.lastIndex = 0;
@@ -670,29 +1141,168 @@ const gradingIsNotAsserted = (segment: string): boolean => {
   return NEGATION.test(before) || INTERROGATIVE.test(before);
 };
 
-const cellTermsPresent = (segment: string, cell: string): boolean =>
-  CELL_TERMS[cell]?.terms.some((term) => segment.includes(term)) ?? false;
+function cellTermsPresent(segment: string, cell: string): boolean {
+  return CELL_TERMS[cell]?.terms.some((term) => segment.includes(term)) ?? false;
+}
 
-/** Does `pattern` match within `ABSENCE_PROXIMITY` characters of one of
- *  this cell's names? See `ABSENCE_PROXIMITY`. */
-const nearACellTerm = (segment: string, cell: string, pattern: RegExp): boolean => {
+/**
+ * How close a POSSESSIVE has to stand to the cell it is attaching a
+ * grade to.
+ *
+ * A window, and the only one left in this file. It exists because
+ * 「FSHD1 通常表现为 D4Z4 区域的低甲基化，但具体的数值解读需要结合你的临床
+ * 表型一起看」 was removed from a live answer: the 你的 belongs to
+ * 临床表型, seventeen characters away, and the grading word belongs to a
+ * general statement about FSHD1.
+ *
+ * It is the WEAK half of check 2 and it is only ever an addition: the
+ * strong half — the sentence carries this patient's own value for that
+ * cell — is grounded in the projection and needs no window at all. A
+ * possessive the window misses costs a caught violation, never a deleted
+ * true sentence.
+ */
+const POSSESSIVE_ATTACHMENT_WINDOW = 8;
+const POSSESSIVE = /你的|您的|你这|本人/u;
+
+const possessiveNearCell = (segment: string, cell: string): boolean => {
   for (const term of CELL_TERMS[cell]?.terms ?? []) {
     let from = segment.indexOf(term);
     while (from >= 0) {
       const window = segment.slice(
-        Math.max(0, from - ABSENCE_PROXIMITY),
-        from + term.length + ABSENCE_PROXIMITY,
+        Math.max(0, from - POSSESSIVE_ATTACHMENT_WINDOW),
+        from + term.length + POSSESSIVE_ATTACHMENT_WINDOW,
       );
-      if (pattern.test(window)) return true;
+      if (POSSESSIVE.test(window)) return true;
       from = segment.indexOf(term, from + term.length);
     }
   }
   return false;
 };
 
+// ------------------------------------------- check 4: whose absence is it
+
 /**
- * Inspect one finished answer. Pure: it reports, it does not rewrite.
+ * THE CLAIM TO CATCH IS 「YOUR REPORT DOES NOT CONTAIN THIS」 ABOUT A CELL
+ * THE RECORD HOLDS — however it is phrased.
+ *
+ * The first version asked whether an absence word stood within eight
+ * characters of the cell's name, and skipped the sentence outright if it
+ * mentioned consent anywhere. Both were wrong in the same direction:
+ *
+ *   - EIGHT CHARACTERS IS NOT HOW CHINESE REFERS BACK. Driven against
+ *     the stack the model wrote 「目前获取到的报告中没有包含这一项数据」
+ *     — the cell is 这一项, the name is in the sentence before it, and no
+ *     window of any size reaches it.
+ *   - AND THE CONSENT WORDING BECAME A PASSWORD. 「根据你的隐私设置，
+ *     报告里没有甲基化结果」 says something false about the report and
+ *     escaped on the 隐私设置.
+ *
+ * So the question is not distance and not vocabulary; it is WHOSE
+ * ABSENCE THE SENTENCE ASSERTS. 「报告里没有」 is a claim about the
+ * document, and it is false. 「没有发给我」「我这边看不到」 is a claim
+ * about this assistant, and it is true — it is the one wording that is
+ * correct here, and pushing the model off it would leave it saying
+ * nothing at all.
+ *
+ * The subject is read as the nearest holder standing BEFORE the absence
+ * word, with a delivery verb after it able to hand the absence back to
+ * the assistant. That is a sentence's own structure rather than a
+ * character count, and it is the only thing that separates the two.
  */
+const ABSENCE_MARKER = /(?<!有)没有|不含|未包含|缺少|没做|未做|查不到|未检出|没写|未写|不包括/u;
+const REPORT_HOLDER = /报告|记录|档案|资料|化验单|单子|检测结果|报告单|这份|上传的|里面/u;
+const SELF_HOLDER = /我这边|我这里|我目前|我手上|我看到|我收到|系统|平台|这边|我方|授权/u;
+const DELIVERY_VERB = /发(?:给|到)|给我|传(?:给|到)|到我|显示|读到|拿到|收到|看到|访问|获取到我/u;
+
+/** The cell, named by a pronoun rather than by its word. Only counts
+ *  when the cell's own name was established earlier in the answer —
+ *  the anaphora has to have an antecedent, and the document is where it
+ *  lives. */
+const CELL_ANAPHORA =
+  /这一项|这个项目|这项|该项|这一格|这一栏|这个指标|这个数值|这个结果|这部分|这些数值|这一条/u;
+
+/** Whose absence is this? Returns the holder the sentence predicates the
+ *  absence of, or null when the sentence predicates it of nothing. */
+const absenceIsAboutTheReport = (segment: string): boolean => {
+  const marker = segment.search(ABSENCE_MARKER);
+  if (marker < 0) return false;
+  const head = segment.slice(0, marker);
+  const tail = segment.slice(marker);
+  const lastOf = (pattern: RegExp): number => {
+    let best = -1;
+    let from = 0;
+    for (;;) {
+      const rest = head.slice(from);
+      const at = rest.search(pattern);
+      if (at < 0) break;
+      best = from + at;
+      from = best + 1;
+    }
+    return best;
+  };
+  const report = lastOf(REPORT_HOLDER);
+  const self = lastOf(SELF_HOLDER);
+  if (report < 0) return false;
+  if (self > report) return false;
+  // 「你的报告里的甲基化数值按当前授权没有发给我」 — the report is the
+  // nearest holder, and the absence is still the assistant's. The
+  // delivery verb is what says so.
+  if (DELIVERY_VERB.test(tail.slice(0, 24))) return false;
+  return true;
+};
+
+/**
+ * A sentence RECOMMENDING the patient go and get a test — as opposed to
+ * one restating the question they asked.
+ *
+ * 「需要」 and 「可以」 were in here, and 「至于「是否需要再做甲基化检测」，
+ * 这个问题没有标准答案」 was removed from a live answer to a patient
+ * whose own question was 「需不需要再去做一个甲基化检测？」. Engaging with
+ * the question they asked is not the defect; the defect is telling them
+ * the report lacks the value, and then sending them to buy it again. So
+ * only the advisory shapes count.
+ */
+const ACQUIRE_MARKER =
+  /建议(?:你|您)?(?:再|去|做|查|加做)|最好(?:再|去)?(?:做|查)|应该(?:再|去)?(?:做|查)|可以去(?:做|查)|去补(?:做|查)/u;
+
+const TEST_MARKER = /检测|检查|化验|测一下|做一个/u;
+
+// -------------------------------------- check 5: a reference range nobody printed
+
+/**
+ * A 参考范围 CELL IS A CLAIM ABOUT WHAT THE LABORATORY PRINTED.
+ *
+ * Driven against the running stack and asked for a table with a
+ * 参考范围 column, the model wrote
+ * 「| D4Z4 重复数 | 3 | … | 3个重复单元落在 FSHD1 的诊断范围（1-10）内 |」.
+ * The interval is not on the report, it is not in the projection, and it
+ * is standing in a column whose header promises the reader that it is
+ * the interval their own laboratory measured them against. A patient
+ * comparing their 3 to a 1-10 they believe came off their report is
+ * reading a diagnostic threshold this platform invented.
+ *
+ * The lexicon here is unavoidable — 参考范围 is a phrase, not a fact —
+ * but it decides only WHERE TO LOOK. What decides the violation is the
+ * fact: `evidence.recordIntervals` holds every interval the record
+ * actually carried this turn, and an interval that is not one of them
+ * was composed here.
+ *
+ * DELIBERATELY NOT ADMITTING CORPUS INTERVALS. A threshold a paper
+ * states is a fact about a cohort; reprinting it under 参考范围 beside
+ * this patient's own value turns it into a fact about their report. The
+ * honest form — 「知识库里写 FSHD1 的重复数范围是 1–10 [2]」 — carries no
+ * reference-range framing and this check never looks at it.
+ *
+ * THE COLUMN, NOT THE ROW. A data row usually carries no 参考范围 of its
+ * own; the word is in the header. So the header is read once and the
+ * column index remembered, which is the document's own structure rather
+ * than a guess about which cell is which.
+ */
+const REFERENCE_RANGE_CONTEXT =
+  /参考范围|参考值|参考区间|正常范围|正常值|正常区间|临界值|界值|阈值|分界线|诊断范围|诊断区间|正常参考|cut-?off/iu;
+
+// ------------------------------------------------------------------ topic clause
+
 /**
  * A leading 「关于X，」 names the topic; it does not assert X.
  *
@@ -706,10 +1316,92 @@ const nearACellTerm = (segment: string, cell: string, pattern: RegExp): boolean 
  */
 const TOPIC_CLAUSE = /^\s*(?:关于|至于|说到|谈到|针对)[^，。；]{0,20}[，:：]/u;
 
-/** A bullet or a numbered item, which is a CONTINUATION of the sentence
- *  above it rather than a statement standing on its own. */
-const LIST_ITEM = /^\s*(?:[-*+•]|\d+[.)、])\s/u;
+/**
+ * THE GUARD'S OWN WORDS ARE NOT THE MODEL'S.
+ *
+ * `exciseUntilClean` re-inspects what excision left behind, and what it
+ * leaves behind includes the marks below. Those marks talk about
+ * 病情轻重 and about 「你的报告里没有」 because they have to explain what
+ * went; re-reading them as claims would let the guard chase its own
+ * tail. They are skipped by their opening, which nothing else in an
+ * answer produces.
+ */
+const REDACTION_MARK_OPENING = '（这里有一句被我删掉了：';
 
+/**
+ * A NESTED LIST ITEM IS THE SECOND HALF OF THE LINE ABOVE IT.
+ *
+ * Driven against the running stack and asked for the same finding as a
+ * bulleted summary, the model wrote
+ *
+ *   - **1–3 个重复单元**
+ *     - 发病风险最高，属于「早发型」FSHD 的高危人群
+ *     - 病情通常较严重，肌肉无力进展较快
+ *
+ * — the band on one line, the claim on the next, and neither line
+ * carrying both. Markdown is how the model naturally writes a table of
+ * bands, so this is not an evasion; it is the ordinary rendering, and a
+ * check that reads one line at a time cannot see the sentence a reader
+ * sees.
+ *
+ * So a nested item is judged carrying the NUMBERS its enclosing items
+ * named. Numbers only, and deliberately not severity words: a heading
+ * like 「关于病情严重程度：」 over a list of this platform's own readings
+ * would otherwise condemn every one of them, which is the exact failure
+ * `TOPIC_CLAUSE` exists to prevent.
+ *
+ * AND ONLY FROM A PARENT THAT IS A LABEL. `LABEL_CONTENT_MAX` is the
+ * line between 「**1–3 个重复单元**」 — a group heading whose whole
+ * content is the band — and a sentence that happens to mention a
+ * number. A sentence carries its own claim; a label carries the claim
+ * of everything under it.
+ */
+const LIST_ITEM_INDENT = /^(\s*)(?:[-*+•]|\d+[.)、])\s/u;
+const LABEL_CONTENT_MAX = 16;
+
+/**
+ * ...AND THE SAME MOVE IN PROSE, WHICH IS THE OTHER HALF OF THE SAME
+ * SEAM.
+ *
+ * Driven against the running stack, the model wrote
+ *
+ *   你的重复数是 3，落在 1–3 这个区间里。
+ *   根据研究，这个区间的患者整体上更容易出现早发型、病情相对更重的情况。
+ *
+ * The first sentence is permitted and correct — it states his value and
+ * says which band it is in. The second carries the claim and refers to
+ * the band by 这个区间, so it holds no digit at all and check 1 had
+ * nothing to match. Splitting a sentence in two is not an evasion
+ * either; it is how the language works.
+ *
+ * So a segment that refers to a band ANAPHORICALLY and names no number
+ * of its own is judged carrying the numbers of the segment immediately
+ * before it. IMMEDIATELY, and one hop only: the referent of 这个区间 is
+ * the last band mentioned, and reaching further back would let any
+ * sentence in the answer supply a number to any other.
+ */
+const BAND_ANAPHORA =
+  /这个区间|这一区间|该区间|这个范围|这一范围|该范围|这一?档|这个区段|这一段区间|上面这一/u;
+
+/**
+ * Does the segment name a number of its own?
+ *
+ * NOT 「does it contain a digit」, which was the first version and was
+ * wrong for the same reason `carriesNumber` has its boundaries: FSHD1,
+ * FSHD2, DUX4 and 4qA all contain digits, and
+ * 「在 FSHD1 里，这是重复数最少的一档。」 is a pure anaphor that a digit
+ * test reads as naming its own number — so the chain broke on the one
+ * sentence shape it exists for.
+ */
+const STANDALONE_NUMBER = /(?<![0-9A-Za-z./])[0-9]+(?:\.[0-9]+)?(?![0-9A-Za-z./])/u;
+const namesANumber = (text: string): boolean => {
+  BAND.lastIndex = 0;
+  return STANDALONE_NUMBER.test(text) || BAND.test(text);
+};
+
+/**
+ * Inspect one finished answer. Pure: it reports, it does not rewrite.
+ */
 export const inspectAnswer = (answer: string, evidence: GuardEvidence): ClinicalViolation[] => {
   const violations: ClinicalViolation[] = [];
   const seen = new Set<string>();
@@ -720,33 +1412,113 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     violations.push(violation);
   };
 
-  // A LIST INHERITS ITS LEAD-IN'S FRAMING, because a reader does.
-  //
-  // 「在群体研究中，1–3 个重复单元是较短的 D4Z4 阵列。研究显示：」 followed
-  // by 「- 1–3 个重复单元的患者更有可能属于「早发型」FSHD…」 is one
-  // cohort statement written across two lines, and the second line was
-  // removed from a live answer for not repeating the word 群体 inside
-  // itself. The framing is in the sentence that opened the list, so a
-  // list item is judged with it.
-  let leadInIsPopulation = false;
+  // Which columns of the table currently being read are reference
+  // ranges. Reset on leaving the table; see REFERENCE_RANGE_CONTEXT.
+  let referenceColumns: number[] = [];
 
-  for (const segment of segmentsOf(answer)) {
-    const text = segment.text;
-    const isListItem = LIST_ITEM.test(text);
-    if (!isListItem && text.trim()) leadInIsPopulation = POPULATION_MARKER.test(text);
-    const populationFramed = POPULATION_MARKER.test(text) || (isListItem && leadInIsPopulation);
+  // Cells the answer names ANYWHERE, so a 「这一项」 has an antecedent.
+  // The whole document rather than the part above it, because Chinese
+  // puts the referent on either side — 「报告里没有这一项。要不要补一个
+  // 甲基化检测，得看…」 names it after — and because the antecedent may
+  // be a sentence an earlier excision pass already took out.
+  const segments = segmentsOf(answer);
+  const cellsNamedAnywhere = new Set<string>();
+  for (const segment of segments) {
+    for (const cell of CELL_NAMES) {
+      if (cellTermsPresent(segment.match, cell)) cellsNamedAnywhere.add(cell);
+    }
+  }
+
+  // The enclosing list labels, innermost last. See LIST_ITEM_INDENT.
+  let labelStack: { indent: number; text: string }[] = [];
+  // The sentence before this one, for a 这个区间 that points at it.
+  let previousSegmentText = '';
+
+  for (const [segmentIndex, segment] of segments.entries()) {
+    const text = segment.match;
+    if (text.includes(REDACTION_MARK_OPENING)) continue;
+    const row = isTableRow(segment);
+
+    const indentMatch = LIST_ITEM_INDENT.exec(segment.text);
+    if (indentMatch === null) {
+      labelStack = [];
+    } else {
+      const indent = indentMatch[1].length;
+      while (labelStack.length > 0 && labelStack[labelStack.length - 1].indent >= indent) {
+        labelStack.pop();
+      }
+    }
+    // What the enclosing labels named, for the NUMBER half of check 1.
+    const inherited = labelStack.map((label) => label.text).join(' ');
+    // ...plus the sentence immediately before, when this one points back
+    // at a band instead of naming it. See BAND_ANAPHORA.
+    const anaphoric = !namesANumber(text) && BAND_ANAPHORA.test(text) ? previousSegmentText : '';
+    // The chain carries: 「你落在 1–3 这一档。这一档在 FSHD1 里最短。
+    // 这一档发病更早。」 is three sentences and one referent. Every link
+    // needs its own explicit anaphor, so the chain cannot grow through a
+    // sentence that changed the subject.
+    previousSegmentText = anaphoric ? `${text} ${anaphoric}` : text;
+    const withInherited = [text, inherited, anaphoric].filter(Boolean).join(' ');
+    if (indentMatch !== null && contentChars(text).length <= LABEL_CONTENT_MAX) {
+      labelStack.push({ indent: indentMatch[1].length, text });
+    }
+
+    // ---- 5. A reference interval the record never printed -----------
+    if (row) {
+      const cells = rowCells(text);
+      if (!isSeparatorRow(text)) {
+        if (isHeaderRow(segments, segmentIndex)) {
+          referenceColumns = cells
+            .map((cell, index) => (REFERENCE_RANGE_CONTEXT.test(cell) ? index : -1))
+            .filter((index) => index >= 0);
+        } else if (referenceColumns.length > 0) {
+          const invented = referenceColumns
+            .flatMap((index) => intervalsIn(cells[index] ?? ''))
+            .filter((interval) => !evidence.recordIntervals.has(interval));
+          if (invented.length > 0 && rowIsAboutThisPatient(text, evidence)) {
+            add({
+              kind: 'fabricated_reference_range',
+              sentence: segment.text.trim(),
+              because: `这一行在「参考范围」那一列写了「${invented[0]}」，但本轮读到的报告和本平台印出来的行里都没有这个区间——这个数字不是化验室给的，患者会拿自己的数值去对它。`,
+            });
+          }
+        }
+      }
+    } else {
+      referenceColumns = [];
+      if (REFERENCE_RANGE_CONTEXT.test(text)) {
+        const invented = intervalsIn(text).filter(
+          (interval) => !evidence.recordIntervals.has(interval),
+        );
+        if (invented.length > 0 && rowIsAboutThisPatient(text, evidence)) {
+          add({
+            kind: 'fabricated_reference_range',
+            sentence: segment.text.trim(),
+            because: `这句给出了一个「参考范围/正常值」区间「${invented[0]}」，但本轮读到的报告和本平台印出来的行里都没有这个区间——这个数字不是化验室给的。`,
+          });
+        }
+      }
+    }
 
     // 1. A severity claim landing on one of this patient's own numbers.
+    //
+    // NO POPULATION ESCAPE. See the block above SEVERITY_WORD.
     const asserted = text.replace(TOPIC_CLAUSE, '');
-    if (SEVERITY_WORD.test(asserted) && !populationFramed && !CLAIM_DISCLAIMED.test(text)) {
+    if (SEVERITY_WORD.test(asserted) && !CLAIM_DISCLAIMED.test(text)) {
       const hit = evidence.numbers.find(
-        (number) => carriesNumber(text, number.value) || carriesBandAround(text, number.value),
+        (number) =>
+          carriesNumber(withInherited, number.value) ||
+          carriesBandAround(withInherited, number.value),
       );
       if (hit) {
+        const provenance =
+          hit.origin === 'record'
+            ? '他本人档案/报告里的数值'
+            : '这轮对话里已经作为他本人数值出现过的数字';
         add({
           kind: 'severity_from_patient_number',
-          sentence: text.trim(),
-          because: `这句把「${hit.value}」——他本人档案/报告里的数值——和病情轻重、进展或发病早晚绑在了一起，而且没有说明这是群体层面的结论。`,
+          sentence: segment.text.trim(),
+          because: `这句把「${hit.value}」——${provenance}——和病情轻重、进展或发病早晚绑在了一起。说成「在人群里」也不行：他的数字（或者包住他数字的那一档）一旦被点名，这句话就落在他身上了。`,
         });
       }
     }
@@ -757,78 +1529,166 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
         const byNumber = evidence.numbers.some(
           (number) => number.cell === cell && carriesNumber(text, number.value),
         );
-        // NEAR the cell, not merely somewhere in the same sentence.
-        // 「FSHD1 通常表现为 D4Z4 区域的低甲基化，但具体的数值解读需要结合
-        // 你的临床表型一起看」 was removed from a live answer: the 你的
-        // belongs to 临床表型, seventeen characters away, and the grading
-        // word belongs to a general statement about FSHD1.
-        const byName = nearACellTerm(text, cell, /你的|您的|你这|本人/u);
+        const byName = possessiveNearCell(text, cell);
         if (!byNumber && !byName) continue;
         add({
           kind: 'ungraded_cell_graded',
-          sentence: text.trim(),
+          sentence: segment.text.trim(),
           because: `本轮工具消息里「${CELL_LABEL_ZH[cell] ?? cell}」这一格没有带本平台的判读（没有 _clinical），本平台对这一格不下结论；这句话给它划了一条线。`,
         });
       }
     }
 
-    // 3. A mechanism no retrieved chunk states.
+    // 3. A mechanism nothing the turn read states.
     //
-    // NOT ASKED OF A TABLE CELL OR A FRAGMENT, because lexical overlap
-    // cannot answer it there. A cell is a gloss — 「4qA | 这是允许型单倍
-    // 型——意味着你的 D4Z4 收缩是能导致 FSHD 的类型」 — with a handful of
-    // shingles and no room for the phrasing the corpus happens to use,
-    // and two such cells were excised in a live run for restating this
-    // platform's own `permissive_haplotype` reading in plain Chinese.
-    // The severity and grading checks still cover table rows, which is
-    // where the claim that matters in a table actually lives.
-    const isTableRow = text.trim().startsWith('|');
-    if (
-      evidence.corpusChunkCount > 0 &&
-      !isTableRow &&
-      contentChars(text).length >= 15 &&
-      CAUSAL_MARKER.test(text) &&
-      !/\[[0-9]/u.test(text) &&
-      (/(FSHD|DUX4|SMCHD1)/iu.test(text) || CELL_NAMES.some((cell) => cellTermsPresent(text, cell)))
-    ) {
-      const shingles = shinglesOf(text);
-      const supported = shingles.some((shingle) => evidence.corpusShingles.has(shingle));
-      if (shingles.length > 0 && !supported) {
-        add({
-          kind: 'unsourced_mechanism',
-          sentence: text.trim(),
-          because:
-            '这句给出了一个机制解释，但本轮检索到的片段里没有任何一段写过它，也没有标出处编号。',
-        });
+    // A TABLE ROW IS JUDGED CELL BY CELL rather than skipped. It used to
+    // be skipped whole, because a cell restating this platform's own
+    // reading in plain Chinese — 「4qA | 这是允许型单倍型——意味着你的
+    // D4Z4 收缩是能导致 FSHD 的类型」 — shares no wording with the corpus
+    // and was excised for it. That cell was never unsourced: its source
+    // is the projection in this turn's own prompt, which
+    // `supportShingles` now contains. With the support set honest, the
+    // row can be read, and an invented mechanism stops being able to
+    // hide in a table.
+    if (evidence.corpusChunkCount > 0) {
+      const units = row ? rowCells(text) : [text];
+      for (const unit of units) {
+        if (contentChars(unit).length < 15) continue;
+        if (!CAUSAL_MARKER.test(unit)) continue;
+        if (/\[[0-9]/u.test(unit)) continue;
+        if (
+          !/(FSHD|DUX4|SMCHD1)/iu.test(unit) &&
+          !CELL_NAMES.some((cell) => cellTermsPresent(unit, cell))
+        )
+          continue;
+        const shingles = shinglesOf(unit);
+        const supported = shingles.some((shingle) => evidence.supportShingles.has(shingle));
+        if (shingles.length > 0 && !supported) {
+          add({
+            kind: 'unsourced_mechanism',
+            sentence: segment.text.trim(),
+            because:
+              '这句给出了一个机制解释，但本轮检索到的片段、本平台印出来的判读里都没有写过它，也没有标出处编号。',
+          });
+        }
       }
     }
 
     // 4. Telling the patient a value they have is missing, or to go get
     //    it again.
     for (const cell of evidence.withheldCells) {
-      if (!cellTermsPresent(text, cell)) continue;
-      if (CONSENT_AWARE.test(text)) continue;
-      const saysMissing = nearACellTerm(text, cell, ABSENCE_MARKER);
+      const namesCell = cellTermsPresent(text, cell);
+      // The pronoun only counts once the cell has been named — the
+      // anaphora needs an antecedent, and the document is where it is.
+      const refersToCell = namesCell || (cellsNamedAnywhere.has(cell) && CELL_ANAPHORA.test(text));
+      if (!refersToCell) continue;
+      const saysMissing = absenceIsAboutTheReport(text);
       // A referral is not a recommendation. 「你可以跟主治医生聊一聊，听听
       // 他对你的具体情况是否建议做甲基化检测」 hands the decision to a
       // clinician, which is what this platform asks for everywhere else;
       // the defect is telling the patient to go and buy a result they
-      // already have. NOT applied to `saysMissing`: 「你的报告里没有甲基
-      // 化结果，建议问医生」 is still a false statement about the report.
+      // already have.
       const saysGetIt =
-        ACQUIRE_MARKER.test(text) &&
-        !CLAIM_DISCLAIMED.test(text) &&
-        nearACellTerm(text, cell, TEST_MARKER);
+        ACQUIRE_MARKER.test(text) && !CLAIM_DISCLAIMED.test(text) && TEST_MARKER.test(text);
       if (!saysMissing && !saysGetIt) continue;
       add({
         kind: 'retest_of_a_value_on_file',
-        sentence: text.trim(),
-        because: `「${CELL_LABEL_ZH[cell] ?? cell}」这一格在他的记录里是有结果的，只是当前授权没有把数值发给你——这是授权造成的看不见，不是报告里没有。`,
+        sentence: segment.text.trim(),
+        because: `「${CELL_LABEL_ZH[cell] ?? cell}」这一格在他的记录里是有结果的，只是当前授权没有把数值发给你——这是授权造成的看不见，不是报告里没有。说「按当前授权我这边看不到」是对的，说「报告里没有」是错的。`,
       });
     }
   }
 
   return violations;
+};
+
+/** Is this row/sentence about the patient at all? A fabricated interval
+ *  in a general encyclopedia table is somebody else's problem; one
+ *  standing beside this patient's own value is this file's. */
+function rowIsAboutThisPatient(text: string, evidence: GuardEvidence): boolean {
+  if (CELL_NAMES.some((cell) => cellTermsPresent(text, cell))) return true;
+  return evidence.numbers.some((number) => carriesNumber(text, number.value));
+}
+
+// ------------------------------------------------------------------ units
+
+/**
+ * A MEASUREMENT WITHOUT ITS UNIT IS A DIFFERENT MEASUREMENT.
+ *
+ * The projection prints 「甲基化值: 95%」. Driven against the running
+ * stack and asked for the number alone, the model answered with the two
+ * characters 「95」 and nothing else. A methylation percentage and a bare
+ * 95 are not the same reading, and the patient has no way to tell which
+ * one they were given.
+ *
+ * A REPAIR, NOT A VIOLATION, for the same reason `localiseWireTokens` is
+ * one: the sentence is true, the patient is entitled to it, and the only
+ * thing wrong with it is a missing suffix that THE RECORD ALREADY HOLDS.
+ * The unit is never invented here — it is copied off the payload the
+ * number came from, and a number the record printed bare stays bare.
+ *
+ * ONLY 「%」 AND 「kb」. Dropping 个 or 次 from a Chinese sentence changes
+ * nothing a reader could misread; dropping the percent sign or the kb
+ * changes the quantity. The narrow list is the point.
+ *
+ * WHERE IT WILL ACT, kept tight because a rewrite in the wrong place is
+ * worse than a bare number: the segment names the cell the value belongs
+ * to, or the segment is nothing but the number.
+ */
+const RESTORABLE_UNITS: ReadonlySet<string> = new Set(['%', 'kb']);
+/** A digit followed by one of these is already carrying a unit of its
+ *  own, whatever the record says. 「95 名患者」 is not this patient's
+ *  methylation value. */
+const FOREIGN_UNIT = /^[\s*`]*(?:名|人|例|个|条|项|次|年|月|日|岁|篇|种|类|位|份)/u;
+
+export const restoreUnits = (
+  answer: string,
+  evidence: GuardEvidence,
+): { text: string; restored: string[] } => {
+  const restorable = evidence.numbers.filter(
+    (number) => number.unit !== null && RESTORABLE_UNITS.has(number.unit),
+  );
+  if (restorable.length === 0) return { text: answer, restored: [] };
+
+  const restored: string[] = [];
+  let out = answer;
+  for (const segment of segmentsOf(answer)) {
+    if (segment.match.includes(REDACTION_MARK_OPENING)) continue;
+    const bare = contentChars(segment.match);
+    let current = segment.text;
+    for (const number of restorable) {
+      const literal = String(number.value);
+      const unit = number.unit as string;
+      const namesCell = number.cell !== null && cellTermsPresent(segment.match, number.cell);
+      const isJustTheNumber = bare === literal;
+      if (!namesCell && !isJustTheNumber) continue;
+      const pattern = new RegExp(`(?<![0-9A-Za-z./%])${literal}(?![0-9A-Za-z./])`, 'gu');
+      const carriedAlready = new RegExp(`^[\\s*\`]*(?:${escapeForRegex(unit)}|％)`, 'iu');
+      let rebuilt = '';
+      let cursor = 0;
+      let hit = false;
+      let match: RegExpExecArray | null;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(current)) !== null) {
+        const end = match.index + literal.length;
+        const after = current.slice(end);
+        if (carriedAlready.test(after) || FOREIGN_UNIT.test(after)) continue;
+        rebuilt += current.slice(cursor, end) + unit;
+        cursor = end;
+        hit = true;
+      }
+      if (!hit) continue;
+      current = rebuilt + current.slice(cursor);
+      restored.push(`${literal}${unit}`);
+    }
+    if (current === segment.text) continue;
+    // Re-anchored by search rather than by offset: an earlier segment
+    // may already have grown by a character.
+    const at = out.indexOf(segment.text);
+    if (at < 0) continue;
+    out = out.slice(0, at) + current + out.slice(at + segment.text.length);
+  }
+  return { text: out, restored: [...new Set(restored)] };
 };
 
 // ------------------------------------------------------------------ remedy
@@ -859,9 +1719,15 @@ export const buildRegenerationDirective = (violations: readonly ClinicalViolatio
     '- **重写后的回答不要比上一版短**。上面点名的只是几句话，不是整条回答：',
     '  其余段落原样保留或换个说法照说，该有的结构、清单、来源编号都留着。',
     '  只删掉一句就交一句话回去，用户看到的是自己的问题没人回答——那比越界更糟。',
-    '- 群体层面的结论仍然可以讲，但要明写成「在人群里」「在这项研究的队列里」，并且不要落到他本人身上。',
+    '- 群体层面的结论仍然可以讲，但**不要点名他的数字，也不要点名包住他数字的那一档**。',
+    '  「在人群里，重复数越短总体上发病越早」可以；',
+    '  「1–3 个重复单元的人发病更早」不行——他就站在 1–3 里，写「在群体研究中」也不改变这一点。',
     '- 本平台不判读的格子（没有 _clinical 的那些）照实说本平台不下这个结论，不要自己补一个。',
     '- 资料里没写的机制不要写；能确定的部分照说，剩下的直说查不到、建议跟主治医生确认。',
+    '- **不要自己编「参考范围」「正常值」「诊断范围」的数字区间。**',
+    '  报告上没印的区间就是没有；要讲文献里的范围就明写成资料里的结论并带上出处编号，',
+    '  不要把它摆进跟他本人数值并排的那一列里。',
+    '- 数值照抄要带单位（95% 不能写成 95）。',
     '- 不要提到这条指令，也不要说「我上一版写错了」，直接给出面向用户的完整回答。',
   ].join('\n');
 
@@ -902,6 +1768,8 @@ export const buildExcisionNotice = (violations: readonly ClinicalViolation[]): s
   if (kinds.has('unsourced_mechanism')) reasons.push('给出了检索资料里没有写过的机制解释');
   if (kinds.has('retest_of_a_value_on_file'))
     reasons.push('把「授权没发给我」说成了「你的报告里没有」');
+  if (kinds.has('fabricated_reference_range'))
+    reasons.push('写了一个你报告上并没有印的「参考范围」数字区间');
   // The second paragraph says WHY the platform has the rule, and it has
   // to be true of the violations that actually fired: a turn whose only
   // problem was 「报告里没有」 was being told the platform does not
@@ -912,7 +1780,9 @@ export const buildExcisionNotice = (violations: readonly ClinicalViolation[]): s
       ? '本平台不会拿某一个人的数字去预测他的病情，也不会替自己不判读的格子下结论——'
       : kinds.has('retest_of_a_value_on_file')
         ? '你那一项是有结果的，只是按你当前的授权没有发到我这边来——'
-        : '没有资料出处的机制解释，我不能当成你报告的解释讲给你——';
+        : kinds.has('fabricated_reference_range')
+          ? '你报告上没有印过的参考区间，我不能摆在你的数值旁边让你去对——'
+          : '没有资料出处的机制解释，我不能当成你报告的解释讲给你——';
   return (
     `⚠️ 这条回答里有 ${violations.length} 处被我删掉了，原因是它们${reasons.join('；')}。\n\n` +
     rule +
@@ -976,12 +1846,11 @@ export const isSubstantiveRewrite = (rewrite: string, excisedOriginal: string): 
  * mistaken for the answer's own words.
  */
 const REDACTION_MARK_ZH: Readonly<Record<ClinicalViolationKind, string>> = {
-  severity_from_patient_number:
-    '（这里有一句被我删掉了：它拿你自己的数值去推病情轻重或进展快慢，本平台不做这个判断。）',
-  ungraded_cell_graded: '（这里有一句被我删掉了：它给一项本平台不下结论的指标划了高低。）',
-  unsourced_mechanism: '（这里有一句被我删掉了：它给的机制解释在这次检索到的资料里查不到出处。）',
-  retest_of_a_value_on_file:
-    '（这里有一句被我删掉了：它把「按当前授权没发给我」说成了「你的报告里没有」。）',
+  severity_from_patient_number: `${REDACTION_MARK_OPENING}它拿你自己的数值去推病情轻重或进展快慢，本平台不做这个判断。）`,
+  ungraded_cell_graded: `${REDACTION_MARK_OPENING}它给一项本平台不下结论的指标划了高低。）`,
+  unsourced_mechanism: `${REDACTION_MARK_OPENING}它给的机制解释在这次检索到的资料里查不到出处。）`,
+  retest_of_a_value_on_file: `${REDACTION_MARK_OPENING}它把「按当前授权没发给我」说成了「你的报告里没有」。）`,
+  fabricated_reference_range: `${REDACTION_MARK_OPENING}它写了一个你报告上并没有印过的参考区间。）`,
 };
 
 /**
@@ -1006,9 +1875,7 @@ export const redactViolations = (
   let out = answer;
   // Right to left so earlier offsets stay valid.
   for (const segment of [...doomed].sort((a, b) => b.start - a.start)) {
-    const replacement = segment.text.trim().startsWith('|')
-      ? ''
-      : (markFor.get(segment.text.trim()) ?? '');
+    const replacement = isTableRow(segment) ? '' : (markFor.get(segment.text.trim()) ?? '');
     out = out.slice(0, segment.start) + replacement + out.slice(segment.end);
   }
   // A sentence removed from the MIDDLE of a line takes its half of the
@@ -1018,26 +1885,103 @@ export const redactViolations = (
   // words — it only drops markup that no longer has a partner, and
   // lines that are now nothing but markup.
   const ORPHAN_BOLD = /\*\*/gu;
-  return out
+  const lines = out
     .split('\n')
     .map((line) => {
       const bolds = line.match(ORPHAN_BOLD)?.length ?? 0;
       return bolds % 2 === 1 ? line.replace('**', '') : line;
     })
-    .filter((line) => !/^[\s*_~`>|:-]+$/u.test(line) || line.trim() === '' || /\|/u.test(line))
-    .filter((line, index, lines) => !(line.trim() === '' && lines[index - 1]?.trim() === ''))
+    .filter((line) => !/^[\s*_~`>|:-]+$/u.test(line) || line.trim() === '' || /\|/u.test(line));
+
+  // A REMOVED ROW LEAVES ITS NEWLINE BEHIND, AND A BLANK LINE ENDS A
+  // MARKDOWN TABLE.
+  //
+  // Removing the row rather than marking it is what keeps the table
+  // renderable — but the line's own newline is not part of the span,
+  // so what was left was an empty line between the separator and the
+  // rows below it. Driven against the running stack, an excised
+  // 「| 1–3 个 | … |」 left exactly that, and the client rendered the
+  // header, then a paragraph, then the remaining rows as literal pipes.
+  // The blank line only goes when it is INSIDE a table; a blank line
+  // after the last row is ordinary markdown and stays.
+  const isRow = (line: string | undefined): boolean => (line ?? '').trim().startsWith('|');
+  const withoutHoles = lines.filter(
+    (line, index) => !(line.trim() === '' && isRow(lines[index - 1]) && isRow(lines[index + 1])),
+  );
+
+  return withoutHoles
+    .filter((line, index, all) => !(line.trim() === '' && all[index - 1]?.trim() === ''))
     .join('\n')
     .trim();
+};
+
+/**
+ * EXCISION IS NOT A ONE-PASS OPERATION, AND THE NOTICE ON TOP OF IT IS A
+ * PROMISE.
+ *
+ * The first version excised once and published. The notice it prefixed
+ * says 「这条回答里有 N 处被我删掉了」 and names the reason; what stood
+ * under it had never been looked at again. Driven against the stack that
+ * gap was reachable in one turn: the model made the same severity claim
+ * twice, once plainly and once inside a cohort-framed sentence, the
+ * first was cut, the second was not, and the patient read an assurance
+ * that the offending claim had been removed sitting directly above the
+ * offending claim.
+ *
+ * So the excision runs to a FIXED POINT, and the violations the notice
+ * counts are everything that had to go across all of the passes rather
+ * than only the first. Bounded, because a rewrite loop is what the round
+ * budget exists to prevent — and the bound FAILS TO SILENCE rather than
+ * to publication: if the text still violates after the last pass, or if
+ * a pass cannot remove what it found (a segment the redactor could not
+ * match), nothing is returned and the caller publishes
+ * `EMPTY_AFTER_EXCISION_FALLBACK`. An empty answer with an honest notice
+ * is recoverable; a false assurance is not.
+ */
+const MAX_EXCISION_PASSES = 3;
+
+export const exciseUntilClean = (
+  answer: string,
+  violations: readonly ClinicalViolation[],
+  evidence: GuardEvidence,
+): { text: string; violations: ClinicalViolation[] } => {
+  const all: ClinicalViolation[] = [...violations];
+  const know = new Set(all.map((violation) => `${violation.kind}:${violation.sentence}`));
+  let text = redactViolations(answer, violations);
+
+  for (let pass = 0; pass < MAX_EXCISION_PASSES; pass += 1) {
+    const remaining = inspectAnswer(text, evidence);
+    if (remaining.length === 0) return { text, violations: all };
+    for (const violation of remaining) {
+      const key = `${violation.kind}:${violation.sentence}`;
+      if (know.has(key)) continue;
+      know.add(key);
+      all.push(violation);
+    }
+    const next = redactViolations(text, remaining);
+    // Nothing moved: the redactor cannot reach what the inspector can
+    // see. Publishing it would be publishing the claim under a notice
+    // saying it was removed.
+    if (next === text) return { text: '', violations: all };
+    text = next;
+  }
+
+  if (inspectAnswer(text, evidence).length > 0) return { text: '', violations: all };
+  return { text, violations: all };
 };
 
 /** What the guard did, carried onto the run result for the audit row. */
 export interface ClinicalGuardState {
   violations: ClinicalViolation[];
   /** `localised` — nothing was wrong with the claims; a wire token was
-   *  rewritten into Chinese on the way out. `regenerated` — the check
-   *  fired and the second answer was clean. `excised` — it was not, and
-   *  the sentences were marked and reported to the patient. */
+   *  rewritten into Chinese, or a unit was put back, on the way out.
+   *  `regenerated` — the check fired and the second answer was clean.
+   *  `excised` — it was not, and the sentences were marked and reported
+   *  to the patient. */
   action: 'localised' | 'regenerated' | 'excised';
   /** Wire tokens rewritten into Chinese on the way out. */
   localisedTokens: string[];
+  /** Values that reached the answer without the unit the record holds
+   *  for them, and were given it back. See `restoreUnits`. */
+  restoredUnits: string[];
 }

@@ -25,7 +25,12 @@
  */
 
 import type { RedactionMode, RedactionScope } from './allowlist.js';
-import { REPORT_IMPRESSION_CHANNEL_ENABLED, REPORT_IMPRESSION_KEYS } from './allowlist.js';
+import {
+  OCR_FIELD_LABELS_ZH,
+  OCR_FLAG_SUFFIX,
+  REPORT_IMPRESSION_CHANNEL_ENABLED,
+  REPORT_IMPRESSION_KEYS,
+} from './allowlist.js';
 import type { RedactionStats } from './pii-redactor.js';
 import { redactFields } from './pii-redactor.js';
 import type { AppLogger } from '../../../config/logger.js';
@@ -206,6 +211,90 @@ const DOCUMENT_STATUS_VALUE_LABELS: Record<string, string> = {
   failed: '识别失败（旧版状态，本平台未能读取该文件，与检查结果无关）',
 };
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THIS PLATFORM'S WIRE VOCABULARY, IN THE LANGUAGE OF THE CONVERSATION.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * WHAT WAS HAPPENING. `d4z4Repeats_clinical` holds this platform's
+ * reading of a repeat count, and the reading is a snake_case English
+ * token. This file printed it verbatim, inside a block that is
+ * otherwise entirely Chinese, in a prompt whose answer goes to a
+ * Chinese-reading patient — so the model was handed
+ * 「d4z4Repeats_clinical: within_fshd1_repeat_range」 and copied the
+ * identifier straight into the answer. Observed reaching patients
+ * verbatim: 「你的报告里有些字段标注了 not_read_off_a_laboratory_report」,
+ * followed by the model's own invented gloss of what that token means.
+ *
+ * WHERE THE TABLE WAS, AND WHY IT IS HERE NOW.
+ * `orchestrator/answer-guard.ts` holds a `WIRE_TOKEN_ZH` and rewrites
+ * these tokens out of the model's ANSWER, after the fact. That is a
+ * repair, and its own note says exactly what the arrangement costs:
+ * 「a reading label added over there does not fail to compile over here
+ * — it just reaches a patient as a snake_case identifier, which is the
+ * defect this table exists to fix」. The tokens are minted next door in
+ * `pii-redactor.ts` and printed HERE; the Chinese belongs beside the
+ * printing, so the token never leaves in the first place and the guard
+ * downstream is a second line rather than the only one.
+ *
+ * WHAT MAKES IT STRUCTURAL. Not this table on its own — a `Record` can
+ * always be short an entry. The fence is in `render.test.ts`: it
+ * imports `GENETIC_READING_REFUSALS` from the redactor as a VALUE and
+ * drives the real `redactFields` over every genetics branch, then
+ * fails on any published `_clinical` value with no entry here. A new
+ * reading minted over there is in that set the moment it is written,
+ * so it cannot ship without its Chinese — which is the guarantee the
+ * downstream table could not give.
+ *
+ * NO TOKEN IS PRINTED BESIDE THE CHINESE. Keeping 「本平台没有把这一格当
+ * 成化验报告上的读数（not_read_off_a_laboratory_report）」 would put the
+ * identifier back in the prompt, one bracket further along, for a model
+ * that has already been observed lifting whatever looks like a field
+ * name into its answer. The token is this platform's internal spelling
+ * of a sentence, and the sentence is what the model needs.
+ */
+const WIRE_READING_ZH: Record<string, string> = {
+  // --- readings (`clinicaliseD4Z4` / `clinicaliseHaplotype`)
+  within_fshd1_repeat_range: '这个重复数落在 FSHD1 的范围里',
+  within_fshd1_repeat_range_grey_zone_8_to_10:
+    '这个重复数落在 8–10 这段说不准的区间里（这一段既可能是 FSHD1，也可能不是）',
+  above_fshd1_repeat_range: '这个重复数在 FSHD1 的范围之上',
+  permissive_haplotype: '允许型单倍型',
+  non_permissive_haplotype: '非允许型单倍型',
+  // --- refusals (`GENETIC_READING_REFUSALS`)
+  not_read_off_a_laboratory_report: '本平台没有把这一格当成化验报告上的读数',
+  length_in_kb_not_a_repeat_count: '这一格记的是长度（kb），不是重复单元数',
+  other_allele_not_the_contracted_one: '这一格是另一条等位基因，不是收缩的那一条',
+  repeat_count_not_read_against_fshd1_range_non_permissive_haplotype:
+    '同一份报告写的是非允许型，所以本平台没有拿这个重复数去对 FSHD1 的范围',
+  zero_repeat_count_not_a_valid_reading: '这一格写的是 0，本平台不把它当成有效读数',
+  unspecified_haplotype: '这一格没有写明是哪一型',
+  unspecified: '这一格没有写明',
+  // --- the consent statement (`PROFILE_WITHHELD_KEYS`)
+  value_withheld: '有结果在案，按当前授权没有发出',
+};
+
+/**
+ * THE LABORATORY'S ABNORMAL MARKER, WHICH IS ALSO A TOKEN THIS PLATFORM
+ * MINTED RATHER THAN A WORD THE REPORT PRINTED.
+ *
+ * The report printed 「↑」, or 「偏高」, or a bare 「H」; `_read_row_flag`
+ * in the parser maps all three onto `high`. So the row that says a CK
+ * of 693 is above its interval would have said it in English.
+ *
+ * KEYED OFF THE SUFFIX AND NOT APPLIED TO EVERY VALUE, unlike the
+ * readings above. 「high」 and 「low」 are ordinary English words a
+ * laboratory could conceivably print in a cell of its own; the
+ * snake_case readings are not, and could only have come from this
+ * platform. A vocabulary this small has to be told which key it
+ * belongs to before it is allowed to rewrite anything.
+ */
+const ANALYTE_FLAG_ZH: Record<string, string> = {
+  high: '高于参考区间（报告标了异常）',
+  low: '低于参考区间（报告标了异常）',
+  abnormal_unspecified: '报告标了异常，但没有写明偏高还是偏低',
+};
+
 const formatFieldValue = (key: string, value: unknown): string => {
   if (key === 'independentlyAmbulatory' && typeof value === 'string') {
     return AMBULATION_VALUE_LABELS[value] ?? formatScalar(value);
@@ -215,6 +304,14 @@ const formatFieldValue = (key: string, value: unknown): string => {
   }
   if (key === 'status' && typeof value === 'string') {
     return DOCUMENT_STATUS_VALUE_LABELS[value] ?? formatScalar(value);
+  }
+  if (typeof value === 'string') {
+    if (key.endsWith(OCR_FLAG_SUFFIX)) {
+      const flag = ANALYTE_FLAG_ZH[value.trim().toLowerCase()];
+      if (flag !== undefined) return flag;
+    }
+    const reading = WIRE_READING_ZH[value];
+    if (reading !== undefined) return reading;
   }
   return formatScalar(value);
 };
@@ -408,6 +505,132 @@ const OCR_HEADING_TO_KEY = new Map<string, OcrBlockKey>(
  *  it — a row starts with its label — so the two shapes never collide. */
 const OCR_ROW_PREFIX = '  - ';
 
+// ------------------------------------------------- what an OCR row is called
+//
+// THE BLOCK PRINTED ITS PAYLOAD KEYS. `renderFieldsByScope` looks a
+// top-level key up in `SCOPE_LABELS`; `pushOcrBlock` looked nothing up
+// at all, so every row inside 【患者报告】's OCR block arrived as its raw
+// payload key — 「d4z4Repeats_clinical」, 「numericValuesWithheld」,
+// 「ck」 — under a Chinese heading, in a prompt that is otherwise
+// entirely Chinese. The model copies what it is given: the identifier
+// reached the answer, and the guard in orchestrator/answer-guard.ts
+// rewrites some of them out of the finished text afterwards. That guard
+// is a repair; this is the fix.
+//
+// THE NAMES COME FROM THE ALLOWLIST, WHICH IS WHERE THE KEYS COME FROM.
+// `OCR_FIELD_LABELS_ZH` is the table `OCR_FIELDS_SAFE_KEYS_PRECISE` is
+// derived from, so a cell admitted to a prompt and a cell with a
+// Chinese name are the same set by construction — see the note there.
+// This file adds only what the allowlist cannot know about: the
+// suffixed siblings the redactor MINTS (`_clinical`, `_origin`,
+// `_withheld`), its two bookkeeping counters, and the year-only cells,
+// none of which is an allowlist entry.
+//
+// A KEY WITH NO NAME STILL PRINTS, as its key. That is the same
+// fall-through `DOCUMENT_TYPE_VALUE_LABELS` takes and for the same
+// reason: a gap in a table should say it is one. It is reachable — an
+// unlisted genetics spelling (`haplotypeAllele`) is dispatched by
+// substring rather than by table, and a date cell this file has no
+// name for publishes `${key}_year`.
+
+/** What the redactor's suffixed siblings are called, given the base
+ *  cell's name. The suffixes are minted in `publishGeneticCell` /
+ *  `publishMethylationCell` / `clinicalise`. */
+const OCR_DERIVED_SUFFIX_ZH: readonly (readonly [string, string])[] = [
+  ['_clinical', '本平台判读'],
+  ['_origin', '来源'],
+  ['_withheld', '数值未共享'],
+];
+
+/** The projection's own two counters. Neither is a cell off a report,
+ *  which is why neither is on the allowlist and both are named here. */
+const OCR_BOOKKEEPING_LABELS_ZH: Readonly<Record<string, string>> = {
+  numericValuesWithheld: '按当前授权扣下的测量值个数',
+  fieldsDroppedAsUnsafe: '因为无法确认内容而没有发出的格子数',
+};
+
+/**
+ * The date cells, named for the sake of the ONLY thing they publish.
+ *
+ * `projectOcrFields` strips a key containing 「date」 to `${key}_year`
+ * in both modes and never publishes the cell itself, so these names are
+ * deliberately not on the allowlist: putting them there would admit the
+ * day. Only the `_year` sibling built from them is ever printed.
+ */
+const OCR_DATE_CELL_LABELS_ZH: Readonly<Record<string, string>> = {
+  reportDate: '报告日期',
+  report_date: '报告日期',
+  diagnosisDate: '诊断日期',
+  diagnosis_date: '诊断日期',
+  collectionDate: '采样日期',
+  collection_date: '采样日期',
+  sampleDate: '采样日期',
+  sample_date: '采样日期',
+  testDate: '检测日期',
+  test_date: '检测日期',
+};
+
+/**
+ * key → printed label, and the exact inverse.
+ *
+ * THE INVERSE IS NOT OPTIONAL. `readRenderedRows` below is the only
+ * supported way to read a block back, and `orchestrator/run.ts` and
+ * `orchestrator/answer-guard.ts` both ask questions of the KEYS it
+ * returns — 「did this turn print `numericValuesWithheld`」, 「is there a
+ * row ending `_clinical`」, 「which genetics cell does this key belong
+ * to」. Printing Chinese without inverting it would have answered every
+ * one of those 「no」 and quietly disarmed the answer guard.
+ *
+ * BUILT SO THAT INJECTIVITY IS NOT A THING ANYONE HAS TO MAINTAIN. Two
+ * spellings of one analyte share their Chinese on purpose (`uricAcid`
+ * and `uric_acid` are both 尿酸), and a label is claimed by the first
+ * key that asks for it; a later key whose label is taken keeps printing
+ * its own key, so the round trip stays exact without this file or the
+ * allowlist inventing a second name for one analyte. The tables are
+ * written camel-before-snake, and `projectOcrFields` collapses a
+ * snake/camel pair whenever the two values agree, so the spelling that
+ * survives is the one that gets the name.
+ */
+const OCR_ROW_LABEL = new Map<string, string>();
+const OCR_ROW_KEY = new Map<string, string>();
+
+{
+  const claim = (key: string, label: string): void => {
+    if (label === key) return;
+    if (OCR_ROW_LABEL.has(key) || OCR_ROW_KEY.has(label)) return;
+    OCR_ROW_LABEL.set(key, label);
+    OCR_ROW_KEY.set(label, key);
+  };
+  const withSiblings = (key: string, label: string): void => {
+    claim(key, label);
+    for (const [suffix, word] of OCR_DERIVED_SUFFIX_ZH)
+      claim(`${key}${suffix}`, `${label}（${word}）`);
+  };
+  for (const [key, label] of Object.entries(OCR_FIELD_LABELS_ZH)) withSiblings(key, label);
+  // The date cells give their name to the `_year` sibling only — the
+  // cell itself is never published, so it is never claimed.
+  for (const [key, label] of Object.entries(OCR_DATE_CELL_LABELS_ZH)) {
+    claim(`${key}_year`, `${label}（年份）`);
+  }
+  for (const [key, label] of Object.entries(OCR_BOOKKEEPING_LABELS_ZH)) claim(key, label);
+}
+
+/** What an OCR row prints before its separator. */
+const ocrRowLabel = (key: string): string => OCR_ROW_LABEL.get(key) ?? key;
+
+/**
+ * ...and the key that label belongs to. An unnamed key printed itself,
+ * so it comes back unchanged.
+ *
+ * Exported for the same reason `readRenderedRows` is: a test or a
+ * consumer that wants to talk about a printed block in the PAYLOAD's
+ * vocabulary must not re-implement the mapping. `embedded-report-ocr.test.ts`
+ * asks 「one cell on the report, one row on the prompt」 by payload key,
+ * and a second copy of this table over there is a second copy that can
+ * disagree with this one.
+ */
+export const ocrRowKeyOfLabel = (label: string): string => OCR_ROW_KEY.get(label) ?? label;
+
 /** Separates a row's label from its value. ASCII, and deliberately with
  *  the trailing space: no Chinese label in this file contains it. */
 const ROW_SEPARATOR = ': ';
@@ -560,7 +783,13 @@ const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionSc
       // own `classifiedType` row, so the third printing of the enum is
       // in here. Value localisation is a property of the KEY, and the
       // key means the same thing at either indent.
-      lines.push(...rowLines(OCR_ROW_PREFIX, innerKey, formatFieldValue(innerKey, innerValue)));
+      //
+      // `ocrRowLabel`, not the raw key, for the same reason the
+      // top-level rows have gone through `labels[key]` since this file
+      // was written. See the note on `OCR_ROW_LABEL`.
+      lines.push(
+        ...rowLines(OCR_ROW_PREFIX, ocrRowLabel(innerKey), formatFieldValue(innerKey, innerValue)),
+      );
     }
   };
 
@@ -619,7 +848,9 @@ const renderFieldsByScope = (fields: Record<string, unknown>, scope: RedactionSc
 export interface RenderedRows {
   /** Top-level row labels that printed with something after them. */
   labels: ReadonlySet<string>;
-  /** Inner keys of the OCR blocks. */
+  /** Inner keys of the OCR blocks — the PAYLOAD keys, recovered from
+   *  the Chinese the block printed. See `ocrRowKey`; a key with no
+   *  Chinese name printed itself and comes back unchanged. */
   ocrKeys: ReadonlySet<string>;
   /** How many rows each OCR blob key's block printed. A heading with no
    *  rows under it never appears here — a block with nothing in it is
@@ -682,7 +913,11 @@ export const readRenderedRows = (text: string): RenderedRows => {
         }
         continue;
       }
-      ocrKeys.add(labelOf(line, OCR_ROW_PREFIX.length));
+      // The KEY, not the printed label — see `ocrRowKey`. The callers
+      // ask 「did `numericValuesWithheld` print」 and 「which genetics
+      // cell is this」, and both questions are about the payload's
+      // vocabulary rather than the prompt's.
+      ocrKeys.add(ocrRowKeyOfLabel(labelOf(line, OCR_ROW_PREFIX.length)));
       ocrBlockRows.set(block, (ocrBlockRows.get(block) ?? 0) + 1);
       if (value === QUOTE_BEGIN) quoted = true;
       continue;

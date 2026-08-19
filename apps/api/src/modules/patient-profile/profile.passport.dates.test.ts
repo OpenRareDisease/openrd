@@ -398,7 +398,12 @@ describe.each(['Asia/Shanghai', 'America/Los_Angeles'])(
       expect(built.summary.summaryCards.map((card) => card.meta)).toEqual([
         '诊断日期 2019-05-03',
         '最近记录 2026-03-03',
-        '最近 MRI 2026-02-13',
+        // 上传日期, and that word is the point. The MRI on this profile
+        // carries no 报告时间, so the day beside it is the day the file
+        // reached this platform — see `PassportDateBasis`. It read
+        // 「最近 MRI 2026-02-13」 with nothing saying which of the two
+        // days that was, on the card the printed sheet leads with.
+        '最近 MRI 2026-02-13 上传日期',
         '最近监测 2026-02-15',
       ]);
       // The days themselves are the ones the other three documents

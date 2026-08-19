@@ -111,9 +111,14 @@ const CORRECTABLE_OCR_FIELDS: Array<{
 ];
 
 type OcrPayload = NonNullable<PatientDocument['ocrPayload']>;
+/** The one member of the stored payload that is not on the DTO: the
+ *  page's own OCR text, under the spelling older rows used.
+ *
+ *  `aiExtraction` / `ai_extraction` were declared here and are gone
+ *  with the reader that used them — 来源追溯 dumped that blob as JSON to
+ *  the patient and no longer does. A declared field nothing reads is a
+ *  standing invitation to print it again. */
 type DebugPayload = OcrPayload & {
-  aiExtraction?: unknown;
-  ai_extraction?: unknown;
   extracted_text?: string;
 };
 
@@ -366,6 +371,271 @@ const formatConfidence = (raw: string | undefined): string | undefined => {
   const value = Number(raw);
   if (!Number.isFinite(value)) return raw;
   return `${Math.round(value * 100)}%`;
+};
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 来源追溯 IS FOR CLINICAL CROSS-CHECKING. IT WAS A JSON DUMP.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The panel said 「保留原始字段、AI 抽取结果和 OCR 文本，便于设计稿之外的
+ * 临床核对」 and then printed `JSON.stringify({ fields, aiExtraction,
+ * extractedText })` — braces, quoted keys, every payload key in
+ * snake_case or camelCase, every stored enum in English — to the
+ * patient, on the screen whose own sibling test is headed 「NO WIRE ENUM
+ * REACHES THE PATIENT ON THIS SCREEN」. 性别 was fixed in the table
+ * above while `"patientSex": "male"` sat in the panel below it.
+ *
+ * WHAT CROSS-CHECKING ACTUALLY IS, which is what decides the shape:
+ * someone holding the paper report wants to compare, cell by cell, what
+ * this platform read against what the laboratory printed. That needs
+ * two things and neither of them is JSON —
+ *
+ *   1. EVERY CELL THIS PLATFORM READ, named in the language of the
+ *      report, including the ones no card above happens to render. The
+ *      cards are curated; this list is not, and that is its whole job.
+ *   2. THE PAGE'S OWN TEXT, as text, so a cell the parser MISSED is
+ *      visible as a gap between the two.
+ *
+ * AND `aiExtraction` IS GONE. It is an intermediate blob from the
+ * extraction model — not a cell off the report and not the report's own
+ * words, so it is neither of the two things above. Dumping it invited
+ * the reader to check the report against a machine's working notes, and
+ * it was the largest source of raw keys on the panel. A patient who
+ * needs the underlying record has 报告管理 → 导出; a maintainer has the
+ * server logs.
+ *
+ * THE TABLE IS THIS BUNDLE'S OWN, and that is the arrangement rather
+ * than an accident. A handset cannot import from apps/api, so the same
+ * vocabulary is spelled in `OCR_FIELD_LABELS_ZH` there (where it is
+ * also what admits a cell to a prompt) and here (where it is what a
+ * patient reads) — the same split `humanize.ts` lives with for the
+ * allowlist keys. What keeps it honest is the fall-through below rather
+ * than a parity check: a cell this table has not caught up with still
+ * appears, so the gap is visible on the screen instead of silently
+ * shrinking the list.
+ *
+ * A KEY WITH NO CHINESE NAME IS STILL SHOWN, under its own heading that
+ * says so. Hiding it would make this panel less complete than the dump
+ * it replaces, and completeness is the point; what changes is that an
+ * identifier is presented as this platform's own gap rather than
+ * printed in a row that looks like a medical term.
+ */
+const TRACE_FIELD_LABELS: Record<string, string> = {
+  // Report identity
+  reportName: '报告名称',
+  report_name: '报告名称',
+  reportTime: '报告时间',
+  report_time: '报告时间',
+  reportId: '报告编号',
+  facility: '医院',
+  department: '科室',
+  specimen: '标本',
+  testMethod: '检测方法',
+  test_method: '检测方法',
+  methodology: '检测方法',
+  // Genetics
+  diagnosisType: 'FSHD 分型',
+  diagnosis_type: 'FSHD 分型',
+  geneType: '基因分型',
+  geneticType: '基因分型',
+  d4z4Repeats: 'D4Z4 重复数',
+  d4z4_repeats: 'D4Z4 重复数',
+  d4z4RepeatPathogenic: 'D4Z4 收缩等位基因重复数',
+  d4z4_repeat_pathogenic: 'D4Z4 收缩等位基因重复数',
+  d4z4RepeatOther: 'D4Z4 另一条等位基因重复数',
+  d4z4_repeat_other: 'D4Z4 另一条等位基因重复数',
+  haplotype: '单倍型',
+  haplotype4q: '单倍型',
+  haplotype_4q: '单倍型',
+  methylationValue: '甲基化值',
+  methylation_value: '甲基化值',
+  ecoRIFragment: 'EcoRI 片段长度',
+  ecoriFragmentKb: 'EcoRI 片段长度（kb）',
+  ecori_fragment_kb: 'EcoRI 片段长度（kb）',
+  diagnosisDate: '诊断日期',
+  diagnosis_date: '诊断日期',
+  // Muscle enzymes / biochemistry
+  ck: '肌酸激酶 CK',
+  creatineKinase: '肌酸激酶',
+  creatine_kinase: '肌酸激酶',
+  ckmb: '肌酸激酶同工酶 CK-MB',
+  ldh: '乳酸脱氢酶 LDH',
+  mb: '肌红蛋白 Mb',
+  myoglobin: '肌红蛋白',
+  alt: '丙氨酸氨基转移酶 ALT',
+  ast: '天冬氨酸氨基转移酶 AST',
+  creatinine: '肌酐',
+  uricAcid: '尿酸',
+  uric_acid: '尿酸',
+  calcium: '钙',
+  // Haematology
+  wbc: '白细胞计数',
+  rbc: '红细胞计数',
+  hgb: '血红蛋白',
+  hct: '红细胞压积',
+  plt: '血小板计数',
+  // Coagulation
+  pt: '凝血酶原时间 PT',
+  inr: '国际标准化比值 INR',
+  aptt: '活化部分凝血活酶时间 APTT',
+  tt: '凝血酶时间 TT',
+  fibrinogen: '纤维蛋白原',
+  // Thyroid
+  ft3: '游离三碘甲状腺原氨酸 FT3',
+  ft4: '游离甲状腺素 FT4',
+  tsh: '促甲状腺激素 TSH',
+  // Pulmonary
+  fvc: '用力肺活量 FVC',
+  fvcPredPct: '用力肺活量占预计值',
+  fvc_pred_pct: '用力肺活量占预计值',
+  fev1: '第一秒用力呼气容积 FEV1',
+  dlco: '一氧化碳弥散量 DLCO',
+  dlcoPredPct: '弥散量占预计值',
+  dlco_pred_pct: '弥散量占预计值',
+  tlcPredPct: 'TLC 占预计值',
+  tlc_pred_pct: 'TLC 占预计值',
+  ventilatoryPattern: '通气模式',
+  ventilatory_pattern: '通气模式',
+  // Cardiac
+  heartRate: '心率',
+  heart_rate: '心率',
+  ecgRhythm: '心电节律',
+  ecg_rhythm: '心电节律',
+  ecgSummary: '心电结论',
+  ecg_summary: '心电结论',
+  echoSummary: '心超结论',
+  echo_summary: '心超结论',
+  conductionAbnormality: '传导异常',
+  conduction_abnormality: '传导异常',
+  LVEF: 'LVEF',
+  lvef: 'LVEF',
+  QTc: 'QTc',
+  qtc: 'QTc',
+  qtcMs: 'QTc 间期（ms）',
+  qtc_ms: 'QTc 间期（ms）',
+  qtMs: 'QT 间期（ms）',
+  qt_ms: 'QT 间期（ms）',
+  prIntervalMs: 'PR 间期（ms）',
+  pr_interval_ms: 'PR 间期（ms）',
+  qrsDurationMs: 'QRS 时限（ms）',
+  qrs_duration_ms: 'QRS 时限（ms）',
+  // Imaging
+  fattyInfiltration: '脂肪浸润',
+  fatty_infiltration: '脂肪浸润',
+  inflammatoryChange: '炎性改变',
+  inflammatory_change: '炎性改变',
+  asymmetry: '左右不对称',
+  serratusFatigueGrade: '前锯肌脂肪化等级',
+  serratus_fatigue_grade: '前锯肌脂肪化等级',
+  reportImpression: '报告印象',
+  report_impression: '报告印象',
+  impressionText: '报告印象',
+  impression_text: '报告印象',
+  findingText: '影像所见',
+  finding_text: '影像所见',
+  abdominalUltrasoundImpression: '腹部超声提示',
+  abdominal_ultrasound_impression: '腹部超声提示',
+  diaphragmMotionSummary: '膈肌运动',
+  diaphragm_motion_summary: '膈肌运动',
+  // Patient identity the parse lifted off the page. Named rather than
+  // hidden: it is on the paper the reader is holding, and a name this
+  // platform read WRONG is exactly the kind of thing a cross-check is
+  // for.
+  patientName: '患者姓名',
+  patientSex: '性别',
+  patientAge: '年龄',
+  orderingDoctor: '送检医生',
+  ordering_doctor: '送检医生',
+  bedNo: '床号',
+  bed_no: '床号',
+};
+
+/** The suffixes the OCR bridge writes the laboratory's own abnormal
+ *  marker and reference interval under — one spelling each, camelCase,
+ *  as `services/ocr/embedded-report-ocr.ts` writes them. */
+const TRACE_FLAG_SUFFIX = 'Flag';
+const TRACE_REFERENCE_SUFFIX = 'Reference';
+
+/** `high` / `low` are tokens this platform minted out of 「↑」, 「偏高」
+ *  and a bare 「H」 (`_read_row_flag` in the parser), so they are
+ *  localised here for the same reason `patientSex` is. */
+const TRACE_FLAG_LABELS: Record<string, string> = {
+  high: '偏高',
+  low: '偏低',
+  abnormal_unspecified: '异常',
+};
+
+/** How much of the page's own text the panel prints. The rest is
+ *  reachable through 报告管理 → 导出; a phone rendering an unbounded
+ *  string is a phone that stops scrolling. */
+const OCR_TEXT_LIMIT = 4000;
+
+/** One traceability row: what to call the cell, and what this platform
+ *  read into it. `named` is false for a key with no Chinese name — the
+ *  row still prints, under its own heading. */
+interface TraceRow {
+  key: string;
+  label: string;
+  value: string;
+  named: boolean;
+}
+
+const traceLabelFor = (key: string): string | undefined => {
+  const direct = TRACE_FIELD_LABELS[key];
+  if (direct) return direct;
+  for (const [suffix, word] of [
+    [TRACE_FLAG_SUFFIX, '异常标记'],
+    [TRACE_REFERENCE_SUFFIX, '参考区间'],
+  ] as const) {
+    if (!key.endsWith(suffix)) continue;
+    const base = TRACE_FIELD_LABELS[key.slice(0, -suffix.length)];
+    if (base) return `${base} ${word}`;
+  }
+  return undefined;
+};
+
+/** 通气模式, in Chinese. Parsed out of a Chinese report, stored in
+ *  English, and read by Chinese speakers — the same round trip 性别
+ *  makes. Mirrors `VENTILATORY_PATTERN_ZH` in the API's passport. */
+const VENTILATORY_PATTERN_LABELS: Record<string, string> = {
+  restrictive: '限制性通气功能障碍',
+  obstructive: '阻塞性通气功能障碍',
+  mixed: '混合性通气功能障碍',
+  normal: '通气功能正常',
+};
+
+const traceValueFor = (key: string, raw: string): string => {
+  if (key.endsWith(TRACE_FLAG_SUFFIX)) {
+    return TRACE_FLAG_LABELS[raw.trim().toLowerCase()] ?? raw;
+  }
+  if (key === 'patientSex') return formatSexLabel(raw) ?? raw;
+  if (key === 'ventilatoryPattern' || key === 'ventilatory_pattern') {
+    return VENTILATORY_PATTERN_LABELS[raw.trim()] ?? raw;
+  }
+  return raw;
+};
+
+/** Every cell the parse took off this report, named where this platform
+ *  has a name for it. Bookkeeping keys are excluded by the same set the
+ *  reparse gate uses, so 「what was read」 means the same thing here as
+ *  it does there. */
+const buildTraceRows = (fields: Record<string, string> | undefined): TraceRow[] => {
+  if (!fields) return [];
+  const rows: TraceRow[] = [];
+  for (const [key, rawValue] of Object.entries(fields)) {
+    if (PIPELINE_BOOKKEEPING_FIELDS.has(key)) continue;
+    const value = String(rawValue ?? '').trim();
+    if (!value) continue;
+    const label = traceLabelFor(key);
+    rows.push({
+      key,
+      label: label ?? key,
+      value: traceValueFor(key, value),
+      named: label !== undefined,
+    });
+  }
+  return rows;
 };
 
 const formatKindLabel = (kind: string) => {
@@ -842,23 +1112,30 @@ export default function ReportDetailScreen() {
     return structuredSections.flatMap((section) => section.items).slice(0, 4);
   }, [relevantSystemPanels, structuredSections]);
 
-  const rawText = useMemo(() => {
+  /** Every cell the parse read, for the cross-check. See
+   *  `TRACE_FIELD_LABELS`. */
+  const traceRows = useMemo(() => buildTraceRows(fields), [fields]);
+  const namedTraceRows = useMemo(() => traceRows.filter((row) => row.named), [traceRows]);
+  const unnamedTraceRows = useMemo(() => traceRows.filter((row) => !row.named), [traceRows]);
+
+  /**
+   * The page's own words, as text.
+   *
+   * THE ONE THING ON THIS PANEL THAT IS NOT THIS PLATFORM'S — which is
+   * why it keeps a mono well and a length cap and gets no labelling
+   * pass: rewriting a word here would defeat the only purpose it has,
+   * which is to show a reader what the parser was reading when it
+   * missed a cell.
+   */
+  const extractedText = useMemo(() => {
     if (!payload) return '';
     const obj = payload as DebugPayload;
-    const aiExtraction = obj.aiExtraction ?? obj.ai_extraction ?? null;
-    const extractedText = obj.extractedText ?? obj.extracted_text ?? '';
-    const compact = {
-      fields: obj.fields ?? null,
-      aiExtraction,
-      extractedText:
-        typeof extractedText === 'string' ? extractedText.slice(0, 4000) : extractedText,
-    };
-    try {
-      return JSON.stringify(compact, null, 2);
-    } catch {
-      return String(compact);
-    }
+    const raw = obj.extractedText ?? obj.extracted_text ?? '';
+    return typeof raw === 'string' ? raw.trim() : '';
   }, [payload]);
+
+  const ocrTextShown = extractedText.slice(0, OCR_TEXT_LIMIT);
+  const ocrTextTruncated = extractedText.length > OCR_TEXT_LIMIT;
 
   const onGenerateSummary = async () => {
     if (!documentId) return;
@@ -1227,23 +1504,81 @@ export default function ReportDetailScreen() {
           )}
         </View>
 
+        {/* 来源追溯 — the cross-check, not a dump. See TRACE_FIELD_LABELS. */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>来源追溯</Text>
           <Text style={styles.smallText}>
-            保留原始字段、AI 抽取结果和 OCR 文本，便于设计稿之外的临床核对。
+            这里逐条列出本平台从这份报告里读到的每一格，以及 OCR
+            识别出的报告原文，方便你对着纸质报告一项一项核对。上面的卡片只挑了重点，这里是全部。
           </Text>
           <Button
-            label={showRaw ? '收起原始结果' : '展开原始结果'}
+            label={showRaw ? '收起核对清单' : '展开核对清单'}
             variant="plain"
             compact
             trailingIcon={showRaw ? 'chevron-up' : 'chevron-down'}
             onPress={() => setShowRaw((value) => !value)}
           />
-          {showRaw && (
-            <View style={styles.codeBlock}>
-              <Text style={styles.codeText}>{rawText}</Text>
-            </View>
-          )}
+          {showRaw ? (
+            <>
+              {traceRows.length === 0 ? (
+                <Text style={styles.smallText}>本平台没有从这份报告里读出任何字段。</Text>
+              ) : (
+                <>
+                  {namedTraceRows.length > 0 ? (
+                    <View style={styles.fieldGroup}>
+                      <Text style={styles.fieldGroupTitle}>本平台读到的字段</Text>
+                      <View style={styles.fieldTable}>
+                        {namedTraceRows.map((row) => (
+                          <View key={row.key} style={styles.fieldRow}>
+                            <Text style={styles.fieldLabel}>{row.label}</Text>
+                            <Text style={styles.fieldValue}>{row.value}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ) : null}
+                  {/* Shown rather than hidden: this panel's job is to be
+                      complete, and a cell dropped here is a cell the
+                      reader cannot cross-check. The heading says whose
+                      gap it is. */}
+                  {unnamedTraceRows.length > 0 ? (
+                    <View style={styles.fieldGroup}>
+                      <Text style={styles.fieldGroupTitle}>
+                        本平台还没有为这些字段起名（按原始字段名列出）
+                      </Text>
+                      <View style={styles.fieldTable}>
+                        {unnamedTraceRows.map((row) => (
+                          <View key={row.key} style={styles.fieldRow}>
+                            <Text style={styles.fieldLabel}>{row.label}</Text>
+                            <Text style={styles.fieldValue}>{row.value}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ) : null}
+                </>
+              )}
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldGroupTitle}>报告原文（OCR 识别文字）</Text>
+                {ocrTextShown ? (
+                  <>
+                    <View style={styles.codeBlock}>
+                      <Text style={styles.codeText}>{ocrTextShown}</Text>
+                    </View>
+                    {ocrTextTruncated ? (
+                      <Text style={styles.smallText}>
+                        {`原文较长，这里只显示前 ${OCR_TEXT_LIMIT} 个字。`}
+                      </Text>
+                    ) : null}
+                  </>
+                ) : (
+                  <Text style={styles.smallText}>
+                    这份报告没有可显示的 OCR 文字（可能是扫描质量的原因，或识别尚未完成）。
+                  </Text>
+                )}
+              </View>
+            </>
+          ) : null}
         </View>
 
         <View style={styles.section}>

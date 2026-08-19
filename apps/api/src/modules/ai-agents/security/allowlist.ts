@@ -581,63 +581,101 @@ export const SAFE_VALUE_MAX_LENGTH = 200;
  * prose, and a key holding a short structured enum is published as the
  * cell it is. The list stays a list of keys whose NAME is safe to show;
  * what happens to the value is decided by the value.
+ *
+ * ══════════════════════════════════════════════════════════════════════
+ * IT IS NO LONGER A LIST. IT IS FOUR TABLES OF KEY → CHINESE, AND THE
+ * SET IS DERIVED FROM THEM.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * WHY. `security/render.ts` applies its label table to TOP-LEVEL rows
+ * only, so every row inside an OCR block printed under its raw key: the
+ * model was handed 「d4z4Repeats_clinical: within_fshd1_repeat_range」 in
+ * a block that is otherwise entirely Chinese, and copied the identifier
+ * into the answer a Chinese-reading patient then read. The other lane's
+ * `WIRE_TOKEN_ZH` rewrites some of those after the fact, and its own
+ * note says what that arrangement is worth: 「a reading label added over
+ * there does not fail to compile over here — it just reaches a patient
+ * as a snake_case identifier」.
+ *
+ * A LIST CANNOT CARRY THE CHINESE AND A TABLE CANNOT BE ADDED TO
+ * WITHOUT IT. That is the whole of the change: `OCR_FIELDS_SAFE_KEYS_PRECISE`
+ * is `Object.keys` of these four tables, so admitting a key to the
+ * prompt and naming it in Chinese are now one edit, and the compiler
+ * rejects the half of it that omits the name. The renderer reads
+ * `OCR_FIELD_LABELS_ZH` and prints the Chinese; a key that somehow
+ * reaches a block without one still prints — see `ocrRowLabel` there —
+ * because a raw key is a gap in a table and printing it says so, which
+ * is the same fall-through `DOCUMENT_TYPE_VALUE_LABELS` takes.
+ *
+ * WHY FOUR TABLES AND NOT ONE. Only one of the four takes the flag and
+ * interval siblings below, and which keys those are is not a property a
+ * predicate over key names can recover. See `OCR_MEASURED_ANALYTE_LABELS_ZH`.
+ *
+ * THE TABLES ARE NOT REQUIRED TO BE INJECTIVE. Two spellings of one
+ * cell (`ck` / `creatine_kinase`) are the same analyte and get the same
+ * Chinese; `projectOcrFields` collapses that pair whenever the two
+ * values agree, so both only ever print together when they disagree.
+ * The renderer's inverse — `readRenderedRows` has to recover the key a
+ * printed row belongs to — resolves a repeated label onto the FIRST key
+ * that claimed it and leaves the later spelling printing its raw key,
+ * so the round trip is exact without this file having to invent a
+ * second Chinese name for one analyte. Camel before snake, throughout,
+ * so the spelling that survives the collapse is the one that gets the
+ * name.
  */
-export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
-  // --- Report identity -------------------------------------------
-  'classifiedType',
-  'classified_type',
-  'reportType',
-  'report_type',
-  'documentType',
-  'document_type',
-  'diagnosisType',
-  'diagnosis_type',
-  'geneType',
-  'gene_type',
-  'geneticType',
-  'genetic_type',
-  'testMethod',
-  'test_method',
-  'methodology',
-  'referenceRange',
-  'reference_range',
-  'normalRange',
-  'normal_range',
-  'status',
 
-  // --- Clinical values -------------------------------------------
-  //
-  // This half was missing, and its absence was invisible: a genetics
-  // report worked (its keys are all above), so the feature looked
-  // fine, while every lab panel arrived stripped. The model was handed
-  // a coagulation report whose PT 13.7 / APTT 34 / INR 1.12 /
-  // fibrinogen 2.68 had all been extracted correctly, saw nothing but
-  // the classification, and told the patient「系统没有解析出具体数据」
-  // — pointing them at an OCR problem that did not exist.
-  //
-  // Each key below is a measured number or a fixed clinical enum. The
-  // identity fields that travel in the same payload — patientName,
-  // orderingDoctor, bedNo, facility, department, specimen, patientAge,
-  // reportId, reportName — are deliberately NOT here and stay denied,
-  // as do the free-text narrative keys (impressionText,
-  // findingText, interpretationSummary, hint, aiSummary): prose cannot
-  // be vouched for AS A CELL, which is the same rule that keeps report
-  // titles off the allowlist. The report's own impression reaches the
-  // prompt through `reportImpression` instead — a channel with an
-  // eligibility gate, an identifier scrub and a measurement mask in
-  // front of it, none of which this projection has or should have.
+/**
+ * THE DOCUMENT'S OWN IDENTITY. Not measurements and not results: what
+ * kind of report this is, how it was run, and where this platform's
+ * pipeline got to with it. No flag and no reference interval — a
+ * laboratory does not print an abnormal marker against 检测方法.
+ */
+const OCR_REPORT_IDENTITY_LABELS_ZH: Readonly<Record<string, string>> = {
+  classifiedType: '报告类型（本平台判定）',
+  classified_type: '报告类型（本平台判定）',
+  reportType: '报告类型（报告自述）',
+  report_type: '报告类型（报告自述）',
+  documentType: '文档类型',
+  document_type: '文档类型',
+  testMethod: '检测方法',
+  test_method: '检测方法',
+  methodology: '检测方法',
+  status: '处理状态',
+};
 
-  // Genetics
-  'd4z4Repeats',
-  'd4z4RepeatPathogenic',
-  'd4z4RepeatOther',
-  'd4z4_repeat_pathogenic',
-  'd4z4_repeat_other',
-  'methylationValue',
-  'methylation_value',
-  'ecoRIFragment',
-  'ecoriFragmentKb',
-  'ecori_fragment_kb',
+/**
+ * THE GENETICS CELLS. They get no flag and no interval siblings, and
+ * that is structural rather than an omission: `geneticBranchFor` in
+ * `pii-redactor.ts` dispatches on the substrings `d4z4` / `ecori` /
+ * `methylation` / `haplotype` BEFORE the safe-key branch is reached, so
+ * a `d4z4RepeatsFlag` minted here would not be published as a flag at
+ * all — it would be handed to `clinicaliseD4Z4`, which would read
+ * 「high」 as a repeat count cell and publish a refusal about it. The
+ * cells this platform reads are read by their own readers; a marker
+ * beside one of them would have to go through those readers, and that
+ * is a change to the dispatch rather than to this table.
+ *
+ * `diagnosisType` sits here rather than with the report identity above
+ * for the same reason: `GENETIC_TYPE_KEYS_LOWER` dispatches it to
+ * `publishDiagnosisTypeCell`, which is not the safe-key branch either.
+ */
+const OCR_GENETIC_CELL_LABELS_ZH: Readonly<Record<string, string>> = {
+  diagnosisType: '分型/诊断方式',
+  diagnosis_type: '分型/诊断方式',
+  geneType: '基因分型',
+  gene_type: '基因分型',
+  geneticType: '基因分型',
+  genetic_type: '基因分型',
+  d4z4Repeats: 'D4Z4 重复数',
+  d4z4RepeatPathogenic: 'D4Z4 收缩等位基因重复数',
+  d4z4RepeatOther: 'D4Z4 另一条等位基因重复数',
+  d4z4_repeat_pathogenic: 'D4Z4 收缩等位基因重复数',
+  d4z4_repeat_other: 'D4Z4 另一条等位基因重复数',
+  methylationValue: '甲基化值',
+  methylation_value: '甲基化值',
+  ecoRIFragment: 'EcoRI 片段长度',
+  ecoriFragmentKb: 'EcoRI 片段长度（kb）',
+  ecori_fragment_kb: 'EcoRI 片段长度（kb）',
   // `geneticPositive` / `genetic_positive` ARE DELIBERATELY ABSENT.
   //
   // Every other key on this list is a value a laboratory printed. That
@@ -668,122 +706,190 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // `fieldCount`. The derivation is deleted at the source — see the note
   // in `_extract_genetic`. These entries stay absent so a payload
   // written before that deletion, still on disk, cannot reach a prompt.
-  'haplotype',
+  haplotype: '单倍型',
+};
 
+/**
+ * A MEASURED NUMBER, AND THE ONLY TABLE THAT TAKES THE FLAG AND THE
+ * INTERVAL.
+ *
+ * WHAT WAS MISSING AND WHY IT WAS INVISIBLE. The parser reads the
+ * laboratory's own abnormal marker and its own reference interval off
+ * the row — 「*14肌酸激酶(CK) 693 ↑ 50-310 U/L」 — and the OCR bridge
+ * writes them onto the payload as `${camelName}Flag` and
+ * `${camelName}Reference` (see the flag/interval note in
+ * services/ocr/embedded-report-ocr.ts). This list carried neither, and
+ * carried instead a generic `referenceRange` / `normalRange` pair that
+ * NOTHING in this pipeline has ever written — an inventory entry for a
+ * key that cannot arrive, which is the `ageGroup` defect on the profile
+ * scope. Those four are deleted here.
+ *
+ * So a CK at 2.2 times its stated upper limit reached the assistant as
+ * 「ck: 693」 and nothing else: no direction, no interval to be 693
+ * against, on the one enzyme this disease is monitored by. The model
+ * has no way to know an ordinary-looking number is flagged, and the
+ * answer it composes says so.
+ *
+ * THE TWO SIBLINGS ARE DERIVED, NOT LISTED. `flagKey` / `referenceKey`
+ * below mint them from every key in this table, so an analyte added
+ * here arrives with its marker and its interval already admitted and
+ * already named. Listing 260 keys by hand is how the half of a pair
+ * goes missing.
+ *
+ * WHAT EACH MODE DOES WITH THEM falls out of the rules already in
+ * `projectOcrFields` and is exactly right in both:
+ *   - the FLAG is `high` / `low` — no digit, so `isQualitativeResult`
+ *     passes it in STRICT mode. That is the mode where the number
+ *     itself is swept into `numericValuesWithheld`, and 「CK 偏高」 with
+ *     no number is precisely what a patient who did not consent to
+ *     precise values should have said about them.
+ *   - the INTERVAL is 「50-310」 — digits, so strict withholds it and
+ *     counts it. An interval is a measurement; precise consent is what
+ *     buys it, and it is only useful beside the number it bounds, which
+ *     that same consent buys.
+ *
+ * THE FLAG IS AN ENGLISH TOKEN THIS PLATFORM MINTS, not a word the
+ * laboratory printed — `_read_row_flag` maps 「↑」/「偏高」/「H」 onto
+ * `high`. So its Chinese is in the renderer's value table beside every
+ * other wire token, not here: this table names KEYS.
+ */
+const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   // Muscle enzymes / biochemistry
-  'ck',
-  'ckmb',
-  'creatineKinase',
-  'ldh',
-  'alt',
-  'ast',
-  'creatinine',
-  'uricAcid',
-  'uric_acid',
-  'calcium',
-  'mb',
-  'myoglobin',
+  ck: '肌酸激酶 CK',
+  ckmb: '肌酸激酶同工酶 CK-MB',
+  creatineKinase: '肌酸激酶',
+  ldh: '乳酸脱氢酶 LDH',
+  alt: '丙氨酸氨基转移酶 ALT',
+  ast: '天冬氨酸氨基转移酶 AST',
+  creatinine: '肌酐',
+  uricAcid: '尿酸',
+  uric_acid: '尿酸',
+  calcium: '钙',
+  mb: '肌红蛋白 Mb',
+  myoglobin: '肌红蛋白',
 
   // Haematology
-  'wbc',
-  'rbc',
-  'hgb',
-  'hct',
-  'plt',
-  'mcv',
-  'mch',
-  'mchc',
-  'mpv',
-  'pct',
-  'pdw',
-  'plcr',
-  'nrbc',
-  'rdwCv',
-  'rdwSd',
-  'rdw_cv',
-  'rdw_sd',
-  'neutAbs',
-  'neutPct',
-  'neut_abs',
-  'neut_pct',
-  'lymphAbs',
-  'lymphPct',
-  'lymph_abs',
-  'lymph_pct',
-  'monoAbs',
-  'monoPct',
-  'mono_abs',
-  'mono_pct',
-  'eosAbs',
-  'eos_abs',
-  'basoAbs',
-  'basoPct',
-  'baso_abs',
-  'baso_pct',
+  wbc: '白细胞计数',
+  rbc: '红细胞计数',
+  hgb: '血红蛋白',
+  hct: '红细胞压积',
+  plt: '血小板计数',
+  mcv: '平均红细胞体积',
+  mch: '平均红细胞血红蛋白量',
+  mchc: '平均红细胞血红蛋白浓度',
+  mpv: '平均血小板体积',
+  pct: '血小板压积',
+  pdw: '血小板分布宽度',
+  plcr: '大血小板比率',
+  nrbc: '有核红细胞',
+  rdwCv: '红细胞分布宽度 CV',
+  rdwSd: '红细胞分布宽度 SD',
+  rdw_cv: '红细胞分布宽度 CV',
+  rdw_sd: '红细胞分布宽度 SD',
+  neutAbs: '中性粒细胞绝对值',
+  neutPct: '中性粒细胞百分比',
+  neut_abs: '中性粒细胞绝对值',
+  neut_pct: '中性粒细胞百分比',
+  lymphAbs: '淋巴细胞绝对值',
+  lymphPct: '淋巴细胞百分比',
+  lymph_abs: '淋巴细胞绝对值',
+  lymph_pct: '淋巴细胞百分比',
+  monoAbs: '单核细胞绝对值',
+  monoPct: '单核细胞百分比',
+  mono_abs: '单核细胞绝对值',
+  mono_pct: '单核细胞百分比',
+  eosAbs: '嗜酸性粒细胞绝对值',
+  eos_abs: '嗜酸性粒细胞绝对值',
+  basoAbs: '嗜碱性粒细胞绝对值',
+  basoPct: '嗜碱性粒细胞百分比',
+  baso_abs: '嗜碱性粒细胞绝对值',
+  baso_pct: '嗜碱性粒细胞百分比',
 
   // Coagulation
-  'pt',
-  'inr',
-  'aptt',
-  'tt',
-  'fibrinogen',
+  pt: '凝血酶原时间 PT',
+  inr: '国际标准化比值 INR',
+  aptt: '活化部分凝血活酶时间 APTT',
+  tt: '凝血酶时间 TT',
+  fibrinogen: '纤维蛋白原',
 
   // Thyroid
-  'ft3',
-  'ft4',
-  'tsh',
+  ft3: '游离三碘甲状腺原氨酸 FT3',
+  ft4: '游离甲状腺素 FT4',
+  tsh: '促甲状腺激素 TSH',
 
   // Pulmonary — the systems this cohort is monitored for
-  'fvc',
-  'fvcPredPct',
-  'fvc_pred_pct',
-  'fev1',
-  'dlco',
-  'dlcoPredPct',
-  'dlco_pred_pct',
+  fvc: '用力肺活量 FVC',
+  fvcPredPct: '用力肺活量占预计值百分比',
+  fvc_pred_pct: '用力肺活量占预计值百分比',
+  fev1: '第一秒用力呼气容积 FEV1',
+  dlco: '一氧化碳弥散量 DLCO',
+  dlcoPredPct: '弥散量占预计值百分比',
+  dlco_pred_pct: '弥散量占预计值百分比',
 
+  // Cardiac — the intervals, which are numbers. The two cardiac cells
+  // that are prose (`ecgSummary`, `conductionAbnormality`) and the one
+  // that is an enum (`ecgRhythm`) are in the qualitative table below:
+  // an abnormal marker beside 心电结论 is not a thing a report prints.
+  heartRate: '心率',
+  heart_rate: '心率',
+  prIntervalMs: 'PR 间期（ms）',
+  pr_interval_ms: 'PR 间期（ms）',
+  qrsDurationMs: 'QRS 时限（ms）',
+  qrs_duration_ms: 'QRS 时限（ms）',
+  qtMs: 'QT 间期（ms）',
+  qt_ms: 'QT 间期（ms）',
+  qtcMs: 'QTc 间期（ms）',
+  qtc_ms: 'QTc 间期（ms）',
+
+  // Infection screening — `trustTiter` is the one measurement on the
+  // panel; the rest of it is 阴性 / 阳性 and lives below.
+  trustTiter: '梅毒 TRUST 滴度',
+  trust_titer: '梅毒 TRUST 滴度',
+};
+
+/**
+ * A RESULT THAT IS A WORD RATHER THAN A NUMBER — an enum the extractor
+ * emits, or the short prose a cardiology or imaging report prints.
+ *
+ * No flag and no interval: 阴性 is not high or low, and there is no
+ * range for 窦性心律 to be outside. The prose members of this table are
+ * the three `looksLikeFreeText` sends through gate 0 and gate 2 like
+ * any other narrative — see the premise paragraph at the top of this
+ * section.
+ */
+const OCR_QUALITATIVE_CELL_LABELS_ZH: Readonly<Record<string, string>> = {
   // Cardiac
-  'heartRate',
-  'heart_rate',
-  'ecgRhythm',
-  'ecg_rhythm',
-  'ecgSummary',
-  'ecg_summary',
-  'prIntervalMs',
-  'pr_interval_ms',
-  'qrsDurationMs',
-  'qrs_duration_ms',
-  'qtMs',
-  'qt_ms',
-  'qtcMs',
-  'qtc_ms',
-  'conductionAbnormality',
-  'conduction_abnormality',
+  ecgRhythm: '心电节律',
+  ecg_rhythm: '心电节律',
+  ecgSummary: '心电结论',
+  ecg_summary: '心电结论',
+  conductionAbnormality: '传导异常',
+  conduction_abnormality: '传导异常',
 
   // Imaging — fixed enums produced by the FSHD extractor
-  'fattyInfiltration',
-  'fatty_infiltration',
-  'inflammatoryChange',
-  'inflammatory_change',
-  'asymmetry',
+  fattyInfiltration: '脂肪浸润',
+  fatty_infiltration: '脂肪浸润',
+  inflammatoryChange: '炎性改变',
+  inflammatory_change: '炎性改变',
+  asymmetry: '左右不对称',
 
   // Stool panel — enums plus counts
-  'stoolColor',
-  'stoolConsistency',
-  'stoolBlood',
-  'stoolMucus',
-  'stoolRbc',
-  'stoolWbc',
-  'stoolFatGlobules',
-  'stoolOccultBlood',
-  'stool_color',
-  'stool_consistency',
-  'stool_blood',
-  'stool_mucus',
-  'stool_rbc',
-  'stool_wbc',
-  'stool_fat_globules',
-  'stool_occult_blood',
+  stoolColor: '粪便颜色',
+  stoolConsistency: '粪便性状',
+  stoolBlood: '粪便肉眼血',
+  stoolMucus: '粪便黏液',
+  stoolRbc: '粪便红细胞',
+  stoolWbc: '粪便白细胞',
+  stoolFatGlobules: '粪便脂肪球',
+  stoolOccultBlood: '粪便隐血试验',
+  stool_color: '粪便颜色',
+  stool_consistency: '粪便性状',
+  stool_blood: '粪便肉眼血',
+  stool_mucus: '粪便黏液',
+  stool_rbc: '粪便红细胞',
+  stool_wbc: '粪便白细胞',
+  stool_fat_globules: '粪便脂肪球',
+  stool_occult_blood: '粪便隐血试验',
 
   // Infection screening — the panel every neurology admission runs
   // before an immunosuppressant or a muscle biopsy, so an FSHD patient
@@ -791,22 +897,74 @@ export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set([
   // all along and this list never named one, so the whole panel was
   // dropped in *both* modes: the patient's own syphilis and hepatitis
   // results were unreadable to the assistant reading their file.
-  // Results are 阴性 / 阳性 enums; `trustTiter` is the one measurement.
-  'hbsag',
-  'antiHbs',
-  'anti_hbs',
-  'hbeag',
-  'antiHbe',
-  'anti_hbe',
-  'antiHbc',
-  'anti_hbc',
-  'hivAb',
-  'hiv_ab',
-  'antiHcv',
-  'anti_hcv',
-  'tppa',
-  'trustAb',
-  'trust_ab',
-  'trustTiter',
-  'trust_titer',
-]);
+  hbsag: '乙肝表面抗原 HBsAg',
+  antiHbs: '乙肝表面抗体 抗-HBs',
+  anti_hbs: '乙肝表面抗体 抗-HBs',
+  hbeag: '乙肝 e 抗原 HBeAg',
+  antiHbe: '乙肝 e 抗体 抗-HBe',
+  anti_hbe: '乙肝 e 抗体 抗-HBe',
+  antiHbc: '乙肝核心抗体 抗-HBc',
+  anti_hbc: '乙肝核心抗体 抗-HBc',
+  hivAb: 'HIV 抗体',
+  hiv_ab: 'HIV 抗体',
+  antiHcv: '丙肝抗体 抗-HCV',
+  anti_hcv: '丙肝抗体 抗-HCV',
+  tppa: '梅毒螺旋体抗体 TPPA',
+  trustAb: '梅毒 TRUST 定性',
+  trust_ab: '梅毒 TRUST 定性',
+};
+
+/**
+ * THE LABORATORY'S ABNORMAL MARKER, AND THE INTERVAL IT WAS READ
+ * AGAINST, as suffixes on the analyte's own key.
+ *
+ * ONE SPELLING EACH, and it is the bridge's: `embedded-report-ocr.ts`
+ * writes `${camelName}Flag` / `${camelName}Reference` and no snake
+ * twin, deliberately, because these two cells are new and nothing on
+ * disk predates them. Exported so nothing has to spell them a second
+ * time — a suffix written twice is a suffix that can disagree with
+ * itself, which is what `reportDate_year` and `uploadYear` cost.
+ */
+export const OCR_FLAG_SUFFIX = 'Flag';
+export const OCR_REFERENCE_SUFFIX = 'Reference';
+
+export const flagKey = (analyteKey: string): string => `${analyteKey}${OCR_FLAG_SUFFIX}`;
+export const referenceKey = (analyteKey: string): string => `${analyteKey}${OCR_REFERENCE_SUFFIX}`;
+
+const analyteSiblingLabels = (): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, label] of Object.entries(OCR_MEASURED_ANALYTE_LABELS_ZH)) {
+    out[flagKey(key)] = `${label} 异常标记`;
+    out[referenceKey(key)] = `${label} 参考区间`;
+  }
+  return out;
+};
+
+/**
+ * EVERY OCR CELL THIS PIPELINE MAY NAME, WITH THE CHINESE IT IS NAMED
+ * IN. The renderer reads this; the set below is its `Object.keys`.
+ *
+ * Order is load-bearing in exactly one way, and it is a small one: a
+ * label claimed by two spellings of one analyte resolves back to the
+ * first, so the tables are written camel-before-snake. See the
+ * injectivity paragraph at the top of this section.
+ */
+export const OCR_FIELD_LABELS_ZH: Readonly<Record<string, string>> = {
+  ...OCR_REPORT_IDENTITY_LABELS_ZH,
+  ...OCR_GENETIC_CELL_LABELS_ZH,
+  ...OCR_MEASURED_ANALYTE_LABELS_ZH,
+  ...analyteSiblingLabels(),
+  ...OCR_QUALITATIVE_CELL_LABELS_ZH,
+};
+
+/**
+ * The keys of the table above, which is the question the redactor
+ * asks: may this OCR cell be named in a prompt at all.
+ *
+ * IT IS DERIVED AND NO LONGER WRITTEN OUT, which is the fence. A key
+ * admitted here without its Chinese is not a diff a reviewer has to
+ * catch — it does not compile.
+ */
+export const OCR_FIELDS_SAFE_KEYS_PRECISE: ReadonlySet<string> = new Set(
+  Object.keys(OCR_FIELD_LABELS_ZH),
+);

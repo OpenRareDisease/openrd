@@ -649,16 +649,61 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
  * current against a laboratory:
  *
  *  1. DOES THIS NUMBER BELONG TO SOMEONE ELSE ON THE SAME REPORT? Two
- *     different analytes carrying the identical reading is the exact
+ *     different analytes carrying the identical reading CAN be the
  *     signature of a column that slipped: CK, CK-MB, 肌酐 and LDH all
  *     reading 693 is one cell copied four times, and no laboratory
- *     printed that. Both readings are WITHHELD, not one — the payload
- *     does not say which of the two is the cell that was really read,
- *     and picking would be this file inventing a clinical value. The
- *     same question asked of ONE analyte's own spellings — `ldh`
- *     against `table_ldh` — is the sharper form of it, and catches the
- *     archived document whose LDH is a row index while the laboratory's
- *     real LDH sits beside it under the other key.
+ *     printed that. When the answer is yes both readings are WITHHELD,
+ *     not one — the payload does not say which of the two is the cell
+ *     that was really read, and picking would be this file inventing a
+ *     clinical value. The same question asked of ONE analyte's own
+ *     spellings — `ldh` against `table_ldh` — is the sharper form of
+ *     it, and catches the archived document whose LDH is a row index
+ *     while the laboratory's real LDH sits beside it under the other
+ *     key.
+ *
+ *     BUT 「TWO ANALYTES, ONE NUMBER」 IS NOT BY ITSELF THE SIGNATURE,
+ *     AND TREATING IT AS ONE DELETED CORRECT DATA. ALT and AST at the
+ *     same figure is an everyday biochemistry result — the two enzymes
+ *     leak from the same muscle — and so is CK-MB with myoglobin, or
+ *     albumin with ALP. Measured against this deployment's own archive
+ *     the previous shape of this rule was wrong on nearly half the rows
+ *     it fired on: nine documents carry a repeated reading, seven of
+ *     them the four-way CK/CK-MB/肌酐/LDH collapse, and the other TWO
+ *     are ordinary pairs — 8 correct readings across 4 documents, each
+ *     one blanked on the passport, the share page and the exports by a
+ *     guard that exists to protect them. Over-deleting a correct
+ *     reading is a clinical defect in its own right, not a safe
+ *     direction to err in.
+ *
+ *     SO THE PAYLOAD IS MADE TO CORROBORATE THE SLIP BEFORE ANYTHING IS
+ *     DELETED, out of what it already holds and nothing else:
+ *
+ *       THE REPORT'S OWN PAGE. `extractedText` is the OCR dump of the
+ *       paper, and a laboratory that really printed the figure on two
+ *       rows printed it TWICE. Counting the figure among the page's
+ *       numeric tokens separates the two cases outright, and on this
+ *       archive it separates them completely: on all seven collapsed
+ *       documents the number appears ONCE while four analytes claim it,
+ *       and on all four ordinary pairs it appears at least as often as
+ *       the analytes claiming it. This is the strongest signal and it
+ *       is asked first.
+ *
+ *       THREE ROWS, ONE FIGURE. No panel prints one number on three
+ *       different rows by chance, so a group of three or more is a slip
+ *       whatever the page says — and it is the archived shape.
+ *
+ *       THE KNOWN COLLISION. `ck` against `ldh` is this parser's own
+ *       documented defect, five archived documents of it, and it is
+ *       taken as corroboration on a row whose page cannot be read.
+ *
+ *       ONE UNIT AND ONE INTERVAL. Two DIFFERENT analytes carrying the
+ *       same number under the same unit AND the same printed reference
+ *       interval is one whole row read twice; two real rows would
+ *       differ somewhere.
+ *
+ *     WHERE THE PAGE IS ILLEGIBLE AND NOTHING ELSE CORROBORATES, THE
+ *     PAIR IS MARKED RATHER THAN DELETED. 「I cannot tell」 is a true
+ *     thing to say and a blank cell is not.
  *
  *  2. DOES IT SIT OUTSIDE THE INTERVAL THIS SAME REPORT PRINTED NEXT
  *     TO IT? The parser archives 「50-310」 off the CK row into
@@ -684,17 +729,66 @@ const PROFILE_OCR_PAYLOAD_PROJECTION = `
  * readings would answer that question 「yes, this report still has
  * data」 — and suppress the offer to repair the very row this guard just
  * emptied.
+ *
+ * AND WHAT A FLAGGED READING LEAVES BEHIND IS A JOB FOR THE SURFACES,
+ * WHICH IS THE HALF OF THIS DEFENCE THAT LIVES OUTSIDE THIS FILE.
+ * `flagged` deletes nothing. It exists so that a reading outside the
+ * interval the report itself printed — or a duplicate the page could
+ * not settle — is not printed as an ordinary number. Every surface that
+ * renders `ocrPayload.fields` gets `unsafeReadings` on the SAME object
+ * and can join the two on `keys`:
+ *
+ *     const marks = new Map<string, UnsafeReading>();
+ *     for (const item of payload.unsafeReadings ?? [])
+ *       for (const key of item.keys) marks.set(key, item);
+ *     // then, per rendered cell: marks.get(fieldKey)
+ *
+ * A surface that renders the payload and never reads this array prints
+ * a flagged value as fact, and a defence that marks where nothing shows
+ * the mark is a defence that does nothing. The surfaces are named in
+ * the module note at the top of the guard: the passport, the share
+ * page, the referral pack, the three exports and the report screen.
+ * `unsafeReadingsNotice` is the one-line form for a surface with no
+ * room to mark cells individually.
  */
 export interface UnsafeReading {
   /** Canonical analyte name, as the parser names it (`ldh`, `uric_acid`). */
   analyte: string;
-  /** Every `fields` spelling that carried it, so a caller can say where it went. */
+  /**
+   * Every `fields` spelling that carried it.
+   *
+   * THIS IS THE JOIN, AND IT IS WHY IT IS A LIST. A surface marking a
+   * flagged reading is holding a `fields` cell keyed by SPELLING —
+   * `ldh`, `table_ldh`, `creatineKinase` — and has no way back to the
+   * canonical name. Matching a rendered cell against these keys is the
+   * whole of what a surface has to do to find its mark. On a WITHHELD
+   * entry the keys are the cells that are no longer there, which is how
+   * a screen says WHICH value it stopped showing.
+   */
   keys: string[];
   disposition: 'withheld' | 'flagged';
   reason: 'duplicate_reading' | 'contradictory_aliases' | 'outside_reference_interval';
   /** The other analytes sharing this value (duplicate_reading only). */
   sharedWith?: string[];
+  /**
+   * Why this duplicate was believed, in one word, so a surface can say
+   * 「报告原件只印了一次」 rather than the generic sentence — and so
+   * this file's judgement is legible in an audit rather than only in
+   * its own comments. Absent on the other two reasons.
+   */
+  corroboration?: 'page_prints_it_once' | 'three_or_more_rows' | 'known_pair' | 'one_row_twice';
 }
+
+/**
+ * A reading is NEVER accompanied by its value in this record.
+ *
+ * `unsafeReadings` travels on the same payload the withheld cell was
+ * deleted from, and every surface that prints `fields` can print this
+ * too. A `value` here would hand the number straight back under a
+ * second key and the deletion would be theatre. The analyte, its
+ * spellings and the reason are everything a surface needs to place the
+ * mark; the number is the one thing it must not be given.
+ */
 
 /**
  * Canonical names of the laboratory analytes this pipeline extracts —
@@ -821,6 +915,141 @@ const readNumericReading = (raw: unknown): number | null => {
   return Number.isFinite(value) ? value : null;
 };
 
+/**
+ * The unit the laboratory printed beside the number, lowercased, or
+ * nothing.
+ *
+ * `formatStructuredValue` staples the unit on — 「693 U/L」 — so the
+ * cell already carries it and no lookup table is needed. Compared only
+ * ever against another cell off the SAME payload, so the casing and
+ * spacing of whatever the OCR read is consistent on both sides.
+ */
+const readReadingUnit = (raw: unknown): string | null => {
+  const text = String(raw ?? '').trim();
+  const match = /^-?\d+(?:\.\d+)?\s*(.*)$/.exec(text);
+  const unit = match?.[1]?.trim() ?? '';
+  return unit ? unit.toLowerCase() : null;
+};
+
+const FULL_WIDTH_DIGITS = '０１２３４５６７８９';
+
+/**
+ * The page's digits as ASCII, with thousands separators removed, so
+ * 「１，６９３」 and 「1,693」 and 「1693」 all count as the same figure.
+ * A page read by OCR carries whichever of the three the scan produced.
+ */
+const normalisePageDigits = (text: string) =>
+  text
+    .replace(/[０-９．]/g, (char) =>
+      char === '．' ? '.' : String(FULL_WIDTH_DIGITS.indexOf(char)),
+    )
+    .replace(/,(?=\d{3}(?!\d))/g, '');
+
+/**
+ * HOW OFTEN THE REPORT'S OWN PAGE PRINTS EACH FIGURE — the corroboration
+ * that decides question 1, and the only one drawn from outside `fields`.
+ *
+ * `null` means the page cannot answer: absent, blank, or carrying no
+ * number at all. That is deliberately distinct from 「the number is not
+ * there」, which is an answer and a damning one. A row whose page is
+ * missing gets the weaker signals and, failing those, a mark instead of
+ * a deletion.
+ *
+ * Counting NUMERIC TOKENS rather than substrings, because 「693」 is
+ * inside 「1693」 and a substring search would find the figure on a page
+ * that never printed it. Parsed as numbers, so 693 and 693.0 are one
+ * figure — the OCR and the extractor do not agree on trailing zeros.
+ */
+const readPageFigureCounts = (record: Record<string, unknown>): Map<number, number> | null => {
+  const raw = record.extractedText ?? record.extracted_text;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const counts = new Map<number, number>();
+  for (const match of normalisePageDigits(raw).matchAll(/-?\d+(?:\.\d+)?/g)) {
+    const value = Number(match[0]);
+    if (!Number.isFinite(value)) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts.size ? counts : null;
+};
+
+/**
+ * THIS PARSER'S OWN DOCUMENTED COLLISION.
+ *
+ * Five archived documents publish an LDH that is the CK value off the
+ * same report. That is not a hypothesis about laboratories, it is a
+ * defect this repository has measured in its own archive, so the pair
+ * is corroboration on a row whose page cannot be read. Kept to what the
+ * archive actually shows: a list grown by guesswork would put this rule
+ * back where it started, deleting ordinary pairs on suspicion.
+ */
+const KNOWN_COLLISION_PAIRS = new Set(['ck|ldh']);
+
+const isKnownCollisionPair = (analytes: readonly string[]) =>
+  analytes.length === 2 && KNOWN_COLLISION_PAIRS.has([...analytes].sort().join('|'));
+
+/**
+ * No panel prints one figure on this many different rows by chance.
+ * Three is the smallest group for which that is true; the archived
+ * collapse is four.
+ */
+const DUPLICATE_GROUP_IS_A_COLLAPSE = 3;
+
+/**
+ * Is this group of analytes sharing one figure a slipped column, an
+ * ordinary coincidence, or something this payload cannot say?
+ *
+ * Three answers, not two, and the third is the point. `slipped` is
+ * deleted, `sound` is an ordinary reading and falls through to question
+ * 2 like any other, and `unknown` — the page is illegible and nothing
+ * else corroborates — is MARKED. Collapsing `unknown` into `slipped` is
+ * exactly what deleted 8 correct readings off this archive; collapsing
+ * it into `sound` would publish a collapsed column in silence on any
+ * row whose page never landed.
+ *
+ * Ordered strongest first.
+ */
+type DuplicateVerdict =
+  | { verdict: 'slipped'; corroboration: NonNullable<UnsafeReading['corroboration']> }
+  | { verdict: 'sound' }
+  | { verdict: 'unknown' };
+
+const corroborateDuplicateGroup = (input: {
+  analytes: readonly string[];
+  value: number;
+  pageFigures: Map<number, number> | null;
+  unitOf: (analyte: string) => string | null;
+  intervalOf: (analyte: string) => string | null;
+}): DuplicateVerdict => {
+  const { analytes, value, pageFigures } = input;
+
+  if (analytes.length >= DUPLICATE_GROUP_IS_A_COLLAPSE) {
+    return { verdict: 'slipped', corroboration: 'three_or_more_rows' };
+  }
+
+  if (pageFigures) {
+    // The page is legible, so it is the answer — in BOTH directions. A
+    // figure printed as often as it is claimed is two real rows and
+    // this function has nothing to say about it.
+    return (pageFigures.get(value) ?? 0) >= analytes.length
+      ? { verdict: 'sound' }
+      : { verdict: 'slipped', corroboration: 'page_prints_it_once' };
+  }
+
+  if (isKnownCollisionPair(analytes)) {
+    return { verdict: 'slipped', corroboration: 'known_pair' };
+  }
+
+  const units = analytes.map(input.unitOf);
+  const intervals = analytes.map(input.intervalOf);
+  const sameUnit = units[0] !== null && units.every((unit) => unit === units[0]);
+  const sameInterval = intervals[0] !== null && intervals.every((iv) => iv === intervals[0]);
+  if (sameUnit && sameInterval) {
+    return { verdict: 'slipped', corroboration: 'one_row_twice' };
+  }
+
+  return { verdict: 'unknown' };
+};
+
 const readReferenceLimits = (payload: Record<string, unknown>) => {
   const projected = asRecord(payload.analyteReferences);
   if (projected) return projected;
@@ -838,9 +1067,49 @@ const readLimit = (source: Record<string, unknown> | null, keys: readonly string
   return null;
 };
 
-const UNSAFE_READING_NOTICE_ZH =
-  '这份报告里有数值没有通过核对：与同一份报告上另一个项目完全相同的数值已经不再显示，' +
-  '超出报告自己印的参考区间的数值已标注。请以报告原件为准，必要时重新识别一次。';
+/**
+ * THE NOTICE SAYS WHAT HAPPENED TO THIS PAYLOAD, NOT WHAT THIS FILE CAN
+ * DO IN GENERAL.
+ *
+ * One fixed string stood here and it asserted a withholding on every
+ * payload it was attached to — including the payloads where nothing was
+ * withheld at all. A report whose only finding is an elevated CK, still
+ * printed, still on the passport, told its reader 「已经不再显示」 about
+ * values that are right there on the screen. A patient who then goes
+ * looking for the missing number cannot find it, because it was never
+ * missing, and the one sentence this platform gives them about the
+ * trustworthiness of their own report is the sentence that was false.
+ *
+ * So it is composed from the dispositions actually present. A payload
+ * that only marks says only that it marked, and the closing sentence
+ * changes with it: 「必要时重新识别一次」 is advice about a hole in the
+ * data and is not offered where there is no hole.
+ */
+const buildUnsafeReadingNotice = (unsafe: readonly UnsafeReading[]): string => {
+  const has = (disposition: UnsafeReading['disposition'], reason: UnsafeReading['reason']) =>
+    unsafe.some((item) => item.disposition === disposition && item.reason === reason);
+
+  const clauses: string[] = [];
+  if (has('withheld', 'duplicate_reading')) {
+    clauses.push('与同一份报告上另一个项目重复、而报告原件核对不上的数值已经不再显示');
+  }
+  if (has('withheld', 'contradictory_aliases')) {
+    clauses.push('同一个项目出现了两个互相矛盾的数值，已经不再显示');
+  }
+  if (has('flagged', 'duplicate_reading')) {
+    clauses.push('与同一份报告上另一个项目完全相同、但无法用报告原件核对的数值已标注');
+  }
+  if (has('flagged', 'outside_reference_interval')) {
+    clauses.push('超出报告自己印的参考区间的数值已标注');
+  }
+
+  const withheldAnything = unsafe.some((item) => item.disposition === 'withheld');
+  const head = withheldAnything ? '这份报告里有数值没有通过核对：' : '这份报告里有数值需要你留意：';
+  const tail = withheldAnything
+    ? '。请以报告原件为准，必要时重新识别一次。'
+    : '。这些数值仍按报告原样显示，请以报告原件为准。';
+  return head + clauses.join('；') + tail;
+};
 
 /**
  * Run both questions over one payload and return a copy fit to print.
@@ -871,20 +1140,22 @@ export const withholdUnsafeReadings = <T>(payload: T): T => {
   // Two spellings of one cell disagreeing is not a tie to break. It is
   // the strongest statement this payload can make that it does not know
   // what the laboratory printed, so it is withheld on its own account.
-  const readings = new Map<string, { keys: string[]; values: Set<number> }>();
+  const readings = new Map<string, { keys: string[]; values: Set<number>; unit: string | null }>();
   if (fields) {
     for (const [key, raw] of Object.entries(fields)) {
       const analyte = resolveLabAnalyte(key);
       if (!analyte) continue;
       const value = readNumericReading(raw);
       if (value === null) continue;
+      const unit = readReadingUnit(raw);
       const existing = readings.get(analyte);
       if (existing) {
         existing.keys.push(key);
         existing.values.add(value);
+        existing.unit ??= unit;
         continue;
       }
-      readings.set(analyte, { keys: [key], values: new Set([value]) });
+      readings.set(analyte, { keys: [key], values: new Set([value]), unit });
     }
   }
 
@@ -896,6 +1167,36 @@ export const withholdUnsafeReadings = <T>(payload: T): T => {
   }
 
   const references = readReferenceLimits(record);
+  const limitsOf = (analyte: string) => asRecord(references?.[analyte]);
+  const lowOf = (analyte: string) => readLimit(limitsOf(analyte), ['low', 'reference_low']);
+  const highOf = (analyte: string) => readLimit(limitsOf(analyte), ['high', 'reference_high']);
+  const intervalOf = (analyte: string) => {
+    const low = lowOf(analyte);
+    const high = highOf(analyte);
+    // No interval archived is not an interval two rows can be said to
+    // SHARE. Returning a placeholder here would make every pair on the
+    // 120 archived payloads that predate the reference column look like
+    // one row read twice.
+    if (low === null && high === null) return null;
+    return `${low ?? ''}|${high ?? ''}`;
+  };
+  const unitOf = (analyte: string) => readings.get(analyte)?.unit ?? null;
+
+  // Read once, not once per group: it walks the whole OCR page.
+  const pageFigures = readPageFigureCounts(record);
+
+  // One verdict per FIGURE, so both sides of a collision are given the
+  // same answer. Asking per analyte would let the two halves of one
+  // group disagree the moment a signal is asymmetric.
+  const duplicateVerdicts = new Map<number, DuplicateVerdict>();
+  for (const [value, analytes] of byValue) {
+    if (analytes.length < 2) continue;
+    duplicateVerdicts.set(
+      value,
+      corroborateDuplicateGroup({ analytes, value, pageFigures, unitOf, intervalOf }),
+    );
+  }
+
   const unsafe: UnsafeReading[] = [];
 
   for (const [analyte, reading] of readings) {
@@ -910,19 +1211,34 @@ export const withholdUnsafeReadings = <T>(payload: T): T => {
     }
     const [value] = reading.values;
     const shared = (byValue.get(value) ?? []).filter((other) => other !== analyte);
-    if (shared.length) {
+    const verdict = shared.length ? duplicateVerdicts.get(value) : undefined;
+    if (verdict && verdict.verdict === 'slipped') {
       unsafe.push({
         analyte,
         keys: [...reading.keys],
         disposition: 'withheld',
         reason: 'duplicate_reading',
         sharedWith: shared,
+        corroboration: verdict.corroboration,
       });
       continue;
     }
-    const limits = asRecord(references?.[analyte]);
-    const low = readLimit(limits, ['low', 'reference_low']);
-    const high = readLimit(limits, ['high', 'reference_high']);
+    if (verdict && verdict.verdict === 'unknown') {
+      // Marked and still printed. The reader is told the two rows agree
+      // and that the page could not settle it; the number stays, because
+      // a coincidence is the likelier of the two and a blank cell is not
+      // a safer answer than a marked one.
+      unsafe.push({
+        analyte,
+        keys: [...reading.keys],
+        disposition: 'flagged',
+        reason: 'duplicate_reading',
+        sharedWith: shared,
+      });
+      continue;
+    }
+    const low = lowOf(analyte);
+    const high = highOf(analyte);
     if ((low !== null && value < low) || (high !== null && value > high)) {
       unsafe.push({
         analyte,
@@ -957,7 +1273,7 @@ export const withholdUnsafeReadings = <T>(payload: T): T => {
     }
     unsafe.sort((a, b) => a.analyte.localeCompare(b.analyte));
     next.unsafeReadings = unsafe;
-    next.unsafeReadingsNotice = UNSAFE_READING_NOTICE_ZH;
+    next.unsafeReadingsNotice = buildUnsafeReadingNotice(unsafe);
   }
 
   return next as T;
@@ -1927,7 +2243,24 @@ export class PatientProfileService {
       { userId, documentId, keys: Object.keys(patch) },
       'Report OCR fields hand-corrected',
     );
-    return updated.rows[0];
+    // THE CORRECTION SCREEN IS WHERE THE WITHHELD READINGS CAME BACK.
+    //
+    // This returned `ocr_payload` exactly as it was just written, and
+    // the mobile client renders the returned payload — so PATCH
+    // …/documents/:id/ocr republished every cell the guard deletes, on
+    // the one screen a patient opens PRECISELY BECAUSE the report looks
+    // wrong. GET on this same path has gone through the guard since it
+    // was built; the PATCH beside it had not, and a door is a door
+    // whichever verb opens it.
+    //
+    // The hand-corrected cells are not the ones at risk — zod admits
+    // only reportName / reportTime / diagnosisType / d4z4Repeats /
+    // haplotype / methylationValue, none of them laboratory analytes.
+    // What came back was the REST of the stored payload, carried along
+    // for the ride: a patient fixing their report's date was handed the
+    // collapsed CK column again in the same response.
+    const patched = updated.rows[0];
+    return { ...patched, ocr_payload: withholdUnsafeReadings(patched.ocr_payload ?? null) };
   }
 
   /**

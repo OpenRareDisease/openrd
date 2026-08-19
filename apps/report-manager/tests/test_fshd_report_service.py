@@ -3591,5 +3591,550 @@ class AMappedNameInsideAnAnalyteTheMapDoesNotOwnTest(unittest.TestCase):
         )
 
 
+# --------------------------------------------------------------------
+# ONE ROW READER FOR EVERY LABORATORY PANEL.
+#
+# Everything below was measured on the same defect wearing seven
+# different hats: a fix landed in `_extract_labs` — the biochemistry and
+# muscle-enzyme map, which reads its rows with `_extract_lab_value` —
+# and the six panels that reach `_extract_numeric_panel` instead kept
+# the old answer. The column orders, the flag conventions, the unit
+# forms and the interval forms are identical on all seven; what differs
+# is the analyte names. So the reader is shared and the names are what a
+# panel declares.
+#
+# Every fixture is synthetic.
+# --------------------------------------------------------------------
+
+
+class TheLowerBoundIsNotTheReadingOnAnyPanelTest(unittest.TestCase):
+    """The 项目 / 参考区间 / 结果 column order, on the panel path.
+
+    `_BOUND_CELL` in this module calls that order 「ordinary on Chinese
+    laboratory reports」, and the row reader was taught it. The panel
+    patterns are written 「the analyte's name, then the first number」,
+    which on that order is the reference interval's LOWER BOUND — so a
+    white cell count of 6.69 was published as 3.5 and a haemoglobin of
+    98 as 130, on every one of 血常规, 甲功, 凝血, 尿常规, 感染筛查 and
+    粪便.
+    """
+
+    @staticmethod
+    def _panel(rows, name="x.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_a_flattened_blood_count_reads_its_result_column(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目 参考区间 结果 单位",
+            "白细胞计数(WBC) 3.5-9.5 6.69 10^9/L",
+            "血红蛋白量(HGB) 130-175 98 g/L",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["hgb"], 98.0)
+
+    def test_the_same_order_read_one_cell_per_line(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目", "参考区间", "结果", "单位",
+            "白细胞计数(WBC)", "3.5-9.5", "6.69", "10^9/L",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_a_coagulation_panel_in_the_same_order(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "项目 参考区间 结果 单位",
+            "凝血酶原时间(PT) 11.0-14.5 17.8 s",
+        ), "coagulation.jpeg")
+        self.assertEqual(panel["pt"], 17.8)
+
+    def test_a_thyroid_panel_in_the_same_order(self):
+        panel = self._panel((
+            "示例市第一人民医院 核医学报告单",
+            "检验目的: 甲状腺功能",
+            "项目 参考区间 结果 单位",
+            "游离T3(FT3) 3.5-6.5 2.10 pmol/L",
+        ), "thyroid.jpeg")
+        self.assertEqual(panel["ft3"], 2.10)
+
+    def test_the_fallback_pattern_will_not_publish_a_bound_either(self):
+        """The row reader is primary; where it cannot see the row the
+        pattern still answers, and it is now refused a number that is one
+        end of a printed interval."""
+        self.assertIsNone(
+            fshd_report_service._extract_named_number(
+                "白细胞计数 3.5-9.5",
+                [r"(?:白细胞计数)[^\d\n(]{0,16}([<>]?\d+(?:\.\d+)?)"],
+                avoid_reference_intervals=True,
+            )[0]
+        )
+
+
+class NoAbbreviationIsReadInsideAnotherTest(unittest.TestCase):
+    """「PT」 and 「TT」 are both printed inside 「APTT」.
+
+    `_analyte_keyword_pattern` has anchored the row reader's keywords
+    since 「肌酸激酶(CK)」 published a potassium of 890. The panel
+    patterns embedded their abbreviations bare, so one
+    activated-partial-thromboplastin row was published as three
+    analytes — two of them times this patient never had measured, both
+    carrying APTT's own interval.
+    """
+
+    @staticmethod
+    def _panel(rows, name="coagulation.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_an_aptt_row_alone_publishes_only_an_aptt(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血功能",
+            "活化部分凝血活酶时间(APTT) 45.2 25.0-38.0 s",
+        ))
+        self.assertEqual(panel["aptt"], 45.2)
+        self.assertNotIn("pt", panel)
+        self.assertNotIn("tt", panel)
+
+    def test_each_coagulation_row_still_reads_its_own_number(self):
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "凝血酶原时间(PT) 13.2 11.0-14.5 s",
+            "国际标准化比值(PT-INR) 1.05 0.80-1.20",
+            "活化部分凝血活酶时间(APTT) 45.2 25.0-38.0 s",
+            "凝血酶时间(TT) 16.8 14.0-21.0 s",
+            "纤维蛋白原(FIB) 3.10 2.00-4.00 g/L",
+        ))
+        self.assertEqual(panel["pt"], 13.2)
+        self.assertEqual(panel["inr"], 1.05)
+        self.assertEqual(panel["aptt"], 45.2)
+        self.assertEqual(panel["tt"], 16.8)
+        self.assertEqual(panel["fibrinogen"], 3.10)
+
+    def test_the_hyphen_is_inside_the_word_here_too(self):
+        """「RDW」 is printed inside 「RDW-SD」, which is a different row of
+        the same 血常规."""
+        panel = self._panel((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "红细胞分布宽度标准差(RDW-SD) 42.5 37.0-54.0 fL",
+        ), "blood routine.jpeg")
+        self.assertEqual(panel["rdw_sd"], 42.5)
+        self.assertNotIn("rdw_cv", panel)
+
+
+class AUrineAnalysisIsNotABloodCountTest(unittest.TestCase):
+    """白细胞 and 红细胞 are rows of a 血常规 AND rows of a 尿常规.
+
+    The blood rules score both bare words plus 「WBC」, so an ordinary
+    尿液分析报告单 came out `blood_routine` — and nothing downstream can
+    tell, because the payload then says 血常规报告, `_extract_urinalysis`
+    never runs, and the sediment counts are published under `wbc` and
+    `rbc`, the keys the mobile 血常规 section reads.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 尿液分析报告单",
+        "项目 结果 提示 参考区间 单位",
+        "白细胞(WBC) 25 高 0-28 /uL",
+        "红细胞(RBC) 15 0-16 /uL",
+        "蛋白质(PRO) 阴性(-)",
+        "亚硝酸盐(NIT) 阴性(-)",
+    )
+
+    def _result(self):
+        return analyze_fshd_report("\n".join(self.ROWS), "other", "urine.jpeg")
+
+    def test_the_report_is_labelled_a_urinalysis(self):
+        self.assertEqual(self._result()["fshd"]["report_type"], "urinalysis")
+
+    def test_the_sediment_counts_are_published_as_urine_counts(self):
+        panel = self._result()["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["urine_wbc"], 25.0)
+        self.assertEqual(panel["urine_rbc"], 15.0)
+
+    def test_no_blood_count_is_minted_from_a_urine_specimen(self):
+        panel = self._result()["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertNotIn("wbc", panel)
+        self.assertNotIn("rbc", panel)
+
+    def test_a_real_blood_count_is_still_a_blood_count(self):
+        """The specimen rule turns on what only a blood tube has. A
+        report printing haemoglobin is a blood count however much urine
+        vocabulary the same page carries."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+            "血红蛋白量(HGB) 155 130-175 g/L",
+        )), "other", "blood routine.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "blood_routine")
+
+    def test_a_urea_row_does_not_name_a_urine_specimen(self):
+        """尿素 and 尿酸 are biochemistry rows drawn from blood, and both
+        contain 尿."""
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 6.69 3.5-9.5 10^9/L",
+            "尿素(UREA) 5.2 2.9-8.2 mmol/L",
+            "尿酸(UA) 320 208-428 umol/L",
+        )), "other", "blood routine.jpeg")
+        self.assertEqual(result["fshd"]["report_type"], "blood_routine")
+
+
+class ASpelledOutFlagIsNotTheNextAnalyteTest(unittest.TestCase):
+    """A 提示 column spelled 「高」 / 「低」 / 「异常」.
+
+    `_ROW_FLAG_MARKERS` reads 偏高 and 降低 as substrings, which is safe
+    because neither occurs inside anything else; the bare forms cannot be
+    read that way — 高 is inside 高密度脂蛋白 and 低 inside 低密度脂蛋白.
+    So the cell was CJK with no digits, `_looks_like_analyte` called it
+    the next analyte, and the row ENDED on it: the reading lost its unit
+    and its reference interval, and with the interval gone there was
+    nothing left for a read-path check to fire on.
+    """
+
+    @staticmethod
+    def _fields(rows, name="blood routine.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_a_bare_high_keeps_the_row_together(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "项目", "结果", "提示", "参考区间", "单位",
+            "白细胞计数(WBC)", "12.60", "高", "3.5-9.5", "10^9/L",
+        ))["wbc"]
+        self.assertEqual(cell["abnormal_flag"], "high")
+        self.assertEqual(cell["unit"], "10^9/L")
+        self.assertEqual(cell["reference_range_raw"], "3.5-9.5")
+
+    def test_a_bare_low_reads_the_same_way(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血红蛋白量(HGB)", "98", "低", "130-175", "g/L",
+        ))["hgb"]
+        self.assertEqual(cell["abnormal_flag"], "low")
+        self.assertEqual(cell["reference_range_raw"], "130-175")
+
+    def test_an_undirected_flag_is_recorded_without_a_direction(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 凝血四项",
+            "凝血酶原时间(PT)", "17.8", "异常", "11.0-14.5", "s",
+        ), "coagulation.jpeg")["pt"]
+        self.assertEqual(cell["abnormal_flag"], "abnormal_unspecified")
+        self.assertEqual(cell["unit"], "s")
+
+    def test_a_row_the_laboratory_called_normal_is_not_ended_by_saying_so(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血小板计数(PLT)", "210", "正常", "125-350", "10^9/L",
+        ))["plt"]
+        self.assertIsNone(cell.get("abnormal_flag"))
+        self.assertEqual(cell["unit"], "10^9/L")
+        self.assertEqual(cell["reference_range_raw"], "125-350")
+
+
+class AnIntervalAndItsUnitInOneCellTest(unittest.TestCase):
+    """「50-310 U/L」 is one box printing two columns.
+
+    It is not a value cell, not a range cell and not a unit cell, so it
+    fell through every class to 「has Latin letters」 — and
+    `_looks_like_analyte` therefore called it the NEXT ANALYTE and ended
+    the row on it. The reading shipped with no unit and no interval.
+    """
+
+    @staticmethod
+    def _fields(rows, name="B.jpeg"):
+        result = analyze_fshd_report("\n".join(rows), "other", name)
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_combined_cell_is_read_as_both_columns(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)", "693", "↑", "50-310 U/L",
+            "乳酸脱氢酶(LDH)", "319", "↑", "120-250 U/L",
+        ))["ck"]
+        self.assertEqual(cell["unit"], "U/L")
+        self.assertEqual(cell["reference_range_raw"], "50-310")
+        self.assertEqual(cell["reference_high"], 310.0)
+
+    def test_the_row_below_keeps_its_own_combined_cell(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 心肌酶谱",
+            "肌酸激酶(CK)", "693", "↑", "50-310 U/L",
+            "乳酸脱氢酶(LDH)", "319", "↑", "120-250 U/L",
+        ))["ldh"]
+        self.assertEqual(cell["reference_range_raw"], "120-250")
+
+    def test_a_panel_row_reads_the_combined_cell_too(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血红蛋白量(HGB)", "98", "↓", "130-175 g/L",
+        ), "blood routine.jpeg")["hgb"]
+        self.assertEqual(cell["unit"], "g/L")
+        self.assertEqual(cell["reference_range_raw"], "130-175")
+
+    def test_the_generic_reader_splits_the_box_as_well(self):
+        rows = {
+            row["name"]: row
+            for row in extract_lab_table_rows([
+                "示例市第一人民医院 检验报告单",
+                "项目", "结果", "参考区间",
+                "抗核抗体滴度", "1.5", "0-1.0 ratio",
+            ])
+        }
+        self.assertEqual(rows["抗核抗体滴度"]["value"], "1.5")
+        self.assertEqual(rows["抗核抗体滴度"]["reference"], "0-1.0")
+        self.assertEqual(rows["抗核抗体滴度"]["unit"], "ratio")
+
+    def test_a_unit_that_only_looks_like_a_number_is_not_split(self):
+        """「10^9/L」 is a unit, not a 10 with a unit of 「^9/L」."""
+        self.assertEqual(fshd_report_service._split_data_cell("10^9/L"), ["10^9/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("50-310"), ["50-310"])
+        self.assertEqual(fshd_report_service._split_data_cell("50-310 U/L"), ["50-310", "U/L"])
+
+
+class TheAbsoluteCountIsNotThePercentageTest(unittest.TestCase):
+    """「NEUT%」 and 「NEUT#」 are two rows of every 血常规.
+
+    The panel definitions carried a pattern list and a keyword list
+    written by hand, and they had drifted: the pattern matched 「NEUT#」
+    and the keyword list said 「NEUT」, which is the abbreviation the
+    PERCENTAGE row prints. `_row_context` therefore asked the row reader
+    about the ratio row, the two readers named different numbers, and
+    all five absolute differential counts shipped with no flag, no unit
+    and no interval — on the panel where the differential is the whole
+    point.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 检验报告单",
+        "检验目的: 血常规",
+        "项目 结果 提示 参考区间 单位",
+        "中性粒细胞比率(NEUT%) 82.5 高 40.0-75.0 %",
+        "淋巴细胞比率(LYMPH%) 12.0 低 20.0-50.0 %",
+        "单核细胞比率(MONO%) 4.5 3.0-10.0 %",
+        "嗜酸细胞百分比(EOS%) 0.8 0.4-8.0 %",
+        "嗜碱细胞百分比(BASO%) 0.2 0.0-1.0 %",
+        "中性粒细胞数(NEUT#) 8.42 高 1.80-6.30 10^9/L",
+        "淋巴细胞数(LYMPH#) 1.22 低 1.10-3.20 10^9/L",
+        "单核细胞数(MONO#) 0.41 0.10-0.60 10^9/L",
+        "嗜酸细胞数(EOS#) 0.05 0.02-0.52 10^9/L",
+        "嗜碱细胞数(BASO#) 0.02 0.00-0.06 10^9/L",
+    )
+
+    def _fields(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "blood routine.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_every_absolute_count_reads_its_own_row(self):
+        fields = self._fields()
+        for key, value in (
+            ("neut_abs", "8.42"), ("lymph_abs", "1.22"), ("mono_abs", "0.41"),
+            ("eos_abs", "0.05"), ("baso_abs", "0.02"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(fields[key]["field_value"], value)
+
+    def test_every_absolute_count_carries_what_its_row_said(self):
+        fields = self._fields()
+        for key, reference in (
+            ("neut_abs", "1.80-6.30"), ("lymph_abs", "1.10-3.20"),
+            ("mono_abs", "0.10-0.60"), ("eos_abs", "0.02-0.52"),
+            ("baso_abs", "0.00-0.06"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(fields[key]["unit"], "10^9/L")
+                self.assertEqual(fields[key]["reference_range_raw"], reference)
+
+    def test_the_flagged_absolute_counts_reach_the_summary(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "blood routine.jpeg")
+        by_analyte = result["latest_summary"]["by_analyte"]
+        flagged = {row["analyte_name"] for row in result["latest_summary"]["abnormal_list"]}
+        self.assertIn("neut_abs", flagged)
+        self.assertIn("lymph_abs", flagged)
+        self.assertEqual(by_analyte["neut_abs"]["direction"], "high")
+        self.assertEqual(by_analyte["lymph_abs"]["direction"], "low")
+
+    def test_the_percentage_rows_keep_their_own_numbers(self):
+        fields = self._fields()
+        self.assertEqual(fields["neut_pct"]["field_value"], "82.5")
+        self.assertEqual(fields["neut_pct"]["unit"], "%")
+        self.assertEqual(fields["lymph_pct"]["field_value"], "12.0")
+
+    def test_one_list_of_names_feeds_both_readers(self):
+        """The pattern and the keyword cannot drift apart if they are
+        built from the same list."""
+        meta = fshd_report_service._numeric_analyte("中性粒细胞数", "NEUT#")
+        self.assertEqual(meta["keywords"], ["中性粒细胞数", "NEUT#"])
+        self.assertEqual(len(meta["patterns"]), 1)
+        for name in meta["keywords"]:
+            self.assertIn(fshd_report_service._anchored_keyword_source(name), meta["patterns"][0])
+
+
+class TheCommonestAnalyteShapeIsAnAnalyteTest(unittest.TestCase):
+    """「中文名(缩写)」 is how most rows of a Chinese report are printed.
+
+    `_is_header_only` calls any 「短词(拉丁内容)」 a label carrying a
+    unit — it was written for 「膈肌厚度(mm)」 and 「LVEF(%)」 — and
+    `_looks_like_analyte` consulted it. So the generic table reader, the
+    one that exists so a report nobody anticipated still produces
+    values, refused 「白细胞计数(WBC)」, 「碱性磷酸酶(ALP)」 and every other
+    row of that shape: a thirty-row table yielded nothing.
+    """
+
+    ROWS = (
+        "示例市第一人民医院 检验报告单",
+        "项目", "结果", "提示", "参考区间", "单位",
+        "抗核抗体滴度(ANA)", "1.5", "偏高", "0-1.0", "ratio",
+        "肿瘤坏死因子(TNF)", "12.4", "0-8.1", "pg/mL",
+    )
+
+    def test_a_name_carrying_its_abbreviation_is_a_name(self):
+        rows = {row["name"]: row for row in extract_lab_table_rows(list(self.ROWS))}
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["value"], "1.5")
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["unit"], "ratio")
+        self.assertEqual(rows["抗核抗体滴度(ANA)"]["reference"], "0-1.0")
+        self.assertEqual(rows["肿瘤坏死因子(TNF)"]["value"], "12.4")
+
+    def test_the_row_reaches_the_patient_report(self):
+        result = analyze_fshd_report("\n".join(self.ROWS), "other", "T.jpeg")
+        names = {item["field_name"] for item in result["fshd"]["structured_fields"]}
+        self.assertIn("table_抗核抗体滴度_ana", names)
+
+    def test_a_label_carrying_a_real_unit_is_still_a_label(self):
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("膈肌厚度(mm)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("LVEF(%)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("血红蛋白(g/L)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("凝血酶原时间(s)"))
+        self.assertFalse(fshd_report_service._names_its_own_abbreviation("检验目的(ALT)"))
+
+    def test_an_abbreviation_is_an_abbreviation(self):
+        for cell in ("白细胞计数(WBC)", "碱性磷酸酶(ALP)", "游离T3(FT3)", "中性粒细胞比率(NEUT%)"):
+            with self.subTest(cell=cell):
+                self.assertTrue(fshd_report_service._names_its_own_abbreviation(cell))
+                self.assertTrue(fshd_report_service._looks_like_analyte(cell))
+
+    def test_a_panel_row_of_that_shape_is_still_not_published_twice(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC)", "6.69", "3.5-9.5", "10^9/L",
+        )), "other", "blood routine.jpeg")
+        names = [item["field_name"] for item in result["fshd"]["structured_fields"]]
+        self.assertIn("wbc", names)
+        self.assertEqual([name for name in names if name.startswith("table_")], [])
+
+
+class TheSuperscriptHaematologyUnitIsAUnitTest(unittest.TestCase):
+    """「×10⁹/L」 is the unit on the first three rows of every 血常规.
+
+    The unit classes admitted no character outside ASCII plus 「μ」, so
+    the printed spelling was not a unit to `is_unit_only`, not a unit to
+    `_unit_from_row` and not a unit to `extract_lab_table_rows` — a white
+    cell count, a red cell count and a platelet count all shipped with no
+    unit at all. The ASCII spellings 「10^9/L」 and 「10*9/L」 were covered
+    and the one laboratories actually print was not.
+    """
+
+    @staticmethod
+    def _fields(rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood routine.jpeg")
+        return {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+
+    def test_the_printed_unit_is_read_off_its_own_cell(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC)", "6.69", "3.5-9.5", "×10⁹/L",
+        ))["wbc"]
+        self.assertEqual(cell["unit"], "×10⁹/L")
+
+    def test_the_printed_unit_is_read_off_a_flattened_row(self):
+        cell = self._fields((
+            "示例市第一人民医院 检验报告单",
+            "检验目的: 血常规",
+            "血小板计数(PLT) 210 125-350 ×10⁹/L",
+        ))["plt"]
+        self.assertEqual(cell["unit"], "×10⁹/L")
+
+    def test_every_spelling_of_the_same_unit_is_a_unit(self):
+        for unit in ("×10⁹/L", "10^9/L", "10*9/L", "10E9/L", "g/L", "μmol/L", "fL"):
+            with self.subTest(unit=unit):
+                self.assertTrue(fshd_report_service._UNIT_CELL.match(unit))
+
+    def test_a_bare_number_is_still_not_a_unit(self):
+        for cell in ("6.69", "125", "3.5-9.5"):
+            with self.subTest(cell=cell):
+                self.assertFalse(fshd_report_service._UNIT_CELL.match(cell))
+
+
+class OnePanelsFixIsEveryPanelsFixTest(unittest.TestCase):
+    """The shared reader, asserted as the thing that is shared.
+
+    Seven maps of analyte names, one reader. A panel that declares names
+    gets the column orders, the flag conventions, the unit forms and the
+    interval forms that every other panel has — which is the whole reason
+    the reader was unified rather than the eight defects patched where
+    each was measured.
+    """
+
+    LAYOUT = (
+        "示例市第一人民医院 检验报告单",
+        "{purpose}",
+        "项目", "结果", "提示", "参考区间", "单位",
+        "{name}", "{value}", "低", "{reference}", "{unit}",
+    )
+
+    def _cell(self, purpose, name, value, reference, unit, key, report):
+        rows = [
+            row.format(purpose=purpose, name=name, value=value, reference=reference, unit=unit)
+            for row in self.LAYOUT
+        ]
+        result = analyze_fshd_report("\n".join(rows), "other", report)
+        fields = {item["field_name"]: item for item in result["fshd"]["structured_fields"]}
+        return fields.get(key)
+
+    def test_the_same_row_reads_the_same_way_on_every_panel(self):
+        for purpose, name, value, reference, unit, key, report in (
+            ("检验目的: 血常规", "血红蛋白量(HGB)", "98", "130-175", "g/L", "hgb", "blood.jpeg"),
+            ("检验目的: 甲状腺功能", "游离T4(FT4)", "8.10", "12.0-22.0", "pmol/L", "ft4", "thyroid.jpeg"),
+            ("检验目的: 凝血四项", "纤维蛋白原(FIB)", "1.20", "2.00-4.00", "g/L", "fibrinogen", "coag.jpeg"),
+            ("检验目的: 尿常规", "尿比重(SG)", "1.002", "1.003-1.030", "", "urine_specific_gravity", "urine.jpeg"),
+            ("检验目的: 生化全套", "肌酸激酶(CK)", "20", "50-310", "U/L", "ck", "bio.jpeg"),
+        ):
+            with self.subTest(key=key):
+                cell = self._cell(purpose, name, value, reference, unit, key, report)
+                self.assertIsNotNone(cell, key)
+                self.assertEqual(cell["field_value"], value)
+                self.assertEqual(cell["abnormal_flag"], "low")
+                self.assertEqual(cell["reference_range_raw"], reference)
+                if unit:
+                    self.assertEqual(cell["unit"], unit)
+
+    def test_every_panel_reaches_the_row_reader_through_one_entry_point(self):
+        lines = ["示例市第一人民医院 检验报告单", "肌酸激酶(CK) 693 50-310 U/L"]
+        vocabulary = {"ck": ["肌酸激酶", "ck"]}
+        reading = fshd_report_service._read_analyte_row(vocabulary, "ck", lines)
+        self.assertEqual(reading.value, "693")
+        self.assertEqual(reading.reference_raw, "50-310")
+        self.assertEqual(reading.unit, "U/L")
+
+
 if __name__ == "__main__":
     unittest.main()

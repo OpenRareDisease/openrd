@@ -493,8 +493,39 @@ const clinicalReadingKeys = (payload: unknown): string[] => {
     .map(([key]) => key);
 };
 
-/** What a reparse did to the row, written onto the payload so the
- *  patient can be told rather than left to notice. */
+/**
+ * What a reparse did to the row, written onto the payload so the
+ * patient can be told rather than left to notice.
+ *
+ * ⚠ NOTHING TELLS THEM YET, AND THIS COMMENT HAS BEEN THE WHOLE OF THE
+ * PROMISE. The API side is complete and has been since this shipped:
+ * the block is written onto the stored payload by `decideReparseLanding`
+ * below, it is named explicitly in `PROFILE_OCR_PAYLOAD_PROJECTION` so
+ * it survives the list projection, and GET …/documents/:id/ocr returns
+ * it inside the full payload. It reaches no screen. A patient who
+ * pressed 重新识别 and lost three readings sees three fewer rows and no
+ * sentence, which is exactly the 「left to notice」 this type exists to
+ * prevent — and worse than never having said it, because the row now
+ * carries a written record that the product declines to read out.
+ *
+ * THE SCREEN IS ANOTHER LANE'S FILE. It is
+ * apps/mobile/screens/p-report_detail/index.tsx (with the list card in
+ * apps/mobile/screens/p-report_management/index.tsx), and the wire
+ * shape it must read, on the payload it already has in hand, is:
+ *
+ *     ocrPayload.reparse?: {
+ *       attemptedAt: string;            // ISO
+ *       outcome: 'replaced' | 'kept_previous';
+ *       removedReadings?: string[];     // `fields` keys, absent when none
+ *       notice: string;                 // ready to render, Chinese, no interpolation
+ *     }
+ *
+ * `notice` is a finished sentence: show it. `removedReadings` names the
+ * cells by their `fields` key, so a screen can point at the gaps rather
+ * than only describe them. Both are absent on every row nobody has
+ * reparsed (3 rows in this deployment carry the block today), so the
+ * whole thing is one optional read with no migration behind it.
+ */
 export interface ReparseOutcome {
   attemptedAt: string;
   outcome: 'replaced' | 'kept_previous';
