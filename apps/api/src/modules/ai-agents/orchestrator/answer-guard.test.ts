@@ -2927,3 +2927,186 @@ describe('a reference range whose framing is in the sentence before the digits',
     expect(kinds.filter((kind) => kind === 'fabricated_reference_range')).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------
+// D9 — 不过 IS A DISCOURSE CONNECTIVE, NOT A NEGATION, AND THE ROUND
+// THAT MADE THE NEGATOR COMPOSITIONAL PUT 过 IN THE GAP.
+//
+// The gap list was assembled by part of speech and admitted two
+// POST-verbal particles, so a negator could fuse with a word that was
+// never a particle between it and a direction word:
+//
+//   - 不 + 过 is 不过, the ordinary 「however」 — the exact word a
+//     careful answer writes in front of a caveat — so
+//     「不过大于 10 个就要考虑 FSHD2」 read as a NEGATED 大于 and came
+//     out as 「<10」, the complement of the band it states;
+//   - 不 + 见 + 得 is 不见得, 「not necessarily」, a hedge that asserts
+//     no bound at all and was read as one.
+//
+// Both are inversions and both are asserted here as round-trips: the
+// connective and the hedge must contribute the band their sentence
+// really states, while every genuine negation keeps flipping.
+describe('a negator that only looks like one because a lexical word starts with it', () => {
+  const CONNECTIVE_LEAVES_THE_BOUND_ALONE: readonly [string, string][] = [
+    ['不过大于 10 个就要考虑 FSHD2', '>10'],
+    ['不过 大于 10 个就要考虑 FSHD2', '>10'],
+    ['不过低于 10 个也不是就没事', '<10'],
+    ['不过 10 个以上这一档要另外看', '>10'],
+    ['结果偏低，不过超过 10 个的也有', '>10'],
+  ];
+
+  it.each(CONNECTIVE_LEAVES_THE_BOUND_ALONE)('reads 「%s」 as %s', (sentence, key) => {
+    expect(intervalsIn(sentence)).toEqual([key]);
+  });
+
+  // The defect stated as its own assertion, in the shape the two earlier
+  // inversions on this parser are stated in.
+  it('does not read the connective 不过 as a negation of the bound after it', () => {
+    expect(intervalsIn('不过大于 10 个就要考虑 FSHD2')).not.toContain('<10');
+    expect(intervalsIn('不过低于 10 个也不是就没事')).not.toContain('>10');
+  });
+
+  // 不见得 / 未必 are one hedge with two spellings, and they disagreed:
+  // 必 was never in the gap list, 得 was. Neither asserts a bound, so
+  // both fall back to the un-negated reading.
+  it.each([
+    ['不见得低于 11 个', '<11'],
+    ['未必低于 11 个', '<11'],
+    ['不见得超过 10 个', '>10'],
+    ['未必超过 10 个', '>10'],
+  ])('reads the hedge 「%s」 as %s, the band it names', (sentence, key) => {
+    expect(intervalsIn(sentence)).toEqual([key]);
+  });
+
+  // ...AND EVERY GENUINE NEGATION STILL FLIPS. 得 keeps its modal use
+  // fused to 不, and 过 keeps its experiential use behind a verb.
+  it.each([
+    ['不得低于 11', '>11'],
+    ['不得超过 10', '<10'],
+    ['没有过 11 个以上', '<11'],
+    ['未见过 11 个以上', '<11'],
+    ['没达到过 11 个以上', '<11'],
+    ['没过 10 个以上', '<10'],
+    ['不能超过 10', '<10'],
+    ['未曾超过 10', '<10'],
+    ['不再超过 10', '<10'],
+    ['无法超过 10', '<10'],
+  ])('still reads the genuine negation 「%s」 as %s', (sentence, key) => {
+    expect(intervalsIn(sentence)).toEqual([key]);
+  });
+
+  // WHAT THE INVERSION COST A PATIENT, through the check that reads this
+  // parser. The record printed 「11 个以上」; the answer repeats it after
+  // a 不过, and the repeated line must not read as a fabrication of the
+  // opposite band.
+  it('admits the record own interval repeated after a 不过', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '11 个以上' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3\n参考范围: 11 个以上'],
+    });
+    expect(withRange.recordIntervals.has('>11')).toBe(true);
+    expect(
+      inspectAnswer('你的 D4Z4 重复数是 3 个。不过报告上印的参考范围是 11 个以上。', withRange),
+    ).toHaveLength(0);
+  });
+
+  // ...and the invented range after a 不过 is still caught, so the fix
+  // added a comparison and not a permission.
+  it('still catches an invented range that stands after a 不过', () => {
+    const evidence = evidenceFor('precise');
+    const answer = '你的 D4Z4 重复数是 3 个。不过正常参考范围是 11 个以上。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// D10 — 「3,250」 IS ONE NUMBER, AND THIS FILE WAS THE ONE READER IN
+// apps/api THAT DID NOT KNOW IT.
+//
+// All three interval readers spelled a number as a bare digit run, so
+// the scan stopped at the group separator: a threshold read as its first
+// group, and a band read INVERTED (「1,200-3,250」 as 200~3). The shared
+// vocabulary states the floor — `PRINTED_NUMBER` in
+// apps/api/src/utils/clinical-notation.ts, the transcription of the
+// Python parser's `_DIGIT_GROUPS` — and it is asserted here on all three
+// readers so the adoption cannot rot on one of them.
+describe('a number printed with a digit-group separator', () => {
+  it.each([
+    ['大于 1,200', '>1200'],
+    ['≥1,200', '>1200'],
+    ['大于等于 1,200', '>1200'],
+    ['不低于 1,200', '>1200'],
+    ['不得超过 3,250', '<3250'],
+    ['<3,250', '<3250'],
+    ['小于 12,500 U/L', '<12500'],
+  ])('reads the bound 「%s」 as %s', (form, key) => {
+    expect(intervalsIn(form)).toEqual([key]);
+  });
+
+  it.each([
+    ['3,250 个以上', '>3250'],
+    ['3,250 个及以上', '>3250'],
+    ['没有 3,250 个以上', '<3250'],
+    ['1,200 以下', '<1200'],
+  ])('reads the suffix bound 「%s」 as %s', (form, key) => {
+    expect(intervalsIn(form)).toEqual([key]);
+  });
+
+  it.each([
+    ['1,200-3,250', '1200~3250'],
+    ['1,200 到 3,250', '1200~3250'],
+    ['40-1,200', '40~1200'],
+    ['1,200－3,250', '1200~3250'],
+  ])('reads the band 「%s」 as %s', (form, key) => {
+    expect(intervalsIn(form)).toEqual([key]);
+  });
+
+  // The full-width comma a Chinese IME gives, which the shared spelling
+  // carries for the same reason the full-width hyphen is in the dash set.
+  it('reads a group written with the full-width comma', () => {
+    expect(intervalsIn('大于 1，200')).toEqual(['>1200']);
+  });
+
+  // THE DEFECT STATED AS ITS OWN ASSERTION: a partial group is not a
+  // number, in either direction. The first read a four-digit floor as
+  // the floor 1; the second produced a band whose low end stood ABOVE
+  // its high end.
+  it('does not read a threshold as its first digit group', () => {
+    expect(intervalsIn('大于 1,200')).not.toContain('>1');
+    expect(intervalsIn('3,250 个以上')).not.toContain('>250');
+  });
+
+  it('does not read a grouped band as an inverted one', () => {
+    expect(intervalsIn('1,200-3,250')).not.toContain('200~3');
+  });
+
+  // ...and the un-grouped spellings are untouched, including the
+  // identifier rule the edge guards exist for.
+  it('still reads the plain spellings the way it always did', () => {
+    expect(intervalsIn('大于 1200')).toEqual(['>1200']);
+    expect(intervalsIn('1-10')).toEqual(['1~10']);
+    expect(intervalsIn('>38kb')).toEqual(['>38']);
+    expect(intervalsIn('4q35 位点')).toHaveLength(0);
+    expect(intervalsIn('D4Z4-4q35')).toHaveLength(0);
+  });
+
+  // WHAT IT COST A PATIENT, through the check that reads this parser:
+  // the laboratory printed a grouped ceiling, the answer read it back,
+  // and the record contributed a bound one thousandth of the size — so
+  // the true line was flagged as invented.
+  it('admits the record own grouped interval read back to the patient', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { ck: '1850', ckReference: '不超过 1,200 U/L' } }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['CK: 1850\n参考范围: 不超过 1,200 U/L'],
+    });
+    expect(withRange.recordIntervals.has('<1200')).toBe(true);
+    expect(withRange.recordIntervals.has('<1')).toBe(false);
+    expect(inspectAnswer('报告上印的参考上限是 1,200 U/L。', withRange)).toHaveLength(0);
+  });
+});

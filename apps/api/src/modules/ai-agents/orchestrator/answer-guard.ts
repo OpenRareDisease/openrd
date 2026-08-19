@@ -181,6 +181,16 @@
  *     classifier is the fix.
  */
 
+import {
+  CEILING_EXCLUSIVE,
+  CEILING_INCLUSIVE,
+  CEILING_INCLUSIVE_DIGRAPHS,
+  FLOOR_EXCLUSIVE,
+  FLOOR_INCLUSIVE,
+  FLOOR_INCLUSIVE_DIGRAPHS,
+  PRINTED_NUMBER,
+  RANGE_SEPARATOR_SOURCE,
+} from '../../../utils/clinical-notation.js';
 import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
 
 // ------------------------------------------------------------ normalisation
@@ -622,51 +632,71 @@ const shinglesOf = (text: string): string[] => {
  * invented one written in the same spelling sails past `intervalsIn`
  * because the answer side lost it too.
  *
- * THE COMPLETE SET, stated once so the other three copies can be
- * compared against something rather than against each other. It is the
- * UNION of what all six copies held, and it is complete in the sense
- * that matters: every spelling of a hyphen, a dash, a minus, a tilde and
- * the four comparators that Unicode gives a Chinese IME, an OCR pass or
- * a LaTeX-ish source.
+ * THE COMPLETE SET IS NO LONGER TRANSCRIBED HERE. It is
+ * `apps/api/src/utils/clinical-notation.ts` — every spelling of a
+ * hyphen, a dash, a minus, a tilde, the four comparators Unicode gives
+ * a Chinese IME, the two range WORDS 到 / 至, and the digit-group
+ * spelling of a number — and the classes below are derived from it so
+ * a mark added there lands here without anyone remembering to come.
  *
- *   RANGE DASH  -  ~  –  —  ―  ‐  ‑  ‒  −  －  ﹣  ～  〜
- *               ASCII hyphen / ASCII tilde / en dash / em dash /
- *               horizontal bar / hyphen / non-breaking hyphen /
- *               figure dash / minus sign / fullwidth hyphen-minus /
- *               small hyphen-minus / fullwidth tilde / wave dash
- *   BELOW       <  ≤  ＜  ≦  ⩽  ﹤   (and the ASCII digraphs <= =<)
- *   ABOVE       >  ≥  ＞  ≧  ⩾  ﹥   (and the ASCII digraphs >= =>)
+ * WHERE IT ACTUALLY LIVES NOW, AND WHY THIS FILE NO LONGER SPELLS ANY
+ * OF IT ITSELF.
  *
- * WHERE THIS SHOULD ACTUALLY LIVE, PROPOSED RATHER THAN QUIETLY
- * DUPLICATED A SEVENTH TIME, and it is two proposals because the repo's
- * layout makes it two problems:
+ * The block above used to end 「NEITHER IS CREATED HERE」 and propose a
+ * neutral `utils/` module. That module WAS created —
+ * `apps/api/src/utils/clinical-notation.ts` — and `profile.passport.ts`
+ * adopted it. THIS FILE DID NOT, and being the last holdout is not a
+ * cosmetic debt, because a shared vocabulary is only a floor for the
+ * readers that stand on it: the copies here agreed with the module
+ * about the dashes and the comparators, and disagreed with it about the
+ * one thing this file never had a spelling for at all —
  *
- *   - WITHIN `apps/api`: `apps/api/src/utils/numeric-notation.ts`,
- *     exporting the three character classes and nothing else. This file
- *     and `profile.passport.ts` are both under `apps/api/src` and
- *     neither may import the other — an orchestrator guard and a
- *     passport builder have no business depending on each other's
- *     modules — so a neutral `utils/` module (which already exists, with
- *     `phone.ts` and `app-error.ts` in it) is the only home that does
- *     not invert a dependency.
- *   - ACROSS `apps/api` AND `apps/mobile`: not possible as the repo
- *     stands. The root `workspaces` field is `apps/*` and there is no
- *     `packages/` directory, so a module both could import would be a
- *     NEW WORKSPACE plus a change to the root manifest. That is a
- *     repo-layout decision and not one lane's to take on the way past.
+ *   A NUMBER IS PRINTED WITH DIGIT GROUPS. 「3,250」 IS ONE NUMBER.
  *
- * NEITHER IS CREATED HERE. `profile.passport.ts` and
- * `apps/mobile/lib/report-insights.ts` are other lanes' this round, and
- * a shared file half-adopted is worse than honest copies that agree.
+ * All three interval readers below spelled a number `[0-9]+(\.[0-9]+)?`,
+ * which stops dead at the group separator, and the failure is not a
+ * missed interval — it is a WRONG one, which is the class of defect
+ * this parser has now been rebuilt for three rounds running:
+ *
+ *   - 「大于 1,200」 read as 「>1」 — a four-digit floor entering the turn
+ *     as the floor 1, so every value in the record clears it;
+ *   - 「参考范围 1,200-3,250」 read as the band 「200~3」 — an INVERTED
+ *     band, low end above high end, off a range the laboratory printed
+ *     correctly;
+ *   - 「3,250 个以上」 read as 「>250」.
+ *
+ * The same defect was fixed in the Python parser two rounds ago (its
+ * `_DIGIT_GROUPS`), and `PRINTED_NUMBER` is the transcription of that
+ * fix the shared module states — grouped alternative FIRST, or the scan
+ * stops at the first group and reads 3. Adopting it is what makes the
+ * threshold on a report and the threshold in an answer the same string
+ * to every reader in `apps/api`.
+ *
+ * A GROUPED NUMBER MUST ALSO NOT BE ENTERED IN THE MIDDLE, which is the
+ * half a bare adoption would miss: the old edge guards refused a digit
+ * or a letter on either side, and a comma is neither, so 「1,200」 would
+ * still offer 「200」 to a reader that started one character later or
+ * backtracked off the grouped alternative. `NUMBER_STARTS` /
+ * `NUMBER_ENDS` below refuse a group continuation on each side, so a
+ * partial group is not a number here at all.
+ *
+ * ACROSS `apps/api` AND `apps/mobile` a shared module is still not
+ * possible as the repo stands: the root `workspaces` field is `apps/*`
+ * and there is no `packages/` directory, so a module both could import
+ * would be a NEW WORKSPACE plus a change to the root manifest. That is
+ * a repo-layout decision and not one lane's to take on the way past.
  * The Python parser cannot import a TypeScript module at all and has to
  * stay a transcription of the same table whatever happens.
- *
- * `-` IS FIRST IN EVERY CLASS so it is a literal and not a range — the
- * same rule the Python copy states in its own comment.
  */
-const RANGE_DASH = '-~–—―‐‑‒−－﹣～〜';
-const BELOW_SYMBOL_CHARS = '<≤＜≦⩽﹤';
-const ABOVE_SYMBOL_CHARS = '>≥＞≧⩾﹥';
+/** The comparator classes, DERIVED from the shared vocabulary rather
+ *  than retyped: inclusive and exclusive both name the same side, and
+ *  this parser's canonical key deliberately does not carry inclusivity
+ *  (see below), so the two are unioned here and told apart nowhere. The
+ *  ASCII digraphs lead the alternation for the reason
+ *  `COMPARATOR_SOURCE` states — otherwise 「<=25」 matches the bare 「<」
+ *  and leaves 「=25」 standing. */
+const BELOW_SYMBOL_CHARS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}`;
+const ABOVE_SYMBOL_CHARS = `${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
 
 /**
  * WHAT STANDS BETWEEN A NUMBER AND THE WORD THAT BOUNDS IT.
@@ -731,6 +761,33 @@ const MEASURE_TAIL =
 const BOUND_CONNECTIVE = '(?:及|或|或者|及其|乃至)?\\s*';
 
 /**
+ * A NUMBER, AND THE TWO EDGES THAT KEEP HALF OF ONE FROM BEING READ AS
+ * A WHOLE ONE.
+ *
+ * `PRINTED_NUMBER` is the shared spelling — 「3,250」 and 「3250」 and
+ * 「12.4」, grouped alternative first. It is a bare alternation, so it
+ * is always wrapped in a group at the call site or it would split the
+ * pattern it is dropped into.
+ *
+ * The edges are what the adoption alone would not give. The old guards
+ * refused a DIGIT or a LETTER on either side of a number, which is what
+ * keeps 「4q35」 an identifier; a comma is neither, so 「1,200」 still
+ * offered 「200」 to a scan that entered one character later, and — the
+ * case that actually bites — to the regex engine BACKTRACKING off the
+ * grouped alternative when the rest of the pattern failed. So each edge
+ * also refuses a group continuation: three digits after a comma ahead,
+ * a digit-then-comma behind. A number this parser reads is a WHOLE
+ * printed number or it is not a number.
+ */
+const NUMBER_STARTS = '(?<![0-9A-Za-z.])(?<![0-9][,，])';
+const NUMBER_ENDS = '(?![0-9A-Za-z.])(?![,，][0-9]{3})';
+
+/** The digit-group separator carries no arithmetic — it is layout — so
+ *  it comes off before the value is read. `Number('3,250')` is NaN, and
+ *  a NaN key would be published as 「>NaN」. */
+const readNumber = (raw: string | undefined): number => Number((raw ?? '').replace(/[,，]/gu, ''));
+
+/**
  * A BAND, IN THE SHAPES A REPORT AND A PAPER ACTUALLY WRITE ONE.
  *
  * The unit is optional on BOTH endpoints because a laboratory writes
@@ -740,11 +797,12 @@ const BOUND_CONNECTIVE = '(?:及|或|或者|及其|乃至)?\\s*';
  * One source string, used by the reference-range scan and by the
  * severity check, so the two can never disagree about what a band is.
  *
- * The separator is `RANGE_DASH` — the complete set, see the block above
- * it — plus the two Chinese words. It used to be a five-character
- * subset, and a band a Chinese IME typed 「1－3」 was not a band here.
+ * The separator is `RANGE_SEPARATOR_SOURCE` — the complete dash set
+ * plus the two Chinese words, from the shared vocabulary. It used to be
+ * a five-character subset, and a band a Chinese IME typed 「1－3」 was
+ * not a band here.
  */
-const BAND_SOURCE = `(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:[${RANGE_DASH}]|到|至)${MEASURE_TAIL}([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?![0-9A-Za-z.])`;
+const BAND_SOURCE = `${NUMBER_STARTS}(${PRINTED_NUMBER})${MEASURE_TAIL}${RANGE_SEPARATOR_SOURCE}${MEASURE_TAIL}(${PRINTED_NUMBER})${MEASURE_TAIL}${NUMBER_ENDS}`;
 
 const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
 
@@ -894,14 +952,14 @@ const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
  * closed list rather than a fifth shape read backwards.
  *
  * WHAT MAY STAND IN THE GAP is closed, and it is function words only:
- * modals (得 / 能 / 可 / 应 / 该 / 须 / 会 / 要 / 能够 / 可以 / 应该 /
- * 应当 / 必须 / 法, as in 无法), aspect particles (曾 / 曾经 / 过 /
- * 再) and the attainment verbs that make a negator and a number one
- * predicate (有 / 见 / 到 / 满 / 足 / 达 / 达到 / 发现 / 检出 / 测出 /
- * 超过 / 超出). A CONTENT WORD IS NOT IN IT, and that is exactly what
- * keeps 「没有人的重复数在 11 个以上」 un-flipped: 人 ends the gap,
- * the negator branch fails, and the sentence contributes the band it
- * really states.
+ * PREVERBAL modals (能 / 可 / 应 / 该 / 须 / 会 / 要 / 能够 / 可以 /
+ * 应该 / 应当 / 必须 / 法, as in 无法), the preverbal aspect adverbs
+ * (曾 / 曾经 / 再) and the attainment verbs that make a negator and a
+ * number one predicate (有 / 见 / 到 / 满 / 足 / 达 / 达到 / 发现 /
+ * 检出 / 测出 / 超过 / 超出). A CONTENT WORD IS NOT IN IT, and that is
+ * exactly what keeps 「没有人的重复数在 11 个以上」 un-flipped: 人 ends
+ * the gap, the negator branch fails, and the sentence contributes the
+ * band it really states.
  *
  * THE RESIDUAL FAILURE MODE IS STATED SO IT IS NOT REDISCOVERED: a
  * negator this gap cannot reach falls back to the UN-NEGATED reading,
@@ -909,6 +967,51 @@ const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
  * this list misses therefore cannot make anything worse than it is
  * today, and it is a token in a closed function-word list rather than a
  * new pattern.
+ *
+ * ---------------------------------------------------------------------
+ * AND WHAT THAT GAP COST THE ROUND IT WAS BUILT, WHICH IS WHY POSITION
+ * IS NOW PART OF THE RULE AND NOT JUST MEMBERSHIP.
+ *
+ * The list above was assembled by part of speech — 「a modal, an aspect
+ * particle, an attainment verb」 — and TWO of its members are not
+ * preverbal at all. A gap is a POSITION, so a token that cannot stand
+ * in that position does not merely fail to help: it makes the negator
+ * reach a direction word across a word boundary that is not there.
+ *
+ *   - 过 stood first, and 不 + 过 IS ONE WORD. 不过 is the ordinary
+ *     Chinese connective 「however」 — the exact word a careful answer
+ *     writes in front of a caveat — so 「不过大于 10 个就要考虑 FSHD2」
+ *     parsed as a negated 大于 and entered the turn as 「<10」. The
+ *     guard then argued about the complement of the band the sentence
+ *     states, which is the precise failure the compositional rebuild
+ *     existed to end, reintroduced by the rebuild itself. 过 is the
+ *     EXPERIENTIAL aspect and it follows its verb, so it now sits in
+ *     `ASPECT_TAIL` behind a link (没有过 / 未见过) and cannot stand
+ *     against 不 at all.
+ *   - 得 stood next to it with the same shape: preverbal only in the
+ *     fused modal 不得, and elsewhere the POST-verbal potential
+ *     complement, which made 不见得 (「not necessarily」) a negated
+ *     bound. A hedge is not a bound: 「不见得低于 11」 asserts nothing
+ *     about 11 and was being read as 「>11」. 未必 says the same thing
+ *     and never matched, because 必 is not in the list — so the two
+ *     spellings of one hedge disagreed. 得 now attaches to 不 in
+ *     `NEGATOR_HEAD` and nowhere else.
+ *
+ * THE REST OF THE LIST WAS CHECKED FOR THE SAME PROPERTY — does 不 /
+ * 未 / 没 / 无 plus this token spell a COMMON WORD in which the token is
+ * not a particle linking to a direction word — and no other member has
+ * it. 不得 / 不能 / 不可 / 不应 / 不该 / 不须 / 不会 / 不要 / 无法 /
+ * 不曾 / 未曾 / 不再 / 没有 / 未见 / 未达 are all genuine negations of
+ * whatever follows them, and 不足 / 不到 / 不满 / 未满 are already
+ * WHOLE ATOMS below. 不法 is a word (「lawless」) but 法 exists here for
+ * 无法 and 「不法」 never precedes a direction word. The multi-character
+ * members (达到 / 能够 / 可以 / 应该 / 应当 / 必须 / 发现 / 检出 /
+ * 测出 / 超过 / 超出 / 曾经) cannot fuse into a different word at all.
+ *
+ * SO THE RULE THE GAP ENFORCES IS NOW BOTH HALVES OF ONE FACT: a token
+ * may stand in the gap only if it is closed-class AND PREVERBAL, and a
+ * post-verbal particle is admitted only in the position it actually
+ * occupies.
  *
  * 不足 / 不到 / 不满 / 未满 stay WHOLE ATOMS and the gap cannot take
  * them apart: 足 and 到 are in the gap list, but no direction word
@@ -948,27 +1051,51 @@ const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
 const OR_EQUAL = '(?:或?等于)?';
 const UP_WORD = '(?:大于|高于|多于|超过|超出)';
 const DOWN_WORD = '(?:小于|低于|少于)';
-/** 不 / 未 / 没 / 无 — the negator core that flips a direction word. */
-const BOUND_NEGATOR = '(?:不|未|没|无)';
 /** The closed function words that may stand between the negator and the
- *  direction word it negates: modals, aspect particles, and the
- *  attainment verbs that make a negator and a number one predicate. A
- *  content word is deliberately absent — see the block above. Longest
- *  alternative first, for the same reason `MEASURE_TAIL` is sorted. */
+ *  direction word it negates: modals and the attainment verbs that make
+ *  a negator and a number one predicate. A content word is deliberately
+ *  absent — see the block above — and so are the two POST-verbal
+ *  particles, which `NEGATOR_HEAD` and `ASPECT_TAIL` place instead of
+ *  this list. Longest alternative first, for the same reason
+ *  `MEASURE_TAIL` is sorted. */
 const NEGATOR_LINK =
-  '(?:达到|能够|可以|应该|应当|必须|发现|检出|测出|超过|超出|曾经|得|能|可|应|该|须|会|要|法|曾|过|再|有|见|到|满|足|达)';
+  '(?:达到|能够|可以|应该|应当|必须|发现|检出|测出|超过|超出|曾经|能|可|应|该|须|会|要|法|曾|再|有|见|到|满|足|达)';
+/** 过 IS POST-VERBAL, so it may only follow a verb inside the gap:
+ *  「没有过 11 个以上」「未见过 11 个以上」 are the experiential aspect
+ *  and they are negations of that bound. Against the negator itself it
+ *  is not a particle at all — see `NEGATOR_HEAD`. */
+const ASPECT_TAIL = '(?:\\s*过)?';
+/** THE HEAD OF A NEGATION — 不 / 未 / 没 / 无, the negator core that
+ *  flips a direction word, and the one place a token is admitted for
+ *  the negator it fuses with rather than for its part of speech.
+ *
+ *  得 is preverbal ONLY in 不得 (「must not」). After anything else it is
+ *  the potential complement — 不见得 is 「not necessarily」, a HEDGE that
+ *  asserts no bound, and reading it as a negation turns 「不见得低于 11」
+ *  into the claim 「>11」. 未必, which means the same thing, never
+ *  matched here because 必 is not in the list, and now the two agree.
+ *
+ *  过 is the mirror image: it is admitted after a verb (`ASPECT_TAIL`)
+ *  and refused against 不, because 不过 IS ONE WORD — the ordinary
+ *  discourse connective 「however」 — and it is exactly the word a
+ *  careful answer puts in front of a caveat. It negates nothing, so
+ *  「不过大于 10 个就要考虑 FSHD2」 was entering the turn as 「<10」, the
+ *  complement of the band the sentence states. 没过 / 未过 keep it,
+ *  because there 过 is the VERB (「没过 10 个」 — did not exceed 10) and
+ *  the negation is real. */
+const NEGATOR_HEAD = `(?:不(?:\\s*得)?|(?:未|没|无)${ASPECT_TAIL})`;
 /** A negator and its gap: 「不」「不得」「未曾」「无法」「没有发现」.
  *  Bounded, so it is a grammatical join and not a reach across a
  *  sentence, and so the engine cannot backtrack pathologically. */
-const BOUND_NEGATION = `${BOUND_NEGATOR}(?:\\s*${NEGATOR_LINK}){0,3}\\s*`;
+const BOUND_NEGATION = `${NEGATOR_HEAD}(?:\\s*${NEGATOR_LINK}${ASPECT_TAIL}){0,3}\\s*`;
 /** Whole atoms: not negations of a direction word, so the negator rule
  *  must not be allowed to take them apart. */
 const BELOW_ATOM = '(?:不足|不到|不满|未满|至多|最多)';
 const ABOVE_ATOM = '(?:至少|最少|起码)';
 /** The complete comparator classes — see `BELOW_SYMBOL_CHARS`. The
  *  ASCII digraphs come first so `<=` is not consumed as a bare `<`. */
-const BELOW_SYMBOL = `(?:<=|=<|[${BELOW_SYMBOL_CHARS}])`;
-const ABOVE_SYMBOL = `(?:>=|=>|[${ABOVE_SYMBOL_CHARS}])`;
+const BELOW_SYMBOL = `(?:${CEILING_INCLUSIVE_DIGRAPHS.join('|')}|[${BELOW_SYMBOL_CHARS}])`;
+const ABOVE_SYMBOL = `(?:${FLOOR_INCLUSIVE_DIGRAPHS.join('|')}|[${ABOVE_SYMBOL_CHARS}])`;
 /** THE DIRECTION ALONE. The negator is no longer fused in here: it is
  *  `BOUND_NEGATION`, and the flip is the XOR in `intervalsIn`. */
 const BELOW_WORD = `(?:${BELOW_SYMBOL}|${DOWN_WORD}${OR_EQUAL}|${BELOW_ATOM})`;
@@ -976,7 +1103,7 @@ const ABOVE_WORD = `(?:${ABOVE_SYMBOL}|${UP_WORD}${OR_EQUAL}|${ABOVE_ATOM})`;
 /** The unit a report glues to a bound number — kb, mg/L, U/L, % — told
  *  apart from an identifier by what follows it, not by name. */
 const GLUED_UNIT = '(?:\\s*(?:%|％)|\\s*[A-Za-z]{1,6}(?:\\s*/\\s*[A-Za-z]{1,6})?)?';
-const BOUND_NUMBER = `(?<pnum>[0-9]+(?:\\.[0-9]+)?)${GLUED_UNIT}(?![0-9A-Za-z.])`;
+const BOUND_NUMBER = `(?<pnum>${PRINTED_NUMBER})${GLUED_UNIT}${NUMBER_ENDS}`;
 
 /** 「不低于 11」「不得低于 11」「≥11」「大于等于 11」「>38kb」 — the
  *  bound in front of the number, its direction and its negation parsed
@@ -994,7 +1121,7 @@ const INTERVAL_BOUND_PREFIX = new RegExp(
  *  `MEASURE_TAIL` and `BOUND_CONNECTIVE` for what may stand between the
  *  number and the boundary word. */
 const INTERVAL_BOUND_SUFFIX = new RegExp(
-  `(?<![0-9A-Za-z.])(?<sneg>${BOUND_NEGATION})?(?<snum>[0-9]+(?:\\.[0-9]+)?)` +
+  `(?<![0-9A-Za-z.])(?<sneg>${BOUND_NEGATION})?${NUMBER_STARTS}(?<snum>${PRINTED_NUMBER})` +
     `${MEASURE_TAIL}${BOUND_CONNECTIVE}` +
     '(?:(?<sbelow>以下|以内|之下|之内)|(?<sabove>以上|之上))',
   'gu',
@@ -1010,9 +1137,9 @@ export const intervalsIn = (text: string): string[] => {
       if (key !== null) out.push(key);
     }
   };
-  scan(INTERVAL_BAND, (match) => `${Number(match[1])}~${Number(match[2])}`);
+  scan(INTERVAL_BAND, (match) => `${readNumber(match[1])}~${readNumber(match[2])}`);
   scan(INTERVAL_BOUND_PREFIX, (match) => {
-    const value = Number(match.groups?.pnum);
+    const value = readNumber(match.groups?.pnum);
     if (!Number.isFinite(value)) return null;
     // The SAME XOR the suffix form uses, because it is the same grammar:
     // a direction, optionally negated, and the negation flips it exactly
@@ -1024,7 +1151,7 @@ export const intervalsIn = (text: string): string[] => {
     return `${below !== negated ? '<' : '>'}${value}`;
   });
   scan(INTERVAL_BOUND_SUFFIX, (match) => {
-    const value = Number(match.groups?.snum);
+    const value = readNumber(match.groups?.snum);
     if (!Number.isFinite(value)) return null;
     // XOR, because that is what negating a bound does: 「11 个以上」 is
     // 「>11」 and 「没有发现 11 个以上」 is 「<11」, and 「没有 10 个以下」

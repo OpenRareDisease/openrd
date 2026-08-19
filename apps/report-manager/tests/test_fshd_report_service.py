@@ -5974,5 +5974,230 @@ class TheEmphasisWordsARadiologistEndsAClauseOnTest(unittest.TestCase):
         self.assertEqual(self._asymmetry("双侧对称"), "none")
 
 
+class AThresholdSentenceIsNotThePatientsRepeatCountTest(unittest.TestCase):
+    """「11以上」 IS A BOUND, AND THE GUARD ONLY LOOKED TO THE LEFT.
+
+    `_BOUND_BEFORE_VALUE` refuses 「>11」 and 「大于11」; the same sentence
+    with the comparator SUFFIXED — the ordinary Chinese spelling — was
+    not a bound to any reader, so a line stating where the laboratory's
+    normal range begins was published as this patient's own D4Z4 array
+    size at 0.97, the confidence of a cell read off a result row.
+    """
+
+    def _fields(self, row):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测项目: FSHD 相关 D4Z4 重复单元数检测",
+                "检测结果:",
+                row,
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        return {
+            item["field_name"]: item
+            for item in result["fshd"]["structured_fields"]
+        }
+
+    def test_the_suffix_bound_is_never_typed_as_a_count(self):
+        for row, shown in (
+            ("D4Z4重复单元数 11以上为正常参考范围", "11以上"),
+            ("D4Z4重复单元数 10以下提示缩短", "10以下"),
+            ("D4Z4重复单元数 10以内为缩短范围", "10以内"),
+            ("D4Z4重复单元数 11个以上为正常", "11个以上"),
+            ("D4Z4重复单元数 11及以上为正常", "11及以上"),
+        ):
+            field = self._fields(row)["d4z4_repeat_pathogenic"]
+            self.assertEqual(field["field_value"], shown, row)
+            self.assertIsNone(field["normalized_value"], row)
+            self.assertLess(field["confidence"], 0.75, row)
+
+    def test_the_refused_bound_reaches_no_typed_channel(self):
+        """Every channel a number is READ OFF, not only the field."""
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院 分子遗传学检测报告",
+                "检测结果:",
+                "D4Z4重复单元数 11以上为正常参考范围",
+            )),
+            "other",
+            "Genetic Report.jpeg",
+        )
+        genetic = result["fshd"]["normalized_summary"]["genetic_summary"]
+        self.assertIsNone(genetic["d4z4_repeat_pathogenic"])
+        self.assertIsNone(result["d4z4_repeats"])
+        by_analyte = result["latest_summary"]["by_analyte"]
+        self.assertIsNone(by_analyte["d4z4_repeat_pathogenic"]["value_num"])
+        self.assertEqual(
+            by_analyte["d4z4_repeat_pathogenic"]["value_text"], "11以上"
+        )
+        for observation in result["observations"]:
+            if observation["analyte_name"] == "d4z4_repeat_pathogenic":
+                self.assertIsNone(observation["result"]["value_num"])
+
+    def test_a_determinate_count_is_unchanged(self):
+        field = self._fields("D4Z4重复单元数: 6")["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "6")
+        self.assertEqual(field["normalized_value"], 6)
+        self.assertEqual(field["confidence"], 0.97)
+
+    def test_a_counter_after_the_count_is_not_a_bound(self):
+        field = self._fields("D4Z4重复单元数 6 个")["d4z4_repeat_pathogenic"]
+        self.assertEqual(field["field_value"], "6")
+        self.assertEqual(field["normalized_value"], 6)
+
+
+class AReadingGluedToItsPrintedExponentUnitTest(unittest.TestCase):
+    """「6.69×10⁹/L」 WAS RESERVED AS A UNIT, READING AND ALL.
+
+    The unit half of `_CELL_NUMBER_THEN_UNIT` had to start with a
+    letter, so the printed haematology cell did not split;
+    `_unit_digit_spans` then reserved the whole of it and the numeric
+    scan took the next free number on the row — the reference cell's
+    lower limit where the reference carried the same unit, the
+    exponent's base where it did not.
+    """
+
+    def _field(self, row):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                row,
+                "血小板计数(PLT) 249 125-350",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        for item in result["fshd"]["structured_fields"]:
+            if item["field_name"] == "wbc":
+                return item
+        return {}
+
+    def test_the_reading_is_the_reading_and_not_the_intervals_lower_limit(self):
+        for row in (
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5×10⁹/L-9.5×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L (3.5-9.5)×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5-9.5×10⁹/L",
+            "白细胞计数(WBC) 6.69×10⁹/L 3.5-9.5",
+        ):
+            field = self._field(row)
+            self.assertEqual(field.get("field_value"), "6.69", row)
+            self.assertEqual(field.get("unit"), "×10⁹/L", row)
+
+    def test_the_cell_per_line_layout_reads_the_same_row(self):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                "白细胞计数(WBC)",
+                "6.69×10⁹/L",
+                "3.5-9.5×10⁹/L",
+            )),
+            "other",
+            "Blood Routine Examination.jpeg",
+        )
+        panel = result["fshd"]["normalized_summary"]["lab_panel"]
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_the_ascii_exponent_spellings_are_unchanged(self):
+        for row, unit in (
+            ("白细胞计数(WBC) 10*9/L 6.69 3.5-9.5", "10*9/L"),
+            ("白细胞计数(WBC) 10^9/L 6.69 3.5-9.5", "10^9/L"),
+            ("白细胞计数(WBC) 10E9/L 6.69 3.5-9.5", "10E9/L"),
+        ):
+            field = self._field(row)
+            self.assertEqual(field.get("field_value"), "6.69", row)
+            self.assertEqual(field.get("unit"), unit, row)
+
+
+class ASemiQuantitativeGradeIsNotACountTest(unittest.TestCase):
+    """「红细胞 3+ 0-3 /HP」 PUBLISHED A RED CELL COUNT OF 3.
+
+    A grade of 3+ and a count of 3 are opposite findings on the sediment
+    scale, and the fabricated one landed inside its own reference
+    interval, so nothing downstream had anything to flag either.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 尿常规",
+                "项目 结果 参考区间 单位",
+            ) + rows),
+            "other",
+            "Urine Routine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_no_count_is_minted_from_a_graded_row(self):
+        for row in (
+            "红细胞 3+ 0-3 /HP",
+            "红细胞 (2+) 0-3 /HP",
+            "红细胞 1+ 0-3 /HP",
+        ):
+            self.assertNotIn("urine_rbc", self._panel(row), row)
+
+    def test_the_grade_is_not_taken_across_a_window_seam_either(self):
+        panel = self._panel("红细胞 3+", "白细胞 8 个/uL")
+        self.assertNotIn("urine_rbc", panel)
+        self.assertEqual(panel.get("urine_wbc"), 8)
+
+    def test_a_genuine_count_on_the_same_scale_is_unchanged(self):
+        self.assertEqual(self._panel("红细胞 3 0-3 /HP").get("urine_rbc"), 3)
+        self.assertEqual(
+            self._panel("红细胞计数 15 个/uL 0-28").get("urine_rbc"), 15
+        )
+
+
+class NoLeukocyteEsteraseIsInventedFromASedimentRowTest(unittest.TestCase):
+    """A TEST THAT WAS NEVER RUN, PUBLISHED AS NEGATIVE.
+
+    The dipstick pattern's gap is eight characters of anything that is
+    not CJK or Latin — a whole column of a 尿常规 table — so on a page
+    whose only white-cell row is the sediment COUNT, the 阴性 it reached
+    was that row's reference column.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report(
+            "\n".join((
+                "示例市第一人民医院检验报告单",
+                "检验目的: 尿常规",
+                "项目 结果 参考区间 单位",
+            ) + rows),
+            "other",
+            "Urine Routine.jpeg",
+        )
+        return result["fshd"]["normalized_summary"].get("lab_panel", {})
+
+    def test_a_page_with_no_esterase_row_publishes_no_esterase(self):
+        panel = self._panel("白细胞 5 0-5 阴性 /HP")
+        self.assertNotIn("urine_leukocyte", panel)
+        self.assertEqual(panel.get("urine_wbc"), 5)
+
+    def test_the_esterase_row_is_still_read_where_the_page_prints_one(self):
+        panel = self._panel("白细胞酯酶(LEU) 阴性", "白细胞 5 0-5 阴性 /HP")
+        self.assertEqual(panel.get("urine_leukocyte"), "阴性")
+        self.assertEqual(panel.get("urine_wbc"), 5)
+
+    def test_the_bare_dipstick_spelling_is_still_read(self):
+        """The bare 白细胞 stays in the pattern on purpose — a dipstick
+        block that prints no abbreviation is still a dipstick block."""
+        panel = self._panel("白细胞 阴性", "蛋白质 阴性")
+        self.assertEqual(panel.get("urine_leukocyte"), "阴性")
+        self.assertEqual(panel.get("urine_protein"), "阴性")
+
+    def test_a_positive_esterase_is_not_overwritten_by_the_count_row(self):
+        panel = self._panel("白细胞酯酶 阳性", "白细胞 25 0-5 阴性 /HP")
+        self.assertEqual(panel.get("urine_leukocyte"), "阳性")
+        self.assertEqual(panel.get("urine_wbc"), 25)
+
+    def test_no_qualitative_row_reaches_across_a_count_to_its_reference(self):
+        self.assertEqual(self._panel("蛋白质 1+ 阴性").get("urine_protein"), "1+")
+
+
 if __name__ == "__main__":
     unittest.main()

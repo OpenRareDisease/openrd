@@ -1929,6 +1929,14 @@ def _find_reading_regex(
     its own provenance disagreeing on the same field. 「细菌 未见 /HP」
     took the 上皮细胞 count the same way.
 
+    AND IT REFUSES THE DIGIT OF A SEMI-QUANTITATIVE GRADE, which is the
+    third half of the same rule and, again, the half only the row reader
+    had. `extract_numeric_value` reserves `_grade_cell_spans` — the 「3」
+    of 「3+」 — and a fallback that reserved nothing would publish that
+    grade as a count the moment the row reader declined, which on a
+    graded row is now every time. See `_grade_cell_spans` for why a
+    grade of 3+ and a count of 3 are opposite findings.
+
     `crossings` is the panel's other declared analyte names. A name
     printed between the matched name and the captured number means the
     scan walked off its own row, and the honest answer there is the one
@@ -1939,6 +1947,7 @@ def _find_reading_regex(
             if match.lastindex and (
                 _inside_a_reference_interval(text, match.span(1))
                 or _inside_a_printed_unit(text, match.span(1))
+                or _inside_a_printed_grade(text, match.span(1))
                 or _crosses_another_row(text, match, crossings)
             ):
                 continue
@@ -3749,6 +3758,35 @@ _BOUND_BEFORE_VALUE = re.compile(
     r"|大于|小于|超过|多于|少于|至少|最多)\s*$"
 )
 
+#: AND A COMPARATOR STANDS AFTER THE NUMBER JUST AS OFTEN.
+#:
+#: 「11以上」 and 「10以下」 are how Chinese states a threshold — the same
+#: sentence as 「>11」 and 「<10」, with the comparator SUFFIXED. The guard
+#: above asks only what precedes the value, so the suffix form was not a
+#: bound to this reader at all, and a sentence stating where the
+#: laboratory's range begins became the patient's own array size:
+#:
+#:     检测结果: D4Z4重复单元数 11以上为正常参考范围
+#:
+#: published `d4z4_repeat_pathogenic: 11` with `normalized_value: 11` at
+#: 0.97 — the confidence reserved for a cell actually read off a result
+#: row — on a report that states no count for this patient anywhere. It
+#: is the cell the whole product turns on: the passport prints it, the
+#: exports carry it, and `applyGeneticReportAutofill` writes it into
+#: `patient_profiles`. A count of 11 sits one repeat above the FSHD1
+#: ceiling, so the invented number also types the patient as NOT
+#: contracted.
+#:
+#: 以内 IS THE THIRD SPELLING OF THE SAME THING — 「10以内」 bounds from
+#: above exactly as 「10以下」 does. A counter (「11个以上」) and 及/或
+#: (「11及以上」, 「11或以上」) may stand between the number and the
+#: comparator; nothing else may, because a gap that admits arbitrary
+#: characters would let a threshold sentence FURTHER DOWN the row make
+#: this row's genuine reading unpublishable.
+#: No `^`: this is asked with `.match(row, pos)` from where the number
+#: ends, and `^` would anchor at the start of the row instead.
+_BOUND_AFTER_VALUE = re.compile(r"\s*[个条次]?\s*(?:及|或)?\s*(?:以上|以下|以内)")
+
 
 def _line_around(text: str, index: int) -> str:
     """The single line `index` falls on, newline excluded."""
@@ -4254,8 +4292,15 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
     # types a patient the report places ABOVE the FSHD1 range as sitting
     # on its edge. The comparator is put back on `field_value` so the
     # cell reads 「>10」 and not 「10」 to the reviewer and the model.
+    #
+    # AND THE COMPARATOR IS AS OFTEN PRINTED AFTER THE NUMBER AS BEFORE
+    # IT. 「D4Z4重复单元数 11以上为正常参考范围」 is the same sentence as
+    # 「>11」 and the guard read only what came BEFORE the value, so this
+    # spelling was not a bound at all: a threshold sentence was published
+    # as this patient's own count at 0.97. See `_BOUND_AFTER_VALUE`.
     d4z4_refusal: Optional[str] = None
     d4z4_bound: Optional[str] = None
+    d4z4_bound_after: Optional[str] = None
     if d4z4_match is not None and d4z4_pathogenic and not d4z4_is_range:
         value_at = (
             d4z4_match.start("value")
@@ -4263,6 +4308,10 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             else d4z4_match.start()
         )
         bound_before = _BOUND_BEFORE_VALUE.search((d4z4_row or "")[:value_at])
+        # From the end of the whole match, which is where the number
+        # stops on every one of these patterns — the single count ends on
+        # its value, the pair and the range on their second number.
+        bound_after = _BOUND_AFTER_VALUE.match(d4z4_row or "", d4z4_match.end())
         if _asserts_absence(d4z4_row or "", d4z4_match):
             d4z4_refusal = "negated"
         elif _LENGTH_UNIT_AFTER.match(d4z4_row or "", d4z4_match.end()):
@@ -4270,6 +4319,9 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         elif bound_before is not None:
             d4z4_refusal = "reference_bound"
             d4z4_bound = bound_before.group(0).strip()
+        elif bound_after is not None:
+            d4z4_refusal = "reference_bound"
+            d4z4_bound_after = bound_after.group(0).strip()
         elif d4z4_pathogenic.isdigit() and int(d4z4_pathogenic) == 0:
             d4z4_refusal = "zero"
     if d4z4_refusal in {"negated", "length_in_kb"}:
@@ -4278,11 +4330,12 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
         d4z4_pathogenic = None
         d4z4_other = None
         d4z4_source_text = None
-    elif d4z4_refusal == "reference_bound" and d4z4_bound:
-        # Shown as the report printed it. `normalized_value` is already
-        # `NO_NORMALIZED_VALUE` for any refusal, so nothing downstream
-        # does arithmetic on either half of this string.
-        d4z4_pathogenic = f"{d4z4_bound}{d4z4_pathogenic}"
+    elif d4z4_refusal == "reference_bound" and (d4z4_bound or d4z4_bound_after):
+        # Shown as the report printed it, on the side the report printed
+        # it. `normalized_value` is already `NO_NORMALIZED_VALUE` for any
+        # refusal, so nothing downstream does arithmetic on either half
+        # of this string.
+        d4z4_pathogenic = f"{d4z4_bound or ''}{d4z4_pathogenic}{d4z4_bound_after or ''}"
         d4z4_other = None
     # Kept visible and never typed, on the same terms as the pathogenic
     # side: a reviewer has to see that the row was read and refused
@@ -5742,6 +5795,36 @@ _TEXT_VALUE_GAP = r"[^\n\u4e00-\u9fa5A-Za-z(（]{0,8}"
 #: 「阴性(-)」 is one cell — it just may not be reached through one.
 _TEXT_VALUE = r"([^\s]+)"
 
+#: WHAT MAY SIT BETWEEN A DIPSTICK ROW'S NAME AND ITS 阴性/阳性 — AND
+#: WHY A DIGIT MAY NOT.
+#:
+#: This gap was `[^\n\u4e00-\u9fa5A-Za-z]{0,8}`: eight characters of
+#: anything that is not CJK, Latin or a newline. Eight characters is a
+#: whole COLUMN of a 尿常规 table, and the pattern reaches through them
+#: into the next one — so on a page whose only white-cell row is the
+#: sediment count,
+#:
+#:     白细胞 5 0-5 阴性 /HP
+#:
+#: the 阴性 the pattern found is that row's REFERENCE COLUMN, and it was
+#: published as `urine_leukocyte`: a leukocyte-esterase dipstick that
+#: this page shows was never run, reported to the patient as negative.
+#: `_read_qualitative_row` gets this right already — it is given only
+#: 白细胞酯酶 and LEU, finds no such row, and answers nothing — and the
+#: bare 白细胞 stays in the PATTERN deliberately, so that a dipstick
+#: block printing 「白细胞 阴性」 with no abbreviation is still read. What
+#: was missing is the difference between the two: a dipstick verdict
+#: sits in the cell NEXT TO its name, and a number standing between the
+#: two proves at least one column intervenes.
+#:
+#: THE SAME GAP IS ON EVERY QUALITATIVE ROW OF THIS PANEL and the defect
+#: is not 白细胞's. 「蛋白质 1+ 阴性」 reached over a 1+ proteinuria to
+#: publish the reference column's 阴性 the same way — the row reader
+#: catches that one, because 「1+」 is a verdict cell it can see, but the
+#: pattern should not have been offering the wrong answer for it to
+#: overrule.
+_DIPSTICK_VERDICT_GAP = r"[^\n\u4e00-\u9fa5A-Za-z\d]{0,8}"
+
 
 def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
@@ -5758,12 +5841,12 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         # ordered for. The other 尿-prefixed spellings need nothing here:
         # 尿潜血, 尿胆红素, 尿酮体 and 尿亚硝酸盐 each CONTAIN the name
         # already listed, and these two do not.
-        "urine_glucose": {"patterns": [r"(?:葡萄糖(?:\(GLU\))?|尿糖(?:\(GLU\))?|GLU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "尿糖", "GLU"], "normalize_qualitative": True},
-        "urine_ketone": {"patterns": [r"(?:酮体(?:\(KET\))?|KET)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["酮体", "KET"], "normalize_qualitative": True},
-        "urine_bilirubin": {"patterns": [r"(?:胆红素(?:\(BIL\))?|BIL)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["胆红素", "BIL"], "normalize_qualitative": True},
-        "urine_protein": {"patterns": [r"(?:蛋白质(?:\(PRO\))?|尿蛋白(?:\(PRO\))?|PRO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "尿蛋白", "PRO"], "normalize_qualitative": True},
-        "urine_nitrite": {"patterns": [r"(?:亚硝酸盐(?:\(NIT\))?|NIT)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
-        "urine_occult_blood": {"patterns": [r"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
+        "urine_glucose": {"patterns": [rf"(?:葡萄糖(?:\(GLU\))?|尿糖(?:\(GLU\))?|GLU){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "尿糖", "GLU"], "normalize_qualitative": True},
+        "urine_ketone": {"patterns": [rf"(?:酮体(?:\(KET\))?|KET){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["酮体", "KET"], "normalize_qualitative": True},
+        "urine_bilirubin": {"patterns": [rf"(?:胆红素(?:\(BIL\))?|BIL){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["胆红素", "BIL"], "normalize_qualitative": True},
+        "urine_protein": {"patterns": [rf"(?:蛋白质(?:\(PRO\))?|尿蛋白(?:\(PRO\))?|PRO){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "尿蛋白", "PRO"], "normalize_qualitative": True},
+        "urine_nitrite": {"patterns": [rf"(?:亚硝酸盐(?:\(NIT\))?|NIT){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
+        "urine_occult_blood": {"patterns": [rf"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
         # THE BARE 白细胞 IS THE SEDIMENT ROW'S NAME, NOT THIS ONE'S.
         #
         # A 尿常规 prints TWO white-cell rows and they are DIFFERENT
@@ -5797,7 +5880,7 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         # `_extract_numeric_panel`'s `neighbours` keeps 白细胞 off the
         # esterase row in the other direction, which is the collision
         # the note below this dict describes.
-        "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "LEU"], "normalize_qualitative": True},
+        "urine_leukocyte": {"patterns": [rf"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU){_DIPSTICK_VERDICT_GAP}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "LEU"], "normalize_qualitative": True},
         "urine_urobilinogen": {"patterns": [rf"(?:尿胆原|URO){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["尿胆原", "URO"]},
     }
     numeric_definitions = {
@@ -6380,6 +6463,75 @@ def _unit_digit_spans(line: str) -> Tuple[Tuple[int, int], ...]:
     return tuple(spans)
 
 
+@lru_cache(maxsize=1024)
+def _grade_cell_spans(line: str) -> Tuple[Tuple[int, int], ...]:
+    """Where on `line` a SEMI-QUANTITATIVE GRADE is printed.
+
+    「3+」 IS NOT A THREE. It is the third of the four grades a 尿液分析仪
+    prints, and on the sediment scale a grade of 3+ and a count of 3 are
+    OPPOSITE FINDINGS: 3 red cells per high-power field is the top of
+    normal, 3+ is frank haematuria. The numeric readers scan a row with
+    `_LAB_NUMBER`, which sees digits and not cells, so on
+
+        红细胞 3+ 0-3 /HP
+
+    the plus was simply dropped and `urine_rbc: 3.0` published with a
+    reference of 0-3 — the fabricated reading landing inside its own
+    reference interval, so nothing downstream had anything to flag
+    either. `_qualitative_polarity` would have called the same cell
+    positive; the two readers were looking at one cell and only one of
+    them knew what it was.
+
+    THE CLASS IS `_is_qualitative_value_cell`, WHICH ALREADY KNOWS THIS
+    SHAPE — 「1+」 through 「4+」 and 「(2+)」 were added to
+    `_QUALITATIVE_SIGN` for exactly this printing. It is asked here as a
+    RESERVATION rather than as a reading, in the same list as
+    `_ROW_RANGE` and `_unit_digit_spans`, because the numeric reader's
+    honest answer for a graded row is no number at all: the grade is
+    published by the qualitative reader on the rows that declare one,
+    and a numeric field must not restate it as a count.
+
+    Only a grade that CARRIES A DIGIT is reserved. 「+++」 and 「(-)」 hold
+    no number for a numeric scan to take, and reserving a span that
+    contains no digit could only cost a reading.
+
+    AND A WINDOW SEAM IS NOT A CELL BOUNDARY, which is the same
+    correction `_unit_digit_spans` carries and for the same reason:
+    `_panel_haystacks` joins two adjacent lines WITHOUT a separator, so
+    「红细胞 3+」 over 「白细胞 8 个/uL」 arrives as the token 「3+白细胞」 —
+    not a grade cell, nothing reserved, and the fallback published the
+    grade as `urine_rbc: 3`. A grade never mixes CJK with its sign, so
+    the seam is visible: where a token carries CJK, each of its non-CJK
+    runs is asked the same question the whole token is asked.
+    """
+    spans: List[Tuple[int, int]] = []
+    for token in re.finditer(r"\S+", line):
+        cell = token.group()
+        if not any(character.isdigit() for character in cell):
+            continue
+        if _is_qualitative_value_cell(cell):
+            spans.append((token.start(), token.end()))
+            continue
+        if not _CJK_RUN.search(cell):
+            continue
+        for piece in _NON_CJK_RUN.finditer(cell):
+            run = piece.group()
+            if not any(character.isdigit() for character in run):
+                continue
+            if not _is_qualitative_value_cell(run):
+                continue
+            start = token.start() + piece.start()
+            spans.append((start, start + len(run)))
+    return tuple(spans)
+
+
+def _inside_a_printed_grade(text: str, span: Tuple[int, int]) -> bool:
+    """`span` is the digit of a semi-quantitative grade. See `_grade_cell_spans`."""
+    return any(
+        start <= span[0] and end >= span[1] for start, end in _grade_cell_spans(text)
+    )
+
+
 #: THE LABORATORY'S OWN VERDICT ON THE ROW, which the captured snippet
 #: has always contained and nothing ever read. See `_read_row_flag`.
 #:
@@ -6595,8 +6747,21 @@ def _unit_from_row(row_text: str, value: Optional[str]) -> Optional[str]:
     A flag, a bare number, a bound and an interval are each excluded by
     name: 「98」 is unit-shaped to `_UNIT_CELL` on its own, and so is
     「H」.
+
+    AND A READING WITH ITS UNIT GLUED ON IS TWO CELLS, WHICH IS WHY THEY
+    ARE SPLIT BEFORE ANYTHING IS ASKED. 「6.69×10⁹/L」 is unit-shaped as a
+    whole, so the scan answered with the ENTIRE READING as this row's
+    unit — the white cell count shipped with `unit: 「6.69×10⁹/L」`, a
+    string a clinician reads as a unit and no reader can parse — and the
+    reading was never located as a token either, so `_reading_ends_at`
+    returned 0 and the scan started to the LEFT of it. `_split_data_cell`
+    is the class that already draws this line, for
+    `extract_lab_table_rows`; it is asked here too, and 「×10⁹/L」 — the
+    half that really is the unit — is what comes back.
     """
-    tokens = row_text.split()
+    tokens = [
+        piece for token in row_text.split() for piece in _split_data_cell(token)
+    ]
     end = _reading_ends_at(tokens, value)
     to_the_left = list(reversed(tokens[: max(end - 1, 0)])) if end else []
     for token in list(tokens[end:]) + to_the_left:
@@ -6671,11 +6836,13 @@ def _extract_lab_value(
             return whole_cell, None
 
         # THE SPANS THIS ROW'S READING CANNOT BE IN: the two ends of a
-        # printed interval, and the digits a unit spells itself with.
-        # See `_unit_digit_spans` for the count a 「10^9/L」 cell was
-        # published as.
+        # printed interval, the digits a unit spells itself with, and the
+        # digit of a semi-quantitative grade. See `_unit_digit_spans` for
+        # the count a 「10^9/L」 cell was published as, and
+        # `_grade_cell_spans` for the 「3+」 published as a count of 3.
         reserved = [match.span() for match in _ROW_RANGE.finditer(line)]
         reserved.extend(_unit_digit_spans(line))
+        reserved.extend(_grade_cell_spans(line))
 
         def is_a_reading(span: Tuple[int, int]) -> bool:
             return not any(start <= span[0] and end >= span[1] for start, end in reserved)
@@ -6746,9 +6913,18 @@ def _extract_lab_value(
         never enough: a 提示 column prints spellings nobody listed, and
         an unlisted one filled the unit slot so the real 单位 column one
         cell further right was never read. See `_is_unit_cell`.
+
+        A READING WITH ITS UNIT GLUED ON IS NOT A UNIT CELL, which is
+        the same split `_unit_digit_spans` already applies one reader
+        over. 「6.69×10⁹/L」 is unit-shaped whole, so on the cell-per-line
+        layout the RESULT cell filled the unit slot and the scan walked
+        past it looking for a number — landing in the reference cell.
+        See `_UNIT_OPENER`.
         """
         stripped = line.strip()
         if _is_row_flag_cell(stripped):
+            return False
+        if _CELL_NUMBER_THEN_UNIT.match(stripped):
             return False
         return _is_unit_cell(stripped)
 
@@ -7800,10 +7976,44 @@ def _is_unit_cell(cell: str) -> bool:
 #: unit and no interval, and with the interval gone the read-path
 #: defence that checks a value against its own reference could not fire
 #: on that row either.
+#: WHAT CAN OPEN A UNIT THAT IS GLUED TO ITS NUMBER — and the character
+#: that could not, on the unit this platform's commonest panel prints.
+#:
+#: 「6.69×10⁹/L」 is one cell: a reading with its unit attached, in the
+#: spelling a haematology analyser prints. The unit half of the split
+#: below had to START with a letter, a micro sign or a percent, and
+#: 「×10⁹/L」 starts with none of them — so the cell did not split, and
+#: `_unit_digit_spans` then classified the WHOLE cell as a unit that
+#: spells itself with digits, which is what 「×10⁹/L」 alone would be.
+#: The reading was reserved along with it. `extract_numeric_value`
+#: skipped 6.69 as unreadable and took the next free number on the row,
+#: which is whatever the reference column left exposed: measured on a
+#: synthetic 血常规 printing 「白细胞计数(WBC) 6.69×10⁹/L
+#: 3.5×10⁹/L-9.5×10⁹/L」 — the reference cell carrying the same unit, so
+#: `_ROW_RANGE` cannot see an interval in it either — `wbc` published as
+#: 3.5, THE BOTTOM OF THE NORMAL RANGE presented as this patient's white
+#: cell count. With the reference bracketed instead, 「(3.5-9.5)×10⁹/L」,
+#: the exposed number is the exponent's base and `wbc` published as 10.
+#:
+#: THE MULTIPLICATION SIGN OPENS A UNIT EXACTLY AS A LETTER DOES. The
+#: ASCII spelling 「6.69x10^9/L」 was never affected, because its `x` is a
+#: letter; the printed 「×」 is the spelling `_UNIT_CHARS` was widened for
+#: and this class had not been told about.
+#:
+#: 「*」 IS NOT ADMITTED, AND THE REASON IS THE SAME ONE
+#: `_EXPONENT_UNIT_TAIL` GIVES FOR 「E」. In 「10*9/L」 — the ASCII export
+#: of the haematology unit — the star is the EXPONENT OPERATOR INSIDE
+#: the unit, not a multiplication in front of one, so admitting it would
+#: split that cell into a reading of 10 and a unit of 「*9/L」: exactly
+#: the 「wbc: 10」 this whole class exists to refuse, on a spelling that
+#: was already correct. 「×」 carries no such reading: no unit is spelled
+#: 「10×9/L」.
+_UNIT_OPENER = r"[A-Za-zμµ%×]"
+
 _NUMERIC_DATA_CELL = re.compile(
     rf"^{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}"
     rf"(?:\s*{_RANGE_SEPARATOR}\s*{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE})?"
-    rf"\s*(?:[A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
+    rf"\s*(?:{_UNIT_OPENER}[{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
 )
 
 #: THE E EXPONENT IS PART OF THE UNIT, NOT THE START OF ONE.
@@ -7828,14 +8038,14 @@ _NUMERIC_DATA_CELL = re.compile(
 _EXPONENT_UNIT_TAIL = r"(?![Ee]\d)"
 
 #: The same cell, split into the two columns it is really printing. The
-#: unit half must START with a letter or a percent sign, which is what
-#: keeps 「10^9/L」 whole — that is a unit, not a 10 with a unit of
-#: 「^9/L」 — and must not start with an exponent, which is what keeps
-#: 「10E9/L」 whole for the same reason.
+#: unit half must START with `_UNIT_OPENER` — a letter, a percent sign
+#: or a multiplication sign — which is what keeps 「10^9/L」 whole (that
+#: is a unit, not a 10 with a unit of 「^9/L」) and must not start with an
+#: exponent, which is what keeps 「10E9/L」 whole for the same reason.
 _CELL_NUMBER_THEN_UNIT = re.compile(
     rf"^({_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE}"
     rf"(?:\s*{_RANGE_SEPARATOR}\s*{_COMPARATOR}?\s*{_NUMBER_CELL_SOURCE})?)"
-    rf"\s*{_EXPONENT_UNIT_TAIL}([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
+    rf"\s*{_EXPONENT_UNIT_TAIL}({_UNIT_OPENER}[{_UNIT_CHARS}\d\.\*]{{0,13}})$"
 )
 
 
