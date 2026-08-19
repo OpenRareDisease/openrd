@@ -96,6 +96,17 @@
  *      carried, so an interval that is not one of them was composed
  *      here — and it reaches the patient looking exactly like the
  *      laboratory's own.
+ *   6. 基因确诊 SAID ABOUT A RECORD THE PLATFORM DOES NOT GRADE THAT
+ *      WAY. This is check 2 pointed at the one grade the whole product
+ *      is built around, and it was the hole those five checks left: the
+ *      passport, the share page, the referral pack, the anaesthesia
+ *      card and all three registry exports read ONE answer
+ *      (`PassportDiagnosisConfirmation`, profile.passport.ts) and every
+ *      one of them refuses to print 基因确诊 without it — and the one
+ *      surface that speaks in sentences had no check about the
+ *      diagnosis at all. The turn holds the fact: the same conjunction
+ *      the passport grades on, asked of the same raw payloads with the
+ *      passport's own exported predicates. See `readGeneticConfirmation`.
  *
  * WHAT IT DOES WHEN IT FIRES — see `buildRegenerationDirective` and
  * `buildExcisionNotice`. Briefly: regenerate once with the offending
@@ -191,6 +202,18 @@ import {
   PRINTED_NUMBER,
   RANGE_SEPARATOR_SOURCE,
 } from '../../../utils/clinical-notation.js';
+import type { GeneticEvidenceDocumentLike } from '../../patient-profile/genetic-evidence.js';
+import {
+  GENETIC_FIELD_KEYS,
+  isLaboratoryGeneticReport,
+  pickReading,
+} from '../../patient-profile/genetic-evidence.js';
+import {
+  FSHD1_MAX_REPEAT_UNITS,
+  isDeterminateRepeatCount,
+  parsePermissiveHaplotype,
+  readSizeCell,
+} from '../../patient-profile/profile.passport.js';
 import { HARD_DELETE_KEYS_LOWER } from '../security/allowlist.js';
 
 // ------------------------------------------------------------ normalisation
@@ -550,6 +573,11 @@ export interface GuardEvidence {
    * HIS cell.
    */
   patientCells: ReadonlySet<string>;
+  /**
+   * THIS PLATFORM'S OWN GRADE OF THIS RECORD'S GENETICS, for check 6.
+   * See `readGeneticConfirmation`.
+   */
+  geneticConfirmation: GeneticConfirmation;
 }
 
 /**
@@ -1432,6 +1460,230 @@ const collectConversationNumbers = (
  * reading of the tool messages per turn and both readers see the same
  * rows.
  */
+// ------------------------------------------- the platform's own grade
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * IS THIS RECORD'S DIAGNOSIS GENETICALLY CONFIRMED — THIS PLATFORM'S
+ * ANSWER, NOT A SECOND ONE.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * WHY THIS EXISTS. 基因确诊 is the claim this product is organised
+ * around. `PassportDiagnosisConfirmation` (profile.passport.ts) is the
+ * one answer to it, and every surface that prints anything about the
+ * diagnosis reads that one: the clinical passport, the share page, the
+ * referral pack's 结论, the anaesthesia card an anaesthetist plans an
+ * airway from, and the three registry exports —
+ * `genetic-confirmation-parity.test.ts` exists because those five
+ * documents once disagreed and it makes them agree again. A record
+ * whose genetics this platform did not read off a genetics
+ * laboratory's own report prints 「未经基因确诊：没有从基因报告里读出来
+ * 的、可作确诊依据的基因结果」 on every one of them.
+ *
+ * The assistant was outside that set. Driven against the running stack
+ * with a synthetic patient whose D4Z4 重复数 3 and 单倍型 4qA are the
+ * registration form's own boxes — the projection in front of the model
+ * printed 「D4Z4 本平台判读: 本平台没有把这一格当成化验报告上的读数」 and
+ * the same refusal for the haplotype, twice, on two chunks — the model
+ * answered 「我算不算基因确诊了？」 with
+ *
+ *   「是的，你已经算基因确诊了——档案显示是 FSHD1 型，D4Z4 重复数为 3，
+ *    落在 FSHD1 的致病范围内，单倍型 4qA 也是允许型。」
+ *
+ * and the guard was silent. Both readings in that sentence are ones
+ * this platform refused to make, in the same turn, in the same prompt;
+ * and the conclusion built out of them is the one every other surface
+ * declines. The five checks above had nothing about the diagnosis in
+ * them, so the one surface that speaks in sentences was the one that
+ * could assert it.
+ *
+ * ---------------------------------------------------------------------
+ * THE FACT, AND WHY IT IS NOT A SECOND COPY OF THE GRADE.
+ *
+ * The rule at the top of this file: a check is grounded in a fact the
+ * turn holds wherever one exists. One does. The turn carries the raw
+ * retriever payloads — the same bytes `security/pii-redactor.ts` asks
+ * `chunkIsLaboratoryGeneticReport` of before it writes a `_clinical`
+ * row — and the conjunction the passport grades on is three predicates
+ * over two cells:
+ *
+ *   `gradeGeneticEvidence`  →  `trial_ready`  ⟺
+ *       the record is the laboratory's own report
+ *       AND `isDeterminateRepeatCount` of its D4Z4 cell
+ *       AND that count is not above `FSHD1_MAX_REPEAT_UNITS`
+ *       AND `parsePermissiveHaplotype` of its haplotype cell is true
+ *
+ * EVERY ONE OF THOSE IS IMPORTED, none is restated. That is the whole
+ * design of this function and the reason it is allowed to exist at all:
+ * a boundary retyped here is how the assistant and the passport come to
+ * disagree about one number, which is the defect
+ * `WITHIN_FSHD1_REPEAT_RANGE_GREY_ZONE` and `FSHD1_MAX_REPEAT_UNITS`
+ * were both exported to end. There is no threshold, no allele name and
+ * no field spelling in this block that this file chose.
+ *
+ * THE TWO ITEMS MUST COME OFF THE SAME RECORD. The passport grades ONE
+ * document (`pickGeneticEvidenceDocument`), so a haplotype off the
+ * registration form paired with a count off a genetics report is not a
+ * confirmation — it is the cross-document mixing the whole
+ * laboratory gate exists to refuse. The conjunction is therefore asked
+ * per payload, and the turn is confirmed only if some ONE payload
+ * satisfies all of it.
+ *
+ * THE PROFILE SCOPE ANSWERS THE LABORATORY QUESTION WITH A FLAG rather
+ * than with a document, and that flag is the passport reader's own
+ * output: `geneticCellsFromLaboratoryReport` in
+ * retrievers/patient-profile.ts runs `readGeneticEvidence` over the
+ * profile's documents and compares each archived cell against the line
+ * this platform read off the ONE document it picked. `d4z4` /
+ * `haplotype` with that flag TRUE is the laboratory's own reading; with
+ * it false or absent it is a value somebody typed. The redactor already
+ * reads exactly these two flags to decide whether to publish a
+ * `_clinical` sibling, so this is the same question answered off the
+ * same field.
+ *
+ * ---------------------------------------------------------------------
+ * WHAT IT DOES WHEN THE TURN HOLDS NOTHING, AND WHY THAT IS A STAND-DOWN
+ * RATHER THAN A REFUSAL.
+ *
+ * `no_genetics_this_turn` — no patient payload carried a D4Z4 or a
+ * haplotype cell at all — makes check 6 stand down, exactly as check 2
+ * stands down when `ungradedCells` is empty. It is the same rule and it
+ * has a sharper reason here: the inverse error is the worst outcome
+ * this file can produce. A patient whose genetics ARE confirmed asking
+ * 「我算确诊了吗」 on a follow-up turn that re-retrieved nothing must be
+ * told yes, plainly; excising that sentence would take the truest and
+ * most consequential thing this platform can say to them off the
+ * screen and replace it with a redaction marker. With no genetics in
+ * the turn there is no fact separating that patient from the one this
+ * check exists for, and a check with no fact does not fire. It is
+ * written down here rather than left for the next round because it
+ * fails toward PUBLICATION: what closes it is the retrieval rule in
+ * `companion-tools.ts` that decides `get_my_reports` runs, which is
+ * that file's decision and not this one's.
+ */
+export type GeneticConfirmationState = 'confirmed' | 'not_confirmed' | 'no_genetics_this_turn';
+
+export interface GeneticConfirmation {
+  state: GeneticConfirmationState;
+  /**
+   * WHY it is not confirmed, in this platform's own words, because it is
+   * quoted to the model and summarised to the patient. Empty for the
+   * other two states.
+   */
+  shortfall: string;
+}
+
+/** The two cells the confirmation is graded on, as this turn holds them
+ *  AND only where this platform read them off the genetics laboratory's
+ *  own report. A cell somebody typed arrives here as `null`, which is
+ *  what makes the conjunction below the passport's conjunction rather
+ *  than a reading of whatever text was lying around. */
+interface LaboratoryGeneticCells {
+  d4z4: string | null;
+  haplotype: string | null;
+}
+
+const isRecordValue = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * A reports-scope payload — the shape `buildReportFields` hands over,
+ * one document per chunk.
+ *
+ * The document-like shape and the question asked of it are copied from
+ * `chunkDocument` / `chunkIsLaboratoryGeneticReport` in
+ * security/pii-redactor.ts, which is the reader that decides whether the
+ * `_clinical` rows in this same turn's prompt say anything at all. The
+ * `id` and `uploadedAt` members are required by the shape and read by
+ * nothing on this path: they are `pickGeneticEvidenceDocument`'s
+ * ordering keys and no pick is being made here.
+ *
+ * Returns null — 「this is not a reports payload」 — rather than a pair of
+ * nulls, so the profile reader below gets its turn.
+ */
+const reportScopeLaboratoryCells = (
+  payload: Record<string, unknown>,
+): LaboratoryGeneticCells | null => {
+  if (!isRecordValue(payload.fields)) return null;
+  const fields = payload.fields;
+  const document: GeneticEvidenceDocumentLike = {
+    id: '',
+    uploadedAt: null,
+    documentType: typeof payload.documentType === 'string' ? payload.documentType : null,
+    status: typeof payload.status === 'string' ? payload.status : null,
+    ocrPayload: {
+      fields: fields as Record<string, string | number>,
+      extractedText: typeof payload.extractedText === 'string' ? payload.extractedText : null,
+    },
+  };
+  if (!isLaboratoryGeneticReport(document)) return { d4z4: null, haplotype: null };
+  return {
+    d4z4: pickReading(fields, GENETIC_FIELD_KEYS.d4z4Repeats),
+    haplotype: pickReading(fields, GENETIC_FIELD_KEYS.haplotype),
+  };
+};
+
+/** A profile-scope payload. See the block above on the two flags. */
+const profileScopeLaboratoryCells = (payload: Record<string, unknown>): LaboratoryGeneticCells => ({
+  d4z4: payload.d4z4FromLaboratoryReport === true ? pickReading(payload, ['d4z4']) : null,
+  haplotype:
+    payload.haplotypeFromLaboratoryReport === true ? pickReading(payload, ['haplotype']) : null,
+});
+
+/**
+ * How far short of the confirmation one record falls, ordered by how
+ * much the sentence quoted to the model and to the patient gains from
+ * saying it. 0 is the confirmation itself.
+ *
+ * The wording of each is the platform's, not a new voice: `WHAT THE
+ * REPORT MUST SAY` and `PassportDiagnosisConfirmation`'s own copy in
+ * profile.passport.ts, and `buildDiagnosisStatement` in referral-pack.ts
+ * — the sentence the referral pack prints for exactly this record.
+ */
+const SHORTFALL_ZH: readonly string[] = [
+  '',
+  // A laboratory DID read the allele and it says 4qB. The one
+  // unconfirmed state where a report was read, so it may not borrow the
+  // sentence beside it.
+  '这份基因报告读到的 4q 单倍型不是允许型 4qA，指南所指的 FSHD1 是 D4Z4 重复序列在允许型 4qA 等位基因上的缩短，所以本平台不作已确诊处理',
+  '基因报告上的 D4Z4 重复单元数没有给出一个落在 FSHD1 范围里的确定数（本平台只认重复单元数，kb 长度、区间、0 和「未检出」都不算）',
+  '基因报告上这两项没有同时给出可作确诊依据的结果',
+  '本轮没有一份被本平台当成基因报告读数的记录——D4Z4 重复数和 4q 单倍型都不是从基因报告上读出来的（自己填的、或者从病历摘要之类的文件上转录的，都算这一类）',
+];
+
+const shortfallOf = (cells: LaboratoryGeneticCells): number => {
+  const count = readSizeCell(cells.d4z4);
+  const contraction = isDeterminateRepeatCount(count) && count.value <= FSHD1_MAX_REPEAT_UNITS;
+  const permissive = parsePermissiveHaplotype(cells.haplotype);
+  if (contraction && permissive === true) return 0;
+  if (permissive === false) return 1;
+  if (cells.d4z4 !== null && !contraction) return 2;
+  if (cells.d4z4 !== null || cells.haplotype !== null) return 3;
+  return 4;
+};
+
+export const readGeneticConfirmation = (
+  payloads: readonly Record<string, unknown>[],
+  cellsOnFile: ReadonlySet<string>,
+): GeneticConfirmation => {
+  // No genetics in this turn at all. See the stand-down block above.
+  if (!cellsOnFile.has('d4z4') && !cellsOnFile.has('haplotype')) {
+    return { state: 'no_genetics_this_turn', shortfall: '' };
+  }
+  // The record that came CLOSEST, because that is the one whose
+  // shortfall is worth telling the model and the patient about: a
+  // 病历摘要 sitting beside a genetics report should not have the pack's
+  // sentence read off the 病历摘要.
+  let closest = SHORTFALL_ZH.length - 1;
+  for (const payload of payloads) {
+    const cells = reportScopeLaboratoryCells(payload) ?? profileScopeLaboratoryCells(payload);
+    const shortfall = shortfallOf(cells);
+    if (shortfall === 0) return { state: 'confirmed', shortfall: '' };
+    if (shortfall < closest) closest = shortfall;
+  }
+  return { state: 'not_confirmed', shortfall: SHORTFALL_ZH[closest] ?? '' };
+};
+
 export interface EmittedRows {
   fields: ReadonlySet<string>;
   ocrKeys: ReadonlySet<string>;
@@ -1574,6 +1826,11 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
     corpusChunkCount: input.corpusTexts.length,
     recordIntervals,
     patientCells,
+    // Read off the RAW payloads, and off `onFile` rather than off the
+    // projection: a cell strict consent stripped out of the prompt is
+    // still a cell the record holds, and 「is this record confirmed」 is
+    // a question about the record. See `readGeneticConfirmation`.
+    geneticConfirmation: readGeneticConfirmation(input.patientPayloads, onFile),
   };
 };
 
@@ -1907,7 +2164,8 @@ export type ClinicalViolationKind =
   | 'ungraded_cell_graded'
   | 'unsourced_mechanism'
   | 'retest_of_a_value_on_file'
-  | 'fabricated_reference_range';
+  | 'fabricated_reference_range'
+  | 'genetic_confirmation_not_this_platforms';
 
 export interface ClinicalViolation {
   kind: ClinicalViolationKind;
@@ -2074,6 +2332,239 @@ const possessedCellCarryingTheClaim = (
     }
   }
   return null;
+};
+
+// ------------------------------- check 6: the claim every other surface refuses
+
+/**
+ * SAYING, TO THIS PATIENT, THAT THEIR DIAGNOSIS IS GENETICALLY
+ * CONFIRMED.
+ *
+ * ANOTHER REGISTER LIST, and by the rule at the top of this file it has
+ * to be: `readGeneticConfirmation` answers 「is this record confirmed」
+ * off facts the turn holds, and nothing the turn holds can decide
+ * whether a string of Chinese ASSERTS a confirmation. So the fact does
+ * the work — this list is never consulted for a record this platform
+ * DOES grade as 基因确诊, and the sentence a confirmed patient is
+ * entitled to passes untouched — and this half only ever decides to
+ * WITHHOLD. A phrasing missing from it costs a caught violation, never
+ * a deleted true sentence.
+ *
+ * IT IS NOT A LIST OF THE WORD 确诊. 「你的诊断已经明确」 is deliberately
+ * absent and must stay absent: a clinical diagnosis of FSHD can be
+ * settled without a molecular one, the passport's 未经基因确诊 says
+ * nothing against it, and this platform is in no position to contradict
+ * the neurologist who made it. What is forbidden is the GENETIC claim,
+ * so every branch below needs a genetic basis in it — 基因 / 遗传 /
+ * 分子 / DNA, or the disease name after the verb, or 确诊依据, which is
+ * the phrase `PassportDiagnosisConfirmation` itself is written in.
+ */
+const CONFIRMATION_CLAIM = new RegExp(
+  [
+    // 基因确诊 / 基因层面已经确诊 / 遗传学确认 / 分子诊断明确 — the
+    // compound this platform's own surfaces print, said forwards.
+    '(?:基因|遗传学?|分子(?:遗传学?)?|DNA)(?:上|层面|水平|检测|报告|结果)?(?:已经|已|也|都|确实|完全)?(?:得到|获得|构成|达到)?(?:确诊|确认|证实)',
+    '(?:分子|遗传学?|基因)(?:层面的?|水平的?)?诊断[^，。；]{0,6}(?:已经?)?(?:明确|成立|确立)',
+    // 确诊 with the disease on the other side of the verb.
+    '(?:确诊|确认|证实)(?:了)?(?:是|为)?\\s*(?:FSHD1?|面肩肱)',
+    // The evidence claim: this record IS a confirmation. 可作确诊依据 is
+    // the platform's own wording, which is why the negated form of it —
+    // 「没有可作确诊依据的基因结果」 — is the sentence that must survive,
+    // and does: see `confirmationAssertedAboutThisPatient`.
+    '(?:作为|当作|算作|算是|构成|就是)[^，。；]{0,8}确诊的?(?:依据|标准|证据)',
+    // 「你已经是基因确诊的 FSHD1 型患者了」 — the claim built as a
+    // COPULA over a modified noun, which the attributive skip below
+    // would otherwise wave through on the 的. Driven against the running
+    // stack, it is the sentence the model closes with once the opening
+    // one has been cut.
+    '(?:是|成为|属于)\\s*(?:一(?:名|位|个))?\\s*(?:基因|分子|遗传学?)确诊的?[^，。；]{0,10}?(?:患者|病人|病例|个案)',
+    '确诊的?(?:依据|标准|条件)[^，。；]{0,8}(?:已经?)?(?:满足|达到|符合|齐全|具备|成立)',
+    '(?:满足|达到|符合|具备)[^，。；]{0,12}(?:确诊|(?:分子|遗传学?|基因)(?:层面的?)?诊断)的?(?:标准|依据|条件|要求)',
+    // The direct answer to 「我算不算确诊」.
+    '(?:算|属于|视为|认定|判定)(?:是|作|为)?\\s*(?:基因|分子|遗传学?)?确诊',
+    // THE SAME CLAIM WITH THE WORD 确诊 TAKEN OUT. Driven against the
+    // running stack, this is what the model wrote one sentence after
+    // the one above:
+    //   「D4Z4 重复数 3 个，加上 4qA 单倍型（允许型），这两个条件合在
+    //    一起，就是 FSHD1 的典型遗传模式。」
+    // Two cells this platform refused to read, asserted as the FSHD1
+    // genotype — which is the confirmation, said without its name. The
+    // verb has to stand in front, so the encyclopedia's own
+    // 「FSHD1 的典型遗传模式是 D4Z4 收缩加 4qA 单倍型」 is untouched.
+    '(?:就是|正是|属于|构成|符合|对应|等于)[^，。；]{0,12}FSHD ?1?[^，。；]{0,8}(?:遗传|分子|基因)(?:模式|机制|改变|基础|特征|诊断)',
+  ].join('|'),
+  'gu',
+);
+
+/**
+ * THE NEGATION THAT CANCELS IT, AND WHY IT IS NOT `NEGATION`.
+ *
+ * 不过 is a discourse connective before it is a negation — the whole
+ * reason 「不过」 was taken out of the bound reader one commit ago — and
+ * the shape this check most has to catch is
+ * 「报告上还缺一项，不过基因层面已经确诊了」. A cancel list holding a bare
+ * 不 would read the 不 of 不过 as the refusal and let the assertion
+ * behind it through, which is the escape hatch this file has already
+ * been caught building twice.
+ *
+ * 谈不上 / 算不上 / 够不上 are here because they carry the refusal AFTER
+ * the claim word rather than before it, and this one marker is measured
+ * over the whole clause for that reason — see below.
+ */
+const CONFIRMATION_NEGATED = /不(?!过|光|仅|只)|没|未|无法|缺|尚|还差|谈不上|算不上|够不上|不到位/u;
+
+/**
+ * ...AND THE FORMS THAT PUT IT IN THE FUTURE OR IN A CONDITION.
+ * 「才算基因确诊」「要想基因确诊」「基因确诊需要两项」 are all statements
+ * OF the rule, which is what an honest answer to an unconfirmed patient
+ * is mostly made of.
+ */
+const CONFIRMATION_DEFERRED =
+  /如果|假如|倘若|要是|一旦|除非|才能|才算|才叫|需要|要想|想要|前提|条件|将来|以后|下一步|去做|补做/u;
+
+/**
+ * IS THE ANSWER TELLING **THIS PATIENT** THEY ARE CONFIRMED?
+ *
+ * TWO WINDOWS, EACH MEASURED WHERE ITS OWN WORD BINDS, and the
+ * asymmetry is the point rather than an oversight:
+ *
+ *   - THE ADDRESSEE IS READ OVER THE WHOLE SEGMENT BEFORE THE CLAIM.
+ *     An answer written to one patient stays about that patient across
+ *     a comma. Driven against the running stack, the model wrote
+ *     「是的，你理解得没错——从基因检测结果来看，已经可以确诊 FSHD1 了。」
+ *     — the clause carrying the claim has no 你 in it at all, and a
+ *     clause-width test would have read it as a sentence about nobody.
+ *   - THE CANCEL IS READ OVER THE CLAUSE. A negation scopes its own
+ *     clause and not the sentence: 「你的报告上还缺一项，不过基因层面已经
+ *     确诊了」 is an assertion, and a segment-width negation window would
+ *     have let it publish on the 缺 in the clause before it.
+ *
+ * AND THE ADDRESSEE MUST STAND **BEFORE** THE CLAIM, which is the same
+ * position rule `claimIsNotAsserted` and `gradingIsNotAsserted` already
+ * run on. It is what separates the assertion from the explanation:
+ *
+ *   「你已经算基因确诊了」                    → 你 before → the claim
+ *   「基因确诊的两项是 D4Z4 长度和 4qA 单倍型，你的档案里这两项都在，
+ *     但来源不是基因报告」                    → 你 after  → the rule,
+ *                                              stated correctly, kept
+ *
+ * ASKED OF EVERY MATCH IN THE SEGMENT, not the first, for the reason
+ * `absenceIsAboutTheReport` gives about its own markers: a segment that
+ * states the rule and then asserts it has one match that is fine and
+ * one that is not, and the second one is the one the patient acts on.
+ *
+ * A HEDGE DOES NOT RESCUE IT. 「基本可以认为」「大概率」「应该是」 are not
+ * in either cancel list on purpose, and neither is a trailing
+ * 「不过还要请医生确认」 — it stands after the claim, so it never enters
+ * the clause window ahead of it. `CLINICAL_INFERENCE_BOUNDS` already
+ * says a hedge does not rescue a prediction; this is the same rule on
+ * the same shape.
+ *
+ * ...OR AN EARLIER SENTENCE ALREADY ADDRESSED HIM. ONE HOP, the same
+ * carry check 5 runs and for the same reason — the claim and the person
+ * it is about land in different sentences, because that is how the
+ * language works. Driven against the running stack, with the excision
+ * already firing on the first sentence:
+ *
+ *   「你的档案记录显示：D4Z4 重复数为 3（落在 FSHD1 的致病范围），
+ *     单倍型为 4qA（允许型），诊断分型为 FSHD1。」
+ *   「这两项同时满足 FSHD1 的基因确诊标准。」
+ *
+ * The second sentence has no 你 and no digit of his in it, and it
+ * published — directly under a notice saying the confirmation claim had
+ * been removed. That is the exact failure `buildExcisionNotice` is
+ * written about, one segment away.
+ *
+ * AND THE HOP IS SPENT ONLY BY A SENTENCE THAT POINTS BACK. The first
+ * version carried it to any following sentence, and the sentence that
+ * followed most often was the honest one:
+ * 「本平台说的「基因确诊」要两项同时是从基因报告上读出来的：D4Z4 重复
+ * 序列的长度，和它的 4qA / 4qB 单倍型。」 — the rule, stated correctly,
+ * cut. The two are told apart by the sentence's own subject: 这两项 is
+ * an anaphor and 本平台说的 is not, and only the anaphor is claiming to
+ * be about what the sentence before it was about. Same shape as
+ * `pointsAtAnEarlierSegment` two screens up, and the same reason: the
+ * anaphor causes the EARLIER sentence to be read alongside this one,
+ * and the possession fact then decides.
+ *
+ * ...OR THE SEGMENT CARRIES ONE OF HIS NUMBERS, which is check 1's fact
+ * and is here for the sentence that made it necessary:
+ * 「D4Z4 重复数 3 个，加上 4qA 单倍型（允许型），这两个条件合在一起，就是
+ * FSHD1 的典型遗传模式。」 — no second person anywhere in it, and the
+ * only thing making it about this reader is his own count sitting in
+ * it. `carriesNumber` and NOT `carriesBandAround`: a band is how the
+ * honest sentence states the RULE (「长度要落在 1–10 之间」), and reading
+ * that as possession would condemn the explanation this check is
+ * supposed to leave standing.
+ *
+ * WHAT IT MISSES, stated: a claim with no second person and no number —
+ * 「诊断：FSHD1（基因确诊）」 as a bare heading; a claim carried entirely
+ * by a table's column header; and a confirmation asserted across two
+ * sentences (「…就是 FSHD1 的典型遗传模式。」 followed by 「说明这个结论
+ * 在临床上是明确的。」), which is the two-step inference this file
+ * already documents as out of a segment-level check's reach. All fail
+ * toward publication.
+ *
+ * AND IT DOES NOT FIRE ON A BARE 「你的诊断已经明确」. That sentence
+ * carries no genetic basis, a clinical diagnosis of FSHD can be settled
+ * without a molecular one, and 未经基因确诊 says nothing against it —
+ * see the block above `CONFIRMATION_CLAIM`.
+ */
+const ADDRESSED_TO_THE_PATIENT = /你|您|咱/u;
+
+/** The sentence's own subject pointing back at the sentence before it.
+ *  A closed demonstrative class, not a claim lexicon, and incomplete by
+ *  construction like every list here: a form it misses costs a caught
+ *  violation. */
+const CONFIRMATION_ANAPHORA =
+  /这两项|这两个|这两条|这两格|这些|它们|上面这|上述|综上|这种情况|这样看|这就/u;
+
+/** Does this segment name him at all — by the second person or by one
+ *  of his own numbers? Both halves of the possession question check 6
+ *  asks, and what the one-hop carry above is measured on. */
+const namesThisPatient = (segment: string, evidence: GuardEvidence): boolean =>
+  ADDRESSED_TO_THE_PATIENT.test(segment) ||
+  evidence.numbers.some((number) => carriesNumber(segment, number.value));
+
+const confirmationAssertedAboutThisPatient = (
+  segment: string,
+  evidence: GuardEvidence,
+  carriedFromEarlier: boolean,
+): boolean => {
+  const carriesHisNumber = evidence.numbers.some((number) => carriesNumber(segment, number.value));
+  CONFIRMATION_CLAIM.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CONFIRMATION_CLAIM.exec(segment)) !== null) {
+    // ATTRIBUTIVE, NOT PREDICATED — 的 after the phrase makes it a
+    // MODIFIER on the noun that follows, and this platform's own
+    // sentence is built out of exactly that shape. Driven against the
+    // running stack, the model wrote the correct answer
+    //   「不算基因确诊。你的档案里目前没有本平台从基因报告原件上读取的、
+    //    可作为确诊依据的 D4Z4 重复数和单倍型结果。」
+    // and the second sentence was excised: the 没有 that negates it sits
+    // in the clause before the 、 while 「可作为确诊依据」 sits after it,
+    // so the clause window below could not see the negation. No widening
+    // of that window fixes it without also handing the escape back to
+    // 「…还缺一项，不过已经确诊了」. What separates them is grammar:
+    // 「可作为确诊依据的基因结果」 is a noun phrase, 「你的报告可以作为
+    // 确诊依据」 is a claim. Cutting the platform's own wording out of
+    // the honest answer is the worse of the two failures — most records
+    // are unconfirmed, so that sentence is the one this check sees most.
+    const after = segment.slice(match.index + match[0].length);
+    if (/^[的之]/u.test(after)) continue;
+    const before = segment.slice(0, match.index);
+    const pointsBack = carriedFromEarlier && CONFIRMATION_ANAPHORA.test(before);
+    if (!ADDRESSED_TO_THE_PATIENT.test(before) && !carriesHisNumber && !pointsBack) continue;
+    // The clause the claim sits in, whole: 谈不上 and 算不上 put the
+    // refusal after the word they refuse.
+    const clause = clausesOf(segment).find((candidate) => candidate.includes(match![0]));
+    const window = clause ?? segment;
+    if (CONFIRMATION_NEGATED.test(window)) continue;
+    if (INTERROGATIVE.test(window)) continue;
+    if (CONFIRMATION_DEFERRED.test(window)) continue;
+    return true;
+  }
+  return false;
 };
 
 // ------------------------------------------- check 4: whose absence is it
@@ -2836,6 +3327,13 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
   // Was the sentence before this one about this patient? See the block
   // above `rowIsAboutThisPatient` for why check 5 has to ask.
   let previousAboutPatient = false;
+  // ...and did it NAME him — 你 / 您 / one of his own numbers? Check 6's
+  // one-hop carry, deliberately a narrower question than the one above:
+  // `rowIsAboutThisPatient` is true of any sentence carrying a cell
+  // NAME, and for an unconfirmed patient that is most of an honest
+  // answer about the two items a confirmation needs. See
+  // `namesThisPatient`.
+  let previousNamedThePatient = false;
   /**
    * ...AND WAS THE SENTENCE BEFORE THIS ONE THE 参考范围 FRAMING WITHOUT
    * THE DIGITS?
@@ -3017,6 +3515,33 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
       }
     }
 
+    // 6. 基因确诊 asserted about a record this platform does not grade
+    //    that way. Check 2's shape at the width of the whole diagnosis:
+    //    the platform declines to call this record confirmed, and the
+    //    sentence calls it confirmed anyway. Grounded in
+    //    `readGeneticConfirmation`, which stands down whenever the turn
+    //    holds no genetics at all — so a confirmed patient, and a
+    //    patient whose report this turn did not retrieve, are never
+    //    judged here.
+    if (
+      evidence.geneticConfirmation.state === 'not_confirmed' &&
+      confirmationAssertedAboutThisPatient(text, evidence, previousNamedThePatient)
+    ) {
+      add({
+        kind: 'genetic_confirmation_not_this_platforms',
+        sentence: segment.text.trim(),
+        because:
+          `这句告诉他他的诊断已经从基因层面确诊了，但本平台对本轮这份记录的判读是「未经基因确诊」：` +
+          `${evidence.geneticConfirmation.shortfall}。` +
+          `指南把 FSHD 的基因分析定义为两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型；` +
+          `这两项要同时是本平台从基因报告上读出来的读数，本平台才说「基因确诊」。` +
+          `同一份记录在临床护照、分享页、转诊资料和给麻醉医生的卡片上印的都是` +
+          `「未经基因确诊：没有从基因报告里读出来的、可作确诊依据的基因结果」——` +
+          `这条回答不能是唯一说了相反结论的那一个。` +
+          `这不是排除诊断，也不是不许回答：他问「我算不算确诊」，就照本平台上面这句话正面回答他。`,
+      });
+    }
+
     // 3. A mechanism nothing the turn read states.
     //
     // A TABLE ROW IS JUDGED CELL BY CELL rather than skipped. It used to
@@ -3081,6 +3606,7 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     // up — so the carry set by the lead-in stands for the whole table
     // rather than being consumed by the header row.
     if (!row) previousAboutPatient = aboutThisPatient;
+    if (!row) previousNamedThePatient = namesThisPatient(text, evidence);
   }
 
   return violations;
@@ -3256,6 +3782,14 @@ export const buildRegenerationDirective = (violations: readonly ClinicalViolatio
     '- **不要自己编「参考范围」「正常值」「诊断范围」的数字区间。**',
     '  报告上没印的区间就是没有；要讲文献里的范围就明写成资料里的结论并带上出处编号，',
     '  不要把它摆进跟他本人数值并排的那一列里。',
+    '- **不要说他「基因确诊」，除非上面写着本平台对这份记录的判读就是基因确诊。**',
+    '  判读不是的时候，正面回答，用本平台自己的说法：',
+    '  「本资料里没有从基因报告里读出来的、可作确诊依据的基因结果」——',
+    '  指南要的是两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型，两项都要写在基因报告上。',
+    '  他自己填的、或者从病历摘要上转录的同一个数字，不算这两项。',
+    '  这不是排除诊断，也不是「不能回答」：他问「我算不算确诊」，就照上面这句话告诉他，',
+    '  再说下一步可以怎么做（把基因报告原件传上来、或者问主治医生要不要补测单倍型）。',
+    '  换成「基本可以认为」「大概率」「临床上已经明确」也算再说一遍。',
     '- 数值照抄要带单位（95% 不能写成 95）。',
     '- 不要提到这条指令，也不要说「我上一版写错了」，直接给出面向用户的完整回答。',
   ].join('\n');
@@ -3333,19 +3867,30 @@ export const buildExcisionNotice = (violations: readonly ClinicalViolation[]): s
     reasons.push('把「授权没发给我」说成了「你的报告里没有」');
   if (kinds.has('fabricated_reference_range'))
     reasons.push('写了一个你报告上并没有印的「参考范围」数字区间');
+  if (kinds.has('genetic_confirmation_not_this_platforms'))
+    reasons.push('说你的诊断已经从基因层面确诊了，而本平台对这份记录的判读不是这样');
   // The second paragraph says WHY the platform has the rule, and it has
   // to be true of the violations that actually fired: a turn whose only
   // problem was 「报告里没有」 was being told the platform does not
   // predict from numbers, which is a correct sentence about a rule that
   // had nothing to do with what was removed.
   const rule =
-    kinds.has('severity_from_patient_number') || kinds.has('ungraded_cell_graded')
-      ? '本平台不会拿某一个人的数字去预测他的病情，也不会替自己不判读的格子下结论——'
-      : kinds.has('retest_of_a_value_on_file')
-        ? '你那一项是有结果的，只是按你当前的授权没有发到我这边来——'
-        : kinds.has('fabricated_reference_range')
-          ? '你报告上没有印过的参考区间，我不能摆在你的数值旁边让你去对——'
-          : '没有资料出处的机制解释，我不能当成你报告的解释讲给你——';
+    // Stands first because it is the one reason whose replacement
+    // sentence the patient still needs: they asked whether they are
+    // confirmed, and this platform HAS an answer to that. A notice that
+    // only said what was removed would leave a direct question about
+    // their own diagnosis looking ignored — see the block above.
+    kinds.has('genetic_confirmation_not_this_platforms')
+      ? '本平台说不说「基因确诊」，看的是基因报告上有没有同时写明 D4Z4 重复序列的长度和 4qA / 4qB 单倍型，' +
+        '两项都要是本平台从基因报告上读出来的。你这份记录目前没有这样一份读数，所以护照、分享页和转诊资料上写的都是' +
+        '「未经基因确诊：没有从基因报告里读出来的、可作确诊依据的基因结果」。这不是排除诊断，也不是说你没有 FSHD——'
+      : kinds.has('severity_from_patient_number') || kinds.has('ungraded_cell_graded')
+        ? '本平台不会拿某一个人的数字去预测他的病情，也不会替自己不判读的格子下结论——'
+        : kinds.has('retest_of_a_value_on_file')
+          ? '你那一项是有结果的，只是按你当前的授权没有发到我这边来——'
+          : kinds.has('fabricated_reference_range')
+            ? '你报告上没有印过的参考区间，我不能摆在你的数值旁边让你去对——'
+            : '没有资料出处的机制解释，我不能当成你报告的解释讲给你——';
   // The limit of what was done, said in the notice itself. See the block
   // above: the excision runs to a fixed point over WHAT THIS CHECK CAN
   // RECOGNISE, and what it recognises is a word list that will never be
@@ -3375,7 +3920,7 @@ export const EMPTY_AFTER_EXCISION_FALLBACK =
   '这次我写出来的回答整段都越过了本平台的界线（拿你的数值去推病情轻重、或者给不判读的指标下了结论），' +
   '所以我没有把它发给你。\n\n' +
   '能告诉你的是本平台对你报告的判读本身——比如「我的重复数在不在 FSHD1 的范围里」' +
-  '「我的单倍型是不是允许型」这类问题，直接问我就行，我照着报告回答。' +
+  '「我的单倍型是不是允许型」「我这份记录算不算基因确诊」这类问题，直接问我就行，我照着报告回答。' +
   '至于病情会怎么走、这些数字对你个人意味着什么，本平台不做这个判断，建议带着报告问你的主治医生。';
 
 /**
@@ -3425,6 +3970,11 @@ const REDACTION_MARK_ZH: Readonly<Record<ClinicalViolationKind, string>> = {
   unsourced_mechanism: `${REDACTION_MARK_OPENING}它给的机制解释在这次检索到的资料里查不到出处。）`,
   retest_of_a_value_on_file: `${REDACTION_MARK_OPENING}它把「按当前授权没发给我」说成了「你的报告里没有」。）`,
   fabricated_reference_range: `${REDACTION_MARK_OPENING}它写了一个你报告上并没有印过的参考区间。）`,
+  // Says what the platform's answer IS, not only that the sentence
+  // went: this marker stands where a patient's direct question about
+  // their own diagnosis was answered, and a marker that only refuses
+  // leaves them with less than the passport already tells them.
+  genetic_confirmation_not_this_platforms: `${REDACTION_MARK_OPENING}它说你的诊断已经从基因层面确诊了，而本平台对这份记录的判读是「未经基因确诊：没有从基因报告里读出来的、可作确诊依据的基因结果」。这不是排除诊断。）`,
 };
 
 /**

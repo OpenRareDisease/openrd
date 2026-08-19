@@ -44,6 +44,7 @@ import {
   isSubstantiveRewrite,
   localiseWireTokens,
   restoreUnits,
+  WIRE_TOKEN_ZH,
   type ClinicalGuardState,
 } from './answer-guard.js';
 import { isPreambleOnly, scrubToolCallMarkup, StreamingAnswerScrubber } from './answer-text.js';
@@ -102,6 +103,28 @@ import type { ToolRegistry } from '../tools/registry.js';
  *  `DEFAULT_SYSTEM_PROMPT` is evaluated at line 1 of module init and
  *  would have interpolated a TDZ error. */
 const GENETIC_REFUSAL_TOKENS_ZH = [...GENETIC_READING_REFUSALS].sort().join('、');
+
+/**
+ * The two rows that ARE this platform's 基因确诊, quoted in the Chinese
+ * the model actually receives.
+ *
+ * INTERPOLATED, NOT TYPED OUT. `security/render.ts` localises every
+ * `_clinical` value before it reaches the prompt, so a hand-copied
+ * Chinese sentence here would be a third copy of a string that already
+ * exists twice — and this bullet's whole job is to name a row the model
+ * has to RECOGNISE. `WIRE_TOKEN_ZH` is the guard's copy of that table,
+ * it is the one `answer-guard.test.ts` runs the real redactor against,
+ * and these two entries are byte-identical to the renderer's. If the
+ * renderer's wording moves, the guard's test fails and this prompt
+ * moves with it; if this prompt quoted its own, nothing would fail and
+ * the model would be looking for a row that no longer prints.
+ */
+const CONFIRMING_READINGS_ZH = {
+  count: WIRE_TOKEN_ZH.within_fshd1_repeat_range,
+  greyZone: WIRE_TOKEN_ZH.within_fshd1_repeat_range_grey_zone_8_to_10,
+  haplotype: WIRE_TOKEN_ZH.permissive_haplotype,
+  notALaboratoryReading: WIRE_TOKEN_ZH.not_read_off_a_laboratory_report,
+};
 
 /**
  * THE SECTION THAT CONSTRAINS WHAT THE MODEL MAY CONCLUDE, as opposed
@@ -189,6 +212,26 @@ export const CLINICAL_INFERENCE_BOUNDS = `【本人的数据：可以照着说�
   not_read_off_a_laboratory_report、numericValuesWithheld、genetic_report 这类），
   **不要原样打给用户**，也不要自己猜它们是什么意思——用中文把它说出来就行
   （「允许型单倍型」「这个重复数落在 FSHD1 的范围里」）。
+- **「基因确诊」不是你来下的判断——本平台已经判读过了，你照着念，两个方向都照着念。**
+  这一条本平台有唯一的口径：指南把 FSHD 的基因分析定义为两项——D4Z4 重复序列的长度，
+  和它的 4qA / 4qB 单倍型——两项都要是本平台**从基因报告上读出来的**读数。
+  临床护照、分享页、转诊资料、给麻醉医生的卡片、以及发给登记库的导出件，读的都是这一个答案。
+  · **判读是基因确诊的时候，就干脆地说「是的」。** 认的就是同一份记录上的这两行同时成立：
+    「D4Z4 本平台判读: ${CONFIRMING_READINGS_ZH.count}」
+    （或者「${CONFIRMING_READINGS_ZH.greyZone}」）
+    **并且**「单倍型本平台判读: ${CONFIRMING_READINGS_ZH.haplotype}」。
+    这两行在，就是本平台说的基因确诊，不要含糊其辞，也不要再补一句「还要医生确认才算」。
+  · **只要有一格写的是别的，判读就不是基因确诊。**
+    「${CONFIRMING_READINGS_ZH.notALaboratoryReading}」
+    （not_read_off_a_laboratory_report）、「非允许型单倍型」、「这个重复数在 FSHD1 的范围之上」、
+    「这一格记的是长度（kb），不是重复单元数」、「这一格没有写明是哪一型」都属于这一类。
+    这种时候照本平台的话说：
+    「未经基因确诊：没有从基因报告里读出来的、可作确诊依据的基因结果」。
+    患者自己填进档案的、或者从病历摘要之类文件上转录的同一个数字，数字本身对不对都一样，
+    不构成这两项；不要绕过判读自己去比 FSHD1 的范围，也不要自己判断单倍型是不是允许型。
+  **两个方向都不是拒答，也都不是排除诊断。** 用户问「我算不算确诊了」就正面回答：
+  是就说是；不是就把上面那句话告诉他，说清楚差的是哪一项、下一步可以怎么补
+  （把基因报告原件传上来、问主治医生要不要加做单倍型），不要含糊成一句「建议咨询医生」。
 - **资料里没写的机制不要写。**
   「代偿性高甲基化」「重复单元太短，剩下的重复代偿性地高度甲基化」这种句子听起来像教科书，
   实际上是现编的，而患者会拿它当自己报告的解释。检索到的片段没写的机制就不要写；

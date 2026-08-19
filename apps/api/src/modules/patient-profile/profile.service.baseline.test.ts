@@ -206,4 +206,45 @@ describe('upsertBaseline mirrors the foundation fields', () => {
     expect(params[5]).toBe(false);
     expect(params[7]).toBe(false);
   });
+
+  /**
+   * 确诊年份 REFINES `diagnosis_date`; IT DOES NOT REPLACE IT.
+   *
+   * The mirror wrote `${year}-01-01` into the column on every save, so a
+   * profile holding a real 2019-05-03 came out of the next questionnaire
+   * submit holding 2019-01-01 — even when the year saved was 2019, which
+   * is what `applyGeneticReportAutofill` puts back in the box at read
+   * time, i.e. even when the save said nothing new about the diagnosis
+   * time at all. The day is not recoverable and the exports read the
+   * column.
+   *
+   * There is no database in this suite, so the shape of the decision is
+   * what is pinned here — that the statement asks the column what year
+   * it is already in before overwriting it, and that the parameter
+   * positions the tests above depend on are unchanged. The four
+   * behaviours themselves are exercised against a real Postgres.
+   */
+  it('keeps a stored day when the saved year is the year that day is in', async () => {
+    const { sql, params } = await captureWrite({ diagnosisYear: 2019 });
+
+    // The column is consulted, not merely overwritten.
+    expect(sql).toContain("date_part('year', diagnosis_date)");
+    expect(sql).toContain("date_part('year', $7::date)");
+    // And on a match the column keeps what it has.
+    expect(sql).toMatch(/date_part\('year', \$7::date\)\s*\n?\s*THEN diagnosis_date/);
+    // Same slots as before, so the erase / silence flags still land.
+    expect(params[5]).toBe(true);
+    expect(params[6]).toBe('2019-01-01');
+  });
+
+  it('still carries an explicit clear and an absent key through the new branch', async () => {
+    const cleared = await captureWrite({ diagnosisYear: null });
+    expect(cleared.params[5]).toBe(true);
+    expect(cleared.params[6]).toBeNull();
+    expect(cleared.sql).toContain('WHEN $7::date IS NULL THEN NULL');
+
+    const untouched = await captureWrite({ fullName: '李四' });
+    expect(untouched.params[5]).toBe(false);
+    expect(untouched.sql).toContain('WHEN NOT $6::boolean THEN diagnosis_date');
+  });
 });

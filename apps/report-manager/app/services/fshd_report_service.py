@@ -798,7 +798,53 @@ def _build_line_windows(lines: List[str], max_window: int = 2) -> List[str]:
 #: EMPTY on the ordinary spelling, `progression_node` was published as
 #: the truncated 「…病程 18」, and the timeline gained a phantom event
 #: 「5 年, 逐渐加重」 with no age attached.
-_SENTENCE_BREAK = re.compile(r"[。;；\n]|(?<!\d)\.|\.(?!\d)")
+_SENTENCE_BREAK_SOURCE = r"[。;；\n]|(?<!\d)\.|\.(?!\d)"
+_SENTENCE_BREAK = re.compile(_SENTENCE_BREAK_SOURCE)
+
+#: A CLAUSE END. The same breaks, plus the ordinary comma.
+#:
+#: THE TWO COMMAS ARE NOT THE SAME COMMA, which `_read_mri_sentence`
+#: already argues one reader over: 「、」 is the ENUMERATION comma and
+#: separates items INSIDE one statement, so it is deliberately absent
+#: here; 「，」 (folded to 「,」 by `_normalize_text`) separates the
+#: statements themselves, and a Chinese conclusion uses it to say what
+#: was found and what was not in one breath.
+#:
+#: THIS IS THE SCOPE AN ABSENCE TEST HAS TO RUN AT. Asked of the whole
+#: LINE, a negator belonging to one clause cancelled a finding that the
+#: other clause stated positively — measured on the ordinary two-clause
+#: conclusion 「检出 D4Z4 阵列缩短, 符合 FSHD1 分子诊断标准, 未见其他致
+#: 病变异」, which published `diagnosis_type: None` on a genetically
+#: confirmed report, and on 「4q35 单倍型: 4qA, 未见 4qB」, which published
+#: no haplotype at all. Both sentences state a result and then deny a
+#: DIFFERENT one; the denial is the second clause's, and reading it
+#: against the first is how a positive report came out blank.
+#:
+#: WHAT IT COSTS, STATED PLAINLY: a report that enumerates two subjects
+#: of one denial across 「，」 rather than 「、」 — 「未检出致病变异, 未见
+#: 缩短」 is fine, 「未检出 FSHD1, FSHD2 相关变异」 is not — now has the
+#: second one unguarded. That is the same trade `_read_mri_clause` took
+#: and it is the narrower error: the enumerating spelling is the one a
+#: laboratory writes with 、, and the two-clause spelling is the one it
+#: writes on every report.
+_CLAUSE_BREAK = re.compile(rf",|{_SENTENCE_BREAK_SOURCE}")
+
+
+def _clause_span(text: str, index: int) -> Tuple[str, int]:
+    """The clause `index` falls on, and the offset it starts at."""
+    start, end = 0, len(text)
+    for match in _CLAUSE_BREAK.finditer(text):
+        if match.end() <= index:
+            start = match.end()
+        elif match.start() >= index:
+            end = match.start()
+            break
+    return text[start:end], start
+
+
+def _clause_around(text: str, index: int) -> str:
+    """The clause `index` falls on — the span between clause breaks."""
+    return _clause_span(text, index)[0]
 
 
 def _extract_sentences(text: str) -> List[str]:
@@ -1416,7 +1462,41 @@ _METHOD_SECTION_HEADERS: Tuple[str, ...] = (
 _NOTE_SECTION_HEADERS: Tuple[str, ...] = ("附注", "备注", "注释", "说明")
 
 #: A footnote that carries its own content — 「附注: 4qA 为允许型单倍型」.
-_NOTE_ROW_PREFIXES: Tuple[str, ...] = ("附注", "备注", "注释", "说明", "注:")
+#:
+#: AND THE TWO OTHER THINGS PRINTED IN THE SAME PLACE AND THE SAME
+#: VOICE. A laboratory page carries three kinds of prose that NAME an
+#: analyte and PRINT a number without either belonging to this patient:
+#:
+#:   - the footnote proper — 「注: 血红蛋白低于 60 g/L 为危急值」
+#:   - the critical-value banner — 「危急值提示: 血小板计数低于 20…」
+#:   - the unit-conversion legend — 「单位换算: 血红蛋白 1 g/dL = 10 g/L」
+#:
+#: and only the first was recognised. Measured on a synthetic 血常规
+#: carrying each: `hgb: 60` on a patient whose haemoglobin is 155,
+#: `plt: 20` on a patient whose platelet count is 249, and `hgb: 1` off
+#: the conversion factor — the panic threshold and the arithmetic
+#: constant published as the patient's own results, on the panel a
+#: clinician scans for exactly those two analytes.
+#:
+#: 危急值 IS A PREFIX AND NOT A SUBSTRING, and that is the whole care
+#: this list needs: a Chinese laboratory also prints 危急值 in the 提示
+#: COLUMN of a row that is a genuine result — 「血钾 6.8 H 危急值」 — and
+#: a contains-test would refuse the very row the banner exists to draw
+#: attention to.
+_NOTE_ROW_PREFIXES: Tuple[str, ...] = (
+    "附注", "备注", "注释", "说明", "注:",
+    "危急值", "警戒值", "单位换算", "换算", "折算", "计算公式",
+)
+
+#: Decoration a page puts in front of a footnote — 「★危急值:…」,
+#: 「※注:…」. Stripped before the prefix test, because a bullet is not a
+#: different kind of row.
+#:
+#: NO DASH IN THE CLASS. A dash is a RANGE SEPARATOR in this file and it
+#: is spelled in exactly one place — `_RANGE_DASHES` — which
+#: `test_no_reader_spells_a_separator_or_comparator_by_hand` enforces.
+#: A leading dash on a footnote is not worth an exception to that.
+_ROW_MARKER_PREFIX = re.compile(r"^[\s*※★☆#·•◆■]+")
 
 #: Labels that name WHAT WAS ORDERED. What a test was ordered to look
 #: for says nothing about what was found — the same thing a TITLE says
@@ -1626,8 +1706,10 @@ def _row_label(line: str, *, first_content_line: bool = False) -> Optional[Tuple
     #    FSHD1 was read as this patient's stated type.
     if any(line.strip().startswith(prefix) for prefix in _EXAM_METADATA_PREFIXES):
         return _KIND_METHOD, _SCOPE_SELF
-    # 5. A footnote carrying its own content.
-    if any(line.strip().startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
+    # 5. A footnote, a critical-value banner or a unit-conversion
+    #    legend carrying its own content. See `_NOTE_ROW_PREFIXES`.
+    undecorated = _ROW_MARKER_PREFIX.sub("", line.strip())
+    if any(undecorated.startswith(prefix) for prefix in _NOTE_ROW_PREFIXES):
         return _KIND_NOTE, _SCOPE_SELF
     # 6. The document's name.
     if _is_title_row(line, first_content_line=first_content_line):
@@ -1661,23 +1743,64 @@ def _page_rows(lines: List[str]) -> List[_Row]:
     has — and being appended last is why `_TABLE_ROW` is a rank of its
     own rather than a tie with `_DEDICATED_ROW`.
     """
-    rows: List[_Row] = []
+    kinds = _row_kinds(lines)
+    rows = [
+        _Row(line.strip(), kind)
+        for line, kind in zip(lines, kinds)
+        if line.strip()
+    ]
+    rows.extend(_Row(text, _KIND_TABLE) for text in _table_row_lines(lines))
+    return rows
+
+
+def _row_kinds(lines: List[str], *, sections: bool = True) -> List[str]:
+    """The kind of each line of `lines`, BY POSITION.
+
+    THE SAME LABELLING `_page_rows` APPLIES, ANSWERED WITHOUT DROPPING
+    THE INDEX. `_page_rows` returns a compacted list — blank lines gone,
+    the rebuilt table rows appended at the end — which is exactly what
+    the genetics readers want and exactly what the LABORATORY row reader
+    cannot use: `_extract_lab_value` reads the cell-per-line layout by
+    walking forward from `index` to `index + 4`, so it needs to ask
+    「what kind is line N」 with N still meaning the same thing.
+
+    So the loop lives here and `_page_rows` is a projection of it. Two
+    readers deciding row kinds separately is how this file got into the
+    state the section above describes.
+
+    `sections=False` TURNS OFF RUN PROPAGATION, and it exists because
+    the propagation is a statement about the GENETICS page. There a bare
+    检测结果 heads data rows that carry no label of their own, so a label
+    has to reach down the page. A laboratory results table is the same
+    shape with the opposite consequence: its rows are ALSO unlabelled,
+    so a bare 检测方法 line printed above one — with no column-header row
+    after it to close the run — labels the entire table METHOD and every
+    reading on the page disappears. Measured on a synthetic 生化 laid out
+    that way: `lab_panel: {}` where CK 693 and LDH 319 are both printed.
+
+    A label that reaches exactly one row (`_SCOPE_NEXT`) still reaches
+    it: that row is the value cell of the label above it, it is bounded,
+    and it cannot run away. What a laboratory page needs refused is a
+    row that labels ITSELF — a title, a footnote, a critical-value
+    banner, a unit-conversion legend — and each of those does.
+    """
+    kinds: List[str] = [_KIND_PLAIN] * len(lines)
     section: Optional[str] = None
     pending: Optional[str] = None
     seen_content = False
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
         label = _row_label(stripped, first_content_line=not seen_content)
         seen_content = True
         if label is None:
-            rows.append(_Row(stripped, pending or section or _KIND_PLAIN))
+            kinds[index] = pending or section or _KIND_PLAIN
             pending = None
             continue
         kind, scope = label
         if scope == _SCOPE_RUN:
-            section = kind
+            section = kind if sections else None
             pending = None
         elif scope == _SCOPE_NEXT:
             section = None
@@ -1685,9 +1808,30 @@ def _page_rows(lines: List[str]) -> List[_Row]:
         else:
             section = None
             pending = None
-        rows.append(_Row(stripped, kind))
-    rows.extend(_Row(text, _KIND_TABLE) for text in _table_row_lines(lines))
-    return rows
+        kinds[index] = kind
+    return kinds
+
+
+def _result_row_mask(lines: List[str]) -> List[bool]:
+    """Which lines of `lines` can carry a reading of THIS patient.
+
+    THE ROW MODEL, ASKED BY THE LABORATORY READERS TOO. Every genetics
+    reader in this file has consulted `_REFUSED_ROW_KINDS` since the
+    page was segmented into labelled rows; the lab-panel readers never
+    did, and they are the ones that publish the numbers a clinician
+    reads off a 血常规 or a 生化. See `_NOTE_ROW_PREFIXES` for the three
+    prose shapes that were being read as results.
+
+    WITHOUT SECTION PROPAGATION — see `_row_kinds`. A laboratory table
+    is a run of rows that label nothing, and letting one stray heading
+    reach down the page would trade a threshold published as a reading
+    for every reading on the page erased: the same defect with a much
+    larger blast radius.
+    """
+    return [
+        kind not in _REFUSED_ROW_KINDS
+        for kind in _row_kinds(lines, sections=False)
+    ]
 
 
 def _inline_row_rank(line: str, value_start: int) -> int:
@@ -2096,7 +2240,7 @@ def _append_panel_text(
     )
 
 
-def _panel_haystacks(text: str, lines: List[str]) -> List[str]:
+def _panel_haystacks(lines: List[str]) -> List[str]:
     """Where a panel pattern may look for `分析物 … 结果`.
 
     The whole text first, so a report that keeps a row on one line keeps
@@ -2145,8 +2289,35 @@ def _panel_haystacks(text: str, lines: List[str]) -> List[str]:
     out of the gap the whole-text haystack simply misses and the
     two-line window pairs the name with its value, which is what these
     windows are for.
+
+    AND NEITHER THE WHOLE TEXT NOR A WINDOW MAY HOLD A ROW THAT IS NOT
+    A RESULT ROW. This is the same defect `_extract_lab_value` carries
+    one layer up, and fixing it there alone fixed nothing: the row
+    reader declines, the panel PATTERN then runs over a haystack that
+    still holds the page's footnotes, and the threshold quoted in one of
+    them is published under the analyte's key — with `_row_context`
+    finding no row to contradict it, because the row it would have read
+    is the footnote. Measured on the same synthetic 血常规: `hgb: 60`
+    off 「注: 血红蛋白低于 60 g/L 为危急值」 and `hgb: 1` off 「单位换算:
+    血红蛋白 1 g/dL = 10 g/L」.
+
+    A REFUSED ROW IS BLANKED, NOT DROPPED. Removing the line would let
+    the two-line window join the rows on either side of it — the exact
+    seam the paragraphs above spend their length arguing against — so
+    the line keeps its slot and loses its content: the whole-text
+    haystack gets a bare newline there, which no gap class in this
+    module can cross, and a window spanning it holds one real row and
+    nothing else.
+
+    `text` is gone from the signature. It was the normalized page and
+    `lines` is that same page split, so the haystack is rebuilt from the
+    lines that survive rather than from a copy that never knew of them.
     """
-    return [text, *_build_line_windows(lines, max_window=2)]
+    kept = [
+        line if usable else ""
+        for line, usable in zip(lines, _result_row_mask(lines))
+    ]
+    return ["\n".join(kept), *_build_line_windows(kept, max_window=2)]
 
 
 def _extract_numeric_panel(
@@ -2191,7 +2362,7 @@ def _extract_numeric_panel(
     qualitative rows of a 尿常规, declared in a second dict — named here
     so that 白细胞 knows 白细胞酯酶's row is not its own.
     """
-    haystacks = _panel_haystacks(text, lines)
+    haystacks = _panel_haystacks(lines)
     #: The panel's own analyte vocabulary, which is what tells one row
     #: from another inside it — see `_row_context`.
     vocabulary: Dict[str, List[str]] = {
@@ -2287,7 +2458,7 @@ def _extract_text_panel(
     published; falling back would publish the very cell the refusal
     exists to withhold.
     """
-    haystacks = _panel_haystacks(text, lines)
+    haystacks = _panel_haystacks(lines)
     columns = _page_columns(lines)
     vocabulary: Dict[str, List[str]] = {
         name: list(meta.get("keywords", [])) for name, meta in definitions.items()
@@ -2650,13 +2821,13 @@ def _read_mri_clause(clause: str) -> _MriClause:
     A CLAUSE THAT SAYS THE THING WAS NOT FOUND ASSERTS NOTHING.
     「未见明显脂肪浸润」 contains 脂肪浸润, and a substring test on it
     published `fatty_infiltration: yes` off a sentence stating the
-    opposite. `_ABSENCE_MARKERS` is the list this file already keeps for
-    that question; the clause is the right scope for it, because
+    opposite. `_states_an_absence` is the test this file already keeps
+    for that question; the clause is the right scope for it, because
     「…脂肪浸润,未见炎性改变」 asserts one and denies the other.
     """
     stripped = clause.strip()
     lowered = stripped.lower()
-    denies = any(marker in lowered for marker in _ABSENCE_MARKERS) or "相对保留" in stripped
+    denies = _states_an_absence(stripped) or "相对保留" in stripped
     descriptors: Tuple[str, ...] = ()
     if not denies:
         descriptors = tuple(
@@ -3319,7 +3490,7 @@ def _looks_like_signature(text: str) -> bool:
     shortened; the patient was shown a sentence that no longer said it.
 
     So the two vocabularies this file already keeps are asked as well —
-    `_ABSENCE_MARKERS`, what was NOT found, and `_FINDING_MARKERS`, what
+    `_states_an_absence`, what was NOT found, and `_FINDING_MARKERS`, what
     was. Either of them present means the line is reporting, and a
     reporting line is not a signature whatever its length. Both are
     defined below this point in the file and resolved when this runs.
@@ -3328,7 +3499,7 @@ def _looks_like_signature(text: str) -> bool:
     if not _BARE_NAME.match(stripped) or stripped in _NOT_A_NAME:
         return False
     lowered = stripped.lower()
-    if any(marker in lowered for marker in _ABSENCE_MARKERS):
+    if _states_an_absence(stripped):
         return False
     return not any(marker.lower() in lowered for marker in _FINDING_MARKERS)
 
@@ -3692,47 +3863,198 @@ def _detect_genetic_method(body_lines: List[str]) -> Optional[str]:
     return matched[0]
 
 
-#: Words that make the token beside them a statement about what the
-#: laboratory did NOT find.
+# --------------------------------------------------------------------
+# THE NEGATOR, PARSED ONCE — NOT REMEMBERED PER LIST
+#
+# THIS FILE HAS NOW HAD THE SAME DEFECT ON THREE SEPARATE LISTS, and
+# every time it was a NEGATOR FUSED INTO A WORD THAT A LIST READ AS THE
+# WORD'S OPPOSITE:
+#
+#   - `_ABSENCE_MARKERS` held the bare 排除 and was asked with a
+#     substring test, so 「不排除」 and 「不能排除」 — the laboratory
+#     saying it CANNOT rule the thing out, which is the opposite of an
+#     absence — were read as the report denying the finding. Measured:
+#     「4q35 单倍型: 4qA, 不能排除低比例嵌合」 published `haplotype:
+#     None`, and 「D4Z4重复单元数为 3, 不排除嵌合体可能」 published no
+#     count at all — the stated allele and the one number this whole
+#     product turns on, both erased by a caveat that asserts neither.
+#   - `_BOUND_BEFORE_VALUE` held the bare 超过 and not 不超过, and it is
+#     applied with `.search`, so the engine skipped the 不 and matched
+#     超过 alone. The refusal string this file PRINTS back to the
+#     reviewer was then 「超过10」 on a report that said 「不超过10」 —
+#     the bound read in the opposite direction, on the FSHD1 boundary.
+#   - the round before that, 不过 (「however」) was parsed as a negator
+#     plus an aspect particle and flipped the bound behind it.
+#
+# A list cannot be kept correct by remembering to add each negated form
+# to it, because the negated forms are not a list: 不 / 未 / 没 / 无
+# combine with a bounded run of closed-class function words and then
+# with whatever word follows. So the negator is parsed HERE, once, and
+# every reader that cares combines it with a polarity of its own — the
+# same shape `answer-guard.ts` settled on in apps/api, where a bound is
+# 「a direction, optionally negated, and the negation flips it」.
+#
+# THE TWO USES DIFFER ONLY IN WHAT THEY COMBINE IT WITH:
+#
+#   - the absence readers combine it with the POLARITY OF A VERB —
+#     `_states_an_absence`. 见 / 检出 / 发现 are FINDING verbs and become
+#     an absence when negated; 排除 / 除外 are EXCLUSION verbs and are an
+#     absence UNNEGATED and stop being one when negated. One XOR, and
+#     「未见」 and 「不排除」 stop having to be separately remembered.
+#   - the bound guard combines it with a DIRECTION — `_BOUND_WORD`.
+#     Direction is not what that guard publishes (it prints the bound
+#     back exactly as the report spelled it and normalises nothing), so
+#     it needs no flip; what it needs is that the negator be part of the
+#     match instead of being skipped over.
+#
+# WHICH DIRECTION AN ERROR HERE FAILS IN. Failing to SEE a negator makes
+# 不排除 an absence — data is dropped, which this file has always
+# preferred to inventing any. Seeing one that is not there makes an
+# absence into an assertion, which publishes a finding the report
+# denied. So the gap between the negator and its verb is a CLOSED class
+# of function words, never a content word, and it is bounded.
+# --------------------------------------------------------------------
+
+#: 不 / 未 / 没 / 无 — the negator core.
+_NEGATOR_HEAD = "(?:不|未|没|无)"
+
+#: The closed function words that may stand between the negator and the
+#: word it negates: modals, the degree adverbs a 「cannot COMPLETELY
+#: exclude」 puts there, and the link verbs that make a negator and its
+#: predicate one clause. Longest alternative first, so 能够 is never
+#: read as a bare 能 with a stray 够 left over.
 #:
-#: A cell under one of these is not a reading, it is a refusal, and
-#: carrying its token forward as though the report had asserted it is
-#: how 「D4Z4 未检出3个重复单元」 became a repeat count of 3, 「未检出 4qA
-#: 等位基因」 became a permissive haplotype, and 「本次检测不支持 FSHD1」
-#: became this patient's diagnosis — each at the same confidence the
-#: extractor gives a cell the laboratory did print, and each carried on
-#: to the passport, the exports and the registry.
-#:
-#: MATCHED AGAINST THE ONE LINE THE TOKEN SITS ON, never the whole
-#: report. Most genetic reports carry a 「未见其他异常」 or a 「阴性对照」
-#: somewhere in them; matching over the whole text would abstain on
-#: every genuine result in the file.
-_ABSENCE_MARKERS = (
-    "未检出",
-    "未见",
-    "未发现",
-    "未检测到",
-    "未提示",
-    "阴性",
-    "不支持",
-    "排除",
-    "not detected",
-    "negative",
+#: 过 AND 得 ARE DELIBERATELY ABSENT, and the previous round is why. 过
+#: is the experiential aspect and FOLLOWS its verb, so against 不 it is
+#: not a particle at all — 不过 is one word, the connective 「however」,
+#: and admitting it made 「不过大于 10 个就要考虑 FSHD2」 read as the
+#: complement of the band that sentence states. 得 is preverbal only in
+#: the fused modal 不得; elsewhere it is a potential complement, and
+#: admitting it made 不见得 (「not necessarily」) parse as a negation.
+#: A content word is absent for the reason stated above the block: it
+#: would let the negator reach across a word boundary that is not there.
+_NEGATOR_LINK = (
+    "(?:能够|可以|应当|应该|必须|完全|彻底|绝对|全然|曾经"
+    "|能|可|会|应|须|要|法|予|曾|再|有)"
 )
+
+#: A negator and its gap — 「不」「不能」「无法」「没有」「不能完全」.
+#: Bounded, so it is a grammatical join and not a reach across a
+#: sentence, and so the engine cannot backtrack pathologically.
+_NEGATION = rf"{_NEGATOR_HEAD}(?:\s*{_NEGATOR_LINK}){{0,3}}\s*"
+
+#: Verbs of FINDING. Negating one is what makes a statement an absence,
+#: and an un-negated one asserts the opposite — which is why the bare
+#: forms could never have been listed as absence markers, and why the
+#: negated forms no longer have to be.
+#:
+#: Longest first: 查见 contains 见, 检测到 stands whole.
+_FINDING_VERBS: Tuple[str, ...] = (
+    "检测到", "检出", "测出", "发现", "查见", "提示", "支持", "见",
+)
+
+#: Verbs of EXCLUSION. These are the mirror image: 「排除 FSHD1」 IS the
+#: report denying the finding, and 「不排除 FSHD1」 is the report saying
+#: it cannot. Same negator, opposite starting polarity.
+_EXCLUSION_VERBS: Tuple[str, ...] = ("排除", "除外")
+
+#: An absence with no verb in it to negate. 「阴性」 is the whole
+#: statement, so it is an atom and the negator grammar must not be let
+#: near it.
+_ABSENCE_ATOMS: Tuple[str, ...] = ("阴性", "not detected", "negative")
+
+#: A VERB FOLLOWED BY 得 IS NOT THAT VERB. 得 after a verb opens the
+#: potential complement, and 不见得 is 「not necessarily」 — a HEDGE that
+#: asserts no absence at all. Without this the negator grammar read it
+#: as 不 + 见 and called the clause a denial, which is the mirror image
+#: of the defect `_NEGATOR_LINK` refuses 得 for on the bound side. One
+#: hedge, one reading, both sides of the file.
+#: Only the negator and the EXCLUSION side are named: the finding
+#: branch is the else of the same alternation, so a group for it would
+#: be a field nothing reads.
+_ABSENCE_CLAUSE = re.compile(
+    rf"(?P<neg>{_NEGATION})?"
+    rf"(?:(?:{'|'.join(_FINDING_VERBS)})"
+    rf"|(?P<excl>{'|'.join(_EXCLUSION_VERBS)}))"
+    r"(?!\s*得)"
+)
+
+
+def _states_an_absence(text: str) -> bool:
+    """Does `text` say the laboratory did NOT find the thing?
+
+    THE XOR IS THE WHOLE RULE. A finding verb asserts an absence only
+    when it is negated; an exclusion verb asserts one only when it is
+    NOT. 「未见」 and 「排除」 are both absences, 「见」 and 「不排除」 are
+    neither, and nobody has to keep two lists in step for that to hold.
+
+    `finditer` rather than a search, so the leftmost match at a negator
+    CONSUMES the verb behind it — that is what stops 「不能排除」 from
+    being re-read one character later as a bare 排除, which is exactly
+    how the substring test got the sentence backwards.
+
+    GIVEN A CLAUSE, NOT A LINE, by every caller that has a clause to
+    give — see `_clause_around`.
+    """
+    lowered = text.lower()
+    if any(atom in lowered for atom in _ABSENCE_ATOMS):
+        return True
+    return any(
+        (match.group("neg") is not None) != (match.group("excl") is not None)
+        for match in _ABSENCE_CLAUSE.finditer(lowered)
+    )
+
 
 #: The report naming a type it is asking someone else to confirm.
 #: Separate from absence because the wording differs, and because only
 #: the graded fields care — a hedged sentence is still DISPLAYED, via
 #: `interpretation_summary`; it just does not become a diagnosis.
+#:
+#: 不排除 / 不能排除 BELONG HERE AND NOWHERE ELSE. 不除外 — the same
+#: sentence in different characters — has been on this list since it was
+#: written, while its two synonyms were on the ABSENCE list, so one
+#: hedge had two opposite readings depending on which characters the
+#: laboratory happened to print. `_states_an_absence` no longer calls
+#: them absences; this is what they are instead.
 _HEDGE_MARKERS = (
     "怀疑",
     "疑似",
     "待排",
+    "待查",
     "拟诊",
     "不除外",
+    "不排除",
+    "不能排除",
     "可能为",
     "rule out",
     "suspected",
+)
+
+#: A TYPE NAMED IN A RECOMMENDATION IS NEITHER STATED NOR DENIED.
+#:
+#: 「本次检测不支持 FSHD1, 建议评估 FSHD2」 is the ordinary negative
+#: conclusion, and its second clause NAMES the type it is asking someone
+#: else to look at. That clause was only ever suppressed by accident —
+#: by the 不支持 in the FIRST clause reaching across the comma — so the
+#: moment the absence test was given the scope it should always have
+#: had, 建议评估 FSHD2 became this patient's 分型.
+#:
+#: THIS IS NOT A HEDGE AND MUST NOT BE ONE. `_read_diagnosis_type`
+#: collects hedged and denied tokens into one set that refuses the token
+#: EVERYWHERE ON THE PAGE, and a positive report says 「符合 FSHD1 分子
+#: 诊断标准.」 and then 「建议按 FSHD1 进行随访管理」 — measured, with
+#: 建议 on the hedge list: `diagnosis_type: None` on a genetically
+#: confirmed report, which is the whole field lost to a follow-up
+#: sentence. A recommendation clause asserts nothing in either
+#: direction, so the token in it is simply not a candidate.
+#:
+#: A MARKER GOVERNS WHAT FOLLOWS IT, which is the rule
+#: `_haplotype_tokens_on` and `_inline_row_rank` already apply to a
+#: label. 「建议评估 FSHD2」 puts the marker in front of the type and is a
+#: recommendation; 「符合 FSHD1 分子诊断标准并建议遗传咨询」 puts it
+#: behind, where it recommends the counselling and not the diagnosis.
+_RECOMMENDATION_MARKERS: Tuple[str, ...] = (
+    "建议", "推荐", "进一步", "有待", "拟行", "转诊",
 )
 
 #: A number followed by one of these is a length. Anchored with `\b` so
@@ -3753,10 +4075,67 @@ _LENGTH_UNIT_AFTER = _cjk_safe_compile(r"\s*(kb|bp|mb)\b", re.IGNORECASE)
 #: The Chinese spellings are here because a laboratory writes the
 #: reference in words as often as in symbols, and — see `_cjk_safe` —
 #: they are matched without `\b`, which would never fire against CJK.
-_BOUND_BEFORE_VALUE = re.compile(
-    rf"(?:{_COMPARATOR}|大于等于|小于等于|不小于|不大于|不少于|不多于|不低于|不高于"
-    r"|大于|小于|超过|多于|少于|至少|最多)\s*$"
-)
+#:
+#: AND THE NEGATED SPELLINGS ARE NOT A LIST. This pattern used to
+#: enumerate six of them — 不小于 / 不大于 / 不少于 / 不多于 / 不低于 /
+#: 不高于 — beside the bare 超过, and it is applied with `.search`, so on
+#: 「D4Z4重复单元数为不超过10个」 the engine simply started one character
+#: later and matched 超过 alone. The bound was still refused as a bound,
+#: which is not the harm: the harm is that this guard PRINTS the bound
+#: back the way the report spelled it, so `d4z4_repeat_pathogenic` came
+#: out 「超过10」 on a report that says 「不超过10」 — the FSHD1 boundary
+#: read in the opposite direction, on the passport, in the exports and
+#: in `latest_summary.by_analyte…value_text`.
+#:
+#: So the negator is `_NEGATION` — the one the absence readers parse —
+#: and the direction is parsed separately behind it. Every negated
+#: spelling the old list held is now a consequence of the grammar rather
+#: than an entry, and so are 不能超过 / 无法达到 / 未能低于 and the rest
+#: of a set nobody was going to finish enumerating.
+#:
+#: THE DIRECTION IS NOT FLIPPED HERE, deliberately. This guard answers
+#: one question — 「is the number a THRESHOLD rather than this patient's
+#: reading」 — and a threshold is a threshold in either direction. It
+#: normalises nothing and computes nothing; `normalized_value` is
+#: already `NO_NORMALIZED_VALUE` for every refusal. `intervalsIn` in
+#: apps/api is the reader that needs the flip, and it does the XOR.
+#:
+#: 低于 AND 高于 ARE HERE NOW BECAUSE THEIR NEGATIONS ALWAYS WERE. The
+#: list carried 不低于 and 不高于 and not the affirmative pair, which is
+#: the one spelling a reference sentence is most likely to use —
+#: measured: 「D4Z4重复单元数为低于10个」 published
+#: `d4z4_repeat_pathogenic: 10` at 0.97, the confidence reserved for a
+#: cell read off a result row, on a report stating no count at all.
+_BOUND_DIRECTION = "(?:大于|高于|多于|超过|超出|小于|低于|少于)"
+
+#: 大于等于 / 小于或等于 — the inclusive tail. It changes no direction
+#: and therefore nothing this guard does; it is here so the whole
+#: printed bound is captured rather than half of it.
+_BOUND_OR_EQUAL = "(?:或?等于)?"
+
+#: THE WHOLE 「FALLS SHORT OF N」 FAMILY, AS ATOMS — and the family was
+#: missing outright.
+#:
+#: 不足 / 不到 / 不下 / 不满 / 不及 / 未达 / 未满 are how a Chinese report
+#: states a floor, and NONE of them is a negated direction word: 足, 到,
+#: 下, 满, 及, 达 are attainment verbs, not directions, so the negator
+#: rule must not be allowed to take them apart. They are whole words and
+#: they are listed as whole words — the same split `answer-guard.ts`
+#: makes with its `BELOW_ATOM`.
+#:
+#: Measured, on 「D4Z4重复单元数为{word}10个」 for every one of the seven:
+#: `d4z4_repeat_pathogenic: 10` with `normalized_value: 10` at 0.97 on a
+#: report that prints no count for this patient anywhere. Ten is the top
+#: of the FSHD1 range — the number that decides whether this platform
+#: shows a contracted-array reading at all — and it was being invented
+#: out of the sentence that DEFINES that boundary.
+_BOUND_ATOM = "(?:不足|不到|不下|不满|不及|未达|未满|至少|最少|起码|至多|最多)"
+
+#: An atom first, so 不足 is never taken apart as a negated 足; then a
+#: direction with its optional negator and its optional inclusive tail.
+_BOUND_WORD = rf"(?:{_COMPARATOR}|{_BOUND_ATOM}|(?:{_NEGATION})?{_BOUND_DIRECTION}{_BOUND_OR_EQUAL})"
+
+_BOUND_BEFORE_VALUE = re.compile(rf"{_BOUND_WORD}\s*$")
 
 #: AND A COMPARATOR STANDS AFTER THE NUMBER JUST AS OFTEN.
 #:
@@ -3793,16 +4172,47 @@ def _line_around(text: str, index: int) -> str:
     return _line_span(text, index)[0]
 
 
+def _match_clause(text: str, match: "re.Match") -> str:
+    """The clause of `text` this match sits in — see `_CLAUSE_BREAK`.
+
+    THE LINE WAS THE WRONG SCOPE AND THE WHOLE REPORT WAS THE WRONG
+    SCOPE BEFORE IT. A line of a Chinese conclusion carries two or three
+    clauses and they make DIFFERENT claims; the one governing a token is
+    the one the token is in.
+    """
+    line, line_start = _line_span(text, match.start())
+    return _clause_around(line, match.start() - line_start)
+
+
 def _asserts_absence(text: str, match: "re.Match") -> bool:
-    """Does the line this match sits on say the thing was NOT found?"""
-    line = _line_around(text, match.start()).lower()
-    return any(marker in line for marker in _ABSENCE_MARKERS)
+    """Does the clause this match sits in say the thing was NOT found?"""
+    return _states_an_absence(_match_clause(text, match))
+
+
+def _only_recommends(text: str, match: "re.Match") -> bool:
+    """Does this match's clause merely RECOMMEND looking at the type?
+
+    Neither a statement nor a denial — see `_RECOMMENDATION_MARKERS`.
+    Positional: a marker counts only where it stands in FRONT of the
+    token, because that is where it governs it.
+    """
+    line, line_start = _line_span(text, match.start())
+    at = match.start() - line_start
+    clause, clause_start = _clause_span(line, at)
+    ahead = clause[: at - clause_start].lower()
+    return any(marker in ahead for marker in _RECOMMENDATION_MARKERS)
 
 
 def _is_hedged(text: str, match: "re.Match") -> bool:
-    """Does the line this match sits on merely suspect the thing?"""
-    line = _line_around(text, match.start()).lower()
-    return any(marker in line for marker in _HEDGE_MARKERS)
+    """Does the clause this match sits in merely suspect the thing?
+
+    THE SAME SCOPE THE ABSENCE TEST USES, because it is the same
+    question about the same token and the two disagreeing on scope is
+    how one hedge ends up with two readings. 「符合 FSHD1 分子诊断标准,
+    待排合并其他肌病」 states one type and defers a second one.
+    """
+    lowered = _match_clause(text, match).lower()
+    return any(marker in lowered for marker in _HEDGE_MARKERS)
 
 
 #: The FSHD type token, on its own and not inside a longer one.
@@ -3876,6 +4286,12 @@ def _read_diagnosis_type(rows: List[_Row]) -> Tuple[Optional[str], Optional[re.M
     for position, row in enumerate(rows):
         for match in _DIAGNOSIS_TYPE_TOKEN.finditer(row.text):
             token = f"FSHD{match.group(1)}"
+            # A RECOMMENDATION IS NOT A REFUSAL. It contributes no
+            # candidate and adds nothing to `refused`, so a follow-up
+            # sentence naming the type cannot unpublish the conclusion
+            # that stated it. See `_RECOMMENDATION_MARKERS`.
+            if _only_recommends(row.text, match):
+                continue
             if _asserts_absence(row.text, match) or _is_hedged(row.text, match):
                 # A refusal printed on a title or a method row is still
                 # this report refusing the type, so it is collected
@@ -3953,17 +4369,25 @@ def _haplotype_tokens_on(line: str) -> Tuple[List[str], List[str], List[str]]:
     an allele.
 
     Method and probe lines state nothing in any bucket, and neither does
-    a line asserting the allele was NOT found.
+    an allele the report says it did NOT find.
+
+    THAT REFUSAL IS PER TOKEN AND PER CLAUSE, NOT PER LINE. It used to
+    empty every bucket the moment an absence marker appeared anywhere on
+    the line, and the ordinary Chinese conclusion states one allele and
+    denies the other in one breath: 「4q35 单倍型: 4qA, 未见 4qB」
+    published NO haplotype at all — the 未见 belongs to the second
+    clause, and reading it against the first threw away the allele the
+    report had just stated. See `_CLAUSE_BREAK`.
     """
     lowered = line.lower()
     if any(label in lowered for label in _HAPLOTYPE_METHOD_LABELS):
-        return [], [], []
-    if any(marker in lowered for marker in _ABSENCE_MARKERS):
         return [], [], []
     dedicated: List[str] = []
     result: List[str] = []
     unlabelled: List[str] = []
     for match in _HAPLOTYPE_TOKEN.finditer(line):
+        if _states_an_absence(_clause_around(line, match.start())):
+            continue
         token = match.group(1)[:2].lower() + match.group(1)[2].upper()
         bucket = unlabelled
         nearest = -1
@@ -6958,7 +7382,18 @@ def _extract_lab_value(
             reference_high=high,
         )
 
+    # WHICH LINES CAN CARRY A READING AT ALL, decided once by the row
+    # model rather than re-derived from the characters around a match.
+    # See `_result_row_mask`: a footnote, a critical-value banner and a
+    # unit-conversion legend all NAME an analyte and PRINT a number, and
+    # this reader returned the first line that did both — so a synthetic
+    # 血常规 carrying 「注: 血红蛋白低于 60 g/L 为危急值」 published
+    # `hgb: 60` for a patient whose haemoglobin is 155.
+    is_result_row = _result_row_mask(lines)
+
     for index, line in enumerate(lines):
+        if not is_result_row[index]:
+            continue
         if matched_span(line.lower()) is None or _starts_no_row(line):
             continue
 
@@ -6999,6 +7434,12 @@ def _extract_lab_value(
         for offset in range(1, 5):
             next_index = index + offset
             if next_index >= len(lines):
+                break
+            # AND A FOOTNOTE ENDS THE ROW. The forward scan is the
+            # cell-per-line reader, and a banner printed between an
+            # analyte cell and its value cell is not this row's next
+            # column — reading through it takes the threshold it quotes.
+            if not is_result_row[next_index]:
                 break
             candidate = lines[next_index].strip()
             if not candidate:

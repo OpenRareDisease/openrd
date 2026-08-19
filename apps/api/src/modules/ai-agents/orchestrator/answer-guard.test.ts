@@ -22,6 +22,7 @@ import {
   intervalsIn,
   localiseWireTokens,
   normaliseForMatch,
+  readGeneticConfirmation,
   restoreUnits,
   WIRE_TOKEN_ZH,
   type GuardEvidence,
@@ -3108,5 +3109,290 @@ describe('a number printed with a digit-group separator', () => {
     expect(withRange.recordIntervals.has('<1200')).toBe(true);
     expect(withRange.recordIntervals.has('<1')).toBe(false);
     expect(inspectAnswer('报告上印的参考上限是 1,200 U/L。', withRange)).toHaveLength(0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// CHECK 6 — 基因确诊, THE CLAIM EVERY OTHER SURFACE REFUSES
+// ══════════════════════════════════════════════════════════════════════
+//
+// Every model sentence pinned below was driven against the running
+// stack (real LLM, real KB service on :5010, real redactor, real
+// renderer, real orchestrator) with the two synthetic patients built
+// here — not invented for the test.
+//
+// THE SELF-ENTERED PATIENT is the commonest real profile: the D4Z4
+// count and the haplotype are the registration form's own boxes, and
+// what is on file beside them is a 病历摘要 quoting the same numbers.
+// `isLaboratoryGeneticReport` refuses that document exactly as the
+// passport does, so the projection carries
+// `not_read_off_a_laboratory_report` for both cells and the passport,
+// the share page, the referral pack, the anaesthesia card and all three
+// registry exports print 未经基因确诊.
+
+const SELF_ENTERED_REPORT: Record<string, unknown> = {
+  classifiedType: 'medical_record',
+  documentType: 'medical_record',
+  status: 'parsed',
+  title: '门诊病历摘要',
+  reportDate: '2019-06-11',
+  extractedText:
+    '主诉：双上肢抬举无力 3 年。现病史：患者 3 年前无明显诱因出现抬臂困难。' +
+    '查体：翼状肩胛。院外基因检测结果自述 D4Z4 重复数 3，单倍型 4qA。处理意见：门诊随诊。',
+  fields: {
+    classifiedType: 'medical_record',
+    documentType: 'medical_record',
+    d4z4Repeats: '3',
+    haplotype: '4qA',
+  },
+};
+
+const SELF_ENTERED_PROFILE: Record<string, unknown> = {
+  gender: '女',
+  diagnosisStage: '确诊',
+  diagnosisYear: 2019,
+  diagnosisType: 'FSHD1',
+  d4z4: '3',
+  d4z4FromLaboratoryReport: false,
+  haplotype: '4qA',
+  haplotypeFromLaboratoryReport: false,
+};
+
+/** ...and the patient the passport DOES grade `genetic`: a genetics
+ *  laboratory's own report carrying both items, and archived cells that
+ *  match it, which is what makes the profile flags true. */
+const CONFIRMED_REPORT: Record<string, unknown> = {
+  classifiedType: 'genetic_report',
+  documentType: 'genetic_report',
+  status: 'parsed',
+  title: '基因检测报告',
+  reportDate: '2021-08-02',
+  extractedText:
+    '检验项目：D4Z4 重复单元数及 4q35 单倍型分析\n检测方法：Southern blot\n' +
+    '检测结果：4q35 D4Z4 重复单元数 4；4q 单倍型 4qA\n参考值：见报告说明',
+  fields: {
+    classifiedType: 'genetic_report',
+    documentType: 'genetic_report',
+    diagnosisType: 'FSHD1',
+    geneticTestMethod: 'southern_blot',
+    d4z4Repeats: '4',
+    haplotype: '4qA',
+  },
+};
+
+const CONFIRMED_PROFILE: Record<string, unknown> = {
+  gender: '男',
+  diagnosisStage: '确诊',
+  diagnosisYear: 2021,
+  diagnosisType: 'FSHD1',
+  d4z4: '4',
+  d4z4FromLaboratoryReport: true,
+  haplotype: '4qA',
+  haplotypeFromLaboratoryReport: true,
+};
+
+const unconfirmed = () => evidenceFor('precise', [SELF_ENTERED_REPORT, SELF_ENTERED_PROFILE]);
+const confirmed = () => evidenceFor('precise', [CONFIRMED_REPORT, CONFIRMED_PROFILE]);
+
+const confirmationHits = (answer: string, evidence: GuardEvidence): string[] =>
+  inspectAnswer(answer, evidence)
+    .filter((violation) => violation.kind === 'genetic_confirmation_not_this_platforms')
+    .map((violation) => violation.sentence);
+
+describe('the grade this check is asked of', () => {
+  // THE PROJECTION IS THE WITNESS. If the redactor ever stops refusing
+  // these cells, this assertion goes red rather than the guard quietly
+  // starting to grade a form-typed count.
+  it('is not confirmed for a record whose cells this platform refused to read', () => {
+    const evidence = unconfirmed();
+    expect(evidence.geneticConfirmation.state).toBe('not_confirmed');
+    expect(evidence.geneticConfirmation.shortfall).toContain(
+      '没有一份被本平台当成基因报告读数的记录',
+    );
+  });
+
+  it('is confirmed for a record the passport grades genetic', () => {
+    expect(confirmed().geneticConfirmation.state).toBe('confirmed');
+  });
+
+  // The four boundaries the passport's own conjunction turns on, asked
+  // of the same predicates it uses. A count above the range, a 4qB, a kb
+  // length and a missing item each cost the confirmation there and here.
+  it('reads the same boundaries the passport reads', () => {
+    const withReport = (fields: Record<string, unknown>) =>
+      readGeneticConfirmation(
+        [{ ...CONFIRMED_REPORT, fields: { ...(CONFIRMED_REPORT.fields as object), ...fields } }],
+        new Set(['d4z4', 'haplotype']),
+      );
+    expect(withReport({ d4z4Repeats: '10' }).state).toBe('confirmed');
+    expect(withReport({ d4z4Repeats: '9' }).state).toBe('confirmed');
+    expect(withReport({ d4z4Repeats: '11' }).state).toBe('not_confirmed');
+    expect(withReport({ d4z4Repeats: '18kb' }).state).toBe('not_confirmed');
+    expect(withReport({ d4z4Repeats: '0' }).state).toBe('not_confirmed');
+    expect(withReport({ d4z4Repeats: '1-10' }).state).toBe('not_confirmed');
+    expect(withReport({ haplotype: '4qB' }).state).toBe('not_confirmed');
+    expect(withReport({ haplotype: '4qA/4qB' }).state).toBe('not_confirmed');
+  });
+
+  // THE TWO ITEMS HAVE TO COME OFF ONE RECORD. A count the laboratory
+  // read plus a haplotype off the registration form is the
+  // cross-document mixing the laboratory gate exists to refuse.
+  it('does not assemble a confirmation out of two different records', () => {
+    const countOnly = {
+      ...CONFIRMED_REPORT,
+      fields: {
+        classifiedType: 'genetic_report',
+        documentType: 'genetic_report',
+        d4z4Repeats: '4',
+      },
+    };
+    const haplotypeOnly = { haplotype: '4qA', haplotypeFromLaboratoryReport: true };
+    expect(
+      readGeneticConfirmation([countOnly, haplotypeOnly], new Set(['d4z4', 'haplotype'])).state,
+    ).toBe('not_confirmed');
+  });
+
+  // THE STAND-DOWN, and it is deliberate rather than an oversight: with
+  // no genetics in the turn there is no fact separating a confirmed
+  // patient's follow-up from an unconfirmed one's, and cutting the
+  // confirmed patient's sentence is the worse of the two errors.
+  it('stands down when the turn carries no genetics at all', () => {
+    const evidence = buildGuardEvidence({
+      patientPayloads: [{ gender: '女', diagnosisStage: '确诊' }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: [],
+    });
+    expect(evidence.geneticConfirmation.state).toBe('no_genetics_this_turn');
+    expect(confirmationHits('是的，你已经基因确诊了。', evidence)).toHaveLength(0);
+  });
+});
+
+describe('the assistant may not say 基因确诊 where this platform does not', () => {
+  // Published to a synthetic self-entered patient with the guard
+  // silent, before this check existed. Both readings inside it are ones
+  // the projection in the same prompt refused to make.
+  it('catches the sentence that was published', () => {
+    expect(
+      confirmationHits(
+        '是的，你已经算基因确诊了——档案显示是 **FSHD1 型**，D4Z4 重复数为 3，落在 FSHD1 的致病范围内，单倍型 4qA 也是允许型。',
+        unconfirmed(),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('catches it with the claim in a clause that names nobody', () => {
+    expect(
+      confirmationHits(
+        '是的，你理解得没错——从基因检测结果来看，已经可以确诊 FSHD1 了。',
+        unconfirmed(),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // THE SAME CLAIM WITH THE WORD 确诊 TAKEN OUT, attached to the reader
+  // by his own count rather than by 你.
+  it('catches the genotype asserted without the word', () => {
+    expect(
+      confirmationHits(
+        'D4Z4 重复数 **3** 个，加上 **4qA 单倍型**（允许型），这两个条件合在一起，就是 FSHD1 的典型遗传模式。',
+        unconfirmed(),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // A HEDGE DOES NOT RESCUE IT, and neither does a negation earlier in
+  // the sentence: 不过 is a connective, not a refusal.
+  it('is not rescued by a hedge or by 不过', () => {
+    expect(confirmationHits('基本可以认为你在基因层面已经确诊了。', unconfirmed())).toHaveLength(1);
+    expect(
+      confirmationHits('你的报告上还缺一项，不过基因层面已经确诊了。', unconfirmed()),
+    ).toHaveLength(1);
+  });
+
+  // THE SENTENCES THAT SURVIVED UNDER THE EXCISION NOTICE in the run
+  // that produced this test — the claim restated one segment later,
+  // pointing back with 这两项, and again as a copula over a modified
+  // noun. A notice saying the claim was removed, standing above the
+  // claim, is the failure `buildExcisionNotice` is written about.
+  it('catches the claim restated after the first one is cut', () => {
+    const answer =
+      '是的，你已经基因确诊了。\n\n' +
+      '你的档案记录显示：D4Z4 重复数为 3（落在 FSHD1 的致病范围），单倍型为 4qA（允许型），诊断分型为 FSHD1。这两项同时满足 FSHD1 的基因确诊标准。\n\n' +
+      '所以你可以放心，你已经是基因确诊的 FSHD1 型患者了。';
+    expect(confirmationHits(answer, unconfirmed())).toEqual([
+      '是的，你已经基因确诊了。',
+      '这两项同时满足 FSHD1 的基因确诊标准。',
+      '所以你可以放心，你已经是基因确诊的 FSHD1 型患者了。',
+    ]);
+  });
+
+  it('leaves nothing behind once the excision has run', () => {
+    const answer =
+      '是的，你已经基因确诊了。\n\n' +
+      '你的档案记录显示：D4Z4 重复数为 3。这两项同时满足 FSHD1 的基因确诊标准。';
+    const evidence = unconfirmed();
+    const excised = exciseUntilClean(answer, inspectAnswer(answer, evidence), evidence);
+    expect(excised.text).not.toContain('基因确诊标准');
+    expect(buildExcisionNotice(excised.violations)).toContain('未经基因确诊');
+  });
+});
+
+describe('...and it must still tell the patient what this platform DOES say', () => {
+  // THE INVERSE IS THE WORST OUTCOME THIS CHECK CAN PRODUCE. Every one
+  // of these is the honest answer to 「我算确诊了吗」 for an unconfirmed
+  // record, in this platform's own wording, and cutting any of them
+  // would leave a direct question about the patient's own diagnosis
+  // looking ignored.
+  it('keeps the platform own wording for an unconfirmed record', () => {
+    const evidence = unconfirmed();
+    for (const sentence of [
+      '本平台对你这份记录的判读是「未经基因确诊」。',
+      '你的档案里没有从基因报告里读出来的、可作确诊依据的基因结果。',
+      '你的档案里目前没有本平台从基因报告原件上读取的、可作为确诊依据的 D4Z4 重复数和单倍型结果。',
+      '你目前不算基因确诊，这不是排除诊断。',
+      '你这两格本平台没有当成化验报告上的读数，所以谈不上基因确诊。',
+      '本平台不把你当成基因确诊的患者，因为这两格不是报告读数。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
+  });
+
+  // The RULE, stated. An answer to an unconfirmed patient is mostly
+  // made of these, and the check has to read them as the explanation
+  // they are.
+  it('keeps the rule stated as a rule', () => {
+    const evidence = unconfirmed();
+    for (const sentence of [
+      '基因确诊需要两项：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型。',
+      '基因确诊的两项是 D4Z4 长度和 4qA 单倍型，你的档案里这两项都在，但来源不是基因报告。',
+      '你的报告上要同时写明这两项，才算基因确诊。',
+      'FSHD1 的典型遗传模式是 D4Z4 收缩加上 4qA 允许型单倍型。',
+      '你可以问问主治医生，需不需要补做单倍型检测来完成基因确诊。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
+  });
+
+  it('keeps the rule stated in the sentence after one that names him', () => {
+    const answer =
+      '你的档案里记录了 D4Z4 重复数 3 和单倍型 4qA。\n\n' +
+      '本平台说的「基因确诊」要两项同时是从基因报告上读出来的：D4Z4 重复序列的长度，和它的 4qA / 4qB 单倍型。';
+    expect(confirmationHits(answer, unconfirmed())).toHaveLength(0);
+  });
+
+  // AND THE CONFIRMED PATIENT IS TOLD SO PLAINLY. The check is never
+  // consulted for this record, which is what makes the sentence safe
+  // rather than lucky.
+  it('never touches a record this platform does grade 基因确诊', () => {
+    const evidence = confirmed();
+    for (const sentence of [
+      '是的，你已经基因确诊了。',
+      '你是基因确诊的 FSHD1 型患者。',
+      '从基因检测结果来看，已经可以确诊 FSHD1 了。',
+      '你的基因报告同时写明了 D4Z4 重复数和 4qA 单倍型，所以本平台把它算作基因确诊。',
+    ]) {
+      expect(confirmationHits(sentence, evidence)).toHaveLength(0);
+    }
   });
 });

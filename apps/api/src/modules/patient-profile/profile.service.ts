@@ -228,11 +228,43 @@ export interface BaselineProfileDTO {
   updatedAt: string;
 }
 
+/**
+ * 「WE HAVE NOT MEASURED THIS」 IS ITS OWN BAND, AND IT IS NOT `high`.
+ *
+ * Each axis is a reading of a record, and a record can be empty. An
+ * empty one used to be graded anyway — `activityLevel` fell to `high`
+ * and `strengthLevel` to `medium` — so a patient who registered five
+ * minutes ago and has typed nothing was handed the same 高关注 chip, in
+ * the same red, as a patient whose logs stopped six weeks ago. There is
+ * no reading behind that chip: nothing has been observed to be wrong,
+ * and 「nothing observed」 is what the axis actually knows.
+ *
+ * `unknown` is what it says instead. The client already renders it
+ * correctly without being changed — `getRiskMeta`
+ * (apps/mobile/lib/clinical-visuals.ts) answers anything outside the
+ * three graded bands with a grey 「暂无评估」, which is the sentence
+ * this state means, and it chose grey deliberately so an unloaded
+ * summary could not read as reassurance either.
+ *
+ * This is the rule the surveillance rows already follow: they print
+ * 「本平台没有你的疼痛记录」 rather than 「不适用」, because a platform
+ * that has not been told something must say so rather than answer for
+ * the patient. A risk band is the same statement in a stronger form —
+ * it is the one line on the screen a patient acts on — so it is the
+ * last place absence may be read as evidence.
+ */
+export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
+
 export interface RiskSummary {
-  overallLevel: 'low' | 'medium' | 'high';
-  strengthLevel: 'low' | 'medium' | 'high';
-  activityLevel: 'low' | 'medium' | 'high';
+  overallLevel: RiskLevel;
+  strengthLevel: RiskLevel;
+  activityLevel: RiskLevel;
   latestMeasurement?: PatientMeasurementDTO;
+  /**
+   * The DAY of the newest activity log, not an instant.
+   * `patient_activity_logs.log_date` is a `date` column; see
+   * `toRequiredDateString`.
+   */
   lastActivityAt?: string | null;
   notes: string[];
 }
@@ -386,6 +418,49 @@ const toDateString = (value: string | Date | null): string | null => {
 
 const toTimestampString = (value: Date | null): string => {
   return value ? value.toISOString() : new Date().toISOString();
+};
+
+/**
+ * A `date` COLUMN IS A DAY, AND `toISOString` IS NOT HOW YOU READ ONE.
+ *
+ * node-postgres decodes `date` (OID 1082) as `new Date(y, m - 1, d)` —
+ * midnight in the SERVER PROCESS'S ZONE. `toISOString` then re-reads
+ * that instant in UTC, and east of Greenwich midnight local is the
+ * previous day in UTC: an activity log the patient dated 2026-08-19
+ * came back as `2026-08-18T16:00:00.000Z` under `TZ=Asia/Shanghai`,
+ * which is where this product runs. Every caller of `logDate` therefore
+ * showed and sorted a day that was one early, and printed a
+ * time-of-day for a column that has never held one.
+ *
+ * `toDateString` is the reader that already gets this right — it takes
+ * the local Y/M/D back out, which are the three numbers Postgres sent.
+ * This wrapper is that function for the columns declared NOT NULL, so
+ * the DTO can keep promising a `string`. The throw is unreachable
+ * through SQL (`log_date DATE NOT NULL DEFAULT CURRENT_DATE`) and is
+ * here because the alternative — an empty string — would reach
+ * `new Date('')` in the passport's sort comparators as a silent NaN.
+ */
+const toRequiredDateString = (value: string | Date): string => {
+  const day = toDateString(value);
+  if (day === null) {
+    throw new AppError('Stored date column came back empty', 500);
+  }
+  return day;
+};
+
+/**
+ * Midnight of the local calendar day a value falls on.
+ *
+ * Used to count whole days between two things that are days. Measuring
+ * from an instant instead makes the answer depend on what time it is:
+ * the same 7-day-old log reads as 6 days before noon and 7 after, so a
+ * band boundary moves during the afternoon. Both operands go through
+ * here so only the calendar difference survives.
+ */
+const startOfLocalDay = (value: string | Date): Date => {
+  const day = toRequiredDateString(value);
+  const [year, month, date] = day.split('-').map(Number);
+  return new Date(year, month - 1, date);
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -1553,7 +1628,7 @@ export class PatientProfileService {
         })),
         activityLogs: activityLogsResult.rows.map((row) => ({
           id: row.id,
-          logDate: row.log_date.toISOString?.() ?? row.log_date,
+          logDate: toRequiredDateString(row.log_date),
           source: row.source,
           content: row.content,
           moodScore: row.mood_score === null ? null : Number(row.mood_score),
@@ -1798,12 +1873,87 @@ export class PatientProfileService {
     const setsDiagnosisYear = foundation.diagnosisYear !== undefined;
     const setsRegionLabel = foundation.regionLabel !== undefined;
 
+    /**
+     * ══════════════════════════════════════════════════════════════════
+     * A YEAR AND A DATE IN ONE COLUMN, WITHOUT THE YEAR EATING THE DATE.
+     * ══════════════════════════════════════════════════════════════════
+     *
+     * There are two stores and they hold different things.
+     * `foundation.diagnosisYear` is the questionnaire's only
+     * diagnosis-time control — four digits, labelled 确诊年份 — and it
+     * lives in `baseline_payload`, which is where it stays.
+     * `patient_profiles.diagnosis_date` is a `date`: it can hold a day,
+     * and for the profiles that have one the day came from somewhere
+     * that knew it — the patient's own profile endpoint, the back
+     * office, or `applyGeneticReportAutofill` copying a 诊断日期 the
+     * laboratory printed.
+     *
+     * THE WRITE THIS REPLACES DESTROYED THE SECOND WITH THE FIRST. It
+     * mirrored the year in as `${year}-01-01` unconditionally, so a
+     * profile whose column held 2019-05-03 came out of the next
+     * questionnaire save holding 2019-01-01 — and the year the patient
+     * had typed was 2019, the same year, which is to say the save
+     * carried no new information about the diagnosis time at all. It
+     * did not even need the patient to touch the field:
+     * `applyGeneticReportAutofill` fills an empty 确诊年份 box FROM this
+     * column at read time, so the form hands the year straight back on
+     * the next submit and the day dies to a save about something else.
+     *
+     * Nobody saw it because every renderer reduces a year-start the
+     * evidence report does not corroborate back to a bare year before
+     * printing (profile.passport.ts, and both machine exports emit the
+     * year by construction). That is a display rule. The column is the
+     * stored fact underneath it, the exports read the column, and 5月3日
+     * is not recoverable from 1月1日.
+     *
+     * SO THE RULE IS: the year may REFINE the column, never coarsen it.
+     *
+     *   · Column already inside that year → LEAVE IT. 2019-05-03 under
+     *     a saved 2019 is the same fact said precisely; the save agrees
+     *     with the column and has nothing to add to it.
+     *   · Column in a DIFFERENT year → the patient is correcting the
+     *     year, and a day in the year they just rejected is not a day
+     *     in the new one. `${year}-01-01` goes in, which is all a
+     *     `date` column can be given, and the renderers reduce it.
+     *   · Column empty → `${year}-01-01` as before. Same reduction.
+     *   · Year explicitly null → the column is cleared. That is the
+     *     erase the four `sets*` flags above exist to carry, and it is
+     *     the patient asking for it rather than a side effect.
+     *   · Key absent → untouched, as for the other three columns.
+     *
+     * Deciding this in SQL rather than by reading the column first is
+     * not an optimisation: a read-then-write would let a concurrent
+     * profile update land between the two and be overwritten by a
+     * decision made about the value it replaced.
+     *
+     * ROWS ALREADY FLATTENED STAY FLATTENED, AND CANNOT BE REPAIRED.
+     * The old day was overwritten in place and no copy of it was kept
+     * anywhere — `baseline_payload` only ever stored the year, and the
+     * questionnaire never had a control that could hold a day. A
+     * migration would have nothing to read. Nor can such a row be
+     * IDENTIFIED: a genuine 1 January diagnosis is byte-identical to a
+     * flattened one. This fix is therefore forward-only — it stops the
+     * next save from destroying a day, and every day already destroyed
+     * before it is gone. What limits the damage is that those rows
+     * already print as a bare year everywhere a human reads them, so
+     * no reader is being shown a false day today; they are being shown
+     * a year, which is now also all the column claims to know.
+     */
     await this.pool.query(
       `UPDATE patient_profiles
        SET baseline_payload = $1,
            full_name = CASE WHEN $2::boolean THEN $3::text ELSE full_name END,
            preferred_name = CASE WHEN $4::boolean THEN $5::text ELSE preferred_name END,
-           diagnosis_date = CASE WHEN $6::boolean THEN $7::date ELSE diagnosis_date END,
+           -- 确诊年份 IS A COARSER STATEMENT OF THE COLUMN, NOT A REPLACEMENT
+           -- FOR IT. See the block above the statement.
+           diagnosis_date = CASE
+             WHEN NOT $6::boolean THEN diagnosis_date
+             WHEN $7::date IS NULL THEN NULL
+             WHEN diagnosis_date IS NOT NULL
+                  AND date_part('year', diagnosis_date) = date_part('year', $7::date)
+               THEN diagnosis_date
+             ELSE $7::date
+           END,
            region_city = CASE WHEN $8::boolean THEN NULLIF($9::text, '') ELSE region_city END,
            updated_at = NOW()
        WHERE id = $10`,
@@ -2066,7 +2216,7 @@ export class PatientProfileService {
 
     return {
       id: row.id,
-      logDate: row.log_date?.toISOString?.() ?? row.log_date,
+      logDate: toRequiredDateString(row.log_date),
       source: row.source,
       content: row.content,
       moodScore: row.mood_score === null ? null : Number(row.mood_score),
@@ -2889,43 +3039,79 @@ export class PatientProfileService {
         : measurementRows.reduce((sum, row) => sum + Number(row.strength_score), 0) /
           measurementRows.length;
 
+    // No measurements is not a middling reading — it is no reading. See
+    // `RiskLevel`.
     const strengthLevel: RiskSummary['strengthLevel'] =
       avgStrength === null
-        ? 'medium'
+        ? 'unknown'
         : avgStrength < 3
           ? 'high'
           : avgStrength < 4
             ? 'medium'
             : 'low';
 
-    const latestActivity = activityResult.rows[0];
-    const lastActivityDate = latestActivity?.log_date ? new Date(latestActivity.log_date) : null;
+    /**
+     * `log_date` is a `date` column, so the DAY is the whole of what is
+     * stored and `toRequiredDateString` is how it is read back. What
+     * this axis grades is how long ago that day was, and 「no log at
+     * all」 has no such distance: the branch below used to answer it
+     * `high`, putting a patient who registered this morning in the same
+     * band as one whose last log is a fortnight old.
+     *
+     * `daysSince` is computed from the same local Y/M/D — via
+     * `startOfLocalDay` on both sides — rather than from an instant, so
+     * the boundary between 7 and 8 days falls where a calendar puts it
+     * and not where the server's clock happens to be inside a day.
+     */
+    const lastActivityDay = activityResult.rows[0]?.log_date
+      ? toRequiredDateString(activityResult.rows[0].log_date)
+      : null;
 
-    let activityLevel: RiskSummary['activityLevel'] = 'medium';
-    if (!lastActivityDate) {
-      activityLevel = 'high';
-    } else {
+    let activityLevel: RiskSummary['activityLevel'] = 'unknown';
+    if (lastActivityDay) {
       const daysSince = Math.floor(
-        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24),
+        (startOfLocalDay(new Date()).getTime() - startOfLocalDay(lastActivityDay).getTime()) /
+          (1000 * 60 * 60 * 24),
       );
       activityLevel = daysSince > 14 ? 'high' : daysSince > 7 ? 'medium' : 'low';
     }
 
+    /**
+     * The overall band is the worst of the axes THAT HAVE A READING.
+     *
+     * An `unknown` axis contributes nothing rather than a rank, so a
+     * patient with weak measurements and no activity log still surfaces
+     * as `high` — that is a real observation and it must not be
+     * softened — while a patient with neither comes out `unknown`, and
+     * the chip goes grey 「暂无评估」 instead of red 高关注. A summary
+     * built out of nothing is a summary of nothing.
+     */
     const levelRank = { low: 1, medium: 2, high: 3 } as const;
-    const overallLevel =
-      levelRank[strengthLevel] >= levelRank[activityLevel] ? strengthLevel : activityLevel;
+    const gradedAxes = [strengthLevel, activityLevel].filter(
+      (level): level is Exclude<RiskLevel, 'unknown'> => level !== 'unknown',
+    );
+    const overallLevel: RiskSummary['overallLevel'] = gradedAxes.length
+      ? gradedAxes.reduce((worst, level) => (levelRank[level] > levelRank[worst] ? level : worst))
+      : 'unknown';
 
     const notes: string[] = [];
     if (avgStrength !== null) {
       notes.push(`最近平均肌力分数：${avgStrength.toFixed(1)}`);
     } else {
-      notes.push('暂无肌力评估数据');
+      // 「暂无」/「近期没有」 both read as a judgement about a recent
+      // stretch of time — as though the platform had looked at the last
+      // few weeks and found them empty. It has not looked at anything:
+      // there is no record here at all, which is a fact about this
+      // platform's files and not about the patient's health or habits.
+      // Same sentence shape as the surveillance rows' 「本平台没有你的
+      // 疼痛记录」.
+      notes.push('本平台还没有你的肌力评估记录');
     }
 
-    if (lastActivityDate) {
-      notes.push(`最近活动记录：${lastActivityDate.toISOString().split('T')[0]}`);
+    if (lastActivityDay) {
+      notes.push(`最近活动记录：${lastActivityDay}`);
     } else {
-      notes.push('近期没有活动记录');
+      notes.push('本平台还没有你的活动记录');
     }
 
     const latestMeasurementRow = measurementRows[0];
@@ -2952,7 +3138,11 @@ export class PatientProfileService {
       strengthLevel,
       activityLevel,
       latestMeasurement,
-      lastActivityAt: lastActivityDate ? lastActivityDate.toISOString() : null,
+      // The day, not a manufactured instant: this used to emit
+      // `2026-08-18T16:00:00.000Z` for a log the patient dated
+      // 2026-08-19, which is a time of day the column has never held
+      // and, read as a date, the wrong day.
+      lastActivityAt: lastActivityDay,
       notes,
     };
   }
@@ -3255,7 +3445,7 @@ export class PatientProfileService {
       if (!target) return;
       target.activityLogs.push({
         id: row.id,
-        logDate: row.log_date.toISOString?.() ?? row.log_date,
+        logDate: toRequiredDateString(row.log_date),
         source: row.source,
         content: row.content,
         moodScore: row.mood_score === null ? null : Number(row.mood_score),

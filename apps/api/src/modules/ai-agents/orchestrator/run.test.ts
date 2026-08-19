@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { WIRE_TOKEN_ZH } from './answer-guard.js';
 import { buildContext, CHUNK_BEGIN, CHUNK_END } from './context-builder.js';
 import {
   CLINICAL_INFERENCE_BOUNDS,
@@ -2283,6 +2284,62 @@ describe('本人数据的推断边界', () => {
     // one that reached a patient.
     expect(CLINICAL_INFERENCE_BOUNDS).toContain('资料里没写的机制不要写');
     expect(CLINICAL_INFERENCE_BOUNDS).toContain('代偿性高甲基化');
+  });
+
+  /**
+   * 基因确诊 IS THE ONE CLAIM THE WHOLE PRODUCT IS ORGANISED AROUND, and
+   * the assistant was the only surface with no rule about it: driven
+   * against the running stack it told a synthetic patient whose D4Z4
+   * and haplotype are the registration form's own boxes 「是的，你已经算
+   * 基因确诊了」, in a turn whose own prompt carried
+   * `not_read_off_a_laboratory_report` for both cells.
+   *
+   * THE BULLET HAS TO CARRY BOTH DIRECTIONS. The first version said only
+   * what the model may not say, and the next live run had it telling a
+   * CONFIRMED patient 「你没有基因确诊」 — the inverse error, on the
+   * record where the answer is unambiguous. So the recogniser for the
+   * confirming rows is in the prompt beside the refusal, and both are
+   * pinned here.
+   */
+  it('基因确诊 的口径两个方向都写在提示词里，而且用的是投影里那几行的原话', () => {
+    // The rule, in the guideline's two items.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('D4Z4 重复序列的长度，\n  和它的 4qA / 4qB 单倍型');
+    // The row pair that IS a confirmation, quoted from the table the
+    // renderer localises through — not typed out a third time.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(WIRE_TOKEN_ZH.within_fshd1_repeat_range);
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(WIRE_TOKEN_ZH.permissive_haplotype);
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(WIRE_TOKEN_ZH.not_read_off_a_laboratory_report);
+    // ...and the answer for the unconfirmed record, in the wording
+    // every other surface prints.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain(
+      '未经基因确诊：没有从基因报告里读出来的、可作确诊依据的基因结果',
+    );
+    // Neither direction may become a refusal.
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('判读是基因确诊的时候，就干脆地说「是的」');
+    expect(CLINICAL_INFERENCE_BOUNDS).toContain('两个方向都不是拒答，也都不是排除诊断');
+  });
+
+  /**
+   * THE RENDERER IS WHERE THOSE ROWS ARE ACTUALLY WORDED. The prompt
+   * tells the model to recognise two lines of the projection; if
+   * security/render.ts stops printing them in those words, the model is
+   * looking for a row that no longer exists and the bullet silently
+   * stops working. `WIRE_TOKEN_ZH` is the guard's copy, so this asks the
+   * renderer directly.
+   */
+  it('提示词里让模型认的那两行，就是渲染器真的会印的那两行', () => {
+    const render = repoSource(
+      'apps',
+      'api',
+      'src',
+      'modules',
+      'ai-agents',
+      'security',
+      'render.ts',
+    );
+    expect(render).toContain(WIRE_TOKEN_ZH.within_fshd1_repeat_range);
+    expect(render).toContain(WIRE_TOKEN_ZH.permissive_haplotype);
+    expect(render).toContain(WIRE_TOKEN_ZH.not_read_off_a_laboratory_report);
   });
 
   /**
