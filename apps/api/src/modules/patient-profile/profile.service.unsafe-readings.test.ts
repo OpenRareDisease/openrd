@@ -37,6 +37,98 @@ const fieldsOf = (payload: unknown) => (payload as { fields: Record<string, stri
 const unsafeOf = (payload: unknown): UnsafeReading[] =>
   (payload as { unsafeReadings?: UnsafeReading[] }).unsafeReadings ?? [];
 
+/**
+ * WHAT A WITHHELD READING LEAVES BEHIND — AND WHAT IT MUST NOT.
+ *
+ * The guard deleted the value spellings and left `ckFlag` /
+ * `ckReference` standing beside the hole, because `resolveLabAnalyte`
+ * does not recognise a sibling key as an analyte and must not (or the
+ * guard would start reading 「high」 as a reading). So a payload whose
+ * LDH was withheld for being a row index went out still carrying
+ * `ldhFlag: high` and `ldhReference: 120-250` — the laboratory's verdict
+ * on a number this file had just decided the payload does not know.
+ *
+ * That is not inert. `pickLabReading` on the passport resolves a
+ * marker across the whole spelling list for a cell rather than off one
+ * key, so an orphaned sibling is a bracket looking for somewhere to
+ * print.
+ */
+describe('withholdUnsafeReadings — the whole reading goes, not just its number', () => {
+  it('takes the flag and the reference interval with the withheld value', () => {
+    const guarded = withholdUnsafeReadings(
+      payloadWith({
+        fieldCount: '4',
+        ck: '693',
+        ckFlag: 'high',
+        ckReference: '50-310',
+        ckmb: '693',
+        ckmbFlag: 'high',
+        creatinine: '693',
+        ldh: '693',
+        ldhFlag: 'high',
+        ldhReference: '120-250',
+      }),
+    );
+
+    expect(Object.keys(fieldsOf(guarded)).filter((key) => /Flag$|Reference$/.test(key))).toEqual(
+      [],
+    );
+  });
+
+  /** The bridge's legacy twin carries its own siblings now, and they go
+   *  too: `creatineKinase` is one of the spellings the guard already
+   *  resolves to `ck`, so its bracket is part of the same cell. */
+  it("takes the legacy twin's siblings as well as the parser key's", () => {
+    const guarded = withholdUnsafeReadings(
+      payloadWith({
+        fieldCount: '4',
+        ck: '693',
+        ckFlag: 'high',
+        creatineKinase: '693',
+        creatineKinaseFlag: 'high',
+        creatineKinaseReference: '50-310',
+        ckmb: '693',
+        creatinine: '693',
+        ldh: '693',
+      }),
+    );
+
+    expect(fieldsOf(guarded).creatineKinase).toBeUndefined();
+    expect(fieldsOf(guarded).creatineKinaseFlag).toBeUndefined();
+    expect(fieldsOf(guarded).creatineKinaseReference).toBeUndefined();
+    expect(fieldsOf(guarded).ckFlag).toBeUndefined();
+  });
+
+  /** A FLAGGED reading deletes nothing, and that includes its bracket —
+   *  the whole point of marking rather than withholding is that the row
+   *  is still printed, and it is printed with what the report said. */
+  it('leaves a flagged reading and its bracket alone', () => {
+    const guarded = withholdUnsafeReadings(
+      payloadWith(
+        { fieldCount: '1', ck: '693', ckFlag: 'high', ckReference: '50-310' },
+        { analyteReferences: { ck: { low: 50, high: 310 } } },
+      ),
+    );
+
+    expect(fieldsOf(guarded).ck).toBe('693');
+    expect(fieldsOf(guarded).ckFlag).toBe('high');
+    expect(fieldsOf(guarded).ckReference).toBe('50-310');
+    expect(unsafeOf(guarded)[0]?.disposition).toBe('flagged');
+  });
+
+  /** A table-reader slug retires its siblings under the CAMEL form the
+   *  bridge writes them in — `table_ldh` → `tableLdhFlag`. */
+  it("retires a table slug's siblings under the spelling the bridge writes them in", () => {
+    const guarded = withholdUnsafeReadings(
+      payloadWith({ fieldCount: '2', ldh: '9', table_ldh: '213', tableLdhFlag: 'high' }),
+    );
+
+    expect(fieldsOf(guarded).ldh).toBeUndefined();
+    expect(fieldsOf(guarded).table_ldh).toBeUndefined();
+    expect(fieldsOf(guarded).tableLdhFlag).toBeUndefined();
+  });
+});
+
 describe('withholdUnsafeReadings — a reading identical to another analyte on the same report', () => {
   it('withholds every analyte in a collapsed column, and says which they collided with', () => {
     const guarded = withholdUnsafeReadings(

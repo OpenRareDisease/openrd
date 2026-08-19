@@ -37,6 +37,7 @@ import {
 import type { AppLogger } from '../../config/logger.js';
 import { maskAuditPayload } from '../../services/audit/identity-masking.js';
 import { AppError } from '../../utils/app-error.js';
+import { flagKey, referenceKey } from '../ai-agents/security/allowlist.js';
 import {
   ConsentMutationError,
   getConsentDetails,
@@ -843,6 +844,13 @@ const LAB_ANALYTE_CANONICAL_KEYS = [
 
 const flattenKey = (key: string) => key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
 
+/** `table_ldh` → `tableLdh`. The bridge writes an analyte's flag and
+ *  reference under the CAMEL spelling of the value's key and no other
+ *  (allowlist.ts states the rule), so retiring a spelling means asking
+ *  for its siblings under that form. */
+const flattenToCamelKey = (key: string) =>
+  key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+
 const LAB_ANALYTE_BY_FLAT_KEY = new Map<string, string>(
   LAB_ANALYTE_CANONICAL_KEYS.map((key) => [flattenKey(key), key]),
 );
@@ -1260,8 +1268,36 @@ export const withholdUnsafeReadings = <T>(payload: T): T => {
   delete next.analyteReferences;
 
   if (unsafe.length) {
+    /**
+     * THE WHOLE READING GOES, NOT JUST ITS NUMBER.
+     *
+     * This deleted the value spellings and left `ckFlag` / `ckReference`
+     * standing beside the hole, because `resolveLabAnalyte` does not
+     * recognise a sibling key as an analyte — and it must not, or the
+     * guard would start reading 「high」 as a reading. So a payload whose
+     * LDH was withheld for being a row index went out carrying
+     * `ldhFlag: high` and `ldhReference: 120-250`: the laboratory's
+     * verdict on a number this file had just decided the payload does
+     * not know. The passport resolves an analyte's marker off the
+     * spelling list rather than off one key (`pickLabReading`), so an
+     * orphaned sibling is not inert — it is a bracket looking for
+     * somewhere to print.
+     *
+     * DERIVED FROM THE KEYS RATHER THAN LISTED. `UnsafeReading.keys`
+     * already carries every `fields` spelling that held the cell; the
+     * siblings are a pure function of a spelling, and the bridge writes
+     * them under the CAMEL form only (allowlist.ts states that rule).
+     * Both forms are cleared anyway, so a payload written by some older
+     * shape of the bridge, or hand-patched, cannot keep one.
+     */
     const withheldKeys = new Set(
-      unsafe.filter((item) => item.disposition === 'withheld').flatMap((item) => item.keys),
+      unsafe
+        .filter((item) => item.disposition === 'withheld')
+        .flatMap((item) => item.keys)
+        .flatMap((key) => {
+          const camel = flattenToCamelKey(key);
+          return [key, flagKey(key), referenceKey(key), flagKey(camel), referenceKey(camel)];
+        }),
     );
     if (fields && withheldKeys.size) {
       const nextFields: Record<string, unknown> = {};

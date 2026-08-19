@@ -992,7 +992,7 @@ describe('血检指标：报告标了异常，这一栏就得说', () => {
    * value is on the payload under both, so a value picked off the snake
    * key has to find its own siblings. Reading them off a second key
    * list would let one report's flag land beside another report's
-   * value; `pickFieldEntry` is what makes it the same cell.
+   * value; `pickLabReading` is what makes it the same cell.
    */
   it('值从蛇形拼写上读到时，标记仍然跟着它 —— 桥只写驼峰那一个', () => {
     expect(bloodSummaryFor({ uric_acid: '520', uricAcidFlag: 'high' })).toBe('UA 520（偏高）');
@@ -1001,6 +1001,55 @@ describe('血检指标：报告标了异常，这一栏就得说', () => {
   it('每一项自己带自己的标记，不会串到隔壁那一项上', () => {
     expect(bloodSummaryFor({ ck: '693', ckFlag: 'high', ldh: '210' })).toBe(
       'CK 693（偏高），LDH 210',
+    );
+  });
+
+  /**
+   * ════════════════════════════════════════════════════════════════
+   * THE ARCHIVE, WHICH IS THE CASE THAT WAS ACTUALLY ON SCREEN.
+   * ════════════════════════════════════════════════════════════════
+   *
+   * `BLOOD_METRICS` is headed by `creatineKinase`, and for the whole
+   * life of this archive the bridge minted that key as a VALUE-ONLY
+   * twin of `ck` — the marker stayed under `ckFlag`. So the picker took
+   * the twin, found no siblings beside it, and printed the row bare:
+   * every stored document in this deployment, on the passport, the
+   * share page, the referral pack and the PDF. The bridge writes the
+   * twin's siblings now, but nothing reparses what is already on disk,
+   * so the READ side has to cross the spelling — and every key in one
+   * spec's list is a spelling of the same cell on the same document,
+   * which is what makes that safe.
+   */
+  it('归档载荷：值在 creatineKinase 上、标记在 ckFlag 上，也要印出来', () => {
+    expect(
+      bloodSummaryFor({
+        ck: '693U/L',
+        ckFlag: 'high',
+        ckReference: '50-310',
+        creatineKinase: '693U/L',
+      }),
+    ).toBe('CK 693U/L（偏高，参考区间 50-310）');
+  });
+
+  /** The same crossing where the twin is the ONLY spelling holding the
+   *  value — an archived payload whose `ck` was hand-corrected away, or
+   *  one written before the parser named the cell. */
+  it('归档载荷：只有 twin 带值时，标记仍从解析器那个拼写上找回来', () => {
+    expect(bloodSummaryFor({ ckFlag: 'high', creatineKinase: '693U/L' })).toBe('CK 693U/L（偏高）');
+  });
+
+  /**
+   * AND THE CROSSING STOPS AT A DISAGREEMENT.
+   *
+   * Two spellings of one cell holding different numbers is the state
+   * `withholdUnsafeReadings` calls `contradictory_aliases` — the payload
+   * does not know what the laboratory printed. A marker read across that
+   * gap would be a verdict attached to a number it was not about, so the
+   * value prints alone.
+   */
+  it('两个拼写的数不一样时不跨拼写取标记 —— 那是给错的数配了判断', () => {
+    expect(bloodSummaryFor({ ck: '693U/L', ckFlag: 'high', creatineKinase: '96U/L' })).toBe(
+      'CK 96U/L',
     );
   });
 });

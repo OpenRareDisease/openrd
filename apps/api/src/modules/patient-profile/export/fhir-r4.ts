@@ -136,6 +136,55 @@ const OBSERVATION_CATEGORY_SYSTEM = 'http://terminology.hl7.org/CodeSystem/obser
  */
 const DATA_ABSENT_REASON_SYSTEM = 'http://terminology.hl7.org/CodeSystem/data-absent-reason';
 
+const OBSERVATION_INTERPRETATION_SYSTEM =
+  'http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation';
+
+/**
+ * THE LABORATORY'S OWN VERDICT, IN THE CODE SYSTEM A RECEIVER READS IT
+ * FROM.
+ *
+ * `Observation.interpretation` is the R4 element for exactly this — 「a
+ * categorical assessment of the observation value, e.g. high, low,
+ * normal」 — and v3-ObservationInterpretation is its required-support
+ * value set. `H`, `L` and `A` are the three members that correspond,
+ * one to one, to what `_read_row_flag` reads off the row: an 「↑」 or a
+ * bare 「H」, an 「↓」 or an 「L」, and a 提示 column that says 异常 without
+ * saying which way.
+ *
+ * Every laboratory Observation in this bundle went out as `valueString`
+ * alone. Measured on a synthetic 心肌酶谱: a CK of 693 against a stated
+ * upper limit of 310 reached a registry as 「693U/L」 under 肌酸激酶（CK）
+ * with no interpretation and no reference range — the same resource,
+ * byte for byte, that a CK of 90 would produce. A receiver ingesting
+ * that has no way to recover what the laboratory said, and this is the
+ * audience with the strongest claim to it: an interpretation code is
+ * machine-filterable in a way a Chinese label never is.
+ *
+ * A CLOSED MAP, AND NOTHING OUTSIDE IT IS EMITTED. A flag this file
+ * cannot read is not one it may guess a code for; the value still
+ * travels, and the omission is silent because there is no claim being
+ * withheld — only a coding this bundle declines to invent.
+ *
+ * AND NO CODE FOR THE ABSENCE OF A FLAG. `N` (normal) exists in this
+ * value set and is deliberately never written: a row the laboratory did
+ * not mark is a row that was not marked, which is not the same
+ * statement as 「the laboratory assessed this as normal」. Most rows on
+ * a Chinese panel print no marker at all, including rows whose interval
+ * this platform never read; emitting `N` for all of them would be this
+ * exporter asserting a verdict nobody made.
+ */
+const OBSERVATION_INTERPRETATION_CODE: Readonly<
+  Record<string, { code: string; display: string; textZh: string }>
+> = {
+  high: { code: 'H', display: 'High', textZh: '高于参考区间（报告标了异常）' },
+  low: { code: 'L', display: 'Low', textZh: '低于参考区间（报告标了异常）' },
+  abnormal_unspecified: {
+    code: 'A',
+    display: 'Abnormal',
+    textZh: '报告标了异常，但没有写明偏高还是偏低',
+  },
+};
+
 /**
  * How many Observations the bundle will carry.
  *
@@ -156,6 +205,28 @@ const DATA_ABSENT_REASON_SYSTEM = 'http://terminology.hl7.org/CodeSystem/data-ab
 export const MAX_OBSERVATIONS = 500;
 
 const codeableText = (text: string): FhirCodeableConcept => ({ text });
+
+/** The `interpretation` element for a flag this file can read, or
+ *  nothing — spread into the resource so that 「no readable flag」 and
+ *  「no flag」 produce the same absence rather than a null member. */
+const interpretationFor = (flag: string | null) => {
+  const coded = flag ? OBSERVATION_INTERPRETATION_CODE[flag.trim().toLowerCase()] : undefined;
+  if (!coded) return null;
+  return {
+    interpretation: [
+      {
+        coding: [
+          {
+            system: OBSERVATION_INTERPRETATION_SYSTEM,
+            code: coded.code,
+            display: coded.display,
+          },
+        ],
+        text: coded.textZh,
+      },
+    ],
+  };
+};
 
 /**
  * Where a candidate with no usable observation time is ranked.
@@ -762,7 +833,45 @@ export const buildFhirExport = (
                 text: `报告上这一项写的是「${field.value}」，那是报告原文，不是这一项的检测结果：本平台从它读不出这一项的结果，因此本条不给出结果值。`,
               },
             }
-          : { valueString: field.value }),
+          : {
+              valueString: field.value,
+              // THE VERDICT AND THE BRACKET, BESIDE THE NUMBER — the two
+              // elements R4 defines for them, on the one resource that
+              // was publishing neither.
+              //
+              // GATED WITH `value[x]` AND NOT BESIDE IT. Both of these
+              // are assessments OF a value: an interpretation with no
+              // value is a verdict about nothing, and a reference range
+              // on a resource that has just said it cannot read a result
+              // invites a receiver to compare a string it was told not
+              // to ingest. So they ride the same branch, and the
+              // `readsAsResult === false` cells — the genetic ones —
+              // publish neither, which is also correct on its own terms:
+              // no laboratory prints a reference interval for a
+              // 4q 单倍型.
+              ...(interpretationFor(field.flag) ?? {}),
+              // `referenceRange.text` AND NOT `low` / `high`.
+              //
+              // The same reasoning as `valueString` two lines up, and it
+              // is the stronger case: `field.referenceRange` is the
+              // interval EXACTLY as the row printed it, and the shapes
+              // that arrive are 「50-310」, 「<25」 and 「>9」. Splitting
+              // those into `Quantity` bounds means this exporter
+              // deciding which side an open interval is open on and
+              // inventing the unit for both bounds — the unit is on the
+              // VALUE string, glued to the number, and is not separately
+              // parsed anywhere in this lane. R4 defines `text` for
+              // exactly this: a range 「stated as text」 where the
+              // structured form is not available.
+              //
+              // ABSENT WHEN THE REPORT PRINTED NONE, which is an
+              // ordinary state and not an error — see
+              // `ReportField.referenceRange`. An omitted referenceRange
+              // says the report did not state one; it must never be
+              // confused with a range this platform decided not to send,
+              // and nothing here fabricates a bound to fill it.
+              ...(field.referenceRange ? { referenceRange: [{ text: field.referenceRange }] } : {}),
+            }),
         ...(documentRef ? { derivedFrom: [{ reference: documentRef }] } : {}),
         note: [
           {

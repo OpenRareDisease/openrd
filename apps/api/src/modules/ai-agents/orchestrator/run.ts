@@ -1550,13 +1550,17 @@ export class Orchestrator {
    *     sourced — its source is the projection in this same prompt.
    *   - WHAT THE CONVERSATION IS CARRYING — the question and the
    *     assistant turns of the history — is handed over so the guard
-   *     can recover the patient's numbers on a follow-up turn that
-   *     retrieved nothing of theirs. `buildGuardEvidence` reads it ONLY
-   *     in that case; see `collectConversationNumbers` for why the
-   *     fallback is bounded that tightly. The USER turns of the history
-   *     are deliberately included and the assistant's are too: both are
-   *     text this conversation already put in front of this patient
-   *     about this patient.
+   *     can recover the patient's numbers on a follow-up turn whose
+   *     retrieval did not bring the cell back. `buildGuardEvidence`
+   *     reads it PER CELL and only for the cells this turn's own
+   *     payloads do not carry; see `collectConversationNumbers` for why
+   *     the fallback is bounded that tightly, and for why the bound used
+   *     to be per TURN and why that was wrong — a turn that retrieved
+   *     the follow-up records but not the report had a chunk in hand,
+   *     no genetics cell in it, and every check standing down. The USER
+   *     turns of the history are deliberately included and the
+   *     assistant's are too: both are text this conversation already put
+   *     in front of this patient about this patient.
    *
    * The remedy is one regeneration and then excision; see
    * `buildExcisionNotice` for why those two and not a refusal, and

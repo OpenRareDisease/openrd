@@ -637,9 +637,26 @@ const OCR_REPORT_IDENTITY_LABELS_ZH: Readonly<Record<string, string>> = {
   report_type: '报告类型（报告自述）',
   documentType: '文档类型',
   document_type: '文档类型',
-  testMethod: '检测方法',
-  test_method: '检测方法',
-  methodology: '检测方法',
+  // 检测方法, UNDER THE SPELLING SOMETHING ACTUALLY WRITES.
+  //
+  // This entry read `testMethod` / `test_method` / `methodology`, and no
+  // stage of this pipeline has ever produced one of the three. The
+  // parser's field is `genetic_test_method` (see `_detect_genetic_method`
+  // and the `genetic_summary` writer), the bridge mints its camel twin,
+  // and `GENETIC_FIELD_KEYS.testMethod` in patient-profile/
+  // genetic-evidence.ts — the closed list every reader on this platform
+  // goes through — is exactly `['geneticTestMethod', 'genetic_test_method']`.
+  // So three keys were advertised that cannot arrive and the one that
+  // does was denied: a genetics report that states 二代测序 or Southern
+  // blot reached the assistant with the method missing, which is the
+  // cell that decides whether a repeat count is a count at all.
+  //
+  // Both halves of that are the SAME defect seen from its two sides —
+  // the `ageGroup` shape in one direction and the D-二聚体 shape in the
+  // other — and it is the pair the parity test is written to make
+  // impossible to reintroduce.
+  geneticTestMethod: '检测方法',
+  genetic_test_method: '检测方法',
   status: '处理状态',
 };
 
@@ -764,9 +781,52 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   creatinine: '肌酐',
   uricAcid: '尿酸',
   uric_acid: '尿酸',
-  calcium: '钙',
   mb: '肌红蛋白 Mb',
   myoglobin: '肌红蛋白',
+
+  // THE REST OF `_extract_labs`, WHICH IS ONE MAP AND WAS HALF A LIST.
+  //
+  // 钙 was here and 钠, 钾, 氯, 镁, 无机磷 were not — one member of the
+  // electrolyte panel admitted and the other five denied, off the same
+  // `analytes` dict in the parser, on a report that prints all six in a
+  // column. Same for the liver set (总蛋白/白蛋白/球蛋白 present nowhere,
+  // 转氨酶 present), the bilirubins, and the whole lipid panel. Nothing
+  // chose those; they are what a list maintained by hand loses. See the
+  // parity test.
+  tbil: '总胆红素',
+  dbil: '直接胆红素',
+  ibil: '间接胆红素',
+  tp: '总蛋白',
+  alb: '白蛋白',
+  globulin: '球蛋白',
+  aGRatio: '白球比值 A/G',
+  a_g_ratio: '白球比值 A/G',
+  alp: '碱性磷酸酶 ALP',
+  ggt: '谷氨酰转肽酶 GGT',
+  urea: '尿素',
+  glucose: '葡萄糖',
+  cholesterol: '总胆固醇',
+  triglyceride: '甘油三酯',
+  hdlC: '高密度脂蛋白胆固醇 HDL-C',
+  hdl_c: '高密度脂蛋白胆固醇 HDL-C',
+  ldlC: '低密度脂蛋白胆固醇 LDL-C',
+  ldl_c: '低密度脂蛋白胆固醇 LDL-C',
+  vldlC: '极低密度脂蛋白胆固醇 VLDL-C',
+  vldl_c: '极低密度脂蛋白胆固醇 VLDL-C',
+  apoA1: '载脂蛋白 A1',
+  apo_a1: '载脂蛋白 A1',
+  apoB: '载脂蛋白 B',
+  apo_b: '载脂蛋白 B',
+  lpA: '脂蛋白 a',
+  lp_a: '脂蛋白 a',
+  phosphorus: '无机磷',
+  magnesium: '镁',
+  co2cp: '二氧化碳结合力 CO2CP',
+  potassium: '钾',
+  sodium: '钠',
+  chloride: '氯',
+  calcium: '钙',
+  il6: '白介素-6 IL-6',
 
   // Haematology
   wbc: '白细胞计数',
@@ -800,6 +860,16 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   mono_pct: '单核细胞百分比',
   eosAbs: '嗜酸性粒细胞绝对值',
   eos_abs: '嗜酸性粒细胞绝对值',
+  // THE ONE DIFFERENTIAL ROW WITH NO PERCENTAGE. Every other lineage on
+  // this panel carries both an absolute and a ratio, because a 血常规
+  // prints both — 中性/淋巴/单核/嗜碱 all had the pair and 嗜酸 had only
+  // the count. Measured on a synthetic 血常规五分类 whose eosinophil
+  // ratio was the flagged row: the absolute printed with its marker and
+  // its interval, and the percentage the laboratory flagged beside it
+  // was not on the prompt at all, in either mode, with nothing said
+  // about its absence.
+  eosPct: '嗜酸性粒细胞百分比',
+  eos_pct: '嗜酸性粒细胞百分比',
   basoAbs: '嗜碱性粒细胞绝对值',
   basoPct: '嗜碱性粒细胞百分比',
   baso_abs: '嗜碱性粒细胞绝对值',
@@ -811,6 +881,14 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   aptt: '活化部分凝血活酶时间 APTT',
   tt: '凝血酶时间 TT',
   fibrinogen: '纤维蛋白原',
+  // THE SIXTH ROW OF `_extract_coagulation`, and the list stopped at
+  // five. D-二聚体 is the row a 凝血 panel is ordered FOR in an
+  // immobilising myopathy, and it is the one this cohort's admissions
+  // flag: a synthetic panel with the D-dimer above its interval reached
+  // the prompt as PT/INR/APTT/TT/纤维蛋白原 and no sixth row, so the
+  // abnormal analyte was the invisible one and its 异常标记 went with it.
+  dDimer: 'D-二聚体',
+  d_dimer: 'D-二聚体',
 
   // Thyroid
   ft3: '游离三碘甲状腺原氨酸 FT3',
@@ -822,9 +900,18 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   fvcPredPct: '用力肺活量占预计值百分比',
   fvc_pred_pct: '用力肺活量占预计值百分比',
   fev1: '第一秒用力呼气容积 FEV1',
+  fev1PredPct: '第一秒用力呼气容积占预计值百分比',
+  fev1_pred_pct: '第一秒用力呼气容积占预计值百分比',
+  fev1Fvc: 'FEV1/FVC',
+  fev1_fvc: 'FEV1/FVC',
+  tlc: '肺总量 TLC',
+  tlcPredPct: '肺总量占预计值百分比',
+  tlc_pred_pct: '肺总量占预计值百分比',
   dlco: '一氧化碳弥散量 DLCO',
   dlcoPredPct: '弥散量占预计值百分比',
   dlco_pred_pct: '弥散量占预计值百分比',
+  dlcoVa: '每单位肺泡容积弥散量 DLCO/VA',
+  dlco_va: '每单位肺泡容积弥散量 DLCO/VA',
 
   // Cardiac — the intervals, which are numbers. The two cardiac cells
   // that are prose (`ecgSummary`, `conductionAbnormality`) and the one
@@ -840,6 +927,54 @@ const OCR_MEASURED_ANALYTE_LABELS_ZH: Readonly<Record<string, string>> = {
   qt_ms: 'QT 间期（ms）',
   qtcMs: 'QTc 间期（ms）',
   qtc_ms: 'QTc 间期（ms）',
+  axisP: 'P 波电轴',
+  axis_p: 'P 波电轴',
+  axisQrs: 'QRS 电轴',
+  axis_qrs: 'QRS 电轴',
+  axisT: 'T 波电轴',
+  axis_t: 'T 波电轴',
+
+  // Echocardiography — the numbers. `_extract_echo` has emitted these
+  // since it was written and this list named none of them, so a
+  // patient's own 心超 reached the assistant as a report type and
+  // nothing else. The three cells on that panel that are ENUMS
+  // (`chamberSizeStatus`, `wallMotionStatus`, `valveStatus`) and the one
+  // that is prose (`echoSummary`) are deliberately still absent — see
+  // the decline list in `allowlist.parity.test.ts`, which is where that
+  // is a recorded decision rather than an omission.
+  lvef: '左室射血分数 LVEF',
+  fs: '左室短轴缩短率 FS',
+  co: '心输出量 CO',
+  hr: '心率（心超）',
+  lad: '左房内径 LAD',
+  aod: '主动脉根部内径 AOD',
+  lvdD: '左室舒张末内径 LVDd',
+  lvd_d: '左室舒张末内径 LVDd',
+  eOverEPrime: "二尖瓣 E/e'",
+  e_over_e_prime: "二尖瓣 E/e'",
+
+  // Urinalysis — the rows that are counts. See the qualitative table
+  // below for the dipstick rows, and the 尿常规 paragraph there for what
+  // the whole panel's absence did.
+  urineSpecificGravity: '尿比重',
+  urine_specific_gravity: '尿比重',
+  urinePh: '尿 pH',
+  urine_ph: '尿 pH',
+  urineRbc: '尿红细胞计数',
+  urine_rbc: '尿红细胞计数',
+  urineWbc: '尿白细胞计数',
+  urine_wbc: '尿白细胞计数',
+  urineBacteria: '尿细菌计数',
+  urine_bacteria: '尿细菌计数',
+  urineEpithelialCells: '尿上皮细胞',
+  urine_epithelial_cells: '尿上皮细胞',
+  urineMucus: '尿粘液丝',
+  urine_mucus: '尿粘液丝',
+
+  // Stool — the 幽门螺杆菌 呼气试验 reading. Its qualitative twin
+  // (`hpResult`) is in the table below, beside the rest of the panel.
+  hpDob: '幽门螺杆菌呼气试验 DOB 值',
+  hp_dob: '幽门螺杆菌呼气试验 DOB 值',
 
   // Infection screening — `trustTiter` is the one measurement on the
   // panel; the rest of it is 阴性 / 阳性 and lives below.
@@ -872,6 +1007,56 @@ const OCR_QUALITATIVE_CELL_LABELS_ZH: Readonly<Record<string, string>> = {
   inflammatoryChange: '炎性改变',
   inflammatory_change: '炎性改变',
   asymmetry: '左右不对称',
+  // The fourth cell `_extract_mri` writes, and the only one of the four
+  // this list did not carry. 萎缩 is a finding a muscle MRI is READ for
+  // in this disease, and it was the one dropped.
+  atrophy: '肌肉萎缩',
+
+  // ══════════════════════════════════════════════════════════════════
+  // URINALYSIS — THE PANEL THAT WAS ON NO TABLE AT ALL.
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // `_extract_urinalysis` writes seventeen cells; this file named none
+  // of them, in either script, in either mode. Every one was therefore
+  // deny-by-default, and the drop happens INSIDE `projectOcrFields`
+  // before any counting — so it did not even reach `notAllowed`, and no
+  // `numericValuesWithheld` counted it either. Measured on a synthetic
+  // 尿常规 with a positive 潜血 and a raised red-cell count: the block
+  // rendered as 报告类型: 尿常规 and one row, and the two statistics that
+  // exist to say 「something was held back」 both read zero.
+  //
+  // That is the worst shape a deny-by-default list can fail in. A key
+  // that is refused loudly costs the model a reading; a key nothing
+  // knows to refuse costs it the knowledge that a reading existed, and
+  // the model then answers a question about the patient's urine from a
+  // urinalysis it has been shown as empty.
+  //
+  // THE COUNTS ARE IN THE MEASURED TABLE ABOVE, not here: 尿红细胞计数
+  // is a number a laboratory flags and prints an interval against, and
+  // putting it here would deny it the two siblings that carry those.
+  // The rows below are the dipstick, whose result is 阴性/阳性/弱阳性 —
+  // `_normalize_qualitative_value`'s vocabulary — plus the two that are
+  // a printed word (颜色, 透明度).
+  urineColor: '尿颜色',
+  urine_color: '尿颜色',
+  urineClarity: '尿透明度',
+  urine_clarity: '尿透明度',
+  urineProtein: '尿蛋白质',
+  urine_protein: '尿蛋白质',
+  urineGlucose: '尿葡萄糖',
+  urine_glucose: '尿葡萄糖',
+  urineKetone: '尿酮体',
+  urine_ketone: '尿酮体',
+  urineBilirubin: '尿胆红素',
+  urine_bilirubin: '尿胆红素',
+  urineUrobilinogen: '尿胆原',
+  urine_urobilinogen: '尿胆原',
+  urineNitrite: '尿亚硝酸盐',
+  urine_nitrite: '尿亚硝酸盐',
+  urineOccultBlood: '尿潜血',
+  urine_occult_blood: '尿潜血',
+  urineLeukocyte: '尿白细胞酯酶',
+  urine_leukocyte: '尿白细胞酯酶',
 
   // Stool panel — enums plus counts
   stoolColor: '粪便颜色',
@@ -890,6 +1075,10 @@ const OCR_QUALITATIVE_CELL_LABELS_ZH: Readonly<Record<string, string>> = {
   stool_wbc: '粪便白细胞',
   stool_fat_globules: '粪便脂肪球',
   stool_occult_blood: '粪便隐血试验',
+  // The 幽门螺杆菌 result the same extractor writes; its DOB value is in
+  // the measured table above.
+  hpResult: '幽门螺杆菌检测结果',
+  hp_result: '幽门螺杆菌检测结果',
 
   // Infection screening — the panel every neurology admission runs
   // before an immunosuppressant or a muscle biopsy, so an FSHD patient
@@ -931,9 +1120,37 @@ export const OCR_REFERENCE_SUFFIX = 'Reference';
 export const flagKey = (analyteKey: string): string => `${analyteKey}${OCR_FLAG_SUFFIX}`;
 export const referenceKey = (analyteKey: string): string => `${analyteKey}${OCR_REFERENCE_SUFFIX}`;
 
+/**
+ * THE SIBLINGS ARE MINTED OFF THE CAMEL SPELLING ONLY, AND THE SNAKE
+ * ONE IS SKIPPED RATHER THAN GIVEN A TWIN.
+ *
+ * The paragraph above states the bridge's rule — `${camelName}Flag` and
+ * no snake twin — and this derivation did not implement it. It walked
+ * EVERY key in the measured table, snake spellings included, so the
+ * inventory carried `neut_absFlag`, `uric_acidReference`,
+ * `qtc_msFlag` and forty-one more: forty-four rows advertising cells
+ * that nothing on this platform has ever written, on a list whose whole
+ * job is to be an honest inventory of what a result can carry. It is
+ * the `ageGroup` defect — a key admitted that cannot arrive — and it was
+ * invisible for the reason the same paragraph names about the OTHER
+ * direction: a derivation is trusted not to be hand-maintained, so
+ * nobody read it against the writer.
+ *
+ * `writeReading` in services/ocr/embedded-report-ocr.ts is the only way
+ * a reading enters `fields`, and it writes `flagKey(toCamelCase(key))`
+ * whichever spelling the value went under — so `uric_acid` and
+ * `uricAcid` share one `uricAcidFlag`, exactly as its own note says.
+ * A key with no underscore IS its camel spelling, so that is the test:
+ * the analyte tables are written camel-before-snake and every snake
+ * entry in them has its camel twin one line above (checked by
+ * `allowlist.parity.test.ts`, which fails if one ever does not).
+ */
+const isCamelSpelling = (key: string): boolean => !key.includes('_');
+
 const analyteSiblingLabels = (): Record<string, string> => {
   const out: Record<string, string> = {};
   for (const [key, label] of Object.entries(OCR_MEASURED_ANALYTE_LABELS_ZH)) {
+    if (!isCamelSpelling(key)) continue;
     out[flagKey(key)] = `${label} 异常标记`;
     out[referenceKey(key)] = `${label} 参考区间`;
   }

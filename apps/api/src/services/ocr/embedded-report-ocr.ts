@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { ON_PREMISE_OCR, type OcrProvider, type OcrResult } from './ocr-provider.js';
+import { flagKey, referenceKey } from '../../modules/ai-agents/security/allowlist.js';
 import { AppError } from '../../utils/app-error.js';
 
 const execFileAsync = promisify(execFile);
@@ -99,6 +100,107 @@ const formatStructuredValue = (field: StructuredField) => {
 };
 
 /**
+ * A READING IS NOT A NUMBER. It is the number, the unit the laboratory
+ * printed beside it, the laboratory's own verdict on it, and the
+ * interval that verdict was reached against — and this type exists so
+ * that no line in this file can pick up one of those four and put down
+ * the other three.
+ *
+ * The defect it is a fix for was in this file and had four separate
+ * spellings of one mistake: `creatineKinase = fields.ck` and
+ * `myoglobin = fields.mb` copied the VALUE of a cell to a second key
+ * and left `ckFlag` / `ckReference` behind under the first, the
+ * cardio-respiratory projection wrote a bare panel float over a cell
+ * the structured-field loop had already rendered WITH its unit, and
+ * `canonicaliseGeneticCells` / the EcoRI block deleted an alias's value
+ * while its siblings stayed. Measured on a synthetic 心肌酶谱: the
+ * passport printed 「CK 693U/L」 with nothing beside it while the LDH on
+ * the very same panel printed 「LDH 319U/L（偏高，参考区间 120-250）」 —
+ * because `BLOOD_METRICS` is headed by `creatineKinase`, the twin this
+ * file minted without siblings, and the picker took it.
+ *
+ * `flag` is the parser's own closed vocabulary (`_read_row_flag`:
+ * `high`, `low`, `abnormal_unspecified`) and `reference` is the
+ * interval EXACTLY as the row printed it — 「50-310」, 「<25」, 「>9」.
+ * Both are optional and their absence is an ORDINARY STATE, not a
+ * failure: a row the laboratory did not mark carries no flag, and a
+ * great many rows print no interval at all. Nothing downstream may
+ * read a missing interval as 「normal」; it means the report did not
+ * say.
+ */
+interface ReportReading {
+  readonly value: string;
+  readonly flag?: string;
+  readonly reference?: string;
+}
+
+/**
+ * Every `fields` key one reading occupies — the value's own key and the
+ * two siblings that belong to it.
+ *
+ * ONE SPELLING FOR THE SIBLINGS, and it is the camel form of whatever
+ * spelling the value is under. `allowlist.ts` states the rule and
+ * `siblingField` in profile.passport.ts is written against it: the
+ * value is on disk under both the snake and the camel name because
+ * both predate this pipeline, while the flag and the interval are new
+ * and get one name each. So `uric_acid` and `uricAcid` share
+ * `uricAcidFlag`, and there is no `uric_acidFlag` for a reader to have
+ * to know about.
+ */
+const readingKeys = (key: string): readonly string[] => {
+  const camel = toCamelCase(key);
+  return [key, flagKey(camel), referenceKey(camel)];
+};
+
+/**
+ * THE ONLY WAY A READING ENTERS `fields`.
+ *
+ * Every assignment of an analyte value in `buildFields` goes through
+ * here, which is what makes 「the value moved without its flag」
+ * unwritable rather than merely absent: to put the number somewhere you
+ * have to be holding the whole `ReportReading`, and this writes all
+ * three keys or none.
+ */
+const writeReading = (
+  fields: Record<string, string>,
+  readings: Map<string, ReportReading>,
+  key: string,
+  reading: ReportReading,
+) => {
+  const camel = toCamelCase(key);
+  fields[key] = reading.value;
+  if (reading.flag) {
+    fields[flagKey(camel)] = reading.flag;
+  }
+  if (reading.reference) {
+    fields[referenceKey(camel)] = reading.reference;
+  }
+  readings.set(key, reading);
+};
+
+/** The whole reading currently stored under `key`, or null when no
+ *  value is. Used by the two blocks that RENAME a cell, so that a
+ *  rename carries the flag and the interval rather than orphaning
+ *  them under the name being retired. */
+const takeReading = (fields: Record<string, string>, key: string): ReportReading | null => {
+  const value = fields[key];
+  if (!value) return null;
+  const camel = toCamelCase(key);
+  const flag = fields[flagKey(camel)];
+  const reference = fields[referenceKey(camel)];
+  return { value, ...(flag ? { flag } : {}), ...(reference ? { reference } : {}) };
+};
+
+/** Retire a spelling completely — value and both siblings. A `delete`
+ *  of the value alone is how the flag and the interval came to outlive
+ *  the number they describe. */
+const deleteReading = (fields: Record<string, string>, key: string) => {
+  for (const spelling of readingKeys(key)) {
+    delete fields[spelling];
+  }
+};
+
+/**
  * The EcoRI fragment carries its unit, and carries it once.
  *
  * `genetic_summary.ecori_fragment_kb` is a bare float — kb is in the
@@ -177,16 +279,70 @@ const CANONICAL_GENETIC_CELLS: ReadonlyArray<{
   { canonical: 'diagnosisType', aliases: ['geneticType', 'diagnosis_type'] },
 ];
 
-const canonicaliseGeneticCells = (fields: Record<string, string>) => {
+/**
+ * THE WHOLE READING SURVIVES THE COLLAPSE, not just its number.
+ *
+ * This walked `fields[alias]` and `delete fields[alias]`, which is the
+ * same one-key-at-a-time move the legacy analyte twins made below: a
+ * 分型 or a 甲基化 cell the parser had flagged would keep
+ * `methylationValueFlag` while `methylationValue` was rewritten from
+ * an alias that had none, and a retired alias would leave its own
+ * siblings standing under a name whose value is gone. `takeReading` /
+ * `deleteReading` make the unit of work the cell rather than the key.
+ */
+/**
+ * Analyte cells this bridge publishes under a second, readable name
+ * because every reader's alias list on this platform is headed by that
+ * name. Kept as data rather than as two hand-written assignments so
+ * that adding a third twin cannot quietly add a third value-only copy;
+ * see the note at the loop that consumes it.
+ */
+const LEGACY_ANALYTE_TWINS: ReadonlyArray<{ from: string; to: string }> = [
+  { from: 'ck', to: 'creatineKinase' },
+  { from: 'mb', to: 'myoglobin' },
+];
+
+const canonicaliseGeneticCells = (
+  fields: Record<string, string>,
+  readings: Map<string, ReportReading>,
+) => {
   for (const { canonical, aliases } of CANONICAL_GENETIC_CELLS) {
-    const value = fields[canonical] ?? aliases.map((alias) => fields[alias]).find(Boolean);
+    const reading =
+      takeReading(fields, canonical) ??
+      aliases.map((alias) => takeReading(fields, alias)).find(Boolean) ??
+      null;
     for (const alias of aliases) {
-      delete fields[alias];
+      // THE SNAKE SPELLING SHARES THE CANONICAL'S SIBLINGS AND MUST
+      // SURRENDER ONLY ITS VALUE. `methylation_value` and
+      // `diagnosis_type` camelise to `methylationValue` and
+      // `diagnosisType` — which ARE the canonical names — so
+      // `deleteReading` on those aliases would delete the flag and the
+      // interval this collapse exists to carry across. An alias whose
+      // camel form is a name of its own (`geneticType`,
+      // `d4z4RepeatPathogenic`) owns its siblings and takes them with
+      // it.
+      if (toCamelCase(alias) === canonical) {
+        delete fields[alias];
+      } else {
+        deleteReading(fields, alias);
+      }
+      readings.delete(alias);
     }
-    if (value) {
-      fields[canonical] = value;
+    if (reading) {
+      // ASSIGNED OVER THE CANONICAL KEY RATHER THAN DELETED AND
+      // RE-ADDED, so a cell that was already under its canonical name
+      // keeps its position in the payload. `fields` is iterated in
+      // insertion order by `renderChunkForPrompt`, and reordering a
+      // stable blob is churn a model sees.
+      writeReading(fields, readings, canonical, reading);
+      const camel = toCamelCase(canonical);
+      // A sibling the SURVIVING reading does not carry is stale — it
+      // described whichever spelling lost.
+      if (!reading.flag) delete fields[flagKey(camel)];
+      if (!reading.reference) delete fields[referenceKey(camel)];
     } else {
-      delete fields[canonical];
+      deleteReading(fields, canonical);
+      readings.delete(canonical);
     }
   }
 };
@@ -265,6 +421,17 @@ export const buildFields = (
     ocrStatus: normalizedExtractedText ? 'text_extracted' : 'empty_text',
     extractedTextLength: String(normalizedExtractedText.length),
   };
+
+  /**
+   * WHAT THIS BRIDGE PUT IN `fields`, AS READINGS RATHER THAN AS
+   * STRINGS — so a block that wants to publish a cell under a second
+   * name can pick up the whole reading instead of re-reading the number
+   * out of the map and losing the rest of it.
+   *
+   * Keyed by the `fields` spelling the reading was written under, which
+   * is the only key a later block has to hand.
+   */
+  const readings = new Map<string, ReportReading>();
 
   const encounter = toRecord(analysis.encounter_info);
   const patientInfo = toRecord(analysis.patient_info);
@@ -346,42 +513,36 @@ export const buildFields = (
    * collapse. See the EcoRI note above for what a second spelling of one
    * cell costs.
    *
-   * THE CONSUMING SHAPE HAS TO CHANGE FOR THIS TO REACH A PATIENT, AND
-   * IT IS IN ANOTHER LANE'S FILE — DO NOT ASSUME IT HAS. `buildMetric`
-   * in apps/mobile/lib/report-insights.ts builds a `ReportInsightMetric`
-   * of `{ label, value, date }`, and no member of that type can hold a
-   * flag, so every screen that renders one drops these keys on the
-   * floor today. What that file needs:
+   * THE CONSUMING SHAPE HAD TO CHANGE FOR THIS TO REACH A PATIENT, AND
+   * IT NOW HAS — `ReportInsightMetric` in apps/mobile/lib/
+   * report-insights.ts carries `flag` and `reference`, the passport's
+   * `buildMonitoringSummary` prints both, and fhir-r4.ts emits them as
+   * `interpretation` / `referenceRange`. All three resolve the siblings
+   * off the SAME key the value came from; see `pickLabReading` in
+   * profile.passport.ts, which is the one resolver the API side shares.
    *
-   *   - `ReportInsightMetric` gains `flag?: 'high' | 'low' | null` and
-   *     `reference?: string | null`;
-   *   - `buildMetric` resolves them off the SAME document it resolved
-   *     the value from — `pickField(doc.ocrPayload?.fields, keys.map(k
-   *     => `${k}Flag`))` — never off `latestDocForField` a second time,
-   *     or a flag from one report can land beside a value from another;
-   *   - the metric renderers on 我的档案 and 临床护照 show the direction
-   *     and the interval beside the number.
-   *
-   * Until that lands these keys are carried and unread, which is the
-   * state this half of the fix can reach on its own: the payload now
-   * CONTAINS what the laboratory said, and no screen invents it.
+   * WHAT WAS STILL DROPPING THEM AFTER THIS LOOP RAN was this file:
+   * three blocks below moved a value to a second key without its
+   * siblings. They all go through `writeReading` now.
    */
   for (const field of structuredFields) {
     const fieldName = toStringField(field.field_name);
     const valueText = formatStructuredValue(field);
     if (!fieldName || !valueText) continue;
     const camelName = toCamelCase(fieldName);
-    fields[fieldName] = valueText;
-    fields[camelName] = valueText;
-
     const abnormalFlag = toStringField(field.abnormal_flag);
-    if (abnormalFlag) {
-      fields[`${camelName}Flag`] = abnormalFlag;
-    }
     const referenceRange = toStringField(field.reference_range_raw);
-    if (referenceRange) {
-      fields[`${camelName}Reference`] = referenceRange;
-    }
+    const reading: ReportReading = {
+      value: valueText,
+      ...(abnormalFlag ? { flag: abnormalFlag } : {}),
+      ...(referenceRange ? { reference: referenceRange } : {}),
+    };
+    // Both spellings of the value, one spelling of the siblings — the
+    // second call writes the same two sibling keys the first did, which
+    // is why `writeReading` derives them from the camel form rather
+    // than from the key it was handed.
+    writeReading(fields, readings, fieldName, reading);
+    writeReading(fields, readings, camelName, reading);
   }
 
   const geneticSummary = toRecord(normalizedSummary?.genetic_summary);
@@ -437,9 +598,22 @@ export const buildFields = (
       // dispatches on the 「ecori」 substring rather than on a spelling,
       // so an archived row still gets the refusal on each of them. This
       // stops the triple being minted; it does not rewrite history.
-      fields.ecoRIFragment = withKbUnit(ecoriFragmentKb);
-      delete fields.ecoriFragmentKb;
-      delete fields.ecori_fragment_kb;
+      //
+      // THE RENAME CARRIES THE ROW'S SIBLINGS. The structured field for
+      // this cell can arrive flagged and with an interval printed
+      // beside it, and the three `delete`s that used to stand here took
+      // the value away while `ecoriFragmentKbFlag` stayed — a marker
+      // with no number left to be about, and one this bridge would then
+      // never write onto the surviving spelling.
+      const retired = takeReading(fields, 'ecoriFragmentKb');
+      deleteReading(fields, 'ecoriFragmentKb');
+      deleteReading(fields, 'ecori_fragment_kb');
+      readings.delete('ecoriFragmentKb');
+      readings.delete('ecori_fragment_kb');
+      writeReading(fields, readings, 'ecoRIFragment', {
+        ...(retired ?? {}),
+        value: withKbUnit(ecoriFragmentKb),
+      });
     }
     // NO D4Z4 AND NO METHYLATION WRITE HERE. Both used to be copied out
     // of `genetic_summary` on top of what the structured-field loop had
@@ -518,7 +692,7 @@ export const buildFields = (
   // `profile.controller.ts`, and both cover the removed one:
   // ['d4z4Repeats', 'd4z4RepeatPathogenic'] and
   // ['diagnosisType', 'geneticType'].
-  canonicaliseGeneticCells(fields);
+  canonicaliseGeneticCells(fields, readings);
 
   const muscleStrength = Array.isArray(normalizedSummary?.muscle_strength)
     ? (normalizedSummary?.muscle_strength as Array<Record<string, unknown>>)
@@ -592,11 +766,38 @@ export const buildFields = (
       'valveStatus',
       'echoSummary',
     ];
+    /**
+     * A FALLBACK, LIKE THE LAB PANEL BELOW — it used to be a clobber.
+     *
+     * `cardio_respiratory_panel` holds the BARE NORMALIZED FLOAT. The
+     * structured-field loop above has already rendered the same cell
+     * through `formatStructuredValue` with the unit the parser read off
+     * the row, and with its flag and its interval; this loop then
+     * assigned the float straight over it. Measured on a synthetic
+     * 肺功能报告: `fvc_pred_pct: 「61%」` from the loop, `fvcPredPct:
+     * 「61」` from here, one cell as two disagreeing strings — and the
+     * `fvcPredPctFlag: low` / `fvcPredPctReference: 80-120` the loop had
+     * just written left describing a number this block had overwritten.
+     *
+     * Two spellings of one cell that DISAGREE is also the one state
+     * `projectOcrFields` refuses to collapse, so both reached the model
+     * as separate rows, and `withholdUnsafeReadings` reads a disagreeing
+     * pair as `contradictory_aliases` — the strongest thing a payload
+     * can say about not knowing what was printed.
+     *
+     * So the panel answers only where the parse produced no structured
+     * field to render, which is the one state in which the bare float
+     * is the best this bridge has. Written through `writeReading` like
+     * everything else: most of these keys are prose or wire tokens that
+     * carry no flag, and going through the one writer is what keeps
+     * that a property of the DATA rather than of this call site.
+     */
     for (const key of directKeys) {
+      if (fields[key]) continue;
       const snakeKey = key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
       const valueText = toStringField(cardio[key]) ?? toStringField(cardio[snakeKey]);
       if (valueText) {
-        fields[key] = valueText;
+        writeReading(fields, readings, key, { value: valueText });
       }
     }
   }
@@ -634,14 +835,48 @@ export const buildFields = (
       const snakeKey = key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
       const valueText = toStringField(labPanel[key]) ?? toStringField(labPanel[snakeKey]);
       if (valueText) {
-        fields[key] = valueText;
+        writeReading(fields, readings, key, { value: valueText });
       }
     }
-    if (fields.ck) {
-      fields.creatineKinase = fields.ck;
-    }
-    if (fields.mb) {
-      fields.myoglobin = fields.mb;
+  }
+
+  /**
+   * THE TWO LEGACY TWINS, AND WHY THEY WERE THE END OF THE CHAIN.
+   *
+   * These two lines were `fields.creatineKinase = fields.ck` and
+   * `fields.myoglobin = fields.mb`: the VALUE of a cell copied to a
+   * second key, with `ckFlag` and `ckReference` left behind under the
+   * first. That would be harmless if nothing preferred the twin — and
+   * everything prefers the twin. `BLOOD_METRICS` in profile.passport.ts
+   * is headed by `creatineKinase`, `REPORT_FIELD_SPECS` in
+   * export/export-source.ts keys the CK Observation on it, and the app's
+   * own lists start there too, because it is the readable name.
+   *
+   * So on a synthetic 心肌酶谱 whose CK row printed 「693 ↑ 50-310」, the
+   * clinical passport, the share page a clinician opens from a link, the
+   * markdown export, the referral pack and the FHIR bundle all printed
+   * 「CK 693U/L」 — while the LDH one row down, which has no twin, printed
+   * 「LDH 319U/L（偏高，参考区间 120-250）」 off the very same payload. The
+   * one enzyme this disease is monitored by was the one the laboratory's
+   * own verdict could not reach.
+   *
+   * `writeReading` off the READING and not off `fields[from]`: an alias
+   * of a reading is the whole reading or it is a misrepresentation of
+   * one.
+   *
+   * OUTSIDE THE `lab_panel` GUARD, for the same reason
+   * `canonicaliseGeneticCells` is outside the `genetic_summary` one: the
+   * twins are about the SPELLING of a cell, not about which branch of
+   * the parse produced it. Standing inside the guard, they were minted
+   * only for a report whose parse also yielded a normalised panel — so a
+   * 心肌酶谱 read out as structured fields alone published no
+   * `creatineKinase` at all, and every reader whose alias list is headed
+   * by that name fell through to the parser's own key by luck.
+   */
+  for (const { from, to } of LEGACY_ANALYTE_TWINS) {
+    const reading = readings.get(from);
+    if (reading) {
+      writeReading(fields, readings, to, reading);
     }
   }
 

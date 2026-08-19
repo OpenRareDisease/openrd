@@ -272,6 +272,22 @@ const WIRE_READING_ZH: Record<string, string> = {
   unspecified: '这一格没有写明',
   // --- the consent statement (`PROFILE_WITHHELD_KEYS`)
   value_withheld: '有结果在案，按当前授权没有发出',
+  // --- the genetics platform (`_detect_genetic_method` in the parser)
+  //
+  // These arrive under `geneticTestMethod`, admitted to the allowlist in
+  // this same change. They are a family name this platform minted, not a
+  // phrase the laboratory printed — the report says 「Southern 印迹」 or
+  //「捕获测序」 and the parser maps whichever it found onto one of these
+  // four — so they belong here for the reason the paragraph above gives
+  // about every other minted token.
+  southern_blot: 'Southern 印迹（Southern blot）',
+  optical_genome_mapping: '光学基因组图谱（OGM）',
+  molecular_combing: '分子梳理（molecular combing）',
+  short_read_sequencing: '短读长测序（二代测序）',
+  // `_detect_genetic_method` returns this when the report named more
+  // than one platform, and its docstring is explicit that the caller
+  // treats it as 「we do not know」 rather than as a method.
+  ambiguous: '报告里提到不止一种检测方法，本平台没有判定是哪一种',
 };
 
 /**

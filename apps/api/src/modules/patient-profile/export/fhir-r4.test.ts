@@ -23,6 +23,191 @@ const resourcesOf = (result: ReturnType<typeof build>, resourceType: string): Fh
     .map((entry) => entry.resource)
     .filter((resource) => resource.resourceType === resourceType);
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * WHAT THE LABORATORY SAID, IN THE ELEMENTS A RECEIVER READS IT FROM.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * Every laboratory Observation in this bundle went out as `valueString`
+ * alone. Measured on the synthetic panel below: a CK of 693 against a
+ * stated upper limit of 310 reached a registry as 「693U/L」 under
+ * 肌酸激酶（CK）, byte for byte the resource a CK of 90 would produce —
+ * while the payload it was built from carried `ckFlag: high` and
+ * `ckReference: 50-310` the whole time.
+ *
+ * SYNTHETIC. The payload is shaped like the one
+ * services/ocr/embedded-report-ocr.ts writes from a parse of
+ * 「*14肌酸激酶(CK) 693 ↑ 50-310 U/L」. No real report was read.
+ */
+describe("FHIR R4 — the laboratory's own verdict and its interval", () => {
+  const labDocument = (fields: Record<string, string>) => ({
+    id: '88888888-8888-4888-8888-888888888883',
+    documentType: 'muscle_enzyme',
+    title: '心肌酶谱',
+    fileName: 'enzymes.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 1024,
+    storageUri: 'local://uploads/user-1/enzymes.pdf',
+    status: 'parsed',
+    uploadedAt: '2025-06-01T06:00:00.000Z',
+    checksum: null,
+    ocrPayload: { fields: { reportTime: '2025-05-30', ...fields } },
+    submissionId: null,
+  });
+
+  const observationFor = (fields: Record<string, string>, codeText: string) =>
+    resourcesOf(
+      build({ documents: [labDocument(fields)] } as Partial<PatientProfileDTO>),
+      'Observation',
+    ).find((resource) => (resource.code as { text?: string })?.text === codeText);
+
+  it('emits interpretation=H for a row the laboratory marked high', () => {
+    const observation = observationFor(
+      { ck: '693U/L', ckFlag: 'high', ckReference: '50-310' },
+      '肌酸激酶（CK）',
+    );
+    expect(observation?.interpretation).toEqual([
+      {
+        coding: [
+          {
+            system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation',
+            code: 'H',
+            display: 'High',
+          },
+        ],
+        text: '高于参考区间（报告标了异常）',
+      },
+    ]);
+  });
+
+  it('emits the interval the report printed, verbatim, as referenceRange.text', () => {
+    const observation = observationFor(
+      { ck: '693U/L', ckFlag: 'high', ckReference: '50-310' },
+      '肌酸激酶（CK）',
+    );
+    expect(observation?.referenceRange).toEqual([{ text: '50-310' }]);
+  });
+
+  /** A one-sided interval is the whole of what a CK-MB row prints, and
+   *  it travels as printed. Splitting 「<25」 into Quantity bounds would
+   *  be this exporter deciding which side is open and inventing the
+   *  unit for both — the unit is glued to the value string and is not
+   *  separately parsed anywhere in this lane. */
+  it('carries a one-sided interval without splitting it into bounds', () => {
+    const observation = observationFor(
+      { ckmb: '18U/L', ckmbReference: '<25' },
+      '肌酸激酶同工酶（CK-MB）',
+    );
+    expect(observation?.referenceRange).toEqual([{ text: '<25' }]);
+    expect(observation?.interpretation).toBeUndefined();
+  });
+
+  it('emits interpretation=L, and A for a 提示 column that says 异常 without a direction', () => {
+    expect(
+      (
+        observationFor({ ldh: '90U/L', ldhFlag: 'low' }, '乳酸脱氢酶（LDH）')
+          ?.interpretation as Array<{ coding: Array<{ code: string }> }>
+      )[0].coding[0].code,
+    ).toBe('L');
+    expect(
+      (
+        observationFor({ ldh: '90U/L', ldhFlag: 'abnormal_unspecified' }, '乳酸脱氢酶（LDH）')
+          ?.interpretation as Array<{ coding: Array<{ code: string }> }>
+      )[0].coding[0].code,
+    ).toBe('A');
+  });
+
+  /**
+   * NO CODE FOR THE ABSENCE OF A FLAG. `N` (normal) is in this value set
+   * and is deliberately never written: a row the laboratory did not mark
+   * is a row that was not marked, which is not the statement 「assessed
+   * as normal」. Most rows on a Chinese panel print no marker at all.
+   */
+  it('writes no interpretation for a row the laboratory did not mark', () => {
+    const observation = observationFor({ ck: '120U/L', ckReference: '50-310' }, '肌酸激酶（CK）');
+    expect(observation?.interpretation).toBeUndefined();
+    expect(observation?.referenceRange).toEqual([{ text: '50-310' }]);
+  });
+
+  /** A missing interval is the report declining to say — not a claim,
+   *  and nothing here fabricates a bound to fill it. */
+  it('writes no referenceRange for a row that printed no interval', () => {
+    const observation = observationFor({ ck: '693U/L', ckFlag: 'high' }, '肌酸激酶（CK）');
+    expect(observation?.referenceRange).toBeUndefined();
+    expect(observation?.valueString).toBe('693U/L');
+  });
+
+  /** A marker outside the parser's closed vocabulary gets no coding —
+   *  this file does not guess a code for a word it cannot read. */
+  it('invents no code for a marker it cannot read', () => {
+    const observation = observationFor(
+      { ck: '693U/L', ckFlag: 'critically_elevated' },
+      '肌酸激酶（CK）',
+    );
+    expect(observation?.interpretation).toBeUndefined();
+    expect(observation?.valueString).toBe('693U/L');
+  });
+
+  /**
+   * THE ARCHIVED SHAPE. `REPORT_FIELD_SPECS` keys the CK Observation on
+   * `creatineKinase`, the value-only twin the bridge minted for the
+   * whole life of this archive, while the marker sits under `ckFlag`.
+   * Nothing reparses those documents.
+   */
+  it('recovers the marker across the spelling on an archived payload', () => {
+    const observation = observationFor(
+      { ck: '693U/L', ckFlag: 'high', ckReference: '50-310', creatineKinase: '693U/L' },
+      '肌酸激酶（CK）',
+    );
+    expect(
+      (observation?.interpretation as Array<{ coding: Array<{ code: string }> }>)[0].coding[0].code,
+    ).toBe('H');
+    expect(observation?.referenceRange).toEqual([{ text: '50-310' }]);
+  });
+
+  /**
+   * A CELL THIS PLATFORM READS NO RESULT OFF PUBLISHES NEITHER.
+   *
+   * `readsAsResult === false` replaces `value[x]` with a
+   * `dataAbsentReason`; an interpretation there would be a verdict about
+   * nothing, and a reference range would invite a receiver to compare a
+   * string it was just told not to ingest.
+   */
+  it('publishes neither beside a genetic cell it reads no result off', () => {
+    const document = {
+      id: '88888888-8888-4888-8888-888888888884',
+      documentType: 'genetic_report',
+      title: 'D4Z4 检测报告',
+      fileName: 'genetic.pdf',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 2048,
+      storageUri: 'local://uploads/user-1/genetic.pdf',
+      status: 'parsed',
+      uploadedAt: '2025-06-02T06:00:00.000Z',
+      checksum: null,
+      ocrPayload: {
+        fields: {
+          classifiedType: 'genetic_report',
+          documentType: 'genetic_report',
+          reportTime: '2025-06-01',
+          haplotype: '未检出',
+          haplotypeFlag: 'high',
+          haplotypeReference: '4qA/4qB',
+        },
+      },
+      submissionId: null,
+    };
+    const observation = resourcesOf(
+      build({ documents: [document] } as Partial<PatientProfileDTO>),
+      'Observation',
+    ).find((resource) => (resource.code as { text?: string })?.text === '4q 单倍型');
+    expect(observation?.valueString).toBeUndefined();
+    expect(observation?.dataAbsentReason).toBeDefined();
+    expect(observation?.interpretation).toBeUndefined();
+    expect(observation?.referenceRange).toBeUndefined();
+  });
+});
+
 describe('FHIR R4 — the bundle is a document', () => {
   it('puts a Composition first, which is what makes type=document true', () => {
     const result = build();

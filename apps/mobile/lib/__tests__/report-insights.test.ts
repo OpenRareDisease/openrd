@@ -123,6 +123,147 @@ describe('report insights blood section tabs', () => {
   });
 });
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 化验室自己标的异常，和它自己印的参考区间。
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * `ReportInsightMetric` was `{ label, value, date }`, so the flag and
+ * the interval the payload had been carrying for two rounds had nowhere
+ * to land: 报告详情, 我的档案 and 病程 all rendered a CK at 2.2× its
+ * stated upper limit in the same words and the same weight as a normal
+ * one, while 临床护照 — one tap away, built by the API off the same
+ * payload — printed the bracket.
+ *
+ * WHAT THIS SURFACE SHOWS AND WHY. The reader is the PATIENT. On this
+ * disease an out-of-range CK is the ordinary finding, so a screen that
+ * escalates every flagged row teaches fear of a baseline; one that hides
+ * the flag leaves the patient unable to see what a clinician will react
+ * to. So: exactly what the laboratory printed, in its own register
+ * (偏高 / 偏低 / 异常) and its interval verbatim, and nothing this
+ * platform derived. The interval prints WITHOUT a flag too — that is
+ * the case where a patient gains most, because they can see for
+ * themselves that the number is inside it.
+ *
+ * SYNTHETIC. Payloads shaped like the ones the API bridge writes; no
+ * real report was read.
+ */
+describe('化验数值带上报告自己写的标记和区间', () => {
+  const labReport = (fields: Record<string, unknown>) => ({
+    id: 'doc-lab',
+    documentType: 'muscle_enzyme',
+    status: 'parsed',
+    uploadedAt: '2026-03-05T00:00:00.000Z',
+    ocrPayload: { fields: { reportTime: '2026-03-04', ...fields } },
+  });
+
+  const insights = (fields: Record<string, unknown>) =>
+    buildReportInsights([labReport(fields)] as never, null);
+
+  const metric = (fields: Record<string, unknown>, label: string) =>
+    insights(fields)
+      .systemPanels.flatMap((panel) => panel.sections)
+      .flatMap((section) => section.metrics)
+      .find((item) => item.label === label);
+
+  it('印出偏高和参考区间，并把两半也留成可读的字段', () => {
+    expect(metric({ ck: '693U/L', ckFlag: 'high', ckReference: '50-310' }, 'CK')).toEqual({
+      label: 'CK',
+      value: '693U/L（偏高，参考区间 50-310）',
+      flag: 'high',
+      reference: '50-310',
+      date: '2026-03-04',
+    });
+  });
+
+  it('只有标记没有区间时也照说', () => {
+    expect(metric({ ck: '693U/L', ckFlag: 'high' }, 'CK')?.value).toBe('693U/L（偏高）');
+  });
+
+  it('只有区间没有标记时印出区间 —— 这是患者能自己核对的那一格', () => {
+    expect(metric({ ck: '120U/L', ckReference: '50-310' }, 'CK')?.value).toBe(
+      '120U/L（参考区间 50-310）',
+    );
+  });
+
+  it('两样都没有的行和以前一模一样', () => {
+    const item = metric({ ck: '120U/L' }, 'CK');
+    expect(item?.value).toBe('120U/L');
+    expect(item?.flag).toBeNull();
+    expect(item?.reference).toBeNull();
+  });
+
+  it('读不懂的标记不印 —— 不替化验室改写它的判断', () => {
+    expect(metric({ ck: '693U/L', ckFlag: 'critically_elevated' }, 'CK')?.value).toBe('693U/L');
+  });
+
+  /** The archive: `creatineKinase` is a value-only twin the API bridge
+   *  minted for the whole life of this deployment, and it is the head of
+   *  this list, so the marker has to be recovered from the parser's own
+   *  spelling. Nothing reparses those documents. */
+  it('归档载荷：值在 creatineKinase 上、标记在 ckFlag 上，也要印出来', () => {
+    expect(
+      metric(
+        { ck: '693U/L', ckFlag: 'high', ckReference: '50-310', creatineKinase: '693U/L' },
+        'CK',
+      )?.value,
+    ).toBe('693U/L（偏高，参考区间 50-310）');
+  });
+
+  it('两个拼写的数不一样时不跨拼写取标记', () => {
+    expect(metric({ ck: '693U/L', ckFlag: 'high', creatineKinase: '96U/L' }, 'CK')?.value).toBe(
+      '96U/L',
+    );
+  });
+
+  it('病程的血检摘要也带上括号 —— 它和护照读的是同一份载荷', () => {
+    expect(insights({ ck: '693U/L', ckFlag: 'high', ckReference: '50-310' }).bloodSummary).toBe(
+      'CK 693U/L（偏高，参考区间 50-310）',
+    );
+  });
+});
+
+/**
+ * 通气模式 IS A WIRE TOKEN AND WAS REACHING THE PATIENT AS ONE.
+ *
+ * `cardio_respiratory_panel.ventilatory_pattern` is `restrictive` — a
+ * value this platform minted, not anything a Chinese 肺功能报告 prints.
+ * It surfaced as the 通气模式 metric on 报告详情 and on 临床护照, and
+ * inside `respiratorySummary`, which read 「restrictive / 61% / 74%」 on
+ * 病程. The API's passport has localised it since it was written.
+ */
+describe('通气模式 用中文印给患者', () => {
+  const pft = (fields: Record<string, unknown>) => ({
+    id: 'doc-pft',
+    documentType: 'pulmonary_function',
+    status: 'parsed',
+    uploadedAt: '2026-03-07T00:00:00.000Z',
+    ocrPayload: { fields: { reportTime: '2026-03-06', ...fields } },
+  });
+
+  it('把 restrictive 印成限制性通气功能障碍', () => {
+    const out = buildReportInsights([pft({ ventilatoryPattern: 'restrictive' })] as never, null);
+    const item = out.systemPanels
+      .flatMap((panel) => panel.sections)
+      .flatMap((section) => section.metrics)
+      .find((metric) => metric.label === '通气模式');
+    expect(item?.value).toBe('限制性通气功能障碍');
+    expect(out.respiratorySummary).toContain('限制性通气功能障碍');
+    expect(out.respiratorySummary).not.toContain('restrictive');
+  });
+
+  /** An unknown pattern falls through to the report's own reading rather
+   *  than being dropped: a blank row is a worse answer than an
+   *  untranslated one. */
+  it('读不懂的模式原样保留，而不是空掉这一行', () => {
+    const out = buildReportInsights(
+      [pft({ ventilatoryPattern: 'small_airway_disease' })] as never,
+      null,
+    );
+    expect(out.respiratorySummary).toContain('small_airway_disease');
+  });
+});
+
 describe('诊断与分型 面板不把档案里的分型说成报告读出来的', () => {
   // The panel prints its summary directly under `latestDate`, which is
   // the genetic report's upload date. `geneticType` falls back to

@@ -1024,33 +1024,6 @@ const pickField = (fields: Record<string, unknown> | undefined, keys: string[]) 
   return undefined;
 };
 
-/**
- * The same pick, and WHICH SPELLING ANSWERED IT.
- *
- * `pickField` throws the key away, which is right for a caller that
- * only wants the value and wrong for one that then has to read a
- * SIBLING of that value. The laboratory's abnormal marker and its
- * reference interval are written as siblings of the analyte's own key
- * (`ckFlag`, `ckReference` — see the flag/interval note in
- * services/ocr/embedded-report-ocr.ts), so 「which key held the number」
- * is the only way to be sure the marker beside it belongs to it.
- * Re-picking with a second key list would let a flag from one spelling
- * land beside a value from another.
- */
-const pickFieldEntry = (
-  fields: Record<string, unknown> | undefined,
-  keys: string[],
-): { key: string; value: string } | undefined => {
-  if (!fields) return undefined;
-  for (const key of keys) {
-    const value = fields[key];
-    if (value === null || value === undefined) continue;
-    const text = String(value).trim();
-    if (text) return { key, value: text };
-  }
-  return undefined;
-};
-
 /** `creatine_kinase` → `creatineKinase`. The bridge writes the flag and
  *  the interval under the CAMEL spelling only, deliberately and for
  *  once — they are new cells, so no snake twin is on disk — while the
@@ -1058,6 +1031,114 @@ const pickFieldEntry = (
  *  snake key has to ask for its siblings under the camel one. */
 const toCamelKey = (key: string): string =>
   key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+
+/**
+ * A READING OFF THE PAYLOAD — THE NUMBER, THE LABORATORY'S OWN VERDICT
+ * ON IT, AND THE INTERVAL IT WAS REACHED AGAINST — OR NOTHING.
+ *
+ * THE ONE RESOLVER THE API SIDE SHARES. This page, the referral pack,
+ * the share page, the markdown export and `collectReportFields` in
+ * export/export-source.ts (which is what the FHIR bundle's laboratory
+ * Observations are built from) all resolve an analyte through this
+ * function, so 「what did the laboratory say about this cell」 has one
+ * answer per profile rather than one per surface. It returns the whole
+ * reading and not a value, because a caller that is handed the value
+ * alone is a caller that will publish the value alone — which is the
+ * defect this exists to close.
+ *
+ * WHY THE SIBLINGS ARE NOT PICKED WITH A SECOND `pickField` CALL. The
+ * marker is written as a sibling of the analyte's own key (`ckFlag`,
+ * `ckReference` — see `ReportReading` in
+ * services/ocr/embedded-report-ocr.ts), so 「which key held the number」
+ * has to be known before the marker beside it can be claimed to belong
+ * to it. A second independent pick would let a flag from one spelling
+ * land beside a value from another.
+ *
+ * AND WHY IT NEVERTHELESS LOOKS PAST THE PICKED KEY. Every key in one
+ * `keys` list is a spelling of the SAME cell on the SAME document —
+ * that is what makes it a list — so a flag found under a sibling
+ * spelling is this cell's flag. It has to look, because the payloads
+ * already on disk are the ones that need it most: the bridge minted
+ * `creatineKinase` as a value-only twin of `ck` for the whole life of
+ * this archive, and on every stored document the CK number is under the
+ * twin while the marker is under `ckFlag`. Refusing to cross the
+ * spelling would leave the passport printing 「CK 693U/L」 bare on every
+ * report uploaded before the bridge was fixed.
+ *
+ * THE CROSSING IS GATED ON AGREEMENT, and that gate is the whole of its
+ * safety. A sibling spelling is consulted only if it holds no value of
+ * its own or holds the SAME value as the one picked. Two spellings of
+ * one cell that disagree are the state `withholdUnsafeReadings` calls
+ * `contradictory_aliases` — the payload does not know what was printed —
+ * and a marker read across a disagreement would be a verdict attached
+ * to a number it was not about.
+ */
+interface PayloadReading {
+  /** The spelling the VALUE was found under. */
+  readonly key: string;
+  readonly value: string;
+  /** `high` | `low` | `abnormal_unspecified`, the parser's own closed
+   *  vocabulary, or null where the laboratory marked nothing. */
+  readonly flag: string | null;
+  /** The interval exactly as the row printed it — 「50-310」, 「<25」,
+   *  「>9」 — or null.
+   *
+   *  NULL IS AN ORDINARY STATE AND NOT AN ERROR. A great many rows print
+   *  no interval, and every surface reading this must render the value
+   *  alone in that case. What none of them may do is read the absence as
+   *  「within range」: it means the report did not say. */
+  readonly reference: string | null;
+}
+
+export const pickLabReading = (
+  fields: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): PayloadReading | undefined => {
+  if (!fields) return undefined;
+  // STRINGS AND FINITE NUMBERS ONLY — the same rule, and the same
+  // reason, as `pickReading` in genetic-evidence.ts: a payload field
+  // holding an array is not a reading, and stringifying one printed
+  //「4qA,4qB」 into the row a real result goes in. `collectReportFields`
+  // used to reach that rule through `pickReading`; it reaches it
+  // through this function now, so the rule has to be here.
+  const read = (key: string): string | undefined => {
+    const value = fields[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed || undefined;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    return undefined;
+  };
+
+  let picked: { key: string; value: string } | undefined;
+  for (const key of keys) {
+    const text = read(key);
+    if (text) {
+      picked = { key, value: text };
+      break;
+    }
+  }
+  if (!picked) return undefined;
+
+  const sibling = (suffix: string): string | null => {
+    for (const key of keys) {
+      const own = read(key);
+      if (own !== undefined && own !== picked.value) continue;
+      const camel = toCamelKey(key);
+      const found =
+        read(`${camel}${suffix}`) ?? (camel === key ? undefined : read(`${key}${suffix}`));
+      if (found !== undefined) return found;
+    }
+    return null;
+  };
+
+  return {
+    ...picked,
+    flag: sibling(OCR_FLAG_SUFFIX),
+    reference: sibling(OCR_REFERENCE_SUFFIX),
+  };
+};
 
 /**
  * THE DAY A SLOT IS DATED BY, AND WHICH DAY IT IS.
@@ -1091,19 +1172,6 @@ const dateWithBasis = (
 ): string => {
   if (!date) return '—';
   return basis ? `${date} ${PASSPORT_DATE_BASIS_ZH[basis]}` : date;
-};
-
-/** The sibling of a picked cell, under either spelling of its key. */
-const siblingField = (
-  fields: Record<string, unknown> | undefined,
-  key: string,
-  suffix: string,
-): string | undefined => {
-  const camel = toCamelKey(key);
-  return pickField(
-    fields,
-    camel === key ? [`${key}${suffix}`] : [`${key}${suffix}`, `${camel}${suffix}`],
-  );
 };
 
 /**
@@ -1467,8 +1535,19 @@ const VENTILATORY_PATTERN_ZH: Record<string, string> = {
  * is still the laboratory's own verdict and prints alone; an interval
  * with no flag is what a row prints when the value is inside it, and
  * printing the bracket lets the reader check rather than trust. What
- * neither may do is arrive without the value, which is why they are
- * read off the key the value came from — see `pickFieldEntry`.
+ * neither may do is arrive without the value, which is why the whole
+ * reading is resolved in one call — see `pickLabReading`.
+ *
+ * WHAT THIS SURFACE SHOWS, AND WHY IT IS THE MOST FORTHCOMING OF THE
+ * THREE. The passport is read by a CLINICIAN — on the share page, in
+ * the referral pack, on the PDF handed across a desk — and the question
+ * they are answering is which of these numbers the laboratory itself
+ * called abnormal. So both halves print, on every row that has them,
+ * unconditionally: the direction in the laboratory's own register
+ * (偏高 / 偏低 / 异常) and the interval verbatim. No triage, no
+ * suppression of 「expected」 abnormals — a CK three times its limit is
+ * the ordinary finding in this disease and it is still what the
+ * clinician came to see.
  */
 const buildMonitoringSummary = (
   fields: Record<string, unknown> | undefined,
@@ -1476,13 +1555,11 @@ const buildMonitoringSummary = (
   fallback: string,
 ) => {
   const parts = specs.flatMap((spec) => {
-    const picked = pickFieldEntry(fields, spec.keys);
-    if (!picked) return [];
-    const value = spec.values?.[picked.value] ?? withUnit(picked.value, spec.unit);
-    const rawFlag = siblingField(fields, picked.key, OCR_FLAG_SUFFIX);
-    const flag = rawFlag ? ANALYTE_FLAG_ZH[rawFlag.toLowerCase()] : undefined;
-    const reference = siblingField(fields, picked.key, OCR_REFERENCE_SUFFIX);
-    const bracket = [flag, reference ? `参考区间 ${reference}` : undefined]
+    const reading = pickLabReading(fields, spec.keys);
+    if (!reading) return [];
+    const value = spec.values?.[reading.value] ?? withUnit(reading.value, spec.unit);
+    const flag = reading.flag ? ANALYTE_FLAG_ZH[reading.flag.toLowerCase()] : undefined;
+    const bracket = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
       .filter(Boolean)
       .join('，');
     return [bracket ? `${spec.label} ${value}（${bracket}）` : `${spec.label} ${value}`];

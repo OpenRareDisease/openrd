@@ -798,13 +798,12 @@ describe('what the laboratory said about the row', () => {
    * the only one of the three any patient-facing screen reads — carried
    * the number alone.
    *
-   * THESE KEYS ARE CARRIED AND NOT YET RENDERED. `ReportInsightMetric`
-   * in apps/mobile/lib/report-insights.ts is `{ label, value, date }`
-   * and has no member that can hold a flag, and
-   * `OCR_FIELDS_SAFE_KEYS_PRECISE` does not list them so they reach no
-   * model prompt in either mode. Both are stated in the comment on the
-   * structured-field loop; this suite asserts the half that is this
-   * file's to keep true.
+   * THESE KEYS NOW REACH A READER. `ReportInsightMetric` in
+   * apps/mobile/lib/report-insights.ts carries `flag` and `reference`,
+   * the passport's `buildMonitoringSummary` prints both, and fhir-r4.ts
+   * emits them as `interpretation` / `referenceRange`. What this file
+   * still owns is that the payload CONTAINS them, under every spelling
+   * of the value it mints — which is the group below.
    */
   it('carries the flag and the interval the row printed', () => {
     const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
@@ -835,5 +834,157 @@ describe('what the laboratory said about the row', () => {
     // The interval is still carried: a row can print one without being
     // abnormal, and that is what the reading is normal AGAINST.
     expect(fields.albReference).toBe('40-55');
+  });
+
+  /**
+   * THE TWIN CARRIES THE WHOLE READING, WHICH IS WHERE THE CHAIN USED
+   * TO END.
+   *
+   * `fields.creatineKinase = fields.ck` copied the number and left
+   * `ckFlag` / `ckReference` behind, and `creatineKinase` is the key
+   * every reader's alias list is headed by — the passport's
+   * `BLOOD_METRICS`, the exporter's `REPORT_FIELD_SPECS`, the app's own
+   * lists. Measured before the fix, off this very fixture: the passport
+   * printed 「CK 693U/L」 while the uric acid on the same panel, which
+   * has no twin, printed its bracket.
+   */
+  it('mints the legacy twin with the flag and the interval, not just the number', () => {
+    const fields = fieldsFor(A_FLAGGED_MUSCLE_ENZYME_PANEL);
+    expect(fields.creatineKinase).toBe('693U/L');
+    expect(fields.creatineKinaseFlag).toBe('high');
+    expect(fields.creatineKinaseReference).toBe('50-310');
+  });
+
+  /** A twin of a row the laboratory did not mark carries no flag and
+   *  keeps the interval, exactly as the cell it is a twin of does. */
+  it('gives the twin only what the row itself printed', () => {
+    const fields = fieldsFor(
+      labAnalysis(
+        [
+          {
+            field_name: 'mb',
+            field_value: '48',
+            normalized_value: 48,
+            unit: 'ng/mL',
+            confidence: 0.9,
+            reference_range_raw: '0-70',
+          },
+        ],
+        { mb: 48 },
+      ),
+    );
+    expect(fields.myoglobin).toBe('48ng/mL');
+    expect(fields.myoglobinFlag).toBeUndefined();
+    expect(fields.myoglobinReference).toBe('0-70');
+  });
+
+  /**
+   * THE TWIN IS ABOUT THE SPELLING, NOT ABOUT THE PANEL.
+   *
+   * Both twins used to be minted inside the `lab_panel` guard, so a
+   * report read out as structured fields alone published no
+   * `creatineKinase` at all and every reader headed by that name fell
+   * through to the parser's key by luck.
+   */
+  it('mints the twin for a parse that produced no normalised panel', () => {
+    const fields = fieldsFor({
+      reportText: '示例市中心医院 检验报告单',
+      analysis: {
+        fshd: {
+          report_type: 'muscle_enzyme',
+          review_queue: [],
+          structured_fields: [
+            {
+              field_name: 'ck',
+              field_value: '693',
+              normalized_value: 693,
+              unit: 'U/L',
+              confidence: 0.9,
+              abnormal_flag: 'high',
+              reference_range_raw: '50-310',
+            },
+          ],
+          normalized_summary: {},
+        },
+      },
+    });
+    expect(fields.creatineKinase).toBe('693U/L');
+    expect(fields.creatineKinaseFlag).toBe('high');
+  });
+
+  /**
+   * THE CARDIO-RESPIRATORY PROJECTION WAS THE SAME CLOBBER THE LAB
+   * PANEL WAS, ON THE OTHER PANEL.
+   *
+   * `cardio_respiratory_panel` holds the bare normalized float and this
+   * block assigned it over the cell the structured-field loop had
+   * already rendered WITH its unit — leaving `fvcPredPctFlag` and
+   * `fvcPredPctReference` describing a number that had been overwritten,
+   * and leaving `fvc_pred_pct` (「61%」) disagreeing with `fvcPredPct`
+   * (「61」). A disagreeing snake/camel pair is the one state
+   * `projectOcrFields` refuses to collapse and the one
+   * `withholdUnsafeReadings` reads as `contradictory_aliases`.
+   */
+  it('does not overwrite a rendered respiratory cell with the panel float', () => {
+    const fields = fieldsFor({
+      reportText: '示例市中心医院 肺功能报告',
+      analysis: {
+        fshd: {
+          report_type: 'pulmonary_function',
+          review_queue: [],
+          structured_fields: [
+            {
+              field_name: 'fvc_pred_pct',
+              field_value: '61',
+              normalized_value: 61,
+              unit: '%',
+              confidence: 0.9,
+              abnormal_flag: 'low',
+              reference_range_raw: '80-120',
+            },
+          ],
+          normalized_summary: {
+            cardio_respiratory_panel: { fvc_pred_pct: 61, ventilatory_pattern: 'restrictive' },
+          },
+        },
+      },
+    });
+    expect(fields.fvc_pred_pct).toBe('61%');
+    expect(fields.fvcPredPct).toBe('61%');
+    expect(fields.fvcPredPctFlag).toBe('low');
+    expect(fields.fvcPredPctReference).toBe('80-120');
+    // Still the answer where the parse produced no structured field.
+    expect(fields.ventilatoryPattern).toBe('restrictive');
+  });
+
+  /**
+   * COLLAPSING THE GENETIC ALIASES MUST NOT ORPHAN THE SIBLINGS.
+   *
+   * `methylation_value` camelises to `methylationValue`, which IS the
+   * canonical name — so retiring the snake spelling by its whole reading
+   * would delete the very flag the collapse is meant to carry across.
+   */
+  it('keeps the flag and the interval when it collapses an alias onto its canonical key', () => {
+    const fields = fieldsFor(
+      geneticAnalysis(
+        'D4Z4 甲基化 35% ↓ 参考 >40%',
+        [
+          {
+            field_name: 'methylation_value',
+            field_value: '35',
+            normalized_value: 35,
+            unit: '%',
+            confidence: 0.9,
+            abnormal_flag: 'low',
+            reference_range_raw: '>40',
+          },
+        ],
+        { methylation_value: 35 },
+      ),
+    );
+    expect(fields.methylationValue).toBe('35%');
+    expect(fields.methylationValueFlag).toBe('low');
+    expect(fields.methylationValueReference).toBe('>40');
+    expect(fields.methylation_value).toBeUndefined();
   });
 });

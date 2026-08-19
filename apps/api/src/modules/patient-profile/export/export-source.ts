@@ -12,6 +12,7 @@ import { resolveOccurrenceDate, type OccurrenceDate } from './occurrence-date.js
 import {
   buildClinicalPassportSummary,
   isDeterminateRepeatCount,
+  pickLabReading,
   readSizeCell,
   type PassportDiagnosisConfirmation,
   type PassportGeneticRecordDTO,
@@ -103,6 +104,27 @@ export interface ReportField {
   readonly key: string;
   readonly labelZh: string;
   readonly value: string;
+  /**
+   * THE LABORATORY'S OWN VERDICT ON `value`, AND THE INTERVAL IT WAS
+   * REACHED AGAINST — the two halves of a reading that had no way out
+   * of this file.
+   *
+   * `flag` is the parser's closed vocabulary (`high`, `low`,
+   * `abnormal_unspecified`); `referenceRange` is the interval exactly as
+   * the row printed it — 「50-310」, 「<25」, 「>9」 — and neither is
+   * parsed or recomputed anywhere in this lane. Resolved by
+   * `pickLabReading` off the SAME key the value was picked from, so a
+   * marker cannot be attached to a number it was not about.
+   *
+   * NULL IS AN ORDINARY STATE FOR BOTH, and the serialisers must treat
+   * it as one: a row the laboratory did not mark carries no flag, and a
+   * great many rows print no interval at all. A missing interval is NOT
+   * a statement that the value is in range — it is the report declining
+   * to say — so no serialiser may synthesise one, and none may emit a
+   * 「normal」 interpretation from its absence.
+   */
+  readonly flag: string | null;
+  readonly referenceRange: string | null;
   readonly documentId: string;
   readonly documentType: string;
   /**
@@ -1865,12 +1887,18 @@ const collectReportFields = (
       if (cell !== undefined && document.id !== geneticEvidenceReading.documentId) {
         return;
       }
-      const value = pickReading(fields, spec.keys);
-      if (value === null) return;
+      // The whole reading, not the number: `pickReading` returns the
+      // value and throws away which spelling answered, which leaves the
+      // flag and the interval unreachable. See `ReportField.flag`.
+      const reading = pickLabReading(fields, spec.keys);
+      if (reading === undefined) return;
+      const value = reading.value;
       out.push({
         key: spec.key,
         labelZh: spec.labelZh,
         value,
+        flag: reading.flag,
+        referenceRange: reading.reference,
         documentId: document.id,
         documentType: document.documentType,
         // Whose page this reading is on, taken off the same read that

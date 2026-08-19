@@ -565,22 +565,47 @@ const shinglesOf = (text: string): string[] => {
  * 「小于 40」 and 「40 以下」 are another.
  */
 /**
+ * WHAT STANDS BETWEEN A NUMBER AND THE WORD THAT BOUNDS IT.
+ *
+ * A unit, and in Chinese a MEASURE WORD, and both are optional. This is
+ * the seam the open-ended forms below were missing: a repeat count is
+ * written 「11 个以上」 or 「11 个单元以上」 or 「11 个重复单元以上」,
+ * never 「11以上」, and a pattern that required the number to sit against
+ * 以上 saw none of them. Driven against the running stack the model put
+ * 「正常参考：11 个单元以上」 in a 参考范围 column — an interval this
+ * platform's record never printed, standing beside the patient's own
+ * value, and `intervalsIn` returned nothing at all for the cell, so
+ * `fabricated_reference_range` had nothing to compare and the invented
+ * threshold published.
+ *
+ * The measure word carries no arithmetic — 「11 个以上」 and 「11 以上」
+ * are the same interval — so it is skipped rather than captured, and the
+ * canonical form is unchanged.
+ */
+const MEASURE_TAIL =
+  '\\s*(?:%|％|kb|KB)?\\s*(?:个|条|段|次|例)?\\s*(?:重复单元|重复数|单元|拷贝|单位|copies?|units?)?\\s*';
+
+/**
  * A BAND, IN THE SHAPES A REPORT AND A PAPER ACTUALLY WRITE ONE.
  *
  * The unit is optional on BOTH endpoints because a laboratory writes
  * 「40%-60%」 and a paper writes 「40-60%」, and a band regex that stops
- * at the first `%` sees neither. One source string, used by the
- * reference-range scan and by the severity check, so the two can never
- * disagree about what a band is.
+ * at the first `%` sees neither. Same for the measure word: 「1 个到 3 个
+ * 重复单元」 is the band 1~3 written the way a Chinese answer writes it.
+ * One source string, used by the reference-range scan and by the
+ * severity check, so the two can never disagree about what a band is.
  */
-const BAND_SOURCE =
-  '(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)\\s*(?:%|％|kb|KB)?\\s*(?:-|–|—|~|～|到|至)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(?:%|％|kb|KB)?(?![0-9A-Za-z.])';
+const BAND_SOURCE = `(?<![0-9A-Za-z.])([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:-|–|—|~|～|到|至)${MEASURE_TAIL}([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?![0-9A-Za-z.])`;
 
 const INTERVAL_BAND = new RegExp(BAND_SOURCE, 'gu');
-const INTERVAL_BELOW =
-  /(?:<|≤|<=|小于|低于|不足)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*(?:以下|以内)/gu;
-const INTERVAL_ABOVE =
-  /(?:>|≥|>=|大于|高于|超过)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*以上/gu;
+const INTERVAL_BELOW = new RegExp(
+  `(?:<|≤|<=|小于|低于|不足)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}(?:以下|以内)`,
+  'gu',
+);
+const INTERVAL_ABOVE = new RegExp(
+  `(?:>|≥|>=|大于|高于|超过)\\s*([0-9]+(?:\\.[0-9]+)?)|([0-9]+(?:\\.[0-9]+)?)${MEASURE_TAIL}以上`,
+  'gu',
+);
 
 export const intervalsIn = (text: string): string[] => {
   const out: string[] = [];
@@ -687,18 +712,39 @@ const collectScalars = (value: unknown, depth: number, out: string[]): void => {
  * A patient asking about their own report asks most of their questions
  * this way.
  *
- * So when the turn retrieved NOTHING of the patient's, the numbers come
- * out of what the turn is holding instead: the question, and the
- * assistant turns of the history — restricted to sentences that name one
- * of the genetics cells, because a bare number in a conversation is not
- * a measurement.
+ * So when the turn does not hold the record for a cell, the numbers for
+ * that cell come out of what the turn IS holding instead: the question,
+ * and the assistant turns of the history — restricted to sentences that
+ * name one of the genetics cells, because a bare number in a
+ * conversation is not a measurement.
  *
- * ONLY AS A FALLBACK, and the bound is the point. Where the record IS in
- * this turn, it is authoritative and the conversation adds nothing but
- * noise: a cohort band the previous turn quoted would enter the set as
- * though it were his, and honest cohort sentences would start
- * disappearing from answers that had a perfectly good number set. The
- * fallback is confined to the case that currently has no check at all.
+ * PER CELL, AND NOT PER TURN, WHICH IS WHERE THE FIRST VERSION OF THIS
+ * FALLBACK WENT WRONG. It read the conversation only when
+ * `patientPayloads` was EMPTY — 「the turn retrieved nothing」 — and a
+ * patient-scoped retrieval is not one thing. Driven against the stack,
+ * 「我上个月复查的时候提到过随访，那 3 个重复单元是不是意味着病情比较
+ * 重？」 pulled the FOLLOW-UP records and not the genetics report:
+ * `patientPayloads` had a chunk in it, so the fallback stood down, and
+ * the chunk it had carried no genetics cell at all. The number set was
+ * EMPTY AND AUTHORITATIVE-LOOKING — the worst of the two states, because
+ * an empty set is indistinguishable here from 「nothing of his is in
+ * play」 — and check 1 had nothing to fire on. ANY patient chunk was
+ * disarming the fallback; only the chunk that carries the CELL should.
+ *
+ * So the gate is `cellsOnFile`: a cell whose value this turn's own
+ * patient payloads carry is authoritative and the conversation is not
+ * read for it, and a cell they do not carry falls back. The old
+ * behaviour is the special case where the payloads carry no cell at all.
+ *
+ * THE BOUND IS STILL THE POINT. Where the record for a cell IS in this
+ * turn, it is authoritative and the conversation adds nothing but noise:
+ * a cohort band the previous turn quoted would enter the set as though
+ * it were his, and honest cohort sentences would start disappearing from
+ * answers that had a perfectly good number set. Note the gate asks
+ * whether the record HOLDS the cell, not whether it produced a NUMBER
+ * for it — 「4qA」 is a haplotype on file that no number can be read off,
+ * and letting a cell with an unparseable value fall through to the
+ * conversation would admit any digit standing beside 单倍型.
  *
  * WHAT THE FALLBACK CANNOT DO, stated rather than papered over. It
  * cannot tell his number from a cohort number the conversation
@@ -713,10 +759,20 @@ const CALENDAR_SUFFIX = /^\s*(?:年|月|日|岁|周|天|次|小时|分钟|号|�
 const NUMBER_IN_PROSE =
   /(?<![0-9A-Za-z./])([0-9]+(?:\.[0-9]+)?)\s*(%|％|kb|KB)?(?![0-9A-Za-z./])/gu;
 
-const collectConversationNumbers = (texts: readonly string[], out: PatientNumber[]): void => {
+const collectConversationNumbers = (
+  texts: readonly string[],
+  cellsOnFile: ReadonlySet<string>,
+  out: PatientNumber[],
+): void => {
   for (const text of texts) {
     for (const segment of segmentsOf(text)) {
-      const cells = CELL_NAMES.filter((cell) => cellTermsPresent(segment.match, cell));
+      // Only the cells this turn's own records did NOT carry. A segment
+      // that names nothing but covered cells is a sentence about a cell
+      // the record already answered authoritatively, and its numbers are
+      // whatever the conversation happened to quote.
+      const cells = CELL_NAMES.filter(
+        (cell) => !cellsOnFile.has(cell) && cellTermsPresent(segment.match, cell),
+      );
       if (cells.length === 0) continue;
       NUMBER_IN_PROSE.lastIndex = 0;
       let match: RegExpExecArray | null;
@@ -775,37 +831,17 @@ export interface BuildGuardEvidenceInput {
    * and nothing else.
    */
   renderedTexts?: readonly string[];
-  /** The question, and the assistant turns of the history. Read ONLY
-   *  when `patientPayloads` is empty; see `collectConversationNumbers`. */
+  /** The question, and the assistant turns of the history. Read only for
+   *  the genetics cells `patientPayloads` did NOT carry this turn; see
+   *  `collectConversationNumbers`. */
   conversationTexts?: readonly string[];
 }
 
 export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidence => {
-  const numbers: PatientNumber[] = [];
-  for (const payload of input.patientPayloads) collectNumbers(payload, '', 0, numbers);
-  if (input.patientPayloads.length === 0) {
-    collectConversationNumbers(input.conversationTexts ?? [], numbers);
-  }
-
-  // Which cells this platform graded, and which it merely printed. Both
-  // sets are read off the SAME rows: a `_clinical` row is this
-  // platform's reading of a cell, and a cell with any other row and no
-  // `_clinical` row is one it declined to read.
-  const printedKeys = [...input.emitted.fields, ...input.emitted.ocrKeys];
-  const graded = new Set<string>();
-  const printed = new Set<string>();
-  for (const key of printedKeys) {
-    const cell = cellOfKey(key);
-    if (cell === null) continue;
-    printed.add(cell);
-    if (key.endsWith('_clinical')) graded.add(cell);
-  }
-  const ungradedCells = [...printed].filter((cell) => !graded.has(cell));
-
-  // A cell the RECORD holds a value for and the PROMPT does not carry.
-  // Read off the raw payload against the printed rows, which is the only
-  // pairing that can tell 「consent withheld it」 from 「there is no such
-  // cell」 — the distinction the model got backwards.
+  // WHICH CELLS THIS TURN'S OWN RECORDS CARRY. Read first, because it is
+  // both halves of one question: which cells the prompt withheld a value
+  // for (below), and which cells the conversation fallback is allowed to
+  // speak for (`collectConversationNumbers`).
   const onFile = new Set<string>();
   const walk = (value: unknown, key: string, depth: number): void => {
     if (depth > 8) return;
@@ -826,6 +862,30 @@ export const buildGuardEvidence = (input: BuildGuardEvidenceInput): GuardEvidenc
   };
   for (const payload of input.patientPayloads) walk(payload, '', 0);
 
+  const numbers: PatientNumber[] = [];
+  for (const payload of input.patientPayloads) collectNumbers(payload, '', 0, numbers);
+  collectConversationNumbers(input.conversationTexts ?? [], onFile, numbers);
+
+  // Which cells this platform graded, and which it merely printed. Both
+  // sets are read off the SAME rows: a `_clinical` row is this
+  // platform's reading of a cell, and a cell with any other row and no
+  // `_clinical` row is one it declined to read.
+  const printedKeys = [...input.emitted.fields, ...input.emitted.ocrKeys];
+  const graded = new Set<string>();
+  const printed = new Set<string>();
+  for (const key of printedKeys) {
+    const cell = cellOfKey(key);
+    if (cell === null) continue;
+    printed.add(cell);
+    if (key.endsWith('_clinical')) graded.add(cell);
+  }
+  const ungradedCells = [...printed].filter((cell) => !graded.has(cell));
+
+  // A cell the RECORD holds a value for and the PROMPT does not carry —
+  // `onFile` above against the printed rows, which is the only pairing
+  // that can tell 「consent withheld it」 from 「there is no such cell」,
+  // the distinction the model got backwards.
+  //
   // A cell whose ONLY printed rows are a reading or a withheld statement
   // has no value in the prompt. `_clinical` is a reading of the cell, not
   // the cell: strict mode prints `d4z4Repeats_clinical` and drops the
@@ -980,14 +1040,57 @@ const isHeaderRow = (segments: readonly Segment[], index: number): boolean => {
 /**
  * The words that turn a value into a prediction.
  *
- * A LEXICON, and it has to be: 「严重」 is not derivable from anything the
- * turn holds. What IS derived is the other half of the rule — whose
- * number the sentence is about. A lexicon alone would flag every
- * sentence in a disease encyclopedia; it fires here only when it lands
- * on the patient's own value.
+ * A LEXICON, and it has to be. THE RULE AT THE TOP OF THIS FILE SAYS TO
+ * ASK FIRST WHETHER A FACT THE TURN HOLDS COULD ANSWER IT, so: it
+ * cannot. The turn holds which numbers are his, which cells this
+ * platform graded, what the retrieval says and which intervals the
+ * record printed. NONE OF THOSE ANSWERS 「is this sentence a prediction
+ * about how bad it will get」. 「严重」 is a judgement, and no projection
+ * row, no chunk and no payload key will ever derive it. So this half
+ * stays a list, it is used ONLY to decide to WITHHOLD, and the fact —
+ * whose number the sentence lands on — is the half that does the work.
+ * A lexicon alone would flag every sentence in a disease encyclopedia.
+ *
+ * IT IS A REGISTER LIST, AND IT WILL ALWAYS BE INCOMPLETE. That is the
+ * defect the second half of it exists to reduce rather than to close.
+ * The first version carried only the 更-comparatives — 更快 更重 更早 —
+ * which is the register of a translation, not of a clinical answer
+ * written in Chinese. A Chinese clinical answer states exactly the claim
+ * this check exists to stop in the 较 / 比较 / 偏 / 相对 register:
+ * 「发病较早」「病情比较重」「起病偏早」「相对较重」, and every one of
+ * those went straight past. The band-naming half was working the whole
+ * time; the half that decides WHAT WAS SAID was reading for the wrong
+ * register.
+ *
+ * So the comparatives are written COMPOSITIONALLY — a degree marker
+ * against a severity axis — because that is what the language actually
+ * does, and because enumerating 4×7 pairs by hand is how the next
+ * register goes missing too. It still will not be complete: a claim
+ * written 「病情不容乐观」 or 「预后堪忧」 or in any register nobody has
+ * driven the stack in yet is a claim this list does not hold, and the
+ * excision notice must not promise otherwise — see `buildExcisionNotice`.
+ *
+ * 早 is excluded before 期 so 「比较早期的报告」 — a sentence about a
+ * DOCUMENT's date — is not read as a claim about when the disease
+ * started.
  */
-const SEVERITY_WORD =
-  /严重|重症|轻重|轻型|重型|预后|进展|恶化|加重|发病早|早发|晚发|越早|越重|越快|更快|更重|更早|病程|残疾|轮椅|走不了|失能|寿命|活不|发病年龄|表型更|受累/u;
+const COMPARATIVE_DEGREE = '(?:更|较|比较|偏|相对较?|稍微?|略|越|最)';
+/** The axes a severity claim is made along. Bare, these are far too
+ *  broad to use — they only count behind a degree marker or in front of
+ *  a comparative tail. */
+const SEVERITY_AXIS = '(?:早(?!期)|晚|重|轻|快|慢|差)';
+const SEVERITY_WORD = new RegExp(
+  [
+    '严重|重症|轻重|轻型|重型|预后|进展|恶化|加重|病程|残疾|轮椅|走不了|失能|寿命|活不',
+    '发病早|起病早|早发|晚发|发病年龄|起病年龄|表型更|表型偏|受累',
+    // 更早 / 较早 / 比较重 / 偏重 / 相对较重 / 越快 / 最重 — and so
+    // 发病较早, 起病偏早, 病情比较重 through the axis inside them.
+    `${COMPARATIVE_DEGREE}${SEVERITY_AXIS}`,
+    // 「进展快一些」「重得多」 — the comparative written as a tail.
+    `${SEVERITY_AXIS}(?:一些|一点|得多|不少)`,
+  ].join('|'),
+  'u',
+);
 
 /**
  * WHY THERE IS NO LONGER A POPULATION ESCAPE ON THIS CHECK.
@@ -1041,11 +1144,22 @@ const SEVERITY_WORD =
 const CLAIM_DISCLAIMED =
   /不能|不会|无法|没法|没能|没办法|不做|不拿|不据此|不是对|不要自己|不是用来|不能用来|不作为|不足以|不预测|不推断|不判断|说不准|由医生|请医生|主治医生|问医生|医生判断|医生评估/u;
 
-/** Words that put a cell on a scale. Paired with a cell the platform
- *  declined to grade, this is the platform drawing a line it refuses to
- *  draw. */
+/**
+ * Words that put a cell on a scale. Paired with a cell the platform
+ * declined to grade, this is the platform drawing a line it refuses to
+ * draw.
+ *
+ * ANOTHER REGISTER LIST, and the same warning as `SEVERITY_WORD`: it
+ * decides only to WITHHOLD, and it will never be complete. 正常范围 was
+ * in it; 典型范围 was not, and driving the running stack in this round
+ * the model published 「你的甲基化 95% 是在 FSHD1 的典型范围里的」 —
+ * a line drawn on the one cell this platform permanently refuses to
+ * grade, said in the synonym the list did not hold. The cell terms and
+ * the possessive are grounded in facts the turn holds; this half is
+ * not, and cannot be.
+ */
 const GRADING_WORD =
-  /偏高|偏低|过高|过低|很高|很低|太高|太低|极高|极低|相当高|非常高|高出|低于|超出|超标|异常|正常范围|明显升高|明显降低|属于高|属于低|高甲基化|低甲基化|分级|哪一档|这一档|程度很|水平很|读成|比较少见|不太常见/u;
+  /偏高|偏低|过高|过低|很高|很低|太高|太低|极高|极低|相当高|非常高|高出|低于|超出|超标|异常|正常范围|典型范围|常规范围|正常水平|明显升高|明显降低|属于高|属于低|高甲基化|低甲基化|分级|哪一档|这一档|程度很|水平很|读成|比较少见|不太常见/u;
 
 /** A negation reaching FORWARD over the grading word. 「我没办法把这个数值
  *  解读成「高」或「低」」 is a refusal to grade and must survive; 「95% 高出
@@ -1146,38 +1260,50 @@ function cellTermsPresent(segment: string, cell: string): boolean {
 }
 
 /**
- * How close a POSSESSIVE has to stand to the cell it is attaching a
- * grade to.
+ * DOES THE POSSESSIVE ATTACH TO THE CELL — ASKED OF THE CLAUSE, NOT OF A
+ * CHARACTER COUNT.
  *
- * A window, and the only one left in this file. It exists because
- * 「FSHD1 通常表现为 D4Z4 区域的低甲基化，但具体的数值解读需要结合你的临床
- * 表型一起看」 was removed from a live answer: the 你的 belongs to
- * 临床表型, seventeen characters away, and the grading word belongs to a
- * general statement about FSHD1.
+ * This was a window of eight characters, and the window is why it
+ * existed: 「FSHD1 通常表现为 D4Z4 区域的低甲基化，但具体的数值解读需要
+ * 结合你的临床表型一起看」 was removed from a live answer because the
+ * 你的 — seventeen characters away and attached to 临床表型 — was being
+ * read as attaching to 甲基化.
  *
- * It is the WEAK half of check 2 and it is only ever an addition: the
- * strong half — the sentence carries this patient's own value for that
- * cell — is grounded in the projection and needs no window at all. A
- * possessive the window misses costs a caught violation, never a deleted
- * true sentence.
+ * EIGHT CHARACTERS IS NOT WHERE CHINESE PUTS A POSSESSIVE. 你的 governs
+ * its noun across as much material as the speaker cares to insert, and
+ * a clinical answer inserts plenty: 「你的这份 2026 年 4 月的报告里那一格
+ * 甲基化数值偏高」 puts fifteen characters between the two, and
+ * 「你的报告里这一次测出来的甲基化明显升高」 puts nine. Both are the
+ * violation this check exists for and both were outside the window, so
+ * the check was passing exactly the sentences a Chinese answer writes.
+ * Widening the count would have re-admitted the false positive above,
+ * because the false positive is only 17 characters away — the count
+ * cannot separate them at any value.
+ *
+ * WHAT SEPARATES THEM IS THE CLAUSE. A possessive binds inside its own
+ * clause and stops at the comma; the FSHD1 sentence has the cell in one
+ * clause and the 你的 in the next, and no amount of distance-fiddling
+ * expresses that. So the segment is cut at its clause punctuation and
+ * the question is asked of one clause at a time — a fact about the
+ * sentence's own structure, which is what the rule at the top of this
+ * file asks for wherever a fact is available.
+ *
+ * It is still the WEAK half of check 2 and still only ever an addition:
+ * the strong half — the sentence carries this patient's own value for
+ * that cell — is grounded in the projection and needs none of this. A
+ * possessive this misses costs a caught violation, never a deleted true
+ * sentence.
  */
-const POSSESSIVE_ATTACHMENT_WINDOW = 8;
-const POSSESSIVE = /你的|您的|你这|本人/u;
+const CLAUSE_BOUNDARY = /[，,、；;：:。！？!?—…\n]|——/u;
+const POSSESSIVE = /你的|您的|你这|你那|您这|您那|你本人|本人|你自己|你个人|你报告|你档案/u;
 
-const possessiveNearCell = (segment: string, cell: string): boolean => {
-  for (const term of CELL_TERMS[cell]?.terms ?? []) {
-    let from = segment.indexOf(term);
-    while (from >= 0) {
-      const window = segment.slice(
-        Math.max(0, from - POSSESSIVE_ATTACHMENT_WINDOW),
-        from + term.length + POSSESSIVE_ATTACHMENT_WINDOW,
-      );
-      if (POSSESSIVE.test(window)) return true;
-      from = segment.indexOf(term, from + term.length);
-    }
-  }
-  return false;
-};
+/** The segment cut into clauses. A clause is where a possessive binds,
+ *  and the punctuation is where a clause ends. */
+const clausesOf = (segment: string): string[] =>
+  segment.split(new RegExp(CLAUSE_BOUNDARY.source, 'gu')).filter((clause) => clause.trim() !== '');
+
+const possessiveAttachedToCell = (segment: string, cell: string): boolean =>
+  clausesOf(segment).some((clause) => POSSESSIVE.test(clause) && cellTermsPresent(clause, cell));
 
 // ------------------------------------------- check 4: whose absence is it
 
@@ -1208,6 +1334,31 @@ const possessiveNearCell = (segment: string, cell: string): boolean => {
  * word, with a delivery verb after it able to hand the absence back to
  * the assistant. That is a sentence's own structure rather than a
  * character count, and it is the only thing that separates the two.
+ *
+ * ---------------------------------------------------------------------
+ * AND IT IS ASKED OF EVERY ABSENCE MARKER IN THE SEGMENT, NOT THE FIRST.
+ *
+ * Resolving only the first one was a hole with this platform's own name
+ * on it. `WIRE_TOKEN_ZH` localises the redactor's refusals into Chinese
+ * and every one of them IS AN ABSENCE SENTENCE —
+ * 「本平台没有把这一格当成化验报告上的读数」,
+ * 「这一格没有写明是哪一型」 — so the model quoting the platform back at
+ * the patient puts a 没有 at the front of the sentence that resolves,
+ * correctly, to the ASSISTANT. Under a first-marker-only rule that
+ * verdict then covered the whole segment. Driven against the running
+ * stack:
+ *
+ *   「这一格标的是「本平台没有把这一格当成化验报告上的读数」，
+ *    你的报告里也没有甲基化的结果。」
+ *
+ * The first 没有 is the platform's own refusal, quoted; the second is the
+ * false claim about the document, and it was never examined. The guard's
+ * own localisation was acting as the password.
+ *
+ * So every marker is resolved and ANY marker predicated of the report
+ * makes the sentence a violation. The direction is right: an absence
+ * sentence with two subjects is one true half and one false half, and
+ * the false half is the one the patient acts on.
  */
 const ABSENCE_MARKER = /(?<!有)没有|不含|未包含|缺少|没做|未做|查不到|未检出|没写|未写|不包括/u;
 const REPORT_HOLDER = /报告|记录|档案|资料|化验单|单子|检测结果|报告单|这份|上传的|里面/u;
@@ -1221,11 +1372,8 @@ const DELIVERY_VERB = /发(?:给|到)|给我|传(?:给|到)|到我|显示|读到
 const CELL_ANAPHORA =
   /这一项|这个项目|这项|该项|这一格|这一栏|这个指标|这个数值|这个结果|这部分|这些数值|这一条/u;
 
-/** Whose absence is this? Returns the holder the sentence predicates the
- *  absence of, or null when the sentence predicates it of nothing. */
-const absenceIsAboutTheReport = (segment: string): boolean => {
-  const marker = segment.search(ABSENCE_MARKER);
-  if (marker < 0) return false;
+/** Whose absence is the marker AT THIS POSITION predicated of? */
+const absenceAtIsAboutTheReport = (segment: string, marker: number): boolean => {
   const head = segment.slice(0, marker);
   const tail = segment.slice(marker);
   const lastOf = (pattern: RegExp): number => {
@@ -1249,6 +1397,29 @@ const absenceIsAboutTheReport = (segment: string): boolean => {
   // delivery verb is what says so.
   if (DELIVERY_VERB.test(tail.slice(0, 24))) return false;
   return true;
+};
+
+/** The same regex, walked. `ABSENCE_MARKER` is deliberately kept
+ *  non-global so nothing else in this file inherits a `lastIndex`. */
+const ABSENCE_MARKER_EVERY = new RegExp(ABSENCE_MARKER.source, 'gu');
+
+/** Does the segment assert, ANYWHERE in it, that the REPORT lacks
+ *  something? See the block above: one segment can carry the platform's
+ *  own refusal and the false claim about the document, and only the
+ *  second one is a violation. */
+const absenceIsAboutTheReport = (segment: string): boolean => {
+  ABSENCE_MARKER_EVERY.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ABSENCE_MARKER_EVERY.exec(segment)) !== null) {
+    if (absenceAtIsAboutTheReport(segment, match.index)) {
+      ABSENCE_MARKER_EVERY.lastIndex = 0;
+      return true;
+    }
+    // A zero-length match cannot happen with this alternation, but a
+    // stalled `lastIndex` would spin forever if one ever did.
+    if (match.index === ABSENCE_MARKER_EVERY.lastIndex) ABSENCE_MARKER_EVERY.lastIndex += 1;
+  }
+  return false;
 };
 
 /**
@@ -1298,8 +1469,18 @@ const TEST_MARKER = /检测|检查|化验|测一下|做一个/u;
  * column index remembered, which is the document's own structure rather
  * than a guess about which cell is which.
  */
+// 正常人 / 健康人 / 正常应该 are here for the same reason 典型范围 is in
+// `GRADING_WORD`: driving the running stack in this round, the model
+// wrote 「正常人是 11 个以上，你的结果是 3 个」, 「正常应该超过 10 个」 and
+// 「健康人（正常）：D4Z4 重复数 >10 个单元」 — a claim about what a
+// laboratory calls normal, standing beside this patient's own value,
+// phrased around every word this list held. Like every lexicon in this
+// file it decides only WHERE TO LOOK; the violation is still decided by
+// `evidence.recordIntervals`. And like every lexicon in this file it is
+// still incomplete, which is why `buildExcisionNotice` no longer claims
+// otherwise.
 const REFERENCE_RANGE_CONTEXT =
-  /参考范围|参考值|参考区间|正常范围|正常值|正常区间|临界值|界值|阈值|分界线|诊断范围|诊断区间|正常参考|cut-?off/iu;
+  /参考范围|参考值|参考区间|正常范围|正常值|正常区间|正常人|健康人|正常应该|正常应在|临界值|界值|阈值|分界线|诊断范围|诊断区间|正常参考|cut-?off/iu;
 
 // ------------------------------------------------------------------ topic clause
 
@@ -1358,6 +1539,86 @@ const REDACTION_MARK_OPENING = '（这里有一句被我删掉了：';
  */
 const LIST_ITEM_INDENT = /^(\s*)(?:[-*+•]|\d+[.)、])\s/u;
 const LABEL_CONTENT_MAX = 16;
+
+/**
+ * ...AND A LEAD-IN THAT IS NOT ITSELF A LIST ITEM, WHICH IS THE ORDINARY
+ * WAY A BANDED LIST GETS INTRODUCED.
+ *
+ * The inheritance above only inherits from a LIST ITEM, and the note at
+ * the top of this file recorded the gap: a bolded prose line ending in
+ * 「：」 is how a model introduces a band table, and its numbers reached
+ * none of the bullets under it. Driven against the running stack:
+ *
+ *   **你落在 1–3 个重复单元这一档**：
+ *   - 发病年龄通常比较早
+ *   - 病情相对较重，进展也快一些
+ *
+ * Every bullet is the claim, the band is on the lead-in, and the
+ * lead-in has no bullet marker so `labelStack` was empty by the time the
+ * bullets were read.
+ *
+ * WHAT WAS TRIED BEFORE AND REJECTED IS STILL REJECTED. That note says
+ * propagating numbers from ANY colon-terminated lead-in condemns
+ * 「你的重复数是 3，下面是随访建议：」 followed by
+ * 「- 每年复查一次，注意病程变化」 — a follow-up plan deleted for the
+ * word 病程 — and that trade is still the wrong one. So this is
+ * narrower, and the narrowing is not a length cutoff:
+ *
+ *   A PROSE LEAD-IN PROPAGATES A BAND, NEVER A BARE VALUE.
+ *
+ * 「1–3 个重复单元」 is an interval — a band the reader is being sorted
+ * into, whose whole purpose is to say what is true of everyone in it —
+ * and a claim under it is a claim about that band. 「你的重复数是 3」 is
+ * a VALUE, and a list under it is a list of things to do about him. The
+ * first is exactly the shape check 1 exists for; the second is the
+ * follow-up plan the earlier attempt deleted. That distinction is
+ * structural rather than a guess about the words, and it costs nothing
+ * to the honest case: 「你的重复数是 3，下面是随访建议：」 names no band,
+ * so it propagates nothing and every bullet under it is judged on its
+ * own.
+ *
+ * The band may be one the lead-in states or one it points back at, so
+ * the anaphora chain feeds it: 「你落在 1–3 这一档。这一档在临床上通常
+ * 关联着：」 propagates 1–3 to the bullets through the lead-in's own
+ * referent.
+ *
+ * AND THE HEADING WITH NO COLON AT ALL, which is what the model
+ * actually wrote when this was driven against the running stack. Asked
+ * for the bands as a bolded-heading list it produced
+ *
+ *   **1–4 个重复单元**
+ *   - **发病年龄**：通常在儿童期或青春期早发…
+ *   - **病情特点**：整体上病情相对更重…
+ *
+ * — the same structure as the colon form with the colon left off,
+ * because the bold IS the punctuation. A colon-only rule reads that
+ * heading as an ordinary sentence and every bullet under it goes
+ * unjudged, which is how this shape published.
+ *
+ * So a lead-in qualifies two ways, and BOTH are gated on the band: it
+ * ends in 「：」, or its whole content is short enough to be a label —
+ * the same `LABEL_CONTENT_MAX` test the bulleted labels already use,
+ * asked of a line that happens not to carry a bullet marker. The band
+ * gate is what keeps 「你的重复数是 3，下面是随访建议：」 harmless: it is
+ * short and it is colon-terminated and it names NO BAND, so it
+ * propagates nothing.
+ *
+ * WHAT IT STILL MISSES, stated: a lead-in whose band is inherited from a
+ * sentence two hops back, and a long heading with no colon. Both fail
+ * toward publication, and both cost a caught violation rather than a
+ * deleted true sentence.
+ */
+const PROSE_LEAD_IN = /[:：]\s*$/u;
+
+const isProseLabel = (text: string): boolean =>
+  PROSE_LEAD_IN.test(text) || contentChars(text).length <= LABEL_CONTENT_MAX;
+
+/** Does the text state an interval at all? The BAND regex is global, so
+ *  its `lastIndex` is reset before every use. */
+const namesABand = (text: string): boolean => {
+  BAND.lastIndex = 0;
+  return BAND.test(text);
+};
 
 /**
  * ...AND THE SAME MOVE IN PROSE, WHICH IS THE OTHER HALF OF THE SAME
@@ -1461,6 +1722,12 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
     const withInherited = [text, inherited, anaphoric].filter(Boolean).join(' ');
     if (indentMatch !== null && contentChars(text).length <= LABEL_CONTENT_MAX) {
       labelStack.push({ indent: indentMatch[1].length, text });
+    } else if (indentMatch === null && !row && isProseLabel(text) && namesABand(withInherited)) {
+      // A lead-in the list under it inherits from. See PROSE_LEAD_IN.
+      // Indent −1 so any bullet at any indent stays inside it, and
+      // `withInherited` rather than `text` so a lead-in that points at
+      // its band with 这一档 carries the digits it points at.
+      labelStack.push({ indent: -1, text: withInherited });
     }
 
     // ---- 5. A reference interval the record never printed -----------
@@ -1529,7 +1796,7 @@ export const inspectAnswer = (answer: string, evidence: GuardEvidence): Clinical
         const byNumber = evidence.numbers.some(
           (number) => number.cell === cell && carriesNumber(text, number.value),
         );
-        const byName = possessiveNearCell(text, cell);
+        const byName = possessiveAttachedToCell(text, cell);
         if (!byNumber && !byName) continue;
         add({
           kind: 'ungraded_cell_graded',
@@ -1758,6 +2025,40 @@ export const buildRegenerationDirective = (violations: readonly ClinicalViolatio
  * patient scanning a long answer on a phone reads the top, and a caveat
  * at the bottom is one they meet after they have already believed the
  * answer.
+ *
+ * ---------------------------------------------------------------------
+ * WHAT THIS NOTICE MAY HONESTLY SAY, WHICH IS LESS THAN IT USED TO SAY.
+ *
+ * The first version read 「这条回答里有 N 处被我删掉了，原因是它们把你
+ * 自己的数值读成了病情轻重」 and then stopped. A patient reads that as an
+ * assurance: the bad claims were found and taken out, so what is left has
+ * been checked. `exciseUntilClean` even runs to a fixed point, which
+ * makes the assurance look earned.
+ *
+ * IT IS NOT EARNED, AND THE FIXED POINT IS EXACTLY WHY. The loop
+ * converges over WHAT THE DETECTOR CAN SEE. The detector is a fact ANDed
+ * with a REGISTER LIST (see `SEVERITY_WORD`), and a register list is
+ * never complete — so a claim stated twice, once in a register the list
+ * holds and once in a register it does not, loses the first copy and
+ * keeps the second, and the surviving copy is now sitting directly under
+ * a banner saying claims like it were removed. Driven against the running
+ * stack that is one turn away: the model wrote the severity claim as
+ * 「病情更重」 in a table row and again as 「发病较早、总体偏重」 in the
+ * paragraph below it, and before the register fix the second one
+ * published under the notice.
+ *
+ * The register fix narrows that gap; it cannot close it, and a notice
+ * whose truth depends on a lexicon being complete is a notice that will
+ * eventually lie. So this one says what the guard ACTUALLY DID — these
+ * N sentences were removed — and then says the part the patient needs in
+ * order to read the rest correctly: THE CHECK IS NOT COMPLETE, so what
+ * is left is not certified. A patient who knows the filter is partial
+ * reads the remaining text the way they should; a patient who believes
+ * it is total does not.
+ *
+ * It costs a sentence of confidence in this platform. That is the right
+ * price: the alternative is a patient trusting a prediction about their
+ * own disease because a banner implied it had been checked.
  */
 export const buildExcisionNotice = (violations: readonly ClinicalViolation[]): string => {
   const kinds = new Set(violations.map((violation) => violation.kind));
@@ -1783,11 +2084,22 @@ export const buildExcisionNotice = (violations: readonly ClinicalViolation[]): s
         : kinds.has('fabricated_reference_range')
           ? '你报告上没有印过的参考区间，我不能摆在你的数值旁边让你去对——'
           : '没有资料出处的机制解释，我不能当成你报告的解释讲给你——';
+  // The limit of what was done, said in the notice itself. See the block
+  // above: the excision runs to a fixed point over WHAT THIS CHECK CAN
+  // RECOGNISE, and what it recognises is a word list that will never be
+  // complete. Naming N removals without naming that would read as 「the
+  // rest has been checked」, which is the one thing this notice must not
+  // imply.
+  const incomplete =
+    '要说清楚的是：我删掉的只是我认出来的那几句。同一个意思换个说法写，我不一定认得出来，' +
+    '所以下面留下来的内容不等于「已经逐句核对过」。如果你读到哪一句像是在拿你的数值判断你本人的' +
+    '病情轻重、发展快慢或者发病早晚，那句话也不作数，以你主治医生的判断为准。';
   return (
     `⚠️ 这条回答里有 ${violations.length} 处被我删掉了，原因是它们${reasons.join('；')}。\n\n` +
     rule +
     '这是平台的规矩，不是你的问题不该问。上面留下来的是本平台对你报告的判读和检索到的资料，' +
-    '被删掉的那部分，最好带着报告直接问你的主治医生。'
+    '被删掉的那部分，最好带着报告直接问你的主治医生。\n\n' +
+    incomplete
   );
 };
 

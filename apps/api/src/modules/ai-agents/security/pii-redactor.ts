@@ -1342,8 +1342,65 @@ const SELF_ANNOUNCING_IDENTIFIERS: readonly SelfAnnouncingIdentifier[] = [
       /(?<!\d)(?:19|20)\d{2}\s*[-/.]\s*(?:0?[1-9]|1[0-2])(?:\s*[-/.]\s*(?:0?[1-9]|[12]\d|3[01]))?(?!\d)/,
     sentinel: 'date',
   },
+  // THE TWO-DIGIT-YEAR SHAPE, AND THE ONE THING THAT TELLS IT FROM A
+  // REFERENCE INTERVAL.
+  //
+  // WHAT IT WAS EATING. `\d{2} sep (1–12) sep (1–31)` with each `sep`
+  // free to be any of `-`, `/`, `.` is also the shape of an ordinary
+  // laboratory reference interval, and it consumed them. Measured
+  // through the real projection on synthetic panels: `0.27-4.20` (TSH)
+  // read as 27-4-20 and 「11.5-15.0」 (haemoglobin) as 11-5-15, and
+  // because `ID_PATTERNS` is what `isUntrustworthyValue` asks of a cell
+  // BEFORE it is published, the interval was not merely scrubbed — the
+  // whole cell was refused, counted into 「因为无法确认内容而没有发出的
+  // 格子数」, and the analyte printed its number with no interval beside
+  // it under a marker that told the model this platform could not
+  // establish what the value was. Two consecutive rows of a synthetic
+  // 甲功 lost their interval that way; `0.80-1.20` (INR) and every other
+  // 「a.bc-d.ef」 does the same.
+  //
+  // An identifier pattern that consumes clinical data is worse than one
+  // that misses an identifier, and this one consumed the specific cell
+  // two other defences are built on: the read path uses the interval to
+  // decide whether a number is inside it, and the abnormal display has
+  // nothing to show a number against without it.
+  //
+  // THE DISCRIMINATOR IS STRUCTURAL AND IT IS NOT A TIGHTER RANGE.
+  // Narrowing the digit classes cannot work — 0.27-4.20 is a perfectly
+  // well-formed 27 March 2020 and no bound on month or day excludes it.
+  // What separates the two is a property of the NOTATION rather than of
+  // the values: A DATE'S FIELD SEPARATORS ARE ONE CHARACTER REPEATED.
+  // No locale writes 19-03.05. An interval of decimals cannot be that,
+  // because its two separators do two different jobs — the `.` is a
+  // decimal point inside a bound and the `-` is the range dash between
+  // them — so they are necessarily different characters. Hence the
+  // backreference: same separator twice, or it is not this shape of
+  // date. (`replaceAll` passes the capture to a callback that ignores
+  // it unless `keepLabel`, which these entries do not set, so the group
+  // changes no substitution.)
+  //
+  // Nor is it three-fields-versus-two dressed up: a three-field run with
+  // ONE separator throughout cannot be a two-bound interval at all,
+  // which is why the rule is complete for the interval question rather
+  // than merely better at it.
+  //
+  // WHAT STAYS AMBIGUOUS, said here rather than left to be found:
+  //   - A DATE TYPED WITH MIXED SEPARATORS — 「19-03.05」, or an OCR that
+  //     read one hyphen as a full stop — is no longer removed by THIS
+  //     entry. Only the two-digit-year form is exposed: the four-digit
+  //     entry above it is unchanged and still takes 2019-03.05 whatever
+  //     its separators, and a two-digit year is the form that carries
+  //     least on its own.
+  //   - A SAME-SEPARATOR NUMERIC TRIPLE THAT IS NOT A DATE — a dosing
+  //     schedule written 「10-2-1」, a lot number, a three-part locus —
+  //     is still read as one and still removed. That is the direction
+  //     this gate is supposed to resolve its doubt in, and it costs a
+  //     token rather than a reading.
+  //   - THE PAIR SHAPE IS UNTOUCHED EITHER WAY. 「50-310」 has one
+  //     separator and two fields, so no date entry has ever matched it;
+  //     that was never the failing case and is not what changed.
   {
-    pattern: /(?<!\d)\d{2}\s*[-/.]\s*(?:0?[1-9]|1[0-2])\s*[-/.]\s*(?:0?[1-9]|[12]\d|3[01])(?!\d)/,
+    pattern: /(?<!\d)\d{2}\s*([-/.])\s*(?:0?[1-9]|1[0-2])\s*\1\s*(?:0?[1-9]|[12]\d|3[01])(?!\d)/,
     sentinel: 'date',
   },
   {

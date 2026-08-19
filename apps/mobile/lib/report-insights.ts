@@ -34,9 +34,55 @@ export type ProfileLike = {
   geneticMutation?: string | null;
 };
 
+/**
+ * ONE READING, AS A SCREEN RECEIVES IT.
+ *
+ * `{ label, value, date }` was the whole of this type, and it is where
+ * the laboratory's own verdict stopped: the payload has carried
+ * `ckFlag: high` and `ckReference: 50-310` for two rounds, and no
+ * member of this type could hold either, so 报告详情, 我的档案 and 病程
+ * all rendered a CK at 2.2× its stated upper limit in the same words
+ * and the same weight as a normal one.
+ *
+ * `value` IS THE DISPLAY STRING AND IT CARRIES THE BRACKET. The screens
+ * that render these print `metric.value` into a `<Text>` and nothing
+ * else, so a metric whose bracket lives only in a sibling member is a
+ * metric whose bracket is not on screen. `flag` and `reference` are the
+ * machine-readable halves of the same thing, for a renderer that wants
+ * to colour the row or lay the interval out separately — they are never
+ * the ONLY place the information exists.
+ *
+ * WHAT THIS SURFACE SHOWS, AND WHY IT IS NOT THE PASSPORT'S ANSWER
+ * TWICE. The reader here is the PATIENT. On this disease the ordinary
+ * finding is an out-of-range CK — it is the thing that sent them for a
+ * diagnosis — so a screen that escalates every flagged row teaches them
+ * to fear their own baseline, and one that hides the flag leaves them
+ * unable to see the number a clinician will react to. The middle is to
+ * print exactly what the laboratory printed and nothing more: its own
+ * word for the direction (偏高 / 偏低 / 异常, the same register the
+ * passport uses) and the interval verbatim, so the number can be
+ * CHECKED rather than merely trusted or feared. No 警告, no 危险, no
+ * severity this platform derived, and no colour decided here.
+ *
+ * AND THE INTERVAL PRINTS EVEN WITH NO FLAG — that is the case where a
+ * bracket helps a patient most, because it is the one where they can
+ * see for themselves that the number is inside it.
+ */
 export type ReportInsightMetric = {
   label: string;
+  /** Label-free display string: the value, then the laboratory's own
+   *  bracket where it printed one. */
   value: string;
+  /** `high` | `low` | `abnormal_unspecified`, the parser's own closed
+   *  vocabulary, or null where the laboratory marked nothing. */
+  flag?: string | null;
+  /** The interval exactly as the row printed it — 「50-310」, 「<25」,
+   *  「>9」 — or null.
+   *
+   *  NULL IS AN ORDINARY STATE. Most rows print no interval; a renderer
+   *  shows the value alone and must not read the absence as 「within
+   *  range」. It means the report did not say. */
+  reference?: string | null;
   date?: string | null;
 };
 
@@ -87,6 +133,143 @@ const pickField = (
     if (text) return text;
   }
   return undefined;
+};
+
+/** `creatine_kinase` → `creatineKinase`. The API bridge writes an
+ *  analyte's flag and its reference interval under the CAMEL spelling
+ *  of the value's key and no other — the value itself is on the payload
+ *  under both, because both spellings predate those two cells. So a
+ *  value picked off a snake key asks for its siblings under the camel
+ *  one. Mirrors `toCamelKey` in the API's profile.passport.ts. */
+const toCamelKey = (key: string): string =>
+  key.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+
+const OCR_FLAG_SUFFIX = 'Flag';
+const OCR_REFERENCE_SUFFIX = 'Reference';
+
+/**
+ * THE LABORATORY'S ABNORMAL MARKER, IN CHINESE.
+ *
+ * `_read_row_flag` in the parser maps 「↑」, 「偏高」 and a bare 「H」 onto
+ * `high`, so what arrives here is an English token this platform
+ * minted. A closed vocabulary; anything outside it is dropped rather
+ * than printed, because a marker this screen cannot read is not one it
+ * should paraphrase for a patient.
+ *
+ * The same three words the API's passport prints, deliberately — a
+ * patient comparing the app against the sheet their doctor is holding
+ * must not find two different vocabularies for one row.
+ */
+const ANALYTE_FLAG_ZH: Record<string, string> = {
+  high: '偏高',
+  low: '偏低',
+  abnormal_unspecified: '异常',
+};
+
+/**
+ * 通气模式 IS A WIRE TOKEN AND WAS REACHING THE PATIENT AS ONE.
+ *
+ * `cardio_respiratory_panel.ventilatory_pattern` is `restrictive` —
+ * a value this platform minted, not anything a Chinese 肺功能报告 ever
+ * printed — and this file passed it through untranslated. It surfaced
+ * as the 通气模式 metric on 报告详情 and on 临床护照, and inside
+ * `respiratorySummary`, which reads 「restrictive / 61 / 74 / 95」 on 病程.
+ *
+ * Mirrors `VENTILATORY_PATTERN_ZH` in the API's profile.passport.ts and
+ * `VENTILATORY_PATTERN_LABELS` in the report-detail screen's own field
+ * table — the third copy of the same four words, and the reason it is a
+ * copy rather than an import is that this bundle does not ship the
+ * API's module. An unknown pattern falls through to the raw token
+ * rather than being dropped: it is the report's own reading, and a
+ * blank row would be a worse answer than an untranslated one.
+ */
+const VENTILATORY_PATTERN_ZH: Record<string, string> = {
+  restrictive: '限制性通气功能障碍',
+  obstructive: '阻塞性通气功能障碍',
+  mixed: '混合性通气功能障碍',
+  normal: '通气功能正常',
+};
+
+/** The whole reading off one document's payload — the number, the
+ *  laboratory's verdict on it, and the interval that verdict was
+ *  reached against.
+ *
+ *  Resolved in ONE call, so that a caller cannot be handed the value
+ *  and then forget the rest of it. The siblings are read off the same
+ *  `keys` list the value came from, and only across spellings whose own
+ *  value agrees with the picked one — two spellings of a cell that
+ *  disagree are the state the API's guard calls `contradictory_aliases`,
+ *  and a marker read across a disagreement would belong to a number it
+ *  was not about. The crossing has to happen at all because the API's
+ *  bridge minted `creatineKinase` as a value-only twin of `ck` for the
+ *  whole life of this archive: on a stored document the CK number is
+ *  under the twin while the marker is under `ckFlag`. */
+const pickReading = (
+  fields: Record<string, string | number> | undefined,
+  keys: readonly string[],
+): { key: string; value: string; flag: string | null; reference: string | null } | undefined => {
+  if (!fields) return undefined;
+  const read = (key: string): string | undefined => {
+    const value = fields[key];
+    if (value === null || value === undefined) return undefined;
+    const text = String(value).trim();
+    return text || undefined;
+  };
+
+  let picked: { key: string; value: string } | undefined;
+  for (const key of keys) {
+    const text = read(key);
+    if (text) {
+      picked = { key, value: text };
+      break;
+    }
+  }
+  if (!picked) return undefined;
+  const found = picked;
+
+  const sibling = (suffix: string): string | null => {
+    for (const key of keys) {
+      const own = read(key);
+      if (own !== undefined && own !== found.value) continue;
+      const camel = toCamelKey(key);
+      const value =
+        read(`${camel}${suffix}`) ?? (camel === key ? undefined : read(`${key}${suffix}`));
+      if (value !== undefined) return value;
+    }
+    return null;
+  };
+
+  return {
+    ...found,
+    flag: sibling(OCR_FLAG_SUFFIX),
+    reference: sibling(OCR_REFERENCE_SUFFIX),
+  };
+};
+
+/**
+ * The value as a patient reads it: the number, then the laboratory's
+ * own bracket where it printed one.
+ *
+ * `values` localises a closed wire enum (通气模式) before anything else
+ * happens, because a bracket beside an English token would be two
+ * problems on one row.
+ *
+ * ONE HALF IS ENOUGH. A flag with no interval still prints — it is the
+ * laboratory's verdict and it stands on its own — and an interval with
+ * no flag prints too, which is the case that lets a patient check a
+ * normal result for themselves rather than take it on trust. A value
+ * with NEITHER prints bare, and that is the ordinary state, not a gap.
+ */
+const readingText = (
+  reading: { value: string; flag: string | null; reference: string | null },
+  values?: Record<string, string>,
+): string => {
+  const value = values?.[reading.value] ?? reading.value;
+  const flag = reading.flag ? ANALYTE_FLAG_ZH[reading.flag.trim().toLowerCase()] : undefined;
+  const bracket = [flag, reading.reference ? `参考区间 ${reading.reference}` : undefined]
+    .filter(Boolean)
+    .join('，');
+  return bracket ? `${value}（${bracket}）` : value;
 };
 
 const pickFieldValue = (doc: DocumentLike | undefined, keys: string[]) => {
@@ -390,11 +573,26 @@ const latestDocForField = (docs: DocumentLike[], keys: string[], docTypes?: stri
   return candidates[0];
 };
 
-const resolveMetric = (docs: DocumentLike[], keys: string[], docTypes?: string[]) => {
+/**
+ * The reading, the day it was read, and the document it came off.
+ *
+ * `pickReading` AND NOT `pickField`: the flag and the interval are
+ * resolved off the SAME document and the SAME key list the value was —
+ * never by a second `latestDocForField` call, which is how a flag from
+ * one report would come to stand beside a value from another.
+ */
+const resolveMetric = (
+  docs: DocumentLike[],
+  keys: string[],
+  docTypes?: string[],
+  values?: Record<string, string>,
+) => {
   const doc = latestDocForField(docs, keys, docTypes);
-  const value = pickField(doc?.ocrPayload?.fields, keys);
+  const reading = pickReading(doc?.ocrPayload?.fields, keys);
   return {
-    value,
+    value: reading ? readingText(reading, values) : undefined,
+    flag: reading?.flag ?? null,
+    reference: reading?.reference ?? null,
     date: formatDate(pickFieldValue(doc, ['reportTime', 'report_time']) ?? doc?.uploadedAt ?? null),
   };
 };
@@ -404,8 +602,9 @@ const buildMetric = (
   label: string,
   keys: string[],
   docTypes?: string[],
+  values?: Record<string, string>,
 ): ReportInsightMetric | null => {
-  const resolved = resolveMetric(docs, keys, docTypes);
+  const resolved = resolveMetric(docs, keys, docTypes, values);
   if (!resolved.value) {
     return null;
   }
@@ -413,6 +612,8 @@ const buildMetric = (
   return {
     label,
     value: resolved.value,
+    flag: resolved.flag,
+    reference: resolved.reference,
     date: resolved.date,
   };
 };
@@ -420,14 +621,21 @@ const buildMetric = (
 const buildMetricSection = (
   key: string,
   title: string,
-  defs: Array<{ label: string; keys: string[]; docTypes?: string[] }>,
+  defs: Array<{
+    label: string;
+    keys: string[];
+    docTypes?: string[];
+    /** Localisation for a closed wire enum — see
+     *  `VENTILATORY_PATTERN_ZH`. Absent for every real measurement. */
+    values?: Record<string, string>;
+  }>,
   docs: DocumentLike[],
   priority: 'core' | 'secondary' = 'secondary',
   groupKey?: 'fshd_related' | 'other',
   groupLabel?: string,
 ): SystemInsightSection | null => {
   const metrics = defs
-    .map((def) => buildMetric(docs, def.label, def.keys, def.docTypes))
+    .map((def) => buildMetric(docs, def.label, def.keys, def.docTypes, def.values))
     .filter((item): item is ReportInsightMetric => Boolean(item));
 
   if (!metrics.length) {
@@ -683,19 +891,28 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     latestBlood || latestDocContainingText(docs, ['ck', '肌酸激酶', 'ldh', 'mb', 'ckmb']);
   const bloodFields = bloodDoc?.ocrPayload?.fields;
   const bloodReportTime = pickFieldValue(bloodDoc, ['reportTime', 'report_time']);
-  const creatineKinase = pickField(bloodFields, ['creatineKinase', 'creatine_kinase', 'CK', 'ck']);
-  const myoglobin = pickField(bloodFields, ['myoglobin', 'MYO', 'Myo', 'MB', 'Mb', 'mb']);
-  const ldh = pickField(bloodFields, ['LDH', 'ldh']);
-  const ckmb = pickField(bloodFields, ['CKMB', 'ckmb']);
-  const creatinine = pickField(bloodFields, ['creatinine']);
-  const uricAcid = pickField(bloodFields, ['uricAcid', 'uric_acid']);
-  const bloodParts: string[] = [];
-  if (creatineKinase) bloodParts.push(`CK ${creatineKinase}`);
-  if (myoglobin) bloodParts.push(`Mb ${myoglobin}`);
-  if (ldh) bloodParts.push(`LDH ${ldh}`);
-  if (ckmb) bloodParts.push(`CKMB ${ckmb}`);
-  if (creatinine) bloodParts.push(`Cr ${creatinine}`);
-  if (uricAcid) bloodParts.push(`UA ${uricAcid}`);
+  /**
+   * 病程 → 血检 summary, and the bracket now rides in it.
+   *
+   * Six `pickField` calls stood here and each threw the key away, so
+   * this row printed 「CK 693U/L，Mb 48ng/mL」 for the same payload the
+   * API's passport printed 「CK 693U/L（偏高，参考区间 50-310）」 off —
+   * two surfaces of one product disagreeing about what the report said,
+   * on the analyte this disease is monitored by.
+   */
+  const bloodParts = (
+    [
+      { label: 'CK', keys: ['creatineKinase', 'creatine_kinase', 'CK', 'ck'] },
+      { label: 'Mb', keys: ['myoglobin', 'MYO', 'Myo', 'MB', 'Mb', 'mb'] },
+      { label: 'LDH', keys: ['LDH', 'ldh'] },
+      { label: 'CKMB', keys: ['CKMB', 'ckmb'] },
+      { label: 'Cr', keys: ['creatinine'] },
+      { label: 'UA', keys: ['uricAcid', 'uric_acid'] },
+    ] as const
+  ).flatMap((spec) => {
+    const reading = pickReading(bloodFields, spec.keys);
+    return reading ? [`${spec.label} ${readingText(reading)}`] : [];
+  });
   const bloodSummary =
     bloodParts.join('，') || compactText(bloodDoc?.ocrPayload?.extractedText, '暂无血检摘要');
 
@@ -704,13 +921,21 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     latestDocContainingText(docs, ['fvc', 'fev1', 'tlc', 'dlco', '肺功能', '膈肌']);
   const respiratoryFields = respiratoryDoc?.ocrPayload?.fields;
   const respiratoryReportTime = pickFieldValue(respiratoryDoc, ['reportTime', 'report_time']);
-  const respiratoryMetrics = [
-    pickField(respiratoryFields, ['ventilatoryPattern', 'ventilatory_pattern']),
-    pickField(respiratoryFields, ['fvcPredPct', 'fvc_pred_pct']),
-    pickField(respiratoryFields, ['tlcPredPct', 'tlc_pred_pct']),
-    pickField(respiratoryFields, ['dlcoPredPct', 'dlco_pred_pct']),
-    pickField(respiratoryFields, ['diaphragmMotionSummary', 'diaphragm_motion_summary']),
-  ].filter(Boolean);
+  // The wire token is localised HERE and not only on the metric: this
+  // string is 病程's own 呼吸 row, and it read 「restrictive / 61 / 74 /
+  // 95」 to a patient.
+  const respiratoryMetrics = (
+    [
+      { keys: ['ventilatoryPattern', 'ventilatory_pattern'], values: VENTILATORY_PATTERN_ZH },
+      { keys: ['fvcPredPct', 'fvc_pred_pct'] },
+      { keys: ['tlcPredPct', 'tlc_pred_pct'] },
+      { keys: ['dlcoPredPct', 'dlco_pred_pct'] },
+      { keys: ['diaphragmMotionSummary', 'diaphragm_motion_summary'] },
+    ] as ReadonlyArray<{ keys: string[]; values?: Record<string, string> }>
+  ).flatMap((spec) => {
+    const reading = pickReading(respiratoryFields, spec.keys);
+    return reading ? [readingText(reading, spec.values)] : [];
+  });
   const respiratorySummary =
     respiratoryMetrics.length > 0
       ? respiratoryMetrics.join(' / ')
@@ -721,12 +946,17 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     latestDocContainingText(docs, ['ecg', 'echo', 'lvef', 'qtc', 'qrs', '心电', '超声心动']);
   const cardiacFields = cardiacDoc?.ocrPayload?.fields;
   const cardiacReportTime = pickFieldValue(cardiacDoc, ['reportTime', 'report_time']);
-  const cardiacMetrics = [
-    pickField(cardiacFields, ['ecgSummary', 'ecg_summary']),
-    pickField(cardiacFields, ['echoSummary', 'echo_summary']),
-    pickField(cardiacFields, ['LVEF', 'lvef']),
-    pickField(cardiacFields, ['QTc', 'qtc', 'qtcMs', 'qtc_ms']),
-  ].filter(Boolean);
+  const cardiacMetrics = (
+    [
+      ['ecgSummary', 'ecg_summary'],
+      ['echoSummary', 'echo_summary'],
+      ['LVEF', 'lvef'],
+      ['QTc', 'qtc', 'qtcMs', 'qtc_ms'],
+    ] as ReadonlyArray<string[]>
+  ).flatMap((keys) => {
+    const reading = pickReading(cardiacFields, keys);
+    return reading ? [readingText(reading)] : [];
+  });
   const cardiacSummary =
     cardiacMetrics.length > 0
       ? cardiacMetrics.join(' / ')
@@ -801,6 +1031,7 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
     docs,
     ['ventilatoryPattern', 'ventilatory_pattern'],
     ['pulmonary_function'],
+    VENTILATORY_PATTERN_ZH,
   );
   const respiratoryFvc = resolveMetric(
     docs,
@@ -1017,6 +1248,7 @@ export const buildReportInsights = (docs: DocumentLike[], profile?: ProfileLike 
           label: '通气模式',
           keys: ['ventilatoryPattern', 'ventilatory_pattern'],
           docTypes: ['pulmonary_function'],
+          values: VENTILATORY_PATTERN_ZH,
         },
         {
           label: 'FVC %Pred',

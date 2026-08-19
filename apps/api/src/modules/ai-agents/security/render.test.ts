@@ -1177,3 +1177,188 @@ describe('no wire identifier reaches the prompt', () => {
     expect([...strict.ocrKeys]).toContain('numericValuesWithheld');
   });
 });
+
+/**
+ * THE PANELS THAT REACHED THE PROMPT EMPTY, AND THE INTERVAL AN
+ * IDENTIFIER PATTERN WAS EATING.
+ *
+ * Three defects, one fixture shape, and all three are asserted on what
+ * actually reaches the prompt rather than on the key lists — the lists
+ * are what `allowlist.parity.test.ts` holds, and this file holds the
+ * consequence.
+ *
+ * EVERY PAYLOAD BELOW IS SYNTHETIC. No cell here came off a patient's
+ * document; the readings are made up to be unambiguous about which
+ * defect they exercise.
+ */
+describe('the laboratory panels a prompt is built from', () => {
+  const labChunk = (classifiedType: string, cells: Record<string, unknown>): RetrievedChunk => ({
+    id: 'panel-1',
+    source: 'patient_reports',
+    content: '',
+    metadata: {
+      fields: {
+        classifiedType,
+        documentType: 'result',
+        status: 'processed',
+        fields: { classifiedType, ...cells },
+      },
+    },
+    distance: null,
+    sourceFile: 'patient_reports',
+    chunkIndex: 0,
+  });
+
+  /**
+   * A 尿常规 REACHED THE ASSISTANT AS AN EMPTY DOCUMENT.
+   *
+   * Not one of `_extract_urinalysis`'s seventeen cells was on the
+   * allowlist, so every one was dropped by deny-by-default inside
+   * `projectOcrFields` — which happens BEFORE anything is counted, so
+   * neither `notAllowed` nor `numericValuesWithheld` said a word about
+   * them. The model was told a urinalysis exists and shown nothing in
+   * it, which is the one failure mode a deny-by-default list must not
+   * have: a refusal the reader cannot see is indistinguishable from an
+   * absence of findings.
+   */
+  it('a urinalysis renders its own readings rather than an empty block', () => {
+    const cells = {
+      urineColor: '黄色',
+      urineProtein: '阴性(-)',
+      urineOccultBlood: '阳性(+)',
+      urineLeukocyte: '阴性(-)',
+      urinePh: '6.0',
+      urineSpecificGravity: '1.020',
+      urineRbc: '12.3/uL',
+      urineRbcFlag: 'high',
+      urineRbcReference: '0-5',
+      urineWbc: '3.1/uL',
+    };
+    const chunk = labChunk('urinalysis', cells);
+
+    const precise = renderChunkForPrompt(chunk, { mode: 'precise' });
+    const preciseKeys = readRenderedRows(precise.content).ocrKeys;
+    for (const key of Object.keys(cells)) {
+      expect([...preciseKeys], `${key} did not reach the prompt`).toContain(key);
+    }
+
+    // Strict mode holds the numbers back and says so — the dipstick is
+    // words, so it travels, and the counts are swept into the counter.
+    const strict = renderChunkForPrompt(chunk, { mode: 'strict' });
+    const strictKeys = readRenderedRows(strict.content).ocrKeys;
+    expect([...strictKeys]).toContain('urineOccultBlood');
+    expect([...strictKeys]).toContain('urineRbcFlag');
+    expect([...strictKeys]).toContain('numericValuesWithheld');
+    expect([...strictKeys]).not.toContain('urineRbc');
+  });
+
+  /**
+   * THE TWO ANALYTES THAT WERE MISSING WHILE EVERY SIBLING ON THEIR OWN
+   * PANEL WAS PRESENT, and in both cases the missing one was the row
+   * the laboratory had flagged.
+   */
+  it('the coagulation panel carries its D-dimer, marker and interval included', () => {
+    const chunk = labChunk('coagulation', {
+      pt: '12.4s',
+      inr: '1.05',
+      aptt: '31.2s',
+      tt: '17.1s',
+      fibrinogen: '3.10g/L',
+      dDimer: '0.86mg/L',
+      dDimerFlag: 'high',
+      dDimerReference: '0.00-0.55',
+    });
+
+    const keys = readRenderedRows(renderChunkForPrompt(chunk, { mode: 'precise' }).content).ocrKeys;
+    expect([...keys]).toContain('dDimer');
+    expect([...keys]).toContain('dDimerFlag');
+    expect([...keys]).toContain('dDimerReference');
+
+    // The marker carries in strict mode too: it is a direction, not a
+    // measurement, and 「D-二聚体偏高」 with no number is exactly what a
+    // patient who did not consent to precise values should have said.
+    const strict = readRenderedRows(
+      renderChunkForPrompt(chunk, { mode: 'strict' }).content,
+    ).ocrKeys;
+    expect([...strict]).toContain('dDimerFlag');
+    expect([...strict]).not.toContain('dDimer');
+  });
+
+  it('the differential carries a percentage for every lineage that has one', () => {
+    const chunk = labChunk('blood_routine', {
+      neutAbs: '4.10',
+      neutPct: '60.3',
+      lymphAbs: '2.00',
+      lymphPct: '29.4',
+      monoAbs: '0.40',
+      monoPct: '5.9',
+      eosAbs: '0.25',
+      eosPct: '3.7',
+      eosPctFlag: 'high',
+      eosPctReference: '0.40-8.00',
+      basoAbs: '0.03',
+      basoPct: '0.4',
+    });
+
+    const keys = readRenderedRows(renderChunkForPrompt(chunk, { mode: 'precise' }).content).ocrKeys;
+    for (const lineage of ['neut', 'lymph', 'mono', 'eos', 'baso']) {
+      expect([...keys], `${lineage} lost its absolute count`).toContain(`${lineage}Abs`);
+      expect([...keys], `${lineage} lost its percentage`).toContain(`${lineage}Pct`);
+    }
+    expect([...keys]).toContain('eosPctFlag');
+  });
+
+  /**
+   * THE REFERENCE INTERVAL AN IDENTIFIER PATTERN WAS CONSUMING.
+   *
+   * `0.27-4.20` read as 27-4-20 under the two-digit-year date shape, and
+   * because `ID_PATTERNS` is asked of a cell by `isUntrustworthyValue`
+   * BEFORE it is published, the whole interval was refused rather than
+   * merely scrubbed — counted into `fieldsDroppedAsUnsafe`, which told
+   * the model this platform could not establish what the value was.
+   *
+   * The bounds below are all real interval shapes and none of them is a
+   * date. The fix is in `SELF_ANNOUNCING_IDENTIFIERS`: a date's field
+   * separators are one character repeated, and an interval of decimals
+   * necessarily mixes its decimal point with its range dash.
+   */
+  it('a reference interval is not read as a date', () => {
+    const intervals = {
+      tshReference: '0.27-4.20',
+      inrReference: '0.80-1.20',
+      hgbReference: '11.5-15.0',
+      ft3Reference: '3.10-6.80',
+      ckReference: '50-310',
+      pltReference: '125-350',
+    };
+    const rendered = renderChunkForPrompt(labChunk('thyroid_function', intervals), {
+      mode: 'precise',
+    });
+
+    const keys = readRenderedRows(rendered.content).ocrKeys;
+    for (const [key, value] of Object.entries(intervals)) {
+      expect([...keys], `${key} was refused`).toContain(key);
+      expect(rendered.content, `${key} lost its bounds`).toContain(value);
+    }
+    // Nothing was withheld, and nothing was scrubbed — the two ways the
+    // defect showed itself.
+    expect([...keys]).not.toContain('fieldsDroppedAsUnsafe');
+    expect(rendered.stats?.identifiersScrubbed).toEqual([]);
+  });
+
+  /**
+   * ...AND THE DATES ARE STILL REMOVED. The rule the fix turns on is a
+   * property of date notation, so every shape that really is one still
+   * goes — including the two-digit-year form, which is the entry that
+   * changed.
+   */
+  it('a date finer than a year is still removed from a cell', () => {
+    for (const printed of ['19-03-05', '19/03/05', '19.03.05', '2019-03-05', '2019年3月5日']) {
+      const rendered = renderChunkForPrompt(
+        labChunk('genetic_report', { ecgSummary: `报告日期 ${printed} 窦性心律` }),
+        { mode: 'precise' },
+      );
+      expect(rendered.content, `${printed} survived`).not.toContain(printed);
+    }
+  });
+});

@@ -721,6 +721,67 @@ def _extract_sentences(text: str) -> List[str]:
     return [chunk.strip() for chunk in chunks if chunk and chunk.strip()]
 
 
+#: WHAT A PRINTED NUMBER IS, INCLUDING THE SEPARATORS THAT GROUP IT.
+#:
+#: THE NUMBER CLASSES SAID 「digits and a decimal point」 AND A CHINESE
+#: LABORATORY PRINTS 「3,250」. Every reader in this file agreed on that
+#: spelling, so every one of them stopped at the first group: a creatine
+#: kinase of 3,250 U/L against an interval of 50-310 was published as
+#: `ck: 3` — and the row's own 偏高 was read separately and correctly, so
+#: the payload carried a reading BELOW its lower bound flagged HIGH, on
+#: the marker this disease is monitored by. 「1 180」 lost its LDH the
+#: same way.
+#:
+#: THIS IS THE POSITIVE FORM OF THE SAME FIX `_UNIT_CELL` AND
+#: `_BOUND_CELL` GOT. Neither of those rounds added an exclusion — they
+#: stated what the cell IS — and the reason to do it here rather than
+#: teach each reader to strip commas is that there is then ONE grammar:
+#: a class that matches a number matches the grouped spelling too, and
+#: the readers keep asking the question they already ask.
+#:
+#: THE COMMA IS ADMITTED EVERYWHERE AND THE SPACE ONLY INSIDE A WHOLE
+#: CELL. A comma between two digits is never a column separator on these
+#: tables, so `_NUMBER_SOURCE` can be scanned across a flattened row. A
+#: SPACE is exactly what separates columns there — 「50 310」 is a row
+#: printing two cells at least as often as it is one number — so the
+#: spaced spelling is only read where the cell boundary itself proves
+#: the space is inside the number: the cell-per-line layout, through
+#: `_NUMBER_CELL_SOURCE`. Both forms require the groups to be three
+#: digits, which is what a thousands separator is.
+_DIGIT_GROUPS = r"\d{1,3}(?:[,，]\d{3})+"
+_SPACED_DIGIT_GROUPS = "\\d{1,3}(?:[ \u00a0]\\d{3})+"
+_NUMBER_SOURCE = rf"(?:{_DIGIT_GROUPS}|\d+)(?:\.\d+)?"
+_NUMBER_CELL_SOURCE = rf"(?:{_DIGIT_GROUPS}|{_SPACED_DIGIT_GROUPS}|\d+)(?:\.\d+)?"
+
+#: A separator INSIDE a number — never the one between two of them,
+#: because both sides have to be a digit.
+_GROUP_SEPARATOR = re.compile("(?<=\\d)[,\uff0c \u00a0](?=\\d)")
+
+#: A whole cell that is one number, with or without a comparator.
+_NUMBER_CELL = re.compile(rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}$")
+
+
+def _strip_group_separators(text: str) -> str:
+    """「3,250」 and 「3 250」 as the one number they print."""
+    return _GROUP_SEPARATOR.sub("", text.strip())
+
+
+def _canonical_number(cell: Any) -> Optional[str]:
+    """`cell` as a bare number, or None when the whole cell is not one.
+
+    The one place the grouped spellings are folded away. What comes back
+    is what every consumer of a reading expects to parse — the API and
+    the app read `field_value` as a number, and `Number("3,250")` is not
+    one — while `source_text` keeps the row exactly as it was printed.
+    """
+    if cell is None:
+        return None
+    text = str(cell).strip()
+    if not text or not _NUMBER_CELL.match(text):
+        return None
+    return _strip_group_separators(text).replace(" ", "")
+
+
 def _exact_float(value: Any) -> Optional[float]:
     """`value` as a number only when the WHOLE cell is one.
 
@@ -735,7 +796,10 @@ def _exact_float(value: Any) -> Optional[float]:
     """
     if value is None:
         return None
-    text = str(value).strip().replace(",", "")
+    # THE GROUPED SPELLING IS THE WHOLE CELL BEING A NUMBER, not a digit
+    # scraped out of prose — so it is folded here, where 「the whole cell
+    # is one」 is exactly the question being asked. See `_canonical_number`.
+    text = _canonical_number(value) or str(value).strip().replace(",", "")
     if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
         return None
     try:
@@ -747,7 +811,7 @@ def _exact_float(value: Any) -> Optional[float]:
 def _safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
-    text = str(value).strip().replace(",", "")
+    text = _canonical_number(value) or str(value).strip().replace(",", "")
     if not text:
         return None
     match = re.search(r"-?\d+(?:\.\d+)?", text)
@@ -1661,7 +1725,11 @@ def _extract_named_number(
     match, _ = finder(text, patterns)
     if not match:
         return None, None, None
+    # The reading leaves canonical, grouped spelling folded away: this
+    # is the fallback path, and it may not read 「3,250」 as a 3 where the
+    # row reader no longer does. See `_canonical_number`.
     raw_value = match.group(1).strip()
+    raw_value = _canonical_number(raw_value) or raw_value
     detected_unit = unit
     if match.lastindex and match.lastindex >= 2:
         maybe_unit = match.group(2)
@@ -4234,19 +4302,70 @@ def _extract_mri(lines: List[str], fields: List[Dict[str, Any]], findings: List[
     }
 
 
+#: A PULMONARY METRIC'S NAME, ANCHORED SO IT IS NOT READ INSIDE THE
+#: RATIO'S NAME.
+#:
+#: `\b` FIRES ON BOTH SIDES OF THE SOLIDUS IN 「FEV1/FVC」, so on the
+#: ordinary Chinese layout — 项目 / 单位 / 实测值 / 占预计值 on one line,
+#: one row per metric — the ratio row answered for THREE fields. Both
+#: 占预计值 patterns reached it: `FVC` matched the second half of the
+#: ratio's name and `FEV1` the first, and each then took the first
+#: percentage on THAT row. Measured on a synthetic 肺通气功能检查报告
+#: whose FVC row reads 70.6% of predicted and whose FEV1 row reads
+#: 64.1%, both were published as 75.4% — the FEV1/FVC ratio — and 75.4%
+#: of predicted FVC is a different clinical picture from 70.6%, on the
+#: surveillance this disease is monitored by.
+#:
+#: The lookarounds refuse the solidus specifically, which is the
+#: character `\b` cannot see across. `DLCO` gets the same treatment for
+#: the same reason: 「DLCO/VA」 is a row of every diffusion report.
+_PFT_FVC = r"(?<![A-Za-z0-9/])FVC(?![A-Za-z0-9/])"
+_PFT_FEV1 = r"(?<![A-Za-z0-9/])FEV ?1(?![A-Za-z0-9/])"
+_PFT_TLC = r"(?<![A-Za-z0-9/])TLC(?![A-Za-z0-9])"
+_PFT_DLCO = r"(?<![A-Za-z0-9/])DLCO(?![A-Za-z0-9/])"
+
+#: Between a metric's name and its first figure: the Chinese name and
+#: the unit column, never another number.
+_PFT_NAME_TO_VALUE = r"[^\d\n(]{0,16}"
+
+
+def _pft_pred_pct_patterns(name: str) -> List[str]:
+    """占预计值 for one metric, read off that metric's OWN row.
+
+    THE PERCENTAGE IS NOT THE FIRST NUMBER ON THE ROW. On the layout
+    where 实测值 precedes 占预计值 the first number is the reading in
+    litres, and the old pattern could not see past it — it forbade
+    digits between the name and its capture — so it matched nothing on
+    the metric's own row and went looking further down the page, where
+    the only row it could match was the ratio's. Two failures compounded:
+    what it found was the wrong row (see `_PFT_FVC`) and what it wanted
+    was the wrong column.
+
+    So the row is scanned for the figure that carries the PERCENT SIGN,
+    which is what the 占预计值 column prints and what the litre column
+    does not. The labelled spelling is tried first, because a report
+    that names the column outright is not guessing.
+    """
+    return [
+        rf"{name}\s*(?:[% ]*Pred|占预计值[%％]?|预计值[%％]?|预计%)"
+        rf"[^\d\n]{{0,10}}({_NUMBER_SOURCE})\s*([%％])?",
+        rf"{name}[^\n]{{0,40}}?({_NUMBER_SOURCE})\s*([%％])",
+    ]
+
+
 def _extract_pulmonary(lines: List[str], fields: List[Dict[str, Any]], findings: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     metric_patterns = {
-        "fvc": [r"\bFVC\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "fvc_pred_pct": [r"FVC(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "fev1": [r"\bFEV1\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "fev1_pred_pct": [r"FEV1(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "fev1_fvc": [r"FEV1/FVC[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "tlc": [r"\bTLC\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*(L|%)?"],
-        "tlc_pred_pct": [r"TLC(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "dlco": [r"\bDLCO\b[^\d\n(]{0,10}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
-        "dlco_pred_pct": [r"DLCO(?:[% ]*Pred|占预计值|预计%)?[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*(%)"],
-        "dlco_va": [r"DLCO/VA[^\d\n(]{0,12}(\d+(?:\.\d+)?)\s*([A-Za-z/%·]+)?"],
+        "fvc": [rf"{_PFT_FVC}{_PFT_NAME_TO_VALUE}({_NUMBER_SOURCE})\s*(L|%)?"],
+        "fvc_pred_pct": _pft_pred_pct_patterns(_PFT_FVC),
+        "fev1": [rf"{_PFT_FEV1}{_PFT_NAME_TO_VALUE}({_NUMBER_SOURCE})\s*(L|%)?"],
+        "fev1_pred_pct": _pft_pred_pct_patterns(_PFT_FEV1),
+        "fev1_fvc": [rf"FEV ?1\s*/\s*FVC[^\d\n(]{{0,12}}({_NUMBER_SOURCE})\s*(%)"],
+        "tlc": [rf"{_PFT_TLC}{_PFT_NAME_TO_VALUE}({_NUMBER_SOURCE})\s*(L|%)?"],
+        "tlc_pred_pct": _pft_pred_pct_patterns(_PFT_TLC),
+        "dlco": [rf"{_PFT_DLCO}{_PFT_NAME_TO_VALUE}({_NUMBER_SOURCE})\s*([A-Za-z/%·]+)?"],
+        "dlco_pred_pct": _pft_pred_pct_patterns(_PFT_DLCO),
+        "dlco_va": [rf"DLCO\s*/\s*VA[^\d\n(]{{0,12}}({_NUMBER_SOURCE})\s*([A-Za-z/%·]+)?"],
     }
     panel: Dict[str, Any] = {}
 
@@ -4557,7 +4676,10 @@ def _extract_echo(lines: List[str], fields: List[Dict[str, Any]], findings: List
 #: reading itself. Neither may cross a newline or open a bracket — see
 #: `_panel_haystacks` for what each of those cost.
 _PANEL_NAME_TO_VALUE = r"[^\d\n(]{0,16}"
-_PANEL_READING = r"([<>]?\d+(?:\.\d+)?)"
+#: THE READING A PANEL PATTERN CAPTURES, grouped spelling included —
+#: the fallback path may not read 「3,250」 as a 3 where the row reader
+#: no longer does. See `_NUMBER_SOURCE`.
+_PANEL_READING = rf"([<>]?{_NUMBER_SOURCE})"
 
 
 def _numeric_analyte(
@@ -4700,12 +4822,41 @@ def _extract_coagulation(lines: List[str], fields: List[Dict[str, Any]], normali
     normalized_summary["lab_panel"] = panel
 
 
+#: THE ANALYTE'S OWN ABBREVIATION, PRINTED IN ITS NAME CELL — 「颜色(COL)」,
+#: 「透明度(CLA)」. IT IS NOT THE PATIENT'S RESULT.
+#:
+#: A free-text row captures 「the first run of non-space after the name」,
+#: and the separator gap admitted brackets while refusing Latin. So on
+#: the commonest 尿常规 printing of all, the gap took the opening bracket
+#: and the capture took what was inside it: 尿色 was published as
+#: 「COL)」 and 透明度 as 「CLA)」 — the report's own 淡黄色 and 清亮 not
+#: merely unread but REPLACED, on the panel's two rows a patient can
+#: check by eye. The stool panel prints 颜色 the same way.
+#:
+#: Hopped over explicitly rather than excluded from the gap alone,
+#: because a name cell may or may not carry it and the row after it is
+#: the same either way.
+#:
+#: IT HAS TO BEGIN WITH A LETTER. 「(-)」 and 「(+)」 are brackets in the
+#: RESULT column — 「尿胆原 (-)」 is a whole reading — and a hop that
+#: swallowed those would step over the answer and capture the next row.
+_OWN_ABBREVIATION = r"(?:\s*[(（][A-Za-z][A-Za-z0-9\-]{0,9}[)）])?"
+
+#: What may sit between a name cell and its reading: punctuation and
+#: spaces, and NEVER a bracket — see `_OWN_ABBREVIATION`.
+_TEXT_VALUE_GAP = r"[^\n\u4e00-\u9fa5A-Za-z(（]{0,8}"
+
+#: A free-text reading: one printed cell. It may CONTAIN a bracket —
+#: 「阴性(-)」 is one cell — it just may not be reached through one.
+_TEXT_VALUE = r"([^\s]+)"
+
+
 def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
     text = "\n".join(lines)
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
     text_definitions = {
-        "urine_color": {"patterns": [r"(?:颜色)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["颜色"]},
-        "urine_clarity": {"patterns": [r"(?:透明度|浊度|清晰度)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["透明度", "浊度"]},
+        "urine_color": {"patterns": [rf"(?:颜色|尿色){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["颜色", "尿色"]},
+        "urine_clarity": {"patterns": [rf"(?:透明度|浊度|清晰度){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["透明度", "浊度", "清晰度"]},
         "urine_glucose": {"patterns": [r"(?:葡萄糖(?:\(GLU\))?|GLU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["葡萄糖", "GLU"], "normalize_qualitative": True},
         "urine_ketone": {"patterns": [r"(?:酮体(?:\(KET\))?|KET)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["酮体", "KET"], "normalize_qualitative": True},
         "urine_bilirubin": {"patterns": [r"(?:胆红素(?:\(BIL\))?|BIL)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["胆红素", "BIL"], "normalize_qualitative": True},
@@ -4713,7 +4864,7 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         "urine_nitrite": {"patterns": [r"(?:亚硝酸盐(?:\(NIT\))?|NIT)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
         "urine_occult_blood": {"patterns": [r"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
         "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "白细胞", "LEU"], "normalize_qualitative": True},
-        "urine_urobilinogen": {"patterns": [r"(?:尿胆原(?:\(URO\))?|URO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["尿胆原", "URO"]},
+        "urine_urobilinogen": {"patterns": [rf"(?:尿胆原|URO){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["尿胆原", "URO"]},
     }
     numeric_definitions = {
         "urine_specific_gravity": _numeric_analyte("尿比重", "比重", "SG"),
@@ -4733,6 +4884,74 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         text, lines, fields, panel, numeric_definitions, neighbours=text_definitions
     )
     normalized_summary["lab_panel"] = panel
+
+
+#: A LINE THAT OPENS A PANEL'S SECTION on a page carrying more than one.
+#: The panel's own name, printed as a heading — 「血常规」 over the counts,
+#: 「尿常规」 over the sediment. Deliberately not the analyte vocabulary:
+#: 尿素 and 白细胞 say nothing about which section they are in.
+_BLOOD_ROUTINE_SECTION_MARKERS: Tuple[str, ...] = (
+    "血常规", "血细胞分析", "全血细胞分析", "血液分析", "血细胞计数",
+)
+_URINALYSIS_SECTION_MARKERS: Tuple[str, ...] = (
+    "尿常规", "尿液分析", "尿沉渣", "小便常规", "尿液检查",
+)
+
+
+def _split_blood_and_urine_sections(
+    lines: List[str],
+) -> Optional[Tuple[List[str], List[str]]]:
+    """This page's 血常规 lines and its 尿常规 lines, or None.
+
+    AN 入院常规 PRINTOUT IS TWO PANELS ON ONE PAGE and the parser had
+    room for one. The page scores `blood_routine` — it prints
+    haemoglobin and platelets, so the specimen rule that saves a pure
+    urine report cannot fire — and from there two things followed. The
+    urinalysis extractor never ran, so 尿蛋白, 尿糖, the colour, the
+    clarity and the sediment counts were absent from a payload that
+    named none of them missing. AND THE BLOOD EXTRACTOR READ DOWNWARDS:
+    every row reader in this file scans the whole document for the first
+    line naming its analyte, so a blood analyte the 血常规 section did
+    not print was looked for in the 尿常规 section and found there.
+    Measured on a synthetic page whose blood section prints no
+    红细胞计数 row, `rbc` came back as the urine sediment's 8 个/uL —
+    published under the key the app's 血常规 card reads, where 8 is a
+    red cell count no living patient has.
+
+    THE SECTION HEADING IS THE BOUNDARY, and there is no answer without
+    one: two panels whose rows are interleaved, or a requisition line
+    naming both with no headings under it, cannot be separated by
+    anything this function can see. It returns None there and the
+    caller keeps the single-extractor behaviour it always had — a
+    wrong split would move a reading from one panel to the other, which
+    is worse than the reading being missing.
+
+    The preamble — everything above the first heading — belongs to both:
+    it is the hospital, the patient and the column header row.
+    """
+    def names(line: str, markers: Tuple[str, ...]) -> bool:
+        return any(marker in line for marker in markers)
+
+    preamble: List[str] = []
+    blood: List[str] = []
+    urine: List[str] = []
+    current: Optional[List[str]] = None
+    for line in lines:
+        is_blood = names(line, _BLOOD_ROUTINE_SECTION_MARKERS)
+        is_urine = names(line, _URINALYSIS_SECTION_MARKERS)
+        # 「检验目的: 血常规+尿常规」 names both and opens neither.
+        if is_blood and not is_urine:
+            current = blood
+        elif is_urine and not is_blood:
+            current = urine
+        (current if current is not None else preamble).append(line)
+
+    if not blood or not urine:
+        return None
+    # A heading with nothing under it is a mention, not a section.
+    if len(blood) < 2 or len(urine) < 2:
+        return None
+    return preamble + blood, preamble + urine
 
 
 def _extract_infection_screening(lines: List[str], fields: List[Dict[str, Any]], normalized_summary: Dict[str, Any]) -> None:
@@ -4764,8 +4983,8 @@ def _extract_stool_test(lines: List[str], fields: List[Dict[str, Any]], normaliz
     text = "\n".join(lines)
     panel: Dict[str, Any] = normalized_summary.get("lab_panel", {})
     text_definitions = {
-        "stool_color": {"patterns": [r"(?:颜色)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["颜色"]},
-        "stool_consistency": {"patterns": [r"(?:硬度|性状)[^\n\u4e00-\u9fa5A-Za-z]{0,8}([^\s]+)"], "keywords": ["硬度", "性状"]},
+        "stool_color": {"patterns": [rf"(?:颜色){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["颜色"]},
+        "stool_consistency": {"patterns": [rf"(?:硬度|性状){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["硬度", "性状"]},
         "stool_blood": {"patterns": [r"(?:血液)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["血液"], "normalize_qualitative": True},
         "stool_mucus": {"patterns": [r"(?:粘液)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["粘液"], "normalize_qualitative": True},
         "stool_rbc": {"patterns": [r"(?:红细胞)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性(?:\([-+]\))?|阳性(?:\([-+]\))?|\([-+]\))"], "keywords": ["红细胞"], "normalize_qualitative": True},
@@ -5165,17 +5384,19 @@ _WORD_FLAG_CELLS: Dict[str, Optional[str]] = {
 #: scan starting or ending in the middle of a number, so 「1.41 1.2-1.6」
 #: reads the interval and not 「41 1」.
 _ROW_RANGE = re.compile(
-    r"(?<![\d.])(\d+(?:\.\d+)?)\s*[-~—～]\s*(\d+(?:\.\d+)?)(?![\d.])"
+    rf"(?<![\d.])({_NUMBER_SOURCE})\s*[-~—～]\s*({_NUMBER_SOURCE})(?![\d.])"
 )
 
-#: A number on a row, with whatever unit is glued to its right.
-_LAB_NUMBER = re.compile(r"([<>≤≥]?\d+(?:\.\d+)?)\s*([A-Za-z/%μµ·/\-]+)?")
+#: A number on a row, with whatever unit is glued to its right. THE
+#: GROUPED SPELLING IS ONE NUMBER — see `_NUMBER_SOURCE`; without it this
+#: scan stopped at the first group and published 「3,250」 as 3.
+_LAB_NUMBER = re.compile(rf"([<>≤≥]?{_NUMBER_SOURCE})\s*([A-Za-z/%μµ·/\-]+)?")
 
 #: A ONE-SIDED reference limit — 「<25」, 「>1.04」. Recorded as one-sided
 #: rather than dropped: an upper limit with no lower one is the whole of
 #: what a CKMB or a cholesterol row prints, and dropping it leaves the
 #: reading with nothing to be abnormal against.
-_ROW_BOUND = re.compile(r"([<>≤≥])\s*(\d+(?:\.\d+)?)(?![\d.])")
+_ROW_BOUND = re.compile(rf"([<>≤≥])\s*({_NUMBER_SOURCE})(?![\d.])")
 
 
 def _read_row_flag(row_text: str) -> Optional[str]:
@@ -5241,16 +5462,46 @@ def _read_row_reference(
             _safe_float(interval.group(1)),
             _safe_float(interval.group(2)),
         )
-    reading = (value or "").replace(" ", "")
+    # Compared as numbers: the reading leaves the row readers canonical
+    # and the row still prints its separators. See `_canonical_number`.
+    reading = _canonical_number(value) or (value or "").replace(" ", "")
     for bound in _ROW_BOUND.finditer(row_text):
         raw = f"{bound.group(1)}{bound.group(2)}"
-        if raw == reading:
+        if (_canonical_number(raw) or raw) == reading:
             continue
         limit = _safe_float(bound.group(2))
         if bound.group(1) in "<≤":
             return raw, None, limit
         return raw, limit, None
     return None, None, None
+
+
+def _reading_ends_at(tokens: List[str], value: Optional[str]) -> int:
+    """Index just past the token(s) on which `value` is printed.
+
+    COMPARED AS NUMBERS, NOT AS STRINGS. The reading leaves the row
+    readers canonical — 「3,250」 is published as 3250 — so a literal
+    token match no longer finds it on its own row, and a search that
+    starts at 0 can hand back the analyte column as the unit: a row
+    printed 「CK 3,250 U/L」 has a unit-shaped cell to the LEFT of its
+    reading. A grouped number the printer spaced apart is several
+    tokens, so a short run of them is joined before being compared.
+    """
+    wanted = _canonical_number(value)
+    if wanted is None:
+        return 0
+    for start in range(len(tokens)):
+        joined = ""
+        for end in range(start, min(start + 4, len(tokens))):
+            piece = _canonical_number(tokens[end])
+            if piece is None:
+                break
+            joined += piece
+            if joined == wanted:
+                return end + 1
+            if not wanted.startswith(joined):
+                break
+    return 0
 
 
 def _unit_from_row(row_text: str, value: Optional[str]) -> Optional[str]:
@@ -5269,20 +5520,13 @@ def _unit_from_row(row_text: str, value: Optional[str]) -> Optional[str]:
     「H」.
     """
     tokens = row_text.split()
-    start = 0
-    if value:
-        wanted = value.strip()
-        for position, token in enumerate(tokens):
-            if token.strip() == wanted:
-                start = position + 1
-                break
-    for token in tokens[start:]:
+    for token in tokens[_reading_ends_at(tokens, value) :]:
         cell = token.strip()
         if not cell or _is_row_flag_cell(cell):
             continue
         if _VALUE_CELL.match(cell) or _BOUND_CELL.match(cell) or _RANGE_CELL.match(cell):
             continue
-        if _UNIT_CELL.match(cell):
+        if _is_unit_cell(cell):
             return cell
     return None
 
@@ -5365,6 +5609,16 @@ def _extract_lab_value(
         two-sided interval, because a flattened row keeps 「50-310」 in
         one piece where the cell reader would have seen a `_RANGE_CELL`.
         """
+        # A CELL THAT IS NOTHING BUT A NUMBER IS THAT NUMBER, WHOLE.
+        # Asked first because it is the one place the SPACED thousands
+        # separator can be read safely: the cell boundary is what says
+        # the space is inside the number rather than between two
+        # columns, and a scan across the line cannot see that boundary.
+        # 「1 180」 is an LDH, and it was published as 1.
+        whole_cell = _canonical_number(line)
+        if whole_cell is not None:
+            return whole_cell, None
+
         reserved = [match.span() for match in _ROW_RANGE.finditer(line)]
 
         def outside_the_interval(span: Tuple[int, int]) -> bool:
@@ -5385,7 +5639,8 @@ def _extract_lab_value(
         # layout, one column earlier.
         if unit and _is_row_flag_cell(unit):
             unit = None
-        return chosen.group(1), unit
+        # The reading leaves here as ONE number — see `_canonical_number`.
+        return _strip_group_separators(chosen.group(1)), unit
 
     def search_segment(line: str) -> str:
         span = matched_span(line.lower())
@@ -5396,7 +5651,8 @@ def _extract_lab_value(
     def is_reference_range(line: str) -> bool:
         return bool(
             re.fullmatch(
-                r"[<>]?\d+(?:\.\d+)?\s*[-~]\s*[<>]?\d+(?:\.\d+)?(?:\s*[A-Za-z/%μµ·/\-]+)?",
+                rf"[<>]?{_NUMBER_CELL_SOURCE}\s*[-~]\s*[<>]?{_NUMBER_CELL_SOURCE}"
+                r"(?:\s*[A-Za-z/%μµ·/\-]+)?",
                 line.strip(),
             )
         )
@@ -5409,16 +5665,21 @@ def _extract_lab_value(
         the unit, the laboratory's own 「U/L」 was never reached, and the
         flag was lost with it. See `_LETTER_FLAG_CELLS`.
 
-        THE CLASS IS `_UNIT_CELL`, WHICH IS THE ONE THE OTHER READERS
+        THE CLASS IS `_is_unit_cell`, WHICH IS THE ONE THE OTHER READERS
         ASK. This test carried a Latin-only run of its own, so the
         haematology unit 「×10⁹/L」 — the unit on the first three rows of
         every 血常规 — was not a unit here even after it became one
         everywhere else.
+
+        AND IT ASKS WHAT THE CELL IS. Refusing the four flag letters was
+        never enough: a 提示 column prints spellings nobody listed, and
+        an unlisted one filled the unit slot so the real 单位 column one
+        cell further right was never read. See `_is_unit_cell`.
         """
         stripped = line.strip()
         if _is_row_flag_cell(stripped):
             return False
-        return bool(_UNIT_CELL.match(stripped))
+        return _is_unit_cell(stripped)
 
     def ends_the_row(candidate: str) -> bool:
         """`candidate` belongs to the NEXT analyte's row, not this one.
@@ -5645,19 +5906,19 @@ def _row_context(
 
 # --------------------------------------------------------------------
 # Generic lab-table reader
-#
+
 # Everything above is per-analyte: someone wrote a regex for FT3, so FT3
 # is extracted; nobody wrote one for 「游离甲状腺素指数」, so it is not.
 # That is a list that can only ever cover reports we have already seen,
 # and the user's ask was the opposite —「如果有其他格式的报告也可以识别
 # 出来，不局限于我这几个」.
-#
+
 # The way out is that the *shape* is universal. Chinese lab reports put
 # a header row over the results —「No 项目 结果 参考区间 单位 方法」— and
 # PaddleOCR emits one cell per line, so a row is N consecutive lines
 # where N is the header's width. Reading that structure extracts every
 # analyte on the page, including ones nobody anticipated.
-#
+
 # Observed motivating case: an FT3/FT4/TSH panel classified correctly at
 # 0.99 confidence and yielded 3 fields, because only three analytes had
 # hand-written patterns and the rest of the table was invisible.
@@ -5680,7 +5941,11 @@ _TABLE_HEADER_CELLS: Tuple[str, ...] = (
 
 #: A cell holding a measurement: digits and nothing else. 「6.000」 yes;
 #: 「3.5-6.59」 no (that is a range); 「>10」 no (see `_BOUND_CELL`).
-_VALUE_CELL = re.compile(r"^\d+(?:\.\d+)?$")
+#: 「3,250」 and 「3 250」 ARE DIGITS AND NOTHING ELSE — a printed
+#: thousands separator is part of the number, not a second cell. See
+#: `_NUMBER_CELL_SOURCE` for why the spaced spelling is read here, where
+#: the cell boundary proves it, and not by the row scanners.
+_VALUE_CELL = re.compile(rf"^{_NUMBER_CELL_SOURCE}$")
 
 #: A ONE-SIDED LIMIT — 「>10」, 「<0.5」, 「≥11」. IT IS NOT A RESULT WHEN A
 #: RESULT IS ALSO ON THE ROW.
@@ -5703,10 +5968,12 @@ _VALUE_CELL = re.compile(r"^\d+(?:\.\d+)?$")
 #: A bound is therefore a REFERENCE by default, and is accepted as the
 #: value only when the row prints no bare number at all — which is what
 #: keeps a genuinely one-sided result such as 「<0.01」 readable.
-_BOUND_CELL = re.compile(r"^[<>≤≥]\s*\d+(?:\.\d+)?$")
+_BOUND_CELL = re.compile(rf"^[<>≤≥]\s*{_NUMBER_CELL_SOURCE}$")
 
 #: A reference range rather than a result.
-_RANGE_CELL = re.compile(r"^[<>≤≥]?\s*\d+(?:\.\d+)?\s*[-~—～]\s*\d+(?:\.\d+)?$")
+_RANGE_CELL = re.compile(
+    rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}\s*[-~—～]\s*{_NUMBER_CELL_SOURCE}$"
+)
 
 #: WHAT A PRINTED UNIT IS MADE OF, AND IT IS NOT ONLY ASCII.
 #:
@@ -5732,6 +5999,97 @@ _UNIT_CHARS = "A-Za-zμµ%/·^×⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
 #: class accepts.
 _UNIT_CELL = re.compile(rf"^(?=.*[{_UNIT_CHARS}])[{_UNIT_CHARS}\d\.\*]{{1,14}}$")
 
+#: THE COUNTERS A UNIT IS SPELLED WITH IN CHINESE. A urine sediment
+#: count is printed 「个/uL」, 「个/HP」 or 「个/HPF」 and a repeat count is
+#: printed 「个」, and `_UNIT_CELL` admits no CJK at all — so on the
+#: cell-per-line layout that cell was not a unit to any reader, and
+#: `_looks_like_analyte` then called it the NEXT ANALYTE and ended the
+#: row on it: the count shipped with no unit, and the reference interval
+#: printed to the right of the unit column was never reached either. A
+#: closed list rather than 「any CJK」, because 「阴性」 and 「偏高」 are CJK
+#: cells of the same table and neither is a unit.
+#:
+#: 「秒」 IS THE SAME FAILURE ONE PANEL OVER: it is what a 凝血 report
+#: prints in the 单位 column of its prothrombin time, and being CJK it
+#: ended that row exactly as 个/uL ended the sediment row. The shape,
+#: not the instance.
+_CJK_UNIT_COUNTERS = "个只条粒株次秒"
+_CJK_UNIT_CELL = re.compile(
+    rf"^[{_CJK_UNIT_COUNTERS}](?:\s*/\s*[{_UNIT_CHARS}\d\.\*]{{1,10}})?$"
+    rf"|^/\s*[{_UNIT_CHARS}\d\.\*]{{1,10}}$"
+)
+
+#: SYMBOLS THAT SAY 「THIS CELL IS A UNIT」 BY THEMSELVES: a solidus, a
+#: percent, a multiplication sign, a power, a superscript.
+_UNIT_SHAPE_MARKERS = "/%×·^*⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
+
+#: AND THE UNITS THAT CARRY NO SYMBOL AT ALL, as a closed vocabulary.
+#: This is the list that lets `_is_unit_cell` answer POSITIVELY; see it
+#: for why a list is the right shape here and an exclusion is not.
+_SIMPLE_UNIT_WORDS: frozenset = frozenset({
+    "l", "ml", "dl", "cl", "ul", "μl", "µl", "nl", "pl", "fl",
+    "g", "mg", "ug", "μg", "µg", "ng", "pg", "fg", "kg",
+    "mol", "mmol", "umol", "μmol", "µmol", "nmol", "pmol", "fmol",
+    "eq", "meq", "u", "iu", "miu", "uiu", "ku", "mu",
+    # A TITRE IS PRINTED AS A WORD. 「ratio」 is the 单位 cell of an
+    # 抗核抗体滴度 row and carries no symbol at all, which is what this
+    # half of the list is for.
+    "ratio", "titer", "titre", "index",
+    "pa", "kpa", "mmhg", "cmh2o", "atm",
+    # 「h」 IS THE HIGH FLAG BEFORE IT IS AN HOUR, and no panel this file
+    # reads prints an hour. Every caller asks `_is_row_flag_cell` first,
+    # and leaving it out is what keeps that ordering from being
+    # load-bearing.
+    "s", "sec", "ms", "min",
+    "m", "cm", "mm", "um", "μm", "µm", "nm",
+    "mv", "bpm", "hz", "kda", "kb",
+    "osm", "mosm", "copies", "cells",
+})
+
+
+def _is_unit_cell(cell: str) -> bool:
+    """`cell` IS this row's unit — asked positively, on purpose.
+
+    THE EXCLUSION LIST WAS NEVER GOING TO BE FINISHED. `is_unit_only`
+    and the two other unit readers asked 「is this Latin-shaped and not
+    one of the four flag letters we know」, and a 提示 column prints far
+    more than four: 「HI」, 「LO」, 「N」, 「A」, 「AB」, 「PANIC」, a
+    laboratory's own house spelling. Every one of those is Latin,
+    short and symbol-free, so every one of them was accepted AS THE
+    ROW'S UNIT — and the damage is not the wrong unit, it is that the
+    unit slot is then FULL: the real 单位 column, one cell further
+    right, is never reached. Measured on a synthetic 生化全套 in the
+    ordinary 项目 / 结果 / 提示 / 单位 order, an ALT of 88 shipped with
+    `unit: 「A」` and the laboratory's 「U/L」 nowhere in the payload. That
+    is the same failure `_LETTER_FLAG_CELLS` was written to stop, on the
+    cells it does not list — and it will keep happening for as long as
+    the question is 「what is this cell NOT」.
+
+    A unit answers positively and a flag cannot: a printed unit either
+    carries a solidus or a symbol, or it is a word from the closed
+    vocabulary of unit names, or it is a Chinese counter. 「A」 is none
+    of those, and neither is a spelling nobody has seen yet — which is
+    the whole difference between this and one more entry on a list of
+    refusals.
+
+    THE LOOSE SHAPE TEST STAYS WHERE BEING WRONG IS SAFE.
+    `_looks_like_analyte` still asks `_UNIT_CELL`, because there the
+    question is 「could this cell be the unit column」 and answering yes
+    only declines to call it an analyte — a 提示 cell that stopped being
+    unit-shaped would END THE ROW, which costs the interval and the
+    unit both. Publishing is the direction that needs certainty.
+    """
+    stripped = cell.strip()
+    if not stripped:
+        return False
+    if _CJK_UNIT_CELL.match(stripped):
+        return True
+    if not _UNIT_CELL.match(stripped):
+        return False
+    if any(character in _UNIT_SHAPE_MARKERS for character in stripped):
+        return True
+    return stripped.lower() in _SIMPLE_UNIT_WORDS
+
 #: A CELL THAT IS A NUMBER, AN INTERVAL OR A LIMIT — WITH OR WITHOUT ITS
 #: UNIT GLUED ON.
 #:
@@ -5744,8 +6102,8 @@ _UNIT_CELL = re.compile(rf"^(?=.*[{_UNIT_CHARS}])[{_UNIT_CHARS}\d\.\*]{{1,14}}$"
 #: defence that checks a value against its own reference could not fire
 #: on that row either.
 _NUMERIC_DATA_CELL = re.compile(
-    r"^[<>≤≥]?\s*\d+(?:\.\d+)?"
-    r"(?:\s*[-~—～]\s*[<>≤≥]?\s*\d+(?:\.\d+)?)?"
+    rf"^[<>≤≥]?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*[-~—～]\s*[<>≤≥]?\s*{_NUMBER_CELL_SOURCE})?"
     rf"\s*(?:[A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
 )
 
@@ -5754,7 +6112,8 @@ _NUMERIC_DATA_CELL = re.compile(
 #: keeps 「10^9/L」 whole — that is a unit, not a 10 with a unit of
 #: 「^9/L」.
 _CELL_NUMBER_THEN_UNIT = re.compile(
-    r"^([<>≤≥]?\s*\d+(?:\.\d+)?(?:\s*[-~—～]\s*[<>≤≥]?\s*\d+(?:\.\d+)?)?)"
+    rf"^([<>≤≥]?\s*{_NUMBER_CELL_SOURCE}"
+    rf"(?:\s*[-~—～]\s*[<>≤≥]?\s*{_NUMBER_CELL_SOURCE})?)"
     rf"\s*([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
 )
 
@@ -5884,7 +6243,20 @@ def _looks_like_analyte(cell: str) -> bool:
     # A unit is not a test. 「fL」 and 「U/L」 sit in their own column and
     # are followed by the next row's figures, so an unfiltered scan read
     # them as analytes whose result was someone else's number.
+    #
+    # THE LOOSE SHAPE TEST, DELIBERATELY. Here 「could be a unit」 is the
+    # right question — being wrong only declines to call the cell an
+    # analyte, and a 提示 cell that stopped being unit-shaped would END
+    # THE ROW. `_is_unit_cell` is the strict half, asked where a cell is
+    # PUBLISHED as a unit.
     if _UNIT_CELL.match(cell) and not re.search(r"[\u4e00-\u9fa5]", cell):
+        return False
+    # A UNIT SPELLED WITH A CHINESE COUNTER IS STILL A UNIT. 「个/uL」 is
+    # the 单位 cell of every urine sediment row, and being CJK it fell
+    # past the test above and was read as THE NEXT ANALYTE — so the row
+    # ended on its own unit column, losing the unit and, where the
+    # interval is printed to the right of it, the interval too.
+    if _CJK_UNIT_CELL.match(cell.strip()):
         return False
     return bool(re.search(r"[\u4e00-\u9fa5A-Za-z]", cell))
 
@@ -5968,7 +6340,7 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
                 (
                     cell
                     for cell in after
-                    if _UNIT_CELL.match(cell) and not _is_row_flag_cell(cell)
+                    if _is_unit_cell(cell) and not _is_row_flag_cell(cell)
                 ),
                 None,
             )
@@ -5983,7 +6355,11 @@ def extract_lab_table_rows(lines: List[str]) -> List[Dict[str, Any]]:
             seen.add(key)
             rows.append({
                 "name": clean,
-                "value": value,
+                # ONE NUMBER, WITHOUT THE SEPARATORS THAT GROUP IT —
+                # 「3,250」 is what the laboratory printed and 3250 is
+                # what every consumer of this row parses. The printed
+                # form stays on `source_text`. See `_canonical_number`.
+                "value": _canonical_number(value) or value,
                 "unit": unit,
                 "reference": ref,
                 # The laboratory's own verdict on the row, read the same
@@ -6435,6 +6811,15 @@ def analyze_fshd_report(
     findings: List[Dict[str, Any]] = []
     normalized_summary: Dict[str, Any] = {}
 
+    #: The two sections of an 入院常规 printout, where the page prints
+    #: both under their own headings. None on every ordinary
+    #: single-panel report, which is what keeps this out of their way.
+    sections = _split_blood_and_urine_sections(lines)
+    if sections and report_type in {"blood_routine", "urinalysis"}:
+        classification_reasons = list(classification_reasons) + [
+            "sections:同页含血常规与尿常规两段，各段按本段判读"
+        ]
+
     def _run_extractor(kind: str) -> None:
         if kind == "genetic_report":
             _extract_genetic(lines, structured_fields, findings, normalized_summary)
@@ -6467,13 +6852,23 @@ def analyze_fshd_report(
         elif kind == "echocardiography":
             _extract_echo(lines, structured_fields, findings, normalized_summary)
         elif kind == "blood_routine":
-            _extract_blood_routine(lines, structured_fields, normalized_summary)
+            # BOTH PANELS, EACH BOUNDED TO ITS OWN SECTION, on a page
+            # that carries both. See `_split_blood_and_urine_sections`
+            # for what one label cost: the urinalysis rows were absent
+            # and the blood rows were read out of the urine section.
+            blood_lines, urine_lines = sections or (lines, lines)
+            _extract_blood_routine(blood_lines, structured_fields, normalized_summary)
+            if sections:
+                _extract_urinalysis(urine_lines, structured_fields, normalized_summary)
         elif kind == "thyroid_function":
             _extract_thyroid_function(lines, structured_fields, normalized_summary)
         elif kind == "coagulation":
             _extract_coagulation(lines, structured_fields, normalized_summary)
         elif kind == "urinalysis":
-            _extract_urinalysis(lines, structured_fields, normalized_summary)
+            blood_lines, urine_lines = sections or (lines, lines)
+            _extract_urinalysis(urine_lines, structured_fields, normalized_summary)
+            if sections:
+                _extract_blood_routine(blood_lines, structured_fields, normalized_summary)
         elif kind == "infection_screening":
             _extract_infection_screening(lines, structured_fields, normalized_summary)
         elif kind == "stool_test":
