@@ -5426,5 +5426,298 @@ class OneRowIsPublishedOnceTest(unittest.TestCase):
         )
         self.assertTrue(any(name.startswith("table_") for name in names))
 
+
+class AUrineEsteraseIsNotASedimentCountTest(unittest.TestCase):
+    """A 尿常规 PRINTS TWO WHITE-CELL ROWS AND THEY ARE DIFFERENT TESTS.
+
+    The dipstick's leukocyte esterase — 白细胞酯酶, or 白细胞(LEU) — and
+    the sediment's count, 白细胞计数 or a bare 白细胞 with a 个/uL or /HP
+    unit. `urine_leukocyte` carried the bare 白细胞 in its KEYWORD list,
+    which is what the shared row reader is given, so the esterase field
+    claimed the count row and published whatever cell it found there: a
+    microscopy 「+++」 was published as a 3+ leukocyte esterase, over the
+    top of a dipstick row that reads 阴性.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_dipstick_row_is_what_the_esterase_field_reports(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "尿沉渣镜检",
+            "白细胞 +++ /HP",
+            "干化学",
+            "白细胞酯酶(LEU) 阴性",
+        )
+        self.assertEqual(panel["urine_leukocyte"], "阴性")
+
+    def test_a_sediment_only_page_reports_no_esterase_at_all(self):
+        """No dipstick was run. The payload may not say one was."""
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "白细胞 +++ /HP",
+            "红细胞 ++ /HP",
+        )
+        self.assertNotIn("urine_leukocyte", panel)
+
+    def test_a_semi_quantitative_microscopy_word_is_not_an_esterase_either(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "白细胞 少量 /HP",
+            "蛋白质(PRO) 阴性(-)",
+        )
+        self.assertNotIn("urine_leukocyte", panel)
+        self.assertEqual(panel["urine_protein"], "阴性")
+
+    def test_the_esterase_row_carries_its_own_row_as_evidence(self):
+        result = analyze_fshd_report("\n".join((
+            "示例市第一人民医院 尿液分析报告单",
+            "项目", "结果", "参考区间",
+            "白细胞计数", "156", "0-28",
+            "白细胞酯酶", "阴性", "阴性",
+        )), "other", "urine.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        self.assertEqual(fields["urine_leukocyte"]["source_text"], "白细胞酯酶")
+
+    def test_the_count_is_still_published_as_the_count(self):
+        panel = self._panel(
+            "示例市第一人民医院 尿液分析报告单",
+            "项目 参考区间 结果",
+            "白细胞计数(WBC) 0-28 156 个/uL",
+            "白细胞酯酶(LEU) 阴性 阳性(+)",
+        )
+        self.assertEqual(panel["urine_wbc"], 156.0)
+        self.assertEqual(panel["urine_leukocyte"], "阳性(+)")
+
+    def test_the_dipstick_spellings_are_all_still_read(self):
+        self.assertEqual(
+            self._panel(
+                "示例市第一人民医院 尿液分析报告单",
+                "白细胞(LEU) 阴性(-)",
+            )["urine_leukocyte"],
+            "阴性",
+        )
+        self.assertEqual(
+            self._panel(
+                "示例市第一人民医院 尿液分析报告单",
+                "白细胞 阴性",
+                "蛋白质 阴性",
+            )["urine_leukocyte"],
+            "阴性",
+        )
+
+
+class TheGradeAChineseDipstickPrintsIsAReadingTest(unittest.TestCase):
+    """1+ / 2+ / 3+ / (2+) / 微量 WERE NOT VERDICTS TO THIS PARSER.
+
+    A 尿液分析仪 prints the grade as a digit before the sign at least as
+    often as it repeats the sign, and the qualitative class accepted
+    only 「+」, 「++」, 「+++」. So on 「蛋白质(PRO) 阴性 2+」 the row reader
+    saw exactly ONE verdict — the 参考区间 column's 阴性 — and published
+    it: a 2+ proteinuria reported to the patient as a negative urinary
+    protein, and the same for every graded row on the page.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "urine.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_graded_result_is_read_and_not_the_reference(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 2+",
+            "葡萄糖(GLU) 阴性 1+",
+            "潜血(OB) 阴性 (3+)",
+        )
+        self.assertEqual(panel["urine_protein"], "2+")
+        self.assertEqual(panel["urine_glucose"], "1+")
+        self.assertEqual(panel["urine_occult_blood"], "(3+)")
+
+    def test_a_page_with_one_column_publishes_the_grade_it_prints(self):
+        """Nothing was published at all before: not a verdict, no row."""
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 2+",
+            "酮体(KET) 微量",
+        )
+        self.assertEqual(panel["urine_protein"], "2+")
+        self.assertEqual(panel["urine_ketone"], "微量")
+
+    def test_the_header_reads_a_trace_out_of_the_result_column(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "葡萄糖(GLU) 阴性 微量",
+        )
+        self.assertEqual(panel["urine_glucose"], "微量")
+
+    def test_a_trace_with_no_header_is_published_as_unread(self):
+        """The answer 「±」 has always had: two verdicts, neither
+        positive, and no column order on the page to settle it."""
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "蛋白质(PRO) 阴性 微量",
+            "潜血(OB) 阴性",
+        )
+        self.assertNotIn("urine_protein", panel)
+
+    def test_the_repeated_sign_spelling_is_unchanged(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 尿常规",
+            "项目 参考区间 结果",
+            "蛋白质(PRO) 阴性 阳性(++)",
+        )
+        self.assertEqual(panel["urine_protein"], "阳性(++)")
+
+    def test_an_interval_cell_is_not_a_grade(self):
+        """The class stays closed: 「0-5」 and 「3-4」 are not verdicts."""
+        self.assertFalse(fshd_report_service._is_qualitative_value_cell("0-5"))
+        self.assertFalse(fshd_report_service._is_qualitative_value_cell("3-4"))
+        self.assertTrue(fshd_report_service._is_qualitative_value_cell("2+"))
+        self.assertTrue(fshd_report_service._is_qualitative_value_cell("(2+)"))
+
+
+class TheHaematologyUnitSpelledWithAnEExponentTest(unittest.TestCase):
+    """「10E9/L」 IS THE SAME CELL AS 「10^9/L」, AND IT SPLIT IN TWO.
+
+    The number-then-unit split only required the unit half to START with
+    a letter, and 「E9/L」 does — so the cell was not a whole unit to
+    `_unit_digit_spans`, nothing was reserved, and on the
+    项目 / 单位 / 结果 order the first number after the analyte's name is
+    the 10 inside its own unit.
+    """
+
+    def _panel(self, *rows):
+        result = analyze_fshd_report("\n".join(rows), "other", "blood.jpeg")
+        return result["fshd"]["normalized_summary"]["lab_panel"]
+
+    def test_the_e_exponent_unit_is_not_the_reading(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 10E9/L 6.69 3.5-9.5",
+            "红细胞计数(RBC) 10E12/L 4.55 4.3-5.8",
+        )
+        self.assertEqual(panel["wbc"], 6.69)
+        self.assertEqual(panel["rbc"], 4.55)
+
+    def test_the_lower_case_spelling_reads_the_same_way(self):
+        panel = self._panel(
+            "示例市第一人民医院检验报告单",
+            "检验目的: 血常规",
+            "白细胞计数(WBC) 10e9/L 6.69 3.5-9.5",
+        )
+        self.assertEqual(panel["wbc"], 6.69)
+
+    def test_the_cell_is_one_unit_and_not_a_number_beside_one(self):
+        self.assertEqual(fshd_report_service._split_data_cell("10E9/L"), ["10E9/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("10E12/L"), ["10E12/L"])
+
+    def test_a_reading_glued_to_a_unit_that_starts_with_e_still_splits(self):
+        """An E followed by a digit is an exponent. An E followed by
+        anything else opens an ordinary unit."""
+        self.assertEqual(fshd_report_service._split_data_cell("5EU/L"), ["5", "EU/L"])
+        self.assertEqual(fshd_report_service._split_data_cell("693U/L"), ["693", "U/L"])
+
+    def test_the_spellings_already_covered_are_unchanged(self):
+        for unit in ("10^9/L", "10*9/L", "×10⁹/L"):
+            panel = self._panel(
+                "示例市第一人民医院检验报告单",
+                "检验目的: 血常规",
+                f"白细胞计数(WBC) {unit} 6.69 3.5-9.5",
+            )
+            self.assertEqual(panel["wbc"], 6.69, unit)
+
+
+class EveryIntervalSeparatorIsOneStatementTest(unittest.TestCase):
+    """THE D4Z4 BRANCH CARRIED ITS OWN LIST OF FIVE.
+
+    `_RANGE_DASHES` is this file's single statement of what an interval
+    is printed with, and the repeat-count reader — the one cell this
+    whole product turns on — listed 「-–—~～」 by hand. The eight it did
+    not list are the eight a Chinese report is most likely to carry, and
+    on each of them a stated range 「1－10」 was published as a confident
+    repeat count of 1, inside the 1–4 window that gates this platform's
+    ophthalmology recommendation.
+    """
+
+    def _count(self, separator):
+        result = analyze_fshd_report("\n".join((
+            "示例市医学检验所 基因检测报告",
+            "检测项目: FSHD相关基因检测",
+            f"检测结果: D4Z4重复单元数 1{separator}10",
+        )), "genetic", "gene.jpeg")
+        fields = {i["field_name"]: i for i in result["fshd"]["structured_fields"]}
+        return fields.get("d4z4_repeat_pathogenic")
+
+    def test_every_separator_this_file_knows_reads_as_a_range(self):
+        separators = list(fshd_report_service._RANGE_DASHES) + list(
+            fshd_report_service._RANGE_WORDS
+        )
+        self.assertEqual(len(separators), 15)
+        for separator in separators:
+            field = self._count(separator)
+            self.assertIsNotNone(field, separator)
+            self.assertEqual(field["field_value"], f"1{separator}10", separator)
+            self.assertIsNone(field.get("normalized_value"), separator)
+
+    def test_a_determinate_count_is_still_a_determinate_count(self):
+        field = self._count("")
+        self.assertEqual(field["field_value"], "110")
+
+
+class TheComparativeFormsAChineseRadiologistWritesTest(unittest.TestCase):
+    """ONE OPTIONAL LINKING CHARACTER, AND THE ORDINARY FORMS ARE TWO.
+
+    「右侧较为明显」, 「左侧更为明显」, 「右侧尤为明显」 and 「左侧相对更重」
+    are how a Chinese radiologist states the asymmetry FSHD is
+    characterised by, and every one of them came back `asymmetry: none`
+    — the study's own signature finding contradicted rather than left
+    unread.
+    """
+
+    def _asymmetry(self, sentence):
+        text = "\n".join((
+            "示例市第一人民医院 磁共振检查报告单",
+            "检查项目: 双大腿MRI平扫",
+            f"影像所见: 双侧股四头肌脂肪浸润,{sentence}。",
+        ))
+        result = analyze_fshd_report(text, "mri", "mri.jpeg")
+        entries = result["fshd"]["normalized_summary"]["mri_map"]
+        return entries[0]["asymmetry"] if entries else None
+
+    def test_the_two_character_linking_forms_name_a_side(self):
+        self.assertEqual(self._asymmetry("右侧较为明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧更为明显"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧尤为明显"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧相对更重"), "left_gt_right")
+
+    def test_the_understated_forms_name_a_side_too(self):
+        self.assertEqual(self._asymmetry("右侧稍重"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧略重"), "left_gt_right")
+
+    def test_the_spellings_already_read_are_unchanged(self):
+        self.assertEqual(self._asymmetry("右侧著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("以右侧为著"), "right_gt_left")
+        self.assertEqual(self._asymmetry("左侧受累更重"), "left_gt_right")
+        self.assertEqual(self._asymmetry("右侧较左侧明显"), "right_gt_left")
+
+    def test_the_linking_run_is_a_closed_class_and_not_a_gap(self):
+        """A clause that changes subject between the side and the
+        emphasis word may not be joined back up."""
+        self.assertEqual(self._asymmetry("左侧膈肌运动明显减弱"), "none")
+        self.assertEqual(self._asymmetry("双侧信号明显增高"), "none")
+        self.assertEqual(self._asymmetry("双侧对称"), "none")
+        self.assertEqual(self._asymmetry("左侧相对保留"), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

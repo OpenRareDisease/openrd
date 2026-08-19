@@ -1253,30 +1253,120 @@ const ANALYTE_FLAG_ZH: Record<string, string> = {
  */
 type PrintedIntervalVerdict = 'above' | 'below';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE PUNCTUATION AN INTERVAL IS ACTUALLY PRINTED WITH. ONE GRAMMAR,
+ * AND IT IS THE PARSER'S.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The comparison below arrived understanding the half-width spellings
+ * only — 「-」 and 「~」 between two bounds, 「<」 「>」 「≤」 「≥」 before
+ * one. A Chinese laboratory does not type those. An IME in Chinese mode
+ * gives 「－」 (U+FF0D) for a hyphen and 「＜」 (U+FF1C) for a less-than,
+ * and an OCR pass hands back 「–」 (U+2013) for a printed en dash at
+ * least as often as it hands back the ASCII one. So on a report typed
+ * the ordinary way the comparison SILENTLY DID NOT HAPPEN: 「CK 693
+ * （参考区间 50－310）」 printed the value and the interval side by side
+ * with no observation between them — exactly the row this whole clause
+ * was added to end, on the passport, the share page, the referral pack
+ * and the markdown export at once.
+ *
+ * AND ON THE VALUE SIDE IT WAS WORSE THAN SILENCE. `VALUE_IS_A_RANGE`
+ * exists to refuse a result cell that is really the reference column
+ * mis-parsed; spelled full-width, 「0.5－1.2」 walked past it, and
+ * `LEADING_NUMBER` handed 0.5 to the comparison. That published 「本平台
+ * 比对：低于该区间」 about a number nobody measured.
+ *
+ * THE SET IS COPIED FROM THE PRODUCER, NOT INVENTED HERE. Everything
+ * that reaches `reading.reference` came off `_read_row_reference` in
+ * apps/report-manager/app/services/fshd_report_service.py, which
+ * returns the interval RAW — 「interval.group(0)」 for a range, the
+ * comparator concatenated with its number for a bound — so whatever the
+ * laboratory typed arrives here unaltered. Its two classes are
+ * therefore the exact set this side has to accept:
+ *
+ *   RANGE SEPARATORS, from `_RANGE_DASHES`, thirteen of them:
+ *     -  U+002D hyphen-minus        ~  U+007E tilde
+ *     ‐  U+2010 hyphen              ‑  U+2011 non-breaking hyphen
+ *     ‒  U+2012 figure dash         –  U+2013 en dash
+ *     —  U+2014 em dash             ―  U+2015 horizontal bar
+ *     −  U+2212 minus sign          〜 U+301C wave dash
+ *     ﹣ U+FE63 small hyphen-minus  －  U+FF0D fullwidth hyphen-minus
+ *     ～ U+FF5E fullwidth tilde
+ *
+ *   COMPARATORS, from `_COMPARATORS` plus 「≦」/「≧」 — see below:
+ *     ceiling, EXCLUSIVE:  <  U+003C   ＜ U+FF1C   ﹤ U+FE64
+ *     ceiling, INCLUSIVE:  ≤  U+2264   ⩽  U+2A7D   ≦  U+2266
+ *     floor,   EXCLUSIVE:  >  U+003E   ＞ U+FF1E   ﹥ U+FE65
+ *     floor,   INCLUSIVE:  ≥  U+2265   ⩾  U+2A7E   ≧  U+2267
+ *
+ *   AND THE THOUSANDS SEPARATOR IN BOTH WIDTHS, from `_DIGIT_GROUPS`
+ *   (「[,，]」): 「1，000－2，000」 is one interval between two numbers.
+ *
+ * THE EXCLUSIVE / INCLUSIVE SPLIT IS THE PART THAT MUST NOT BE FLATTENED
+ * WHEN WIDENING. The parser only has to know that 「＜」 names a CEILING
+ * (`_UPPER_LIMIT_COMPARATORS`); this file has to know that it EXCLUDES
+ * its own limit while 「⩽」 does not, or a reading sitting exactly on the
+ * limit lands on the wrong side of it. Hence four classes, not two.
+ *
+ * 「≦」 AND 「≧」 ARE IN THIS SET AND NOT IN `_COMPARATORS`, deliberately:
+ * `parseD4Z4Reading` in this same file already counts them as bounds,
+ * they are unambiguously the inclusive spellings, and a class that is a
+ * strict superset of the producer's can only widen what is understood.
+ *
+ * WHAT IS STILL NOT ACCEPTED, said out loud so the next reader does not
+ * trust this further than it goes: an interval written in WORDS (「大于
+ * 10」, 「10 以上」, 「正常」) — `parseD4Z4Reading` reads those, this does
+ * not, and a row it cannot read prints as it stands, which is the safe
+ * direction; a NEGATIVE bound (「−5－5」), because `PRINTED_NUMBER`
+ * carries no sign and the dash class would eat it; and a space-grouped
+ * number (「3 250」), which the parser folds away before publishing and
+ * so never reaches a reference cell.
+ */
+const RANGE_DASHES = '-~‐‑‒–—―−〜﹣－～';
+
+/** 「<」 EXCLUDES its own limit and 「≤」 does not, in every width. Kept
+ *  as four separate classes rather than one comparator class plus a
+ *  direction, because the strictness is the half a widening loses. */
+const CEILING_EXCLUSIVE = '<＜﹤';
+const CEILING_INCLUSIVE = '≤⩽≦';
+const FLOOR_EXCLUSIVE = '>＞﹥';
+const FLOOR_INCLUSIVE = '≥⩾≧';
+const COMPARATORS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
+
 /** 「3,250」 IS ONE NUMBER, and the grouped spelling has to come first
  *  in the alternation or the scan stops at the first group and reads
- *  3. Same rule, same reason, as `_NUMBER_SOURCE` in the parser. */
-const PRINTED_NUMBER = String.raw`\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
+ *  3. Same rule, same reason, and now the same comma class, as
+ *  `_NUMBER_SOURCE` / `_DIGIT_GROUPS` in the parser. */
+const PRINTED_NUMBER = String.raw`\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
 
-/** 「50-310」, 「1.2~1.6」 — the exact shape `_read_row_reference`
- *  returns for a two-sided interval, anchored so nothing else is read
- *  as one. */
-const PRINTED_RANGE = new RegExp(`^(${PRINTED_NUMBER})\\s*[-~—～]\\s*(${PRINTED_NUMBER})$`);
+/** 「50-310」, 「1.2~1.6」, 「50－310」 — the exact shape
+ *  `_read_row_reference` returns for a two-sided interval, anchored so
+ *  nothing else is read as one. */
+const PRINTED_RANGE = new RegExp(
+  `^(${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(${PRINTED_NUMBER})$`,
+);
 
-/** 「<25」, 「>1.04」, 「≤25」, 「≥9」 — a one-sided limit, which is the
- *  whole of what a CKMB or a cholesterol row prints. */
-const PRINTED_BOUND = new RegExp(`^([<>≤≥])\\s*(${PRINTED_NUMBER})$`);
+/** 「<25」, 「>1.04」, 「≤25」, 「＜25」, 「⩾9」 — a one-sided limit, which
+ *  is the whole of what a CKMB or a cholesterol row prints. */
+const PRINTED_BOUND = new RegExp(`^([${COMPARATORS}])\\s*(${PRINTED_NUMBER})$`);
 
 /** The number at the head of a display value: 「693U/L」 → 693. The
  *  unit is glued on the right and is the SAME unit the interval was
  *  printed under, because they are two cells of one row. */
 const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
 
+/** A READING that is itself a bound — 「<0.01」, 「＜0.01」 — says the
+ *  assay stopped looking, not that the analyte is 0.01. */
+const READING_IS_A_BOUND = new RegExp(`^[${COMPARATORS}]`);
+
 /** A value cell holding an interval rather than a result. */
-const VALUE_IS_A_RANGE = new RegExp(`^(?:${PRINTED_NUMBER})\\s*[-~—～]\\s*(?:${PRINTED_NUMBER})`);
+const VALUE_IS_A_RANGE = new RegExp(
+  `^(?:${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(?:${PRINTED_NUMBER})`,
+);
 
 const toNumber = (text: string): number | null => {
-  const parsed = Number(text.replace(/,/g, ''));
+  const parsed = Number(text.replace(/[,，]/g, ''));
   return Number.isFinite(parsed) ? parsed : null;
 };
 
@@ -1302,7 +1392,7 @@ export const compareWithPrintedInterval = (
   const reading = value.trim();
   // A reading that is itself a bound cannot be placed: 「<0.01」 says
   // the assay stopped looking, not that the analyte is 0.01.
-  if (/^[<>≤≥]/.test(reading)) return null;
+  if (READING_IS_A_BOUND.test(reading)) return null;
   // A VALUE THAT IS ITSELF A RANGE IS NOT A READING. 「0.5-1.2」 in the
   // value cell is a mis-parse — the row's reference interval landed in
   // the result column — and placing its low end against another
@@ -1327,22 +1417,26 @@ export const compareWithPrintedInterval = (
   if (bound) {
     const limit = toNumber(bound[2]);
     if (limit === null) return null;
-    switch (bound[1]) {
-      // 「<25」 EXCLUDES 25 and 「≤25」 does not — the two characters are
-      // the laboratory saying which, and collapsing them would put a
-      // reading exactly on the limit on the wrong side of it.
-      case '<':
-        return measured >= limit ? 'above' : null;
-      case '≤':
-        return measured > limit ? 'above' : null;
-      case '>':
-        return measured <= limit ? 'below' : null;
-      // 「≥」, and nothing else: `PRINTED_BOUND` admits exactly these
-      // four characters, so the default branch is that one case rather
-      // than a catch-all.
-      default:
-        return measured < limit ? 'below' : null;
-    }
+    // 「<25」 EXCLUDES 25 and 「≤25」 does not — the two characters are
+    // the laboratory saying which, and collapsing them would put a
+    // reading exactly on the limit on the wrong side of it. Asked of
+    // the four classes rather than of twelve literal cases, so a
+    // spelling added to a class is answered without a branch being
+    // added here and without one being forgotten.
+    //
+    // Tested for emptiness first and not defaulted to 「''」: every
+    // 「includes('')」 is true, so an absent capture would answer the
+    // FIRST class asked and publish a verdict off a comparator that was
+    // never read.
+    const comparator = bound[1];
+    if (!comparator) return null;
+    if (CEILING_EXCLUSIVE.includes(comparator)) return measured >= limit ? 'above' : null;
+    if (CEILING_INCLUSIVE.includes(comparator)) return measured > limit ? 'above' : null;
+    if (FLOOR_EXCLUSIVE.includes(comparator)) return measured <= limit ? 'below' : null;
+    // The inclusive floor, and nothing else: `PRINTED_BOUND` admits
+    // exactly the four classes, so this is that one case rather than a
+    // catch-all.
+    return measured < limit ? 'below' : null;
   }
 
   return null;

@@ -272,20 +272,70 @@ const pickReading = (
  */
 type PrintedIntervalVerdict = 'above' | 'below';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE PUNCTUATION AN INTERVAL IS ACTUALLY PRINTED WITH. ONE GRAMMAR,
+ * AND IT IS THE PARSER'S.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * These classes understood the half-width spellings only — 「-」 and
+ * 「~」 between two bounds, 「<」 「>」 「≤」 「≥」 before one — and a
+ * Chinese laboratory does not type those. An IME in Chinese mode gives
+ * 「－」 (U+FF0D) for a hyphen and 「＜」 (U+FF1C) for a less-than, and an
+ * OCR pass hands back 「–」 (U+2013) for a printed en dash at least as
+ * often as the ASCII one. So on a report typed the ordinary way the
+ * comparison SILENTLY DID NOT HAPPEN: 报告详情 printed 「CK 693（参考区间
+ * 50－310）」, the value and the interval side by side with nothing
+ * between them. On the value side it was worse than silence —
+ * 「0.5－1.2」 in the result column walked past `VALUE_IS_A_RANGE` and
+ * 0.5 was compared, publishing a verdict about a number nobody
+ * measured.
+ *
+ * THE SET IS COPIED FROM THE PRODUCER. `_read_row_reference` in
+ * apps/report-manager/app/services/fshd_report_service.py returns the
+ * interval RAW, so whatever the laboratory typed arrives here
+ * unaltered, and its `_RANGE_DASHES` / `_COMPARATORS` / `_DIGIT_GROUPS`
+ * are the exact set this side has to accept. The full argument, the
+ * codepoint-by-codepoint listing and what is still NOT accepted are in
+ * `compareWithPrintedInterval` in
+ * apps/api/src/modules/patient-profile/profile.passport.ts; these
+ * literals are its word-for-word twin and have to stay identical or the
+ * two screens disagree about whether a number fits its own row.
+ *
+ * THE EXCLUSIVE / INCLUSIVE SPLIT IS THE PART A WIDENING LOSES. The
+ * parser only needs to know 「＜」 names a CEILING; this file needs to
+ * know it EXCLUDES its own limit while 「⩽」 does not. Hence four
+ * classes, not two.
+ */
+const RANGE_DASHES = '-~‐‑‒–—―−〜﹣－～';
+const CEILING_EXCLUSIVE = '<＜﹤';
+const CEILING_INCLUSIVE = '≤⩽≦';
+const FLOOR_EXCLUSIVE = '>＞﹥';
+const FLOOR_INCLUSIVE = '≥⩾≧';
+const COMPARATORS = `${CEILING_EXCLUSIVE}${CEILING_INCLUSIVE}${FLOOR_EXCLUSIVE}${FLOOR_INCLUSIVE}`;
+
 /** 「3,250」 is one number, and the grouped spelling has to come first
- *  in the alternation or the scan stops at the first group. */
-const PRINTED_NUMBER = String.raw`\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
-const PRINTED_RANGE = new RegExp(`^(${PRINTED_NUMBER})\\s*[-~—～]\\s*(${PRINTED_NUMBER})$`);
-const PRINTED_BOUND = new RegExp(`^([<>≤≥])\\s*(${PRINTED_NUMBER})$`);
+ *  in the alternation or the scan stops at the first group. The comma
+ *  in both widths, as `_DIGIT_GROUPS` has it. */
+const PRINTED_NUMBER = String.raw`\d{1,3}(?:[,，]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?`;
+const PRINTED_RANGE = new RegExp(
+  `^(${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(${PRINTED_NUMBER})$`,
+);
+const PRINTED_BOUND = new RegExp(`^([${COMPARATORS}])\\s*(${PRINTED_NUMBER})$`);
 const LEADING_NUMBER = new RegExp(`^(${PRINTED_NUMBER})`);
+/** A READING that is itself a bound — 「<0.01」, 「＜0.01」 — is a
+ *  detection limit, not a number that sits anywhere on an interval. */
+const READING_IS_A_BOUND = new RegExp(`^[${COMPARATORS}]`);
 /** A value cell holding an interval rather than a result — 「0.5-1.2」
  *  in the result column is the row's reference interval mis-parsed, and
  *  placing its low end against another interval would compare a number
  *  nobody measured. */
-const VALUE_IS_A_RANGE = new RegExp(`^(?:${PRINTED_NUMBER})\\s*[-~—～]\\s*(?:${PRINTED_NUMBER})`);
+const VALUE_IS_A_RANGE = new RegExp(
+  `^(?:${PRINTED_NUMBER})\\s*[${RANGE_DASHES}]\\s*(?:${PRINTED_NUMBER})`,
+);
 
 const toNumber = (text: string): number | null => {
-  const parsed = Number(text.replace(/,/g, ''));
+  const parsed = Number(text.replace(/[,，]/g, ''));
   return Number.isFinite(parsed) ? parsed : null;
 };
 
@@ -301,7 +351,7 @@ const compareWithPrintedInterval = (
   if (!reference) return null;
   const printed = reference.trim();
   const reading = value.trim();
-  if (/^[<>≤≥]/.test(reading)) return null;
+  if (READING_IS_A_BOUND.test(reading)) return null;
   if (VALUE_IS_A_RANGE.test(reading)) return null;
   const head = LEADING_NUMBER.exec(reading);
   if (!head) return null;
@@ -322,20 +372,20 @@ const compareWithPrintedInterval = (
   if (bound) {
     const limit = toNumber(bound[2]);
     if (limit === null) return null;
-    switch (bound[1]) {
-      // 「<25」 excludes 25 and 「≤25」 does not; the two characters are
-      // the laboratory saying which.
-      case '<':
-        return measured >= limit ? 'above' : null;
-      case '≤':
-        return measured > limit ? 'above' : null;
-      case '>':
-        return measured <= limit ? 'below' : null;
-      // 「≥」, and nothing else: `PRINTED_BOUND` admits exactly these
-      // four characters.
-      default:
-        return measured < limit ? 'below' : null;
-    }
+    // 「<25」 excludes 25 and 「≤25」 does not; the two characters are
+    // the laboratory saying which. Asked of the four classes, so a
+    // spelling added to one is answered without a branch being added
+    // here and without one being forgotten. Emptiness first, because
+    // every 「includes('')」 is true and an absent capture would answer
+    // the first class asked.
+    const comparator = bound[1];
+    if (!comparator) return null;
+    if (CEILING_EXCLUSIVE.includes(comparator)) return measured >= limit ? 'above' : null;
+    if (CEILING_INCLUSIVE.includes(comparator)) return measured > limit ? 'above' : null;
+    if (FLOOR_EXCLUSIVE.includes(comparator)) return measured <= limit ? 'below' : null;
+    // The inclusive floor, and nothing else: `PRINTED_BOUND` admits
+    // exactly the four classes.
+    return measured < limit ? 'below' : null;
   }
 
   return null;

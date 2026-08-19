@@ -870,6 +870,35 @@ _GROUP_SEPARATOR = re.compile("(?<=\\d)[,\uff0c \u00a0](?=\\d)")
 _RANGE_DASHES = "-~—～－–‐‑‒―−〜﹣"
 _COMPARATORS = "<>≤≥＜＞⩽⩾﹤﹥"
 
+#: AND THE TWO WORDS AN INTERVAL IS ALSO PRINTED WITH. 「1至10」 and
+#: 「1到10」 are the same interval as 「1-10」, written out; they are not
+#: punctuation, so they cannot live in `_RANGE_DASHES`, and every reader
+#: that needs one needs the other.
+_RANGE_WORDS: Tuple[str, ...] = ("至", "到")
+
+#: THE WHOLE GRAMMAR OF 「A TO B」, AS ONE REGEX SOURCE — THIS IS THE ONE
+#: PLACE A SEPARATOR IS SPELLED.
+#:
+#: `_RANGE_DASHES` was already the single statement for the interval
+#: readers, and the D4Z4 branch — the one cell this whole product turns
+#: on — carried its OWN list of five: 「-–—~～」 plus 至 and 到. The eight
+#: spellings it did not carry are the eight a Chinese report is most
+#: likely to be printed with: 「－」 (U+FF0D) is what a Chinese IME gives
+#: for a hyphen, and an OCR pass returns 「‐」 (U+2010), 「‑」 (U+2011),
+#: 「‒」 (U+2012), 「―」 (U+2015), 「−」 (U+2212), 「〜」 (U+301C) and
+#: 「﹣」 (U+FE63) for the printed dashes it cannot tell apart.
+#:
+#: The cost was not a missing interval, it was a WRONG COUNT. The
+#: determinate-count pattern refuses a number that is the left edge of a
+#: printed interval — the refusal is spelled as this separator class —
+#: so on 「D4Z4重复单元数 1－10」 the refusal did not fire, and the range
+#: branch it hands off to did not match either: the report's stated
+#: uncertainty was published as a confident repeat count of 1, inside
+#: the 1–4 window that gates this platform's ophthalmology
+#: recommendation. Measured on every spelling: the eight above all
+#: published 1.
+_RANGE_SEPARATOR = rf"(?:[{_RANGE_DASHES}]|{'|'.join(_RANGE_WORDS)})"
+
 #: The comparators that name a CEILING. Read as a set rather than by
 #: `in "<≤"`, which was a substring test over the two ASCII spellings —
 #: so 「＜25」 was recorded as a LOWER limit of 25 the moment the
@@ -2404,8 +2433,24 @@ _ASYMMETRY_COMPARISON = re.compile(
     rf"([左右])侧[^,\n]{{0,12}}?[较比]([左右对健])侧[^,\n]{{0,8}}?"
     rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
 )
+#: WHAT A RADIOLOGIST PUTS BETWEEN THE SIDE AND THE EMPHASIS WORD.
+#:
+#: The pattern allowed ONE optional character — 「为」, 「更」 or 「较」 —
+#: and the ordinary comparative forms are two: 「右侧较为明显」,
+#: 「左侧更为明显」, 「右侧尤为明显」, 「左侧相对更重」. Each of those is a
+#: report stating the asymmetry FSHD is characterised by, and each came
+#: back `asymmetry: none` — the study's own signature finding
+#: contradicted, on the modality this disease is followed by.
+#:
+#: A CLOSED CLASS AND NOT A GAP. Widening this to 「any few characters」
+#: reads 「左侧膈肌运动明显减弱」 — a diaphragm moving poorly, which says
+#: nothing about which side is more infiltrated — as a left-heavy
+#: asymmetry. These are the linking words themselves, so a clause that
+#: changes subject between the side and the emphasis word cannot be
+#: joined back up.
+_ASYMMETRY_LINKING = "为更较相对尤稍略甚"
 _ASYMMETRY_SIDE_EMPHASIS = re.compile(
-    rf"(?<![较比于和与及])([左右])侧?(?:受累|病变|改变)?[为更较]?"
+    rf"(?<![较比于和与及])([左右])侧?(?:受累|病变|改变)?[{_ASYMMETRY_LINKING}]{{0,3}}"
     rf"(?:{_ASYMMETRY_EMPHASIS_WORDS})"
 )
 
@@ -3992,7 +4037,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
             [
                 r"D4Z4(?P<gap>[^\d\n(]{0,16})"
                 + _NOT_INSIDE_A_LATIN_TOKEN
-                + r"(?P<value>\d+)(?!\s*(?:-|–|—|~|～|至|到)\s*\d)"
+                + rf"(?P<value>\d+)(?!\s*{_RANGE_SEPARATOR}\s*\d)"
             ],
             analyte="repeat_count",
         )
@@ -4007,7 +4052,7 @@ def _extract_genetic(lines: List[str], fields: List[Dict[str, Any]], findings: L
                 [
                     r"D4Z4(?P<gap>[^\d\n(]{0,16})"
                     + _NOT_INSIDE_A_LATIN_TOKEN
-                    + r"(?P<value>\d+\s*(?:-|–|—|~|～|至|到)\s*\d+)"
+                    + rf"(?P<value>\d+\s*{_RANGE_SEPARATOR}\s*\d+)"
                 ],
                 analyte="repeat_count",
             )
@@ -5391,7 +5436,17 @@ _PANEL_NAME_TO_VALUE = r"[^\d\n(]{0,16}"
 #: THE READING A PANEL PATTERN CAPTURES, grouped spelling included —
 #: the fallback path may not read 「3,250」 as a 3 where the row reader
 #: no longer does. See `_NUMBER_SOURCE`.
-_PANEL_READING = rf"([<>]?{_NUMBER_SOURCE})"
+#:
+#: THE COMPARATOR COMES FROM `_COMPARATORS`, which is the same
+#: one-source rule `_RANGE_SEPARATOR` states for the dashes. This class
+#: was the two ASCII spellings while every other comparator reader in
+#: the file had all ten, so a below-detection reading printed 「＜0.01」
+#: or 「≤0.01」 would fall out of this capture as a bare 0.01 — a limit
+#: the laboratory refused to state, shipped as a determinate
+#: measurement. The row reader answers first on every layout measured,
+#: so this is the fallback closing behind it rather than a live
+#: reading; it is spelled from the shared class so that it stays shut.
+_PANEL_READING = rf"([{_COMPARATORS}]?{_NUMBER_SOURCE})"
 
 
 def _numeric_analyte(
@@ -5584,7 +5639,40 @@ def _extract_urinalysis(lines: List[str], fields: List[Dict[str, Any]], normaliz
         "urine_protein": {"patterns": [r"(?:蛋白质(?:\(PRO\))?|尿蛋白(?:\(PRO\))?|PRO)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["蛋白质", "尿蛋白", "PRO"], "normalize_qualitative": True},
         "urine_nitrite": {"patterns": [r"(?:亚硝酸盐(?:\(NIT\))?|NIT)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["亚硝酸盐", "NIT"], "normalize_qualitative": True},
         "urine_occult_blood": {"patterns": [r"(?:潜血(?:\(OB\)|\(BLD\))?|OB|BLD)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["潜血", "OB"], "normalize_qualitative": True},
-        "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "白细胞", "LEU"], "normalize_qualitative": True},
+        # THE BARE 白细胞 IS THE SEDIMENT ROW'S NAME, NOT THIS ONE'S.
+        #
+        # A 尿常规 prints TWO white-cell rows and they are DIFFERENT
+        # TESTS: the dipstick's leukocyte esterase — 白细胞酯酶, or
+        # 白细胞(LEU) — and the sediment's count, 白细胞计数 or a bare
+        # 白细胞 carrying a 个/uL or /HP unit. This field's keyword list
+        # carried the bare 白细胞, and `keywords` is what the shared ROW
+        # reader is given, so the esterase field claimed the count row
+        # and published whatever cell it found there:
+        #
+        #     白细胞 +++ /HP          →  urine_leukocyte: 「+++」
+        #     白细胞酯酶(LEU) 阴性     →  never reached
+        #
+        # — a 3+ leukocyte esterase invented out of a microscopy field,
+        # published over the top of the dipstick row that says 阴性. On
+        # a sediment-only page, where no dipstick was run at all, the
+        # same 「+++」 was published as a test that was never performed,
+        # and 「白细胞 少量 /HP」 published 少量 the same way. It also took
+        # the field's EVIDENCE: `_panel_source_line` searches on these
+        # keywords, so even a correctly read esterase shipped with the
+        # count row as its `source_text`.
+        #
+        # THE PATTERN KEEPS THE BARE SPELLING AND THE ROW READER DOES
+        # NOT. The pattern requires a printed 阴性/阳性 within a few
+        # non-CJK characters of the name, which a count row does not
+        # have — so 「白细胞 阴性」 on a dipstick block that prints no
+        # abbreviation is still read, while the row reader, which
+        # accepts whatever cell the row happens to carry, can no longer
+        # reach a count. The count is `urine_wbc`'s, which declares both
+        # spellings; 白细胞酯酶 stays on this list so that
+        # `_extract_numeric_panel`'s `neighbours` keeps 白细胞 off the
+        # esterase row in the other direction, which is the collision
+        # the note below this dict describes.
+        "urine_leukocyte": {"patterns": [r"(?:白细胞酯酶|白细胞(?:\(LEU\))?|LEU)[^\n\u4e00-\u9fa5A-Za-z]{0,8}(阴性|\(-\)|阳性|\(\+\)|弱阳性)"], "keywords": ["白细胞酯酶", "LEU"], "normalize_qualitative": True},
         "urine_urobilinogen": {"patterns": [rf"(?:尿胆原|URO){_OWN_ABBREVIATION}{_TEXT_VALUE_GAP}{_TEXT_VALUE}"], "keywords": ["尿胆原", "URO"]},
     }
     numeric_definitions = {
@@ -6917,12 +7005,36 @@ def _row_segment_after_name(line: str, name_end: int) -> str:
 #: is what lets a 阴性/阳性 cell be recognised without asking
 #: `_looks_like_analyte`, which calls 「阴性」 a name and would end the
 #: row on the very cell being read.
+#:
+#: 「微量」 AND 「痕量」 ARE READINGS, NOT HEDGES. They are what a urine
+#: dipstick prints for a trace of protein, glucose or blood — the whole
+#: of the row's result — and neither was in this vocabulary, so the cell
+#: was not a qualitative reading to `_read_qualitative_row`, the row was
+#: passed over, and the panel's own pattern took the 参考区间 column's
+#: 阴性 instead. A trace of urinary protein published as a negative one.
 _QUALITATIVE_WORDS: Tuple[str, ...] = (
     "弱阳性", "可疑阳性", "阳性", "阴性", "未检出", "检出", "未见异常", "未见",
+    "微量", "痕量",
 )
 
 #: The same verdict printed as a sign — 「(-)」, 「+」, 「++」, 「±」.
-_QUALITATIVE_SIGN = re.compile(r"^[(（]?\s*[-+±]{1,4}\s*[)）]?$")
+#:
+#: AND THE SPELLING A CHINESE DIPSTICK PRINTOUT ACTUALLY USES: 「1+」,
+#: 「2+」, 「3+」, 「(2+)」. A 尿液分析仪 prints the grade as a digit before
+#: the sign at least as often as it repeats the sign, and this class
+#: accepted only the repeated form — so on 「蛋白质(PRO) 阴性 2+」 the
+#: 「2+」 was not a qualitative cell at all: `_read_qualitative_row` found
+#: exactly one candidate on the row, the reference column's 阴性, and
+#: published it. A 2+ proteinuria reported to the patient as a negative
+#: urinary protein, and the same for every graded row on the page —
+#: glucose, blood, ketones. Where the page prints no reference column at
+#: all the row was published as UNREAD instead, which is the same
+#: reading lost the other way.
+#:
+#: THE GRADE IS 1 TO 4 and nothing else: a dipstick has four grades, and
+#: leaving the digit unbounded would make 「0-5」-shaped cells and row
+#: indices compete for a class whose whole job is to be closed.
+_QUALITATIVE_SIGN = re.compile(r"^[(（]?\s*(?:[1-4]\s*)?[-+±]{1,4}\s*[)）]?$")
 
 
 def _is_qualitative_value_cell(cell: str) -> bool:
@@ -6947,7 +7059,21 @@ def _is_qualitative_value_cell(cell: str) -> bool:
 
 
 def _qualitative_polarity(cell: str) -> Optional[str]:
-    """Whether `cell` says positive, negative, or neither."""
+    """Whether `cell` says positive, negative, or neither.
+
+    A TRACE HAS NO POLARITY, WHICH IS THIS FILE'S EXISTING ANSWER FOR
+    「±」 and is now also 微量's. 「阴性 微量」 is then two verdicts,
+    neither positive, and `_pick_qualitative_cell` publishes that row as
+    UNREAD where the page carries no header to read the columns off —
+    the same treatment 「阴性 ±」 has always had, and the reason is the
+    same: a trace read out of the wrong column is a finding this patient
+    does not have, and an unread cell is visibly missing while a
+    misread one is not. What changed is that 微量 is a RECOGNISED
+    reading at all — it used to be no verdict of any kind, so
+    「蛋白质 阴性 微量」 offered the row reader exactly ONE candidate, the
+    参考区间 column's 阴性, and that was published as the patient's own
+    result.
+    """
     stripped = cell.strip().replace(" ", "")
     negative = "阴性" in stripped or stripped.startswith(("未检出", "未见"))
     positive = "阳性" in stripped or (
@@ -7462,14 +7588,36 @@ _NUMERIC_DATA_CELL = re.compile(
     rf"\s*(?:[A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})?$"
 )
 
+#: THE E EXPONENT IS PART OF THE UNIT, NOT THE START OF ONE.
+#:
+#: 「10E9/L」, 「10e9/L」 and 「10E12/L」 are how a Chinese LIS exports the
+#: haematology unit when it cannot print a superscript — the same cell
+#: as 「10^9/L」, 「10*9/L」 and 「×10⁹/L」, in the spelling those three
+#: were fixed for and this one was not. The unit half only had to START
+#: with a letter, and 「E9/L」 does, so the cell split into 「10」 and a
+#: remainder: `_unit_digit_spans` then saw a cell that was NOT a whole
+#: unit and reserved nothing, and on the 项目 / 单位 / 结果 order — the
+#: 单位 column beside the analyte's name — the first number after the
+#: name is that 10. Measured on a synthetic 血常规 in that order,
+#: 「白细胞计数(WBC) 10E9/L 6.69 3.5-9.5」 published `wbc: 10` and
+#: 「红细胞计数(RBC) 10E12/L 4.55」 published `rbc: 10`: a white cell
+#: count of 10 is a leucocytosis a clinician acts on, a red cell count
+#: of 10 is not a figure a living patient has, and neither 6.69 nor 4.55
+#: was anywhere in the payload.
+#:
+#: An `E` followed by a DIGIT is an exponent; an `E` followed by
+#: anything else still opens a unit, so 「5EU/L」 splits as it always did.
+_EXPONENT_UNIT_TAIL = r"(?![Ee]\d)"
+
 #: The same cell, split into the two columns it is really printing. The
 #: unit half must START with a letter or a percent sign, which is what
 #: keeps 「10^9/L」 whole — that is a unit, not a 10 with a unit of
-#: 「^9/L」.
+#: 「^9/L」 — and must not start with an exponent, which is what keeps
+#: 「10E9/L」 whole for the same reason.
 _CELL_NUMBER_THEN_UNIT = re.compile(
     rf"^([{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE}"
     rf"(?:\s*[{_RANGE_DASHES}]\s*[{_COMPARATORS}]?\s*{_NUMBER_CELL_SOURCE})?)"
-    rf"\s*([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
+    rf"\s*{_EXPONENT_UNIT_TAIL}([A-Za-zμµ%][{_UNIT_CHARS}\d\.\*]{{0,13}})$"
 )
 
 

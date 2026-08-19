@@ -106,3 +106,102 @@ describe('没标注但超出区间的数值，屏幕上要说出来', () => {
     ).toBe('96U/L');
   });
 });
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * 全角标点写的区间 —— 中国化验室实际打出来的那种。
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * These classes shipped understanding the half-width spellings only, so
+ * a report typed in a Chinese IME — 「50－310」 (U+FF0D), 「＜25」
+ * (U+FF1C) — printed the value and the interval side by side with no
+ * observation between them, which is the row the clause exists to end.
+ *
+ * The set is the parser's: `_read_row_reference` in
+ * apps/report-manager/app/services/fshd_report_service.py returns the
+ * interval RAW, so `_RANGE_DASHES` and `_COMPARATORS` are exactly what
+ * arrives. Asserted here member by member, and identically to
+ * apps/api/src/modules/patient-profile/
+ * profile.passport.printed-interval.test.ts — 临床护照 is one tap from
+ * 报告详情 and the two must not disagree about whether a number fits.
+ */
+describe('全角标点写的区间，手机上照样比得出来', () => {
+  const DASHES = ['-', '~', '‐', '‑', '‒', '–', '—', '―', '−', '〜', '﹣', '－', '～'];
+
+  it.each(DASHES)('两侧区间的分隔符 %s 都读得出来', (dash) => {
+    expect(metric({ ck: '693U/L', ckReference: `50${dash}310` }, 'CK')?.value).toBe(
+      `693U/L（参考区间 50${dash}310；${CLAUSE_HIGH}）`,
+    );
+    expect(metric({ ck: '18U/L', ckReference: `50${dash}310` }, 'CK')?.value).toBe(
+      `18U/L（参考区间 50${dash}310；${CLAUSE_LOW}）`,
+    );
+  });
+
+  /** 「<」 excludes its own limit and 「≤」 does not; a widening that
+   *  collapses the two puts a reading sitting on the limit on the wrong
+   *  side of it. */
+  const CEILINGS: Array<[string, boolean]> = [
+    ['<', true],
+    ['＜', true],
+    ['﹤', true],
+    ['≤', false],
+    ['⩽', false],
+    ['≦', false],
+  ];
+
+  it.each(CEILINGS)('上限 %s 读得出来，开闭区间没被抹平', (mark, strict) => {
+    expect(metric({ ckmb: '30ng/mL', ckmbReference: `${mark}25` }, 'CKMB')?.value).toBe(
+      `30ng/mL（参考区间 ${mark}25；${CLAUSE_HIGH}）`,
+    );
+    expect(metric({ ckmb: '25ng/mL', ckmbReference: `${mark}25` }, 'CKMB')?.value).toBe(
+      strict ? `25ng/mL（参考区间 ${mark}25；${CLAUSE_HIGH}）` : `25ng/mL（参考区间 ${mark}25）`,
+    );
+  });
+
+  const FLOORS: Array<[string, boolean]> = [
+    ['>', true],
+    ['＞', true],
+    ['﹥', true],
+    ['≥', false],
+    ['⩾', false],
+    ['≧', false],
+  ];
+
+  it.each(FLOORS)('下限 %s 读得出来，开闭区间没被抹平', (mark, strict) => {
+    expect(metric({ ldh: '4U/L', ldhReference: `${mark}9` }, 'LDH')?.value).toBe(
+      `4U/L（参考区间 ${mark}9；${CLAUSE_LOW}）`,
+    );
+    expect(metric({ ldh: '9U/L', ldhReference: `${mark}9` }, 'LDH')?.value).toBe(
+      strict ? `9U/L（参考区间 ${mark}9；${CLAUSE_LOW}）` : `9U/L（参考区间 ${mark}9）`,
+    );
+  });
+
+  it('千分位逗号的两种宽度都是一个数', () => {
+    expect(metric({ ck: '3，250U/L', ckReference: '1，000－2，000' }, 'CK')?.value).toBe(
+      `3，250U/L（参考区间 1，000－2，000；${CLAUSE_HIGH}）`,
+    );
+  });
+
+  /** The refusals widen with the acceptances. A result cell holding a
+   *  full-width interval walked past `VALUE_IS_A_RANGE`, its low end
+   *  was read as the reading, and a verdict was published about a
+   *  number nobody measured. */
+  it('结果格里装的是全角写法的区间时不比', () => {
+    expect(metric({ ck: '0.5－1.2', ckReference: '50-310' }, 'CK')?.value).toBe(
+      '0.5－1.2（参考区间 50-310）',
+    );
+  });
+
+  it('数值本身是全角单边界限时不比 —— 那是检出限', () => {
+    expect(metric({ ck: '＜0.01', ckReference: '0.05-0.5' }, 'CK')?.value).toBe(
+      '＜0.01（参考区间 0.05-0.5）',
+    );
+  });
+
+  it('全角区间上，病程摘要和指标卡说的是同一句话', () => {
+    const fields = { ck: '693U/L', ckReference: '50－310' };
+    const row = `CK 693U/L（参考区间 50－310；${CLAUSE_HIGH}）`;
+    expect(insights(fields).bloodSummary).toBe(row);
+    expect(metric(fields, 'CK')?.value).toBe(`693U/L（参考区间 50－310；${CLAUSE_HIGH}）`);
+  });
+});

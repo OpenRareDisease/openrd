@@ -2331,3 +2331,398 @@ describe('the shapes the running stack produced in this round', () => {
     expect(violations[0].sentence).toContain('大于 10');
   });
 });
+
+// ---------------------------------------------------------------------
+// D1 — THE OTHER HALF OF THE SAME PARSER.
+//
+// The previous round rebuilt the PREFIX form out of the grammar so that
+// 不低于 flips to an above-bound. The SUFFIX form had no negator branch
+// at all, so 「未见 11 个以上」 and 「没有 11 个以上」 — both of which say
+// FEWER THAN 11 WERE FOUND — canonicalised to 「>11」, the interval of
+// exactly what they deny. Same defect, same file, other side of the
+// number, and it is asserted in the SAME round-trip table shape as the
+// prefix forms.
+describe('a negated bound written on the suffix side of the number', () => {
+  const NEGATED_TO_BELOW_11 = [
+    '未见 11 个以上',
+    '没有 11 个以上',
+    '没 11 个以上',
+    '未检出 11 个以上',
+    '未发现 11 个重复单元以上',
+    '没有 11 之上',
+    '未达到 11 个及以上',
+  ];
+
+  const NEGATED_TO_ABOVE_10 = ['没有 10 个以下', '未见 10 个以内', '未检出 10 个之下'];
+
+  it.each(NEGATED_TO_BELOW_11)('reads 「%s」 as the band at or below 11', (form) => {
+    expect(intervalsIn(form)).toEqual(['<11']);
+  });
+
+  it.each(NEGATED_TO_ABOVE_10)('reads 「%s」 as the band at or above 10', (form) => {
+    expect(intervalsIn(form)).toEqual(['>10']);
+  });
+
+  // The defect stated as its own assertion, in the same shape the prefix
+  // half already states it.
+  it('does not read a negated suffix bound as the bound it negates', () => {
+    expect(intervalsIn('未见 11 个以上')).not.toContain('>11');
+    expect(intervalsIn('没有 11 个以上')).not.toContain('>11');
+    expect(intervalsIn('没有 10 个以下')).not.toContain('<10');
+  });
+
+  // ...and the un-negated forms are untouched.
+  it('still reads the plain suffix forms the way it always did', () => {
+    expect(intervalsIn('11 个以上')).toEqual(['>11']);
+    expect(intervalsIn('10 个及以下')).toEqual(['<10']);
+  });
+
+  // A negator that is not this number's is not a negation of this bound.
+  // 「没有人的…」 opens with 没有 and quantifies over PEOPLE.
+  it('does not flip a bound whose 没有 belongs to another predicate', () => {
+    expect(intervalsIn('没有人的重复数在 11 个以上')).toEqual(['>11']);
+    expect(intervalsIn('报告上不写 11 个以上这种范围')).toEqual(['>11']);
+  });
+
+  // WHAT THE INVERSION COST A PATIENT, through the check that reads this
+  // parser, in both directions — the same pair the prefix half pins.
+  it('admits the interval the record printed as 「未见 11 个以上」', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '未见 11 个以上重复单元' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(withRange.recordIntervals.has('<11')).toBe(true);
+    expect(withRange.recordIntervals.has('>11')).toBe(false);
+    // The laboratory's own line, read back to the patient, is not a
+    // fabrication.
+    expect(
+      inspectAnswer('报告上印的参考范围是 11 个以下，你的结果是 3 个。', withRange),
+    ).toHaveLength(0);
+  });
+
+  it('still catches the invented range beside a record that printed a negated suffix', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { d4z4Repeats: '3', d4z4Reference: '未见 11 个以上重复单元' } }],
+      emitted: { fields: new Set(['d4z4Repeats']), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['D4Z4 重复数: 3'],
+    });
+    expect(
+      inspectAnswer('你的 D4Z4 重复数的正常参考范围是 11 个以上。', withRange).map((v) => v.kind),
+    ).toContain('fabricated_reference_range');
+  });
+});
+
+// ---------------------------------------------------------------------
+// D2 — THE NOTATION CLASSES, WHICH ARE ONE OF SIX COPIES IN THIS REPO
+// AND USED TO DISAGREE WITH THE OTHER FIVE.
+//
+// The complete set is written out in the block above `RANGE_DASH`. It is
+// asserted HERE as a table rather than described, so a copy that drifts
+// shows up as a red test rather than as a report the guard silently
+// stops reading.
+describe('every spelling of a band separator and a comparator', () => {
+  const evidence = evidenceFor('precise');
+
+  const RANGE_DASHES = ['-', '~', '–', '—', '―', '‐', '‑', '‒', '−', '－', '﹣', '～', '〜'];
+  const BELOW_SYMBOLS = ['<', '≤', '＜', '≦', '⩽', '﹤'];
+  const ABOVE_SYMBOLS = ['>', '≥', '＞', '≧', '⩾', '﹥'];
+
+  it.each(RANGE_DASHES)('reads 「1%s3」 as the band 1~3', (dash) => {
+    expect(intervalsIn(`1${dash}3`)).toEqual(['1~3']);
+  });
+
+  it.each(BELOW_SYMBOLS)('reads 「%s10」 as the band at or below 10', (symbol) => {
+    expect(intervalsIn(`${symbol}10`)).toEqual(['<10']);
+  });
+
+  it.each(ABOVE_SYMBOLS)('reads 「%s11」 as the band at or above 11', (symbol) => {
+    expect(intervalsIn(`${symbol}11`)).toEqual(['>11']);
+  });
+
+  // The spellings this file did NOT hold, driven through the checks that
+  // read them. 「－」 is what a Chinese IME gives for a hyphen keyed in
+  // Chinese mode; 「﹤」「﹥」 are what the Python parser has read off a
+  // real report since its own round.
+  it('catches a severity claim on a band an IME typed with the full-width hyphen', () => {
+    const violations = inspectAnswer('1－3 个重复单元的患者病情通常较重。', evidence);
+    expect(violations.map((v) => v.kind)).toContain('severity_from_patient_number');
+  });
+
+  it('catches a reference range written with the small-form comparator', () => {
+    const violations = inspectAnswer('正常参考范围是 ﹥10 个重复单元，你的是 3 个。', evidence);
+    expect(violations.map((v) => v.kind)).toContain('fabricated_reference_range');
+  });
+
+  // ...and symmetrically, the record printing the same spelling is
+  // admissible rather than fabricated. Widening a notation class can
+  // only ever add a comparison.
+  it('admits the record own interval written with the full-width hyphen', () => {
+    const withRange = buildGuardEvidence({
+      patientPayloads: [{ fields: { ck: '320', ckReference: '40－200' } }],
+      emitted: { fields: new Set(), ocrKeys: new Set() },
+      corpusTexts: [],
+      renderedTexts: ['CK: 320\n参考范围: 40－200'],
+    });
+    expect(withRange.recordIntervals.has('40~200')).toBe(true);
+    expect(inspectAnswer('报告上印的参考范围是 40-200。', withRange)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D3 — 拷贝数 IS ONE OF THE FOUR TERMS THIS FILE REGISTERS FOR THE D4Z4
+// CELL, and `MEASURE_TAIL` held only the bare 拷贝. Alternation is
+// leftmost-first, so 拷贝 matched and left 数 standing between the
+// measure and the boundary word, and the whole interval disappeared.
+describe('an interval whose measure word is the one this file already knows', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each(['11 个拷贝数以上', '11 拷贝数以上', '11 个拷贝数及以上'])(
+    'reads 「%s」 as the band at or above 11',
+    (form) => {
+      expect(intervalsIn(form)).toEqual(['>11']);
+    },
+  );
+
+  it('reads a band written with 拷贝数 on both ends', () => {
+    expect(intervalsIn('1 个拷贝数到 3 个拷贝数')).toEqual(['1~3']);
+  });
+
+  it('catches the fabricated range that was invisible without it', () => {
+    const answer = [
+      '| 项目 | 你的结果 | 参考范围 |',
+      '| --- | --- | --- |',
+      '| D4Z4 重复数 | 3 | 正常参考：11 个拷贝数以上 |',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toEqual([
+      'fabricated_reference_range',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D4 — THE DISCLAIMER ESCAPE HAD NO POSITION RULE.
+//
+// `gradingIsNotAsserted` says it for check 2: a negation cancels only a
+// grading word that comes AFTER it. Check 1 tested the hedge against the
+// whole segment, so a claim delivered whole and then softened published.
+describe('a hedge standing after the claim it is supposed to soften', () => {
+  const evidence = evidenceFor('precise');
+
+  it.each([
+    '1–3 个重复单元这一档发病较早、病情较重，不过具体还要看你的主治医生怎么判断。',
+    '你的 3 个重复单元对应的进展通常比较快，当然我不能替医生下结论。',
+    '3 个重复单元属于病情较严重的遗传基础，说不准的地方还很多。',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // ...and the refusal, which opens with the disclaimer, is untouched.
+  it.each([
+    '我不能把你的 3 个重复单元、95% 甲基化值拿来判断「你病情严重不严重」。',
+    '我不能拿你的 3 个重复单元去说你以后会不会比较重。',
+    '至于 95% 这个数值对你的病情具体意味着什么，建议跟你的主治医生讨论，他会结合你的疾病进展来判断。',
+  ])('leaves %s alone', (sentence) => {
+    expect(inspectAnswer(sentence, evidence)).toHaveLength(0);
+  });
+
+  // The interrogative is the other thing that stands in front of a
+  // severity word without asserting it — the same rule check 2 has.
+  it('leaves the question handed to a clinician alone', () => {
+    expect(
+      inspectAnswer(
+        '95% 这个数值具体代表什么、是否异常、是否提示更重或更轻的表型，建议你拿着报告去问你的主治医生。',
+        evidence,
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D5 — THE ANAPHORA CHAIN WAS SWITCHED OFF BY ANY STANDALONE NUMBER.
+//
+// The gate is real — a sentence that states its own band is pointing at
+// that band — but 「any digit」 is the wrong proxy for it: a year, a
+// citation index and a cohort size are not what 这个数值 points at.
+describe('an anaphor in a sentence that happens to carry an unrelated figure', () => {
+  const evidence = evidenceFor('precise');
+
+  it('follows the value anaphor through a year', () => {
+    const answer = '你的重复数是 3。这个数值在 2019 年的一项队列研究里和更早的发病年龄相关。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['severity_from_patient_number']);
+    expect(violations[0].sentence).toContain('这个数值');
+  });
+
+  it('follows the value anaphor through a citation marker', () => {
+    const answer = '你的重复数是 3。这个数值对应的病程进展通常比较快 [2]。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  it('follows the band anaphor through a cohort proportion', () => {
+    const answer = '你落在 1–3 这一档。这一档的患者里有 30% 最终需要轮椅。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+      'severity_from_patient_number',
+    );
+  });
+
+  // The gate this replaces is still doing its job: a band anaphor whose
+  // referent is a band the sentence states itself borrows nothing.
+  it('still does not borrow for a sentence that states its own band', () => {
+    expect(inspectAnswer('你的重复数是 3。8–10 这一档的预后说不清楚。', evidence)).toHaveLength(0);
+  });
+
+  it('still does not borrow for a value anaphor that states its own reading', () => {
+    expect(
+      inspectAnswer('你的重复数是 3。这个数值 30 的时候预后完全不同。', evidence),
+    ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D6 — 显示 / 看到 / 读到 ARE PREDICATED OF THE REPORT AT LEAST AS
+// READILY AS OF THE ASSISTANT.
+//
+// The delivery-verb list handed the absence back to this assistant on
+// any of them, so 「报告里没有显示甲基化」 — the ordinary Chinese for
+// 「the document does not show it」, and the false claim check 4 exists
+// for — stood the whole check down.
+describe('a verb the report is the subject of just as readily', () => {
+  const strict = evidenceFor('strict');
+
+  it.each([
+    '你的报告里没有显示甲基化的结果。',
+    '这份报告里没有列出甲基化这一项。',
+    '你上传的资料里没有提到甲基化。',
+  ])('catches %s', (sentence) => {
+    expect(inspectAnswer(sentence, strict).map((v) => v.kind)).toContain(
+      'retest_of_a_value_on_file',
+    );
+  });
+
+  // ...and the same verb with the assistant named in the clause is the
+  // wording that IS correct here.
+  it.each([
+    '你的报告里的甲基化，我没有看到。',
+    '甲基化的具体数值系统没有显示出来（按当前授权扣下的测量值个数: 1）。',
+    '你的报告里的甲基化数值，按当前授权没有发给我。',
+  ])('leaves %s alone', (sentence) => {
+    expect(inspectAnswer(sentence, strict)).toHaveLength(0);
+  });
+
+  // 「我的报告」 is the PATIENT's possessive, said by a model writing in
+  // their voice. Reading its 我 as the assistant would hand it the
+  // escape.
+  it('does not let the patient own 我的 stand in for the assistant', () => {
+    expect(inspectAnswer('我的报告里没有显示甲基化的结果。', strict).map((v) => v.kind)).toContain(
+      'retest_of_a_value_on_file',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------
+// D7 — THE SUBJECT MAY STAND AFTER THE VERB.
+//
+// The resolution only looked backward, so the negated existential — the
+// ordinary Chinese order, thing first and location after the verb — had
+// nothing in front of the marker to resolve to and escaped.
+describe('the existential order, where the document stands after the marker', () => {
+  const strict = evidenceFor('strict');
+
+  it.each([
+    '甲基化的结果没有出现在你上传的报告里。',
+    '这一项没有包含在这份检测结果中。',
+    '甲基化数值没有写在报告单上。',
+  ])('catches %s', (sentence) => {
+    const answer = `你问的是甲基化那一项。\n${sentence}`;
+    expect(inspectAnswer(answer, strict).map((v) => v.kind)).toContain('retest_of_a_value_on_file');
+  });
+
+  // A holder in FRONT still wins, which is what keeps this platform's own
+  // quoted refusal — 平台 before the marker, 报告 after it — alive.
+  it('leaves the quoted refusal alone, whose 报告 stands after the marker', () => {
+    expect(
+      inspectAnswer('这一格标的是「本平台没有把这一格当成化验报告上的读数」。', strict),
+    ).toHaveLength(0);
+  });
+
+  it('leaves the assistant-side absence with the report after the verb alone', () => {
+    expect(inspectAnswer('我这边没有拿到你报告里的甲基化数值。', strict)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// D8 — CHECK 5 ONLY HOPPED BACKWARD, AND WANTED THE FRAMING AND THE
+// DIGITS IN ONE SEGMENT.
+describe('a fabricated reference range that stands before the value it is read against', () => {
+  const evidence = evidenceFor('precise');
+
+  it('catches the range stated one sentence BEFORE his value', () => {
+    const answer = '正常参考范围是 11 个以上。你的 D4Z4 重复数是 3 个。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toEqual(['fabricated_reference_range']);
+    expect(violations[0].sentence).toContain('11 个以上');
+  });
+
+  it('catches a table of ranges standing above the sentence about his value', () => {
+    const answer = [
+      '| 项目 | 正常参考 |',
+      '| --- | --- |',
+      '| 检测下限 | 11 个以上 |',
+      '你的 D4Z4 重复数是 3 个。',
+    ].join('\n');
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // ONE HOP forward, exactly as backward: two sentences away is still
+  // somebody else's problem.
+  it('reaches forward exactly one segment and no further', () => {
+    const answer = '正常参考范围是 11 个以上。这些都记在档案里了。你的 D4Z4 重复数是 3 个。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // ...and a passage about nobody is still left alone in both directions.
+  it('leaves an encyclopedia interval with no patient on either side alone', () => {
+    const answer = 'FSHD 是一种常染色体显性遗传病 [2]。文献里的正常参考范围是 11 个以上 [2]。';
+    expect(inspectAnswer(answer, evidence)).toHaveLength(0);
+  });
+});
+
+describe('a reference range whose framing is in the sentence before the digits', () => {
+  const evidence = evidenceFor('precise');
+
+  it('catches the interval under a framing sentence that printed none', () => {
+    const answer = '参考范围报告上没有另外印。你的 D4Z4 重复数 3 个要跟 11 个以上去对。';
+    const violations = inspectAnswer(answer, evidence);
+    expect(violations.map((v) => v.kind)).toContain('fabricated_reference_range');
+  });
+
+  // The honest form is untouched: a cited encyclopedia range keeps its
+  // citation, and the framing does not reach it. Same 「[N]」 test check 3
+  // uses.
+  it('does not carry the framing onto a cited source sentence', () => {
+    const answer = '参考范围报告上没有另外印。知识库里写 FSHD1 的重复数范围是 1–10 [2]。';
+    expect(inspectAnswer(answer, evidence).map((v) => v.kind)).not.toContain(
+      'fabricated_reference_range',
+    );
+  });
+
+  // ONE segment, and a framing that stated its own interval does not
+  // carry — it was already judged.
+  it('does not carry a framing that stated an interval of its own', () => {
+    const answer =
+      '你的 D4Z4 重复数是 3 个。报告上印的参考范围是 1-10。后面还有 11 个以上这种说法。';
+    const kinds = inspectAnswer(answer, evidence).map((v) => v.kind);
+    expect(kinds.filter((kind) => kind === 'fabricated_reference_range')).toHaveLength(1);
+  });
+});

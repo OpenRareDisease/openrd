@@ -283,3 +283,137 @@ describe('比不了的就不比', () => {
     expect(compareWithPrintedInterval('120-250', '50-310')).toBeNull();
   });
 });
+
+/**
+ * ══════════════════════════════════════════════════════════════════════
+ * THE PUNCTUATION A CHINESE LABORATORY ACTUALLY TYPES.
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * The comparison shipped understanding the HALF-WIDTH spellings only —
+ * 「-」 and 「~」 between two bounds, 「<」 「>」 「≤」 「≥」 before one.
+ * A Chinese IME does not produce those: it gives 「－」 (U+FF0D) for a
+ * hyphen keyed in Chinese mode and 「＜」 (U+FF1C) for a less-than, and
+ * an OCR pass hands back 「–」 (U+2013) for a printed en dash at least
+ * as often as the ASCII one. So on a report typed the ordinary way the
+ * comparison SILENTLY DID NOT HAPPEN and 「CK 693（参考区间 50－310）」
+ * printed with no observation — the exact row the clause exists to end,
+ * on all four surfaces at once.
+ *
+ * THE SET IS THE PARSER'S, not one invented here. `_read_row_reference`
+ * in apps/report-manager/app/services/fshd_report_service.py returns
+ * the interval RAW, so `_RANGE_DASHES` and `_COMPARATORS` are exactly
+ * what can arrive. Every member of both is asserted below by codepoint,
+ * so a class that is narrowed again fails on the member that was
+ * dropped rather than on whichever one a fixture happened to use.
+ */
+describe('全角标点写的区间照样比得出来', () => {
+  const RANGE_DASHES = [
+    ['U+002D 半角连字符', '-'],
+    ['U+007E 半角波浪', '~'],
+    ['U+2010 hyphen', '‐'],
+    ['U+2011 non-breaking hyphen', '‑'],
+    ['U+2012 figure dash', '‒'],
+    ['U+2013 en dash', '–'],
+    ['U+2014 em dash', '—'],
+    ['U+2015 horizontal bar', '―'],
+    ['U+2212 minus sign', '−'],
+    ['U+301C wave dash', '〜'],
+    ['U+FE63 small hyphen-minus', '﹣'],
+    ['U+FF0D 全角连字符', '－'],
+    ['U+FF5E 全角波浪', '～'],
+  ] as const;
+
+  it.each(RANGE_DASHES)('两侧区间的分隔符 %s 都读得出来', (_name, dash) => {
+    expect(compareWithPrintedInterval('693', `50${dash}310`)).toBe('above');
+    expect(compareWithPrintedInterval('18', `50${dash}310`)).toBe('below');
+    expect(compareWithPrintedInterval('120', `50${dash}310`)).toBeNull();
+  });
+
+  /**
+   * 「<」 EXCLUDES its own limit and 「≤」 does not, and that distinction
+   * is exactly what a widening loses if it collapses the comparators
+   * into one class with a direction. The parser only needs to know
+   * 「＜」 names a ceiling; this file needs to know it is the strict
+   * one, or a reading sitting on the limit lands on the wrong side.
+   */
+  const CEILINGS = [
+    ['U+003C 半角小于', '<', 'strict'],
+    ['U+FF1C 全角小于', '＜', 'strict'],
+    ['U+FE64 small less-than', '﹤', 'strict'],
+    ['U+2264', '≤', 'inclusive'],
+    ['U+2A7D', '⩽', 'inclusive'],
+    ['U+2266', '≦', 'inclusive'],
+  ] as const;
+
+  it.each(CEILINGS)('上限 %s 读得出来，并且没把开闭区间抹平', (_name, mark, kind) => {
+    expect(compareWithPrintedInterval('30', `${mark}25`)).toBe('above');
+    expect(compareWithPrintedInterval('24', `${mark}25`)).toBeNull();
+    expect(compareWithPrintedInterval('25', `${mark}25`)).toBe(kind === 'strict' ? 'above' : null);
+  });
+
+  const FLOORS = [
+    ['U+003E 半角大于', '>', 'strict'],
+    ['U+FF1E 全角大于', '＞', 'strict'],
+    ['U+FE65 small greater-than', '﹥', 'strict'],
+    ['U+2265', '≥', 'inclusive'],
+    ['U+2A7E', '⩾', 'inclusive'],
+    ['U+2267', '≧', 'inclusive'],
+  ] as const;
+
+  it.each(FLOORS)('下限 %s 读得出来，并且没把开闭区间抹平', (_name, mark, kind) => {
+    expect(compareWithPrintedInterval('4', `${mark}9`)).toBe('below');
+    expect(compareWithPrintedInterval('10', `${mark}9`)).toBeNull();
+    expect(compareWithPrintedInterval('9', `${mark}9`)).toBe(kind === 'strict' ? 'below' : null);
+  });
+
+  /** `_DIGIT_GROUPS` admits 「[,，]」, so a grouped number can reach
+   *  this side with the full-width comma and 「1，000」 is one number. */
+  it('千分位逗号的两种宽度都是一个数', () => {
+    expect(compareWithPrintedInterval('3，250', '1，000－2，000')).toBe('above');
+    expect(compareWithPrintedInterval('1，500', '1，000－2，000')).toBeNull();
+  });
+
+  /**
+   * THE REFUSALS HAVE TO WIDEN WITH THE ACCEPTANCES, and this is the
+   * half where staying narrow was worse than silence. A result cell
+   * holding an interval is the reference column mis-parsed; spelled
+   * full-width it walked past `VALUE_IS_A_RANGE`, its low end was read
+   * as the reading, and 「本平台比对：低于该区间」 was published about a
+   * number nobody measured.
+   */
+  it('结果格里装的是全角写法的区间时不比', () => {
+    expect(compareWithPrintedInterval('0.5－1.2', '50-310')).toBeNull();
+    expect(compareWithPrintedInterval('0.5～1.2', '50-310')).toBeNull();
+    expect(compareWithPrintedInterval('120–250', '50-310')).toBeNull();
+  });
+
+  it('数值本身是全角单边界限时不比 —— 那是检出限', () => {
+    expect(compareWithPrintedInterval('＜0.01', '0.05-0.5')).toBeNull();
+    expect(compareWithPrintedInterval('⩾100', '50-310')).toBeNull();
+  });
+
+  it('全角写法的上下界颠倒时同样不比', () => {
+    expect(compareWithPrintedInterval('693', '310－50')).toBeNull();
+  });
+
+  /** All four surfaces are built off `buildMonitoringSummary`, so the
+   *  widened class reaching one of them and not another would mean a
+   *  surface had grown its own bracket. */
+  it('全角区间上，四个面拿到的还是同一句话', () => {
+    const fields = { ck: '693', ckReference: '50－310' };
+    const profile = profileWith(fields);
+    const summary = buildClinicalPassportSummary(profile, NOW);
+    const ROW = 'CK 693（参考区间 50－310；报告未标注异常，本平台比对：高于该区间）';
+
+    expect(bloodRowFor(fields)).toBe(ROW);
+    expect(buildPassportSharePage(summary, { viaPickup: true })).toContain(ROW);
+    expect(
+      buildReferralPack(profile, NOW).monitoring.find((item) => item.key === 'blood')?.statement,
+    ).toContain(ROW);
+    expect(
+      buildClinicalPassportExport(summary)
+        .markdown.split('\n')
+        .find((row) => row.startsWith('- 血检指标')),
+    ).toContain(ROW);
+  });
+});
