@@ -1,3 +1,20 @@
+# THE PRODUCTION INTERPRETER IS 3.11 AND ANNOTATIONS ARE EVALUATED AT
+# DEFINITION TIME THERE.
+#
+# `_TableColumns` is annotated on a reader 2049 lines before the class
+# is defined, and on 3.11 that is a NameError raised while the module is
+# still importing - so the parser did not load AT ALL in either Docker
+# image (both are python:3.11-slim) and the whole test suite failed
+# during collection. It was invisible locally because this machine runs
+# 3.14, where PEP 649 defers annotation evaluation.
+#
+# The future import defers them everywhere, which covers the forward
+# references nobody has tripped over yet as well as this one. Do not
+# remove it without moving every forward-referenced definition above its
+# first use - and do not trust `python3` to tell you: run the suite on
+# 3.11, which is what ci.yml pins and what ships.
+from __future__ import annotations
+
 import re
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
